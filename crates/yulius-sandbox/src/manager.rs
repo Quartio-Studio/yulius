@@ -478,6 +478,9 @@ pub struct IsolationStatus {
 /// See the module docs.
 pub struct Manager {
     config: IsolationConfig,
+    /// Restart controls of the active host-side outbound relays.
+    #[cfg(target_os = "linux")]
+    pub outbound_relays: Arc<crate::relay::handoff::OutboundRelays>,
     bases: Bases,
     /// A purge may remove the durable retirement marker while old requests still exist.
     retirements: Mutex<HashMap<String, Instant>>,
@@ -576,6 +579,8 @@ impl Manager {
     #[must_use]
     pub fn new(config: IsolationConfig) -> Arc<Self> {
         Arc::new(Self {
+            #[cfg(target_os = "linux")]
+            outbound_relays: Arc::default(),
             bases: Bases::new(&config.data_dir),
             disk_max: AtomicU64::new(config.disk_max.unwrap_or(0)),
             docker_restarts: AtomicU64::new(0),
@@ -1811,12 +1816,22 @@ impl Manager {
         match tokio::net::UnixListener::bind(state.outbound()) {
             Ok(listener) => {
                 let targets = Arc::new(self.config.forwards.clone());
-                tasks.push(tokio::spawn(crate::relay::serve_outbound(
+                #[cfg(target_os = "linux")]
+                let serving = self.outbound_relays.serve(
                     listener,
                     targets,
-                    sandbox.to_string(),
+                    sandbox.to_owned(),
+                    record.clone(),
                     Arc::clone(&self.config.health),
-                )));
+                );
+                #[cfg(not(target_os = "linux"))]
+                let serving = crate::relay::serve_outbound(
+                    listener,
+                    targets,
+                    sandbox.to_owned(),
+                    Arc::clone(&self.config.health),
+                );
+                tasks.push(tokio::spawn(serving));
             }
             Err(error) => tracing::warn!(sandbox, %error, "cannot serve the sandbox's out.sock"),
         }

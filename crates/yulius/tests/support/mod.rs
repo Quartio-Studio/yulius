@@ -43,6 +43,8 @@ impl Clock for TestClock {
 /// Fake GitHub: OAuth codes map to users; permissions per (login, repo).
 #[derive(Default)]
 pub struct FakeGitHub {
+    pub branch_read_purposes: Mutex<Vec<yulius_app::ports::github::GitHubPurpose>>,
+    pub budget_view: Mutex<Option<yulius_app::ports::github::GitHubBudget>>,
     pub users_by_code: Mutex<HashMap<String, GhUser>>,
     pub perms: Mutex<HashMap<(String, String), GitHubPermissions>>,
     pub fail_permissions: std::sync::atomic::AtomicBool,
@@ -59,10 +61,23 @@ pub struct FakeGitHub {
     /// When set, a callback question waits for it; `callback_entered` says one began.
     pub callback_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub callback_entered: tokio::sync::Notify,
+    pub pull_get_count: std::sync::atomic::AtomicUsize,
+    pub pull_list_count: std::sync::atomic::AtomicUsize,
+    /// A lagging open-PR list can omit a PR its numbered endpoint still serves.
+    pub omit_listed_pull: Mutex<Option<u64>>,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
+    /// REST calls to get or list PRs for discovery.
+    pub pull_reads: std::sync::atomic::AtomicUsize,
     /// Simulates a failed repository-wide overview while individual PRs remain readable.
     pub fail_overview_pulls: std::sync::atomic::AtomicBool,
+    /// Hold the selected PR list until cancelled or explicitly released.
+    pub hold_overview_list: std::sync::atomic::AtomicBool,
+    pub pull_list_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub pull_list_entered: tokio::sync::Notify,
+    /// Hold publication for just this SHA.
+    pub status_hold: Mutex<Option<(String, Arc<tokio::sync::Notify>)>>,
+    pub status_entered: tokio::sync::Notify,
     pub no_installation: std::sync::atomic::AtomicBool,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
     /// scan's `MAX_PULL_LOOKUPS` bound).
@@ -74,6 +89,14 @@ pub struct FakeGitHub {
     pub guarded_branches: Mutex<Vec<String>>,
     /// A PR retargeted at GitHub after the client observed it and before the merge lands.
     pub retarget_on_merge: Mutex<Option<String>>,
+    /// A concurrent GitHub write to the base immediately before merging a pull request.
+    pub advance_base_on_merge: Mutex<Option<String>>,
+    /// Another release request creates the same ref before the provider answers the POST.
+    pub concurrent_release_ref: std::sync::atomic::AtomicBool,
+    /// Return the selected source SHA in place of the actual merge commit once.
+    pub report_source_as_merge: std::sync::atomic::AtomicBool,
+    /// Refuse one production head read following a pinned release merge.
+    pub fail_pinned_merge_read: std::sync::atomic::AtomicBool,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
     pub fail_merged_reads: std::sync::atomic::AtomicBool,
     /// Metadata confirms a merge while the branch listing still has the open PR.
@@ -99,6 +122,8 @@ pub struct FakeGitHub {
     pub pull_authors: Mutex<HashMap<u64, String>>,
     /// Commit statuses published, in order: (sha, status).
     pub statuses: Mutex<Vec<(String, NewCommitStatus)>>,
+    /// Notifies a waiting CI test after GitHub receives a status.
+    pub status_published: tokio::sync::Notify,
     /// When set, publishing a commit status fails as without the App permission.
     pub statuses_forbidden: std::sync::atomic::AtomicBool,
     /// Issues opened (DLV-008).
@@ -166,6 +191,13 @@ fn login_of(token: &Secret) -> String {
 
 #[async_trait]
 impl GitHubPort for FakeGitHub {
+    fn budget(&self, _: Option<u64>) -> yulius_app::ports::github::GitHubBudget {
+        self.budget_view
+            .lock()
+            .ok()
+            .and_then(|v| v.clone())
+            .unwrap_or_else(yulius_app::ports::github::GitHubBudget::empty)
+    }
     fn authorize_url(&self, _: &GitHubAppConfig, state: &str, _: &str, select: bool) -> String {
         let prompt = if select { "&prompt=select_account" } else { "" };
         format!("https://github.test/login/oauth/authorize?state={state}{prompt}")
@@ -333,6 +365,7 @@ impl GitHubPort for FakeGitHub {
             client_id: "Iv1.test".into(),
             client_secret: "secret".into(),
             private_key_pem: "pem".into(),
+            webhook_secret: None,
         })
     }
     async fn create_issue(
@@ -458,6 +491,8 @@ impl GitHubPort for FakeGitHub {
         Ok(created)
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
+        self.pull_reads.fetch_add(1, Ordering::SeqCst);
+        self.pull_get_count.fetch_add(1, Ordering::SeqCst);
         let hold = self
             .pull_read_hold
             .lock()
@@ -524,6 +559,19 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         head: Option<&str>,
     ) -> AppResult<Vec<GhPull>> {
+        self.pull_reads.fetch_add(1, Ordering::SeqCst);
+        self.pull_list_count.fetch_add(1, Ordering::SeqCst);
+        let hold = self
+            .pull_list_hold
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if head.is_none() == self.hold_overview_list.load(Ordering::SeqCst)
+            && let Some(hold) = hold
+        {
+            self.pull_list_entered.notify_one();
+            hold.notified().await;
+        }
         if head.is_none()
             && self
                 .fail_overview_pulls
@@ -547,12 +595,15 @@ impl GitHubPort for FakeGitHub {
         {
             *pull = replacement;
         }
+        let omitted = *self.omit_listed_pull.lock().map_err(AppError::internal)?;
         Ok(self
             .pulls
             .lock()
             .map_err(AppError::internal)?
             .iter()
-            .filter(|p| p.state == "open" && head.is_none_or(|h| p.head == h))
+            .filter(|p| {
+                Some(p.number) != omitted && p.state == "open" && head.is_none_or(|h| p.head == h)
+            })
             .cloned()
             .collect())
     }
@@ -626,6 +677,16 @@ impl GitHubPort for FakeGitHub {
         let remote = self
             .remote()
             .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        if let Some(new_base) = self
+            .advance_base_on_merge
+            .lock()
+            .map_err(AppError::internal)?
+            .take()
+        {
+            remote
+                .fast_forward(&pull.base, &new_base)
+                .map_err(AppError::Upstream)?;
+        }
         if self.strict.load(Ordering::SeqCst) {
             let base = remote.branch_sha(&pull.base).unwrap_or_default();
             if remote.contains(&base, &pull.head_sha) != Some(true) {
@@ -659,7 +720,30 @@ impl GitHubPort for FakeGitHub {
             p.merge_commit_sha = Some(sha.clone());
         }
         self.record(token, format!("merge_pull #{number} {method}"));
+        if self.report_source_as_merge.swap(false, Ordering::SeqCst) {
+            return Ok(pull.head_sha);
+        }
         Ok(sha)
+    }
+    async fn create_branch(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        branch: &str,
+        sha: &str,
+    ) -> AppResult<()> {
+        let remote = self
+            .remote()
+            .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        if self.concurrent_release_ref.swap(false, Ordering::SeqCst) {
+            remote
+                .create_branch(branch, sha)
+                .map_err(AppError::Conflict)?;
+        }
+        remote
+            .create_branch(branch, sha)
+            .map_err(AppError::Conflict)
     }
     async fn fast_forward(
         &self,
@@ -686,6 +770,13 @@ impl GitHubPort for FakeGitHub {
         sha: &str,
         status: &NewCommitStatus,
     ) -> AppResult<()> {
+        let hold = self.status_hold.lock().map_err(AppError::internal)?.clone();
+        if let Some((held_sha, release)) = hold
+            && held_sha == sha
+        {
+            self.status_entered.notify_one();
+            release.notified().await;
+        }
         if self.statuses_forbidden.load(Ordering::SeqCst) {
             return Err(AppError::Forbidden(STATUS_PERMISSION_MISSING.to_owned()));
         }
@@ -693,6 +784,7 @@ impl GitHubPort for FakeGitHub {
             .lock()
             .map_err(AppError::internal)?
             .push((sha.to_owned(), status.clone()));
+        self.status_published.notify_one();
         Ok(())
     }
     async fn delete_branch(
@@ -738,6 +830,31 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         branch: &str,
     ) -> AppResult<Option<String>> {
+        let purpose = yulius_app::ports::github::current_purpose();
+        self.branch_read_purposes
+            .lock()
+            .map_err(AppError::internal)?
+            .push(purpose);
+        if purpose == yulius_app::ports::github::GitHubPurpose::Display
+            && self.budget(None).display_paused
+        {
+            return Err(AppError::Upstream("display refreshes paused".into()));
+        }
+        if self.fail_pinned_merge_read.load(Ordering::SeqCst)
+            && self
+                .pulls
+                .lock()
+                .map_err(AppError::internal)?
+                .iter()
+                .any(|pull| {
+                    pull.merged && pull.base == branch && pull.head.starts_with("yulius/release/")
+                })
+            && self.fail_pinned_merge_read.swap(false, Ordering::SeqCst)
+        {
+            return Err(AppError::Upstream(
+                "production head temporarily unavailable".into(),
+            ));
+        }
         Ok(self.remote().and_then(|r| r.branch_sha(branch)))
     }
 }
@@ -952,6 +1069,16 @@ pub fn cookie_header(session: &str) -> String {
 pub struct FixedSystem;
 
 impl yulius_app::ports::system::SystemProbe for FixedSystem {
+    fn tree_allocation(
+        &self,
+        directory: &std::path::Path,
+    ) -> yulius_app::ports::system::TreeAllocation {
+        yulius_app::ports::system::SystemProbe::tree_allocation(
+            &yulius::wiring::system::SysinfoProbe::new(),
+            directory,
+        )
+    }
+
     fn snapshot(&self, _: &std::path::Path) -> yulius_app::ports::system::SystemSnapshot {
         yulius_app::ports::system::SystemSnapshot {
             cpu_percent: Some(12.5),
@@ -1003,6 +1130,13 @@ impl SettableSystem {
 }
 
 impl yulius_app::ports::system::SystemProbe for SettableSystem {
+    fn tree_allocation(
+        &self,
+        directory: &std::path::Path,
+    ) -> yulius_app::ports::system::TreeAllocation {
+        yulius_app::ports::system::SystemProbe::tree_allocation(&FixedSystem, directory)
+    }
+
     fn cpu_ticks(&self) -> Option<(u64, u64)> {
         *self
             .ticks
@@ -1282,6 +1416,10 @@ pub trait FakeRemote: Send + Sync {
         method: &str,
         message: &str,
     ) -> Result<String, String>;
+    /// Creates a branch only if it does not exist.
+    fn create_branch(&self, _branch: &str, _sha: &str) -> Result<(), String> {
+        Err("creating a branch is unavailable".into())
+    }
     /// Moves `branch` to `sha` only as a fast-forward.
     fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String>;
     /// Deletes `branch`; `false` when it did not exist.
@@ -1977,6 +2115,7 @@ pub async fn seed_task_of(
     use yulius_domain::ids::{SandboxId, TaskId, UserId};
     let now = h.app.now();
     let task = yulius_app::model::TaskRecord {
+        resume_attempt_id: None,
         id: TaskId::parse(id)?,
         sandbox_id: SandboxId::parse(sandbox)?,
         number: 0,
@@ -2048,6 +2187,112 @@ pub async fn seed_live_attempt_at(
             exit_reason: None,
         })
         .await?;
+    Ok(())
+}
+
+/// Arrange a newer parked attempt and a fresh question after a caller has selected its targets.
+pub async fn replace_park_at(
+    h: &Harness,
+    point: yulius_app::race::Point,
+    dispatched: &yulius_domain::ids::TaskId,
+    task: &yulius_app::model::TaskRecord,
+) -> TestResult {
+    use yulius_app::ports::store::{AttemptUpdate, TaskStore};
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    use yulius_domain::task::AttemptState;
+    let target = &task.id;
+    let tree = h
+        .app
+        .config
+        .data_dir
+        .join("sandboxes")
+        .join(task.sandbox_id.as_str())
+        .join("worktrees")
+        .join(target.as_str());
+    std::fs::create_dir_all(&tree)?;
+    repos::git(&tree, &["init", "--quiet"])?;
+    seed_live_attempt(h, target.as_str(), "first parked attempt").await?;
+    let mut run = h
+        .store
+        .live_attempt(target)
+        .await?
+        .ok_or("parked fixture run")?;
+    let now = h.app.now();
+    h.store
+        .transition_attempt(
+            &run.id,
+            AttemptState::Killed,
+            &AttemptUpdate {
+                ended_at: Some(now),
+                exit_code: Some(0),
+                exit_reason: Some("parked".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    run.id = yulius_domain::ids::AttemptId::parse("later-parked-run")?;
+    run.seq = 2;
+    run.state = AttemptState::Killed;
+    run.exit_code = Some(0);
+    run.exit_reason = Some("parked".into());
+    run.ended_at = Some(now);
+    run.token_hash = "later-parked-token".into();
+    let mut question = yulius_app::needs_you::NeedsYouRecord {
+        action: "Decide the original turn".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: now.0,
+        cause: None,
+        named: yulius_app::needs_you::Named {
+            who: vec!["bob".into()],
+            withdrawn: Vec::new(),
+        },
+    };
+    h.store
+        .set_task_needs_you(target, Some(&question), now)
+        .await?;
+    question.action = "Decide the replacement turn".into();
+    let store = h.store.clone();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        point,
+        std::path::Path::new(dispatched.as_str()),
+        move || {
+            tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    let inserted = store.insert_attempt(&run).await;
+                    assert!(inserted.is_ok(), "replacement parked run: {inserted:?}");
+                    let asked = store
+                        .set_task_needs_you(&run.task_id, Some(&question), now)
+                        .await;
+                    assert!(asked.is_ok(), "replacement question: {asked:?}");
+                })
+            });
+        },
+    );
+    Ok(())
+}
+
+pub async fn assert_replacement_parked(
+    h: &Harness,
+    target: &yulius_domain::ids::TaskId,
+) -> TestResult {
+    use yulius_app::ports::store::TaskStore;
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    assert_eq!(
+        h.store.task(target).await?.ok_or("target")?.status,
+        yulius_domain::task::TaskStatus::Parked
+    );
+    assert_eq!(h.store.attempts(target).await?.len(), 2);
+    let question = h
+        .store
+        .task_needs_you(target)
+        .await?
+        .ok_or("replacement question")?;
+    assert_eq!(question.action, "Decide the replacement turn");
+    assert_eq!(question.named.who, ["bob"]);
     Ok(())
 }
 

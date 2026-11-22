@@ -29,7 +29,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use yulius_contracts::api::tasks::{QueueMessage, TaskSummary};
 use yulius_domain::harness::Harness;
-use yulius_domain::ids::TaskId;
+use yulius_domain::ids::{AttemptId, TaskId};
 use yulius_domain::intake::BoxHeld;
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::task_access::TaskAction;
@@ -42,7 +42,7 @@ use crate::error::{AppError, AppResult};
 use crate::lifecycle::MAX_PROMPT_BYTES;
 use crate::manage::tool_detail;
 use crate::model::TaskRecord;
-use crate::supervisor::{TaskRuntime, trust_prompt_shown};
+use crate::supervisor::{SessionInput, TaskRuntime, trust_prompt_shown};
 use crate::vault::reach::Holder;
 
 /// Longest message, in bytes after cleaning.
@@ -145,11 +145,13 @@ pub fn answer_prompt(login: &str, owner: &str, mine: bool, text: &str) -> String
 
 /// What Yulius types into a session ([`App::type_into_session`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Typed {
+pub(crate) enum Typed<'a> {
     /// A message for the agent, which Claude Code submits as a prompt: from the paste to that
     /// submit it sits in the session's prompt box, and a restart would lose it (SPEC-468
     /// CCF-011).
     Prompt,
+    /// A machine notification is reconsidered on its next pass when the observed writer is busy.
+    Notice(&'a AttemptId),
     /// A command Claude Code runs itself (`/mcp reconnect yulius`): no prompt is submitted,
     /// so nothing of it waits anywhere.
     Command,
@@ -205,16 +207,14 @@ const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text 
     Yulius types its message.";
 
 /// Only these exact stored reasons belong to the shared typing guard.
-fn draft_flag(reason: &AttentionRecord) -> bool {
+pub(crate) fn draft_flag(reason: &AttentionRecord) -> bool {
     [DRAFT_HOLDS_PROBLEM, VISIBLE_DRAFT_PROBLEM]
         .iter()
         .any(|problem| *reason == AttentionRecord::yulius(problem, DRAFT_HOLDS_ACTION))
 }
 
 fn shows_empty(harness: Harness, runtime: &TaskRuntime) -> bool {
-    harness == Harness::ClaudeCode
-        && !runtime.screen_withheld()
-        && runtime.hub.prompt_box_shown_empty()
+    !runtime.screen_withheld() && runtime.hub.prompt_box_shown_empty(harness)
 }
 
 /// How long a line of Yulius's own waits for another typist to finish ([`Typing::wait`]).
@@ -269,7 +269,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
-        self.task_message_as(caller, args, None).await
+        self.task_message_as(caller, args, None, None).await
     }
 
     /// [`App::tool_task_message`], an answer naming the request it answers (`asked_at_ms`, as
@@ -280,6 +280,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
         asked_at_ms: Option<i64>,
+        selected: Option<&TaskRecord>,
     ) -> AppResult<Value> {
         let ctx = self.manage_context(caller).await?;
         let task = self.agent_task_ref(caller, args).await?;
@@ -296,7 +297,7 @@ impl App {
                 .get("text")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::Invalid("missing string argument `text`".into()))?;
-            self.answer_needs_you(&ctx, task.id.as_str(), text, asked_at_ms)
+            self.answer_observed_question(&ctx, &task, text, asked_at_ms, selected)
                 .await?;
             // Audited as a message too, with the channel it came through (TMS-005).
             let named = json!({
@@ -337,6 +338,9 @@ impl App {
         // words from an agent holding the owner's personal secrets or MCP servers (SPEC-245,
         // SPEC-332).
         self.require_control(&ctx, &task).await?;
+        if let Some(selected) = selected {
+            task.check_selected_park(selected)?;
+        }
         let text = args
             .get("text")
             .and_then(Value::as_str)
@@ -384,9 +388,13 @@ impl App {
             // Writing to a parked task resumes it in its own session, with the message as its
             // first prompt; it is the person's answer, so the request it had open ends (SPEC-512
             // PRK-005, TMS-006).
+            crate::race::reached(
+                crate::race::Point::ParkedMessageSelected,
+                std::path::Path::new(task.id.as_str()),
+            );
             let login = self.login_of(&caller.user).await;
             let prompt = message_prompt(&login, caller.channel, &text);
-            if !self.resume_parked(&task.id, Some(prompt)).await? {
+            if !self.resume_parked(&task, Some(prompt)).await? {
                 return Err(AppError::Conflict(format!(
                     "task #{} changed while it was resumed: try again",
                     task.number
@@ -484,15 +492,37 @@ impl App {
         asked_at_ms: Option<i64>,
     ) -> AppResult<TaskSummary> {
         // A disabled account has no access to any project, so this refuses it too.
-        let task = self.load_task_to(ctx, id, TaskAction::Answer).await?;
+        let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
+        let task = self.deps.store.task(&id).await?.ok_or(AppError::NotFound)?;
+        self.answer_observed_question(ctx, &task, text, asked_at_ms, None)
+            .await
+    }
+
+    async fn answer_observed_question(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        observed: &TaskRecord,
+        text: &str,
+        asked_at_ms: Option<i64>,
+        selected: Option<&TaskRecord>,
+    ) -> AppResult<TaskSummary> {
+        self.require_task(ctx, observed, TaskAction::Answer).await?;
+        crate::race::reached(
+            crate::race::Point::AnswerAuthorized,
+            std::path::Path::new(observed.id.as_str()),
+        );
         // The access check may have waited on GitHub: what the task does now is read after it
         // (review round 1), so a question opened in its terminal meanwhile is not answered.
         let task = self
             .deps
             .store
-            .task(&task.id)
+            .task(&observed.id)
             .await?
             .ok_or(AppError::NotFound)?;
+        task.check_selected_park(observed)?;
+        if let Some(selected) = selected {
+            task.check_selected_park(selected)?;
+        }
         let text = clean_message(text);
         if text.is_empty() {
             return Err(AppError::Invalid("the answer is empty".into()));
@@ -535,7 +565,7 @@ impl App {
             // Resumed in its own session with the answer as its first prompt, as a message to a
             // parked task resumes it (PRK-005); it stays its owner's.
             let prompt = answer_prompt(&login, &owner, mine, &text);
-            if !self.resume_parked(&task.id, Some(prompt)).await? {
+            if !self.resume_parked(&task, Some(prompt)).await? {
                 return Err(AppError::Conflict(format!(
                     "task #{} changed while it was resumed: try again",
                     task.number
@@ -698,8 +728,22 @@ impl App {
         &self,
         task: &TaskRecord,
         paste: &[u8],
-        what: Typed,
+        what: Typed<'_>,
         from: Sender,
+    ) -> AppResult<()> {
+        self.type_into_session_if(task, paste, what, from, None::<std::future::Ready<bool>>)
+            .await
+    }
+
+    /// A machine notification verifies its recipient and decision after draft lookup. It defers if the draft lock
+    /// is busy, so neither a hosted read under the lock nor a later wait can stale that decision.
+    pub(crate) async fn type_into_session_if(
+        &self,
+        task: &TaskRecord,
+        paste: &[u8],
+        what: Typed<'_>,
+        from: Sender,
+        admit: Option<impl std::future::Future<Output = bool>>,
     ) -> AppResult<()> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
@@ -737,7 +781,19 @@ impl App {
         // For a screen-based release, serialize the final decision, paste, Enter and mark
         // cleanup with viewer keys and submit hooks (SPEC-537). A key arriving during
         // the lookup above participates in this decision.
-        let mut mark = if attempt.is_some() {
+        let guarded = admit.is_some();
+        if let Some(admit) = admit
+            && !admit.await
+        {
+            return Err(AppError::Conflict(
+                "the notification is no longer due".into(),
+            ));
+        }
+        let mut mark = if attempt.is_some() && guarded {
+            Some(runtime.draft_mark.try_lock().map_err(|_| {
+                AppError::Conflict("the prompt box changed during notification verification".into())
+            })?)
+        } else if attempt.is_some() {
             Some(runtime.draft_mark.lock().await)
         } else {
             None
@@ -868,16 +924,41 @@ impl App {
         // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a
         // turn runs). A command submits nothing, and a text that could not be typed is nowhere.
         let before = runtime.message_typed_ms.load(Ordering::SeqCst);
-        if what == Typed::Prompt {
+        if matches!(what, Typed::Prompt | Typed::Notice(_)) {
             runtime
                 .message_typed_ms
                 .store(self.now().0, Ordering::SeqCst);
         }
-        if let Err(err) = self.send_input(&task.id, paste).await {
+        let pasted = match what {
+            Typed::Notice(attempt) => {
+                runtime
+                    .write_notice(attempt, self.now(), SessionInput::Paste(paste))
+                    .await
+            }
+            Typed::Prompt | Typed::Command => {
+                self.send_session_input(&task.id, SessionInput::Paste(paste))
+                    .await
+            }
+        };
+        if let Err(err) = pasted {
             runtime.message_typed_ms.store(before, Ordering::SeqCst);
             return Err(err);
         }
+        if matches!(what, Typed::Notice(_)) {
+            crate::race::reached(
+                crate::race::Point::PrNoticePasted,
+                Path::new(task.id.as_str()),
+            );
+        }
         tokio::time::sleep(SUBMIT_DELAY).await;
+        if task.mode == crate::model::TaskMode::Goal
+            && matches!(from, Sender::Yulius | Sender::YuliusLastTry)
+            && let Some(text) = paste
+                .strip_prefix(b"\x1b[200~")
+                .and_then(|data| data.strip_suffix(b"\x1b[201~"))
+        {
+            self.note_issued_prompt(&task.id, text);
+        }
         // The submit below carries the owner's draft to the agent with the message: the
         // prompt hook reads this to know the draft ended (also one known from its mark alone,
         // after a restart of the server). Set before the Enter: the hook runs some 30 ms
@@ -887,7 +968,18 @@ impl App {
             runtime.sent_past_draft.store(true, Ordering::SeqCst);
         }
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
-        self.send_input(&task.id, b"\r").await.map_err(|err| {
+        let submitted = match what {
+            Typed::Notice(attempt) => {
+                runtime
+                    .write_notice(attempt, self.now(), SessionInput::Submit)
+                    .await
+            }
+            Typed::Prompt | Typed::Command => {
+                self.send_session_input(&task.id, SessionInput::Submit)
+                    .await
+            }
+        };
+        submitted.map_err(|err| {
             if past_draft {
                 runtime.sent_past_draft.store(false, Ordering::SeqCst);
             }
@@ -898,6 +990,26 @@ impl App {
                 err.public_message()
             ))
         })?;
+        // The task's owner can send the new instruction through a tool as well as by
+        // typing in its terminal. A failed send, a command and a machine wake spend
+        // none of the goal's restored budget.
+        if task.mode == crate::model::TaskMode::Goal
+            && what == Typed::Prompt
+            && matches!(from, Sender::Person | Sender::OwnerPastDraft)
+        {
+            let update = crate::ports::store::TaskFieldUpdate {
+                gate_blocks: Some(0),
+                ..Default::default()
+            };
+            if let Err(err) = self
+                .deps
+                .store
+                .update_task(&task.id, &update, self.now())
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "could not reset the goal attempts after an owner message");
+            }
+        }
         if let (Some(attempt), Some(mark)) = (&released, &mut mark) {
             runtime.box_emptied_ms.fetch_max(typed, Ordering::SeqCst);
             runtime
@@ -938,11 +1050,15 @@ impl App {
     /// PR news may retry the exact flag of a waiting message once the person has
     /// left an empty conversation box. Delivery itself judges the key and screen again.
     pub(crate) async fn held_message_flag_outlived(&self, task: &TaskRecord) -> bool {
+        self.held_draft_box_cleared(task)
+            && matches!(self.deps.store.task_attention(&task.id).await, Ok(Some((reason, _))) if draft_flag(&reason))
+    }
+
+    pub(crate) fn held_draft_box_cleared(&self, task: &TaskRecord) -> bool {
         self.typed_recently(&task.id).is_none()
             && self
                 .existing_runtime(&task.id)
                 .is_some_and(|runtime| shows_empty(task.harness, &runtime))
-            && matches!(self.deps.store.task_attention(&task.id).await, Ok(Some((reason, _))) if draft_flag(&reason))
     }
 
     /// Ends the flag that says a message of Yulius's own waits for a person's draft
@@ -1013,6 +1129,66 @@ mod tests {
         assert!(super::shows_empty(super::Harness::ClaudeCode, &rt));
         assert!(!super::shows_empty(super::Harness::Codex, &rt));
         assert!(!super::shows_empty(super::Harness::Antigravity, &rt));
+    }
+
+    #[test]
+    fn only_the_focused_codex_placeholder_proves_its_composer_empty() {
+        let rt = super::TaskRuntime::new();
+        let frame = concat!(
+            "\x1b[?1049h\x1b[2J",
+            "\x1b[18;1H\x1b[1m›\x1b[22m \x1b[2mAsk Codex to do anything\x1b[22m",
+            "\x1b[20;1H  GPT-6.2-Sol default · project",
+            "\x1b[40;1H  \x1b[1m←\x1b[22m for agents · \x1b[1m?\x1b[22m for shortcuts",
+            "\x1b[18;3H\x1b[?25h",
+        );
+        for (edit, empty) in [
+            ("", true),
+            ("\x1b[18;1H\x1b[1m»\x1b[0m\x1b[18;3H", true),
+            (
+                "\x1b[40;1H\x1b[2K  \x1b[1m?\x1b[0m for shortcuts\x1b[18;3H",
+                true,
+            ),
+            // History can restore a remote image independently of the editable text.
+            ("\x1b[16;3H[Image #1]\x1b[40;1H\x1b[2K\x1b[18;3H", false),
+            // A partial repaint can leave the previous empty footer beneath that label.
+            ("\x1b[16;3H[Image #2]\x1b[18;3H", false),
+            (
+                "\x1b[40;1H\x1b[2K  \x1b[1m←\x1b[0m for agentsXYZ\x1b[18;3H",
+                false,
+            ),
+            // When attachment rows are clipped, the empty-only footer hint is still absent.
+            ("\x1b[40;1H\x1b[2K\x1b[18;3H", false),
+            ("\x1b[40;3H←\x1b[18;3H", false),
+            ("\x1b[?25l", false),
+            ("\x1b[?1049l", false),
+            ("\x1b[18;4H", false),
+            ("\x1b[17;3H", false),
+            ("\x1b[18;1H›\x1b[18;3H", false),
+            ("\x1b[18;1H\x1b[1;2m›\x1b[0m\x1b[18;3H", false),
+            ("\x1b[18;2Hx\x1b[18;3H", false),
+            ("A\x1b[18;3H", false),
+            ("\x1b[18;26Hg\x1b[18;3H", false),
+            ("Ask Codex to do anything\x1b[18;3H", false),
+            ("\x1b[2mTry another command\x1b[0m\x1b[K\x1b[18;3H", false),
+            ("\x1b[K[Image #1]\x1b[18;3H", false),
+            ("\x1b[18;30Hmore text\x1b[18;3H", false),
+            ("\x1b[19;1Hcontinued draft\x1b[18;3H", false),
+        ] {
+            rt.hub.output(1, frame.as_bytes());
+            rt.hub.output(2, edit.as_bytes());
+            assert_eq!(
+                super::shows_empty(super::Harness::Codex, &rt),
+                empty,
+                "{edit:?}"
+            );
+            assert!(!super::shows_empty(super::Harness::ClaudeCode, &rt));
+            assert!(!super::shows_empty(super::Harness::Antigravity, &rt));
+        }
+        // The same cells in the primary buffer can be transcript output.
+        rt.hub.output(3, b"\x1b[?1049l");
+        rt.hub
+            .output(4, frame.trim_start_matches("\x1b[?1049h").as_bytes());
+        assert!(!super::shows_empty(super::Harness::Codex, &rt));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 Accepted. Specified in [SPEC-174](../../.ai/specs/SPEC-174-review-findings-in-the-change-s-own-code.md);
 task #164. Tightens the review step of the delivery pipeline (SPEC-001 DLV-008).
+[ADR-0427](0427-task-authorization-covers-independent-re-review.md) supersedes the round-count escalation in decision 1. The agent owns further in-scope review rounds.
 
 ## Context
 

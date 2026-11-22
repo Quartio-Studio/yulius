@@ -7,7 +7,7 @@ use yulius_app::delivery::{
     DeliveryRecord, EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState,
 };
 use yulius_app::error::AppResult;
-use yulius_app::ports::store_ext::DeliveryStore;
+use yulius_app::ports::store_ext::{DeliveryStore, PullDiscovery};
 use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
@@ -86,6 +86,135 @@ impl DeliveryStore for SqliteStore {
         .await
     }
 
+    async fn terminal_branches_for_discovery(
+        &self,
+        sandbox: &SandboxId,
+        after: Option<&TaskId>,
+        limit: u32,
+    ) -> AppResult<Vec<PullDiscovery>> {
+        let sandbox = sandbox.to_string();
+        let after = after.map(ToString::to_string).unwrap_or_default();
+        self.call(move |c| {
+            let mut statement = c.prepare(
+                "SELECT t.id, coalesce(t.branch, ''), p.snapshot, landing.pr_number FROM tasks t
+                 LEFT JOIN delivery d ON d.task_id=t.id JOIN task_pull_observations p ON p.task_id=t.id
+                 LEFT JOIN task_pull_observations landing ON landing.task_id=t.id AND landing.pr_number=coalesce(
+                     (SELECT pr_number FROM task_pull_observations WHERE task_id=t.id AND pr_number=d.pr_number AND needs_confirmation),
+                     (SELECT min(pr_number) FROM task_pull_observations WHERE task_id=t.id AND needs_confirmation))
+                 WHERE t.sandbox_id=?1 AND t.archived_at IS NULL AND t.id>?2
+                 AND coalesce(d.stage,'none')!='pr_open' AND p.pr_number=(SELECT pr_number FROM task_pull_observations WHERE task_id=t.id
+                     ORDER BY json_extract(snapshot,'$.state')='open' DESC, pr_number DESC LIMIT 1)
+                 AND (t.status='parked' OR coalesce(d.stage,'none')='none' OR
+                     json_extract(p.snapshot,'$.state')='open' OR landing.pr_number IS NOT NULL)
+                 ORDER BY t.id LIMIT ?3"
+            ).map_err(db)?;
+            let rows = statement.query_map(params![sandbox, after, limit], |r| {
+                Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,Option<i64>>(3)?))
+            }).map_err(db)?;
+            rows.map(|r| {
+                let (id, branch, json, pending) = r.map_err(db)?;
+                Ok(PullDiscovery {
+                    task: TaskId::parse(&id).map_err(yulius_app::error::AppError::internal)?,
+                    branch, observation: serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)?,
+                    pending_landing: pending.map(to_u64),
+                })
+            }).collect()
+        }).await
+    }
+
+    async fn terminal_pull(
+        &self,
+        task: &TaskId,
+        number: Option<u64>,
+    ) -> AppResult<Option<yulius_app::ports::github::GhPull>> {
+        let task = task.to_string();
+        self.call(move |c| {
+            let snapshot: Option<String> = c
+                .query_row(
+                    "SELECT snapshot FROM task_pull_observations WHERE task_id = ?1
+                 AND json_extract(snapshot,'$.state')!='open' AND (?2 IS NULL OR pr_number = ?2)
+                 ORDER BY pr_number DESC LIMIT 1",
+                    params![task, number.map(to_i64)],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            snapshot
+                .map(|json| {
+                    serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)
+                })
+                .transpose()
+        })
+        .await
+    }
+
+    async fn open_followups(&self, task: &TaskId, limit: usize) -> AppResult<Vec<u64>> {
+        let task = task.to_string();
+        let limit = i64::try_from(limit).map_err(yulius_app::error::AppError::internal)?;
+        self.call(move |c| {
+            let mut statement = c.prepare("SELECT pr_number FROM task_pull_observations WHERE task_id=?1
+                         AND json_extract(snapshot,'$.state')='open' ORDER BY pr_number DESC LIMIT ?2").map_err(db)?;
+            statement.query_map(params![task, limit], |row| row.get::<_, i64>(0).map(to_u64))
+                .map_err(db)?.collect::<rusqlite::Result<Vec<_>>>().map_err(db)
+        }).await
+    }
+
+    async fn remember_pull_observation(
+        &self,
+        task: &TaskId,
+        pull: &yulius_app::ports::github::GhPull,
+    ) -> AppResult<()> {
+        let needs_confirmation =
+            pull.merged && !pull.from_fork && Landing::closed_pull(pull).is_none();
+        let snapshot =
+            serde_json::to_string(pull).map_err(yulius_app::error::AppError::internal)?;
+        let (task, number) = (task.to_string(), to_i64(pull.number));
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO task_pull_observations(task_id, pr_number, snapshot, needs_confirmation) VALUES (?1, ?2, ?3, ?4)
+                       ON CONFLICT(task_id,pr_number) DO UPDATE SET snapshot=excluded.snapshot, needs_confirmation=excluded.needs_confirmation
+                       WHERE NOT json_extract(task_pull_observations.snapshot,'$.merged')
+                          OR (json_extract(excluded.snapshot,'$.merged') AND
+                              task_pull_observations.needs_confirmation AND NOT excluded.needs_confirmation)",
+                params![task, number, snapshot, needs_confirmation],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn armed_notice_recipient(
+        &self,
+        task: &TaskId,
+        pr: u64,
+        branch: &str,
+    ) -> AppResult<Option<yulius_app::pr_watch::NoticeRecipient>> {
+        let task = task.to_string();
+        let branch = branch.to_owned();
+        let row: Option<(bool, Option<String>)> = self.call(move |conn| {
+            conn.query_row(
+                "SELECT t.activity IS 'working', CASE WHEN t.activity = 'needs_attention' THEN t.attention END
+                 FROM tasks t JOIN delivery d ON d.task_id = t.id
+                 WHERE t.id = ?1 AND d.stage = 'pr_open' AND d.pr_number = ?2 AND t.branch = ?3
+                   AND t.status = 'running' AND t.archived_at IS NULL AND t.needs_you IS NULL
+                   AND (t.activity IS NOT 'needs_attention' OR
+                        CASE WHEN json_valid(t.attention) THEN json_extract(t.attention, '$.at') END = t.state_at)
+                   AND NOT EXISTS (SELECT 1 FROM capacity_pauses WHERE task_id = t.id AND ended_at IS NULL)
+                   AND NOT EXISTS (SELECT 1 FROM prompt_holds WHERE task_id = t.id AND state = 'pending')",
+                params![task, to_i64(pr), branch],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional().map_err(db)
+        }).await?;
+        Ok(row.and_then(|(working, reason)| {
+            let attention = reason
+                .map(|json| serde_json::from_str(&json))
+                .transpose()
+                .ok()?;
+            Some(yulius_app::pr_watch::NoticeRecipient { working, attention })
+        }))
+    }
+
     async fn deliveries(&self, sandbox: &SandboxId) -> AppResult<Vec<DeliveryRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
@@ -132,17 +261,25 @@ impl DeliveryStore for SqliteStore {
                 return Ok(false);
             }
             tx.execute(
-                "INSERT INTO delivery (task_id, stage, pr_number, updated_at) VALUES (?1, ?2, ?3, ?4) \
+                "INSERT INTO delivery (task_id, stage, pr_number, updated_at, review_merge_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
                  ON CONFLICT(task_id) DO UPDATE SET stage = excluded.stage, \
-                 pr_number = excluded.pr_number, updated_at = excluded.updated_at",
+                 pr_number = excluded.pr_number, updated_at = excluded.updated_at, \
+                 review_merge_at = COALESCE(excluded.review_merge_at, delivery.review_merge_at)",
                 params![
                     next.task_id.as_str(),
                     next.stage.encode(),
                     next.pr_number.map(to_i64),
-                    next.updated_at.0
+                    next.updated_at.0,
+                    (next.stage == DeliveryStage::MergedIntegration).then_some(next.updated_at.0),
                 ],
             )
             .map_err(db)?;
+            if next.stage == DeliveryStage::PrOpen && let Some(pr) = next.pr_number {
+                tx.execute("DELETE FROM task_pull_observations WHERE task_id=?1 AND pr_number=?2
+                            AND NOT json_extract(snapshot,'$.merged')",
+                    params![next.task_id.as_str(), to_i64(pr)]).map_err(db)?;
+            }
             if next.stage == DeliveryStage::PrOpen && let (Some(base), Some(pr)) = (opening_base, next.pr_number) {
                 tx.execute(
                     "INSERT INTO task_merge_recovery(task_id, pr_number, branch) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
@@ -448,6 +585,7 @@ mod tests {
             .await?;
         let task = store
             .insert_task(&TaskRecord {
+                resume_attempt_id: None,
                 id: TaskId::parse("t1")?,
                 sandbox_id: SandboxId::parse("s1")?,
                 number: 0,
@@ -478,6 +616,62 @@ mod tests {
             })
             .await?;
         Ok(task.id)
+    }
+
+    #[tokio::test]
+    async fn terminal_discovery_pages_advance_over_the_whole_project() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        seed(&store).await?;
+        let sandbox = SandboxId::parse("s1")?;
+        store.call(|conn| {
+            conn.execute_batch(
+                "UPDATE tasks SET status='parked' WHERE id='t1';
+                 INSERT INTO tasks (id,sandbox_id,number,title,prompt,harness,status,branch,origin,created_by,created_at,updated_at)
+                 VALUES ('t2','s1',2,'Next','Prompt','codex','parked','next','ui','u1',1,2);
+                 INSERT INTO delivery (task_id,stage,pr_number,updated_at) VALUES ('t1','merged_integration',1,2),('t2','merged_integration',2,2);"
+            ).map_err(db)?;
+            Ok(())
+        }).await?;
+        for number in 1..=2 {
+            let task = TaskId::parse(&format!("t{number}"))?;
+            store
+                .remember_pull_observation(
+                    &task,
+                    &yulius_app::ports::github::GhPull {
+                        number,
+                        html_url: String::new(),
+                        title: String::new(),
+                        state: "closed".into(),
+                        merged: true,
+                        base: "dev".into(),
+                        base_sha: String::new(),
+                        head: String::new(),
+                        head_sha: "a".repeat(40),
+                        mergeable: None,
+                        behind: false,
+                        from_fork: false,
+                        merge_commit_sha: Some("b".repeat(40)),
+                    },
+                )
+                .await?;
+        }
+        let first = store
+            .terminal_branches_for_discovery(&sandbox, None, 1)
+            .await?;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].task.as_str(), "t1");
+        let second = store
+            .terminal_branches_for_discovery(&sandbox, Some(&first[0].task), 1)
+            .await?;
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].task.as_str(), "t2");
+        assert!(
+            store
+                .terminal_branches_for_discovery(&sandbox, Some(&second[0].task), 1)
+                .await?
+                .is_empty()
+        );
+        Ok(())
     }
 
     #[tokio::test]

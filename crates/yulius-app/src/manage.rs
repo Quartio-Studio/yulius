@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use yulius_contracts::api::tasks::{ChangeStart, CreateTask};
 use yulius_domain::auto_choice::AUTO;
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
 use yulius_domain::rule::{MAX_ATOMS, Rule};
@@ -190,7 +191,7 @@ impl App {
             }
         }
         tasks.retain(|task| task.status != TaskStatus::Prepared && !held.contains(&task.number));
-        let groups = self.list_groups(&tasks).await?;
+        let groups = self.list_groups(&tasks, true).await?;
         let mut numbers: Vec<_> = tasks
             .iter()
             .zip(groups)
@@ -367,19 +368,16 @@ impl App {
             None => None,
         };
         let model = opt_str(args, "model")?;
-        // Omitting both `harness` and `model` from a running task keeps its own agent; explicit
-        // `auto` or a caller without a task (Superagent, remote MCP) draws (SPEC-520 RHM-004).
+        // Inherit a running parent task's harness. The CLI and Superagents have no parent
+        // task and use the ordinary Codex launch defaults (SPEC-583).
         let harness = match opt_str(args, "harness")? {
             Some(named) => named,
-            None => match model.as_deref() {
-                Some(m) => yulius_domain::harness::Harness::implied_by(m)
-                    .as_str()
-                    .to_owned(),
-                None => caller
-                    .task
-                    .as_ref()
-                    .map_or_else(|| AUTO.to_owned(), |t| t.harness.as_str().to_owned()),
-            },
+            None => model
+                .as_deref()
+                .map(Harness::implied_by)
+                .unwrap_or_else(|| caller.task.as_ref().map_or(Harness::Codex, |t| t.harness))
+                .as_str()
+                .to_owned(),
         };
         let request = CreateTask {
             prompt: prompt.to_owned(),

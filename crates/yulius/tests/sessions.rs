@@ -115,6 +115,7 @@ async fn insert_task(
 ) -> Result<TaskRecord, Error> {
     Ok(store
         .insert_task(&TaskRecord {
+            resume_attempt_id: None,
             id: TaskId::parse(id)?,
             sandbox_id: sandbox.clone(),
             number: 0,

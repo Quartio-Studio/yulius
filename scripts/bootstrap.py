@@ -80,8 +80,17 @@ for name, version in tools.items():
     print(f"{name} {version} linked from {shared_root}", flush=True)
 
 if sys.platform == "linux":
+    from http.client import HTTPException
     import platform
     sys.path.insert(0, str(root / "scripts"))
+    from compile_cache import install as install_compile_cache, sandbox_for
+    import tarfile
+    if os.environ.get("YULIUS_SANDBOX") and sandbox_for(root, Path.home().resolve()):
+        try:
+            print(install_compile_cache(pinned["mbx"], cache, bin_dir, platform.machine(),
+                                        urllib.request.urlopen), flush=True)
+        except (OSError, EOFError, HTTPException, ValueError, KeyError, tarfile.TarError) as error:
+            print(f"Rust compile cache unavailable ({error}); builds use Cargo", flush=True)
     from zig_install import install
     print(install(pinned["zig"], cache, bin_dir, root, platform.machine(), urllib.request.urlopen), flush=True)
 print("Ready. Run scripts/dev doctor, then scripts/dev ci.", flush=True)

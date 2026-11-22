@@ -31,6 +31,7 @@ use crate::error::AppResult;
 use crate::leftovers::{no_link_between, read_small_file};
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::ports::isolation::SandboxRef;
+use crate::ports::system::TreeAllocation;
 
 /// How often the upkeep runs.
 pub const DISK_EVERY: Duration = Duration::from_secs(5 * 60);
@@ -47,6 +48,9 @@ pub const ENDED_GRACE_MS: i64 = 10 * 60 * 1000;
 const MAX_ENTRIES: u64 = 4_000_000;
 /// Longest `yulius.toml` read for declared caches.
 const MAX_TOML_BYTES: u64 = 64 * 1024;
+/// The project's collector targets 16 GiB. Upkeep recovers an idle store left above 20 GiB
+/// if a CI job ended before its collector ran, including the store's bookkeeping.
+const COMPILE_CACHE_LIMIT: u64 = 20 * 1024 * 1024 * 1024;
 /// A directory under `worktrees/` that belongs to no task (an agent's own `git worktree add`)
 /// untouched this long is treated as ended (F 2026-10-12: `wt-206` kept 2.7 GB).
 const ORPHAN_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
@@ -54,13 +58,20 @@ const ORPHAN_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
 /// What a round did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiskReport {
-    /// Bytes freed by removing caches (worktrees removed whole are counted by their caches) and
-    /// by pruning the sandbox's Docker engine.
+    /// Bytes credited toward disk pressure from caches, worktrees and the sandbox's Docker
+    /// engine. Compiler artifacts with multiple hard links can still occupy their blocks.
     pub freed: u64,
-    /// Cache directories removed.
+    /// Cache directories removed or cleared.
     pub caches: usize,
     /// Worktrees removed (tasks closed or cancelled).
     pub worktrees: usize,
+}
+
+impl DiskReport {
+    /// A removal can change quota usage even when the freed-byte estimate is zero.
+    pub(crate) fn pruned_anything(&self) -> bool {
+        self.freed != 0 || self.caches != 0 || self.worktrees != 0
+    }
 }
 
 /// A cache [`App::ended_caches`] found.
@@ -150,6 +161,84 @@ fn remove_cache(root: &Path, path: &Path) -> std::io::Result<()> {
             "caches are removed through directory handles on Linux only",
         ))
     }
+}
+
+/// Hold the sandbox lease and the stamped directory's identity while clearing its contents.
+/// Move the ownership stamp into its pending name before removing any entry. Even launchers
+/// predating host upkeep require the ready name and fall back to Cargo until it returns.
+fn prune_compile_cache(
+    root: &Path,
+    limit: u64,
+    measure: impl Fn(&Path) -> TreeAllocation,
+) -> std::io::Result<Option<u64>> {
+    use nix::errno::Errno;
+    use nix::fcntl::{OFlag, openat};
+    use nix::sys::stat::Mode;
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    const STORE: &str = "rust-compile-cache";
+    const OWNER: &str = ".yulius-mbx-v1";
+    const PENDING: &str = ".yulius-mbx-pruning";
+
+    if !cfg!(target_os = "linux") {
+        return Ok(None);
+    }
+    let flags = OFlag::O_DIRECTORY.union(OFlag::O_NOFOLLOW);
+    let lease = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits())
+        .open(root)
+    {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        result => result?,
+    };
+    if lease.try_lock().is_err() {
+        return Ok(None);
+    }
+    let store = match openat(&lease, STORE, flags.union(OFlag::O_CLOEXEC), Mode::empty()) {
+        Err(Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP) => return Ok(None),
+        result => result?,
+    };
+    let store = std::fs::File::from(store);
+    // The final "." lets the quota walker open the held directory with O_NOFOLLOW.
+    let through = PathBuf::from(format!("/proc/self/fd/{}/.", store.as_raw_fd()));
+    let ready = through.join(OWNER);
+    let pending = through.join(PENDING);
+    let owned = |stamp: &Path| read_small_file(stamp, 7).as_deref() == Some("mbx-v1\n");
+    let ready_owned = owned(&ready);
+    let interrupted = owned(&pending);
+    if !interrupted && !ready_owned {
+        return Ok(None);
+    }
+    let before = measure(&through);
+    if !interrupted && before.allocated <= limit {
+        return Ok(None);
+    }
+    if ready_owned {
+        std::fs::rename(&ready, &pending)?;
+    }
+    if !owned(&pending) {
+        return Err(std::io::Error::other("compiler store ownership changed"));
+    }
+    store.sync_all()?;
+    let shown = root.join(STORE);
+    crate::race::reached(crate::race::Point::CachePrune, &shown);
+    let mut cleared = false;
+    for entry in std::fs::read_dir(&through)? {
+        let name = entry?.file_name();
+        if name != PENDING {
+            crate::race::reached(crate::race::Point::CachePrune, &shown.join(&name));
+            crate::leftovers::remove_below(&through, &through.join(name))?;
+            cleared = true;
+        }
+    }
+    std::fs::rename(&pending, &ready)?;
+    store.sync_all()?;
+    // The previous round may have removed the final artifact before it could refresh quota.
+    Ok(
+        (cleared || interrupted)
+            .then(|| before.unshared.saturating_sub(measure(&through).unshared)),
+    )
 }
 
 fn root_entries(worktree: &Path) -> Vec<String> {
@@ -309,8 +398,35 @@ impl App {
             .collect();
         let chosen = plan_prune(&candidates, need, need > 0);
         let mut report = self.prune(sandbox, &scan, &chosen).await;
+        let limit = if report.freed < need {
+            0
+        } else {
+            COMPILE_CACHE_LIMIT
+        };
+        let root = self.sandbox_dir(&sandbox.id);
+        let probe = Arc::clone(&self.deps.system);
+        match tokio::task::spawn_blocking(move || {
+            prune_compile_cache(&root, limit, |dir| probe.tree_allocation(dir))
+        })
+        .await
+        {
+            Ok(Ok(None)) => {}
+            Ok(Ok(Some(bytes))) => {
+                report.caches += 1;
+                report.freed = report.freed.saturating_add(bytes);
+                self.dlv_audit(
+                    "yulius",
+                    "disk.prune",
+                    &sandbox.slug,
+                    &format!("shared Rust compile cache: {}", human(bytes)),
+                )
+                .await;
+            }
+            Ok(Err(err)) => tracing::warn!(error = %err, "could not prune compiler cache"),
+            Err(err) => tracing::warn!(error = %err, "compiler cache upkeep interrupted"),
+        }
         report.freed = report.freed.saturating_add(engine_freed);
-        if (report.freed > 0 || report.worktrees > 0)
+        if report.pruned_anything()
             && let Some(isolation) = isolation
         {
             isolation.measure_disk(&reference).await;
@@ -753,6 +869,123 @@ mod tests {
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn each_kind_of_removal_triggers_a_fresh_disk_reading() {
+        assert!(!DiskReport::default().pruned_anything());
+        assert!(
+            DiskReport {
+                freed: 1,
+                ..DiskReport::default()
+            }
+            .pruned_anything()
+        );
+        assert!(
+            DiskReport {
+                caches: 1,
+                ..DiskReport::default()
+            }
+            .pruned_anything()
+        );
+        assert!(
+            DiskReport {
+                worktrees: 1,
+                ..DiskReport::default()
+            }
+            .pruned_anything()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn single_link_allocation(path: &Path) -> TreeAllocation {
+        let allocated = dir_size(path);
+        TreeAllocation {
+            allocated,
+            unshared: allocated,
+        }
+    }
+
+    /// RCC-002: a completed build can exceed its budget before its collector gets CPU time.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn upkeep_reclaims_an_over_budget_compiler_store_even_on_a_healthy_disk() -> TestResult {
+        assert_eq!(
+            COMPILE_CACHE_LIMIT,
+            20_u64 << 30,
+            "the documented idle-store budget"
+        );
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("rust-compile-cache");
+        std::fs::create_dir(&cache)?;
+        std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+        let empty = dir_size(&cache);
+        std::fs::write(cache.join("artifact"), vec![1u8; 8192])?;
+        let bytes = dir_size(&cache);
+        assert_eq!(
+            prune_compile_cache(root.path(), bytes, single_link_allocation)?,
+            None
+        );
+        assert_eq!(
+            prune_compile_cache(root.path(), bytes - 1, single_link_allocation)?,
+            Some(bytes - empty)
+        );
+        assert_eq!(dir_size(&cache), empty);
+        assert!(cache.join(".yulius-mbx-v1").is_file());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compiler_upkeep_refuses_linked_roots_and_skips_linked_stores() -> TestResult {
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("sandbox");
+        let link = parent.path().join("linked-sandbox");
+        let cache = root.join("rust-compile-cache");
+        assert_eq!(
+            prune_compile_cache(&root, 0, single_link_allocation)?,
+            None,
+            "sandbox not on disk"
+        );
+        std::fs::create_dir_all(&cache)?;
+        std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+        std::os::unix::fs::symlink(&root, &link)?;
+        assert!(prune_compile_cache(&link, COMPILE_CACHE_LIMIT, single_link_allocation).is_err());
+        let original = root.join("original");
+        std::fs::rename(&cache, &original)?;
+        std::os::unix::fs::symlink(&original, &cache)?;
+        assert_eq!(prune_compile_cache(&root, 0, single_link_allocation)?, None);
+        assert!(original.join(".yulius-mbx-v1").is_file());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compiler_upkeep_requires_a_complete_stamp_at_removal() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("rust-compile-cache");
+        std::fs::create_dir(&cache)?;
+        let ready = cache.join(".yulius-mbx-v1");
+        let pending = cache.join(".yulius-mbx-pruning");
+        let artifact = cache.join("artifact");
+        std::fs::write(&artifact, b"preserve")?;
+        std::fs::write(&pending, b"other")?;
+        assert_eq!(
+            prune_compile_cache(root.path(), 0, single_link_allocation)?,
+            None
+        );
+        assert_eq!(std::fs::read(&pending)?, b"other");
+        std::fs::write(&ready, b"mbx-v1\n")?;
+        let result = prune_compile_cache(root.path(), 0, |dir| {
+            assert!(
+                std::fs::write(&ready, b"other").is_ok(),
+                "replace stamp during measurement"
+            );
+            single_link_allocation(dir)
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(artifact)?, b"preserve");
+        Ok(())
+    }
 
     /// `declared_caches(worktree)` on its own thread, or `None` when it has not answered within
     /// `bound` (it is blocked; the thread is left behind).

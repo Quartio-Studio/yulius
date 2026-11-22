@@ -159,6 +159,7 @@ async fn an_assumed_version_fills_only_what_the_transcript_left_open() -> TestRe
     let at = Timestamp(1_794_000_000_000);
     h.store
         .insert_task(&TaskRecord {
+            resume_attempt_id: None,
             id: task.clone(),
             sandbox_id: SandboxId::parse("s1")?,
             number: 0,

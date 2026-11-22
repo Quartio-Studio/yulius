@@ -1,4 +1,4 @@
-//! Claude Code's prompt box, read from a session's screen (SPEC-572, ADR-0405).
+//! Empty conversation inputs observed in Claude Code and Codex (SPEC-572, SPEC-581).
 //!
 //! Yulius sees a person's keys, not what they left in the prompt box, and holds every typed
 //! message while a key may have left a draft there (SPEC-480). Most keys leave none. The screen
@@ -79,6 +79,92 @@ pub fn shown_empty(screen: &vt100::Screen) -> bool {
     let first_is_nothing_typed =
         blank(row, FIRST_CELL) || dim(FIRST_CELL) || (under_cursor_inverse && dim_follows);
     rest_is_dim && first_is_nothing_typed
+}
+
+/// Codex 0.170.0 displays the placeholder when the text area is empty, including
+/// when prompt history restored a remote image. Its navigation hints, however,
+/// require the entire composer (text and attachments) to be empty.
+pub(super) fn codex_shown_empty(screen: &vt100::Screen) -> bool {
+    const PLACEHOLDER: &str = "Ask Codex to do anything";
+    let (row, col) = screen.cursor_position();
+    let Some(attachment_row) = row.checked_sub(2) else {
+        return false;
+    };
+    if col != FIRST_CELL || screen.hide_cursor() || !screen.alternate_screen() {
+        return false;
+    }
+    let (rows, cols) = screen.size();
+    let mut lines = screen.rows(0, cols).skip(usize::from(attachment_row));
+    // One separator row lies between the last remote image label and the input.
+    if lines
+        .next()
+        .is_some_and(|line| line.trim_start().starts_with("[Image #"))
+    {
+        return false;
+    }
+    let placeholder = lines.nth(1).is_some_and(|line| {
+        matches!(
+            line.trim_end_matches(' ').split_once(' '),
+            Some(("›" | "»", PLACEHOLDER))
+        )
+    });
+    if !placeholder || lines.next().is_none_or(|below| !below.trim().is_empty()) {
+        return false;
+    }
+    // The footer also distinguishes a clipped image row from an empty composer.
+    let empty_footer = lines.last().is_some_and(|footer| {
+        ["  ← for agents", "  ? for shortcuts"].iter().any(|hint| {
+            footer
+                .strip_prefix(hint)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })
+    });
+    empty_footer
+        && screen
+            .cell(rows - 1, FIRST_CELL)
+            .is_some_and(vt100::Cell::bold)
+        && screen
+            .cell(row, 0)
+            .is_some_and(|marker| marker.bold() && !marker.dim())
+        && (FIRST_CELL..cols)
+            .take(PLACEHOLDER.len())
+            .all(|c| screen.cell(row, c).is_some_and(vt100::Cell::dim))
+}
+
+/// Codex 0.170.0's rate-limit model picker uses a list with no input cursor.
+/// The title and question wrap at small widths. A short terminal can show
+/// the beginning of the title and the focused switch row before the full question.
+pub(super) fn codex_rate_limit_picker_shown(screen: &vt100::Screen) -> bool {
+    const TITLE: &str = "Approaching rate limits";
+    const SWITCH: &str = "› 1. Switch to";
+    if !screen.hide_cursor() {
+        return false;
+    }
+    let (_, cols) = screen.size();
+    let mut remaining = TITLE;
+    for row in screen.rows(0, cols) {
+        let row = row.trim();
+        if row.is_empty() {
+            continue;
+        }
+        if remaining.is_empty() && (row == "Switch" || row.starts_with("Switch to")) {
+            return true;
+        }
+        if remaining != TITLE {
+            let row = row.trim_end_matches('…');
+            if row.starts_with(SWITCH) || (row.starts_with("› 1. S") && SWITCH.starts_with(row)) {
+                return true;
+            }
+            if row.starts_with("[…") {
+                continue;
+            }
+        }
+        remaining = remaining
+            .strip_prefix(row)
+            .or_else(|| TITLE.strip_prefix(row))
+            .map_or(TITLE, str::trim_start);
+    }
+    false
 }
 
 /// Whether the hint row's text `hint` says nothing about the prompt box: it is blank, or it

@@ -141,3 +141,7 @@ At twice the budget, the worst case was the limit that held jobs back all night,
 
 Measured use (rule 3) is what stops jobs when CI really fills the host. The worst case only bounds
 a burst, and three times still guarantees each job a third of what it may use.
+
+## Amendment, 21 Nov 2026
+
+A waiter that wakes reserves slots and budgets for the eligible tickets in priority and arrival order until capacity is full or an overdue ticket blocks the rest. The same admission checks apply to each grant against the updated totals. A ticket owns its grant until its job collects it or cancellation releases it. Its startup allowance covers that interval and the usual window after collection. This removes a scheduling delay when several tickets fit and the later task wakes first. [SPEC-598](../../.ai/specs/SPEC-598-shorten-a-yulius-ci-run-parallel-quality.md)

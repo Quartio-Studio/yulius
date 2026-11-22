@@ -10,12 +10,64 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// An owner requested continuation of an ended task.
+    OwnerContinueRequested,
+    /// The owner continuation has committed, before the supervisor prepares its launch.
+    OwnerContinueAccepted,
+    /// A start finished its preflight outside the launch lock.
+    StartPreflightFinished,
+    /// The exit reader recorded the attempt outcome before finishing terminal cleanup.
+    RunReaped,
+    /// A continuation is waiting for the previous reader's cleanup.
+    ContinueWaitsForReader,
+    /// A question’s answer passed task authorization, before the current task is read.
+    AnswerAuthorized,
+    /// A bulk message, Telegram reply or remote restart is about to dispatch a selected task.
+    SelectedTaskDispatched,
+    /// An owner's message selected its parked task before caller preflight.
+    ParkedMessageSelected,
+    /// The parked predecessor's local work is settled and its successor needs hosted PR facts.
+    ParkedPredecessorChecksPr,
+    /// SQLite committed this attempt's terminal outcome, before returning to its observer.
+    TerminalOutcomeRecorded,
+    /// A host exit was received, before the run reader enters finalization.
+    HostExitReceived,
+    /// A host exit reader finished finalizing its attempt.
+    HostExitFinalized,
+    /// A parked resume completed preflight, before it owns the launch lock.
+    ParkedResumePrepared,
+    /// The parked status is durable, just before the reader restores the saved grid.
+    ParkStateRecorded,
+    /// A new merge request owns the task’s arm writer before changing the slot.
+    ArmWriteStarted,
+    /// Continue waits for the previous attempt's reader to finish writing its task state.
+    ParkedResumeWaitsForReader,
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
     ParkedStatusRead,
     /// A queued row reads session capacity to explain its wait. Keyed by task ID.
     QueuedRowCapacity,
+    /// The capacity worker selected a saved start and has not yet claimed the task.
+    CapacityStartReady,
+    /// The capacity worker confirmed its pause before reading the task state.
+    CapacityPauseObserved,
+    /// A capacity worker read an ended task and is about to clean up its observed pause.
+    CapacityStaleCleanup,
+    /// A start is about to claim its observed task state. Keyed by task ID.
+    StartClaimReady,
+    /// The parked PR watcher has prepared its observation for the store's launch claim.
+    ParkedCandidateClaimReady,
+    /// The supervisor released the launch lock after the attempted claim. Keyed by task ID.
+    StartLockReleased,
     /// An idle running row reads its pending PR news. Keyed by task ID.
     LiveRowPrNews,
+    /// The live watch has read an open PR, before returning its advice. Keyed by task ID.
+    LivePrFactsRead,
+    /// The armed watcher completed its local publication lookup before final recipient admission.
+    ArmedNoticePublicationRead,
+    /// A live PR notice was pasted into the attempt; its submit is still pending.
+    PrNoticePasted,
+    /// A free arm has been taken by the queue, before its merge is decided.
+    FreeArmTaken,
     /// A review starts reading its Git head. Keyed by worktree path.
     ReviewHead,
     /// `file_read`: the path was resolved and checked, the file is not opened yet.
@@ -59,6 +111,8 @@ pub enum Point {
     SwitchDecided,
     /// A switch passed preflight and has yet to claim the task status. The path is the task id.
     SwitchPrepared,
+    /// A subscription move has read the original capacity pause. Keyed by task id.
+    MovePauseRead,
     /// A queued limit move is about to check its reporting attempt. The path is the task id.
     LimitMoveReady,
     /// The pool stored the limit pause and is finishing its notices. The path is the task id.
@@ -154,6 +208,8 @@ pub enum Point {
     /// The screen showed an empty box during an old-key hold. The typist is about to
     /// recheck under the draft lock before pasting. The path is the task id.
     BoxSeenEmpty,
+    /// A terminal resize owns the run writer. The path is the task id.
+    TerminalResizeOwnsWriter,
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,
@@ -163,6 +219,12 @@ pub enum Point {
     /// A Stop hook (SPEC-453) found its turn ended cleanly; it has not taken the turn lock to
     /// remember when, or settled the turn, yet. The path is the task id.
     StopClean,
+    /// A verdict or timeout found its Stop and is about to claim the turn for settlement.
+    GoalVerdictReady,
+    /// The watcher read a native goal record. The path identifies its attempt.
+    NativeVerdictRead,
+    /// The watcher finished applying a native goal record for this attempt.
+    NativeVerdictChecked,
     /// `validate_checkout` (SPEC-394): the checkout's root was resolved and the file's path
     /// worked out; the file is not opened yet. The path is the file's.
     CheckoutRead,
@@ -233,7 +295,7 @@ pub enum Point {
     /// path is the task id.
     ReviewMoveDecided,
     /// A CI sync of a sandbox read its runs and planned what to queue; nothing is queued yet.
-    /// The path is the sandbox id.
+    /// The path is the sandbox id for inventory, or the clone for a single opening.
     CiSyncPlanned,
     /// The pool found a prompt waiting in a turn held for capacity that it would move
     /// (SPEC-479): the turn's lines were read; the pause is not asked for again yet and nothing
@@ -285,7 +347,7 @@ pub fn on(point: Point, below: &Path, hook: impl FnOnce() + Send + 'static) {
 }
 
 /// The server reached `point` for `path`: runs the hook registered for it, if any.
-pub(crate) fn reached(point: Point, path: &Path) {
+pub fn reached(point: Point, path: &Path) {
     #[cfg(feature = "test-support")]
     {
         let hook = {

@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Cache only Rust compilations with a known procedural-macro-free dependency closure."""
+import hashlib
+import os
+from pathlib import Path
+import sys
+
+compiler, *args = sys.argv[1:]
+scratch = Path(os.environ["YULIUS_MACRO_FREE"])
+
+
+def values(flag):
+    for i, arg in enumerate(args):
+        if arg == flag and i + 1 < len(args):
+            yield args[i + 1]
+        elif arg.startswith(flag + "="):
+            yield arg[len(flag) + 1:]
+
+
+def certificate(artifact):
+    return scratch / hashlib.sha256(os.fsencode(os.path.abspath(artifact))).hexdigest()
+
+
+def literal_path_key():
+    # mbx normalizes registry/checkout paths in its keys. rustc embeds absolute source
+    # arguments in file!(), and writes its working directory into debug information.
+    # A prefix mapped to itself is a no-op for rustc. Its literal destination is keyed
+    # by mbx, even for paths containing '=' or non-UTF-8 bytes.
+    paths = [os.fsencode(arg) for arg in args if os.path.isabs(arg) and arg.endswith(".rs")]
+    if "-g" in args or any("debuginfo=" in arg and arg.rsplit("=", 1)[-1] not in {"0", "none"} for arg in args):
+        paths.append(os.getcwdb())
+    if paths:
+        identity = "__yulius_source_" + hashlib.sha256(b"\0".join(paths)).hexdigest()
+        return [f"--remap-path-prefix={identity}={identity}"]
+    return []
+
+
+# Cargo only gives a consumer its dependencies after producing their metadata. An
+# existing target from an earlier invocation has no certificate in this private session.
+# Foreign wrappers, bare sysroot externs, proc macros and macro re-exports compile normally.
+try:
+    name = next(values("--crate-name"), None)
+    directory = next(values("--out-dir"), None)
+    suffix = next((arg.removeprefix("extra-filename=") for arg in values("-C")
+                   if arg.startswith("extra-filename=")), None)
+    eligible = not any(arg.startswith("@") for arg in args)
+    for extern in values("--extern"):
+        _, _, path = extern.partition("=")
+        if Path(path).suffix not in {".rlib", ".rmeta"} or not certificate(path).is_file():
+            eligible = False
+            break
+    if directory and name and suffix and set(values("--crate-type")) in ({"lib"}, {"rlib"}):
+        for ext in ("rmeta", "rlib"):
+            proof = certificate(Path(directory) / f"lib{name}{suffix}.{ext}")
+            if eligible:
+                proof.touch()
+            else:
+                proof.unlink(missing_ok=True)
+    if eligible:
+        wrapper = os.environ["YULIUS_MBX_RUSTC"]
+        os.execv(wrapper, [wrapper, compiler, *args, *literal_path_key()])
+    (scratch / f"bypass.{os.getpid()}").touch()
+except OSError:
+    pass
+os.execvp(compiler, [compiler, *args])

@@ -129,6 +129,18 @@ pub trait McpStore: Send + Sync {
     async fn delete_mcp_server(&self, id: &str) -> AppResult<bool>;
 }
 
+/// One task in the bounded background scan of GitHub observations.
+pub struct PullDiscovery {
+    /// Task owning the source branch.
+    pub task: TaskId,
+    /// The task's current source branch.
+    pub branch: String,
+    /// Open follow-up identity if known, otherwise the most recent terminal PR.
+    pub observation: super::github::GhPull,
+    /// A merged PR whose landing still needs confirmation, independent of the open identity.
+    pub pending_landing: Option<u64>,
+}
+
 /// Delivery and environment-run persistence (CP8). Records live in [`crate::delivery`].
 #[async_trait]
 pub trait DeliveryStore: Send + Sync {
@@ -137,6 +149,39 @@ pub trait DeliveryStore: Send + Sync {
         &self,
         task: &yulius_domain::ids::TaskId,
     ) -> crate::error::AppResult<Option<crate::delivery::DeliveryRecord>>;
+    /// Parked merged branches and branches whose last PR closed that may acquire a new PR.
+    async fn terminal_branches_for_discovery(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        after: Option<&TaskId>,
+        limit: u32,
+    ) -> crate::error::AppResult<Vec<PullDiscovery>>;
+    /// Last directly observed terminal PR of the task, optionally by number.
+    async fn terminal_pull(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        number: Option<u64>,
+    ) -> crate::error::AppResult<Option<super::github::GhPull>>;
+    /// Last observed open follow-up identity, independently of the primary delivery stage.
+    async fn open_followup(&self, task: &TaskId) -> AppResult<Option<u64>> {
+        Ok(self.open_followups(task, 1).await?.first().copied())
+    }
+    /// Up to `limit` confirmed open PR numbers, newest first, including other bases.
+    async fn open_followups(&self, task: &TaskId, limit: usize) -> AppResult<Vec<u64>>;
+    /// Records a terminal pull or a positively observed open follow-up. A merged number stays merged.
+    async fn remember_pull_observation(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        pull: &super::github::GhPull,
+    ) -> crate::error::AppResult<()>;
+    /// One coherent read of the open owner PR, task, decisions and pauses before typing.
+    /// An unavailable recipient or an unreadable current attention reason defers the notice.
+    async fn armed_notice_recipient(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        pr: u64,
+        branch: &str,
+    ) -> crate::error::AppResult<Option<crate::pr_watch::NoticeRecipient>>;
     /// Delivery rows of every task of a sandbox (archived tasks included).
     async fn deliveries(
         &self,
@@ -299,6 +344,11 @@ pub trait CapacityStore: Send + Sync {
     async fn insert_pause(&self, pause: &crate::model::PauseRecord) -> AppResult<bool>;
     /// The open pause of a task.
     async fn open_pause(&self, task: &TaskId) -> AppResult<Option<crate::model::PauseRecord>>;
+    /// The observed pause and whether it owned a live or spawning attempt, in one snapshot.
+    async fn open_pause_with_process(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<(crate::model::PauseRecord, bool)>>;
     /// Every open pause, oldest first.
     async fn open_pauses(&self) -> AppResult<Vec<crate::model::PauseRecord>>;
     /// Changes how an open pause holds its task; `false` when the task has none.
@@ -309,7 +359,17 @@ pub trait CapacityStore: Send + Sync {
         continuation: Option<&str>,
     ) -> AppResult<bool>;
     /// Closes the open pause of a task with `outcome`; `false` when there was none.
-    async fn end_pause(&self, task: &TaskId, at: Timestamp, outcome: &str) -> AppResult<bool>;
+    async fn end_pause(&self, task: &TaskId, at: Timestamp, outcome: &str) -> AppResult<bool> {
+        self.end_pause_if(task, None, at, outcome).await
+    }
+    /// Closes only the observed open pause when its ID is supplied.
+    async fn end_pause_if(
+        &self,
+        task: &TaskId,
+        observed: Option<&str>,
+        at: Timestamp,
+        outcome: &str,
+    ) -> AppResult<bool>;
     /// Pauses open at or after `since` (still open or ended later), oldest first.
     async fn pauses_since(&self, since: Timestamp) -> AppResult<Vec<crate::model::PauseRecord>>;
     /// Stores provider readings and drops readings older than `keep_after`.
@@ -475,6 +535,10 @@ pub trait UpdateStore: Send + Sync {
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
 #[async_trait]
 pub trait CiStore: Send + Sync {
+    /// PRs occupying this sandbox's CI places, in admission order, including shared commits.
+    async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>>;
+    /// Atomically replaces that bounded window.
+    async fn set_ci_admitted_pulls(&self, sandbox: &SandboxId, numbers: &[u64]) -> AppResult<()>;
     /// Inserts a run with its jobs atomically.
     async fn insert_ci_run(
         &self,
@@ -492,6 +556,12 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// The commits in this bounded Git history batch with a retained passing CI run, in input order.
+    async fn ci_shas_with_pass(
+        &self,
+        sandbox: &SandboxId,
+        commits: &[String],
+    ) -> AppResult<Vec<String>>;
     /// Bounded scheduler history, most recently admitted first. A new run may
     /// inherit an older queue position from the head it superseded.
     async fn ci_planning_runs(
@@ -669,6 +739,17 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<()>;
 }
 
+/// Which CD outcomes can supply a historical run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CdRunHistory {
+    /// Include the run in progress.
+    Latest,
+    /// The latest terminal verdict, including failures.
+    Finished,
+    /// Only a successful run.
+    Passed,
+}
+
 /// CD (deployment) runs (SPEC-134, table `cd_runs`).
 #[async_trait]
 pub trait CdStore: Send + Sync {
@@ -720,6 +801,7 @@ pub trait CdStore: Send + Sync {
         environment: &str,
         stage: yulius_domain::cd::CdStage,
         kind: yulius_domain::rollback::CdRunKind,
+        history: CdRunHistory,
     ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
     /// Records releases of an environment of `stage` (in order, the last the newest) and keeps
     /// the newest [`yulius_domain::rollback::KEEP_RELEASE_RECORDS`] of each part.
@@ -881,6 +963,11 @@ pub trait StagingStore: Send + Sync {
     async fn insert_staging_request(&self, request: &StagingRequestRecord) -> AppResult<bool>;
     /// One request.
     async fn staging_request(&self, id: &str) -> AppResult<Option<StagingRequestRecord>>;
+    /// Latest staging request whose result still needs to reach this task.
+    async fn task_staging_wait(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<yulius_domain::staging::StagingState>>;
     /// The requests of `environment` asked by the same requester: the task's, or (for `None`) a
     /// person's for `revision`; oldest first.
     async fn staging_requests_of(
@@ -900,6 +987,13 @@ pub trait StagingStore: Send + Sync {
     /// The sandboxes and environments with a pending request, or a deploy that failed since
     /// `failed_since` (staging is restored to its last verified release after it).
     async fn staging_queues(&self, failed_since: Timestamp) -> AppResult<Vec<(SandboxId, String)>>;
+    /// Whether staging recorded a successful request for this exact revision.
+    async fn staging_verified(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        revision: &str,
+    ) -> AppResult<bool>;
     /// The newest requests of `environment`, newest first.
     async fn recent_staging_requests(
         &self,
@@ -920,8 +1014,8 @@ pub trait StagingStore: Send + Sync {
     /// The requests of tasks whose outcome (verified, included, gate failed, deploy failed,
     /// superseded) was not told yet, oldest first.
     async fn untold_staging_requests(&self) -> AppResult<Vec<StagingRequestRecord>>;
-    /// Records the outcome as told; `false` when it already was.
-    async fn mark_staging_told(&self, id: &str) -> AppResult<bool>;
+    /// Acknowledge exactly the observed terminal decision. A retried request owns its new outcome.
+    async fn mark_staging_told(&self, outcome: &StagingRequestRecord) -> AppResult<bool>;
     /// Claims making the upgrade task of Infra bootstrap `revision` for `sandbox` (SPEC-575
     /// MFS-012, migration 0079): `true` when it recorded the claim, which happens only while
     /// its recorded revision is older (or none). A claim stays until its task is linked.
@@ -949,8 +1043,14 @@ pub trait StagingStore: Send + Sync {
     ) -> AppResult<bool>;
     /// The sandbox's recorded bootstrap revision, its state, task and when it was recorded.
     async fn bootstrap_upgrade(&self, sandbox: &SandboxId) -> AppResult<Option<BootstrapUpgrade>>;
-    /// The commits a task's pull requests landed on `branch` (migration 0077), in landing order.
-    async fn task_landings(&self, task: &TaskId, branch: &str) -> AppResult<Vec<String>>;
+    /// Newest confirmed integration landing for the current merged PR. A merge receipt is
+    /// scoped to its own PR. An unconfirmed final merge never falls back to an older slice.
+    async fn staging_landing(
+        &self,
+        task: &TaskId,
+        branch: &str,
+        receipt_pr: Option<u64>,
+    ) -> AppResult<Option<String>>;
 }
 
 /// One person's stored digest (SPEC-512 DIG-005).
@@ -1129,6 +1229,18 @@ pub trait SpanStore: Send + Sync {
         figures: &[(String, f64)],
         add: bool,
     ) -> AppResult<()>;
+    /// Retires an observed singleton only while the same decision is still current.
+    async fn retire_singleton(
+        &self,
+        task: &TaskId,
+        observed: &crate::stages::SpanRecord,
+        now: Timestamp,
+    ) -> AppResult<bool>;
+    /// Latest merge wait for this task, including ordinary decisions that supersede a singleton.
+    async fn latest_merge_wait(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::stages::SpanRecord>>;
     /// A subject's newest `limit` spans, in start order.
     async fn subject_spans(
         &self,

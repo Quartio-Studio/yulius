@@ -4,9 +4,9 @@
 // Claude Code's `--model` and a level to `--effort`; choosing "Random" sends no model and no agent,
 // so the server draws uniformly across Claude Code (on Yulius's default, Opus 5.5 at high effort;
 // SPEC-023, SPEC-462, SPEC-493), Codex and Antigravity among those with non-exhausted
-// subscriptions (SPEC-520 RHM-001/006). The first model listed is the default, as on the server.
+// subscriptions (SPEC-520 RHM-001/006). The browser starts on Codex default (SPEC-587).
 // Choosing Codex default sends `harness: codex` and no model: the server runs GPT-6.2 Astra, at
-// extra high effort unless one is chosen (SPEC-561). An explicit Codex model sends its id. Choosing a
+// high effort unless one is chosen (SPEC-607). An explicit Codex model sends its id. Choosing a
 // Gemini model sends `harness: antigravity` and the model; Antigravity's default is Gemini 4
 // Neon at high effort (SPEC-519; Gemini 4 Carbon before, SPEC-505).
 
@@ -15,6 +15,7 @@ import { readJson, writeJson } from './store.js';
 /** This browser's defaults for new tasks (the composer and Settings share them). */
 export const MODEL_PREF_KEY = 'yulius.composer.model';
 export const EFFORT_PREF_KEY = 'yulius.composer.effort';
+export const DEFAULT_EFFORT = 'high';
 
 const STANDARD = ['low', 'medium', 'high'];
 const EXTRA_HIGH = [...STANDARD, 'xhigh'];
@@ -43,7 +44,7 @@ export const PROVIDERS = [
     efforts: ULTRA,
     models: [
       // No model id: the server runs its Codex default, GPT-6.2 Astra (`harnessOnly`, SPEC-511).
-      { id: 'codex', name: 'Codex default', description: 'GPT-6.2 Astra at extra high effort by default', harnessOnly: true },
+      { id: 'codex', name: 'Codex default', description: 'GPT-6.2 Astra at high effort by default', harnessOnly: true },
       { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra' },
       { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol' },
       { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
@@ -111,7 +112,7 @@ export const EFFORTS = [
   { id: 'low', name: 'Low', description: 'Quick, fewest tokens' },
   { id: 'medium', name: 'Medium', description: 'Balanced speed and depth' },
   { id: 'high', name: 'High', description: 'Thorough reasoning' },
-  { id: 'xhigh', name: 'Extra high', description: 'Deep reasoning, best for most coding' },
+  { id: 'xhigh', name: 'Extra high', description: 'Deeper reasoning for complex work' },
   { id: 'max', name: 'Max', description: 'More time for complex work' },
   { id: 'ultra', name: 'Ultra', description: 'Deep reasoning with automatic delegation' },
 ];
@@ -147,7 +148,9 @@ function effortLevels(modelId) {
 
 /** A browser's new-task picks, shared by Settings and the composer. */
 export function modelPreferences() {
-  const model = findModel(readJson(MODEL_PREF_KEY, null))?.model.id ?? null;
+  // Choosing Random saves JSON null. An absent or unreadable key returns undefined.
+  const savedModel = readJson(MODEL_PREF_KEY, undefined);
+  const model = savedModel === null ? null : findModel(savedModel)?.model.id ?? 'codex';
   const saved = readJson(EFFORT_PREF_KEY, null);
   return {
     model,
@@ -178,16 +181,10 @@ export function modelMenuItems(selected, onPick) {
   ];
 }
 
-/** An inherited effort on a model that supports effort levels (SPEC-561). */
-export function defaultEffort(model) {
-  return model === 'gpt-6.2-astra' ? 'xhigh' : 'high';
-}
-
 /** Menu items to pick an effort level; `onPick(id|null)`. */
 export function effortMenuItems(model, selected, onPick) {
-  const modelId = model === 'codex' ? 'gpt-6.2-astra' : model;
   return [
-    { label: 'Default', description: modelId ? findEffort(defaultEffort(modelId)).name : 'Depends on the drawn model', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Default', description: findEffort(DEFAULT_EFFORT).name, checked: selected === null, onSelect: () => onPick(null) },
     ...effortLevels(model).map(findEffort).map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === selected, onSelect: () => onPick(effort.id) })),
   ];
 }

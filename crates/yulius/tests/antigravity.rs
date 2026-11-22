@@ -34,7 +34,7 @@ use yulius_store::crypto::MasterKeyCrypto;
 
 const API_KEY: &str = "SYNTHETIC-gemini-api-key-0123456789";
 
-async fn add_google_account(
+pub(super) async fn add_google_account(
     app: &App,
     id: &str,
     credential: &[u8],
@@ -60,7 +60,7 @@ async fn add_google_account(
     Ok(account)
 }
 
-fn api_key() -> Result<Vec<u8>, String> {
+pub(super) fn api_key() -> Result<Vec<u8>, String> {
     antigravity_api_key_credential(API_KEY).ok_or_else(|| "an API key envelope".to_owned())
 }
 
@@ -295,6 +295,118 @@ fn an_antigravity_task_runs_in_its_home() -> TestResult {
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// SPEC-604. A conversation opened with no prompt emits no new Stop hook.
+#[test]
+fn a_bare_resume_under_the_neon_banner_can_close() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let fixture = include_str!("fixtures/antigravity/gemini-neon-idle.txt");
+    std::fs::write(data.join("screen.txt"), fixture)?;
+    std::os::unix::fs::symlink(fake, data.join("fake-agent"))?;
+    let cli = data.join("agy");
+    std::fs::write(
+        &cli,
+        r#"#!/bin/sh
+cat "${0%/*}/screen.txt"
+exec "${0%/*}/fake-agent" "$@"
+"#,
+    )?;
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700))?;
+    runtime()?.block_on(async {
+        use yulius_domain::task::Activity;
+
+        let release = data.join("release-turn");
+        std::fs::write(&release, b"")?;
+        let options = FakeAgentOptions {
+            answers_first_message: true,
+            resume_prompts: true,
+            turn_hold_file: Some(release.clone()),
+            ..crate::first_message::hooked()
+        };
+        let (app, _) =
+            crate::first_message::start_with(&data, &cli, options, 0, Arc::default(), |config| {
+                config.park_after_ms = 1
+            })
+            .await?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_google_account(&app, "a-google", &api_key()?).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_agy_task(&app, &sandbox, &user, "Neon", TaskMode::Prompt).await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        wait_for("first turn settled", Duration::from_secs(30), || async {
+            screen_contains(&app, &id, "ECHO: Neon: answer with an echo").await
+                && task(&app, &id)
+                    .await
+                    .is_ok_and(|t| t.activity == Some(Activity::Waiting))
+        })
+        .await?;
+        app.close_task_and_wait(&id).await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        wait_for(
+            "resumed conversation screen",
+            Duration::from_secs(30),
+            || screen_contains(&app, &id, fixture.trim_end()),
+        )
+        .await?;
+        assert_eq!(task(&app, &id).await?.activity, Some(Activity::Waiting));
+        wait_for(
+            "idle conversation parked",
+            Duration::from_secs(30),
+            || async {
+                app.park_idle_sessions_now().await;
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|t| t.status == TaskStatus::Parked)
+                    && matches!(app.deps.store.live_attempt(&id).await, Ok(None))
+            },
+        )
+        .await?;
+        std::fs::remove_file(&release)?;
+        app.continue_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                prompt: Some("Next turn".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        assert_eq!(task(&app, &id).await?.activity, Some(Activity::Working));
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        std::fs::write(&release, b"")?;
+        wait_for(
+            "new turn answered and settled",
+            Duration::from_secs(30),
+            || async {
+                screen_contains(&app, &id, "ECHO: Next turn").await
+                    && task(&app, &id)
+                        .await
+                        .is_ok_and(|t| t.activity == Some(Activity::Waiting))
+            },
+        )
+        .await?;
+        app.close_task_for_person(&ctx, id.as_str()).await?;
+        wait_for(
+            "closed with its session released",
+            Duration::from_secs(30),
+            || async {
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|t| t.status == TaskStatus::Closed)
+                    && matches!(app.deps.store.live_attempt(&id).await, Ok(None))
+            },
+        )
+        .await?;
+        Ok(())
+    })
 }
 
 /// SPEC-505 AGY-004, AGY-009, AC-2: a plan's quota in the transcript is a limit of the

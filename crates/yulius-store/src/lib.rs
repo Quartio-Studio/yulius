@@ -218,6 +218,11 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0080_task_wait_messages.sql"),
     include_str!("migrations/0081_ci_run_admission.sql"),
     include_str!("migrations/0082_task_merge_wait.sql"),
+    // SPEC-605. The position is the schema version, 0084 is the reserved file number.
+    include_str!("migrations/0084_review_round_delivery.sql"),
+    include_str!("migrations/0085_ci_pull_window.sql"),
+    // Schema 85 follows the shipped review and CI-window migrations.
+    include_str!("migrations/0083_terminal_pulls.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -357,6 +362,23 @@ impl SqliteStore {
         })
         .await
     }
+}
+
+/// Applies this release's migrations to the existing database file `path`, never creating one,
+/// and closes it: the schema it had and the one it has now (SPEC-591: staging measures a
+/// release's migration on a copy of the store an older release wrote before it stops anything).
+///
+/// # Errors
+/// Fails when the file does not exist, is damaged or was written by a newer Yulius.
+pub fn migrate_file(path: &Path) -> Result<(i64, u32), OpenError> {
+    let mut conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let from: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    prepare(&mut conn)?;
+    conn.close().map_err(|(_, err)| OpenError::Sqlite(err))?;
+    Ok((from, schema_version()))
 }
 
 /// Creates the database file `path` at schema `version`, as a Yulius of that version left it,
@@ -529,6 +551,12 @@ mod tests {
             (80, include_str!("migrations/0080_task_wait_messages.sql")),
             (81, include_str!("migrations/0081_ci_run_admission.sql")),
             (82, include_str!("migrations/0082_task_merge_wait.sql")),
+            (
+                83,
+                include_str!("migrations/0084_review_round_delivery.sql"),
+            ),
+            (84, include_str!("migrations/0085_ci_pull_window.sql")),
+            (85, include_str!("migrations/0083_terminal_pulls.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -537,7 +565,94 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 82, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 85, "a new migration is pinned here too");
+    }
+
+    #[test]
+    fn terminal_pull_upgrade_keeps_the_confirmed_landing_of_a_parked_task()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..84] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", 84)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1);
+             INSERT INTO tasks (id,sandbox_id,number,title,prompt,harness,status,branch,origin,created_by,created_at,updated_at)
+             VALUES ('t','s',1,'Checkout','Change checkout','codex','parked','feature','user','u',1,2);
+             INSERT INTO delivery (task_id,stage,pr_number,updated_at) VALUES ('t','merged_integration',41,2);
+             INSERT INTO task_merges (task_id,sandbox_id,merged_sha,branch,pr_number,head_sha)
+             VALUES ('t','s','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','dev',41,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');",
+        )?;
+        conn.execute_batch(
+            "INSERT INTO tasks (id,sandbox_id,number,title,prompt,harness,status,branch,origin,created_by,created_at,updated_at)
+             VALUES ('older','s',2,'Renamed task','Old prompt','codex','parked','renamed','user','u',1,2);
+             INSERT INTO delivery (task_id,stage,pr_number,updated_at) VALUES ('older','merged_integration',42,2);"
+        )?;
+        prepare(&mut conn)?;
+        let json: String = conn.query_row(
+            "SELECT snapshot FROM task_pull_observations WHERE task_id='t'",
+            [],
+            |r| r.get(0),
+        )?;
+        let pull: yulius_app::ports::github::GhPull = serde_json::from_str(&json)?;
+        assert_eq!(
+            (pull.number, pull.merged, pull.base.as_str()),
+            (41, true, "dev")
+        );
+        assert_eq!(pull.head_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(
+            pull.merge_commit_sha.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        let json: String = conn.query_row(
+            "SELECT snapshot FROM task_pull_observations WHERE task_id='older'",
+            [],
+            |r| r.get(0),
+        )?;
+        let older: yulius_app::ports::github::GhPull = serde_json::from_str(&json)?;
+        assert!(older.merged && older.merge_commit_sha.is_none());
+        assert_eq!(older.title, "Pull request #42");
+        assert!(older.head.is_empty() && older.head_sha.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn ci_pull_admission_upgrade_keeps_existing_active_prs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let at = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("ADD COLUMN ci_open_pulls"))
+            .unwrap_or(MIGRATIONS.len());
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..at] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", i64::try_from(at)?)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1);
+             INSERT INTO ci_runs (id, sandbox_id, reference, sha, source, state, requested_by, queued_at)
+             VALUES ('1','s','pr/12','abc','profile','running','yulius',1),
+                    ('2','s','pr/10','def','profile','queued','yulius',2),
+                    ('3','s','pr/11','ghi','profile','passed','yulius',3),
+                    ('4','s','branch/dev','jkl','profile','queued','yulius',4);"
+        )?;
+        prepare(&mut conn)?;
+        let pulls: String = conn.query_row(
+            "SELECT ci_open_pulls FROM sandboxes WHERE id = 's'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(serde_json::from_str::<Vec<u64>>(&pulls)?, vec![12, 10]);
+        Ok(())
     }
 
     /// SPEC-575 (a person's integration finding on PR #1541): a populated database at the

@@ -972,3 +972,45 @@ async fn restarting_real_chrome_reopens_the_active_page_with_its_cookie() -> Tes
     server.abort();
     Ok(())
 }
+
+/// SPEC-593 AC-5: a profile carried from another host (the old host's `SingletonLock` and links
+/// into its gone `/tmp`) starts headful on a virtual display, where Chrome would otherwise show
+/// its "in use on another computer" dialog and never answer; then Chrome holds the profile.
+#[tokio::test]
+async fn real_chrome_starts_on_a_profile_locked_by_another_host() -> TestResult {
+    use yulius_browser::{DisplayConfig, DisplayMode};
+    let Some(exe) = std::env::var_os("YULIUS_TEST_CHROMIUM") else {
+        return Ok(());
+    };
+    let dir = tempfile::tempdir()?;
+    let config = BrowserConfig {
+        startup_timeout: Duration::from_secs(60),
+        display: DisplayMode::Virtual(DisplayConfig::new(dir.path().join("displays"))),
+        no_sandbox: std::env::var_os("YULIUS_TEST_CHROMIUM_NO_SANDBOX").is_some(),
+        ..BrowserConfig::new(exe.into(), dir.path().join("profiles"))
+    };
+    let manager = BrowserManager::new(config);
+    let sandbox = SandboxId::parse("real-moved")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    std::fs::create_dir_all(&profile)?;
+    let link = |name: &str, target: &str| std::os::unix::fs::symlink(target, profile.join(name));
+    link("SingletonLock", "old-host-4242")?;
+    link(
+        "SingletonSocket",
+        "/tmp/.org.chromium.Chromium.gone/SingletonSocket",
+    )?;
+    link("SingletonCookie", "8412907261")?;
+    let browser = manager.ensure(&sandbox, &profile).await?;
+    let pid = browser.pid().ok_or("no pid")?;
+    let host = nix::unistd::gethostname()?
+        .into_string()
+        .map_err(|_| "host name")?;
+    let lock = std::fs::read_link(profile.join("SingletonLock"))?;
+    assert_eq!(
+        lock.to_string_lossy(),
+        format!("{host}-{pid}"),
+        "Chrome holds it"
+    );
+    manager.shutdown(&sandbox).await?;
+    Ok(())
+}

@@ -673,10 +673,9 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          start, done once nothing of it remains (a review: once approved), never in a batch. Add \
          a step only for work found later. Keep the Plan checklist and your steps in sync with \
          `steps_set` and `step_update`.\n\
-         4. Tests prove behavior: for every behavior change first write a test that fails \
-         without it, then make it pass; cover failure cases. Wait on conditions, never on \
-         sleeps. A flaky test is reproduced and fixed, or quarantined with an issue; never \
-         retried until green.\n\
+         4. Start each behavior change with a test that fails without it. Make it pass and \
+         cover failures. Run each touched test binary in full. Wait on conditions, never sleeps. \
+         Flaky tests are reproduced and fixed or quarantined with an issue, never retried until green.\n\
          5. Decide like a senior engineer: compare options, choose and justify yourself (do not \
          ask the user to choose), and record each lasting decision {decisions}. Keep the \
          architecture document {architecture} (with at least one Mermaid diagram), the product \
@@ -721,9 +720,11 @@ fn changes_rule(input: &BriefingInput<'_>) -> String {
 fn review_instructions(harness: Harness) -> &'static str {
     match harness {
         Harness::ClaudeCode => "Agent `yulius-reviewer`, Yulius picks its model",
-        Harness::Codex => {
-            "`spawn_agent`, fork_turns=none, model=gpt-6.2-astra, reasoning_effort=high"
-        }
+        Harness::Codex => concat!(
+            "`spawn_agent`, fork_turns=none, model=gpt-6.2-astra, reasoning_effort=high, ",
+            "task_name=yulius_review_<n> with a fresh positive integer for each reviewer. ",
+            "Ask the reviewer to end its report with `Verdict: approve` or `Verdict: request changes`",
+        ),
         Harness::Antigravity => "`swarm` add a fresh reviewer, model=gemini-4-neon-high",
     }
 }
@@ -782,7 +783,7 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          request (about 400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Get an independent review in a fresh session ({review}), read-only, given the diff range, \
          spec and `om-code-review`, marking findings own code or pre-existing; answer all. \
-         Fix own code test-first, never as an issue; after 3 rounds split or `needs_you`.\n\
+         Fix own code test-first, never as an issue. Re-review until approval without asking the user.\n\
          - Yulius pushes your branch and opens the pull request (spec valid if needed, all \
          committed) at your turn's end once all steps are done{review_start}, or when \
          you call `delivery_merge` for the finished part (steps ahead stay open); later commits \
@@ -804,7 +805,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
             // SPEC-575 MFS-004: the merge-first target changes through its queue.
             Some(env) => format!(
                 "Merge-first {}: once your whole delivery merged, `cd_deploy` it once; Yulius \
-                 runs the full gate on that revision, then deploys it",
+                 runs the full gate on that revision, then deploys it. End the turn once the \
+                 request is recorded. If your final step requires the verdict, keep it in progress; \
+                 Yulius wakes the task with the outcome",
                 code(&format!("[cd.{env}]"), 60)
             ),
             None => "Merges deploy nothing: `cd_deploy`/`cd_rollback` dev only if asked".to_owned(),
@@ -844,7 +847,7 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          tests after a conflict.\n\
          - Get an independent review in a fresh session ({review}), read-only, given the diff range, \
          spec and `om-code-review`. The reviewer marks each finding own code or pre-existing. \
-         Fix every own-code finding test-first before the merge, never deferring it (after 3 rounds: keep fixing, split the change or `needs_you`).\n\
+         Fix every own-code finding test-first. Re-review until approval without asking the user.\n\
          - Before delivery, run every project gate yourself. When the work is ready (spec valid \
          if needed, steps done, all committed) and the review approved the exact head, call \
          `delivery_merge`: Yulius CI tests your head merged into {integration} (when the \
@@ -1798,6 +1801,30 @@ mod tests {
             for (harness, expected) in policies {
                 input.harness = harness;
                 let briefing = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+                let review = briefing
+                    .lines()
+                    .find(|line| line.starts_with("- Get an independent review"))
+                    .ok_or("missing independent review instructions")?;
+                assert_eq!(
+                    review.contains("task_name=yulius_review_<n>"),
+                    harness == Harness::Codex
+                );
+                if harness == Harness::Codex {
+                    assert!(
+                        review.contains("reasoning_effort=high, task_name=yulius_review_<n>")
+                            && !review.contains('+'),
+                        "{review}"
+                    );
+                    assert!(
+                        review.contains("Verdict: approve")
+                            && review.contains("Verdict: request changes")
+                    );
+                }
+                assert!(
+                    review.contains("Re-review until approval without asking")
+                        && !review.contains("needs_you"),
+                    "{harness:?}, playground={playground}: {review}"
+                );
                 assert_eq!(
                     briefing.contains("when the review starts"),
                     !playground && harness == Harness::ClaudeCode
@@ -1869,7 +1896,7 @@ mod tests {
             "marking findings own code or pre-existing",
             "answer all.",
             "never as an issue",
-            "never as an issue; after 3 rounds split or `needs_you`",
+            "a permission outside the repository), ask with `needs_you`",
             "for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
              outside your change",
             // SPEC-517 FIX-005 (quartio-v2 task #312): the request's own defect is fixed, never
@@ -2320,6 +2347,10 @@ mod tests {
         let layout = DocsLayout::default();
         let mut input = base(&profile, &layout)?;
         let plain = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(
+            plain.contains("Run each touched test binary in full."),
+            "{plain}"
+        );
         assert!(plain.contains("Merges deploy nothing"), "{plain}");
         assert!(!plain.contains("Local deployment"), "{plain}");
         input.foundations.merge_first = Some("staging".into());
@@ -2495,7 +2526,6 @@ mod tests {
             "`ci_rerun`",
             "marks each finding own code or pre-existing",
             "Fix every own-code finding",
-            "split the change or `needs_you`",
             "List in your summary what is outside your change",
         ] {
             assert!(text.contains(present), "{present} not in {text}");

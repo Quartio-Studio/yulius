@@ -18,13 +18,20 @@ planned to merge by hand.
 
 ## Decision
 
-A failed candidate narrowed to one PR belongs to that PR’s merge decision. The source run may have tested the same tree for a larger candidate. Verify the hosted head and integration base together and include the failing job’s retained, redacted diagnostic in the owner’s merge outcome. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+Record an observed open PR before preparing advice about its merge queue state. Use the slot’s request generation, count of successful takes and decision state to check that the same queue request is still current. A pass overtaken by a queue decision can then defer typing and still recognize the PR after its merge.
+
+During restoration, keep the open PR sighting and withhold a check-in until its owner's saved merge request has a live activation. The train retains the member's admission head and checkpoints the head verified against its predicted tree when GitHub needs more time. Queue-position reads can then distinguish a verified move from an incomplete checkpoint. The conflict files of an excluded member belong to the activation and head that produced them.
+
+A failed candidate narrowed to one PR belongs to that PR’s merge decision. The source run may have tested the same tree for a larger candidate. The queue persists the accepted decision before clearing its original arm. Restoration reconciles the recorded activation with the arm saved on disk. The watcher reuses the live outcome key after restart so a reported decision stays heard. A new ordinary rerun holds replay for up to the queue’s 15-minute wait from its first watcher observation. The notice record binds that time to the queue decision and ordinary run. Changing queue priority or restarting retains the deadline. A singleton that reuses a larger train’s CI run has its own verification notice. Verify the hosted head and integration base together and include the failing job’s retained, redacted diagnostic in the owner’s merge outcome. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
 - A server-side watch (every 20 s) looks at each running task with an open pull request, from
   Yulius's own records and clone, and types what needs the task into its session as one message
   with the next step: a red run at its head or of a merge candidate holding it (jobs, failing
   tests, where to read the log), a conflict with the integration branch, how its armed merge ended,
   its merge, and why a green head is not merging (with "Hands off" while a candidate holds it).
+Use the queue’s owner-preferred ordinary CI result at the armed head. A shared ordinary failure can reach its owner even when the train registry or candidate run cannot be read. Verify a candidate against the active request and its current members because the queue can reuse a CI run for the same tree. Use a bounded hosted PR read for an armed notice that is due. The author’s remote-tracking ref can lag a push from another clone. Recheck a held scope decision before dispatch and leave deferred notices unheard.
+
+- The first paste of a live PR notice takes the writer only if it is free. A waiting paste could answer a decision that appeared during a backpressured resize. The existing watch retries the unheard event and checks the owner again.
 - Each event is typed once, by key, kept in `<data>/pr-notices.json`.
 - A session quiet for 45 minutes with an open pull request gets a check-in; a pull request with no
   progress for 60 minutes while its CI is idle is stalled: told once and shown on the task list
@@ -32,6 +39,8 @@ A failed candidate narrowed to one PR belongs to that PR’s merge decision. The
 - `yulius wait` has no limit while something it waits for is under way, and says why when it ends
   on its limit; with a merge armed it ends on its head's failure.
 - The PreToolUse guard refuses `gh pr merge` and `gh api …/pulls/N/merge`.
+
+The parking supervisor uses the latest singleton decision for the original owner. A changed decision during verification leaves the owner live for the next pass. See SPEC-558.
 
 ## Alternatives
 

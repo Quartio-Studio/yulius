@@ -15,6 +15,8 @@
 mod copy;
 #[cfg(target_os = "linux")]
 pub mod custodian;
+#[cfg(target_os = "linux")]
+pub mod handoff;
 
 pub use copy::CopyState;
 
@@ -58,12 +60,43 @@ pub const IDLE_FLOOR: Duration = Duration::from_secs(300);
 /// One relay's places toward Yulius (SLR-001): at its limit the longest-idle connection past the
 /// floor gives way to a new one. Each place holds the sender that ends its connection.
 pub(crate) struct Places {
-    table: Mutex<Connections<(), oneshot::Sender<()>>>,
+    table: Mutex<Admissions>,
+    #[cfg(not(target_os = "linux"))]
     epoch: Instant,
     max: usize,
     /// Where a refusal is reported as its sandbox's relay trouble (the server's `out.sock`,
     /// SPEC-361).
     report: Option<Report>,
+}
+
+struct Admissions {
+    connections: Connections<(), Control>,
+    stopped: bool,
+}
+
+enum AdmissionRefusal {
+    Full,
+    Stopping,
+}
+
+struct Control {
+    _end: oneshot::Sender<()>,
+    #[cfg(target_os = "linux")]
+    capture: Option<(handoff::TcpLink, handoff::Capture)>,
+    #[cfg(target_os = "linux")]
+    enrollment: Option<handoff::Enrollment>,
+}
+
+impl Control {
+    fn new(end: oneshot::Sender<()>) -> Self {
+        Self {
+            _end: end,
+            #[cfg(target_os = "linux")]
+            capture: None,
+            #[cfg(target_os = "linux")]
+            enrollment: None,
+        }
+    }
 }
 
 /// A relay's sandbox and the registry its troubles go to.
@@ -100,7 +133,11 @@ impl Places {
     fn reporting(max: usize, floor: Duration, report: Option<Report>) -> Arc<Self> {
         let floor = u64::try_from(floor.as_millis()).unwrap_or(u64::MAX);
         Arc::new(Self {
-            table: Mutex::new(Connections::new(max, max, floor)),
+            table: Mutex::new(Admissions {
+                connections: Connections::new(max, max, floor),
+                stopped: false,
+            }),
+            #[cfg(not(target_os = "linux"))]
             epoch: Instant::now(),
             max,
             report,
@@ -108,15 +145,31 @@ impl Places {
     }
 
     fn now(&self) -> u64 {
-        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+        #[cfg(target_os = "linux")]
+        {
+            custodian::monotonic_ms()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+        }
     }
 
     /// A place, what resolves once its connection gave way, and how long the connection that
     /// gave way to it had been idle (ms); `None` when every connection was active lately.
     pub(crate) fn admit(self: &Arc<Self>) -> Option<(Place, oneshot::Receiver<()>, Option<u64>)> {
+        self.try_admit().ok()
+    }
+
+    fn try_admit(
+        self: &Arc<Self>,
+    ) -> Result<(Place, oneshot::Receiver<()>, Option<u64>), AdmissionRefusal> {
         let (end, ended) = oneshot::channel();
         let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
-        let admitted = table.admit((), end, self.now());
+        if table.stopped {
+            return Err(AdmissionRefusal::Stopping);
+        }
+        let admitted = table.connections.admit((), Control::new(end), self.now());
         let Ok(admitted) = admitted else {
             // Reported under the table's lock, so a close after it sees the trouble open and ends
             // it (review round 1). The registry never calls back into the relay.
@@ -124,7 +177,7 @@ impl Places {
                 let refusal = Refusal {
                     limit: Limit::Relay,
                     sandbox: Some(report.sandbox.clone()),
-                    held: table.len(),
+                    held: table.connections.len(),
                     max: self.max,
                     holders: Vec::new(),
                 };
@@ -134,7 +187,7 @@ impl Places {
                 }
                 report.health.refused(refusal, wall_ms());
             }
-            return None;
+            return Err(AdmissionRefusal::Full);
         };
         drop(table);
         // Dropping the evicted sender ends that connection.
@@ -144,7 +197,7 @@ impl Places {
             id: admitted.id,
             activity: admitted.activity,
         };
-        Some((place, ended, idle))
+        Ok((place, ended, idle))
     }
 }
 
@@ -154,6 +207,7 @@ impl Places {
         self.table
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .connections
             .len()
     }
 }
@@ -189,7 +243,7 @@ impl Drop for Place {
             .table
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        table.close(self.id);
+        table.connections.close(self.id);
         // Under the table's lock, as a refusal is reported: a trouble begun before this close is
         // seen, and one begun after it counts this close (SPEC-361 CHR-002, review round 1). A
         // connection of a relay the sandbox replaced (a restart overlapping its old relay's
@@ -201,9 +255,11 @@ impl Drop for Place {
                 .health
                 .open(Limit::Relay, Some(report.sandbox.as_str()))
         {
-            report
-                .health
-                .held(Limit::Relay, Some(report.sandbox.as_str()), table.len());
+            report.health.held(
+                Limit::Relay,
+                Some(report.sandbox.as_str()),
+                table.connections.len(),
+            );
         }
     }
 }
@@ -514,15 +570,16 @@ pub async fn serve_forward_at(
     out_sock: PathBuf,
     loopback_v6: bool,
 ) -> io::Result<JoinHandle<()>> {
-    forward_within(
-        address,
+    let listener = TcpListener::bind((address, port)).await?;
+    Ok(forward_within(
+        listener,
         port,
         out_sock,
         loopback_v6,
         MAX_CONNECTIONS,
         IDLE_FLOOR,
     )
-    .await
+    .await)
 }
 
 /// Connections the relays of this process dropped at their limit (SPEC-353 LAP-002).
@@ -537,21 +594,20 @@ fn dropped_connections() -> u64 {
 /// [`serve_forward_at`] with `max` connections at once, idle ones giving way after `floor`
 /// (tests use small ones).
 async fn forward_within(
-    address: Ipv4Addr,
+    v4: TcpListener,
     port: u16,
     out_sock: PathBuf,
     loopback_v6: bool,
     max: usize,
     floor: Duration,
-) -> io::Result<JoinHandle<()>> {
-    let v4 = TcpListener::bind((address, port)).await?;
+) -> JoinHandle<()> {
     let v6 = if loopback_v6 {
         TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok()
     } else {
         None
     };
     let places = Places::new(max, floor);
-    Ok(tokio::spawn(async move {
+    tokio::spawn(async move {
         let mut warned = None;
         let mut gave_way = None;
         loop {
@@ -585,7 +641,7 @@ async fn forward_within(
                 }
             });
         }
-    }))
+    })
 }
 
 async fn forward_connection<S>(stream: S, port: u16, out_sock: &Path) -> io::Result<()>
@@ -652,10 +708,30 @@ async fn outbound_reporting(
         pause: None,
     };
     let places = Places::reporting(max, floor, Some(report));
+    outbound_loop(
+        listener,
+        targets,
+        sandbox,
+        places,
+        JoinSet::new(),
+        #[cfg(target_os = "linux")]
+        None,
+    )
+    .await;
+}
+
+async fn outbound_loop(
+    listener: UnixListener,
+    targets: Arc<BTreeMap<u16, SocketAddr>>,
+    sandbox: String,
+    places: Arc<Places>,
+    mut copies: JoinSet<()>,
+    #[cfg(target_os = "linux")] holder: Option<Arc<yulius_contracts::sandbox::HolderRecord>>,
+) {
+    let max = places.max;
     let mut warned = None;
     let mut gave_way = None;
     // Dropping the listener task cancels the copies admitted by this holder's relay.
-    let mut copies = JoinSet::new();
     loop {
         let accepted = tokio::select! {
             biased;
@@ -666,35 +742,43 @@ async fn outbound_reporting(
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         };
-        let Some((place, ended, idle)) = places.admit() else {
-            drop(stream);
-            warn_dropped(&mut warned, "outbound", None, Some(&sandbox), max);
-            continue;
+        let (place, ended, idle) = match places.try_admit() {
+            Ok(place) => place,
+            Err(refusal) => {
+                drop(stream);
+                if let AdmissionRefusal::Full = refusal {
+                    warn_dropped(&mut warned, "outbound", None, Some(&sandbox), max);
+                }
+                continue;
+            }
         };
         if let Some(idle) = idle {
             warn_gave_way(&mut gave_way, "outbound", None, Some(&sandbox), idle);
         }
         let targets = Arc::clone(&targets);
+        #[cfg(target_os = "linux")]
+        let holder = holder.clone();
         copies.spawn(async move {
             let stream = Tracked {
                 inner: stream,
                 place,
             };
             tokio::select! {
-                _ = outbound_connection(stream, &targets) => {}
+                biased;
                 _ = ended => {}
+                _ = outbound_connection(stream, &targets,
+                    #[cfg(target_os = "linux")] holder,
+                ) => {}
             }
         });
     }
 }
 
-async fn outbound_connection<S>(
-    mut stream: S,
+async fn outbound_connection(
+    mut stream: Tracked<UnixStream>,
     targets: &BTreeMap<u16, SocketAddr>,
-) -> io::Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+    #[cfg(target_os = "linux")] holder: Option<Arc<yulius_contracts::sandbox::HolderRecord>>,
+) -> io::Result<()> {
     let port = with_timeout(HEADER_TIMEOUT, "relay header", stream.read_u16()).await?;
     let Some(target) = targets.get(&port) else {
         return stream.write_u8(RELAY_FORBIDDEN).await;
@@ -702,6 +786,11 @@ where
     match with_timeout(CONNECT_TIMEOUT, "connect", TcpStream::connect(*target)).await {
         Ok(mut upstream) => {
             stream.write_u8(RELAY_OK).await?;
+            #[cfg(target_os = "linux")]
+            if let Some(holder) = holder {
+                return handoff::transfer(stream, upstream, CopyState::default(), &holder, None)
+                    .await;
+            }
             CopyState::default()
                 .transfer(&mut stream, &mut upstream)
                 .await
@@ -1047,11 +1136,9 @@ mod tests {
                 }
             }
         });
-        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-        let port = free.local_addr()?.port();
-        drop(free);
-        let forward =
-            forward_within(Ipv4Addr::LOCALHOST, port, out_sock, false, 2, IDLE_FLOOR).await?;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
+        let forward = forward_within(listener, port, out_sock, false, 2, IDLE_FLOOR).await;
         let mut clients = Vec::new();
         for _ in 0..2 {
             clients.push(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?);
@@ -1269,20 +1356,20 @@ mod tests {
     -> TestResult {
         let dir = tempfile::tempdir()?;
         let out_sock = dir.path().join("out.sock");
-        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-        let port = free.local_addr()?.port();
-        drop(free);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
+        assert_eq!(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                .await
+                .err()
+                .map(|error| error.kind()),
+            Some(io::ErrorKind::AddrInUse),
+            "another listener must not claim the forward's port during setup"
+        );
         let server = ServerProcess::start(out_sock.clone(), port)?;
         // Idle at once: the test's leftovers are idle for as long as the floor.
-        let forward = forward_within(
-            Ipv4Addr::LOCALHOST,
-            port,
-            out_sock.clone(),
-            false,
-            4,
-            Duration::ZERO,
-        )
-        .await?;
+        let forward =
+            forward_within(listener, port, out_sock.clone(), false, 4, Duration::ZERO).await;
         // Leftover processes: each made a call and keeps its connection, idle, for good.
         let mut leftovers = Vec::new();
         for _ in 0..4 {
@@ -1467,19 +1554,10 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let out_sock = dir.path().join("out.sock");
         let in_sock = dir.path().join("in.sock");
-        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-        let port = free.local_addr()?.port();
-        drop(free);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
         let server = ServerProcess::start(out_sock.clone(), port)?;
-        let forward = forward_within(
-            Ipv4Addr::LOCALHOST,
-            port,
-            out_sock.clone(),
-            false,
-            2,
-            IDLE_FLOOR,
-        )
-        .await?;
+        let forward = forward_within(listener, port, out_sock.clone(), false, 2, IDLE_FLOOR).await;
         let holder = tokio::spawn(serve_inbound_forwarding(
             UnixListener::bind(&in_sock)?,
             1,

@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Run a project Cargo command with a sandbox-local compiler cache when bootstrapped."""
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import tempfile
+
+from compile_cache import UnreapedBuild, foreground_terminal, installed, open_store, run_disposable, run_session, sandbox_for
+
+root = Path(__file__).resolve().parent.parent
+args = sys.argv[1:]
+os.environ["PATH"] = str(root / ".tools/bin") + os.pathsep + os.environ.get("PATH", "")
+
+EXTERNAL_BUILDS = {"clippy", "nextest"}
+
+
+def validate_scratch_args(args):
+    # Cargo expands configured aliases after parsing its options. Use a named
+    # build command whose output arguments can be inspected before dispatch.
+    builtins = {"bench", "build", "check", "clean", "doc", "fix", "run", "rustc", "rustdoc", "test"}
+    if not args or args[0] not in builtins | EXTERNAL_BUILDS:
+        sys.exit("--scratch-target needs a supported Cargo build subcommand; expand any alias")
+    for arg in args:
+        if arg == "--":
+            break
+        key = arg.split("=", 1)[0]
+        if key in {"--target-dir", "--build-dir"}:
+            sys.exit(f"--scratch-target owns Cargo's output directories; remove {key} or use -- before program options")
+
+
+scratch_target = args[:1] == ["--scratch-target"]
+if scratch_target:
+    args = args[1:]
+
+
+def scratch_config_end(args):
+    """Find the end of Cargo's last CLI configuration, before program arguments."""
+    end = None
+    possible_program_arg = False
+    options = iter(enumerate(args[1:], start=1))
+    for index, arg in options:
+        if arg == "--":
+            break
+        if arg == "--config" or arg.startswith("--config="):
+            if args[0] == "run" and possible_program_arg:
+                sys.exit("place Cargo --config before positional arguments; use -- before program options")
+            if arg == "--config":
+                value = next(options, None)
+                if value is None:
+                    sys.exit("Cargo --config requires a value")
+                index = value[0]
+            end = index + 1
+        elif arg == "-" or not arg.startswith("-"):
+            # A bare word may be either a Cargo option value or the first
+            # argument to the executable. Require unambiguous config placement.
+            possible_program_arg = True
+    return end
+
+
+def scratch_parent():
+    parent = Path(os.environ.get("YULIUS_BUILD_SCRATCH", root / "target")).resolve()
+    parent.mkdir(exist_ok=True, parents=True)
+    return parent
+
+
+def run_build(command, env, lease=None):
+    parent = scratch_parent()
+    build = tempfile.mkdtemp(prefix="cargo-", dir=parent)
+    try:
+        config_end = scratch_config_end(command[1:])
+        if config_end is not None:
+            # Keep both paths after the user's final setting, while leaving
+            # Cargo run's implicit program arguments in their original order.
+            insert = 1 + config_end
+            path = json.dumps(build, ensure_ascii=False)
+            command = [*command[:insert], "--config", f"build.target-dir={path}",
+                       "--config", f"build.build-dir={path}", *command[insert:]]
+        result = run_disposable(command, dict(env, CARGO_TARGET_DIR=build, CARGO_BUILD_BUILD_DIR=build, CARGO_BUILD_TARGET_DIR=build), lease)
+    except UnreapedBuild as error:
+        # The containing session can reclaim this target once its processes end.
+        raise UnreapedBuild(f"{error}; retained build target {build}") from error
+    except BaseException:
+        remove_target(build, parent)
+        raise
+    remove_target(build, parent)
+    return result
+
+
+def remove_target(build, parent):
+    try:
+        shutil.rmtree(build)
+    except FileNotFoundError:
+        if os.path.lexists(build):
+            raise
+        # cargo clean can remove the allocated root itself.
+    except PermissionError:
+        # TemporaryDirectory's cleanup also handles owner-read-only dependencies.
+        with tempfile.TemporaryDirectory(prefix="cargo-clean-", dir=parent) as disposal:
+            os.rename(build, Path(disposal) / "target")
+
+
+def plain(cargo, plugin=None):
+    os.environ["CARGO"] = cargo
+    executable = plugin or cargo
+    if scratch_target:
+        try:
+            status = run_build([executable, *args], os.environ)
+        except OSError as error:
+            sys.exit(f"disposable build failed: {error}")
+        sys.exit(status if status >= 0 else 128 - status)
+    os.execvp(executable, [executable, *args])
+
+
+def run_cached(mbx, lease):
+    cache = sandbox / "rust-compile-cache"
+    if not open_store(cache, root):
+        return
+    dispatched = False
+    try:
+        with tempfile.TemporaryDirectory(prefix="yulius-cargo-", dir=scratch_parent() if scratch_target else None) as scratch:
+            marker = Path(scratch) / "dispatched"
+            env = dict(os.environ, CARGO=str(root / "scripts/cargo"), YULIUS_MBX_CARGO=cargo,
+                       YULIUS_MBX_DISPATCH=str(marker), YULIUS_MBX_LEASE=str(lease),
+                       YULIUS_MACRO_FREE=scratch, MBX_CACHE_DIR=str(cache),
+                       MBX_GC_MAX_TOTAL_SIZE="16GiB", MBX_GC_INTERVAL="1m", MBX_TARGET_VIEWS="0",
+                       MBX_RESTORE_HARDLINK="0", MBX_SCHEDULER="0", MBX_BUILD_SCRIPT_EXECUTION="0",
+                       MBX_CC="0", MBX_SHARE_WORKSPACE_ROOT="0", MBX_SHARE_OUT_DIR="0",
+                       MBX_LEARNED_INCREMENTAL="0", MBX_DISPLAY="plain", MBX_SUMMARY="full")
+            if plugin:
+                env["YULIUS_MBX_PLUGIN"] = plugin
+            try:
+                runner = run_build if scratch_target else run_session
+                status = runner([mbx, *args], env, lease)
+            finally:
+                dispatched = marker.exists()
+            bypasses = sum(1 for _ in Path(scratch).glob("bypass.*"))
+            if bypasses:
+                print(f"yulius[cache]: {bypasses} compiler invocations bypassed for unknown or procedural-macro inputs",
+                      file=sys.stderr)
+            if dispatched or status < 0:
+                sys.exit(status if status >= 0 else 128 - status)
+    except (OSError, KeyError, ValueError) as error:
+        if dispatched:
+            sys.exit(f"dispatched Cargo command failed: {error}")
+        raise
+
+
+
+# mbx invokes Cargo for discovery before the build. Mark the actual dispatch, so a cache
+# startup error can fall back without ever retrying a test, an executable or a failed build.
+marker = os.environ.pop("YULIUS_MBX_DISPATCH", None)
+if marker is not None:
+    os.close(int(os.environ.pop("YULIUS_MBX_LEASE")))
+    if args and args[0] not in {"metadata", "locate-project", "-V", "-vV", "--version"}:
+        Path(marker).touch()
+        if "RUSTC_WRAPPER" in os.environ:
+            os.environ["YULIUS_MBX_RUSTC"] = os.environ["RUSTC_WRAPPER"]
+            os.environ["RUSTC_WRAPPER"] = str(root / "scripts/cache-rustc")
+    plugin = os.environ.pop("YULIUS_MBX_PLUGIN", None)
+    if plugin and (not args or Path(plugin).name != "cargo-" + args[0]):
+        plugin = None  # Discovery commands still go to Cargo.
+    plain(os.environ.pop("YULIUS_MBX_CARGO"), plugin)
+
+configured = os.environ.get("CARGO") or "cargo"
+cargo = shutil.which(configured) or configured
+launcher = Path(__file__).resolve()
+if Path(cargo).resolve() == launcher:
+    # A build tool may set CARGO to this launcher, or put scripts first in PATH.
+    for directory in os.get_exec_path():
+        executable = shutil.which("cargo", path=directory or ".")
+        if executable and Path(executable).resolve() != launcher:
+            cargo = executable
+            break
+    else:
+        sys.exit("The project Cargo launcher needs a Cargo executable on PATH")
+plugin = None
+if scratch_target:
+    validate_scratch_args(args)
+    if args[0] in EXTERNAL_BUILDS:
+        # Invoke the named plugin using Cargo's external command convention.
+        # Workspace, environment and CLI Cargo aliases cannot replace it.
+        plugin = shutil.which("cargo-" + args[0])
+        if plugin is None:
+            sys.exit(f"cargo-{args[0]} is required for this disposable build")
+
+
+# Yulius CI keeps the runner's session for cancellation and redirects all three streams.
+unattended_ci = (os.environ.get("YULIUS_CI") == "1" and os.environ.get("YULIUS_CI_RUN")
+                 and not any(os.isatty(fd) for fd in (0, 1, 2)))
+if (sys.platform != "linux" or not os.environ.get("YULIUS_SANDBOX")
+        or not args or args[0] not in {"build", "check", "clippy", "doc", "nextest", "run", "test"}
+        or "RUSTC_WRAPPER" in os.environ or os.environ.get("CARGO_INCREMENTAL", "0") != "0"
+        or sys.stdin.isatty() or (not unattended_ci and foreground_terminal())
+        or any("--jobserver-" in os.environ.get(name, "") for name in ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"))):
+    plain(cargo, plugin)
+
+import fcntl
+
+sandbox = sandbox_for(root, Path.home().resolve())
+if sandbox is None:
+    plain(cargo, plugin)
+# Leave explicit global or remote mbx configurations outside this repository policy.
+config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+if os.environ.get("MBX_REMOTE_URL") or (config_home / "mbx/config.toml").exists():
+    plain(cargo, plugin)
+try:
+    mbx = installed(root)
+    if os.access(mbx, os.X_OK):
+        # Disk upkeep locks the same directory exclusively. Give up the
+        # lease before any direct fallback, including interrupted upkeep.
+        lease = os.open(sandbox, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            run_cached(mbx, lease)
+        finally:
+            os.close(lease)
+except (OSError, KeyError, ValueError) as error:
+    print(f"Rust compile cache unavailable ({error}); running Cargo directly", file=sys.stderr)
+plain(cargo, plugin)

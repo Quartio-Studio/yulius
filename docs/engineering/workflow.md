@@ -77,24 +77,23 @@ another round: `delivery_merge` with the approved head counts them (tests and do
 not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 
 Findings in the change's own code are fixed, never deferred
-([ADR-0141](../decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)):
+([ADR-0141](../decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md),
+[ADR-0427](../decisions/0427-task-authorization-covers-independent-re-review.md)):
 
 1. An own-code finding is fixed in the same pull request, test-first, and never becomes a
    follow-up issue, whatever its severity: a test that cannot fail, a weak or missing
-   assertion, a race, a missing regression test. The round limit (3) does not excuse it:
-   keep fixing, split the change, or stop and ask a person (`needs_you`). Never merge
-   with a known defect in the change's own code.
+   assertion, a race, a missing regression test. Re-review until approval under the task's
+   existing authorization. If findings persist, the author keeps fixing or splits the work
+   within scope. Use `needs_you` only for a concrete action that requires a person.
 2. Only these may become a new issue: a pre-existing bug found on the way, a flaky test
-   the change did not cause, and cosmetic nits (naming, wording) left at the round limit.
+   the change did not cause, and cosmetic nits (naming, wording) left after 3 rounds.
    Each says why it is outside the change, with the evidence (for example "present on
    dev before this change").
 3. The reviewer classifies each finding as own code or pre-existing, and the pull request
    answers every finding. Deferring an own-code finding makes the verdict request changes.
 
-Before asking for another round, answer each finding of the last report with the test that
-fails without its fix (or why no test can), check every finding of that report against the
-new head, and run the project's mutation command on the lines of the fix where it can take
-them. Here: `scripts/dev mutants --base <reviewed head>`.
+Before asking for another round, answer each finding of the last report with the test that fails
+without its fix (or why no test can) and check every finding of that report against the new head.
 
 Do not invent issues for balance. For changes to existing mechanisms, identify the
 old guarantee and test it under the new default configuration.

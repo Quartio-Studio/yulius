@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+from pathlib import Path
 
 
 def library_packages(metadata):
@@ -14,6 +15,8 @@ def library_packages(metadata):
 
 def main():
     cargo = os.environ.get("CARGO", "cargo")
+    if os.environ.get("YULIUS_PROJECT_CARGO") == cargo:
+        cargo = str(Path(__file__).resolve().with_name("cargo"))
     metadata = json.loads(subprocess.check_output(
         [cargo, "metadata", "--locked", "--no-deps", "--format-version", "1"], text=True))
     packages = library_packages(metadata)

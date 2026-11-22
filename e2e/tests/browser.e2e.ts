@@ -78,6 +78,97 @@ test('the sandbox Chrome streams into the panel and takes clicks and keys', asyn
   await expect(screen.getByRole('textbox', 'Address')).toHaveValue('');
 });
 
+// Advance just a clipboard offer's lifetime, while keeping the browser's normal UI timers.
+function controlCopyExpiry() {
+  const schedule = window.setTimeout.bind(window);
+  const cancel = window.clearTimeout.bind(window);
+  const offers = new Map<number, () => void>();
+  window.setTimeout = ((run: () => void, delay?: number, ...args: unknown[]) => {
+    const id = schedule(run, delay, ...args);
+    if (delay === 15000) offers.set(id, run);
+    return id;
+  }) as typeof window.setTimeout;
+  window.clearTimeout = (id?: number) => {
+    if (id !== undefined) offers.delete(id);
+    cancel(id);
+  };
+  window.addEventListener('expire-clipboard', () => {
+    for (const [id, run] of offers) { cancel(id); offers.delete(id); run(); }
+  });
+}
+
+test('a blocked Browser clipboard write can be completed with an explicit click', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await browser.evaluate(controlCopyExpiry);
+  await browser.evaluate(() => {
+    type Socket = { push(message: string): void; send(message: string): void };
+    type Mock = { browsers: Map<string, { viewers: Map<Socket, string> }> };
+    const session = (window as unknown as { __yuliusMock: Mock }).__yuliusMock.browsers.get('sb_studio')!;
+    navigator.clipboard.writeText = async () => { throw new DOMException('Blocked', 'NotAllowedError'); };
+    document.addEventListener('copy', event => {
+      document.body.dataset.copiedText = event.clipboardData?.getData('text/plain');
+    });
+    for (const socket of session.viewers.keys()) {
+      const send = socket.send.bind(socket);
+      socket.send = message => {
+        const request = JSON.parse(message);
+        if (request.type === 'accept_page_copy' && request.tab_id === 'tab-app' && request.offer === 7) {
+          window.dispatchEvent(new Event('expire-clipboard'));
+          socket.push(JSON.stringify({ type: 'page_clipboard', tab_id: 'tab-app', offer: 7, text: 'first line\nzażółć' }));
+        } else { send(message); }
+      };
+      socket.push(JSON.stringify({ type: 'page_copy_available', tab_id: 'tab-app', offer: 7 }));
+    }
+  });
+  await screen.getByRole('button', 'Copy to my clipboard').click();
+  await screen.getByRole('button', 'Retry copy').click();
+  expect(await browser.evaluate(() => document.body.dataset.copiedText)).toBe('first line\nzażółć');
+});
+
+test('expired clipboard actions preserve focus and explain how to copy again', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await browser.evaluate(controlCopyExpiry);
+  await browser.evaluate(() => {
+    type Socket = { push(message: string): void; send(message: string): void };
+    type Mock = { browsers: Map<string, { viewers: Map<Socket, string> }> };
+    const session = (window as unknown as { __yuliusMock: Mock }).__yuliusMock.browsers.get('sb_studio')!;
+    navigator.clipboard.writeText = async () => { throw new DOMException('Blocked', 'NotAllowedError'); };
+    for (const socket of session.viewers.keys()) {
+      const offer = (id: number) => socket.push(JSON.stringify({ type: 'page_copy_available', tab_id: 'tab-app', offer: id }));
+      window.addEventListener('offer-copy-again', () => offer(9));
+      const send = socket.send.bind(socket);
+      socket.send = message => {
+        const request = JSON.parse(message);
+        if (request.type === 'accept_page_copy') {
+          socket.push(JSON.stringify({ type: 'page_clipboard', tab_id: 'tab-app', offer: request.offer, text: 'temporary text' }));
+        } else { send(message); }
+      };
+      offer(8);
+    }
+    document.addEventListener('copy', () => { document.body.dataset.unexpectedCopy = 'yes'; });
+  });
+  const copy = screen.getByRole('button', 'Copy to my clipboard');
+  await copy.focus();
+  await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
+  await expect(copy).toBeFocused();
+  await expect(screen.getByText('Copy expired. Click Copy on the webpage again.')).toBeVisible();
+  await copy.click();
+  await browser.evaluate(() => window.dispatchEvent(new Event('offer-copy-again')));
+  await copy.click();
+  const retry = screen.getByRole('button', 'Retry copy');
+  await retry.focus();
+  await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
+  await expect(retry).toBeFocused();
+  await retry.click();
+  expect(await browser.evaluate(() => document.body.dataset.unexpectedCopy)).toBeUndefined();
+});
+
 // SPEC-434 MTB-003/004: the Browser's tabs move as the sandbox and Notes tabs do, and keep their order.
 const bpStrip = '[role="tablist"][aria-label="Browser tabs"]';
 

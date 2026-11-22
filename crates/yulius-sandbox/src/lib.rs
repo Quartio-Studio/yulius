@@ -23,6 +23,7 @@
 
 pub mod adopt;
 pub mod base;
+pub mod build_tree;
 pub mod cgroup;
 pub mod docker_bind;
 pub mod docker_front;

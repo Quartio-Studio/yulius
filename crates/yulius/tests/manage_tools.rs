@@ -907,7 +907,8 @@ async fn after_all_tasks_with_nothing_left_starts_now() -> TestResult {
         actor: "cockpit:alice".into(),
         detail: json!({}),
     };
-    let args = json!({"prompt": "Nothing to wait for", "after_all_tasks": true});
+    let args =
+        json!({"prompt": "Nothing to wait for", "harness": "claude", "after_all_tasks": true});
     let created = h.app.tool_task_create(&caller, &args).await?;
     assert_eq!(created["task"]["status"], "queued", "{created}");
     assert!(created["task"]["start_rule"].is_null(), "{created}");
@@ -967,7 +968,7 @@ async fn task_update_after_all_tasks_with_nothing_left_starts_now() -> TestResul
         .app
         .tool_task_create(
             &caller,
-            &json!({"prompt": "After the agent's task", "after_task": 1}),
+            &json!({"prompt": "After the agent's task", "harness": "claude", "after_task": 1}),
         )
         .await?;
     assert_eq!(waiting["task"]["runs_after"], 1, "{waiting}");

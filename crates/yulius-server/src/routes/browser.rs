@@ -703,6 +703,8 @@ async fn pump(
     if !view.watch(session, watching.as_ref(), out).await {
         return;
     }
+    let mut page_copy: Option<(TabId, String, tokio::sync::oneshot::Receiver<u32>)> = None;
+    let mut offered_copy = None;
     let mut budget = InputBudget::new();
     let mut recheck = tokio::time::interval(RECHECK);
     recheck.tick().await;
@@ -710,6 +712,19 @@ async fn pump(
     reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            offer = async {
+                match &mut page_copy {
+                    Some((_, _, copy)) => copy.await.ok(),
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some((tab_id, url, _)) = page_copy.take() && watching.as_ref() == Some(&tab_id)
+                    && session.tabs().iter().any(|t| t.active && t.id == tab_id && t.url == url)
+                    && let Some(offer) = offer {
+                    offered_copy = Some((tab_id.clone(), url, offer));
+                    if !out.json(&ViewerServerMsg::PageCopyAvailable { tab_id, offer }).await { return; }
+                }
+            }
             changed = tabs_rx.changed() => {
                 if changed.is_err() {
                     out.close(CLOSE_BROWSER_FAILED, "browser stopped").await;
@@ -735,6 +750,8 @@ async fn pump(
                     if !view.watch(session, next.as_ref(), out).await {
                         return;
                     }
+                    page_copy = None;
+                    offered_copy = None;
                     watching = next;
                 }
             }
@@ -751,6 +768,8 @@ async fn pump(
                         }
                     }
                     Some(BrowserNotice::AgentActivity { tab_id, x, y, action, label }) => {
+                        page_copy = None;
+                        offered_copy = None;
                         let message = ViewerServerMsg::AgentActivity { tab_id, x, y, action, label };
                         if !out.json(&message).await {
                             return;
@@ -825,12 +844,14 @@ async fn pump(
                         Ok(())
                     }
                     Ok(ViewerClientMsg::Watch { tab_id }) => {
+                        page_copy = None;
+                        offered_copy = None;
                         chosen = Some(tab_id.clone());
                         // The display shows one tab: watching a tab brings it to the front.
                         let shown = match &tab_id {
                             Some(tab) => session
                                 .apply_viewer(ViewerClientMsg::Activate { tab_id: tab.clone() })
-                                .await
+                                .await.map(|_| ())
                                 .map_err(|failure| (failure.viewer_code(), failure.message)),
                             None => Ok(()),
                         };
@@ -843,7 +864,26 @@ async fn pump(
                         }
                         shown
                     }
+                    Ok(ViewerClientMsg::AcceptPageCopy { tab_id, offer }) => {
+                        let current = offered_copy.as_ref().filter(|(tab, _, id)| tab == &tab_id && *id == offer);
+                        let text = if let Some((_, url, _)) = current && watching.as_ref() == Some(&tab_id) {
+                            let url = url.clone();
+                            offered_copy = None;
+                            let same_page = || session.tabs().iter().any(|t| t.active && t.id == tab_id && t.url == url);
+                            if same_page() && app.browser_still_allowed(ctx, grant).await {
+                                session.accept_page_copy(offer).await.filter(|_| same_page())
+                            } else { None }
+                        } else { None };
+                        if let Some(text) = text {
+                            if !out.json(&ViewerServerMsg::PageClipboard { tab_id, offer, text }).await { return; }
+                            Ok(())
+                        } else {
+                            Err((ViewerErrorCode::ClipboardUnavailable, "Clipboard text is unavailable. Copy plain text up to 1 MiB on the webpage and try again.".into()))
+                        }
+                    }
                     Ok(ViewerClientMsg::Copy { tab_id }) => {
+                        page_copy = None;
+                        offered_copy = None;
                         match session.copy_selection(&tab_id).await {
                             Ok(text) => {
                                 if !out.json(&ViewerServerMsg::Clipboard { text }).await {
@@ -857,8 +897,20 @@ async fn pump(
                     Ok(message @ (ViewerClientMsg::Mouse { .. } | ViewerClientMsg::Key { .. })) => {
                         let silent = droppable(&message);
                         if budget.take(Instant::now(), silent) {
+                            let page = match &message {
+                                ViewerClientMsg::Mouse { tab_id, event: MouseEventKind::Down, .. }
+                                    if watching.as_ref() == Some(tab_id) => {
+                                    session.tabs().into_iter().find(|t| t.active && t.id == *tab_id)
+                                }
+                                _ => None,
+                            };
                             match session.apply_viewer(message).await {
-                                Ok(_) => Ok(()),
+                                Ok(Some(copy)) => {
+                                    offered_copy = None;
+                                    page_copy = page.map(|t| (t.id, t.url, copy));
+                                    Ok(())
+                                }
+                                Ok(None) => Ok(()),
                                 // A move or wheel that did not apply is superseded by the
                                 // next one: never an error for the user (F 2026-10-10).
                                 Err(failure) if silent => {
@@ -878,7 +930,7 @@ async fn pump(
                             .await;
                         Ok(())
                     }
-                    Ok(message) => session.apply_viewer(message).await.map_err(|failure| {
+                    Ok(message) => session.apply_viewer(message).await.map(|_| ()).map_err(|failure| {
                         (failure.viewer_code(), failure.message)
                     }),
                     Err(err) => Err((ViewerErrorCode::Invalid, format!("invalid message: {err}"))),

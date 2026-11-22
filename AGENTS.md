@@ -20,11 +20,21 @@ Project map for Yulius, configured in [yulius.toml](yulius.toml): [product](docs
 [remote control](docs/remote-control.md). They summarise and point to the specs
 above; the rules in this file stay authoritative. Yulius CI is the only CI: it runs the gate
 (`[[ci.jobs]]` in `yulius.toml`) and publishes the `yulius/ci` commit status; there are no GitHub Actions.
-CD (deployment) is `[cd.dev]` (empty: no dev machine yet) and `[cd.prod]` (promotion of `dev` to
-`main`) in `yulius.toml`; another target would be a `[cd.<name>]` with its `stage`
+CD (deployment) is `[cd.dev]` (Yulius's own staging VM: `scripts/cd/` builds the exact dev
+revision and installs it there with its store kept,
+[ADR-0430](docs/decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
+[operations](docs/operations.md#yuliuss-own-staging-vm); the merge-first staging target) and `[cd.prod]` (promotion of `dev` to `main`) in `yulius.toml`; another target would be a `[cd.<name>]` with its `stage`
 ([ADR-0195](docs/decisions/0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md)). Yulius runs them from the protected branches
 ([ADR-0109](docs/decisions/0109-cd-runs-verified-commits-out-of-the-agents-reach.md)); a merge
-deploys nothing and only a person deploys production
+deploys nothing by itself (a shared staging target uses merge-first staging via `cd_deploy` after
+the merged revision passes the full gate,
+[SPEC-575](.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md),
+[ADR-0410](docs/decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
+[ADR-0411](docs/decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
+[ADR-0415](docs/decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md))
+and a person can release the last verified dev revision while a newer verification runs
+([ADR-0425](docs/decisions/0425-pin-a-production-deploy-to-verified-dev.md)),
+and only a person deploys production
 ([ADR-0110](docs/decisions/0110-only-a-person-deploys-production.md)). Every `[cd.*]` that deploys
 also has `rollback` and `migrations`; production deploys wait for a passed rollback drill on dev
 ([ADR-0263](docs/decisions/0263-rollback-redeploys-a-kept-release-and-a-dev-drill-proves-it-before-production.md)),
@@ -66,9 +76,16 @@ Read [Git workflow](docs/engineering/git.md) before changing branches, publishin
 merging. Every local branch, including `dev` and `main`, must have its own worktree.
 Create a typed branch and worktree together from `origin/dev` with `git worktree add -b`;
 never switch an existing worktree to another branch. Never work directly on
-`dev` or `main`. Follow the task briefing for the reviewer and model of the active harness. While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests the head while the reviewer reads. Do not run the whole gate locally before a review or between rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an outage). Green Yulius CI + an independent review in a fresh session of the exact head →
+`dev` or `main`. Follow the task briefing for the reviewer and model of the active harness. While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests the head while the reviewer reads. Do not run the whole gate locally before a review or between rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an outage). Yulius is merge-first
+([ADR-0436](docs/decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)):
+a pull request merges on `quality` (check), `lint`, `macos`, `docs`, `deps`, `security`,
+the affected `file-contracts` tests and any job it adds or changes. The two partitions of `test` share a build, and `e2e` also runs on the merged revision. Before review, run the whole test binary you touched, including its other tests,
+and the e2e specs your change touches. After the merge, ask once for staging with `cd_deploy` when
+`delivery_status` says it is due: it deploys your merged revision once its full suite passed. The task ends after asking. Yulius reports a gate, deployment or verification failure for a fix forward. A task explicitly assigned to verify the staging verdict leaves that step in progress. Yulius shows the current wait and wakes its agent with the result. Only a revision that passed the full suite and that staging verified is
+promoted to `main` (a person's). Green Yulius CI + an independent review in a fresh session of the exact head →
 `delivery_merge` → Yulius squashes the pull request into `dev` on green Yulius CI through its
-merge queue (`yulius wait` to wait; a hand merge is refused): a task's work ends there. After an approval, fix the remaining nits within 20 product lines and merge without another round: `delivery_merge` with the approved head counts them (tests and documents do not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
+merge queue (`yulius wait` to wait; a hand merge is refused): a task's work ends there, once it requests staging. After an approval, fix the remaining nits within 20 product lines and merge without another round: `delivery_merge` with the approved head counts them (tests and documents do not count). More than that, or a file leaving the change, needs a new round.
+The task's delivery authorization covers every independent re-review of in-scope fixes. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 Promotion (`dev` → `main`, merge commit) is a person's, on the CD page (ADR-0110); a task that
 needs it asks with `needs_you`. Yulius removes a closed task's worktree; for a branch made by
 hand, safely remove its worktree before deleting the local branch; keep dev/main and their
@@ -131,6 +148,8 @@ about the key or its quota. A superadmin can switch Vidoc off the same way for e
 instance, keeping the key (the Instance page's Vidoc card; [ADR-0242](docs/decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)). Other projects run the same scanner
 as `yulius security-scan`.
 
+Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Use `scripts/cargo --scratch-target <cargo arguments>` for a disposable build target under the run’s `YULIUS_BUILD_SCRATCH` directory. On-request campaigns use `scripts/dev mutants`. See [Development](docs/engineering/development.md#mutation-testing).
+
 Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
 (Node 24.8+, test-only; see [e2e/README.md](e2e/README.md)).
 
@@ -141,8 +160,10 @@ changes a file they read. They take seconds, and each one that fails in CI costs
 `checks` run it first.
 
 `scripts/dev` selects the pinned Rust even if Homebrew Cargo is first in PATH.
+On the instance, `scripts/dev` and `scripts/cargo` share compiled Rust across this sandbox's
+worktrees and CI lanes ([ADR-0434](docs/decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md)).
 The `yulius` crate's integration tests are one binary (ADR-0028): run one file's tests with
-`cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'` (the `cargo test`
+`scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'` (the `cargo test`
 filter `<file>::` is a substring: `supervision::` also runs `pool_supervision::`), and declare a
 new test file in `tests/main.rs`.
 `cargo xtask <command>` also works with the pinned rustup toolchain and `.tools/bin` on PATH.

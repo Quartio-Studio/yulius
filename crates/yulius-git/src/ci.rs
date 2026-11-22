@@ -273,6 +273,26 @@ impl Git {
         }
     }
 
+    /// The preceding first-parent commits, nearest first, in a bounded batch.
+    ///
+    /// # Errors
+    /// An unknown revision or a Git failure.
+    pub fn preceding_commits(&self, repo: &Path, head: &str) -> Result<Vec<String>, GitError> {
+        let head = self.rev_parse(repo, head)?;
+        let output = self.run_ok(
+            Invocation::new(self, "rev-list", Some(repo))
+                .args([
+                    "rev-list",
+                    "--first-parent",
+                    "--skip=1",
+                    "--max-count=128",
+                    "--end-of-options",
+                ])
+                .arg(head),
+        )?;
+        Ok(output.stdout_trimmed().lines().map(str::to_owned).collect())
+    }
+
     /// The place of commit `sha` on `head`'s first-parent history: how many first-parent
     /// commits lead up to it, itself included, when walking `head`'s first parents passes it;
     /// `None` when it does not (a merged side branch's commit, or one `head` does not contain)

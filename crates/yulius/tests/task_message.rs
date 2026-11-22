@@ -2,6 +2,7 @@
 //! task's session (real processes: supervisor → detached `yulius ptyhost` → fake agent), or adds
 //! it to the request of a task that has not started, and refuses what cannot take one.
 
+use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -26,7 +27,7 @@ use yulius_app::model::TaskMode;
 
 use crate::first_message::{
     ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
-    start_with, stop, wait_for,
+    start_on_listener, start_with, stop, wait_for,
 };
 use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support::agents::FakeAgentOptions;
@@ -1253,7 +1254,7 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
 /// A fake agent that draws full screen as Claude Code does: its prompt box (a row `❯` between
 /// two rules) with the cursor in it. The PTY echoes what a person types into that row, so a
 /// draft shows in the box, and `Ctrl+U` erases it there.
-fn full_screen() -> FakeAgentOptions {
+pub(super) fn full_screen() -> FakeAgentOptions {
     FakeAgentOptions {
         tui: true,
         ..fake_agent()
@@ -1294,7 +1295,7 @@ fn fixture_box_empty(app: &App, id: &TaskId) -> bool {
 }
 
 /// Wait for the fake agent's SIGWINCH redraw before sending PTY-echoed draft text.
-async fn full_screen_terminal(
+pub(super) async fn full_screen_terminal(
     app: &Arc<App>,
     caller: &ProjectCaller,
     id: &TaskId,
@@ -1710,6 +1711,428 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
     Ok(())
 }
 
+async fn open_pull_for_news(
+    app: &App,
+    data: &Path,
+    task: &yulius_app::model::TaskRecord,
+) -> Result<String, Error> {
+    use crate::pr_watch::git;
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_domain::delivery::DeliveryStage;
+    let seed_dir = data.join("seed");
+    git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
+    let repo = data
+        .join("sandboxes")
+        .join(task.sandbox_id.as_str())
+        .join("repo");
+    git(&repo, &["fetch", "-q", "origin"])?;
+    let worktree = task.worktree_path.clone().ok_or("no worktree")?;
+    let worktree = Path::new(&worktree);
+    std::fs::write(worktree.join("README.md"), "# the task's line\n")?;
+    git(worktree, &["commit", "-q", "-am", "task"])?;
+    let head = git(worktree, &["rev-parse", "HEAD"])?;
+    let open = DeliveryRecord {
+        task_id: task.id.clone(),
+        stage: DeliveryStage::PrOpen,
+        pr_number: Some(7),
+        updated_at: app.now(),
+    };
+    app.deps
+        .store
+        .transition_delivery(&DeliveryStage::None, &open)
+        .await?;
+    Ok(head)
+}
+
+// The screen reported in task #587, with Codex's first menu item selected.
+const CODEX_RATE_LIMIT_PICKER: &str = concat!(
+    "\x1b[?1049h\x1b[H\x1b[J\x1b[?25l\x1b[34;1H",
+    "  Approaching rate limits\r\n",
+    "  Switch to gpt-6-luna for lower credit usage?\r\n",
+    "› 1. Switch to gpt-6-luna                   Fast and affordable model for easier tasks.\r\n",
+    "  2. Keep current model\r\n",
+    "  3. Keep current model (never show again)  Hide future rate limit reminders about switching models\r\n",
+    "  enter select · esc back",
+);
+const CODEX_EMPTY_COMPOSER: &str = concat!(
+    "\x1b[?1049h\x1b[H\x1b[J",
+    "\x1b[34;1H\x1b[1m›\x1b[22m \x1b[2mAsk Codex to do anything\x1b[0m",
+    "\x1b[40;1H  \x1b[1m←\x1b[22m for agents · \x1b[1m?\x1b[22m for shortcuts",
+    "\x1b[34;3H\x1b[?25h",
+);
+
+async fn codex_with_pr_news(
+    data: &Path,
+) -> Result<(Arc<App>, TaskId, ProjectCaller, TcpListener), Error> {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::RunState;
+
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let clock = Arc::new(ShiftedClock(AtomicI64::new(-13 * MINUTE)));
+    let probe = Arc::new(ScriptedUsage::default());
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    listener.set_nonblocking(true)?;
+    let accepting = tokio::net::TcpListener::from_std(listener.try_clone()?)?;
+    let app = start_on_listener(data, &fake, fake_agent(), accepting, probe, clock).await?;
+    let (sandbox, user) = seed(&app, data, &[]).await?;
+    crate::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#).await?;
+    let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
+    wait_for(
+        "first Codex turn ended",
+        Duration::from_secs(30),
+        || async {
+            screen(&app, &id).contains("ECHO: Codex PR news")
+                && activity(&app, &id).await.is_some_and(Activity::is_idle)
+        },
+    )
+    .await?;
+    let task = app.deps.store.task(&id).await?.ok_or("task")?;
+    let head = open_pull_for_news(&app, data, &task).await?;
+    assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+    let (red, job) = crate::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
+    app.deps.store.insert_ci_run(&red, &[job]).await?;
+    Ok((app, id, superagent(&sandbox, &user, "admin"), listener))
+}
+
+fn paint_codex(app: &App, id: &TaskId, picture: &str) {
+    let runtime = app.runtime(id);
+    runtime
+        .hub
+        .output(runtime.hub.output_seq() + 1, picture.as_bytes());
+}
+
+#[test]
+fn the_codex_rate_limit_picker_holds_messages_until_it_is_dismissed() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        paint_codex(&app, &id, CODEX_RATE_LIMIT_PICKER);
+        assert!(screen(&app, &id).contains("› 1. Switch to gpt-6-luna"));
+        let bounds = WatchBounds::default();
+        let reply = send(&app, &caller, &id).await;
+        assert!(
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("rate-limit model picker")),
+            "{reply:?}"
+        );
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        assert!(audited(&data, &id)?.is_empty());
+        assert!(!screen(&app, &id).contains("ECHO: "));
+
+        // A quotation in the conversation is ordinary output. The composer has the cursor.
+        let conversation = format!(
+            "{CODEX_EMPTY_COMPOSER}\x1b7\x1b[2;1HApproaching rate limits\r\n\
+             Switch to gpt-6-luna for lower credit usage?\x1b8"
+        );
+        paint_codex(&app, &id, &conversation);
+        let news = app.watch_prs(&bounds).await;
+        assert_eq!(news.len(), 1, "{news:?}");
+        assert_eq!(news[0].0, id);
+        wait_for("deferred PR notice", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Yulius, about your pull request #7")
+        })
+        .await?;
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_between_paste_and_enter_holds_the_submit() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_app::race::{Point, on};
+
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        let drawn = (Arc::clone(&app), id.clone());
+        on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+            paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+        });
+        let bounds = WatchBounds::default();
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "Enter was withheld"
+        );
+        assert!(screen(&app, &id).contains("Approaching rate limits"));
+
+        // The picker can restore what was pasted. Wait for a confirmed empty composer
+        // before the watcher pastes again.
+        paint_codex(
+            &app,
+            &id,
+            "\x1b[H\x1b[J\x1b[34;1H› Yulius, about your pull request #7\x1b[?25h",
+        );
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        // Dismiss and clear in the native TUI, simulated by its repaint in this fixture.
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert_eq!(app.watch_prs(&bounds).await.len(), 1, "notice released");
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_holds_input_when_its_heading_wraps() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        app.resize_run(&id, 20, 40).await?;
+        paint_codex(
+            &app,
+            &id,
+            concat!(
+                "\x1b[?1049h\x1b[H\x1b[J\x1b[?25l\x1b[34;1H",
+                "  Approaching\r\n  rate limits\r\n",
+                "  Switch to\r\n  gpt-6-luna for\r\n",
+                "  › 1. Switch to\r\n",
+                "    2. Keep current",
+            ),
+        );
+        assert_eq!(app.runtime(&id).hub.size(), (20, 40));
+        let reply = send(&app, &caller, &id).await;
+        assert!(
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("rate-limit model picker")),
+            "{reply:?}"
+        );
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_holds_enter_when_resize_crops_out_the_picker() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_app::race::{Point, on};
+
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        let drawn = (Arc::clone(&app), id.clone());
+        on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+            paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+            assert!(screen(&drawn.0, &drawn.1).contains("Approaching rate limits"));
+            drawn.0.runtime(&drawn.1).hub.resize(120, 24);
+            assert!(!screen(&drawn.0, &drawn.1).contains("Approaching rate limits"));
+            paint_codex(
+                &drawn.0,
+                &drawn.1,
+                "\x1b[H\x1b[J\x1b[18;1H  Approaching rate limits",
+            );
+        });
+        let bounds = WatchBounds::default();
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "the partial repaint kept Enter out"
+        );
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "the incomplete repaint still holds the notice"
+        );
+        paint_codex(&app, &id, "\x1b[H\x1b[J");
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "erase alone is not a repaint"
+        );
+        let composer = CODEX_EMPTY_COMPOSER
+            .replace("[34;", "[18;")
+            .replace("[40;", "[24;");
+        paint_codex(&app, &id, &composer);
+        assert_eq!(
+            app.watch_prs(&bounds).await.len(),
+            1,
+            "repaint released the notice"
+        );
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_submit_hold_survives_a_server_restart() -> TestResult {
+    codex_paste_across_restart(false)
+}
+
+#[test]
+fn the_codex_rate_limit_picker_paste_is_recovered_before_enter_runs() -> TestResult {
+    codex_paste_across_restart(true)
+}
+
+fn codex_paste_across_restart(interrupt_before_enter: bool) -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_app::race::{Point, on};
+
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (id, caller, listener) = first.block_on(async {
+        let (app, id, caller, listener) = codex_with_pr_news(&data).await?;
+        let drawn = (Arc::clone(&app), id.clone());
+        if interrupt_before_enter {
+            let (pasted, observed) = tokio::sync::oneshot::channel();
+            let (leave, paused) = std::sync::mpsc::channel();
+            on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+                paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+                let _ = pasted.send(());
+                let _ = paused.recv_timeout(Duration::from_secs(10));
+            });
+            let watching = Arc::clone(&app);
+            let watch =
+                tokio::spawn(async move { watching.watch_prs(&WatchBounds::default()).await });
+            tokio::time::timeout(Duration::from_secs(10), observed).await??;
+            watch.abort();
+            leave.send(())?;
+            assert!(matches!(watch.await, Err(err) if err.is_cancelled()));
+        } else {
+            on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+                paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+            });
+            assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        }
+        assert!(screen(&app, &id).contains("Approaching rate limits"));
+        Ok::<_, Error>((id, caller, listener))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    let occupied = TcpListener::bind(listener.local_addr()?);
+    assert!(
+        matches!(occupied, Err(err) if err.kind() == std::io::ErrorKind::AddrInUse),
+        "the saved PTY's hook endpoint remains reserved throughout the restart"
+    );
+
+    runtime()?.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let app = start_on_listener(
+            &data,
+            &fake,
+            fake_agent(),
+            tokio::net::TcpListener::from_std(listener)?,
+            Arc::new(ScriptedUsage::default()),
+            Arc::new(ShiftedClock(AtomicI64::new(0))),
+        )
+        .await?;
+        app.reconcile().await?;
+        paint_codex(
+            &app,
+            &id,
+            "\x1b[?1049h\x1b[H\x1b[J\x1b[34;1H› Yulius, about your pull request #7\x1b[?25h",
+        );
+        let reply = app
+            .tool_task_message(
+                &caller,
+                &json!({"task_id": id.as_str(), "text": "Go on", "with_draft": true}),
+            )
+            .await;
+        assert!(
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("unsent automated paste")),
+            "{reply:?}"
+        );
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_requires_recording_a_paste_before_writing_it() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let marker = Path::new(&attempt.run_dir).join("codex-submit-held");
+        std::fs::create_dir(&marker)?;
+        let reply = send(&app, &caller, &id).await;
+        assert!(
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("could not record the Codex paste")),
+            "{reply:?}"
+        );
+        assert!(audited(&data, &id)?.is_empty());
+        std::fs::remove_dir(&marker)?;
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        assert!(!marker.exists(), "a successful Enter clears the recorded paste");
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        stop(&app, &id).await
+    })
+}
+
+/// Replay the pinned Codex composer's empty repaint into the PTY grid. The viewer's
+/// draft and erase, the PR watch and the message read by the fake agent are live.
+#[test]
+fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::RunState;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock) = app_behind(&data, 13 * MINUTE).await?;
+        let (sandbox, user) = seed(&app, &data, &[]).await?;
+        crate::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#)
+            .await?;
+        let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
+        let caller = superagent(&sandbox, &user, "admin");
+        wait_for("first Codex answer", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Codex PR news")
+                && activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let head = open_pull_for_news(&app, &data, &task).await?;
+        let bounds = WatchBounds::default();
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"draft to erase", false)
+            .await?;
+        wait_for("draft echoed", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("draft to erase")
+        })
+        .await?;
+        let (red, job) = crate::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
+        app.deps.store.insert_ci_run(&red, &[job]).await?;
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            held_message_flag()
+        );
+
+        app.terminal_input(&ctx, &attach, b"\x15", false).await?;
+        wait_for("PTY erased draft", Duration::from_secs(30), || async {
+            !screen(&app, &id).contains("draft to erase")
+        })
+        .await?;
+        let runtime = app.runtime(&id);
+        let repaint = concat!(
+            "\x1b[?1049h\x1b[1;1H\x1b[J",
+            "\x1b[34;1H\x1b[1m›\x1b[22m \x1b[2mAsk Codex to do anything\x1b[0m",
+            "\x1b[36;1H  GPT-6.2-Sol default · project",
+            "\x1b[40;1H  \x1b[1m←\x1b[22m for agents · \x1b[1m?\x1b[22m for shortcuts",
+            "\x1b[34;3H\x1b[?25h",
+        );
+        runtime
+            .hub
+            .output(runtime.hub.output_seq() + 1, repaint.as_bytes());
+        clock.0.store(-2 * MINUTE + 30_000, Ordering::SeqCst);
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        let mark = draft_mark(&app, &id).await?;
+        assert!(mark.exists());
+
+        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        let news = app.watch_prs(&bounds).await;
+        let [(recipient, notice)] = news.as_slice() else {
+            return Err(format!("expected one Codex PR notice, got {news:?}").into());
+        };
+        assert_eq!(recipient, &id);
+        assert!(notice.contains("pull request #7"), "{notice}");
+        wait_for("PR news read alone", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Yulius, about your pull request #7")
+        })
+        .await?;
+        assert!(!mark.exists());
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })
+}
+
 /// SPEC-572 AC2, with a pull request's news: text left in the prompt box holds the
 /// news of a red run, and eleven minutes later the task is flagged for it. The pull-request
 /// watch types nothing into a task whose person must act; a flag that only says a message
@@ -1718,39 +2141,16 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
 /// used to stand, with the news untyped, until a prompt was sent.
 #[test]
 fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult {
-    use crate::pr_watch::{git, run};
-    use yulius_app::delivery::DeliveryRecord;
+    use crate::pr_watch::run;
     use yulius_app::pr_watch::WatchBounds;
     use yulius_domain::ci::RunState;
-    use yulius_domain::delivery::DeliveryStage;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
         let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
         // The task's pull request #7 is open at its head, and the head's run failed.
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
-        let seed_dir = data.join("seed");
-        git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
-        let repo = data
-            .join("sandboxes")
-            .join(task.sandbox_id.as_str())
-            .join("repo");
-        git(&repo, &["fetch", "-q", "origin"])?;
-        let worktree = task.worktree_path.clone().ok_or("no worktree")?;
-        let worktree = Path::new(&worktree);
-        std::fs::write(worktree.join("README.md"), "# the task's line\n")?;
-        git(worktree, &["commit", "-q", "-am", "task"])?;
-        let head = git(worktree, &["rev-parse", "HEAD"])?;
-        let open = DeliveryRecord {
-            task_id: id.clone(),
-            stage: DeliveryStage::PrOpen,
-            pr_number: Some(7),
-            updated_at: app.now(),
-        };
-        app.deps
-            .store
-            .transition_delivery(&DeliveryStage::None, &open)
-            .await?;
+        let head = open_pull_for_news(&app, &data, &task).await?;
         let bounds = WatchBounds::default();
         let watched = |app: Arc<App>, id: TaskId| async move {
             let typed = app.watch_prs(&WatchBounds::default()).await;

@@ -12,3 +12,9 @@ cargo-mutants = "27.1.0"
 version = "0.17.0"
 x86_64-linux = "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
 aarch64-linux = "9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8"
+
+# Optional local compiler cache. SHA-256 of the upstream Linux release archives.
+[mbx]
+version = "1.30.0"
+x86_64 = "b523a9324d50fd434e355fc7a5af5f7155d62854dd6a5a74173d52655f168d45"
+aarch64 = "900844b980f9e3daf778d38a19046281cc35e07108a9c821befef6130846df1f"

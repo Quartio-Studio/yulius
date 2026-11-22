@@ -173,7 +173,7 @@ impl App {
         let _pass = pass.lock().await;
         match self.playground_merge(user, task, None, checks).await? {
             PlaygroundMerge::Merged(view) => {
-                self.clear_armed(task);
+                self.clear_armed(task).await;
                 Ok(*view)
             }
             PlaygroundMerge::Testing(_, note) => Err(AppError::Conflict(format!(
@@ -216,7 +216,14 @@ impl App {
                 "this task has no branch to deliver yet".into(),
             ));
         };
-        let observed = self.dlv_observe(&sandbox, task, &profile, None).await?;
+        let observed = self
+            .dlv_observe(
+                &sandbox,
+                task,
+                &profile,
+                super::ObserveAccess::Provided(None),
+            )
+            .await?;
         let refusal = if past_merge(&observed.record.stage) {
             Some(format!("this task is already merged into `{integration}`"))
         } else {

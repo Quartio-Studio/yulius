@@ -132,6 +132,18 @@ impl App {
     /// `Invalid` arguments; `Conflict` while the review does not cover the head or the checks
     /// have not passed; every refusal of the delivery path (`merge_task_pr`).
     pub async fn tool_delivery_merge(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Merges,
+            self.tool_delivery_merge_inner(ctx, args),
+        )
+        .await
+    }
+
+    async fn tool_delivery_merge_inner(
+        &self,
+        ctx: &AgentContext,
+        args: &Value,
+    ) -> AppResult<Value> {
         let mut since = String::new();
         let mut answer = self.delivery_merge_answer(ctx, args, &mut since).await?;
         // An accepted call past the reviewed head says what it counted (SPEC-493 APR-004).
@@ -215,7 +227,6 @@ impl App {
         // later pull request, and the answer names them (SPEC-484 PLN-002, PLN-003). While the
         // merge is armed their work waits: a commit on the branch drops it.
         let steps = self.deps.store.steps(&ctx.task.id).await?;
-        let ahead = crate::delivery::steps_ahead_note(&steps);
         let armed_ahead = crate::delivery::steps_ahead_armed_note(&steps);
         // The agent hears this call's own answer: an earlier armed merge's outcome is old news.
         self.forget_merge_outcome(&ctx.task);
@@ -239,7 +250,7 @@ impl App {
                 .await?
             {
                 crate::delivery::playground::PlaygroundMerge::Merged(view) => {
-                    self.clear_armed(&ctx.task);
+                    self.clear_armed(&ctx.task).await;
                     self.agent_audit(
                         ctx,
                         "delivery.agent.merge",
@@ -253,7 +264,7 @@ impl App {
                     Ok(json!({"merged": true, "delivery": view}))
                 }
                 crate::delivery::playground::PlaygroundMerge::Testing(state, note) => {
-                    self.arm_merge(&ctx.task, &head, reviewed, &summary);
+                    self.arm_merge(&ctx.task, &head, reviewed, &summary).await?;
                     self.agent_audit(
                         ctx,
                         "delivery.agent.merge_armed",
@@ -306,7 +317,7 @@ impl App {
             .await?
             .filter(|r| crate::delivery::past_merge(&r.stage))
         {
-            self.clear_armed(&ctx.task);
+            self.clear_armed(&ctx.task).await;
             let pull = record.pr_number.map_or_else(
                 || "this task's pull request".to_owned(),
                 |n| format!("pull request #{n}"),
@@ -317,7 +328,7 @@ impl App {
                 (Some(number), Ok(Some(sandbox))) => {
                     format!(
                         " {}",
-                        self.merged_note(&ctx.task, &sandbox, number, false).await
+                        self.merged_note(&ctx.task, &sandbox, number, true).await
                     )
                 }
                 _ => String::new(),
@@ -395,7 +406,7 @@ impl App {
                 // Still running (or not known yet): Yulius merges this exact head by itself once
                 // its checks pass (SPEC-011), so the agent never polls for them. Armed already:
                 // it keeps its place (SPEC-441 MQ-006).
-                if !self.arm_merge(&ctx.task, &head, reviewed, &summary) {
+                if !self.arm_merge(&ctx.task, &head, reviewed, &summary).await? {
                     return Ok(json!({
                         "merged": false,
                         "armed": true,
@@ -436,7 +447,7 @@ impl App {
             // GitHub could not take the pull request's new title for now (SPEC-069 BPL-008):
             // armed, so Yulius merges this head on its next pass.
             Err(MergeFailure::Later(err)) => {
-                self.arm_merge(&ctx.task, &head, reviewed, &summary);
+                self.arm_merge(&ctx.task, &head, reviewed, &summary).await?;
                 self.agent_audit(
                     ctx,
                     "delivery.agent.merge_armed",
@@ -461,7 +472,7 @@ impl App {
             }
         };
         // Merged now: nothing is left armed for this task.
-        self.clear_armed(&ctx.task);
+        self.clear_armed(&ctx.task).await;
         self.agent_audit(
             ctx,
             "delivery.agent.merge",
@@ -477,10 +488,13 @@ impl App {
             ),
         )
         .await;
+        let next = self
+            .after_merge_of(&ctx.task, &sandbox, merged.number)
+            .await;
         Ok(json!({
             "merged": true,
             "delivery": merged.view,
-            "next": format!("{}.{ahead}", merged.receipt),
+            "next": format!("{}. {next}", merged.receipt),
         }))
     }
 

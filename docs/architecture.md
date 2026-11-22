@@ -12,6 +12,10 @@ or an imported `auth.json`. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
+The GitHub adapter exposes the active reset time for App-authenticated requests. Task displays use the recorded delivery and ordered pull observations during an outage. [Decision 0446](decisions/0446-keep-github-availability-separate-from-task-state.md)
+
+Contained agent and CI processes have a 1 GiB `/tmp`. The process host creates a run-owned directory inside the sandbox disk quota for disposable builds. Commands receive a build subdirectory. The ownership marker lives in its parent. The host pins the parent directory, and the server retains its launch ownership at readiness or reclaims a stopped host's builds before returning a startup error. Cleanup walks the opened build tree and keeps its versioned receipt with the protected run metadata. Same-boot recovery checks host and child process identities before removing the tree. [Decision 0439](decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
+
 The supervisor terminates a disconnected run using the identities recorded by its host. On Linux it checks exit of the entire process before recording a forced loss. [Decision 0390](decisions/0390-linux-host-exit-is-observed-for-the-whole-process.md)
 
 ```mermaid
@@ -36,7 +40,7 @@ flowchart LR
   CD -->|"dev: deploy + verify, allowed secrets"| SB
   CD -->|"production: deploy + verify (or rollback), allowed secrets"| PSB
   APP -->|"prune caches, quota"| SB
-  CI -->|"jobs in its ci/ leaf, job slots"| SB
+  CI -->|"job slots and per-job CPU and memory budgets"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude, codex or agy TUI"]
@@ -50,18 +54,21 @@ flowchart LR
   AG -->|"MCP (yulius mcp stdio bridge) + hooks"| INT
   AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
   APP <--> GH["GitHub App + REST"]
+  GH -->|"signed PR opening"| API
   APP -->|"long poll getUpdates, sendMessage, getFile"| TG["Telegram Bot API"]
   AG <--> AN["Anthropic"]
   AG <--> OA["OpenAI (Codex)"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
 ```
 
+Task delivery stores observed terminal PR metadata in SQLite. The GitHub adapter coalesces credential-scoped display GETs, revalidates with ETags and records installation attempts at the HTTP transport. The delivery reconciliation tick discovers new PRs on parked terminal branches. GitHub response headers supply the remaining quota and reset time. [ADR-0447](decisions/0447-task-display-shares-github-reads-and-yields-to-delivery.md)
+
 ## Codex
 
 A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,
 using its chosen model or `-m gpt-6.2-astra`. Each new or resumed process receives the task's
-chosen effort or the model default. Astra 6.2 gets `-c model_reasoning_effort="xhigh"` and other
-Codex models get `high`. [Decision 0398](decisions/0398-astra-6-2-inherits-extra-high-effort.md)
+chosen effort or `-c model_reasoning_effort="high"` for every model.
+[Decision 0444](decisions/0444-codex-tasks-inherit-high-effort-on-every-model.md)
 For a ChatGPT Pro 500 sign-in, the launch planner writes `service_tier = "ultrafast"` as the
 home default ([decision 0375](decisions/0375-codex-selects-ultrafast-for-pro-500.md)).
 The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
@@ -72,6 +79,16 @@ account is left there. If a session document predates its rollout, transcript re
 file by session ID and the next index refresh saves its path on the same document.
 [SPEC-538](../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
 
+For an explicit restart of stopped Codex work, the supervisor carries a continuation prompt through admission and into the native resume. It derives initial activity from the launch mode and observes subsequent turns in the rollout. [Decision 0429](decisions/0429-continue-stopped-codex-work-in-its-saved-session.md)
+
+The generated Codex configuration hides the rate-limit model switch reminder. If a live terminal
+shows the picker or its resized alternate grid has yet to repaint, the terminal writer holds
+automated pastes and submits. The PR watch can deliver
+its pending notice after the picker closes. The run directory records the paste before it is sent.
+A successful Enter clears the record. After an interrupted submission or server reattachment,
+a confirmed empty composer clears it.
+[Decision 0443](decisions/0443-hold-codex-input-at-the-rate-limit-model-picker.md)
+
 ```mermaid
 flowchart LR
   ACC["openai account (vault: auth.json)"] -->|"written before each run"| HOME["sandbox/codex/account: auth.json, config.toml, hooks.json"]
@@ -79,9 +96,12 @@ flowchart LR
   CX["codex TUI (ptyhost)"] -->|"CODEX_HOME"| HOME
   CX -->|"rollout JSONL"| SESS
   CX -->|"yulius hook codex, yulius mcp"| INT2["Internal listener"]
-  SESS -->|"turns, tokens, rate limits, limit"| SUP2["Supervisor"]
+  CX -->|"rendered picker holds automated input"| SUP2["Supervisor"]
+  SESS -->|"turns, tokens, rate limits, limit"| SUP2
   SUP2 -->|"a genuine refresh"| ACC
 ```
+
+The capacity estimator reads the model and four token classes stored per attempt. It uses Standard GPT-6 prices for Codex and reports a weekly Ultrafast scenario for eligible models. The attempt totals lack per-response speed settings and cover the task session. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
 
 A Codex subscription signs in with `codex login --device-auth` in the login terminal (the
 provided CLI, its `CODEX_HOME` in the sign-in's own folder with credentials kept in a file),
@@ -91,7 +111,9 @@ its runs' rollouts. In the web UI, Subscriptions' Add dialog chooses the agent f
 or Codex) and then its way in, a Codex card imports a new `auth.json`, the composer's model menu
 groups explicit model IDs by provider. Each Codex or Gemini choice sends its harness and model,
 and the Codex default choice sends its harness alone. Settings and the composer share the model's
-supported effort levels and browser preferences. An automation chooses the agent of the tasks it
+supported effort levels and browser preferences. A missing or unusable model preference selects
+Codex default, while a saved JSON null selects Random. [Decision 0426](decisions/0426-the-new-task-composer-defaults-to-codex.md)
+An automation chooses the agent of the tasks it
 creates. See [ADR-0372](decisions/0372-model-pickers-use-provider-reasoning-levels.md).
 
 Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
@@ -105,9 +127,12 @@ its model implies (Codex for `gpt-*`, Antigravity for `gemini-*`, otherwise Clau
 draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the harnesses in `Harness::ALL` (`claude`, `codex`, `antigravity`) that have at least one healthy
 non-exhausted subscription for their default model (falling back to healthy `Usable` pools when
 every connected pool is temporarily limited, else `ClaudeCode`), recorded in `task_harness_draws`
-(`harness_choice: random`). A running task agent's `task_create` and `automation_create` without
-`harness` (or `model`) keep the calling task's agent (`chosen`), while explicit `auto`, Superagent
-calls and `auto` automations draw per created task.
+(`harness_choice: random`). With harness and model omitted, the shared `task_create` tool
+selects the parent task's harness for a follow-up and Codex for the CLI or either Superagent,
+including approved cross-sandbox requests. Codex then inherits its model, effort and tier as
+described above. Explicit `auto` still draws. An automation created by a task inherits its
+parent's harness by default. Other automations default to a draw on each run.
+[Decision 0422](decisions/0422-cli-and-superagent-task-creation-defaults-to-codex.md)
 
 An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
 [decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))
@@ -118,12 +143,20 @@ runs the `agy` TUI on a Google account, on its own model and effort or else `--m
 a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Google sign-in, the
 CLI's token file. Its `antigravity-cli/brain` and `conversations` link to
 `<sandbox>/antigravity/shared`, so a conversation resumes on any Antigravity account by
-`--conversation <id>`. A contained run binds that `.gemini` over the sandbox home's (the agent's
+`--conversation <id>`. Without a prompt or continuation, a resumed Antigravity process starts
+with its saved idle activity or Waiting. The next turn follows native events. [ADR-0445](decisions/0445-antigravity-resume-activity-follows-its-launch-prompt.md)
+
+A contained run binds that `.gemini` over the sandbox home's (the agent's
 shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's Antigravity home.
 `yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
 turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
 a turn its model API failed ends with a Stop Yulius settles without a gate. A successful Stop
-with `fullyIdle: false` keeps the task Working while its command runs. A first invocation
+with `fullyIdle: false` probes live background processes (including PTY-hosted commands) and active
+`yulius wait` calls: when only `yulius wait` is running, Yulius settles the turn to Waiting with
+`yulius_wait = true` so the merge queue proceeds; when non-wait background work runs, Yulius
+settles `activity = Waiting` while tracking `background_shells >= 1` so SPEC-528 does not show
+Needs You and the merge queue holds until that work ends ([ADR-0419](decisions/0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md),
+[SPEC-580](../.ai/specs/SPEC-580-an-armed-green-pr-merges-when-its-agent.md)). A first invocation
 following a system message signals activity without submitting a prompt ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). When its run ends, a
 token file the CLI refreshed replaces the stored sign-in and is removed.
 
@@ -546,7 +579,9 @@ itself that the host's managed policy, which switches those windows off, is in f
 (`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
 blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
+The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
 A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
+Before each start the manager removes the profile's Chrome lock entries (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) unless a running process of this host holds the lock, so a profile carried from another host starts. This happens before the display starts (`yulius_browser::profile`). [ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)
 
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
 extensions unloaded, so a later policy reload can take effect without a native administrator
@@ -1016,11 +1051,18 @@ flowchart LR
   R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]
+  RUN -->|"idle Codex resume without a turn"| I["Restore Waiting or Done"]
   C -->|"none"| W["waiting_capacity"]
   D --> T["tell_left: one line"]
   R --> T
   T -->|"nothing usable left"| N["Needs you, ended with the pause"]
 ```
+
+A live Codex task resumed without a turn keeps its saved Waiting or Done activity, including in
+Goal mode. The supervisor determines activity from the final launch mode, so a recovered reviewer
+or another opening instruction still starts a turn. Automatic Codex placement ranks eligible
+subscriptions by headroom in the tightest binding window before considering reset urgency.
+[Decision 0449](decisions/0449-use-codex-quota-headroom-and-preserve-idle-moves.md)
 
 ## Subscription names and emails
 
@@ -1249,6 +1291,13 @@ loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`; the 
 
 **Build caches and disk pressure** ([SPEC-276](../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md),
 [decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)).
+For this repository, Cargo writes targets per checkout and mbx stores compiled artifacts in
+`<sandbox>/rust-compile-cache`. Each build owns its mbx session. mbx collects at 16 GiB.
+Instance upkeep can reclaim a stamped, idle store above 20 GiB or under remaining disk pressure.
+A shared lock protects active builds. Upkeep moves the opened store’s ownership stamp to a pending name
+before clearing its contents. Builds use ordinary Cargo until upkeep restores the ready name. A later
+round resumes an interrupted eviction even on a healthy disk. [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md).
+
 The disk upkeep (`yulius-app::disk`) reads the data disk every minute through
 `SystemProbe::disk`; `yulius-domain::sweep` turns it into a level (low from 85 %, critical from
 95 %) and a policy. `yulius-app::pressure` runs a round every 5 minutes, and at once when the level
@@ -1369,6 +1418,8 @@ sequenceDiagram
 
 ## The review's rounds and models
 
+The task briefing directs the author to fix findings and obtain independent re-review under the existing delivery authorization, including after the third round. [ADR-0427](decisions/0427-task-authorization-covers-independent-re-review.md)
+
 The independent code review runs as one of two agents Yulius defines at every task launch
 (`--agents`, `harness::launch::reviewer_agents`), out of the agent's reach:
 `yulius-reviewer` on `claude-fable-5-2` and `yulius-reviewer-opus` on `claude-opus-5-5`, both at
@@ -1411,6 +1462,14 @@ subagent off sends no `SubagentStop`, so such a round stays without a report. Th
 pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1.
 
+The Codex briefing assigns fresh review children a `yulius_review_<n>` task name.
+`SubagentStart` supplies the child ID and active model. Yulius checks that the sandbox's
+child rollout header names that reviewer and the authenticated parent, and takes the
+reviewed head and start time from its launch metadata. A `SubagentStop` with a verdict can
+settle or establish the same round under the child's ID. The merge transaction keeps its time
+in the delivery record even when it has zero rounds, so delayed hooks from the previous PR
+cannot open a round on the next one. [ADR-0442](decisions/0442-identify-codex-reviewers-by-their-child-rollout.md)
+
 The delivery transaction also binds the task, PR, accepted head, integration branch and landed commit in `task_merges`. Delivery reads the existing CI jobs, CD runs and delivery-profile command runs by sandbox and exact commit. A historical link keeps its identity when a branch moves or the task opens another PR. Retention archives the compact results before deleting a linked run. A clean CD wrapper exit confirms each configured command. Other exits leave their individual outcomes unconfirmed. Legacy deliveries recover their binding from the recorded PR on the branch named by the task's historical PR-opening audit entry. A direct merge awaiting confirmation recovers only when the closed PR matches the original expected branch, head and merge result. An unavailable historical result supplies no proof. [Decision 0399](decisions/0399-task-evidence-belongs-to-the-landed-commit.md)
 
 The transcript watch also reads each subagent of the session's own thread
@@ -1419,7 +1478,8 @@ The transcript watch also reads each subagent of the session's own thread
 (`Observation::SubagentCutOff`). The supervisor uses the transcript time to identify the round
 that ran when the observation was written, including during restart replay
 (`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
-`delivery_status`) lists the open pull request's rounds. When a merge is recorded,
+`delivery_status`) lists the current review or the rounds of the pull request just delivered.
+Each round includes its start, optional end and pull request number when known. When a merge is recorded,
 `dlv_transition_at` writes the merge record `delivery.review.models` (actor `yulius`): the
 models of the runs that worked on the pull request (those still going when the previous one
 merged, known from its rounds or its own merge record, and every later one), and each round
@@ -1453,6 +1513,19 @@ sequenceDiagram
         A->>H: SubagentStop (new report)
         H->>Y: record that round's verdict
     end
+```
+
+```mermaid
+sequenceDiagram
+    participant C as Codex review subagent
+    participant R as Child rollout
+    participant Y as Yulius
+    C->>R: write session metadata for named review child
+    C->>Y: SubagentStart (child ID and model)
+    Y->>R: verify parent and reviewer name, read launch head
+    Y->>Y: number and record the round
+    C->>Y: SubagentStop (report and model)
+    Y->>Y: record the verdict for the child
 ```
 
 ## Harness comparison
@@ -1619,12 +1692,18 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
   the kept failures, partial observations from siblings stopped by a failed job, and the exact
   `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
-- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. Hourly span cleanup preserves the task’s latest merge wait, ordered by activation time, for recovery across restart.
+- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. The queue saves the decision in the task’s latest completed merge wait before clearing its arm. The record identifies the original PR, head, tested base and tree, source run and redacted failure. Hourly cleanup retains it. Startup uses the activation time to discard a consumed arm or retire its decision for a newer saved arm. The parking supervisor compares this decision with the verified PR head and base before recording the park intent. A change to the decision during hosted verification defers parking. The live PR watcher uses this record to deliver the accepted failure once to the original task. It checks the published head, integration base, latest wait and ordinary CI again before typing. The PR watcher defers advice for a saved request until its arm is restored. A passed train retains the admission head and records the verified integration head while waiting for GitHub. An exclusion identifies the request and head whose files conflicted. A legacy exclusion or replacement request gets the queue position alone.
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;
 - a green head that is not merging: no merge armed, where the armed merge stands, or, held by a
   candidate, "Hands off".
+
+The watch remembers an open PR when it first observes its number. While the live queue decides the merge, or if its activation changes during a read, the watch defers advice and keeps that observation for the eventual merge notice.
+
+For a live merge request, the watcher reads ordinary CI at its armed head using the same owner preference as the queue. An actionable ordinary failure takes precedence over train advice. The watcher ties a train notice to the request’s activation, PR, head and current member list. When armed advice is due, it confirms the open PR’s hosted head within five seconds, then rechecks the delivery, CI results and any decision reserved for a person, including a held scope change. A local publication lookup precedes hosted verification. Both the paste and Enter target the observed attempt, so a subscription switch leaves obsolete advice unheard. An already-reported failed train waits for the queue’s next decision. If the facts change, the next pass can deliver the current notice.
+
+The first paste of a live PR notice needs immediate access to the session writer. If another input or resize holds it, the watcher keeps the event pending for its next pass.
 
 Each event has a key, typed once and kept in `<data>/pr-notices.json`. A session idle for 45
 minutes with nothing typed gets a check-in with the pull request's state; a pull request with no
@@ -1720,6 +1799,17 @@ ownership by location: an untracked or ignored path of the task's worktree
 (`YULIUS_TASK_WORKTREE`), or a path on the run's own tmpfs (`/`, `/tmp`, `/run`, `/dev/shm`) of a
 contained run; mount points, directories holding one and the root's links are refused, and a
 link is removed as a link. Task runs get `TMPDIR=/tmp`, so `$TMPDIR/x` is not `/x`.
+
+For a contained Claude task, a Bash permission request about a recursive scratch removal such
+as `rm -rf $S/$d` returns a checked retry directly to the calling agent, including a reviewer.
+The local hook leaves the original script unexecuted. The agent retries it with the checked
+removal in place, preserving its conditions and loop bindings. File-only cleanup unlinks files
+and links and fails on directories. Cleanup without force reports missing targets as errors.
+The hook reads the Bash syntax tree and excludes shell jobs and command-local redirections or environment assignments. The retry
+checks how Bash resolves the command and runs the helper only for the system rm executable.
+When the original removal omitted `--`, an option-like expanded operand stops the entire retry.
+On retry, a trailing slash on the expanded path requires a directory. A directory symlink
+spelled this way produces a refusal and preserves its target. [Decision 0435](decisions/0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md)
 
 ```mermaid
 flowchart TD
@@ -2071,12 +2161,21 @@ possible draft or keystroke within the grace period, and is not an onboarding ta
 A task keeps its session while its plan has an open step, its spec is unfinished, or its goal still needs work. Both grace and digest parking recheck these facts before stopping the session, including when a person has been asked.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
+Parked admission waits outside the launch lock for in-flight terminal cleanup, up to the stop escalation bound. The observer that records the attempt’s terminal outcome saves the final screen. A late exit reader leaves the replacement run alone. Successor and onboarding checks may continue after terminal cleanup finishes.
 [Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
 
 Codex parking requires a recorded rollout ID. A message to the parked task resumes that rollout.
 If the server restarted between writing the attempt’s ID and writing its session lineage, the
 resume path recovers the ID from the parked attempt. If capacity holds a resume, an unreadable
 rollout history leaves its pause and prompt in place for the next capacity round.
+
+The PR watcher can resume a parked owner for a failed single-PR integration candidate. It reuses the live watcher’s saved decision. After preparing the launch, the watcher releases the launch lock to check the published head, integration base and ordinary CI. Under the merge writer, SQLite binds the start to the parked attempt, PR and recorded decision. The transaction also checks ordinary CI for that head, checks for a human request and validates the subscription against the task’s current model. If the launch slot or subscription is busy, the next watch verifies the failure again. If the subscription disappears before spawn, ending the unspawned attempt and restoring the park commit together. A restarted server can retry with the original screen and goal.
+
+Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, including when a bulk operation, Telegram reply or remote restart first resolves the target. Under the launch lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt.
+
+Continue also binds the owner’s selection to the latest attempt and archive state on an ended task. Exit and loss release terminal cleanup before successor checks. Once that cleanup finishes, the store compares the selection and records Starting or a queued start together with clearing the archive and question. A named Continue applies the pool’s manual placement policy to the task model and subscription records in that transaction. An immediate launch uses the accepted model and subscription. A queued start retains its subscription choice for the normal dispatch check.
+
+Parking takes the task’s merge writer for the final eligibility check and releases it before requesting terminal shutdown. It verifies that the selected attempt is still attached and its reader has not started settling it. The shutdown request names that attempt. The runtime records which attempt committed to park until its exit or loss settles. A new merge request checks that marker and the durable status while holding the same writer.
 
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
@@ -2117,6 +2216,8 @@ run for these reads per application. Each keeps its permit until Git returns.
 [ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
 
 Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
+A recorded merge remains visible when a display read cannot discover follow-up PRs. Branch discovery and Git overviews publish PR identities in request-start order. A branch result updates only its task. The overlap limit applies separately to the sandbox overview and to each task branch. Known open follow-ups still need verification. The server rechecks the local plan, decisions and delivery before showing Done and keeps an unverified follow-up lookup in the prerequisites for an `after_all_tasks` rule. [ADR-0424](decisions/0424-keep-a-recorded-merge-visible-when-follow-up-discovery-is-unavailable.md)
 
 The browser uses the parked summary’s verified Needs you group and its open steps, spec or goal when classifying a task. It retains the displayed reason for a human decision or failing PR. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
 
@@ -2382,7 +2483,7 @@ possible draft leaves `person-typed` in the run folder, removed when a prompt is
 the box and read by `reconcile` for a reattached run). Claude’s scheduled hand-over preserves that mark even when its submit hook
 carries plain text (SPEC-541, [ADR-0388](decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)).
 After the typing minute, the exact empty conversation box can also end the key's hold,
-its recovery mark and its held-message flag. [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
+its recovery mark and its held-message flag. Codex's reader recognizes its focused, dim conversation placeholder and empty-composer footer on a fully rendered grid. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md) · [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 Before a paste, visible input in
 Claude Code’s conversation box also holds a message. This catches restores that generated no
 key. An automatic message flags the task immediately in this case
@@ -3155,7 +3256,7 @@ sequenceDiagram
 flowchart LR
   M["merge into dev"] -->|"deploys nothing"| DEV
   DEV["dev stage: [cd.dev], [cd.staging] … at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
-  P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
+  P["a person on the CD page, slug typed"] --> PROMO["promote the confirmed dev revision into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
   AG["agent"] -.->|"refused"| P
 ```
 
@@ -3189,12 +3290,21 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - **Failure.** A failed deploy is restored: each part's current kept release is redeployed and
   verified once (`CdRequest::Restore`, a rollback run).
 - **Told and shown.**
+  - An idle task with an untold staging request shows which part of delivery it awaits. The
+    staging queue wakes a running or parked agent when that request is decided. Each stage change
+    updates the task view. If the summary exceeds its budget, sandbox viewers receive a resync.
+    [ADR-0437](decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
   - `tell_staging_outcomes` types each task's outcome into its session once.
+  - `delivery_status` tells a merged task its request is due, then where it stands
+    (`staging_note`).
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
-  - Every promotion waits until staging serves the integration head, verified, read through the
-    CD mirror: `cd_prepare` for a production deploy, `staging_promotion_head` for the Delivery
-    page and the automatic one.
+  - A production CD deploy selects the verified staging revision through the CD mirror.
+    If the integration branch has advanced, a fast-forward uses the selected SHA and a
+    merge-commit release uses a same-repository pull request pinned to it. CD checks the
+    production tree against the confirmed revision. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
+  - The Delivery page and automatic promotion use `staging_promotion_head` and wait for the
+    verified integration head.
     - A head that cannot be read is refused.
     - The queue's verified deploy runs the automatic promotion that waited.
   - A failed deploy that announced a rollback barrier is not restored.
@@ -3237,6 +3347,30 @@ stateDiagram-v2
     onboarding, `claimed` while the task is being made, and `linked` once it is made.
   - Every start finishes a claim left unfinished: it adopts a task made since, else makes it.
 
+### Yulius's own staging
+
+Yulius's own `[cd.dev]` deploys to a staging VM, a Yulius instance no person relies on
+([decision 0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
+[SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md); operations in
+[Yulius's own staging VM](operations.md#yuliuss-own-staging-vm)). The scripts are `scripts/cd/`,
+the build `deploy/build/Dockerfile`, and the tests `scripts/test_cd.py`, which run against a fake
+root. Production is still a promotion of `dev` to `main` that each instance installs through
+its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: the two test jobs share one run-scoped nextest archive,
+and both shards and e2e are `after_merge`, and a promotion comes only from the revision staging verified
+([decision 0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
+
+```mermaid
+flowchart LR
+  RUN["dev CD run (sandbox)"] -->|"build.sh: docker build, Ubuntu 24.04"| BIN["release binary (YULIUS_CD_CACHE, last 10)"]
+  BIN -->|"ssh, pinned host key: upload by SHA-256"| KEPT["VM: /var/lib/yulius-releases/&lt;commit&gt;"]
+  RUN -->|"remote.sh activate"| CHK["the new binary migrates a copy of the live store: no rows lost"]
+  CHK --> SW["stop yulius.service, keep the replaced binary and its store, install, start"]
+  SW -->|"/internal/version = commit"| OK["recorded current"]
+  SW -->|"no answer in 2 min"| BACK["previous binary and store put back"]
+  OK --> VER["verify: commit, HTTPS /healthz, contained doctor, store check and schema, Docker smoke"]
+  VER --> DRILL["Yulius's drill: rollback.sh back (its own store across a schema change), verify, forward, verify"]
+```
+
 ### Rollback
 
 Rollback is part of every project's CD
@@ -3252,8 +3386,9 @@ branch's verified head. Which release is previous, kept or behind a barrier is
 `yulius_domain::rollback::History`. When a dev-stage deploy passes, its execution starts the drill
 (`App::cd_start_drill`; back to the previous release and forward, `drill_steps`), and a
 production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::production_gate`)
-before any secret or promotion: rollback configured, and the newest drill passed at the tree it
-deploys. A person's production deploy refused only for that proof, where the drill environment can
+before it obtains secrets or promotes a revision. Rollback must be configured and the drill must
+have passed for the deployed tree. While another dev commit is drilling, the last completed drill
+can prove that tree. A person's production deploy refused only for that proof, where the drill environment can
 deploy the same tree (`yulius_domain::rollback::dev_can_prove`, `App::cd_dev_proof`), deploys that
 environment instead as the same person (`App::cd_start_or_prove`,
 `crates/yulius-app/src/ci/prove.rs`;
@@ -3544,6 +3679,8 @@ sequenceDiagram
   Note over L: every 60 s a spawned re-check, its verdict selected beside input and output
 ```
 
+A plain right-click in a mouse-tracking Codex terminal opens the viewer’s clipboard menu. Choosing Paste sends the text through xterm’s existing input path. [Decision 0421](decisions/0421-codex-right-click-opens-the-viewers-clipboard-menu.md)
+
 Output can carry a program's copy: Claude Code copies the selection it draws with an OSC 52 write.
 The browser terminal (`terminal-core.js`) writes it to the clipboard only for a viewer who can write
 and just pressed a key or the mouse there, and never answers a clipboard query
@@ -3713,7 +3850,7 @@ flowchart LR
 The web UI is plain ES modules. Server state comes from the API and the UI event stream
 (`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
 column widths, model and effort), the notification history, the new-task composer's drafts
-([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)), and each sandbox's pull
+([decision 0433](decisions/0433-store-each-new-task-draft-under-its-own-key.md)), and each sandbox's pull
 requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
 after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
 that read fails, while a later failed read keeps the chips an earlier read on the page showed;
@@ -3772,11 +3909,12 @@ flowchart LR
 ```mermaid
 flowchart LR
   PI["promptinput.js (files inside the text)"] -->|"value with @'path' in place"| C
-  C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user and sandbox)"]
+  C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user, sandbox and draft)"]
+  D -->|"selected draft key for this tab"| SS[("sessionStorage")]
   C -->|"upload"| U["POST /api/sandboxes/:id/attachments"]
   D -->|"debounced, on leave or hide"| LS[("localStorage yulius.draft.*")]
   LS -->|"after a reload"| D
-  C -->|"task started: clear"| D
+  C -->|"started or discarded: remove this draft"| D
   SO["Sign-out"] -->|"forget"| LS
   G["GET /api/sandboxes/:id/git"] -->|"every read"| P["store.js loadPulls / pullsOf()"]
   EV["pulls.updated (stage moved, CI run changed)"] -->|"read again"| G
@@ -3827,7 +3965,22 @@ The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected 
 and private copy state for one successor. Its two-minute deadline includes the time spent
 receiving and returning the batch. Each timed pair also retains its original monotonic
 deadline. The helper releases expired pairs while a successor receives the remaining live
-records. The server integration is tracked in SPEC-577.
+records. A timed pair can carry its original kernel socket identities. The sender supplies
+them before transferring its descriptors. The receiver can drain a final TCP receive queue
+after both FINs, and a reset or timed-out stream releases its own pair. On orderly Linux
+shutdown the server pauses established opaque HTTP/1.1 CONNECT tunnels. In namespace mode it
+also pauses the outbound copy enrolled at CONNECT. The live internal endpoints identify
+the relay at enrollment. Its kernel socket cookie binds the two records across restart. HTTP/2 traffic inside the tunnel stays opaque. A multiplexed HTTP/2 session to
+the proxy reconnects.
+Capture and deposit have fifteen seconds, concurrent with five seconds to drain in-flight HTTP
+responses. The successor restores the original sockets, copy cursors, admission owners, last
+activity and expiry before serving new HTTP requests. Intercepted connections close at restart.
+Fresh connections use the successor's host-bound injection and redaction policy. The holder
+keeps its forward. The replacement verifies that holder's identity and reserves the saved
+outbound copies in their old admission order before the relay accepts again. Eviction or
+explicit cancellation releases both host-side places. A peer's FIN closes its write
+direction and allows the other direction to drain. A copy that finishes first remains
+available for handoff while the other copy still has outstanding bytes.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
@@ -3850,6 +4003,11 @@ flowchart LR
   A["process in the sandbox"] -->|"127.0.0.1:8081"| F["holder's forward (256 places)"]
   F -->|"out.sock"| O["server's out.sock relay (256 places)"]
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
+  D["direct agent connection (legacy mode)"] --> I
+  I -.->|"orderly stop of an established opaque tunnel"| C["Linux socket custodian"]
+  O -.->|"matching opaque tunnel and surviving holder"| C
+  C -.->|"restore original sockets and places before HTTP"| I
+  C -.->|"reserve original outbound places before accepting"| O
   F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
   I -.->|"share full, all active: the busiest run's oldest tunnel gives way"| I
   I -.->|"still refused: a trouble"| H["ConnectionHealth"]
@@ -3884,7 +4042,8 @@ hands on alone leaves one end later
 ```mermaid
 flowchart LR
     prompt["prompt / wake-up\n(hook, user line)"] --> working
-    stop["clean Stop hook"] --> idle["waiting / done"]
+    stop["clean Stop hook"] -->|"turn may settle"| idle["waiting / done"]
+    stop -->|"goal has actionable plan or spec work, within retry bound"| working
     turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
     launch["transcript: monitor started,\nagent launched (until it ends)"] --> bg
     idle --> bg
@@ -3895,6 +4054,8 @@ flowchart LR
     own["Yulius's own flag: the gate gave up,\nno goal, a full context, a secret\nor browser request, …"] -->|"reason: yulius,\nproblem, to do, page"| attention
     attention -.->|"a notice's flag:\nagent works on"| working
 ```
+
+A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
 
 A `needs_attention` flag keeps its reason with the task
 ([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),
@@ -4108,6 +4269,8 @@ flowchart TD
   K -->|yes| R["run with the gate in force, its own changed jobs beside (never instead)"]
   R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
+
+Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust shards cover those tests on dev. [Decision 0448](decisions/0448-repository-file-readers-run-before-merge.md)
 
 ## CI job output
 
@@ -4729,6 +4892,7 @@ flowchart LR
   sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
   or a goal verdict it applied belongs to a turn that is over and changes nothing
   ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
+  The client assigns each UserPromptSubmit a 32-hex-digit `x-yulius-hook-invocation` and reuses it on every HTTP retry. A goal run uses that ID to distinguish a retry from a fresh submission of identical text. Older clients use terminal input and the run’s recent issued prompts.
   A prompt the transcript watcher reads takes the same per-task turn order as a clean Stop: the
   Stop remembers its time and settles after a prompt that is being applied, and a prompt read
   after it is not a new turn

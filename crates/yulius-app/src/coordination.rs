@@ -275,10 +275,18 @@ impl App {
         let rows = self
             .list_briefs(&tasks, limit, filtered, caller.task.is_none())
             .await?;
-        match &caller.task {
-            Some(own) => Ok(json!({"you": self.task_brief(own).await?, "tasks": rows})),
-            None => Ok(json!({"tasks": rows})),
+        let mut listing = json!({"tasks": rows});
+        if let Some(own) = &caller.task {
+            listing["you"] = self.task_brief(own).await?;
         }
+        if let Some(wait) = self.github_wait() {
+            listing["github_wait"] = json!(wait);
+        }
+        if self.github_budget().await?.display_paused {
+            listing["github_refresh_note"] =
+                json!("Live GitHub display refreshes are paused to reserve requests for delivery.");
+        }
+        Ok(listing)
     }
 
     /// Apply the owner's limit after the Needs you filter. Only time spent on
@@ -573,6 +581,9 @@ impl App {
     }
 
     pub(crate) async fn publish_steps(&self, task: &TaskRecord) {
+        if crate::hooks::defer_task_update(&task.id, true) {
+            return;
+        }
         self.events.publish(
             Some(task.sandbox_id.clone()),
             false,

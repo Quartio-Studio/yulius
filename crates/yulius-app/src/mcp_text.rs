@@ -754,6 +754,10 @@ fn delivery_status(value: &Value) -> Option<String> {
             );
         }
     }
+    // A merged task's staging request (SPEC-575 MFS-013).
+    if let Some(staging) = text(value, "staging") {
+        push_line(&mut out, staging);
+    }
     let problems: Vec<&str> = value
         .get("spec_problems")
         .and_then(Value::as_array)
@@ -779,7 +783,7 @@ fn delivery_status(value: &Value) -> Option<String> {
     {
         push_line(&mut out, &format!("Open steps: {open}."));
     }
-    // The review's rounds of the open pull request (SPEC-493 REV-005).
+    // The current or just-delivered pull request's review rounds.
     let rounds = value.get("review_rounds").and_then(Value::as_array);
     if let Some(rounds) = rounds.filter(|r| !r.is_empty()) {
         push_line(&mut out, "Review rounds of this pull request:");
@@ -787,6 +791,11 @@ fn delivery_status(value: &Value) -> Option<String> {
             let model = text(round, "model_answered")
                 .or_else(|| text(round, "model"))
                 .unwrap_or("?");
+            let model = if model.starts_with("claude-") {
+                yulius_domain::harness::claude_model_name(model)
+            } else {
+                model.to_owned()
+            };
             let state = match (text(round, "verdict"), round["reported"].as_bool()) {
                 (Some(verdict), _) => verdict.replace('_', " "),
                 (None, Some(true)) => "no verdict".to_owned(),
@@ -798,9 +807,8 @@ fn delivery_status(value: &Value) -> Option<String> {
             push_line(
                 &mut out,
                 &format!(
-                    "- round {} on {}: {state}",
-                    round["round"].as_u64().unwrap_or(0),
-                    yulius_domain::harness::claude_model_name(model)
+                    "- round {} on {model}: {state}",
+                    round["round"].as_u64().unwrap_or(0)
                 ),
             );
         }
@@ -965,6 +973,9 @@ fn task_line(task: &Value) -> Option<String> {
 /// Claude Code's own.
 fn waits_why(task: &Value) -> Vec<String> {
     let mut parts = Vec::new();
+    if let Some(stage) = text(task, "staging_wait") {
+        parts.push(stage.to_owned());
+    }
     if text(task, "shows") == Some("needs_you") {
         parts.push("NEEDS ITS PERSON".to_owned());
         if let Some(reason) = text(task, "wait_reason") {
@@ -1084,6 +1095,11 @@ fn waits_why(task: &Value) -> Vec<String> {
 fn tasks_list(value: &Value) -> Option<String> {
     let tasks = value.get("tasks")?.as_array()?;
     let mut out = String::new();
+    if let Some(wait) = text(value, "github_wait") {
+        push_line(&mut out, wait);
+    } else if let Some(note) = value.get("github_refresh_note").and_then(Value::as_str) {
+        push_line(&mut out, note);
+    }
     if let Some(you) = value.get("you").filter(|v| !v.is_null()) {
         push_line(&mut out, &format!("You: {}", task_line(you)?));
     }
@@ -1218,7 +1234,9 @@ mod tests {
             {"round": 2, "model": "claude-fable-5-2", "verdict": null, "reported": false,
              "cut_off": false},
             {"round": 3, "model": "claude-opus-5-5", "verdict": null, "reported": true,
-             "cut_off": false}
+             "cut_off": false},
+            {"round": 4, "model": "gpt-6.2-astra", "model_answered": "gpt-6.2-sol",
+             "verdict": "approve", "reported": true}
         ]});
         let text = render("delivery_status", &json!({}), &value);
         for line in [
@@ -1227,6 +1245,7 @@ mod tests {
             "- round 2 on Fable 5.2: cut off by a usage limit",
             "- round 2 on Fable 5.2: no report yet",
             "- round 3 on Opus 5.5: no verdict",
+            "- round 4 on gpt-6.2-sol: approve",
         ] {
             assert!(text.contains(line), "{line:?} in {text}");
         }

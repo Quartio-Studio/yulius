@@ -1012,6 +1012,11 @@ impl GitPort for GitAdapter {
         blocking(move || git.is_ancestor(&repo, &a, &d)).await
     }
 
+    async fn preceding_commits(&self, repo: &Path, head: &str) -> AppResult<Vec<String>> {
+        let (git, repo, head) = (self.git(), repo.to_path_buf(), head.to_owned());
+        blocking(move || git.preceding_commits(&repo, &head)).await
+    }
+
     async fn first_parent_position(
         &self,
         repo: &Path,

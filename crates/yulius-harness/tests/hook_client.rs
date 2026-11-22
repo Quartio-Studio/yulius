@@ -381,10 +381,10 @@ fn a_held_hook_asks_again_and_prints_only_the_final_answer() -> TestResult {
         ],
     );
     let mut output = Vec::new();
-    let payload = br#"{"hook_event_name":"Stop"}"#;
+    let payload = br#"{"hook_event_name":"UserPromptSubmit"}"#;
     let code = run_hook_with(
         "claude",
-        "Stop",
+        "UserPromptSubmit",
         &mut &payload[..],
         &mut output,
         &env_with(url, Some("t")),
@@ -399,6 +399,16 @@ fn a_held_hook_asks_again_and_prints_only_the_final_answer() -> TestResult {
     assert!(
         requests.iter().all(|r| r.body == payload),
         "the same payload"
+    );
+    let invocation = requests[0]
+        .headers
+        .get("x-yulius-hook-invocation")
+        .ok_or("missing submit invocation")?;
+    assert_eq!(invocation.len(), 32);
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.headers.get("x-yulius-hook-invocation") == Some(invocation))
     );
     Ok(())
 }
@@ -1150,5 +1160,268 @@ fn a_refused_antigravity_prompt_is_never_continued() -> TestResult {
     );
     assert_eq!(json_out(&output)?, serde_json::json!({}));
     assert_no_connection(&listener);
+    Ok(())
+}
+
+#[test]
+fn claude_scratch_removal_permission_returns_a_checked_retry() -> TestResult {
+    use serde_json::{Value, json};
+
+    let answer = |payload: &[u8]| {
+        let mut out = Vec::new();
+        assert_eq!(
+            run_hook(
+                "claude",
+                "PermissionRequest",
+                &mut &payload[..],
+                &mut out,
+                &|_| None,
+            ),
+            0
+        );
+        out
+    };
+    let request = |command: &str| {
+        json!({
+            "hook_event_name": "PermissionRequest", "permission_mode": "bypassPermissions",
+            "permission_suggestions": [], "tool_name": "Bash", "tool_input": {"command": command}
+        })
+    };
+    for (command, retry) in [
+        (
+            r#"W=/work
+S=/tmp/scratchpad
+cd $W && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_cd.py 2>&1 | tail -n 4
+for d in r3m r3p; do
+    rm -rf $S/$d
+    mkdir -p $S/$d/scripts
+    cp -r $W/scripts/cd $S/$d/scripts/cd
+done
+cd $S/r3m && n=$(grep -n '^  phase=installed$' scripts/cd/remote.sh | sed -n 2p | cut -d: -f1)
+sed -i "${n}s/.* /   : # mutated/" scripts/cd/remote.sh && sed -n "$((n-2)),$((n+1))p" scripts/cd/remote.sh
+python3 -m unittest scripts/test_cd.py 2>&1 | grep -E "^(FAIL|Ran|OK)"
+cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/${d:?}""#,
+        ),
+        (
+            r#"rm -fr -- "${scratch}/${copy}""#,
+            r#"yulius remove --preserve-trailing-slash -- "${scratch:?}/${copy:?}""#,
+        ),
+        (
+            r#"rm -rf "$scratch""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
+        ),
+        (
+            r#"rm -rf "$scratch" && echo rebuilt &>result"#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
+        ),
+        (
+            r#"rm -rf "$scratch" || echo failed &>>result"#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
+        ),
+        (
+            r#"{ rm -rf "$scratch"; } >result"#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
+        ),
+        (
+            r#"rm -rf "$scratch" && echo rebuilt &>result # <<"#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
+        ),
+        (
+            r#"rm -rf "$scratch" && echo "<< rebuilt" &>result"#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
+        ),
+        (
+            "cat <<'END&>'\nEND>\nrm -rf $data\nEND&>\nrm -rf \"$scratch\" && echo rebuilt &>result",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
+        ),
+        (
+            r#"rm -rf "$TMPDIR/scratch""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${TMPDIR:?}/scratch""#,
+        ),
+        (
+            r#"rm "$scratch/""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only --require-existing -- "${scratch:?}/""#,
+        ),
+        (
+            "rm -rf $S/leaf",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/leaf""#,
+        ),
+        (
+            r#"rm() { return 0; }; /bin/rm -rf "$scratch""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
+        ),
+        (
+            "rm -rf $S/$d another-path",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/${d:?}" "another-path""#,
+        ),
+        (
+            "if test -d scratch; then rm -rf $S/$d; fi",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/${d:?}""#,
+        ),
+        (
+            r#"test -f marker && rm -f "$S/$d""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "${S:?}/${d:?}""#,
+        ),
+        (
+            "rm -f /task.log /probe.log",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "/task.log" "/probe.log""#,
+        ),
+        (
+            "rm /task.log",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only --require-existing -- "/task.log""#,
+        ),
+        (
+            "rm -r /scratch",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --require-existing -- "/scratch""#,
+        ),
+        (
+            "rm -rf '/scratch dir'",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "/scratch dir""#,
+        ),
+        (
+            "rm -rf /scratch/",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "/scratch/""#,
+        ),
+        (
+            "rm -rf //scratch///",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "//scratch///""#,
+        ),
+        (
+            "while test -e ready; do rm --recursive --force /artifact; done",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "/artifact""#,
+        ),
+        (
+            "until test -e ready; do rm -R -f /artifact; done",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "/artifact""#,
+        ),
+        (
+            "case x in x) (rm -f /artifact);; esac",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "/artifact""#,
+        ),
+        (
+            "true || { rm -f /artifact; }",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "/artifact""#,
+        ),
+        (
+            "if false; then true; else rm -f /artifact | cat; fi",
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "/artifact""#,
+        ),
+        (
+            "rm -rf -- -name /artifact",
+            r#"yulius remove --preserve-trailing-slash -- "-name" "/artifact""#,
+        ),
+        (
+            r#"rm -rf "${S}/some space""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/some space""#,
+        ),
+    ] {
+        let mut event = request(command);
+        for worker in [false, true] {
+            if worker {
+                event["agent_id"] = json!("reviewer-fixture");
+            }
+            let reply: Value = serde_json::from_slice(&answer(&serde_json::to_vec(&event)?))?;
+            let output = &reply["hookSpecificOutput"];
+            assert_eq!(output["hookEventName"], "PermissionRequest");
+            let decision = &output["decision"];
+            assert_eq!(decision["behavior"], "deny");
+            assert_eq!(decision["interrupt"], false);
+            let message = decision["message"]
+                .as_str()
+                .ok_or("missing retry message")?;
+            assert!(message.contains(retry), "{message}");
+            assert!(
+                message.contains("in place")
+                    && message.contains("conditions")
+                    && message.contains("variable bindings"),
+                "{message}"
+            );
+        }
+    }
+    for command in [
+        r#"rm -rf "${S:?}/${d:?}""#,
+        "rm -rf /tmp/scratch",
+        r#"rm -rf "$S/"'$(echo unintended)'"#,
+        r#"rm -rf "$S/"'`echo unintended`'"#,
+        r#"rm -rf "$scratch$""#,
+        r#"rm -rf "$10""#,
+        "rm -rf $10",
+        r#"rm -rf "${10}""#,
+        "rm -rf $S $(echo x)",
+        "rm -rf $S -i",
+        "rm --interactive=once $S/$d",
+        r#"rm <required-marker -rf "$scratch""#,
+        r#"<required-marker rm -rf "$scratch""#,
+        r#"rm -rf "$scratch" 2>result"#,
+        r#"FLAG=1 rm -rf "$scratch""#,
+        r#"rm -rf "$scratch" &>result"#,
+        r#"rm -rf "$scratch" &>>result"#,
+        r#"true && rm -rf "$scratch" &>result"#,
+        r#"echo ready | rm -rf "$scratch" 2>result"#,
+        r#"rm -rf "$scratch" &"#,
+        r#"rm -rf "$scratch" && echo rebuilt & >result"#,
+        r#"rm -rf "$scratch" && echo rebuilt &"#,
+        "cat <<'END&>'\nEND>\nrm -rf $scratch\nEND&>",
+        r#"rm() { return 0; }; rm -rf "$scratch""#,
+        r#"if true; then function rm { echo dry-run; }; fi; rm -rf "$scratch""#,
+        "rm - $S/$d",
+        "rm -rf",
+        "rm -rf '/a/b/c'",
+        "rm -i $S/$d",
+        "curl https://example.invalid",
+        "echo do rm -rf $S/$d",
+        "printf '%s' 'rm -rf $S/$d'",
+        "rm -rf '$S/$d'",
+        "cat <<'END'\nrm -rf $S/$d\nEND",
+        "echo ok # rm -rf $S/$d",
+        "rm -rf $S/$d &&",
+    ] {
+        assert!(
+            answer(&serde_json::to_vec(&request(command))?).is_empty(),
+            "{command}"
+        );
+    }
+    for (key, value) in [
+        ("tool_name", json!("Read")),
+        ("permission_mode", json!("plan")),
+        ("hook_event_name", json!("PreToolUse")),
+        ("tool_input", json!(null)),
+        ("permission_suggestions", json!([{"type":"addRules"}])),
+    ] {
+        let mut event = request("rm -rf $S/$d");
+        event[key] = value;
+        assert!(answer(&serde_json::to_vec(&event)?).is_empty(), "{key}");
+    }
+    let payload = serde_json::to_vec(&request("rm -rf $scratch"))?;
+    for (harness, event) in [("codex", "PermissionRequest"), ("claude", "SessionStart")] {
+        let mut out = Vec::new();
+        assert_eq!(
+            run_hook(harness, event, &mut payload.as_slice(), &mut out, &|_| None),
+            0
+        );
+        assert!(out.is_empty(), "{harness} {event}");
+    }
+    let reply: Value =
+        serde_json::from_slice(&answer(&serde_json::to_vec(&request("rm -rf $scratch"))?))?;
+    let retry = reply["hookSpecificOutput"]["decision"]["message"]
+        .as_str()
+        .and_then(|message| message.split('`').nth(1))
+        .ok_or("missing complete retry")?;
+    for (setup, external) in [("", true), ("rm() { :; }", false), ("alias rm=true", false)] {
+        let run = std::process::Command::new("bash")
+            .env_clear().env("PATH", "/usr/bin:/bin")
+            .args(["-c", r#"shopt -s expand_aliases; eval "$1"; scratch=fixture; yulius() { printf called; }; eval "$2""#, "fixture", setup, retry])
+            .output()?;
+        assert_eq!(run.status.success(), external, "{setup}");
+        assert_eq!(run.stdout == b"called", external, "{setup}");
+    }
+    let mut at_limit = serde_json::to_vec(&request("rm -rf $S/$d"))?;
+    at_limit.resize(MAX_INPUT_BYTES, b' ');
+    assert!(!answer(&at_limit).is_empty());
+    assert!(answer(b"invalid json").is_empty());
+    let mut oversized = serde_json::to_vec(&request("rm -rf $S/$d"))?;
+    oversized.resize(MAX_INPUT_BYTES + 1, b' ');
+    assert!(answer(&oversized).is_empty());
     Ok(())
 }

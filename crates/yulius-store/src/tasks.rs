@@ -29,8 +29,13 @@ fn transition(
     next: TaskStatus,
     activity: Option<Activity>,
     at: Timestamp,
+    idle: Option<(Activity, Timestamp, &AttemptId)>,
 ) -> AppResult<bool> {
     let queued = matches!(next, TaskStatus::Queued).then_some(at.0);
+    let (idle_activity, idle_updated_at, idle_attempt) = idle
+        .map_or((None, None, None), |(activity, at, attempt)| {
+            (Some(activity.as_str()), Some(at.0), Some(attempt.as_str()))
+        });
     let n = c
         .execute(
             "UPDATE tasks SET status = ?1, activity = ?2, updated_at = ?3, \
@@ -42,24 +47,52 @@ fn transition(
                COALESCE(closed_at, ?3) ELSE ?3 END, \
              queued_at = CASE WHEN ?4 IS NOT NULL THEN ?4 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
              queued_start = CASE WHEN ?1 = 'queued' THEN queued_start ELSE NULL END, \
-             gate_blocks = CASE WHEN ?1 = 'running' THEN gate_blocks ELSE 0 END \
-             WHERE id = ?5 AND (?6 IS NULL OR status = ?6)",
+             gate_blocks = CASE WHEN ?1 = 'running' OR (mode = 'goal' AND \
+               ?1 IN ('switching', 'waiting_capacity', 'starting', 'queued')) THEN gate_blocks ELSE 0 END \
+             WHERE id = ?5 AND (?6 IS NULL OR status = ?6) \
+               AND (?7 IS NULL OR (activity IS ?7 AND activity IN ('waiting', 'done') AND updated_at = ?8 \
+                 AND EXISTS (SELECT 1 FROM attempts WHERE task_id = tasks.id AND id = ?9 AND state = 'live')))",
             params![
                 next.as_str(),
                 activity.map(Activity::as_str),
                 at.0,
                 queued,
                 id,
-                expected.map(TaskStatus::as_str)
+                expected.map(TaskStatus::as_str),
+                idle_activity,
+                idle_updated_at,
+                idle_attempt,
             ],
         )
         .map_err(db)?;
     Ok(n == 1)
 }
 
+fn keep_queued_start(c: &rusqlite::Connection, id: &str, start: &QueuedStart) -> AppResult<()> {
+    c.execute(
+        "UPDATE tasks SET queued_start = json_object('kind', ?2, 'prompt', ?3, \
+                 'account', ?4, 'at', queued_at) WHERE id = ?1",
+        params![
+            id,
+            start.kind.as_str(),
+            start.prompt,
+            start.account_id.as_ref().map(AccountId::as_str)
+        ],
+    )
+    .map_err(db)?;
+    Ok(())
+}
+
 const TASK_COLS: &str = "id, sandbox_id, number, title, prompt, harness, model, effort, workflow_id, \
     status, activity, branch, worktree_path, spec_path, origin, automation_run, created_by, created_at, \
     updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode, supertask, owner_id";
+
+// The task and the attempt an owner can continue form one SQLite snapshot. Running and queued
+// task reads skip the attempt lookup. The existing (task_id, seq) index serves it.
+const RESUME_ATTEMPT: &str = "CASE WHEN tasks.status IN ('parked', 'closed')
+    OR tasks.status GLOB 'stopped_*' OR tasks.status GLOB 'failed_*' THEN
+    (SELECT id FROM attempts WHERE task_id = tasks.id ORDER BY seq DESC LIMIT 1)
+    END AS resume_attempt_id";
 
 const ATTEMPT_COLS: &str = "id, task_id, seq, harness, account_id, provider_session_id, launch_kind, \
     state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason, model";
@@ -87,6 +120,11 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
     let harness_text: String = row.get("harness")?;
     Ok(TaskRecord {
         id: parse_id("task id", &id, TaskId::parse)?,
+        resume_attempt_id: row
+            .get::<_, Option<String>>("resume_attempt_id")?
+            .as_deref()
+            .map(|id| parse_id("resume attempt id", id, AttemptId::parse))
+            .transpose()?,
         sandbox_id: parse_id("sandbox id", &sandbox, SandboxId::parse)?,
         number: to_u32(row.get("number")?),
         title: row.get("title")?,
@@ -117,6 +155,19 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
         },
         supertask: row.get("supertask")?,
     })
+}
+
+fn attempt_state(connection: &rusqlite::Connection, id: &str) -> AppResult<AttemptState> {
+    let state: Option<String> = connection
+        .query_row("SELECT state FROM attempts WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(db)?;
+    state
+        .as_deref()
+        .and_then(AttemptState::parse)
+        .ok_or(AppError::NotFound)
 }
 
 fn attempt_from_row(row: &Row<'_>) -> rusqlite::Result<AttemptRecord> {
@@ -277,7 +328,7 @@ impl TaskStore for SqliteStore {
             )
             .map_err(db)?;
             let stored = tx
-                .query_row(&format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"), [t.id.as_str()], task_from_row)
+                .query_row(&format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"), [t.id.as_str()], task_from_row)
                 .map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(stored)
@@ -289,7 +340,7 @@ impl TaskStore for SqliteStore {
         let id = id.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"),
+                &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
                 [id],
                 task_from_row,
             )
@@ -307,7 +358,7 @@ impl TaskStore for SqliteStore {
         let s = sandbox.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE sandbox_id = ?1 AND number = ?2"),
+                &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE sandbox_id = ?1 AND number = ?2"),
                 params![s, i64::from(number)],
                 task_from_row,
             )
@@ -324,7 +375,7 @@ impl TaskStore for SqliteStore {
             "archived_at IS NULL"
         };
         self.tasks_query(
-            format!("SELECT {TASK_COLS} FROM tasks WHERE sandbox_id = ?1 AND {clause} ORDER BY number DESC"),
+            format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE sandbox_id = ?1 AND {clause} ORDER BY number DESC"),
             vec![sandbox.as_str().to_owned()],
         )
         .await
@@ -341,7 +392,7 @@ impl TaskStore for SqliteStore {
         self.tasks_query(
             // Tasks that share a place (queued in the same millisecond) keep the order
             // they were created in: the queue's order is one order, whoever reads it.
-            format!("SELECT {TASK_COLS} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
+            format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
             statuses.iter().map(|s| s.as_str().to_owned()).collect(),
         )
         .await
@@ -356,8 +407,180 @@ impl TaskStore for SqliteStore {
         at: Timestamp,
     ) -> AppResult<bool> {
         let id = id.as_str().to_owned();
-        self.call(move |c| transition(c, &id, expected, next, activity, at))
+        self.call(move |c| transition(c, &id, expected, next, activity, at, None))
             .await
+    }
+
+    async fn claim_idle_switch(
+        &self,
+        id: &TaskId,
+        from: (Activity, Timestamp),
+        attempt: &AttemptId,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        let attempt = attempt.clone();
+        self.call(move |c| {
+            transition(
+                c,
+                &id,
+                Some(TaskStatus::Running),
+                TaskStatus::Switching,
+                None,
+                at,
+                Some((from.0, from.1, &attempt)),
+            )
+        })
+        .await
+    }
+
+    async fn claim_continuation(
+        &self,
+        selected: &TaskRecord,
+        queue: Option<&QueuedStart>,
+        requested: Option<&AccountId>,
+        at: Timestamp,
+    ) -> AppResult<Option<yulius_app::capacity::ContinuationAdmission>> {
+        let id = selected.id.as_str().to_owned();
+        let status = selected.status;
+        let archive = selected.archived_at.map(|time| time.0);
+        let attempt = selected.resume_attempt_id.clone();
+        let queue = queue.cloned();
+        let requested = requested.cloned();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let claimed = tx.execute(
+                "UPDATE tasks SET archived_at = NULL, needs_you = NULL, updated_at = ?5 WHERE id = ?1 AND status = ?2
+                 AND archived_at IS ?3 AND (SELECT id FROM attempts WHERE task_id = ?1
+                 ORDER BY seq DESC LIMIT 1) IS ?4",
+                params![id, status.as_str(), archive, attempt.as_ref().map(AttemptId::as_str), at.0],
+            ).map_err(db)?;
+            if claimed == 0 {
+                return Ok(None);
+            }
+            // The guarded update owns the write transaction. A placement refusal rolls
+            // back its archive, question and span changes together.
+            let admission = if let Some(requested) = requested {
+                let task = tx.query_row(&format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
+                    [&id], task_from_row).map_err(db)?;
+                yulius_app::capacity::ContinuationAdmission::named(&task, crate::accounts::list_accounts(&tx)?, &requested, at)?
+            } else {
+                yulius_app::capacity::ContinuationAdmission::Pool
+            };
+            let next = if queue.is_some() {
+                TaskStatus::Queued
+            } else {
+                TaskStatus::Starting
+            };
+            transition(&tx, &id, Some(status), next, None, at, None)?;
+            if let Some(start) = queue {
+                keep_queued_start(&tx, &id, &start)?;
+            }
+            tx.commit().map_err(db)?;
+            Ok(Some(admission))
+        })
+        .await
+    }
+
+    async fn claim_parked_candidate(
+        &self,
+        selected: &TaskRecord,
+        claim: yulius_app::pr_watch::ParkedCandidateClaim,
+        account: &AccountId,
+        at: Timestamp,
+    ) -> AppResult<Option<yulius_app::capacity::ContinuationAdmission>> {
+        let account = account.clone();
+        let id = selected.id.to_string();
+        let attempt = selected.resume_attempt_id.clone();
+        let branch = selected.branch.clone();
+        let sandbox = selected.sandbox_id.clone();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let eligible: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks t JOIN delivery d ON d.task_id = t.id
+                 WHERE t.id = ?1 AND t.status = 'parked' AND t.archived_at IS NULL
+                 AND t.needs_you IS NULL AND t.activity IS NOT 'needs_attention'
+                 AND d.stage = 'pr_open' AND d.pr_number = ?2 AND t.branch = ?3
+                 AND (SELECT id FROM attempts WHERE task_id = t.id ORDER BY seq DESC LIMIT 1) = ?4
+                 AND NOT EXISTS (SELECT 1 FROM capacity_pauses WHERE task_id = t.id AND ended_at IS NULL)
+                 AND NOT EXISTS (SELECT 1 FROM prompt_holds WHERE task_id = t.id AND state = 'pending'))",
+                params![id, to_i64(claim.pr), branch, attempt.as_ref().map(AttemptId::as_str)], |row| row.get(0)
+            ).map_err(db)?;
+            if !eligible || crate::spans::latest_merge_wait(&tx, &id)?.as_ref() != Some(&claim.decision) {
+                return Ok(None);
+            }
+            if let Some((head, observed)) = &claim.ordinary {
+                let runs = crate::ci::runs_for_exact_head(&tx, sandbox.as_str(), head)?;
+                if yulius_app::ci::run_for_pull_head(&runs, claim.pr) != observed.as_ref() {
+                    return Ok(None);
+                }
+            }
+            let current = tx.query_row(
+                &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
+                [&id], task_from_row,
+            ).map_err(db)?;
+            // The pool selected this subscription. Accept it only for the model
+            // and account limits in the same snapshot as the launch claim.
+            let placement = match yulius_app::capacity::ContinuationAdmission::named(
+                &current, crate::accounts::list_accounts(&tx)?, &account, at,
+            ) {
+                Ok(placement) => placement,
+                Err(AppError::Capacity(_)) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            let started = transition(&tx, &id, Some(TaskStatus::Parked), TaskStatus::Starting, None, at, None)?;
+            tx.commit().map_err(db)?;
+            Ok(started.then_some(placement))
+        }).await
+    }
+
+    async fn settle_unspawned_candidate(
+        &self,
+        task: &TaskId,
+        attempt: &AttemptId,
+        activity: Option<Activity>,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let task = task.to_string();
+        let attempt = attempt.to_string();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let ended = tx
+                .execute(
+                    "UPDATE attempts SET state='exited', ended_at=?3, exit_reason='account_removed'
+                 WHERE task_id=?1 AND id=?2 AND state='spawning'",
+                    params![task, attempt, at.0],
+                )
+                .map_err(db)?;
+            if ended == 0 {
+                return Ok(false);
+            }
+            let latest: String = tx
+                .query_row(
+                    "SELECT id FROM attempts WHERE task_id=?1 ORDER BY seq DESC LIMIT 1",
+                    [&task],
+                    |r| r.get(0),
+                )
+                .map_err(db)?;
+            let parked = latest == attempt
+                && transition(
+                    &tx,
+                    &task,
+                    Some(TaskStatus::Starting),
+                    TaskStatus::Parked,
+                    activity,
+                    at,
+                    None,
+                )?;
+            tx.commit().map_err(db)?;
+            #[cfg(feature = "test-support")]
+            yulius_app::race::reached(
+                yulius_app::race::Point::TerminalOutcomeRecorded,
+                std::path::Path::new(&attempt),
+            );
+            Ok(parked)
+        })
+        .await
     }
 
     async fn queue_task(
@@ -372,20 +595,10 @@ impl TaskStore for SqliteStore {
         self.call(move |c| {
             // One transaction: a task is never queued without the start it was to make.
             let tx = c.transaction().map_err(db)?;
-            if !transition(&tx, &id, Some(expected), TaskStatus::Queued, None, at)? {
+            if !transition(&tx, &id, Some(expected), TaskStatus::Queued, None, at, None)? {
                 return Ok(false);
             }
-            tx.execute(
-                "UPDATE tasks SET queued_start = json_object('kind', ?2, 'prompt', ?3, \
-                 'account', ?4, 'at', queued_at) WHERE id = ?1",
-                params![
-                    id,
-                    start.kind.as_str(),
-                    start.prompt,
-                    start.account_id.as_ref().map(AccountId::as_str)
-                ],
-            )
-            .map_err(db)?;
+            keep_queued_start(&tx, &id, &start)?;
             tx.commit().map_err(db)?;
             Ok(true)
         })
@@ -1126,6 +1339,20 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn consume_stop_attempt(
+        &self,
+        id: &TaskId,
+        ceiling: u32,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            c.execute("UPDATE tasks SET gate_blocks = MIN(gate_blocks + 1, ?2), updated_at = ?3 WHERE id = ?1",
+                params![id, ceiling, at.0]).map_err(db)?;
+            Ok(())
+        }).await
+    }
+
     async fn update_task(&self, id: &TaskId, u: &TaskFieldUpdate, at: Timestamp) -> AppResult<()> {
         let (id, u) = (id.as_str().to_owned(), u.clone());
         self.call(move |c| {
@@ -1208,6 +1435,11 @@ impl TaskStore for SqliteStore {
             Ok(())
         })
         .await
+    }
+
+    async fn attempt_state(&self, id: &AttemptId) -> AppResult<AttemptState> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| attempt_state(c, &id)).await
     }
 
     async fn attempt(&self, id: &AttemptId) -> AppResult<Option<AttemptRecord>> {
@@ -1307,13 +1539,7 @@ impl TaskStore for SqliteStore {
         let (id, u) = (id.as_str().to_owned(), u.clone());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            let current: Option<String> = tx
-                .query_row("SELECT state FROM attempts WHERE id = ?1", [&id], |r| r.get(0))
-                .optional()
-                .map_err(db)?;
-            let Some(current) = current.as_deref().and_then(AttemptState::parse) else {
-                return Err(AppError::NotFound);
-            };
+            let current = attempt_state(&tx, &id)?;
             // One durable outcome: a terminal attempt is not transitioned again, not even to the
             // same state (its second observer is not first, SPEC-065).
             if (current != next || current.is_terminal()) && !current.can_become(next) {
@@ -1335,6 +1561,13 @@ impl TaskStore for SqliteStore {
             )
             .map_err(db)?;
             tx.commit().map_err(db)?;
+            #[cfg(feature = "test-support")]
+            if next.is_terminal() {
+                yulius_app::race::reached(
+                    yulius_app::race::Point::TerminalOutcomeRecorded,
+                    std::path::Path::new(&id),
+                );
+            }
             Ok(true)
         })
         .await

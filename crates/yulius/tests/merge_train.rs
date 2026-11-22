@@ -34,11 +34,14 @@ use yulius_domain::time::Timestamp;
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 type TestResult = BoxResult<()>;
 
-/// Every wait of a test shares one deadline from its start (SPEC-140 TWT-002): nextest kills a test
+/// The usual fixture shares one deadline from its start (SPEC-140 TWT-002): nextest kills it
 /// at 120 s (`slow-timeout` 30 s × `terminate-after` 4, `.config/nextest.toml`), and a test that
 /// misses its deadline 20 s before reports what it saw. The red train test takes 9 to 10 s alone
 /// and 37 to 41 s in 8 copies at once beside 24 busy loops (load 34 to 79).
 const BUDGET: Duration = Duration::from_secs(100);
+// The two four/five-head scenarios exceeded 100 s on a shard slowed from 4 to 11.7 minutes.
+// Keep one deadline for all their conditions and 30 s to report before nextest intervenes.
+const MULTI_HEAD_BUDGET: Duration = Duration::from_secs(300);
 
 /// One job: two pull requests that each add a `clash-*` file pass alone and fail together (the
 /// kind of conflict no merge shows, F 2026-10-13: two records taking one number).
@@ -183,12 +186,16 @@ struct Fixture {
 }
 
 async fn fixture() -> BoxResult<Fixture> {
-    fixture_with(Project::Standard, None).await
+    fixture_with(Project::Standard, None, BUDGET).await
 }
 
 /// A fixture of `project`, its CI with `lanes` lanes per sandbox when given.
-async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture> {
-    let deadline = tokio::time::Instant::now() + BUDGET;
+async fn fixture_with(
+    project: Project,
+    lanes: Option<u32>,
+    budget: Duration,
+) -> BoxResult<Fixture> {
+    let deadline = tokio::time::Instant::now() + budget;
     // A short base: job sockets live at <data>/runs/ci-<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ytr").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
@@ -199,7 +206,11 @@ async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture
         git: Some(Arc::new(crate::support::confined_git())),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
-            config.ci.job_timeout = Duration::from_secs(60);
+            config.ci.job_timeout = if budget == MULTI_HEAD_BUDGET {
+                budget
+            } else {
+                Duration::from_secs(60)
+            };
             config.ci.max_jobs = 3;
             if let Some(lanes) = lanes {
                 config.ci.lanes = lanes;
@@ -354,6 +365,7 @@ impl Fixture {
         self.h
             .store
             .insert_task(&TaskRecord {
+                resume_attempt_id: None,
                 id: TaskId::parse(&id)?,
                 sandbox_id: self.sandbox.clone(),
                 number: 0,
@@ -1099,7 +1111,7 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
 /// When the first half lands, the last two recreate the four-member tree that failed.
 #[tokio::test]
 async fn a_bisection_executes_the_failed_tree_only_once() -> TestResult {
-    let f = fixture().await?;
+    let f = fixture_with(Project::Standard, None, MULTI_HEAD_BUDGET).await?;
     let app = f.h.app.clone();
     let mut worktrees = Vec::new();
     for (n, file) in [(1, "a.txt"), (2, "b.txt"), (3, "clash-1"), (4, "clash-2")] {
@@ -1606,90 +1618,351 @@ async fn shared_owner_rerun(owner_state: RunState, peer_state: RunState) -> Test
 /// The owner of the singleton gets the verdict even when CI was executed for another train.
 #[tokio::test]
 async fn a_reused_failed_candidate_tells_the_singleton_owner_which_job_failed() -> TestResult {
-    reused_singleton(SingletonChange::None).await
+    Box::pin(reused_singleton(SingletonChange::None)).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_on_an_obsolete_base_keeps_the_owner_armed() -> TestResult {
-    reused_singleton(SingletonChange::Base).await
+    Box::pin(reused_singleton(SingletonChange::Base)).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_does_not_blame_a_retargeted_owner_pr() -> TestResult {
-    reused_singleton(SingletonChange::Retarget).await
+    Box::pin(reused_singleton(SingletonChange::Retarget)).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_does_not_blame_the_owners_new_head() -> TestResult {
-    reused_singleton(SingletonChange::Head).await
+    Box::pin(reused_singleton(SingletonChange::Head)).await
 }
 
 #[tokio::test]
 async fn the_owners_ordinary_failure_wins_during_singleton_verification() -> TestResult {
-    reused_singleton(SingletonChange::Ordinary).await
+    Box::pin(reused_singleton(SingletonChange::Ordinary)).await
 }
 
 #[tokio::test]
 async fn a_base_advance_during_singleton_verification_keeps_the_arm_and_no_drop_span() -> TestResult
 {
-    reused_singleton(SingletonChange::BaseDuringRead).await
+    Box::pin(reused_singleton(SingletonChange::BaseDuringRead)).await
 }
 
 #[tokio::test]
 async fn another_pr_failing_at_the_same_sha_keeps_the_singleton_failure_with_its_owner()
 -> TestResult {
-    reused_singleton(SingletonChange::PeerFailed).await
+    Box::pin(reused_singleton(SingletonChange::PeerFailed)).await
 }
 
 #[tokio::test]
 async fn an_owner_rerun_started_during_singleton_verification_keeps_its_bounded_wait() -> TestResult
 {
-    reused_singleton(SingletonChange::RerunStarted).await
+    Box::pin(reused_singleton(SingletonChange::RerunStarted)).await
 }
 
 #[tokio::test]
 async fn a_singleton_wait_deadline_survives_repeated_reads_and_reports_the_tested_failure()
 -> TestResult {
-    reused_singleton(SingletonChange::RerunExpired).await
+    Box::pin(reused_singleton(SingletonChange::RerunExpired)).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_singleton_decides_the_arm_before_recording_its_dissolution() -> TestResult {
-    reused_singleton(SingletonChange::Bookkeeping).await
+    Box::pin(reused_singleton(SingletonChange::Bookkeeping)).await
 }
 
 #[tokio::test]
 async fn a_singleton_with_unavailable_inputs_releases_its_place_after_the_limit() -> TestResult {
-    reused_singleton(SingletonChange::Unavailable).await
+    Box::pin(reused_singleton(SingletonChange::Unavailable)).await
 }
 
 #[tokio::test]
 async fn a_singleton_waits_for_its_failing_job_to_be_readable() -> TestResult {
-    reused_singleton(SingletonChange::JobRead).await
+    Box::pin(reused_singleton(SingletonChange::JobRead)).await
 }
 
 #[tokio::test]
 async fn a_singleton_waits_for_safe_redaction_before_telling_its_owner() -> TestResult {
-    reused_singleton(SingletonChange::MatcherRead).await
+    Box::pin(reused_singleton(SingletonChange::MatcherRead)).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reused_failure_pruned_during_the_singleton_decision_keeps_the_original_arm() -> TestResult
 {
-    reused_singleton(SingletonChange::Pruned).await
+    Box::pin(reused_singleton(SingletonChange::Pruned)).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_cannot_drop_a_later_arm_of_the_same_head_after_restart() -> TestResult {
-    reused_singleton(SingletonChange::Rearmed).await
+    Box::pin(reused_singleton(SingletonChange::Rearmed)).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_cannot_blame_the_tasks_replacement_pr_at_the_same_head() -> TestResult {
-    reused_singleton(SingletonChange::ReplacementPr).await
+    Box::pin(reused_singleton(SingletonChange::ReplacementPr)).await
+}
+
+#[tokio::test]
+async fn a_singleton_decision_recovers_an_interrupted_history_write() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::HistoryWrite)).await
+}
+
+#[tokio::test]
+async fn a_singleton_keeps_its_train_until_the_saved_owner_can_be_restored() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::HistoryRead)).await
+}
+
+#[tokio::test]
+async fn an_unreadable_arm_file_keeps_the_singleton_until_the_file_recovers() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::ArmFileRead)).await
+}
+
+#[tokio::test]
+async fn a_damaged_singleton_receipt_keeps_the_consumed_arm_in_recovery() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::DamagedReceipt)).await
+}
+
+#[tokio::test]
+async fn a_singleton_decision_survives_span_pruning_before_arm_cleanup() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::PrunedReceipt)).await
+}
+
+#[tokio::test]
+async fn consuming_a_replayed_singleton_requires_its_original_activation_and_receipt() -> TestResult
+{
+    Box::pin(reused_singleton(SingletonChange::ReplayedWrite)).await
+}
+
+#[tokio::test]
+async fn a_stale_saved_head_cannot_retire_the_singletons_newer_decision() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::StaleSavedHead)).await
+}
+
+#[tokio::test]
+async fn a_merged_retry_retires_the_saved_replacement_before_clearing_it() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::MergedRetry)).await
+}
+
+#[tokio::test]
+async fn a_merged_retry_keeps_the_replacement_until_its_retirement_is_writable() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::MergedRetryOffline)).await
+}
+
+#[tokio::test]
+async fn a_writable_replacement_singleton_arm_succeeds_on_its_first_call() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::WritableRearm)).await
+}
+
+#[tokio::test]
+async fn retrying_a_restored_arm_does_not_import_an_unrelated_stale_arm_file_entry() -> TestResult {
+    let f = fixture().await?;
+    let owner = f.task(1, &[("one.txt", "one")]).await?;
+    let peer = f.task(2, &[("two.txt", "two")]).await?;
+    f.arm(1, &owner).await?;
+    let app = restart(&f.h.app).await;
+    let path = app
+        .config
+        .data_dir
+        .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let head = git(&owner, &["rev-parse", "HEAD"])?;
+    let peer_head = git(&peer, &["rev-parse", "HEAD"])?;
+    let original = saved_armed(&app, 1)?;
+    let mut entries: Vec<Value> = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let mut stale = entries.first().ok_or("saved arm")?.clone();
+    stale["task"] = json!("t2");
+    stale["head"] = json!(peer_head);
+    entries.push(stale);
+    std::fs::write(&path, serde_json::to_vec(&entries)?)?;
+    let ctx = app.agent_context("tok-t1").await?;
+    let retry = Box::pin(app.tool_delivery_merge(
+        &ctx,
+        &json!({"reviewed_head":head,"review_summary":"approve"}),
+    ))
+    .await?;
+    assert_eq!(retry["armed"], true, "{retry}");
+    assert_eq!(saved_armed(&app, 1)?, original);
+    assert!(
+        !app.agent_wait_state("tok-t2", Some(&peer_head))
+            .await?
+            .merge_armed
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_person_merging_an_armed_head_tells_the_agent_which_revision_to_stage() -> TestResult {
+    let f = fixture().await?;
+    f.advance_dev_with("yulius.toml", &format!(
+        "{YULIUS_TOML}\n[cd.dev]\n[cd.prod]\n[cd.staging]\nstage = \"dev\"\nmerge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\nmigrations = \"none: stateless\"\n"
+    ))?;
+    let tree = f.task(1, &[("owner.txt", "change")]).await?;
+    let head = git(&tree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &tree).await?;
+    f.record_passed(&f.h.app, 1, &head).await?;
+    let response = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t1/delivery/merge",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    let landed = git(&f.origin, &["rev-parse", f.integration])?;
+    let receipt =
+        f.h.app
+            .agent_wait_state("tok-t1", Some(&head))
+            .await?
+            .merge_outcome
+            .ok_or("receipt")?;
+    assert!(
+        receipt.contains(&format!("your merged revision {}", &landed[..12]))
+            && receipt.contains("cd_deploy {\"environment\":\"staging\"}"),
+        "{receipt}"
+    );
+    let repeated = support::mcp_tool(
+        &f.h,
+        "tok-t1",
+        "delivery_merge",
+        json!({"reviewed_head": head, "review_summary": "approve"}),
+    )
+    .await?;
+    let repeated = support::tool_text(&repeated);
+    let next = repeated["next"].as_str().ok_or("repeated merge receipt")?;
+    assert!(
+        next.contains("it counts as merged on green Yulius CI")
+            && next.contains(&format!("your merged revision {}", &landed[..12]))
+            && next.contains("cd_deploy {\"environment\":\"staging\"}")
+            && !next.contains("Finish what the delivery profile still asks"),
+        "{next}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_person_http_merge_keeps_its_receipt_when_the_closed_pr_read_fails() -> TestResult {
+    let f = fixture().await?;
+    let tree = f.task(1, &[("owner.txt", "change")]).await?;
+    let head = git(&tree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &tree).await?;
+    f.record_passed(&f.h.app, 1, &head).await?;
+    f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
+    let response = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t1/delivery/merge",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    let landed = git(&f.origin, &["rev-parse", f.integration])?;
+    let wait = f.h.app.agent_wait_state("tok-t1", Some(&head)).await?;
+    assert_eq!(wait.merge_outcome_head.as_deref(), Some(head.as_str()));
+    let receipt = wait.merge_outcome.ok_or("accepted merge receipt")?;
+    assert!(
+        receipt.contains(&format!(" at {} from PR head {}", &landed[..9], &head[..9])),
+        "{receipt}"
+    );
+    assert!(receipt.contains("own Yulius CI run passed"), "{receipt}");
+    assert!(
+        !receipt.contains("into `dev`"),
+        "unconfirmed landing branch: {receipt}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_person_http_merge_reconciles_the_replacement_singleton_arm() -> TestResult {
+    use yulius_domain::stages::SubjectKind;
+
+    let f = fixture().await?;
+    let app = &f.h.app;
+    let tree = f.task(1, &[("a.txt", "owner change\n")]).await?;
+    let head = git(&tree, &["rev-parse", "HEAD"])?;
+    let id = TaskId::parse("t1")?;
+    let old = yulius_app::stages::NewSpan {
+        sandbox_id: f.sandbox.clone(), subject_kind: SubjectKind::Task, subject_id: id.as_str().into(),
+        key: "wait@1".into(), parent_key: None, kind: "wait".into(), name: "merge_armed".into(),
+        environment: None, job: None, started_at: Timestamp(1), ended_at: Some(Timestamp(2)),
+        outcome: Some("dropped".into()),
+        detail: Some(json!({"head":head,"message":"shard 2 failed","singleton":{"pr":1,
+            "base":git(&tree,&["rev-parse","origin/dev"])?,"tree":git(&tree,&["rev-parse","HEAD^{tree}"])?,
+            "run":"prior-train"}}).to_string()),
+    };
+    assert!(app.deps.store.insert_span(&old).await?);
+    f.h.store.execute_for_tests("CREATE TRIGGER refuse_retirement BEFORE UPDATE OF detail ON spans WHEN OLD.name='merge_armed' BEGIN SELECT RAISE(ABORT,'unavailable'); END").await?;
+    let ctx = app.agent_context("tok-t1").await?;
+    let args = json!({"reviewed_head":head,"review_summary":"approve"});
+    assert!(
+        Box::pin(app.tool_delivery_merge(&ctx, &args))
+            .await
+            .is_err()
+    );
+    assert!(saved_armed(app, 1)?.is_some());
+    f.h.store
+        .execute_for_tests("DROP TRIGGER refuse_retirement")
+        .await?;
+    f.record_passed(app, 1, &head).await?;
+    let result = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t1/delivery/merge",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(result.status, StatusCode::OK, "{}", result.body);
+    assert!(f.merged(app, 1).await?);
+    let wait = app.agent_wait_state("tok-t1", Some(&head)).await?;
+    assert!(
+        wait.merge_outcome
+            .as_deref()
+            .is_some_and(|message| message.contains("own Yulius CI run passed")),
+        "{wait:?}"
+    );
+    let history = app
+        .deps
+        .store
+        .subject_spans(&f.sandbox, SubjectKind::Task, id.as_str(), 100)
+        .await?;
+    let accepted = history
+        .iter()
+        .find(|span| span.key == old.key)
+        .ok_or("earlier singleton receipt")?;
+    let detail: Value = serde_json::from_str(accepted.detail.as_deref().ok_or("receipt")?)?;
+    assert!(
+        detail["superseded_at"].is_i64(),
+        "person's merged response left the previous decision current"
+    );
+    assert!(
+        saved_armed(app, 1)?.is_none(),
+        "person's merged response left its saved arm"
+    );
+    let finished = app
+        .deps
+        .store
+        .latest_merge_wait(&id)
+        .await?
+        .ok_or("finished replacement")?;
+    assert!(
+        finished.started_at > accepted.started_at,
+        "replacement wait must retain its own identity"
+    );
+    assert_eq!(finished.outcome.as_deref(), Some("merged"));
+    Ok(())
 }
 
 enum SingletonChange {
+    WritableRearm,
+    ReplayedWrite,
+    MergedRetryOffline,
+    MergedRetry,
+    StaleSavedHead,
+    DamagedReceipt,
+    PrunedReceipt,
+    ArmFileRead,
+    HistoryRead,
+    HistoryWrite,
     ReplacementPr,
     Rearmed,
     Pruned,
@@ -1706,6 +1979,426 @@ enum SingletonChange {
     Base,
     Retarget,
     Head,
+}
+
+async fn check_recovered_singleton_arm(
+    f: &Fixture,
+    change: &SingletonChange,
+    cold: &Arc<App>,
+    arms: &Path,
+    original_arms: &[u8],
+    head: &str,
+) -> TestResult {
+    // A process exit after the SQL commit can leave the original arm on disk.
+    std::fs::write(arms, original_arms)?;
+    let recovered = restart(cold).await;
+    assert!(
+        saved_armed(&recovered, 1)?.is_none(),
+        "committed arm restored twice"
+    );
+    let ctx = recovered.agent_context("tok-t1").await?;
+    let args = json!({"reviewed_head":head,"review_summary":"approve"});
+    let tmp = arms.with_extension("json.tmp");
+    std::fs::create_dir(&tmp)?;
+    let refused = Box::pin(recovered.tool_delivery_merge(&ctx, &args)).await;
+    std::fs::remove_dir(&tmp)?;
+    assert!(
+        refused.is_err(),
+        "an unsaved replacement was acknowledged: {refused:?}"
+    );
+    let latest = recovered
+        .deps
+        .store
+        .latest_merge_wait(&TaskId::parse("t1")?)
+        .await?
+        .ok_or("receipt after refused arm")?;
+    let old: Value = serde_json::from_str(latest.detail.as_deref().ok_or("decision")?)?;
+    assert!(
+        old["superseded_at"].is_null(),
+        "a refused arm retired its owner: {old}"
+    );
+    if matches!(change, SingletonChange::WritableRearm) {
+        let response = Box::pin(recovered.tool_delivery_merge(&ctx, &args)).await?;
+        assert_eq!(response["armed"], true, "{response}");
+        let (saved_head, stamp) = saved_armed(&recovered, 1)?.ok_or("saved arm")?;
+        assert_eq!(saved_head, head);
+        assert!(stamp > latest.started_at.0);
+        let decision = recovered
+            .deps
+            .store
+            .latest_merge_wait(&ctx.task.id)
+            .await?
+            .ok_or("prior wait")?;
+        assert_eq!(decision.key, latest.key);
+        let detail: Value = serde_json::from_str(decision.detail.as_deref().ok_or("receipt")?)?;
+        assert!(detail["superseded_at"].is_i64());
+        return Ok(());
+    }
+    // The replacement file is durable before retirement in SQL. While that write is
+    // refused the queue must preserve the later activation, including across restart.
+    f.h.store.execute_for_tests(
+        "CREATE TRIGGER refuse_retirement BEFORE UPDATE OF detail ON spans WHEN OLD.name='merge_armed' BEGIN SELECT RAISE(ABORT, 'unavailable'); END",
+    ).await?;
+    assert!(
+        Box::pin(recovered.tool_delivery_merge(&ctx, &args))
+            .await
+            .is_err()
+    );
+    let (saved_head, stamp) =
+        saved_armed(&recovered, 1)?.ok_or("requested replacement is durable")?;
+    assert_eq!(saved_head, head);
+    assert!(stamp > latest.started_at.0);
+    let restart_during_rearm = matches!(
+        change,
+        SingletonChange::HistoryRead | SingletonChange::MergedRetry
+    );
+    let live = if restart_during_rearm {
+        restart(&recovered).await
+    } else {
+        recovered
+    };
+    Box::pin(live.merge_armed(&f.sandbox)).await;
+    assert_eq!(saved_armed(&live, 1)?, Some((head.to_owned(), stamp)));
+    let offline = matches!(change, SingletonChange::MergedRetryOffline);
+    if !offline {
+        f.h.store
+            .execute_for_tests("DROP TRIGGER refuse_retirement")
+            .await?;
+    }
+    if matches!(
+        change,
+        SingletonChange::MergedRetry | SingletonChange::MergedRetryOffline
+    ) {
+        let landed =
+            Origin(f.origin.clone()).merge(f.integration, head, "squash", "external merge")?;
+        {
+            let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+            let pull = pulls
+                .iter_mut()
+                .find(|pr| pr.number == 1)
+                .ok_or("owner PR")?;
+            pull.state = "closed".into();
+            pull.merged = true;
+            pull.merge_commit_sha = Some(landed);
+        }
+        let owner = TaskId::parse("t1")?;
+        let record = live.deps.store.delivery(&owner).await?.ok_or("delivery")?;
+        assert!(
+            live.deps
+                .store
+                .transition_delivery(
+                    &record.stage,
+                    &yulius_app::delivery::DeliveryRecord {
+                        stage: DeliveryStage::MergedIntegration,
+                        ..record.clone()
+                    }
+                )
+                .await?
+        );
+        let retry_ctx = live.agent_context("tok-t1").await?;
+        let response = Box::pin(live.tool_delivery_merge(&retry_ctx, &args)).await?;
+        assert_eq!(response["merged"], true, "{response}");
+        if offline {
+            assert_eq!(
+                saved_armed(&live, 1)?,
+                Some((head.to_owned(), stamp)),
+                "a merged PR lost the saved replacement during the outage"
+            );
+            f.h.store
+                .execute_for_tests("DROP TRIGGER refuse_retirement")
+                .await?;
+        }
+        if !offline {
+            let decision = live
+                .deps
+                .store
+                .latest_merge_wait(&owner)
+                .await?
+                .ok_or("decision after retry")?;
+            let detail: Value = serde_json::from_str(decision.detail.as_deref().ok_or("receipt")?)?;
+            assert!(
+                detail["superseded_at"].is_i64(),
+                "successful retry left the consumed decision current"
+            );
+            assert!(
+                saved_armed(&live, 1)?.is_none(),
+                "successful retry left its replacement on disk"
+            );
+        }
+        let next = restart(&live).await;
+        let decision = next
+            .deps
+            .store
+            .latest_merge_wait(&owner)
+            .await?
+            .ok_or("accepted decision")?;
+        let detail: Value =
+            serde_json::from_str(decision.detail.as_deref().ok_or("owner receipt")?)?;
+        assert!(
+            detail["superseded_at"].is_i64(),
+            "merged retry lost pending retirement: {detail}"
+        );
+        return Ok(());
+    }
+    if restart_during_rearm {
+        f.h.clock.0.fetch_add(500, Ordering::SeqCst);
+        let retry_ctx = live.agent_context("tok-t1").await?;
+        let retry = Box::pin(live.tool_delivery_merge(&retry_ctx, &args)).await?;
+        assert_eq!(retry["armed"], true, "{retry}");
+        assert_eq!(
+            saved_armed(&live, 1)?,
+            Some((head.to_owned(), stamp)),
+            "a retry before the next queue pass changed the saved replacement's place"
+        );
+    } else {
+        f.h.store.execute_for_tests("CREATE TEMP TABLE pending_detail AS SELECT id, detail FROM spans WHERE name='merge_armed' AND subject_id='t1' AND outcome='dropped'").await?;
+        for damage in [
+            "UPDATE spans SET detail='{}' WHERE id IN (SELECT id FROM pending_detail)",
+            "UPDATE spans SET detail=json_remove(detail,'$.singleton.tree') WHERE id IN (SELECT id FROM pending_detail)",
+        ] {
+            f.h.store.execute_for_tests(damage).await?;
+            let retry_ctx = live.agent_context("tok-t1").await?;
+            let retry = Box::pin(live.tool_delivery_merge(&retry_ctx, &args)).await;
+            assert!(
+                retry.is_err(),
+                "acknowledged an unreadable pending retirement: {retry:?}"
+            );
+            Box::pin(live.merge_armed(&f.sandbox)).await;
+            assert_eq!(saved_armed(&live, 1)?, Some((head.to_owned(), stamp)));
+            f.h.store.execute_for_tests("UPDATE spans SET detail=(SELECT detail FROM pending_detail WHERE pending_detail.id=spans.id) WHERE id IN (SELECT id FROM pending_detail)").await?;
+        }
+        Box::pin(live.merge_armed(&f.sandbox)).await;
+    }
+    let old = live
+        .deps
+        .store
+        .subject_spans(
+            &f.sandbox,
+            yulius_domain::stages::SubjectKind::Task,
+            "t1",
+            100,
+        )
+        .await?
+        .into_iter()
+        .find(|span| span.key == latest.key)
+        .ok_or("original receipt")?;
+    let retired: Value = serde_json::from_str(old.detail.as_deref().ok_or("decision")?)?;
+    assert!(
+        retired["superseded_at"].is_i64(),
+        "restored replacement must finish retirement: {retired}"
+    );
+    Ok(())
+}
+
+async fn check_singleton_history(
+    f: &Fixture,
+    change: &SingletonChange,
+    head: &str,
+    base: &str,
+    tree: &str,
+    run_id: &str,
+    secret: &str,
+) -> TestResult {
+    use yulius_domain::stages::SubjectKind;
+    let app = &f.h.app;
+    let arms = app
+        .config
+        .data_dir
+        .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let original_arms = std::fs::read(&arms)?;
+    if matches!(change, SingletonChange::ReplayedWrite) {
+        // Replay with a row already present at the unique span key. Only a durable
+        // copy of the owner's exact decision can acknowledge this activation.
+        let saved = saved_armed(app, 1)?.ok_or("original arm")?;
+        let trigger = "CREATE TRIGGER replay_merge_wait BEFORE INSERT ON spans WHEN NEW.name='merge_armed' BEGIN
+            INSERT OR IGNORE INTO spans (sandbox_id,subject_kind,subject_id,key,kind,name,started_at,ended_at,outcome,detail)
+            VALUES (NEW.sandbox_id,NEW.subject_kind,NEW.subject_id,NEW.key,NEW.kind,NEW.name,NEW.started_at,NEW.ended_at,NEW.outcome,NEW.detail);
+            SELECT RAISE(IGNORE); END";
+        for (stamp, detail) in [
+            ("NEW.started_at + 1", "NEW.detail"),
+            (
+                "NEW.started_at",
+                "json_set(NEW.detail, '$.singleton.run', 'different-run')",
+            ),
+        ] {
+            let interrupted = trigger
+                .replace(
+                    "NEW.started_at,NEW.ended_at",
+                    &format!("{stamp},NEW.ended_at"),
+                )
+                .replace("NEW.outcome,NEW.detail", &format!("NEW.outcome,{detail}"));
+            f.h.store.execute_for_tests(&interrupted).await?;
+            app.merge_armed(&f.sandbox).await;
+            assert_eq!(
+                saved_armed(app, 1)?,
+                Some(saved.clone()),
+                "a mismatched replay consumed the arm"
+            );
+            f.h.store.execute_for_tests("DROP TRIGGER replay_merge_wait; DELETE FROM spans WHERE subject_id='t1' AND name='merge_armed'").await?;
+        }
+        f.h.store.execute_for_tests(trigger).await?;
+        app.merge_armed(&f.sandbox).await;
+        assert!(
+            saved_armed(app, 1)?.is_none(),
+            "the original persisted receipt must finish the replay"
+        );
+        let span = app
+            .deps
+            .store
+            .latest_merge_wait(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("saved singleton")?;
+        assert_eq!(span.started_at.0, saved.1);
+        let written: Value = serde_json::from_str(span.detail.as_deref().ok_or("receipt")?)?;
+        assert_eq!(written["singleton"]["run"], run_id);
+        return Ok(());
+    }
+    f.h.store.execute_for_tests(
+            "CREATE TRIGGER refuse_merge_span BEFORE INSERT ON spans WHEN NEW.name = 'merge_armed' BEGIN SELECT RAISE(ABORT, 'temporarily unavailable'); END",
+        ).await?;
+    app.merge_armed(&f.sandbox).await;
+    f.h.store
+        .execute_for_tests("DROP TRIGGER refuse_merge_span")
+        .await?;
+    if matches!(change, SingletonChange::HistoryRead) {
+        f.h.store.execute_for_tests(
+                "INSERT INTO spans(sandbox_id,subject_kind,subject_id,key,kind,name,started_at,ended_at,outcome,detail) VALUES ('s1','task','t1','wait@1','wait','merge_armed',1,2,'merged',x'FF')",
+            ).await?;
+    }
+    if matches!(change, SingletonChange::ArmFileRead) {
+        std::fs::write(&arms, b"[")?;
+    }
+    let cold = restart(app).await;
+    if matches!(change, SingletonChange::ArmFileRead) {
+        let expected = f.trains_file(app);
+        Box::pin(cold.merge_decidable_everywhere()).await;
+        cold.merge_armed(&f.sandbox).await;
+        assert_eq!(
+            f.trains_file(&cold),
+            expected,
+            "arm read failure dissolved the original singleton"
+        );
+        std::fs::write(&arms, &original_arms)?;
+        cold.merge_armed(&f.sandbox).await;
+    }
+    if matches!(change, SingletonChange::HistoryRead) {
+        let expected = f.trains_file(app);
+        Box::pin(cold.merge_decidable_everywhere()).await;
+        cold.merge_armed(&f.sandbox).await;
+        assert_eq!(
+            f.trains_file(&cold),
+            expected,
+            "keep the original train and deadline until its owner is restored"
+        );
+        f.h.store
+            .execute_for_tests(
+                "UPDATE spans SET detail='{}' WHERE key='wait@1' AND subject_id='t1'",
+            )
+            .await?;
+        Box::pin(cold.resume_armed_merges()).await;
+    }
+    cold.merge_armed(&f.sandbox).await;
+    cold.merge_armed(&f.sandbox).await;
+    let spans = cold
+        .deps
+        .store
+        .subject_spans(&f.sandbox, SubjectKind::Task, "t1", 100)
+        .await?;
+    let recorded: Vec<Value> = spans
+        .iter()
+        .filter(|s| s.name == "merge_armed" && s.outcome.as_deref() == Some("dropped"))
+        .filter_map(|s| serde_json::from_str(s.detail.as_deref()?).ok())
+        .collect();
+    assert_eq!(recorded.len(), 1, "one accepted decision");
+    assert_eq!(recorded[0]["head"], head);
+    assert!(
+        recorded[0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("292.1 ms") && !message.contains(secret))
+    );
+    assert_eq!(
+        recorded[0]["singleton"],
+        json!({"pr":1,"base":base,"tree":tree,"run":run_id}),
+        "the accepted singleton decision must survive the failed write and restart"
+    );
+    if matches!(change, SingletonChange::StaleSavedHead) {
+        let mut entries: Value = serde_json::from_slice(&original_arms)?;
+        let stamp = entries[0]["armed_at"]
+            .as_i64()
+            .ok_or("original activation")?;
+        // A reviewed move keeps its stamp even when its best-effort file update fails.
+        // An older saved activation also cannot displace a later accepted decision.
+        for saved_stamp in [stamp, stamp - 1] {
+            entries[0]["head"] = json!(base);
+            entries[0]["armed_at"] = json!(saved_stamp);
+            std::fs::write(&arms, serde_json::to_vec(&entries)?)?;
+            let recovered = restart(&cold).await;
+            assert!(
+                saved_armed(&recovered, 1)?.is_none(),
+                "an old head of activation {saved_stamp} was rearmed"
+            );
+            let span = recovered
+                .deps
+                .store
+                .latest_merge_wait(&TaskId::parse("t1")?)
+                .await?
+                .ok_or("accepted receipt")?;
+            let detail: Value = serde_json::from_str(span.detail.as_deref().ok_or("decision")?)?;
+            assert_eq!(detail["head"], head);
+            assert!(
+                detail["superseded_at"].is_null(),
+                "the old file retired the accepted decision: {detail}"
+            );
+        }
+        return Ok(());
+    }
+    if matches!(change, SingletonChange::DamagedReceipt) {
+        f.h.store.execute_for_tests("CREATE TEMP TABLE accepted_detail AS SELECT id, detail FROM spans WHERE name='merge_armed' AND subject_id='t1' AND outcome='dropped'").await?;
+        for damage in [
+            "UPDATE spans SET detail='{' WHERE id IN (SELECT id FROM accepted_detail)",
+            "UPDATE spans SET detail=json_remove(detail,'$.singleton.tree') WHERE id IN (SELECT id FROM accepted_detail)",
+        ] {
+            std::fs::write(&arms, &original_arms)?;
+            f.h.store.execute_for_tests(damage).await?;
+            let recovering = restart(&cold).await;
+            assert!(
+                saved_armed(&recovering, 1)?.is_some(),
+                "keep the saved identity until the receipt is readable"
+            );
+            f.h.store.execute_for_tests("UPDATE spans SET detail=(SELECT detail FROM accepted_detail WHERE accepted_detail.id=spans.id) WHERE id IN (SELECT id FROM accepted_detail)").await?;
+            recovering.restore_armed_merges().await;
+            assert!(
+                saved_armed(&recovering, 1)?.is_none(),
+                "unreadable accepted receipt reactivated a consumed arm: {damage}"
+            );
+        }
+        return Ok(());
+    }
+    if matches!(change, SingletonChange::PrunedReceipt) {
+        let entries: Value = serde_json::from_slice(&original_arms)?;
+        let stamp = entries[0]["armed_at"].as_i64().ok_or("original stamp")?;
+        cold.deps
+            .store
+            .prune_spans(yulius_domain::time::Timestamp(stamp + 1))
+            .await?;
+        std::fs::write(&arms, &original_arms)?;
+        let recovering = restart(&cold).await;
+        assert!(
+            saved_armed(&recovering, 1)?.is_none(),
+            "telemetry pruning reactivated the consumed arm"
+        );
+        return Ok(());
+    }
+    Box::pin(check_recovered_singleton_arm(
+        f,
+        change,
+        &cold,
+        &arms,
+        &original_arms,
+        head,
+    ))
+    .await?;
+    Ok(())
 }
 
 async fn reused_singleton(change: SingletonChange) -> TestResult {
@@ -1794,6 +2487,24 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             .await?
     );
     app.merge_armed(&f.sandbox).await;
+    if matches!(
+        change,
+        SingletonChange::HistoryWrite
+            | SingletonChange::HistoryRead
+            | SingletonChange::ArmFileRead
+            | SingletonChange::DamagedReceipt
+            | SingletonChange::PrunedReceipt
+            | SingletonChange::ReplayedWrite
+            | SingletonChange::WritableRearm
+            | SingletonChange::MergedRetryOffline
+            | SingletonChange::MergedRetry
+            | SingletonChange::StaleSavedHead
+    ) {
+        return Box::pin(check_singleton_history(
+            &f, &change, &head, &base, &tree, run_id, secret,
+        ))
+        .await;
+    }
     if matches!(change, SingletonChange::Rearmed) {
         // A later arm is persisted before restart, while the previous train still names the old arm.
         let path = app
@@ -2112,6 +2823,15 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                     text.contains("prior-train") && !text.contains("passed its own run"),
                     "{text}"
                 );
+                let receipt = app
+                    .deps
+                    .store
+                    .latest_merge_wait(&TaskId::parse("t1")?)
+                    .await?
+                    .ok_or("expired singleton receipt")?;
+                let detail: Value =
+                    serde_json::from_str(receipt.detail.as_deref().ok_or("decision")?)?;
+                assert_eq!(detail["expired_ordinary_run"], "ordinary-rerun", "{detail}");
                 return Ok(());
             }
             end_own_run(app, "ordinary-rerun", RunState::Failed).await?;
@@ -2179,7 +2899,17 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
                 git(&worktree, &["push", "-q", "origin", "HEAD"])?;
             }
-            SingletonChange::Rearmed
+            SingletonChange::HistoryWrite
+            | SingletonChange::HistoryRead
+            | SingletonChange::ArmFileRead
+            | SingletonChange::DamagedReceipt
+            | SingletonChange::PrunedReceipt
+            | SingletonChange::ReplayedWrite
+            | SingletonChange::WritableRearm
+            | SingletonChange::MergedRetryOffline
+            | SingletonChange::MergedRetry
+            | SingletonChange::StaleSavedHead
+            | SingletonChange::Rearmed
             | SingletonChange::Pruned
             | SingletonChange::JobRead
             | SingletonChange::MatcherRead
@@ -2229,6 +2959,39 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         "{outcome}"
     );
     assert_eq!(f.train_runs(app).await?, [red]);
+    if matches!(change, SingletonChange::None) {
+        // Both the live slot and its durable decision still name this failure. A new
+        // ordinary rerun must enter its bounded wait even before the daemon restarts.
+        f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        let (mut rerun, job) = crate::pr_watch::run(
+            &f.sandbox,
+            "recheck-owner",
+            &head,
+            RunState::Running,
+            None,
+            app.now().0,
+        );
+        rerun.reference = CiRef::PullRequest(1);
+        app.deps.store.insert_ci_run(&rerun, &[job]).await?;
+        let notices = app
+            .config
+            .data_dir
+            .join(yulius_app::pr_watch::PR_NOTICES_FILE);
+        let bounds = yulius_app::pr_watch::WatchBounds::default();
+        // Retaining an older receipt with the same head and different diagnosis must
+        // not replace the newer in-memory decision or start a wait on its behalf.
+        f.h.store.execute_for_tests("CREATE TABLE prior_decision AS SELECT id, detail FROM spans WHERE subject_id='t1' AND outcome='dropped' AND name='merge_armed'").await?;
+        f.h.store.execute_for_tests("UPDATE spans SET detail=json_set(detail, '$.message', 'an earlier diagnosis') WHERE id IN (SELECT id FROM prior_decision)").await?;
+        Box::pin(app.watch_prs(&bounds)).await;
+        if notices.exists() {
+            let saved: Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
+            assert!(saved["t1"]["singleton_wait"].is_null(), "{saved}");
+        }
+        f.h.store.execute_for_tests("UPDATE spans SET detail=(SELECT detail FROM prior_decision WHERE prior_decision.id=spans.id) WHERE id IN (SELECT id FROM prior_decision)").await?;
+        assert!(Box::pin(app.watch_prs(&bounds)).await.is_empty());
+        let saved: Value = serde_json::from_slice(&std::fs::read(notices)?)?;
+        assert_eq!(saved["t1"]["singleton_wait"]["run"], rerun.id, "{saved}");
+    }
     let cold = restart(app).await;
     let spans = cold
         .deps
@@ -2387,6 +3150,32 @@ async fn a_pull_request_that_conflicts_in_the_train_is_left_out() -> TestResult 
     );
     assert_eq!(state["merge_armed"], true, "still armed: {state}");
     let third = git(&worktrees[2], &["rev-parse", "HEAD"])?;
+    let registry = app.config.data_dir.join(MERGE_TRAINS_FILE);
+    let saved: Value = serde_json::from_str(&f.trains_file(&app))?;
+    let (_, activation) = saved_armed(&app, 3)?.ok_or("excluded arm")?;
+    let original = &saved[f.sandbox.as_str()]["train"]["left_out"][0];
+    assert_eq!(original["head"], third);
+    assert_eq!(original["armed_at"], activation);
+    for (excluded_head, excluded_arm) in [
+        (json!("earlier"), json!(activation)),
+        (json!(third), json!(activation - 1)),
+        (Value::Null, Value::Null),
+    ] {
+        let mut older = saved.clone();
+        let exclusion = &mut older[f.sandbox.as_str()]["train"]["left_out"][0];
+        exclusion["head"] = excluded_head;
+        exclusion["armed_at"] = excluded_arm;
+        std::fs::write(&registry, serde_json::to_vec(&older)?)?;
+        let wait = f.wait(3, &worktrees[2]).await?;
+        assert!(
+            wait["merge_train"]
+                .as_str()
+                .is_some_and(|note| note.contains("#3 waits behind merge train #1, #2")
+                    && !note.contains("shared.txt")),
+            "{wait}"
+        );
+    }
+    std::fs::write(&registry, serde_json::to_vec(&saved)?)?;
 
     app.ci_sync_sandbox(&app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?)
         .await?;
@@ -2892,7 +3681,12 @@ async fn run_candidate(f: &Fixture, app: &Arc<App>, id: &str) -> BoxResult<RunSt
             return Ok(run.state);
         }
         if tokio::time::Instant::now() > f.deadline {
-            return Err("the candidate did not end".into());
+            return Err(format!(
+                "candidate {id} at {} is still {}",
+                run.sha,
+                run.state.as_str()
+            )
+            .into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -3010,7 +3804,7 @@ async fn a_run_that_skipped_a_paths_job_is_no_source_for_a_candidate() -> TestRe
 /// again; `reused`: whether the second takes the first's passed run.
 async fn formed_again(project: Project) -> TestResult {
     let reused = project != Project::Paths;
-    let f = fixture_with(project, None).await?;
+    let f = fixture_with(project, None, BUDGET).await?;
     let app = f.h.app.clone();
     let worktree = f.task(1, &[("f1.txt", "x\n")]).await?;
     f.arm(1, &worktree).await?;
@@ -3086,7 +3880,7 @@ async fn formed_again(project: Project) -> TestResult {
 /// first. No candidate fails on their combination.
 #[tokio::test]
 async fn derived_files_are_changed_one_candidate_at_a_time() -> TestResult {
-    let f = fixture_with(Project::Apart, None).await?;
+    let f = fixture_with(Project::Apart, None, BUDGET).await?;
     let app = f.h.app.clone();
     let mut worktrees = Vec::new();
     for (n, file) in [(1u32, "gen/a.txt"), (2, "gen/b.txt"), (3, "c.txt")] {
@@ -3136,7 +3930,7 @@ async fn derived_files_are_changed_one_candidate_at_a_time() -> TestResult {
 /// own runs took, and its job's output says so.
 #[tokio::test]
 async fn a_candidates_run_takes_a_lane_of_its_members() -> TestResult {
-    let f = fixture_with(Project::Standard, Some(2)).await?;
+    let f = fixture_with(Project::Standard, Some(2), BUDGET).await?;
     let app = f.h.app.clone();
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
@@ -3441,7 +4235,7 @@ async fn failed_member_leaves(fail_during_decision: bool) -> TestResult {
 /// candidate is cancelled, and all three land in order after their 3 pre-checks and at most 2
 /// candidate runs.
 async fn three_green_in_sequence(project: Project) -> TestResult {
-    let f = fixture_with(project, Some(1)).await?;
+    let f = fixture_with(project, Some(1), BUDGET).await?;
     let app = f.h.app.clone();
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let mut worktrees = Vec::new();
@@ -3530,9 +4324,28 @@ fn saved_armed(app: &App, n: u32) -> BoxResult<Option<(String, i64)>> {
 /// catches up, and merges once it has.
 #[tokio::test]
 async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
+    verified_head_during_github_wait(false).await
+}
+
+#[tokio::test]
+async fn a_transient_pr_title_failure_keeps_the_trains_verified_head() -> TestResult {
+    verified_head_during_github_wait(true).await
+}
+
+async fn verified_head_during_github_wait(retitle_fails: bool) -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
     let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    if retitle_fails {
+        // The PR opened with the fallback title. A later conventional commit requires a retitle.
+        std::fs::write(worktree.join("fix.txt"), "reviewed repair")?;
+        git(&worktree, &["add", "fix.txt"])?;
+        git(
+            &worktree,
+            &["commit", "-qm", "fix(queue): finish the repair"],
+        )?;
+        git(&worktree, &["push", "-q", "origin", "HEAD:feat/1-train"])?;
+    }
     f.arm(1, &worktree).await?;
     let reviewed = git(&worktree, &["rev-parse", "HEAD"])?;
     f.record_passed(&app, 1, &reviewed).await?;
@@ -3540,18 +4353,70 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     f.advance_dev("other.txt")?;
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.train_runs(&app).await?.len(), 1);
-    // GitHub does not show the head Yulius pushes yet.
-    *f.h.github.stale_reads.lock().map_err(|_| "lock")? = u32::MAX;
+    if retitle_fails {
+        // GitHub sees the pushed head and refuses title updates until the fixture releases it.
+        f.h.github
+            .retitle_errors
+            .lock()
+            .map_err(|_| "retitle errors")?
+            .extend((0..8).map(|_| {
+                yulius_app::error::AppError::Upstream("GitHub upstream error (HTTP 502)".into())
+            }));
+    } else {
+        *f.h.github.stale_reads.lock().map_err(|_| "stale reads")? = u32::MAX;
+    }
     f.settle(&app).await?;
     f.decide_until(&app, || async {
         Ok(git(&f.origin, &["rev-parse", "feat/1-train"])? != reviewed)
     })
     .await?;
     let moved = git(&worktree, &["rev-parse", "HEAD"])?;
+    if retitle_fails {
+        let outstanding =
+            f.h.github
+                .retitle_errors
+                .lock()
+                .map_err(|_| "retitle errors")?
+                .len();
+        assert!(
+            (1..8).contains(&outstanding),
+            "the title update must have reached GitHub"
+        );
+    }
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], true, "kept: {state}");
     assert_eq!(state["merge_outcome"], Value::Null, "{state}");
     assert_eq!(saved_armed(&app, 1)?, Some((moved.clone(), armed_at)));
+    let train: Value = serde_json::from_str(&f.trains_file(&app))?;
+    let held = &train[f.sandbox.as_str()]["train"]["members"][0];
+    assert_eq!(held["head"], reviewed, "admission head");
+    assert_eq!(
+        held["verified_head"], moved,
+        "the watcher can identify the moved arm"
+    );
+    // The saved arm can be ahead of the train checkpoint, including across an upgrade.
+    let registry = app.config.data_dir.join(MERGE_TRAINS_FILE);
+    let mut legacy = train.clone();
+    legacy[f.sandbox.as_str()]["train"]["members"][0]
+        .as_object_mut()
+        .ok_or("saved member")?
+        .remove("verified_head");
+    std::fs::write(&registry, serde_json::to_vec(&legacy)?)?;
+    let interrupted = f.wait(1, &worktree).await?;
+    assert!(
+        interrupted["merge_train"]
+            .as_str()
+            .is_some_and(|note| note.contains("verifies its current head")),
+        "{interrupted}"
+    );
+    std::fs::write(&registry, serde_json::to_vec(&train)?)?;
+    let restored = f.wait(1, &worktree).await?;
+    assert!(
+        restored["merge_train"].as_str().is_some_and(
+            |note| note.contains("number 1 of 1") && note.contains("combined result passed")
+        ),
+        "{restored}"
+    );
     // An unrelated PR verdict arrives while GitHub catches up. Keep the already
     // published owner verdict at this head and finish the candidate that passed.
     let mut peer = app
@@ -3564,6 +4429,11 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     peer.reference = CiRef::PullRequest(82);
     peer.state = RunState::Failed;
     app.deps.store.insert_ci_run(&peer, &[]).await?;
+    f.h.github
+        .retitle_errors
+        .lock()
+        .map_err(|_| "retitle errors")?
+        .clear();
     *f.h.github.stale_reads.lock().map_err(|_| "lock")? = 0;
     f.decide_until(&app, || async { f.merged(&app, 1).await })
         .await?;
@@ -3629,7 +4499,7 @@ async fn arming_the_same_head_again_keeps_its_place() -> TestResult {
 /// Four green heads arriving during a running candidate share the first candidate after it.
 #[tokio::test]
 async fn four_heads_that_pass_during_a_candidate_join_the_next_one_in_arm_order() -> TestResult {
-    let f = fixture().await?;
+    let f = fixture_with(Project::Standard, None, MULTI_HEAD_BUDGET).await?;
     let app = &f.h.app;
     let mut worktrees = Vec::new();
     for n in 1..=5 {
@@ -4894,6 +5764,17 @@ async fn a_train_skips_the_full_suite_and_the_merged_head_runs_it() -> TestResul
     .await?;
     app.ci_sync_sandbox(&sandbox).await?;
     f.settle(&app).await?;
+    let outcome = f.wait(2, &worktrees[1]).await?["merge_outcome"]
+        .as_str()
+        .ok_or("merge outcome")?
+        .to_owned();
+    let landed = git(&f.origin, &["rev-parse", f.integration])?;
+    assert!(
+        outcome.contains("cd_deploy {\"environment\":\"staging\"}")
+            && outcome.contains(&format!("your merged revision {}", &landed[..12]))
+            && outcome.contains("If your final step requires the outcome, leave it in progress"),
+        "{outcome}"
+    );
     let mut trains = 0;
     for run in f.runs(&app).await? {
         if !matches!(run.reference, CiRef::Train(_)) {

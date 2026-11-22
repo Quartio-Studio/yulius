@@ -3,7 +3,7 @@
 //! among `claude`, `codex` and `antigravity` whose subscriptions have non-exhausted capacity,
 //! giving every eligible harness equal weight regardless of how many subscriptions it has; a
 //! running task agent's unadorned `task_create` / `automation_create` keeps the calling task's
-//! harness while `auto` and the Superagent draw; automations default to `auto` (drawn per run) and
+//! harness while explicit `auto` draws and a Superagent defaults to Codex; automations default to `auto` (drawn per run) and
 //! preserve their stored harness on partial updates.
 
 use std::collections::BTreeSet;
@@ -121,16 +121,17 @@ async fn shown(h: &Harness, alice: &Creds, id: &str) -> Result<(String, String),
     ))
 }
 
-/// SPEC-561: the HTTP request keeps the owner's choice, including an explicit default value.
+/// SPEC-607: the HTTP request keeps the owner's choice, including an explicit default value.
 #[tokio::test]
 async fn codex_task_creation_preserves_effort_provenance() -> TestResult {
     let (h, alice) = world().await?;
     available(&h, "a-codex", Provider::OpenAi).await?;
     for (model, effort, expected) in [
-        (None, None, "xhigh"),
-        (Some("gpt-6.2-astra"), None, "xhigh"),
+        (None, None, "high"),
+        (Some("gpt-6.2-astra"), None, "high"),
         (None, Some("high"), "high"),
         (Some("gpt-6.2-astra"), Some("xhigh"), "xhigh"),
+        (Some("gpt-6.2-astra"), Some("max"), "max"),
         (Some("gpt-6.2-sol"), None, "high"),
     ] {
         let mut body = json!({"prompt":"Compare effort", "harness":"codex"});
@@ -528,9 +529,9 @@ async fn agent_of(h: &Harness, title: &str) -> Result<(String, String), Error> {
 
 /// RHM-004 (AC-3): a running task's `task_create` and `automation_create` without `harness` or
 /// `model` keep the calling task's harness (`chosen`); explicit `auto` draws (`random`) or stores
-/// `"auto"`; a caller without a task (Superagent / remote MCP) draws by default.
+/// `"auto"`. A Superagent defaults to Codex for tasks and to `auto` for automations.
 #[tokio::test]
-async fn agent_follow_ups_keep_their_caller_while_auto_and_superagent_draw() -> TestResult {
+async fn agent_follow_ups_inherit_the_parent_and_superagent_tasks_default_to_codex() -> TestResult {
     let (h, alice) = world().await?;
     uneven_all_available(&h).await?;
     support::seed_task_of(
@@ -600,7 +601,7 @@ async fn agent_follow_ups_keep_their_caller_while_auto_and_superagent_draw() -> 
         );
     }
 
-    // A Superagent / remote caller (`task: None`) without `harness` draws like the UI.
+    // The Superagent chooses Codex even with other providers available.
     let superagent = yulius_app::coordination::ProjectCaller {
         sandbox: SandboxId::parse("s1")?,
         user: UserId::parse("u-alice")?,
@@ -615,7 +616,26 @@ async fn agent_follow_ups_keep_their_caller_while_auto_and_superagent_draw() -> 
             &json!({"prompt": "From Superagent", "title": "Superagent default"}),
         )
         .await?;
-    assert_eq!(agent_of(&h, "Superagent default").await?.1, "random");
+    assert_eq!(
+        agent_of(&h, "Superagent default").await?,
+        pair("codex", "chosen")
+    );
+    let explicit = h
+        .app
+        .tool_task_create(
+            &superagent,
+            &json!({"prompt": "Compare settings", "model": "gemini-4-neon", "effort": "high"}),
+        )
+        .await?;
+    assert_eq!(explicit["task"]["harness"], "antigravity");
+    assert_eq!(explicit["task"]["effort"], "high");
+    h.app
+        .tool_task_create(
+            &superagent,
+            &json!({"prompt": "Draw a harness", "title": "Superagent Random", "harness": "auto"}),
+        )
+        .await?;
+    assert_eq!(agent_of(&h, "Superagent Random").await?.1, "random");
     h.app
         .tool_automation_create(
             &superagent,

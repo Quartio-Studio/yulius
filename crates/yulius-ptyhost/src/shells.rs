@@ -59,9 +59,13 @@ pub struct ProcessEntry {
     pub shell: bool,
     /// The process is `yulius wait` ([`is_yulius_wait`]).
     pub waits: bool,
+    /// The process is a Yulius helper (`yulius hook` or `yulius mcp`, [`is_yulius_internal`]).
+    pub internal: bool,
     /// The process is the init of a PID namespace (the sandbox's `bwrap`): it adopts the orphans
     /// of the processes in that namespace.
     pub ns_init: bool,
+    /// Controlling terminal device number (`/proc/<pid>/stat` `tty_nr`); 0 when none/unknown.
+    pub tty_nr: u64,
     /// When it started, in clock ticks after boot (`/proc/<pid>/stat`); 0 when unknown. With the
     /// pid it identifies the process (pids are reused).
     pub started: u64,
@@ -79,14 +83,23 @@ pub fn is_agent_shell(command_line: &[u8]) -> bool {
 /// that blocks until Yulius has news for it (the shim execs the server binary with `wait`).
 #[must_use]
 pub fn is_yulius_wait(command_line: &[u8]) -> bool {
+    yulius_subcommand(command_line) == Some(b"wait".as_slice())
+}
+
+/// Whether a command line is a Yulius session helper (`yulius hook` or `yulius mcp`): never a
+/// background command shell of the agent's (SPEC-580 AWM-001).
+#[must_use]
+pub fn is_yulius_internal(command_line: &[u8]) -> bool {
+    matches!(yulius_subcommand(command_line), Some(b"hook" | b"mcp"))
+}
+
+fn yulius_subcommand(command_line: &[u8]) -> Option<&[u8]> {
     let mut args = command_line
         .split(|b| *b == 0 || *b == b' ')
         .filter(|arg| !arg.is_empty());
-    let Some(exe) = args.next() else {
-        return false;
-    };
+    let exe = args.next()?;
     let name = exe.rsplit(|b| *b == b'/').next().unwrap_or(exe);
-    name == b"yulius" && args.next() == Some(b"wait".as_slice())
+    (name == b"yulius").then(|| args.next()).flatten()
 }
 
 /// Whether a `/proc/<pid>/status` text describes the init of a PID namespace: the last pid of its
@@ -123,7 +136,21 @@ pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
 /// [`count_shells`], with the shells that only run `yulius wait` counted apart.
 #[must_use]
 pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
-    // Per wrapper, keep its ownership and whether it runs a wait, another command, or both.
+    let root_tty = table
+        .iter()
+        .find(|entry| entry.pid == root)
+        .map_or(0, |entry| entry.tty_nr);
+    count_background_with_tty(table, root, root_tty)
+}
+
+/// [`count_background`] with the root process's controlling terminal (`root_tty`, 0 when unknown),
+/// so agent-owned commands spawned on their own PTY (Antigravity `run_command`, Codex PTY
+/// commands) are distinguished from long-lived stdio/shared-TTY helpers like `yulius mcp`
+/// (SPEC-580 AWM-001).
+#[must_use]
+pub fn count_background_with_tty(table: &[ProcessEntry], root: u32, root_tty: u64) -> ShellCount {
+    // Per wrapper (Claude Bash wrapper or PTY-hosted background command), keep its ownership and
+    // whether it runs a wait, another command, or both.
     #[derive(Default)]
     struct Wrapper {
         owned: bool,
@@ -143,8 +170,8 @@ pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
     let mut shells: HashMap<u32, Wrapper> = HashMap::new();
     let mut seen = HashSet::from([root]);
     let mut unwrapped_waits = 0;
-    let mut queue = VecDeque::from([(root, None::<u32>, 0usize, true)]);
-    while let Some((pid, shell, depth, owned)) = queue.pop_front() {
+    let mut queue = VecDeque::from([(root, None::<u32>, 0usize, true, root_tty)]);
+    while let Some((pid, shell, depth, owned, parent_tty)) = queue.pop_front() {
         if depth >= MAX_DEPTH {
             continue;
         }
@@ -163,9 +190,21 @@ pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
                 continue; // The sandbox adopted this entire subtree.
             }
             let owned = owned && (!sandbox_init || agent.is_some());
+            // A non-wrapper agent-owned child on a different controlling PTY (e.g. Antigravity
+            // `run_command` on `pts/N`) is a background command container, unless it is itself
+            // `yulius wait`, `yulius hook`/`mcp`, or a namespace init.
+            let pty_command = owned
+                && !child.ns_init
+                && !child.internal
+                && !child.waits
+                && !inits.contains(&pid)
+                && child.tty_nr != 0
+                && parent_tty != 0
+                && child.tty_nr != parent_tty;
             let shell = match shell {
                 Some(top) => {
                     if !child.shell
+                        && !child.internal
                         && let Some(wrapper) = shells.get_mut(&top)
                     {
                         wrapper.waits |= child.waits;
@@ -175,7 +214,7 @@ pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
                 }
                 // An orphan the sandbox's init adopted: not the agent's (DMD-001).
                 None if child.shell && inits.contains(&pid) => continue,
-                None if child.shell => {
+                None if child.shell || pty_command => {
                     shells.insert(
                         child.pid,
                         Wrapper {
@@ -192,7 +231,12 @@ pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
                     None
                 }
             };
-            queue.push_back((child.pid, shell, depth + 1, owned));
+            let next_tty = if child.tty_nr != 0 {
+                child.tty_nr
+            } else {
+                parent_tty
+            };
+            queue.push_back((child.pid, shell, depth + 1, owned, next_tty));
         }
     }
     let mut count = ShellCount {
@@ -223,7 +267,7 @@ pub fn background_probe(root: u32) -> Option<ShellCount> {
         return None;
     }
     let table = imp::table_under(root)?;
-    Some(count_background(&table, root))
+    Some(count_background_with_tty(&table, root, imp::tty_nr(root)))
 }
 
 /// A stray: a process the run's sandbox init adopted, other than the agent, with everything below
@@ -301,7 +345,10 @@ pub fn background_report(root: u32) -> Option<(ShellCount, Vec<Stray>)> {
         return None;
     }
     let table = imp::table_under(root)?;
-    Some((count_background(&table, root), strays(&table, root)))
+    Some((
+        count_background_with_tty(&table, root, imp::tty_nr(root)),
+        strays(&table, root),
+    ))
 }
 
 /// Kills the processes of `strays` (`SIGKILL`), each only while its pid still has the recorded
@@ -323,7 +370,7 @@ mod imp {
 
     use super::{
         MAX_CMDLINE_BYTES, MAX_DEPTH, MAX_PROCESSES, ProcessEntry, is_agent_shell, is_ns_init,
-        is_yulius_wait,
+        is_yulius_internal, is_yulius_wait,
     };
 
     /// Bytes of a `/proc/<pid>/status` read (a few KiB in practice).
@@ -377,6 +424,29 @@ mod imp {
         after.split_whitespace().nth(n)?.parse().ok()
     }
 
+    /// Reads both `tty_nr` (field 4 after `)`) and `started` (field 19 after `)`) from a single
+    /// `/proc/<pid>/stat` read (SPEC-580 review F7).
+    fn stat_tty_and_started(pid: u32) -> (u64, u64) {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return (0, 0);
+        };
+        let Some(after) = stat.rfind(')').and_then(|i| stat.get(i + 1..)) else {
+            return (0, 0);
+        };
+        let mut fields = after.split_whitespace();
+        let tty = fields
+            .nth(4)
+            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+        // Field 19 is 14 positions after field 4 (`nth(14)` advances 15 elements: 5..=19).
+        let started = fields
+            .nth(14)
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        (tty, started)
+    }
+
     fn parent(pid: u32) -> Option<u32> {
         stat_field(pid, 1).and_then(|ppid| u32::try_from(ppid).ok())
     }
@@ -384,6 +454,11 @@ mod imp {
     /// When `pid` started, in clock ticks after boot.
     pub(super) fn started(pid: u32) -> Option<u64> {
         stat_field(pid, 19)
+    }
+
+    /// Controlling terminal device number (`tty_nr`, field 4 after `)`); 0 when none or unreadable.
+    pub(super) fn tty_nr(pid: u32) -> u64 {
+        stat_tty_and_started(pid).0
     }
 
     /// `SIGKILL`s `pid` if it still started at `started`; whether it was signalled. The check and
@@ -419,14 +494,17 @@ mod imp {
                 }
                 let line = command_line(kid);
                 let shell = is_agent_shell(&line);
+                let (tty_nr, started) = stat_tty_and_started(kid);
                 table.push(ProcessEntry {
                     pid: kid,
                     ppid: pid,
                     shell,
                     waits: is_yulius_wait(&line),
+                    internal: is_yulius_internal(&line),
                     // A wrapper shell is never a namespace's init: its status is not read.
                     ns_init: !shell && ns_init(kid),
-                    started: started(kid).unwrap_or(0),
+                    tty_nr,
+                    started,
                 });
                 queue.push_back((kid, depth + 1));
             }
@@ -451,7 +529,11 @@ mod imp {
         }
         let kinds = |pid: u32| {
             let line = command_line(pid);
-            (is_agent_shell(&line), is_yulius_wait(&line))
+            (
+                is_agent_shell(&line),
+                is_yulius_wait(&line),
+                is_yulius_internal(&line),
+            )
         };
         let mut below = HashSet::from([root]);
         let mut table = Vec::new();
@@ -461,14 +543,17 @@ mod imp {
             for &(pid, ppid) in &parents {
                 if below.contains(&ppid) && !below.contains(&pid) && table.len() < MAX_PROCESSES {
                     below.insert(pid);
-                    let (shell, waits) = kinds(pid);
+                    let (shell, waits, internal) = kinds(pid);
+                    let (tty_nr, started) = stat_tty_and_started(pid);
                     table.push(ProcessEntry {
                         pid,
                         ppid,
                         shell,
                         waits,
+                        internal,
                         ns_init: !shell && ns_init(pid),
-                        started: started(pid).unwrap_or(0),
+                        tty_nr,
+                        started,
                     });
                 }
             }
@@ -493,7 +578,7 @@ mod imp {
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
-    use super::{PS_TIMEOUT, ProcessEntry, is_agent_shell, is_yulius_wait};
+    use super::{PS_TIMEOUT, ProcessEntry, is_agent_shell, is_yulius_internal, is_yulius_wait};
 
     /// Largest `ps` output read.
     const MAX_PS_BYTES: u64 = 16 * 1024 * 1024;
@@ -501,6 +586,10 @@ mod imp {
     /// Without `/proc` no start time is known, so nothing is reaped.
     pub(super) fn kill_if_started(_pid: u32, _started: u64) -> bool {
         false
+    }
+
+    pub(super) fn tty_nr(_pid: u32) -> u64 {
+        0
     }
 
     /// Parses `ps -axww -o pid=,ppid=,command=` output.
@@ -516,7 +605,9 @@ mod imp {
                     ppid: ppid.parse().ok()?,
                     shell: is_agent_shell(command.as_bytes()),
                     waits: is_yulius_wait(command.as_bytes()),
+                    internal: is_yulius_internal(command.as_bytes()),
                     ns_init: false,
+                    tty_nr: 0,
                     started: 0,
                 })
             })
@@ -572,7 +663,9 @@ mod tests {
             ppid,
             shell,
             waits: false,
+            internal: false,
             ns_init: false,
+            tty_nr: 0,
             started: u64::from(pid),
         }
     }
@@ -591,9 +684,91 @@ mod tests {
             ppid,
             shell: false,
             waits: true,
+            internal: false,
             ns_init: false,
+            tty_nr: 0,
             started: u64::from(pid),
         }
+    }
+
+    /// SPEC-580 AWM-001: Antigravity (and Codex) spawn commands on their own PTY without Claude's
+    /// shell wrapper. A PTY command running `yulius wait` (directly or under `bash -c`) counts
+    /// only in `waits`; a non-wait PTY command (like `cargo test`) counts in `shells`; long-lived
+    /// helpers sharing the agent's TTY (`yulius mcp`) or `yulius hook` never count.
+    #[test]
+    fn pty_hosted_commands_distinguish_yulius_wait_from_real_background_work() {
+        assert!(is_yulius_internal(b"/usr/local/bin/yulius\0mcp\0"));
+        assert!(is_yulius_internal(
+            b"/usr/local/bin/yulius\0hook\0antigravity\0Stop\0"
+        ));
+        assert!(!is_yulius_internal(b"/usr/local/bin/yulius\0wait\0"));
+        assert!(!is_yulius_internal(b"cargo\0test\0"));
+
+        let agent_tty = 34_847;
+        let pty = |pid, ppid, tty_nr| ProcessEntry {
+            tty_nr,
+            ..entry(pid, ppid, false)
+        };
+        let mut mcp = pty(28, 12, agent_tty);
+        mcp.internal = true;
+        let mut hook = pty(29, 12, 34_900);
+        hook.internal = true;
+
+        // Only `yulius wait` (under `bash -c` on its own PTY) + `yulius mcp` + `yulius hook`.
+        let wait_only = [
+            ProcessEntry {
+                tty_nr: agent_tty,
+                ..ns_init(11, 10)
+            },
+            pty(12, 11, agent_tty), // antigravity agent
+            mcp.clone(),
+            hook.clone(),
+            pty(30, 12, 34_816), // `bash -c 'yulius wait'` on pts/0
+            ProcessEntry {
+                tty_nr: 34_816,
+                ..wait(31, 30)
+            },
+        ];
+        assert_eq!(
+            count_background(&wait_only, 10),
+            ShellCount {
+                shells: 0,
+                waits: 1
+            }
+        );
+
+        // Direct `yulius wait` on its own PTY + a non-wait `cargo test` on another PTY.
+        let both = [
+            ProcessEntry {
+                tty_nr: agent_tty,
+                ..ns_init(11, 10)
+            },
+            pty(12, 11, agent_tty),
+            mcp,
+            ProcessEntry {
+                tty_nr: 34_816,
+                ..wait(30, 12)
+            },
+            pty(40, 12, 34_817), // `bash -c 'cargo test'` on pts/1
+            pty(41, 40, 34_817), // `cargo test`
+        ];
+        assert_eq!(
+            count_background(&both, 10),
+            ShellCount {
+                shells: 1,
+                waits: 1
+            }
+        );
+
+        // Unsandboxed agent (root = 12, root_tty passed explicitly): non-wait PTY command counts.
+        let unsandboxed = [pty(40, 12, 34_817), pty(41, 40, 34_817)];
+        assert_eq!(
+            count_background_with_tty(&unsandboxed, 12, agent_tty),
+            ShellCount {
+                shells: 1,
+                waits: 0
+            }
+        );
     }
 
     /// DSK-102: a shell that only waits for Yulius is not a running background shell; one that

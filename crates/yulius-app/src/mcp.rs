@@ -7,7 +7,8 @@ use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
 };
 use yulius_domain::harness::{
-    DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, GPT_6_2_ASTRA, codex_effort,
+    DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CLAUDE_EFFORT,
+    DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::vault::redact::redact_text;
@@ -134,13 +135,12 @@ pub const CLIENT_TEXT_MAX: usize = 4096;
 
 /// `task_create`'s and `sandbox_task_create`'s `model` argument, one definition for both.
 fn model_property() -> Value {
-    json!({"type": "string", "description": format!("Model override (default {DEFAULT_CLAUDE_MODEL})")})
+    json!({"type": "string", "description": format!("Model override. Defaults by agent: Codex {DEFAULT_CODEX_MODEL}, Claude {DEFAULT_CLAUDE_MODEL}, Antigravity {DEFAULT_ANTIGRAVITY_MODEL}.")})
 }
 
 /// `task_create`'s and `sandbox_task_create`'s `effort` argument, one definition for both.
 fn effort_property() -> Value {
-    let astra_effort = codex_effort(GPT_6_2_ASTRA, None);
-    json!({"type": "string", "description": format!("Effort override (default {astra_effort} for {GPT_6_2_ASTRA}, {DEFAULT_CLAUDE_EFFORT} for other models, none for Haiku)")})
+    json!({"type": "string", "description": format!("Effort override. Codex defaults to {DEFAULT_CODEX_EFFORT} on every model and supports explicit xhigh and max on GPT-6.2 Astra and Sol. Claude defaults to {DEFAULT_CLAUDE_EFFORT} (none for Haiku). Antigravity defaults to {DEFAULT_ANTIGRAVITY_EFFORT}.")})
 }
 
 /// What the Yulius MCP tells a task's agent at `initialize`.
@@ -274,7 +274,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({
                 "sandbox": {"type": "string", "description": "The sandbox's slug (or owner/name) from sandboxes_list; not this one"},
                 "prompt": {"type": "string", "description": "The request for the new task, complete (what, why, where, done when)"},
-                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent: auto (default) draws uniformly across harnesses with non-exhausted subscriptions"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "With no harness, a model selects its agent. With both omitted, the task uses Codex (Ultrafast on ChatGPT Pro 500). Use auto without a model to draw uniformly across harnesses with non-exhausted subscriptions."},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
                 "workflow": {"type": "string", "description": "Workflow id or name of that sandbox, or \"auto\""},
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"]},
@@ -466,10 +466,10 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_create".into(),
-            description: "Create and start a new task in this project (another agent session with its own branch, on the agent harness names, else the one a model implies, else your task's own when called from a task, else drawn uniformly across harnesses with non-exhausted subscriptions), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, no work it declared is left (its plan is complete and its spec, if any, says done) and its pull request is merged, or open and would merge as it is, with nothing of it left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
+            description: "Create and start a new task in this project (another agent session with its own branch, on the agent harness names, else the one a model implies, else your task's own when called from a task, else Codex), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, no work it declared is left (its plan is complete and its spec, if any, says done) and its pull request is merged, or open and would merge as it is, with nothing of it left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
             input_schema: schema(json!({
                 "prompt": {"type": "string", "description": "The request for the new task"},
-                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent: auto draws uniformly across harnesses with non-exhausted subscriptions; absent uses model's agent, else your task's own (auto when you have none)"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "With no harness, a model selects its agent. With both omitted, a running task inherits its own agent for the follow-up. CLI and Superagent calls default to Codex (Ultrafast on ChatGPT Pro 500). Use auto without a model to draw uniformly across harnesses with non-exhausted subscriptions."},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
                 "workflow": {"type": "string", "description": "Workflow id or name from workflows_list, or \"auto\" to let Yulius choose"},
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"], "description": "goal (default): the task works until its definition of done holds; prompt: one plain prompt"},
@@ -1411,6 +1411,12 @@ mod tests {
                 .unwrap_or_default()
         };
         let (here, there) = (schema_of("task_create"), schema_of("sandbox_task_create"));
+        assert!(
+            there["properties"]["harness"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("Codex")
+                    && description.contains("Ultrafast on ChatGPT Pro 500"))
+        );
         for field in ["model", "effort"] {
             assert!(
                 here["properties"][field]["description"].is_string(),
@@ -1820,13 +1826,14 @@ mod tests {
                 .unwrap_or_default()
                 .to_owned()
         };
-        assert_eq!(
-            described("model"),
-            format!("Model override (default {DEFAULT_CLAUDE_MODEL})")
-        );
+        assert!(described("harness").contains("Codex"));
+        assert!(described("harness").contains("Ultrafast on ChatGPT Pro 500"));
+        for model in ["gpt-6.2-astra", DEFAULT_CLAUDE_MODEL, "gemini-4-neon"] {
+            assert!(described("model").contains(model), "{model}");
+        }
         assert_eq!(
             described("effort"),
-            "Effort override (default xhigh for gpt-6.2-astra, high for other models, none for Haiku)"
+            "Effort override. Codex defaults to high on every model and supports explicit xhigh and max on GPT-6.2 Astra and Sol. Claude defaults to high (none for Haiku). Antigravity defaults to high."
         );
         assert_eq!(
             (DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_EFFORT),

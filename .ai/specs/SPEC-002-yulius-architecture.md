@@ -1299,11 +1299,11 @@ space-separated values) or `[commands] gate` (one job named `gate`) in `yulius.t
 
 **Scheduling** (`yulius_app::ci`, pure plan in `yulius_domain::ci::plan`).
 
+- A signed GitHub App PR opening can schedule a same-repository head immediately within the same 30-PR admission limit as inventory. [ADR-0441](../../docs/decisions/0441-github-pr-openings-trigger-exact-head-ci.md)
 - *Sync loop*, every 60 s (`YULIUS_CI_POLL_SECS`). For each sandbox:
-  - fetch the clone with the installation token;
-  - read the CI in force;
-  - list open pull requests into the integration branch (at most 30; heads not in the clone,
-    from forks, are not tested);
+  - list open pull requests using the installation token
+  - fetch the clone and read the CI in force
+  - reconcile up to 30 open same-repository PRs into the integration branch and test heads available in the clone
   - resolve the integration and production heads.
 - *Plan:*
   - a target is queued unless a run of the same commit is active or has a verdict (a commit is

@@ -87,10 +87,14 @@ that failed.
   - Its outcome is typed into its session once, or resumes it when parked: verified, included,
     gate failed with the run, deploy failed with the run and what happened to staging, or
     superseded by Yulius.
+  - Until it asked, `delivery_status` tells a task whose work merged that its request is due,
+    and afterwards where its newest request stands (MFS-013). The receipt of a merge on
+    green sends the agent there, so a task whose briefing predates the switch, such as the
+    switch's own task, learns it too.
   - Ticks never overlap.
   - `cd_status` and the CD page list the queue with its revisions and run ids, and the revision
     staging serves.
-- **Production from verified staging.**
+- **Production from verified staging.** [ADR-0425](0425-pin-a-production-deploy-to-verified-dev.md) supersedes the head-equality rule for a person’s production CD deployment.
   - With a merge-first target at the verified integration head, every promotion is refused
     unless that head is the revision staging serves and a verified request deployed it: a
     person's production deploy (`cd_prepare`), the Delivery page's Promote and the profile's

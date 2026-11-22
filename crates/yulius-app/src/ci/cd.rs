@@ -57,11 +57,12 @@ use super::staging::staging_text;
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::AgentContext;
-use crate::delivery::delivery_profile;
 use crate::delivery::runner::OutputRing;
+use crate::delivery::{PromotionSource, delivery_profile};
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, UserRecord};
 use crate::ports::session::{Containment, LaunchPlan};
+use crate::ports::store_ext::CdRunHistory;
 use crate::vault::holds::StateHold;
 use crate::vault::states::{CdRestored, CdWriter};
 
@@ -247,7 +248,7 @@ struct ShownSource {
     branch: String,
     head: Option<String>,
     config: Result<CdConfig, String>,
-    /// Production with `promote`: the integration head it would promote.
+    /// The integration revision a promoting production deployment would release.
     promotes_from: Option<String>,
 }
 
@@ -502,6 +503,257 @@ impl App {
         }
     }
 
+    /// Selects what a person's production deploy would promote. The caller supplies the
+    /// integration snapshot it read, from the clone for display or the CD mirror for execution.
+    async fn cd_promotion_revision(
+        &self,
+        sandbox: &SandboxRecord,
+        branch: &str,
+        head: &str,
+        config: &CdConfig,
+        prod: &CdTarget,
+        repo: &Path,
+    ) -> AppResult<String> {
+        let store = &self.deps.store;
+        let drill_env = prod.drill_env();
+        let staging = config.merge_first();
+        let staged = if let Some(target) = staging {
+            Some(
+                self.staging_verified_revision(sandbox, target)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Conflict(format!(
+                            "nothing ran: [cd.{}] staging verified nothing yet",
+                            target.name
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
+        if prod.deploy.is_some()
+            && prod.rollback.is_some()
+            && let Some(run) = store
+                .last_cd_run_of_kind(
+                    &sandbox.id,
+                    drill_env,
+                    CdStage::Dev,
+                    CdRunKind::Drill,
+                    CdRunHistory::Latest,
+                )
+                .await?
+            && run.state.is_active()
+            && staged.as_ref().is_none_or(|sha| sha == &run.sha)
+        {
+            let previous = store
+                .last_cd_run_of_kind(
+                    &sandbox.id,
+                    drill_env,
+                    CdStage::Dev,
+                    CdRunKind::Drill,
+                    CdRunHistory::Finished,
+                )
+                .await?;
+            let Some(proof) =
+                previous.filter(|proof| proof.state == RunState::Passed && proof.sha != run.sha)
+            else {
+                return Err(AppError::Conflict(format!(
+                    "nothing ran: the rollback drill of {drill_env} is running and there is no preceding proven revision"
+                )));
+            };
+            if let Some(target) = staging
+                && !store
+                    .staging_verified(&sandbox.id, &target.name, &proof.sha)
+                    .await?
+            {
+                return Err(AppError::Conflict(
+                    "nothing ran: staging has not verified the previously drilled revision".into(),
+                ));
+            }
+            return Ok(proof.sha);
+        }
+        if let Some(sha) = staged {
+            return Ok(sha);
+        }
+        if config.target_of(drill_env, CdStage::Dev).is_some()
+            && store
+                .last_cd_run_of_kind(
+                    &sandbox.id,
+                    drill_env,
+                    CdStage::Dev,
+                    CdRunKind::Deploy,
+                    CdRunHistory::Latest,
+                )
+                .await?
+                .is_some_and(|run| run.state.is_active())
+        {
+            return store
+                .last_cd_run_of_kind(
+                    &sandbox.id,
+                    drill_env,
+                    CdStage::Dev,
+                    CdRunKind::Deploy,
+                    CdRunHistory::Passed,
+                )
+                .await?
+                .map(|run| run.sha)
+                .ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "nothing ran: {drill_env} is verifying its first deployment"
+                    ))
+                });
+        }
+        let reference = yulius_domain::ci::CiRef::Branch(branch.to_owned());
+        let verdict = self
+            .ci_gate_result_for_ref(sandbox, head, Some(&reference))
+            .await;
+        if matches!(
+            verdict,
+            yulius_domain::ci::GateResult::Run(
+                None | Some(RunState::Queued | RunState::Running | RunState::Passed)
+            )
+        ) {
+            // Each batch advances towards the root of this fixed history. The bound covers
+            // both Git and inspection of saved job verdicts, including the current commit.
+            let search = async {
+                let mut commits = vec![head.to_owned()];
+                while let Some(oldest) = commits.last() {
+                    if let Some(sha) = self
+                        .cd_verified_ci_revision(sandbox, &reference, repo, &commits)
+                        .await?
+                    {
+                        return Ok(sha);
+                    }
+                    commits = self.deps.git.preceding_commits(repo, oldest).await?;
+                }
+                Err(AppError::Conflict(format!(
+                    "nothing ran: no verified revision in {branch} covers its required CI jobs"
+                )))
+            };
+            return tokio::time::timeout(std::time::Duration::from_secs(30), search)
+                .await
+                .map_err(|_| {
+                    AppError::Conflict(format!(
+                        "nothing ran: verification history lookup for {branch} timed out"
+                    ))
+                })?;
+        }
+        Ok(head.to_owned())
+    }
+
+    /// Use a branch's own verdict first. A shared verdict must cover the jobs the commit's
+    /// branch gate would run, with the same eligibility checks as CI's own tree reuse.
+    async fn cd_verified_ci_revision(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: &yulius_domain::ci::CiRef,
+        repo: &Path,
+        commits: &[String],
+    ) -> AppResult<Option<String>> {
+        let store = &self.deps.store;
+        for sha in store.ci_shas_with_pass(&sandbox.id, commits).await? {
+            let mut runs = store
+                .ci_runs_for_pull_head(&sandbox.id, super::PullHead::Exact(&sha))
+                .await?;
+            if let Some(index) = runs.iter().position(|run| &run.reference == reference) {
+                // A rerun of an older dev commit can execute the current dev gate. Even
+                // the branch's own latest verdict must cover this commit's jobs.
+                runs = vec![runs.swap_remove(index)];
+            } else {
+                runs.retain(|run| {
+                    super::ordinary_scheduler_ref(&run.reference)
+                        && yulius_domain::ci::covers_shared_commit(run.state)
+                        && run.requested_by != crate::merge_train::TRAIN_VERDICT_BY
+                });
+            }
+            if runs.is_empty() {
+                continue;
+            }
+            let jobs = self
+                .ci_jobs_at(repo, &sha)
+                .await
+                .map_err(AppError::Conflict)?;
+            let gate = yulius_domain::ci::effective_gate(
+                crate::delivery::profile_gate(sandbox).as_deref(),
+                &jobs,
+            );
+            let Some(gate) = self.ci_with_security(sandbox, gate).await else {
+                continue;
+            };
+            for run in runs {
+                if run.state != RunState::Passed {
+                    break;
+                }
+                let jobs = store.ci_jobs(&run.id, false).await?;
+                if super::jobs_cover_target(reference, &gate, &jobs) {
+                    return Ok(Some(sha));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Resolve the promotion table at the revision the person can confirm. The overview uses
+    /// the last-fetched clone. Execution repeats both checks in the protected CD mirror.
+    async fn cd_release_source(
+        &self,
+        sandbox: &SandboxRecord,
+        branch: &str,
+        head: &str,
+        config: &CdConfig,
+        prod: &CdTarget,
+        repo: &Path,
+    ) -> AppResult<(String, CdConfig)> {
+        let mut sha = self
+            .cd_promotion_revision(sandbox, branch, head, config, prod, repo)
+            .await?;
+        if sha == head {
+            return Ok((sha, config.clone()));
+        }
+        let mut upper = head.to_owned();
+        // A newer configuration can remove staging. The latest branch-green candidate may
+        // then lead back to an earlier staged release. Each step must move strictly backwards.
+        loop {
+            if self
+                .deps
+                .git
+                .first_parent_position(repo, &upper, &sha)
+                .await
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                return Err(AppError::Conflict(format!(
+                    "nothing ran: verified revision {sha} cannot be confirmed on {branch}'s history"
+                )));
+            }
+            let config = self
+                .cd_config_at(repo, &sha)
+                .await
+                .map_err(AppError::Conflict)?;
+            let target = config
+                .target_of(&prod.name, CdStage::Prod)
+                .filter(|target| target.promote)
+                .ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "nothing ran: the verified revision does not configure a promotion for {}",
+                        prod.name
+                    ))
+                })?;
+            if config.merge_first().is_some() {
+                let staged = self
+                    .cd_promotion_revision(sandbox, branch, &sha, &config, target, repo)
+                    .await?;
+                if staged != sha {
+                    upper = sha;
+                    sha = staged;
+                    continue;
+                }
+            }
+            return Ok((sha, config));
+        }
+    }
+
     /// The CD of `sandbox` as its protected branches define it, with recent runs (SPEC-134
     /// CDT-001, CDT-005). Reads the clone as last fetched (the CI sync fetches it every minute).
     pub(crate) async fn cd_overview_of(
@@ -523,7 +775,32 @@ impl App {
         );
         let mut environments = Vec::with_capacity(listed.len());
         for (name, stage) in listed {
-            let source = Self::cd_shown_source(&shown, &profile, &name, stage);
+            let mut source = Self::cd_shown_source(&shown, &profile, &name, stage);
+            if let Some(head) = source.promotes_from.as_deref()
+                && let Ok(config) = &source.config
+                && let Some(prod) = config.target_of(&name, stage)
+            {
+                match self
+                    .cd_release_source(
+                        sandbox,
+                        &profile.integration_branch,
+                        head,
+                        config,
+                        prod,
+                        &self.sandbox_repo(&sandbox.id),
+                    )
+                    .await
+                {
+                    Ok((sha, config)) => {
+                        source.promotes_from = Some(sha);
+                        source.config = Ok(config);
+                    }
+                    Err(err) => {
+                        source.config = Err(err.public_message());
+                        source.promotes_from = None;
+                    }
+                }
+            }
             let (target, problem) = match &source.config {
                 Ok(config) => (config.target_of(&name, stage).cloned(), None),
                 Err(problem) => (None, Some(problem.clone())),
@@ -1067,7 +1344,7 @@ impl App {
     /// The commit GitHub reports as `branch`'s head, taken from the sandbox clone into the CD
     /// mirror with every object checked (review C1): what a deploy runs never depends on
     /// anything an agent can write.
-    pub(super) async fn cd_verified_head(
+    pub(crate) async fn cd_verified_head(
         &self,
         sandbox: &SandboxRecord,
         branch: &str,
@@ -1200,25 +1477,7 @@ impl App {
             && integration_config
                 .target_of(env, CdStage::Prod)
                 .is_some_and(|prod| prod.promote);
-        // A promotion comes from a verified staging revision (SPEC-575 MFS-009): with a
-        // merge-first target, the integration head it would promote must be the revision that
-        // target last deployed and verified.
-        if promotes && let Some(staging) = integration_config.merge_first() {
-            let verified = self.staging_verified_revision(sandbox, staging).await?;
-            if verified.as_deref() != Some(integration.as_str()) {
-                return Err(AppError::Conflict(format!(
-                    "nothing ran: production is promoted from the revision [cd.{}] verified, and {} at {} is {}; promote once staging verified it",
-                    staging.name,
-                    profile.integration_branch,
-                    integration.get(..7).unwrap_or(&integration),
-                    match &verified {
-                        Some(sha) =>
-                            format!("not it (staging verified {})", sha.get(..7).unwrap_or(sha)),
-                        None => "not verified there (staging verified nothing yet)".to_owned(),
-                    }
-                )));
-            }
-        }
+        let observed_integration = integration.clone();
         // What dev would deploy, should production's rollback need proving there (SPEC-438).
         let integration_tables = prove
             .is_some()
@@ -1265,11 +1524,22 @@ impl App {
                     "only a dev-stage environment deploys a pinned revision".into(),
                 ));
             }
-            (CdStage::Prod, None) if promotes => (
-                profile.production_branch.clone(),
-                integration,
-                integration_config,
-            ),
+            (CdStage::Prod, None) if promotes => {
+                let prod = integration_config
+                    .target_of(env, stage)
+                    .ok_or_else(|| refusal(&CdRefusal::not_defined(env)))?;
+                let (sha, config) = self
+                    .cd_release_source(
+                        sandbox,
+                        &profile.integration_branch,
+                        &integration,
+                        &integration_config,
+                        prod,
+                        &self.cd_mirror(&sandbox.id),
+                    )
+                    .await?;
+                (profile.production_branch.clone(), sha, config)
+            }
             (CdStage::Prod, None) => {
                 let production = self
                     .cd_verified_head(sandbox, &profile.production_branch, &token)
@@ -1366,15 +1636,38 @@ impl App {
             .await?;
         // From verified commits, never the agents' clone (round 2, M-C).
         let contained = self.deps.git.is_ancestor(&mirror, &sha, &before).await?;
+        let pinned_tree = if sha != observed_integration {
+            let tree = self.deps.git.tree_of(&mirror, &sha).await?.ok_or_else(|| {
+                AppError::Conflict("cannot read the verified revision tree".into())
+            })?;
+            let merge = self.deps.git.preview_merge(&mirror, &before, &sha).await?;
+            if !matches!(merge, crate::ports::git::TrainStep::Clean { tree: merged } if merged == tree)
+            {
+                return Err(AppError::Conflict("nothing was promoted: production would contain changes outside the selected verified revision".into()));
+            }
+            Some(tree)
+        } else {
+            None
+        };
         let mut promoted = None;
-        let note = if contained {
+        let note = if contained && pinned_tree.is_none() {
             format!(
                 "'{}' already contains '{}': nothing to promote",
                 profile.production_branch, profile.integration_branch
             )
         } else {
             let promoting = self.now();
-            let note = self.cd_promote(sandbox, &profile, user, &sha).await?;
+            let source = if pinned_tree.is_some() {
+                PromotionSource::Verified {
+                    sha: &sha,
+                    head: &observed_integration,
+                    base: &before,
+                    mirror: &mirror,
+                }
+            } else {
+                PromotionSource::Head(Some(&sha))
+            };
+            let note = self.cd_promote(sandbox, &profile, user, source).await?;
             promoted = Some((promoting, self.now()));
             note
         };
@@ -1394,6 +1687,13 @@ impl App {
                 production.get(..7).unwrap_or(&production),
                 sha.get(..7).unwrap_or(&sha)
             )));
+        }
+        if let Some(tree) = pinned_tree
+            && self.deps.git.tree_of(&mirror, &production).await?.as_ref() != Some(&tree)
+        {
+            return Err(AppError::Conflict(
+                "nothing was deployed: production moved away from the confirmed tree".into(),
+            ));
         }
         // What production holds now is what runs, with its own table.
         let deployed = self.cd_verified_config(sandbox, &production).await?;
@@ -1438,19 +1738,19 @@ impl App {
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
         user: &UserRecord,
-        confirmed: &str,
+        source: PromotionSource<'_>,
     ) -> AppResult<String> {
         let (integration, production) = (&profile.integration_branch, &profile.production_branch);
         let token = self
             .person_github_token(user, &format!("Deploying {production}"))
             .await?;
         let mut result = self
-            .cd_promote_once(sandbox, profile, user, &token, confirmed)
+            .cd_promote_once(sandbox, profile, user, &token, source)
             .await?;
         if result.result == "pr_opened" {
             let url = result.sha.clone().unwrap_or_default();
             result = self
-                .cd_promote_once(sandbox, profile, user, &token, confirmed)
+                .cd_promote_once(sandbox, profile, user, &token, source)
                 .await
                 .map_err(|err| {
                     AppError::Conflict(format!(
@@ -1472,7 +1772,7 @@ impl App {
         profile: &DeliveryProfile,
         user: &UserRecord,
         token: &Secret,
-        confirmed: &str,
+        source: PromotionSource<'_>,
     ) -> AppResult<yulius_contracts::api::git::PromoteResult> {
         self.dlv_promote_exactly(
             sandbox,
@@ -1481,7 +1781,7 @@ impl App {
             user,
             token,
             true,
-            Some(confirmed),
+            source,
         )
         .await
     }
@@ -2488,20 +2788,33 @@ impl App {
         // The merge-first staging target changes only through its queue (SPEC-575 MFS-004).
         if let Some(sandbox) = self.deps.store.sandbox(&ctx.task.sandbox_id).await?
             && !sandbox.is_playground()
-            && let Ok((head, Some(target))) = self.staging_target(&sandbox).await
+            && let Ok((head, Some(target))) = crate::ports::github::for_purpose(
+                crate::ports::github::GitHubPurpose::Staging,
+                self.staging_target(&sandbox),
+            )
+            .await
             && target.name == env
         {
-            let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
-            let text = format!(
-                "Staging request {} for revision {} of {}: {}. {}. Yulius tells this session its outcome; meanwhile cd_status shows the queue with its run ids, and cd_deploy again answers with this request.",
-                request.id,
-                short_sha(&request.revision),
-                env_label(&env),
-                request.state.as_str(),
-                request.note.as_deref().unwrap_or(
-                    "Yulius runs the full gate on exactly that merged revision, then deploys and verifies it in revision order"
-                ),
-            );
+            let request = crate::ports::github::for_purpose(
+                crate::ports::github::GitHubPurpose::Staging,
+                self.staging_request(&sandbox, &env, ctx, &head),
+            )
+            .await?;
+            self.publish_staging_task(&request).await;
+            let text = if request.state.is_pending() {
+                format!(
+                    "Staging request {} for revision {} of {}: {}. {}. The request is recorded. End this turn. If your final step requires the verdict, leave it in progress. Yulius wakes the task with the outcome. cd_status shows the run ids.",
+                    request.id,
+                    short_sha(&request.revision),
+                    env_label(&env),
+                    request.state.as_str(),
+                    request.note.as_deref().unwrap_or(
+                        "Yulius runs the full gate on exactly that merged revision, then deploys and verifies it in revision order"
+                    ),
+                )
+            } else {
+                super::staging::staging_outcome_text(&request)
+            };
             return Ok(serde_json::json!({
                 "text": text,
                 "staging": {

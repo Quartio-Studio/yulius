@@ -993,7 +993,7 @@ impl App {
             let text = self.redact_for_sandbox(&source.sandbox_id, &text).await;
             let delivered = match source.status {
                 TaskStatus::Parked => self
-                    .resume_parked(&source.id, Some(text))
+                    .resume_parked(&source, Some(text))
                     .await
                     .unwrap_or(false),
                 TaskStatus::Running => {

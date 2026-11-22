@@ -291,6 +291,13 @@ p { margin: 0; }
   grid-template-rows: var(--tabrow-h) minmax(0, 1fr);
   grid-template-areas: "tabs tabs tabs tabs" "side main panel rail";
 }
+.github-wait { padding: 6px 12px; color: var(--warn-fg); background: var(--bg); border-bottom: 1px solid var(--border); }
+.app > .github-wait { grid-area: github; }
+.app:has(> .github-wait:not([hidden])) {
+  grid-template-rows: var(--tabrow-h) auto minmax(0, 1fr);
+  grid-template-areas: "tabs tabs tabs tabs" "github github github github" "side main panel rail";
+}
+body:has(.status-pop .github-wait) .app > .github-wait { display: none; }
 /* The home screen (UI-045) and the other pages outside a sandbox have one tool, the Global
    Superagent (SPEC-427 GSA-006): the rail shows only its button. */
 .app.no-sandbox .rail-btn:not([data-kind="agent"]) { display: none; }
@@ -1577,6 +1584,7 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
   display: flex; flex-direction: column; border: 1px solid var(--border-control); border-radius: var(--radius-xl);
   background: var(--surface); box-shadow: var(--shadow-raised); container: composer / inline-size;
 }
+.composer-drafts { display: flex; gap: 8px; flex-wrap: wrap; }
 .composer-box:focus-within { border-color: var(--accent-border-strong); outline: 2px solid transparent; outline-offset: 1px; }
 .composer-prompt {
   min-height: 112px; max-height: 50vh; padding: 16px 20px 8px; border: 0; background: transparent; color: var(--text);
@@ -2352,6 +2360,7 @@ a.dl-task:hover { text-decoration: underline; }
     grid-template-rows: var(--tabrow-h) minmax(0, 1fr);
     grid-template-areas: "tabs rail" "main main";
   }
+  .app:has(> .github-wait:not([hidden])) { grid-template-areas: "tabs rail" "github github" "main main"; }
   .hamburger { display: inline-flex; align-self: center; width: var(--control-xl); height: var(--control-xl); margin-left: 4px; }
   .tabrow { padding-right: 2px; gap: 2px; border-bottom: 1px solid var(--border); }
   .tabrow-right { gap: 4px; padding-right: 0; }

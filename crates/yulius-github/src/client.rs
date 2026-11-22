@@ -32,6 +32,7 @@ pub(crate) type TokenKey = (u64, Option<String>, bool);
 pub(crate) struct Inner {
     pub(crate) config: GitHubConfig,
     pub(crate) transport: Transport,
+    pub(crate) display: crate::display::DisplayCache,
     pub(crate) signer: Option<AppSigner>,
     /// Installation tokens by (installation, repository restriction, agent permissions).
     pub(crate) tokens: Mutex<HashMap<TokenKey, InstallationToken>>,
@@ -62,17 +63,42 @@ impl GitHubClient {
     /// # Errors
     /// As [`GitHubClient::new`].
     pub fn with_clock(config: GitHubConfig, clock: Arc<dyn Clock>) -> Result<Self, GitHubError> {
+        Self::metered(
+            config,
+            clock,
+            crate::RequestMeter::default(),
+            Default::default,
+        )
+    }
+
+    /// Builds an adapter that attributes physical requests to the operation being polled.
+    ///
+    /// # Errors
+    /// As for [`Self::new`].
+    pub fn metered(
+        config: GitHubConfig,
+        clock: Arc<dyn Clock>,
+        meter: crate::RequestMeter,
+        purpose: fn() -> yulius_contracts::api::status::GitHubPurpose,
+    ) -> Result<Self, GitHubError> {
         config.validate()?;
         let signer = config.app.as_ref().map(AppSigner::new).transpose()?;
-        let transport = Transport::new(&config, clock)?;
+        let transport = Transport::new(&config, clock, meter, purpose)?;
         Ok(Self {
             inner: Arc::new(Inner {
                 config,
                 transport,
                 signer,
+                display: crate::display::DisplayCache::default(),
                 tokens: Mutex::new(HashMap::new()),
             }),
         })
+    }
+
+    /// Active rate-limit reset reported for authenticated requests on this client.
+    #[must_use]
+    pub fn rate_limit_reset(&self) -> Option<yulius_domain::time::Timestamp> {
+        self.inner.transport.rate_limit_reset()
     }
 
     /// The configuration this client was built with.
@@ -113,9 +139,20 @@ impl GitHubClient {
         url: Url,
         token: Option<&Secret>,
     ) -> Result<T, GitHubError> {
-        let reply = self
-            .send_ok(Call::new(Method::GET, url, token.map(Secret::expose)))
-            .await?;
+        let task_resource = url.path_segments().is_some_and(|mut parts| {
+            parts.any(|p| p == "repos")
+                && matches!(parts.nth(2), Some("pulls" | "commits" | "actions"))
+        });
+        let call = Call::new(Method::GET, url, token.map(Secret::expose));
+        let reply = if task_resource
+            && token.is_some()
+            && (self.inner.transport.purpose)()
+                == yulius_contracts::api::status::GitHubPurpose::Display
+        {
+            self.inner.display.read(call, &self.inner.transport).await?
+        } else {
+            self.send_ok(call).await?
+        };
         decode(&reply)
     }
 

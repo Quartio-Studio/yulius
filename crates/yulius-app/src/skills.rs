@@ -1068,7 +1068,7 @@ mod tests {
                 .to_lowercase();
             for stated in [
                 "own code",
-                "round limit",
+                "after 3 rounds",
                 "pre-existing",
                 "flaky test",
                 "the change did not cause",
@@ -1077,6 +1077,11 @@ mod tests {
             ] {
                 assert!(text.contains(stated), "{rel} does not say {stated:?}");
             }
+            assert!(
+                text.contains("re-review until approval under the task's existing authorization")
+                    || text.contains("re-review until approval without asking the user"),
+                "{rel} does not authorize independent re-review through approval"
+            );
             assert!(
                 [
                     "never becomes a follow-up issue",
@@ -1093,6 +1098,11 @@ mod tests {
                 "the author decides on the rest",
                 "follow-ups, bugs you find",
                 "at most 3 rounds.",
+                "up to 3 rounds",
+                "split the change or ask a person",
+                "splits the change or asks a person",
+                "split the change, or stop and ask a person",
+                "splits the change, or stops and asks a person",
             ] {
                 assert!(!text.contains(gone), "{rel} still says {gone:?}");
             }
@@ -1325,20 +1335,17 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-493 MUT-002 (AC-12), SPEC-506 FST-004: mutation testing beside the review, the same
-    /// everywhere tests and reviews are described; this repository names its command; the workflows send
-    /// the agent to `delivery-pipeline`, which states it.
+    /// SPEC-600 MTS-002/003. Catalog skills and local instructions share the instance policy.
     #[test]
-    fn every_place_says_mutation_testing_runs_beside_the_review() -> TestResult {
-        const RULE: &str = "mutation testing runs beside the review: when you ask for a pull \
-            request's first review, start the project's mutation command in the background and let \
-            the reviewer read meanwhile; when it ends, put its summary line in the spec's evidence \
-            and fix each missed mutant test-first before the merge. after a later round's fix, run \
-            it on that fix's lines alone. a project without one undoes by hand the few lines its \
-            new tests are meant to hold and says what failed. the reviewer may undo a single line \
-            it doubts and runs no campaign of its own. nobody writes a mutation script by hand. a \
-            test that cannot fail is still fixed in the same pull request (adr-0141).";
-        const HERE: &str = "here the command is `scripts/dev mutants`.";
+    fn every_place_requires_by_hand_mutation_checks() -> TestResult {
+        const RULE: &str = "mutation checks are by hand, in every project: undo the few lines your new tests are meant \
+            to hold, watch those tests fail, restore the lines, and say in the spec's evidence what \
+            failed. do not start a mutation run or campaign for a delivery (not beside the review, not \
+            between rounds, not before the merge), also where a project's own documents still ask for \
+            one: run the project's mutation command only when the task's request asks for it by name \
+            (instance policy of 2026-11-21). the reviewer may undo a single line it doubts and runs no \
+            campaign of its own. nobody writes a mutation script by hand. a test that cannot fail is \
+            still fixed in the same pull request (adr-0141).";
         let normal = |text: &str| {
             text.split_whitespace()
                 .collect::<Vec<_>>()
@@ -1350,40 +1357,24 @@ mod tests {
             Ok(normal(&fs::read_to_string(root.join(rel))?))
         };
         for rel in [
-            "catalog/skills/open-mercato/om-code-review/SKILL.md",
-            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
-            "catalog/skills/superpowers/test-driven-development/SKILL.md",
-        ] {
-            assert!(
-                read(rel)?.contains(&normal(RULE)),
-                "{rel} does not state the rule"
-            );
-        }
-        for rel in [
-            ".apm/skills/yulius-verify/SKILL.md",
-            ".apm/skills/yulius-review/SKILL.md",
-            "docs/engineering/development.md",
-        ] {
-            let text = read(rel)?;
-            assert!(
-                text.contains(&normal(&format!("{RULE} {HERE}"))),
-                "{rel} does not state the rule with this repository's command"
-            );
-        }
-        for rel in [
-            "catalog/skills/open-mercato/om-code-review/SKILL.md",
-            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
-            "catalog/skills/superpowers/test-driven-development/SKILL.md",
-            ".apm/skills/yulius-verify/SKILL.md",
-            ".apm/skills/yulius-review/SKILL.md",
-            "docs/engineering/development.md",
             "AGENTS.md",
+            "docs/engineering/development.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            ".apm/skills/yulius-verify/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/superpowers/test-driven-development/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/yulius/infra-bootstrap/SKILL.md",
         ] {
+            let guide = read(rel)?;
+            assert!(guide.contains(RULE), "{rel} lacks the by-hand rule");
             assert!(
-                !read(rel)?.contains("on the first head you ask a review for"),
-                "{rel} keeps the rule that waits for the run before the review"
+                !guide.contains("mutation testing runs beside the review"),
+                "{rel}"
             );
         }
+        assert!(read("catalog/skills/yulius/delivery-pipeline/SKILL.md")?
+            .contains("after asking, your task is done: do not keep the session waiting for the staging run"));
         // The workflows' instructions have no byte to spare (1,444 with their heading, #555):
         // they reach the rule through `delivery-pipeline`, which each tells the agent to follow.
         for rel in ["catalog/workflows/feature.md", "catalog/workflows/fix.md"] {
@@ -1611,16 +1602,12 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-506 FST-003 (AC-2): the author proves each fix before asking for another round, the
-    /// same everywhere fixes and reviews are described; this repository names its command for a
-    /// fix's lines.
+    /// Review corrections have a failing test and the author checks each against the new head.
     #[test]
     fn every_place_says_prove_each_fix_before_another_round() -> TestResult {
         const RULE: &str = "before asking for another round, answer each finding of the last \
-            report with the test that fails without its fix (or why no test can), check every \
-            finding of that report against the new head, and run the project's mutation command \
-            on the lines of the fix where it can take them.";
-        const HERE: &str = "here: `scripts/dev mutants --base <reviewed head>`.";
+            report with the test that fails without its fix (or why no test can) and check every \
+            finding of that report against the new head.";
         let normal = |text: &str| {
             text.split_whitespace()
                 .collect::<Vec<_>>()
@@ -1645,8 +1632,8 @@ mod tests {
         ] {
             let text = normal(&fs::read_to_string(root.join(rel))?);
             assert!(
-                text.contains(&normal(&format!("{RULE} {HERE}"))),
-                "{rel} does not state the rule with this repository's command"
+                text.contains(&normal(RULE)),
+                "{rel} does not state the review rule"
             );
         }
         Ok(())

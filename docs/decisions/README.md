@@ -407,7 +407,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0395](0395-tasks-hand-work-to-another-sandbox-behind-an-instance-switch.md): amends ADR-0227 for task agents: an instance switch (off by default, ask, automatic; depth 1 to 5, default 3; per owner a day 1 to 100, default 20) and each sandbox's opt-out for its writers; `sandbox_handoff` served to task agents only while on, with `sandbox_task_create`'s checks plus depth, cycles and the daily bound, every refusal audited; ask stores a request the owner answers in a browser session, automatic creates as the owner; origin `handoff`, "Handed off from" on the target, the outcome told to the source; `task.handoff` on both sandboxes, never the prompt; rejected: only ask, serving `sandbox_task_create` to tasks, provenance in the prompt (SPEC-512)
 - [0396](0396-capture-the-parked-terminal-before-shutdown.md) preserves the pre-stop terminal and continues unfinished Codex goals through the bounded Stop hook.
 - [0397](0397-gpt-models-imply-codex.md): GPT models imply Codex
-- [0398](0398-astra-6-2-inherits-extra-high-effort.md) GPT-6.2 Astra inherits extra high effort on fresh and resumed Codex launches. Task details distinguish an inherited effort from an explicit choice (SPEC-561).
+- [0398](0398-astra-6-2-inherits-extra-high-effort.md) GPT-6.2 Astra inherits extra high effort on fresh and resumed Codex launches. Task details distinguish an inherited effort from an explicit choice (SPEC-561). ADR-0444 supersedes the effort default.
 - [0399](0399-task-evidence-belongs-to-the-landed-commit.md) Task verification evidence binds the landed commit to its actual CI and environment attempts (SPEC-562).
 - [0400](0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md) records a new round when an author continues a reviewer after its report.
 - [0401](0401-red-ci-notices-include-partial-sibling-failures.md) Red CI notices and run details include partial failures observed in siblings stopped by fail-fast.
@@ -446,36 +446,67 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0417 -->
 - [0418](0418-keep-the-newest-successful-task-list.md) keeps the newest successful browser task list when full reads overlap.
 <!-- ADR 0418 -->
+- [0419](0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md) settles Antigravity `Stop` turns (`yulius wait` vs non-wait background PTY work), reports fresh PR conflicts and drops conflicting armed merges immediately, and bounds stalled armed green PRs with a 10 min check-in and 20 min SPEC-578 Needs You escalation (SPEC-580).
 <!-- ADR 0419 -->
+- [0420](0420-recognize-the-empty-codex-composer.md) recognizes the focused Codex placeholder and its full repaint after resize (SPEC-581).
 <!-- ADR 0420 -->
+- [0421](0421-codex-right-click-opens-the-viewers-clipboard-menu.md) reserves a plain right-click in a mouse-tracking Codex terminal for the viewer’s clipboard menu.
 <!-- ADR 0421 -->
+- [0422](0422-cli-and-superagent-task-creation-defaults-to-codex.md) defaults CLI and Superagent task creation to Codex and inherits its model, effort and subscription tier.
 <!-- ADR 0422 -->
+- [0423](0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md) returns a webpage’s clipboard write through the viewer connection that clicked.
 <!-- ADR 0423 -->
+- [0424](0424-keep-a-recorded-merge-visible-when-follow-up-discovery-is-unavailable.md) keeps a recorded merge visible when follow-up discovery is unavailable.
 <!-- ADR 0424 -->
+- [0425](0425-pin-a-production-deploy-to-verified-dev.md): Pin a production deploy to verified dev.
 <!-- ADR 0425 -->
+- [0426](0426-the-new-task-composer-defaults-to-codex.md) defaults the new-task composer to Codex when the browser has no saved model.
 <!-- ADR 0426 -->
+- [0427](0427-task-authorization-covers-independent-re-review.md): A task's delivery authorization covers independent re-review of its in-scope corrections through approval.
 <!-- ADR 0427 -->
+- [0428](0428-a-goal-turn-continues-its-declared-work.md): A goal turn continues its declared work within the Stop budget.
 <!-- ADR 0428 -->
+- [0429](0429-continue-stopped-codex-work-in-its-saved-session.md) resumes stopped Codex work in its saved conversation and shows a bare resume as idle.
 <!-- ADR 0429 -->
+- [0430](0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md): Yulius's own staging (`[cd.dev]`) builds the exact commit in CD's Docker builder (Ubuntu 24.04, pinned toolchain), uploads it by SHA-256 over SSH with a pinned host key, and installs it with the replaced release's store kept beside it; verify proves the commit, HTTPS, the contained doctor, no lost rows and the Docker smoke; a rollback restores the release's own store across a schema change; rejected: the VM's update helper (main only, never older, needs a repository credential, rebuilds on rollback) (SPEC-591).
 <!-- ADR 0430 -->
+- [0431](0431-the-move-restarts-caddy-and-asks-its-own-port-443.md): An instance move always restarts the new host's Caddy with the carried configuration and asks that host's own port 443 before the proxy counts as done.
 <!-- ADR 0431 -->
+- [0432](0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md) clears a browser profile's Chrome locks that no live process holds before Chrome starts.
 <!-- ADR 0432 -->
+- [0433](0433-store-each-new-task-draft-under-its-own-key.md): each unfinished task draft has its own browser storage key, and each tab remembers its selection
 <!-- ADR 0433 -->
+- [0434](0434-keep-a-local-compiler-cache-in-each-project-sandbox.md): Keep a local compiler cache in each project sandbox.
 <!-- ADR 0434 -->
+- [0435](0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md): A contained Claude task returns a scratch removal prompt to the agent with a checked, in-place retry.
 <!-- ADR 0435 -->
+- [0436](0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md): Yulius's `[cd.dev]` is merge-first; both `test` shards and `e2e` are `after_merge` (11.6 of 17.1 job-minutes per pull request head), `quality` and `security` stay on pull requests; promotion to `main` only from a revision whose full suite passed and that staging verified, tested with the repository's own `yulius.toml`; a red `dev` is fixed forward (SPEC-591).
 <!-- ADR 0436 -->
+- [0437](0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md): the staging request keeps its task waiting until the outcome is delivered (SPEC-597).
 <!-- ADR 0437 -->
+- [0438](0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md) Quality passes have separate CI jobs and test partitions share a build.
 <!-- ADR 0438 -->
+- [0439](0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md): Delivery checks mutations by hand and requested campaigns build on disk.
 <!-- ADR 0439 -->
+- [0440](0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md). Recorded GPT-6 work enters the standard API estimate and the pool shows the cost of using Ultrafast for eligible runs.
 <!-- ADR 0440 -->
+- [0441](0441-github-pr-openings-trigger-exact-head-ci.md): signed GitHub PR openings queue the exact head using the existing CI gate (SPEC-606)
 <!-- ADR 0441 -->
+- [0442](0442-identify-codex-reviewers-by-their-child-rollout.md): identify Codex reviewers by their child rollout.
 <!-- ADR 0442 -->
+- [0443](0443-hold-codex-input-at-the-rate-limit-model-picker.md). Codex starts with the model reminder hidden and a visible reminder holds automated terminal input.
 <!-- ADR 0443 -->
+- [0444](0444-codex-tasks-inherit-high-effort-on-every-model.md) Codex tasks inherit High effort on every model. A task can explicitly choose Extra high or Max on GPT-6.2 Astra and Sol.
 <!-- ADR 0444 -->
+- [0445](0445-antigravity-resume-activity-follows-its-launch-prompt.md) A bare Antigravity resume starts at its saved idle activity or Waiting.
 <!-- ADR 0445 -->
+- [0446](0446-keep-github-availability-separate-from-task-state.md): Keep GitHub availability separate from task state.
 <!-- ADR 0446 -->
+- [0447](0447-task-display-shares-github-reads-and-yields-to-delivery.md): Task display shares GitHub reads and yields to delivery.
 <!-- ADR 0447 -->
+- [0448](0448-repository-file-readers-run-before-merge.md): Repository file readers run before merge.
 <!-- ADR 0448 -->
+- [0449](0449-use-codex-quota-headroom-and-preserve-idle-moves.md) Automatic Codex placement prefers the most remaining quota in the tightest binding window. A moved idle Codex task keeps its activity when the replacement opens without a turn.
 <!-- ADR 0449 -->
 <!-- ADR 0450 -->
 <!-- ADR 0451 -->
@@ -492,3 +523,35 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0462 -->
 <!-- ADR 0463 -->
 <!-- ADR 0464 -->
+<!-- ADR 0465 -->
+<!-- ADR 0466 -->
+<!-- ADR 0467 -->
+<!-- ADR 0468 -->
+<!-- ADR 0469 -->
+<!-- ADR 0470 -->
+<!-- ADR 0471 -->
+<!-- ADR 0472 -->
+<!-- ADR 0473 -->
+<!-- ADR 0474 -->
+<!-- ADR 0475 -->
+<!-- ADR 0476 -->
+<!-- ADR 0477 -->
+<!-- ADR 0478 -->
+<!-- ADR 0479 -->
+<!-- ADR 0480 -->
+<!-- ADR 0481 -->
+<!-- ADR 0482 -->
+<!-- ADR 0483 -->
+<!-- ADR 0484 -->
+<!-- ADR 0485 -->
+<!-- ADR 0486 -->
+<!-- ADR 0487 -->
+<!-- ADR 0488 -->
+<!-- ADR 0489 -->
+<!-- ADR 0490 -->
+<!-- ADR 0491 -->
+<!-- ADR 0492 -->
+<!-- ADR 0493 -->
+<!-- ADR 0494 -->
+<!-- ADR 0495 -->
+<!-- ADR 0496 -->

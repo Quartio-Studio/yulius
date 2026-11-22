@@ -32,6 +32,8 @@ in PATH cannot override the project. Direct `cargo xtask` is equivalent only whe
 Cargo is the selected rustup toolchain and `.tools/bin` is on PATH. Prefer the wrapper.
 Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 
+On the instance, bootstrap installs the optional pinned mbx executable. A fresh task worktree can use the pin already installed in its agent home. Use `scripts/dev` for the gates and `scripts/cargo` for a targeted build, check or nextest run. Their cache is on the project sandbox's disk and lists its hit counts in command output. An explicit `RUSTC_WRAPPER` takes precedence. Use `CARGO_INCREMENTAL=1` for ordinary checkout-local incremental compilation during repeated edits. [ADR-0434](../decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md)
+
 ## Gates
 
 | Command | Actual work |
@@ -42,11 +44,13 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
 | `scripts/dev macos` | Clippy with warnings denied on every target for `aarch64-apple-darwin`; on Linux the vendored C (ring, SQLite) is compiled by the pinned zig. Type-checks only: nothing is linked |
-| `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets. With `YULIUS_CI_MATRIX=i/n` (Yulius CI's `test` job, two shards) only hash partition i of n, and the doctests in shard 1 (ADR-0358) |
+| `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets. With `YULIUS_CI_MATRIX=i/n` (an individual matrix shard) only hash partition i of n, and the doctests in shard 1 (ADR-0358) |
+| `scripts/dev docs` | Locked workspace rustdoc build with warnings denied |
+| `scripts/dev test-shard` | Both CI matrix jobs use one nextest archive of their run. They run their own hash partitions concurrently when both have a slot. The first partition runs doctests |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, quick, check, lint, macos, test, deps, then rustdoc with warnings denied; the checker's Python tests run beside the gates after quick, their output in a `checker-tests` stage at the end (ADR-0363) |
-| `scripts/dev checks` | `ci` without its tests: Yulius CI's `quality` job, beside the `test` shards |
-| `scripts/dev mutants` | One bounded mutation run of the Rust lines the branch changed (pinned cargo-mutants; ADR-0347): 30 min in all, 300 s a mutant, by default one job per 8 mutants listed (2 to 7, at most a third of `YULIUS_CPUS`, one per 12 GB of `YULIUS_MEMORY_MB`; 2 without a budget), within `YULIUS_CPUS` CPUs; the product's tests narrowed to those the branch changed. Started with the first review and run beside it, its summary line in the Evidence; `--base <reviewed head>` for a later fix's lines alone (SPEC-506); not part of `ci` |
+| `scripts/dev checks` | Local aggregate of the five CI quality passes |
+| `scripts/dev mutants` | Run a campaign on changed Rust lines when the task requests the command by name. See [Mutation testing](#mutation-testing). |
 | `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open medium findings in the changed lines and on open critical or high findings, exit 2 when it could not run, exit 3 when incomplete. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
@@ -286,10 +290,11 @@ can use the same rust-analyzer component and toolchain. No global editor setting
 or agent permission overrides are installed.
 
 Yulius CI is the only CI ([SPEC-002 ADR-18](../../.ai/specs/SPEC-002-yulius-architecture.md),
-ADR-21): there are no GitHub Actions. It runs `quality` (`scripts/dev checks`), `test` in two
-shards, `e2e` and `security` (`[[ci.jobs]]`; ADR-0358) and publishes
+ADR-21): there are no GitHub Actions. It runs `quality`, `lint`, `macos`, `docs`, `deps`, `file-contracts`, `test`, `e2e` and `security`
+(`[[ci.jobs]]`, ADR-0438) and publishes
 the `yulius/ci` commit status, which the rulesets require. The `e2e` job gets no model key (agent
-steps are skipped). [Git delivery](git.md) defines promotion checks and post-merge evidence.
+steps are skipped). Run the file-reader selector locally with an explicit changed path, for example
+`python3 scripts/repository_tests.py crates/yulius-server/web/assets/mock.js`. With no arguments it compares HEAD with the integration branch. [Git delivery](git.md) defines promotion checks and post-merge evidence.
 
 ## Troubleshooting
 
@@ -305,7 +310,9 @@ steps are skipped). [Git delivery](git.md) defines promotion checks and post-mer
 
 ## Mutation testing
 
-Mutation testing runs beside the review: when you ask for a pull request's first review, start the project's mutation command in the background and let the reviewer read meanwhile; when it ends, put its summary line in the spec's Evidence and fix each missed mutant test-first before the merge. After a later round's fix, run it on that fix's lines alone. A project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.
+Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the on-request command is `scripts/dev mutants`.
+
+Contained agents and CI jobs receive a private disk directory in `YULIUS_BUILD_SCRATCH`. Run `scripts/cargo --scratch-target check` (or another Cargo command) for an ad-hoc build. Each invocation places final and intermediate artifacts in its own target and removes it once its workers stop. Pass the subcommand first and expand any Cargo aliases yourself. Supported built-ins are `bench`, `build`, `check`, `clean`, `doc`, `fix`, `run`, `rustc`, `rustdoc` and `test`. For `clippy` and `nextest`, the launcher invokes the installed plugin directly, including when a Cargo alias shares its name. Eligible builds reuse the sandbox compiler cache across disposable targets. Omit explicit output-directory flags. The launcher pins both directories after user-supplied Cargo configuration. For `cargo run`, place `--config` before positional arguments, including separate option values such as the name in `--bin NAME`. Arguments after Cargo’s `--` separator go to the program as usual. Older sessions and local checkouts use a fresh directory under the checkout’s `target`. The host reclaims the run-owned directory on exit. The separate 1 GiB session tmpfs returns ENOSPC when full. On native macOS, a new process group can make it unclear whether a build worker survived. The command reports the retained scratch path in that case. For the disposable Cargo launcher, an unrelated process started during the build can also trigger retention.
 
 The unmutated baseline runs the same workspace tests and nextest filter as each mutant.
 A baseline failure stops the campaign. Read `target/mutants/mutants.out/log/baseline.log`
@@ -313,5 +320,4 @@ for the failing command and test.
 
 Summaries recorded before the fix for #1364 can overstate the number caught. If a mutant log
 only shows the xtask missing-key test failing in the Git-free copy, the run provides no
-evidence that a test detected that mutation. Rerun the affected change with the corrected
-runner to establish coverage. [ADR-0347](../decisions/0347-mutation-testing-runs-once-per-pull-request.md)
+evidence that a test detected that mutation. An explicitly requested rerun with the corrected runner can establish coverage. [ADR-0347](../decisions/0347-mutation-testing-runs-once-per-pull-request.md)

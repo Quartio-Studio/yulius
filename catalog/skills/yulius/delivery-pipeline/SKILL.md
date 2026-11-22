@@ -89,10 +89,10 @@ is a blocker.
 
 - Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
   shows the problem, then the fix. Answer each finding in the pull request.
-- Re-review after fixes, up to 3 rounds. Before asking for another round, answer each finding of the
-  last report with the test that fails without its fix (or why no test can), check every finding of
-  that report against the new head, and run the project's mutation command on the lines of the fix
-  where it can take them.
+- Re-review until approval under the task's existing authorization.
+  Before asking for another round, answer each finding of the
+  last report with the test that fails without its fix (or why no test can) and check every finding of
+  that report against the new head.
 - After an approval, fix the remaining nits within 20 product lines and merge without another round:
   `delivery_merge` with the approved head counts them (tests and documents do not count). More than
   that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
@@ -101,12 +101,11 @@ is a blocker.
 
 1. A finding in code or tests this change added or modified is fixed in this pull request,
    test-first, and never becomes a follow-up issue. That covers every finding: a test that cannot
-   fail, a weak or missing assertion, a race, a missing regression test. The round limit does not
-   excuse it: when 3 rounds are not enough, keep fixing, split the change, or stop and ask a
-   person (in Yulius: `needs_you`). Never merge with a known defect in your own code.
+   fail, a weak or missing assertion, a race, a missing regression test. If findings persist,
+   keep fixing or split the work into independently reviewable changes within scope.
 2. Only these may become a new issue: a bug in code the change did not introduce (pre-existing,
    found on the way), a flaky test the change did not cause, and cosmetic nits (naming, wording)
-   left at the round limit. Each says why it is outside the change, with the evidence (for
+   left after 3 rounds. Each says why it is outside the change, with the evidence (for
    example "present on the integration branch before this change").
 3. The reviewer classifies each finding as own code or pre-existing, and the pull request answers
    every finding. Deferring an own-code finding makes the verdict request changes.
@@ -164,6 +163,10 @@ With a merge-first staging target (a dev-stage `[cd.<name>]` with `merge_first =
   your sandbox.
 - Once your whole delivery merged (every pull request of the task), ask for staging once (in
   Yulius: `cd_deploy` of that environment).
+- After asking, your task is done: do not keep the session waiting for the staging run, and open no
+  pull request only to record its result (the task's delivery evidence holds it; instance policy of
+  2026-11-21). Yulius tells the task when the gate, the deploy or the verification of its revision
+  fails: only then fix it forward.
 - Yulius runs the full gate on exactly your merged revision, then deploys and verifies it in
   revision order. A failing gate leaves staging on its last verified release and tells you which
   check failed: fix it forward with a new pull request, merge it and ask again.
@@ -221,4 +224,4 @@ locks (claim paths and talk to the other task instead), and metrics dashboards.
 
 Parallel tasks claim the paths they change (`scope_claim`). On an overlap both tasks are told: wait for the other's pull request to merge and merge the integration branch before editing those files, or agree who changes what by a note on the claim.
 
-Mutation testing runs beside the review: when you ask for a pull request's first review, start the project's mutation command in the background and let the reviewer read meanwhile; when it ends, put its summary line in the spec's Evidence and fix each missed mutant test-first before the merge. After a later round's fix, run it on that fix's lines alone. A project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).
+Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).

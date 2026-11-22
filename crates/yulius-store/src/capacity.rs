@@ -95,6 +95,27 @@ impl CapacityStore for SqliteStore {
         .await
     }
 
+    async fn open_pause_with_process(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<(PauseRecord, bool)>> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                &format!(
+                    "SELECT {PAUSE_COLS}, EXISTS (SELECT 1 FROM attempts WHERE task_id = ?1 \
+                     AND state IN ('spawning', 'live')) AS has_process FROM capacity_pauses \
+                     WHERE task_id = ?1 AND ended_at IS NULL"
+                ),
+                [task],
+                |row| Ok((pause_from_row(row)?, row.get("has_process")?)),
+            )
+            .optional()
+            .map_err(db)
+        })
+        .await
+    }
+
     async fn open_pauses(&self) -> AppResult<Vec<PauseRecord>> {
         self.call(|c| {
             let mut stmt = c
@@ -129,14 +150,21 @@ impl CapacityStore for SqliteStore {
         .await
     }
 
-    async fn end_pause(&self, task: &TaskId, at: Timestamp, outcome: &str) -> AppResult<bool> {
+    async fn end_pause_if(
+        &self,
+        task: &TaskId,
+        observed: Option<&str>,
+        at: Timestamp,
+        outcome: &str,
+    ) -> AppResult<bool> {
         let (task, outcome) = (task.as_str().to_owned(), outcome.to_owned());
+        let observed = observed.map(str::to_owned);
         self.call(move |c| {
             let changed = c
                 .execute(
                     "UPDATE capacity_pauses SET ended_at = ?1, outcome = ?2, continuation = NULL \
-                     WHERE task_id = ?3 AND ended_at IS NULL",
-                    params![at.0, outcome, task],
+                     WHERE task_id = ?3 AND ended_at IS NULL AND (?4 IS NULL OR id = ?4)",
+                    params![at.0, outcome, task, observed],
                 )
                 .map_err(db)?;
             Ok(changed > 0)

@@ -23,13 +23,12 @@ dev/main worktrees.
 Merge only after the PR answers every review finding (own code or pre-existing,
 `docs/engineering/workflow.md`, Review output). Each finding in code or tests the
 change added or modified is fixed in the PR, test-first, and never becomes a
-follow-up issue; the round limit does not excuse it (keep fixing, split the change
-or ask a person), and deferring it means request changes. Only a pre-existing bug,
-a flaky test the change did not cause or a cosmetic nit left at the round limit is
+follow-up issue. Deferring it means request changes. Re-review until approval under
+the task's existing authorization. Only a pre-existing bug, a flaky test the change
+did not cause or a cosmetic nit left after 3 rounds is
 filed, saying why it is outside the change.
 
-Require a successful `yulius/ci` status on the exact resulting dev SHA. A task's work
-ends there. Promotion (dev → main, a merge commit, never a squash) is a person's, on the CD
+Merge on green Yulius CI for the exact head. For merge-first staging (Yulius's `[cd.dev]`, ADR-0436), ask once with `cd_deploy` when `delivery_status` says it is due. The task ends after asking. Yulius reports a failed gate, deploy or verification for a fix forward. Promotion (dev → main, a merge commit, never a squash) is a person's, on the CD
 page (ADR-0110): a task that needs it asks with `needs_you`. Keep both permanent branches. Do not
 claim CI proves a deployed app works.
 

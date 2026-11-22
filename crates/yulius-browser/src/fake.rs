@@ -9,7 +9,8 @@
 //! tests), fail a method, or drop all connections (crash tests).
 //!
 //! [`write_fake_chromium`] writes a POSIX shell script that behaves like Chromium's startup
-//! contract: it reads `--user-data-dir=`, records its argv, relays its DevTools pipe (fds 3 and
+//! contract: it reads `--user-data-dir=`, records its argv, holds and honours the profile's
+//! `SingletonLock` like Chrome (SPEC-593), relays its DevTools pipe (fds 3 and
 //! 4) to the fake server's pipe port through `python3` (a repository prerequisite), forks a
 //! descendant (to prove process-group cleanup) and stays alive until killed.
 //!
@@ -1424,6 +1425,10 @@ pub enum FakeChromium {
 pub const FAKE_ARGV_FILE: &str = "fake-chromium-argv.txt";
 /// File holding the fake's own pid (stable across its final `exec`).
 pub const FAKE_PID_FILE: &str = "fake-chromium.pid";
+/// File holding the pid of the fake that took the profile's `SingletonLock`: the fake hands
+/// over only to that process (Chrome only to a Chrome process), and takes over a lock whose pid
+/// runs but is not it.
+pub const FAKE_LOCK_OWNER_FILE: &str = "fake-chromium-lock-owner.pid";
 /// File holding the fake's forked descendant pid.
 pub const FAKE_CHILD_PID_FILE: &str = "fake-chromium-child.pid";
 
@@ -1463,9 +1468,41 @@ for arg in "$@"; do
   esac
 done
 if [ -z "$dir" ]; then echo "fake-chromium: missing --user-data-dir" >&2; exit 2; fi
-printf '%s\n' "$@" > "$dir/fake-chromium-argv.txt"
+"#;
+    let record = r#"printf '%s\n' "$@" > "$dir/fake-chromium-argv.txt"
 printf '%s' "$$" > "$dir/fake-chromium.pid"
 "#;
+    // Chrome's process singleton (SPEC-593): a lock of another host is refused (headless: exit
+    // 21; on a display a dialog that never answers), a running pid of this host gets the window
+    // handed over when it is the fake that took it (exit 0), anything else is replaced by this
+    // process's own lock.
+    let singleton = r#"host="$(uname -n)"
+headless=""
+for arg in "$@"; do
+  case "$arg" in
+    --headless*) headless=1 ;;
+  esac
+done
+if [ -L "$dir/SingletonLock" ]; then
+  lock="$(readlink "$dir/SingletonLock")"
+  lock_host="${lock%-*}"
+  lock_pid="${lock##*-}"
+  if [ "$lock_host" != "$lock" ] && [ "$lock_host" != "$host" ]; then
+    echo "fake-chromium: The profile appears to be in use by another Chromium process ($lock_pid) on another computer ($lock_host)." >&2
+    if [ -n "$headless" ]; then exit 21; fi
+    exec sleep 600
+  fi
+  owner="$(cat "$dir/fake-chromium-lock-owner.pid" 2>/dev/null)"
+  if [ "$lock_host" = "$host" ] && [ "$owner" = "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+    echo "fake-chromium: Opening in existing browser session." >&2
+    exit 0
+  fi
+fi
+rm -f "$dir/SingletonLock" "$dir/SingletonCookie" "$dir/SingletonSocket"
+ln -s "$host-$$" "$dir/SingletonLock"
+printf '%s' "$$" > "$dir/fake-chromium-lock-owner.pid"
+"#;
+    let parse_dir = format!("{parse_dir}{singleton}{record}");
     // Only the relay keeps fds 3 and 4, so its end (the server dropped the connection) is the
     // end of the pipe for Yulius, as a crashed browser's would be.
     let ready = |port: u16, trap: &str| {
@@ -1496,6 +1533,8 @@ struct FakeDisplayInner {
     config: Mutex<DisplayConfig>,
     inputs: Mutex<Vec<DisplayInput>>,
     inputs_seen: watch::Sender<u64>,
+    next_copy: Mutex<Option<String>>,
+    offered_copy: Mutex<(u32, Option<String>)>,
     encoders: Mutex<Vec<(u32, u32)>>,
     tiers: Mutex<Vec<Tier>>,
     running: AtomicUsize,
@@ -1544,6 +1583,8 @@ impl FakeDisplay {
                 config: Mutex::new(config),
                 inputs: Mutex::new(Vec::new()),
                 inputs_seen: watch::channel(0).0,
+                next_copy: Mutex::new(None),
+                offered_copy: Mutex::new((0, None)),
                 encoders: Mutex::new(Vec::new()),
                 tiers: Mutex::new(Vec::new()),
                 running: AtomicUsize::new(0),
@@ -1590,6 +1631,29 @@ impl FakeDisplay {
         tokio::time::timeout(timeout, waiting)
             .await
             .unwrap_or(false)
+    }
+
+    /// Makes the next primary press imitate a webpage that writes text to the display.
+    pub fn copy_on_next_press(&self, text: &str) {
+        *lock(&self.inner.next_copy) = Some(text.to_owned());
+    }
+
+    pub(crate) fn copy_press(&self, result: tokio::sync::oneshot::Sender<u32>) {
+        self.record(DisplayInput::Button {
+            button: 1,
+            press: true,
+        });
+        let mut offer = lock(&self.inner.offered_copy);
+        offer.0 = offer.0.wrapping_add(1);
+        offer.1 = lock(&self.inner.next_copy).take();
+        if offer.1.is_some() {
+            let _ = result.send(offer.0);
+        }
+    }
+
+    pub(crate) fn accept_copy(&self, id: u32) -> Option<String> {
+        let mut offer = lock(&self.inner.offered_copy);
+        (id == offer.0).then(|| offer.1.take()).flatten()
     }
 
     /// Sizes the encoder was started at (device pixels), in order.
@@ -1653,6 +1717,9 @@ impl FakeDisplay {
     }
 
     pub(crate) fn record(&self, input: DisplayInput) {
+        if input.supersedes_copy() {
+            lock(&self.inner.offered_copy).1 = None;
+        }
         lock(&self.inner.inputs).push(input);
         self.inner.inputs_seen.send_modify(|n| *n += 1);
     }

@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use yulius_browser::fake::{
-    FAKE_ARGV_FILE, FAKE_CHILD_PID_FILE, FAKE_PID_FILE, FakeCdpServer, FakeChromium,
-    write_fake_chromium,
+    FAKE_ARGV_FILE, FAKE_CHILD_PID_FILE, FAKE_LOCK_OWNER_FILE, FAKE_PID_FILE, FakeCdpServer,
+    FakeChromium, write_fake_chromium,
 };
 use yulius_browser::{
     BrowserConfig, BrowserError, BrowserManager, BrowserNetwork, CdpError, NetworkLease, PIPE_URL,
@@ -804,6 +804,307 @@ async fn replacement_cleanup_holds_the_slot_and_saved_tabs_until_the_display_sto
         );
         assert_eq!(recovered.tabs()[0].url, "https://page.test/saved");
         manager.shutdown(&sandbox).await?;
+    }
+    Ok(())
+}
+
+/// The output of a fake run expected to end by itself; one that does not is killed and fails.
+async fn bounded(
+    mut child: std::process::Child,
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + WAIT;
+    while child.try_wait()?.is_none() {
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            return Err("the fake did not end by itself".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(child.wait_with_output()?)
+}
+
+/// The host name Chrome writes into its `SingletonLock` (`<host>-<pid>`).
+fn host_name() -> Result<String, Box<dyn std::error::Error>> {
+    Ok(nix::unistd::gethostname()?
+        .into_string()
+        .map_err(|_| "host name")?)
+}
+
+fn link(dir: &Path, name: &str, target: &str) -> TestResult {
+    std::os::unix::fs::symlink(target, dir.join(name))?;
+    Ok(())
+}
+
+fn link_target(dir: &Path, name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(std::fs::read_link(dir.join(name))?
+        .to_str()
+        .ok_or("utf-8")?
+        .to_owned())
+}
+
+/// The locks a moved profile carries: the old host's lock and links into its gone `/tmp`.
+fn carried_locks(profile: &Path) -> TestResult {
+    std::fs::create_dir_all(profile)?;
+    link(profile, "SingletonLock", "old-host-4242")?;
+    link(
+        profile,
+        "SingletonSocket",
+        "/tmp/.org.chromium.Chromium.gone/SingletonSocket",
+    )?;
+    link(profile, "SingletonCookie", "8412907261")?;
+    Ok(())
+}
+
+/// SPEC-593 AC-1: a profile carried from another host (its lock and dangling socket and cookie
+/// links) starts; the fake refuses it like Chrome (exit 21 headless) until Yulius clears them.
+#[tokio::test]
+async fn a_profile_locked_by_another_host_starts_after_its_stale_locks_are_cleared() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let manager = BrowserManager::new(config(exe, dir.path()));
+    let sandbox = SandboxId::parse("moved")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    carried_locks(&profile)?;
+    let browser = manager.ensure(&sandbox, &profile).await?;
+    let pid = browser.pid().ok_or("no pid")?;
+    assert_eq!(
+        link_target(&profile, "SingletonLock")?,
+        format!("{}-{pid}", host_name()?),
+        "the browser holds the profile now"
+    );
+    assert!(std::fs::symlink_metadata(profile.join("SingletonSocket")).is_err());
+    assert!(std::fs::symlink_metadata(profile.join("SingletonCookie")).is_err());
+    manager.shutdown(&sandbox).await?;
+    Ok(())
+}
+
+/// SPEC-593 AC-3 (review round 1): a lock of this host naming a running process that is no
+/// browser (a reused pid) is left to Chrome, which takes the profile over: the start is not
+/// refused, and the browser holds the lock afterwards.
+#[tokio::test]
+async fn a_lock_naming_a_running_process_that_is_no_browser_does_not_block_the_start() -> TestResult
+{
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let manager = BrowserManager::new(config(exe, dir.path()));
+    let sandbox = SandboxId::parse("reused")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    std::fs::create_dir_all(&profile)?;
+    let mut holder = std::process::Command::new("sleep").arg("600").spawn()?;
+    link(
+        &profile,
+        "SingletonLock",
+        &format!("{}-{}", host_name()?, holder.id()),
+    )?;
+    let result = manager.ensure(&sandbox, &profile).await;
+    holder.kill()?;
+    holder.wait()?;
+    let pid = result?.pid().ok_or("no pid")?;
+    assert_eq!(
+        link_target(&profile, "SingletonLock")?,
+        format!("{}-{pid}", host_name()?)
+    );
+    manager.shutdown(&sandbox).await?;
+    Ok(())
+}
+
+/// SPEC-593 SPL-004: the fake refuses another host's lock like Chrome (headless: exit 21; on a
+/// display it never answers), hands over to a running fake browser's lock (exit 0) and takes
+/// over a lock whose pid runs but is no browser, without recording itself before that.
+#[tokio::test]
+async fn the_fake_chromium_honours_profile_locks_like_chrome() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(dir.path(), "fake-chromium", FakeChromium::NeverReady)?;
+    let profile = dir.path().join("profile");
+    std::fs::create_dir_all(&profile)?;
+    let run = |extra: &[&str]| {
+        std::process::Command::new(&exe)
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .args(extra)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    };
+    link(&profile, "SingletonLock", "old-host-4242")?;
+    let refused = bounded(run(&["--headless=new"])?).await?;
+    assert_eq!(refused.status.code(), Some(21));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("another computer (old-host)"));
+    let mut dialog = run(&[])?;
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        assert!(
+            dialog.try_wait()?.is_none(),
+            "the dialog never ends by itself"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    dialog.kill()?;
+    dialog.wait()?;
+    assert_eq!(link_target(&profile, "SingletonLock")?, "old-host-4242");
+    assert!(
+        !profile.join(FAKE_PID_FILE).exists(),
+        "a refused start records nothing"
+    );
+
+    // A running process that took the lock as a fake browser gets the window.
+    std::fs::remove_file(profile.join("SingletonLock"))?;
+    let mut browser = std::process::Command::new("sleep").arg("600").spawn()?;
+    let lock = format!("{}-{}", host_name()?, browser.id());
+    link(&profile, "SingletonLock", &lock)?;
+    std::fs::write(profile.join(FAKE_LOCK_OWNER_FILE), browser.id().to_string())?;
+    let handed = bounded(run(&[])?).await;
+    let handed_recorded = profile.join(FAKE_PID_FILE).exists();
+    // Not a browser: the same running pid without the owner record is taken over.
+    std::fs::remove_file(profile.join(FAKE_LOCK_OWNER_FILE))?;
+    let mut taking = run(&[])?;
+    let took = taking.id();
+    let mut lock_now = String::new();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline {
+        lock_now = link_target(&profile, "SingletonLock").unwrap_or_default();
+        if lock_now.ends_with(&format!("-{took}")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    taking.kill()?;
+    taking.wait()?;
+    browser.kill()?;
+    browser.wait()?;
+    let handed = handed?;
+    assert_eq!(handed.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&handed.stderr).contains("existing browser session"));
+    assert!(!handed_recorded, "a start that hands over records nothing");
+    assert_eq!(lock_now, format!("{}-{took}", host_name()?));
+    Ok(())
+}
+
+/// SPEC-593 AC-3: a start on the profile of a browser Yulius runs never takes its lock.
+#[tokio::test]
+async fn a_running_browsers_profile_lock_is_never_removed() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let manager = BrowserManager::new(config(exe, dir.path()));
+    let (first, second) = (SandboxId::parse("owner")?, SandboxId::parse("intruder")?);
+    let profile = manager.default_profile_dir(&first);
+    let running = manager.ensure(&first, &profile).await?;
+    let pid = running.pid().ok_or("no pid")?;
+    let lock = link_target(&profile, "SingletonLock")?;
+    assert_eq!(lock, format!("{}-{pid}", host_name()?));
+    match manager.ensure(&second, &profile).await {
+        Err(BrowserError::ProfileInUse { pid: holder, .. }) => assert_eq!(holder, pid),
+        other => return Err(format!("expected the profile in use, got {other:?}").into()),
+    }
+    assert_eq!(link_target(&profile, "SingletonLock")?, lock);
+    assert!(running.is_alive() && pid_alive(pid));
+    manager.shutdown(&first).await?;
+    Ok(())
+}
+
+/// SPEC-593 AC-4: a stale lock that cannot be removed fails the start before a display starts,
+/// naming the lock.
+#[tokio::test]
+async fn a_stale_lock_that_cannot_be_removed_fails_before_the_display_starts() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let mut settings = config(exe, dir.path());
+    let display = yulius_browser::fake::FakeDisplay::new();
+    settings.display = display.mode();
+    let manager = BrowserManager::new(settings);
+    let sandbox = SandboxId::parse("stuck")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    std::fs::create_dir_all(profile.join("SingletonSocket").join("occupied"))?;
+    link(&profile, "SingletonLock", "old-host-4242")?;
+    match manager.ensure(&sandbox, &profile).await {
+        Err(error @ BrowserError::Profile(_)) => {
+            let text = error.to_string();
+            assert!(
+                text.contains("SingletonSocket") && text.contains("old-host"),
+                "{text}"
+            );
+        }
+        other => return Err(format!("expected a profile error, got {other:?}").into()),
+    }
+    assert_eq!(display.lifecycle(), (0, 0), "no display was started");
+    assert_eq!(fake.connections(), 0, "Chrome was not started");
+    Ok(())
+}
+
+/// SPEC-593 SPL-003 (review round 2): a failure that is not Chrome giving up on the holder is
+/// never blamed on it: a display server that exits early beside a held lock, and a Chrome that
+/// took over a lock of a running process that is no browser and then never answered.
+#[tokio::test]
+async fn a_start_that_failed_for_another_reason_does_not_name_the_lock_holder() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let mut holder = std::process::Command::new("sleep").arg("600").spawn()?;
+    let lock = format!("{}-{}", host_name()?, holder.id());
+    let xvfb = dir.path().join("failing-xvfb");
+    std::fs::write(
+        &xvfb,
+        "#!/bin/sh\necho 'fake-xvfb: cannot open display' >&2\nexit 1\n",
+    )?;
+    std::fs::set_permissions(&xvfb, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    let mut display = yulius_browser::DisplayConfig::new(dir.path().join("displays"));
+    display.xvfb = xvfb;
+    display.ffmpeg = "/bin/true".into();
+    let hanging = write_fake_chromium(dir.path(), "hanging", FakeChromium::NeverReady)?;
+    let mut settings = config(hanging.clone(), dir.path());
+    settings.display = yulius_browser::DisplayMode::Virtual(display);
+    let on_display = BrowserManager::new(settings);
+    let sandbox = SandboxId::parse("no-display")?;
+    let profile = on_display.default_profile_dir(&sandbox);
+    std::fs::create_dir_all(&profile)?;
+    link(&profile, "SingletonLock", &lock)?;
+    let display_failed = on_display.ensure(&sandbox, &profile).await;
+
+    let mut settings = config(hanging, dir.path());
+    settings.startup_timeout = Duration::from_secs(1);
+    settings.stop.graceful = Duration::ZERO;
+    let headless = BrowserManager::new(settings);
+    let other = SandboxId::parse("taken-over")?;
+    let taken = headless.default_profile_dir(&other);
+    std::fs::create_dir_all(&taken)?;
+    link(&taken, "SingletonLock", &lock)?;
+    let timed_out = headless.ensure(&other, &taken).await;
+    holder.kill()?;
+    holder.wait()?;
+    match display_failed {
+        Err(BrowserError::ExitedEarly { stderr, .. }) => {
+            assert!(stderr.contains("fake-xvfb"), "{stderr}");
+        }
+        other => return Err(format!("expected the display's own failure, got {other:?}").into()),
+    }
+    match timed_out {
+        Err(BrowserError::StartupTimeout { .. }) => {}
+        other => return Err(format!("expected a startup timeout, got {other:?}").into()),
     }
     Ok(())
 }

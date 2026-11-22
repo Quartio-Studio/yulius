@@ -88,6 +88,8 @@ enum Command {
     /// worktree, paths of the session's own `/`, `/tmp`, `/run` and `/dev/shm`), refusing anything
     /// else.
     Remove {
+        #[command(flatten)]
+        options: yulius::remove_cli::RemovalOptions,
         /// Files or directories to remove; a link is removed, not what it points to.
         #[arg(required = true)]
         paths: Vec<PathBuf>,
@@ -311,6 +313,14 @@ enum Command {
     },
     /// Print build information.
     Version,
+    /// Apply this release's migrations to a copy of a store file and print its schema, from the
+    /// one it had (staging's deploy measures a migration with it, SPEC-591).
+    #[command(name = "store-migrate", hide = true)]
+    StoreMigrate {
+        /// The store file (a copy): it must exist.
+        #[arg(long)]
+        db: PathBuf,
+    },
     /// Root helper: build or install the commit the server requested (yulius-update.service).
     #[command(name = "update-helper", hide = true)]
     UpdateHelper(Box<yulius::update_helper::HelperArgs>),
@@ -730,9 +740,8 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::SecurityScan { args } => yulius::security_scan::run(&args),
-        Command::Remove { paths } => {
-            let code =
-                yulius::remove_cli::run(&mut std::io::stdout(), &paths, &|k| std::env::var(k).ok());
+        Command::Remove { options, paths } => {
+            let code = options.run(&mut std::io::stdout(), &paths, &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::GhToken => {
@@ -962,6 +971,16 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Command::StoreMigrate { db } => match yulius_store::migrate_file(&db) {
+            Ok((from, to)) => {
+                println!("schema {to} (from {from})");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("yulius store-migrate: {}: {err}", db.display());
+                ExitCode::FAILURE
+            }
+        },
         Command::UpdateHelper(args) => yulius::update_helper::main(&args),
         Command::MigrateHelper(args) => yulius::migrate_helper::main(&args),
         Command::Serve(args) => run_async(yulius::serve::serve(*args)),

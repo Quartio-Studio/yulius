@@ -18,7 +18,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskRecord};
 use crate::needs_you::NeedsYouRecord;
-use crate::supervisor::RunStart;
+use crate::supervisor::{CONTINUE_TASK_PROMPT, RunStart, SwitchCondition};
 
 /// What a task of `provider` with nothing usable left is asked for (MOV-006). The request ends by
 /// itself when the task gets a subscription again.
@@ -30,7 +30,7 @@ pub(crate) fn no_subscription_action(provider: Provider) -> String {
 }
 
 /// Whether `action` is the "no subscription left" request of any provider.
-fn is_no_subscription_action(action: &str) -> bool {
+pub(crate) fn is_no_subscription_action(action: &str) -> bool {
     Harness::ALL
         .iter()
         .any(|harness| action == no_subscription_action(harness.provider()))
@@ -176,7 +176,55 @@ impl App {
         reason: &str,
     ) -> AppResult<()> {
         let store = &self.deps.store;
-        let pause = store.open_pause(task_id).await?;
+        let observed = store.open_pause_with_process(task_id).await?;
+        let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        let idle_codex = if let Some(activity) = task.activity.filter(|activity| {
+            task.harness == Harness::Codex
+                && task.status == TaskStatus::Running
+                && activity.is_idle()
+        }) {
+            let attempt = store.live_attempt(task_id).await?.ok_or_else(|| {
+                AppError::Conflict("the idle session changed during the move".into())
+            })?;
+            Some(SwitchCondition::IdleCodex {
+                from: (activity, task.updated_at),
+                attempt: attempt.id,
+            })
+        } else {
+            None
+        };
+        crate::race::reached(
+            crate::race::Point::MovePauseRead,
+            std::path::Path::new(task_id.as_str()),
+        );
+        // An admitted start owns its saved instruction and its pause row. Read a legacy
+        // goal turn's process with that row so a later run cannot turn it into a live move.
+        if let Some((pause, has_process)) = &observed
+            && match pause.kind {
+                PauseKind::GoalFreshStart | PauseKind::GoalResumeStart => true,
+                PauseKind::FreshStart | PauseKind::Start => task.harness == Harness::Codex,
+                PauseKind::Turn => task.mode == crate::model::TaskMode::Goal && !has_process,
+                PauseKind::Limit | PauseKind::Prompt => false,
+            }
+        {
+            let start = if pause.kind == PauseKind::Start {
+                RunStart::Resume {
+                    prompt: pause.continuation.clone(),
+                }
+            } else {
+                self.start_for_capacity_pause(&task, pause).await?
+            };
+            return self
+                .switch_from(
+                    task_id,
+                    account,
+                    reason,
+                    start,
+                    SwitchCondition::Paused(pause),
+                )
+                .await;
+        }
+        let pause = observed.map(|(pause, _)| pause);
         let at_limit = pause.as_ref().is_some_and(|p| p.kind == PauseKind::Limit)
             || self.runtime(task_id).at_limit.load(Ordering::SeqCst);
         if at_limit {
@@ -186,16 +234,25 @@ impl App {
             let start = RunStart::Fresh { prompt: None };
             return self.switch_with(task_id, account, reason, start).await;
         }
-        let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        let goal_stop = task.mode == crate::model::TaskMode::Goal
+            && pause
+                .as_ref()
+                .is_some_and(|pause| pause.kind == PauseKind::Turn);
         let prompt = match pause {
             Some(pause) if pause.kind == PauseKind::Prompt => pause.continuation,
             Some(pause) if pause.kind == PauseKind::Turn => self.stop_continuation(&task).await,
             _ if task.status == TaskStatus::Running && task.activity == Some(Activity::Working) => {
-                Some("Continue the task exactly where you left off.".into())
+                Some(CONTINUE_TASK_PROMPT.into())
             }
             _ => None,
         };
-        self.switch_with(task_id, account, reason, RunStart::Resume { prompt })
+        let start = RunStart::Resume { prompt }.with_goal_continuation(goal_stop);
+        let condition = if matches!(start, RunStart::Resume { prompt: None }) {
+            idle_codex.unwrap_or(SwitchCondition::Any)
+        } else {
+            SwitchCondition::Any
+        };
+        self.switch_from(task_id, account, reason, start, condition)
             .await
     }
 

@@ -59,7 +59,7 @@ pub struct CdEnvironment {
     pub verify: Option<String>,
     /// Production promotes the integration branch first.
     pub promote: bool,
-    /// With `promote`: the integration head a deploy now would promote (as last fetched).
+    /// With `promote`, the integration revision available for release at the last fetch.
     #[serde(default)]
     pub promotes_from: Option<String>,
     /// Secrets the commands get.
@@ -84,6 +84,9 @@ pub struct CdEnvironment {
 /// A merge-first staging target's queue (SPEC-575, ADR-0411).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CdStaging {
+    /// Instance-wide GitHub wait while the App is rate limited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_wait: Option<String>,
     /// The revision staging last deployed and verified, if any.
     #[serde(default)]
     pub verified: Option<String>,
@@ -266,7 +269,7 @@ pub struct CdDeploy {
     #[serde(default)]
     pub confirm: Option<String>,
     /// The commit the person was shown (at least 7 hex digits): the one it deploys, or with a
-    /// promotion the integration commit it promotes. Refused (409) when the branch moved since.
+    /// promotion the integration commit it promotes. Refused (409) when the selected revision changed.
     #[serde(default)]
     pub expect: Option<String>,
     /// Production: how long the person kept the confirmation open, in milliseconds, as the page

@@ -109,7 +109,7 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
     merge-first deploy script is idempotent by contract.
   - A request whose run passed before the crash is marked `verified` from the run.
   - A second request in the same tick creates no second row or run.
-- **MFS-009 Production from verified staging.**
+- **MFS-009 Production from verified staging.** The production CD head-equality rule below is superseded by [SPEC-586](SPEC-586-we-should-be-able-to-deploy-on-prod-last.md).
   - With a merge-first environment, every promotion (a person's production deploy, the Delivery
     page's Promote, the profile's automatic one) is refused until the integration head is the
     revision that environment serves, verified, with the tables read through the CD mirror.
@@ -139,6 +139,16 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
   - The upgrade task must keep the project's commands, targets and vault grants. It reconciles
     conflicting repository guidance and reports whether the project switched or has no target.
   - The task is created once per sandbox and revision, including across restarts.
+- **MFS-013 A merged task hears that staging waits for it.**
+  - Once a task's work merged into a project with a merge-first target, `delivery_status` tells
+    its agent that its staging request is due: the merged revision and the `cd_deploy` call.
+  - Once it asked, the same line says where its newest request stands, with its run ids and
+    the next step. A failed or superseded request of an older revision leaves the newer landing
+    due again.
+  - The receipt of a merge on green sends the agent to `delivery_status`, so a task whose
+    session began before its project switched learns it there. The rollout of 2026-11-21 showed the need:
+    three upgrade tasks switched their project and ended without a staging request (their
+    briefing still said merges deploy nothing), and only a task can ask.
 
 ## Plan
 
@@ -162,6 +172,9 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 - [x] Scenario test: fresh bootstrap, existing sandbox, failed candidate then fix, concurrent tasks with a retried deploy
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
+- [x] delivery_status asks a merged task of a merge-first project for its staging request
+- [x] Independent review of the staging request note, findings fixed test-first
+- [x] Gate green, docs and the changes log updated for the staging request note
 
 ## Acceptance criteria
 
@@ -186,6 +199,8 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
   verified: while the integration head is a newer revision, it is refused.
 - Upgrade task: a ready sandbox at an older bootstrap revision gets one upgrade task. A restart
   creates no second one.
+- A merged task's `delivery_status` names its due staging request; after a failed gate and a
+  merged fix, the fix's revision is due; then it names the newer request's state and run ids.
 
 ## Test plan
 
@@ -205,7 +220,8 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
   - coordinator scenarios from the acceptance criteria with run and revision ids;
   - restart reconcile;
   - production promotion pin;
-  - upgrade task creation.
+  - upgrade task creation;
+  - `delivery_status`'s staging line (MFS-013).
 - **Real rollout:** Yulius's own repository has no shared target (`[cd.dev]` empty), so it keeps
   its full suite on PRs. Quartio-v2 and the PerfectData projects adopt through their upgrade
   tasks once the release is installed.
@@ -333,15 +349,44 @@ Each of these was reverted, its test failed, and the code was restored:
 - The security scan is turned off for this project in Yulius: `yulius security-scan` prints
   "Security scan disabled", and CI's `security` job ends skipped. Disabled, not passed.
 
-### Not tested here, and the rollout
+### MFS-013 (PR #1579 and its review round)
 
-- Shipping, adoption on the Quartio and PerfectData instances, and Quartio-v2 as the first real
-  project need the release on `main` and each instance updated. Promotion to `main` and the
-  instance update (Settings, Instance, Update now) are a person's; task #561 asks for both with
-  `needs_you`.
-- After the update, the upgrade task in each onboarded sandbox reports whether it switched (and
-  its target) or has no shared target. Those reports are the adoption evidence. This task cannot
-  read other sandboxes: the handoff switch is off on this instance.
+- `delivery_status_asks_a_merged_task_for_its_staging_request`: no line before a landing, the
+  due line, then the verified request with both run ids; no line without a merge-first target.
+- `delivery_status_after_a_failed_gate_names_the_fix`: a `gate_failed` request with its next
+  step, then the fix's revision due, then the newer request verified.
+- Review round 1 (Fable 5.2) approved 404f27586 with five minors; the second PR fixes them:
+  - the stale failure line;
+  - a fetch only when the verified head is missing;
+  - no read on evidence pages;
+  - a logged read failure;
+  - the two-request test.
+
+### Rollout (2026-11-21)
+
+- Promoted to `main` at 3fc0e5976 (#1567, main run 14a26ad8); Quartio and PerfectData run it.
+- **Quartio-v2 #338, the first real project: switched.**
+  - PR #1498 set `[cd.dev] merge_first`, `tests` `after_merge`, and `[local]`, merging at e8bdfcf6d.
+  - PR run 97701a18 and merge-train run 86a41cbc passed. The full gate ran once on the merge,
+    as `dev` run 5d943395.
+  - Staging request 4d4c40d6 is verified: CD run 469c3db1 deployed e8bdfcf6d, and the rollback
+    drill aeb9857e followed. Production was untouched.
+- **Switched:**
+  - autoresearch #24, staging verified with run bd590594;
+  - VistulaValley #11, jobs after the merge (run 12da928d);
+  - Branding #6;
+  - N3.1-yulius-owned #67;
+  - FW-N2-Device #25, with its build moved off pull requests.
+  VistulaValley, Branding and N3.1 ended without a staging request, which is what MFS-013 fixes.
+- **No shared target:**
+  - yulius #563 (PR #1568);
+  - product #81;
+  - studio #3;
+  - OS-CMS #5, blocked on a person creating its dev environment.
+- centrum (PerfectData) got no task: an admin skipped its onboarding (ADR-0415).
+
+### Not tested here
+
 - The update gate's real flow (an install closing the gate) is covered through a test seam
   (`hold_deploys_for_tests`), not the self-update fixture.
 - Yulius's own repository has no shared staging target (`[cd.dev]` is empty), so it keeps its

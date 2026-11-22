@@ -44,6 +44,14 @@ issue #1412. Extends SPEC-050 SES-101 (Done tasks' sessions do not count toward 
 - A queued task says what it waits for (`queue_reason`), and the Capacity card shows working,
   parked, idle and queued sessions apart.
 
+Capture the attempt ID in the task read that sees Parked, then check it at launch. Another turn can start and park during account or permission checks. Its outstanding decision belongs to that later turn.
+
+Continue on a closed, stopped or failed task carries the same attempt identity and the archive state the owner saw. A run can already appear ended while its reader is finishing a park. Continue waits for the terminal cleanup bound, then accepts the launch or queue entry in the same transaction that removes the archive and clears the old question. A later archive or replacement run wins if it was recorded first. When the owner names a subscription, this transaction reads current subscription eligibility and the task’s model before committing. Refusal rolls back the archive, question and its answer timestamp. The queue retains the accepted subscription and checks it again at dispatch.
+
+The final park check and a new merge request use the existing per-task merge writer. The idle pass defers when it cannot acquire the writer. A committed park remains identifiable by attempt until its task state settles, including while an exit reader has taken the park intent. This preserves an admitted merge and prevents a late request from arming on a parked owner.
+
+When a parked owner's single-PR integration candidate fails, the PR watcher uses the recorded queue decision as the prompt for a native resume. A lack of capacity leaves the decision pending so the next launch can check the current PR head, integration base and human requests. A failed subscription selection before spawn leaves the prior session available to resume.
+
 ## Alternatives
 
 - **Count only working sessions, keep the processes.** Frees slots, not memory: the small host of

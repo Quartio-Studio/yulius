@@ -285,6 +285,7 @@ function createStatusPanel(ctx, button) {
   let offFocus = null;
   let el = null;
   let timer = null;
+  let expiry = null;
   let onDoc = null;
   let onKey = null;
 
@@ -292,8 +293,15 @@ function createStatusPanel(ctx, button) {
     if (!el) return;
     try {
       const data = await ctx.api.get('/api/status');
-      if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {})));
+      if (!el) return;
+      const render = () => { if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {}))); };
+      render();
+      clearTimeout(expiry);
+      if (githubWaitText(data?.github_reset_at_ms)) {
+        expiry = setTimeout(render, Math.min(data.github_reset_at_ms - Date.now(), 2_147_483_647));
+      }
     } catch (error) {
+      clearTimeout(expiry);
       if (el) setChildren(el, h('div', { class: 'status-section' }, h('div', { class: 'placeholder placeholder-error' }, error.message)));
     }
   }
@@ -312,6 +320,7 @@ function createStatusPanel(ctx, button) {
   }
 
   function close() {
+    clearTimeout(expiry);
     clearInterval(timer);
     timer = null;
     if (offFocus) offFocus();
@@ -426,6 +435,13 @@ function statusSection(key, iconName, title, summary, body, openByDefault) {
     h('div', { class: 'status-fold-body' }, body)), key, openByDefault);
 }
 
+export function githubWaitText(reset) {
+  if (!Number.isFinite(reset) || reset <= Date.now()) return '';
+  const when = new Date(reset);
+  if (!Number.isFinite(when.getTime())) return '';
+  return `GitHub rate limit reached. Merges, CI status updates and the staging queue are waiting until ${when.toISOString().slice(11, 19)} UTC.`;
+}
+
 /**
  * Render GET /api/status (`StatusView`: vm, sessions, sandboxes, accounts, contained) so it reads
  * in seconds: one health line, machine tiles, then sandboxes and accounts as collapsible lists.
@@ -464,6 +480,7 @@ export function renderStatus(data) {
   if (placed !== REVIEW_MODEL) health = { tone: 'warn', icon: 'clock', text: fallbackLine(REVIEW_MODEL, placed) };
   if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'subscription needs' : 'subscriptions need'} attention` };
 
+  const githubWait = githubWaitText(data.github_reset_at_ms);
   const facts = [
     h('span', { class: 'status-fact', title: 'Time since the machine started' }, icon('clock', { size: 13 }), Number.isFinite(vm.uptime_s) ? `Up ${duration(vm.uptime_s * 1000)}` : 'Uptime unknown'),
     load ? h('span', { class: 'status-fact', title: 'Load average over 1, 5 and 15 minutes' }, icon('pulse', { size: 13 }), `Load ${load.join(' · ')}`) : null,
@@ -484,7 +501,8 @@ export function renderStatus(data) {
   const accountSummary = [`${ready} ready`, limited ? `${limited} at the limit` : null, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean);
 
   return [
-    h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
+    githubWait ? h('div', { class: 'github-wait', role: 'status' }, githubWait) : null,
+    githubWait && health.tone === 'ok' ? null : h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
     h('div', { class: 'status-section' },
       h('h2', null, 'Machine'),
       h('div', { class: 'stat-tiles' },
@@ -493,10 +511,25 @@ export function renderStatus(data) {
         statTile('disk', 'Disk', diskPct === null ? '—' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
         sessionsTile(sessions)),
       h('div', { class: 'status-facts' }, facts)),
+    data.github_budget ? githubBudgetSection(data.github_budget) : null,
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
     statusSection('accounts', 'user', 'Subscriptions', accounts.length ? accountSummary : 'none yet',
       accounts.length === 0 ? h('div', { class: 'muted small' }, 'No subscriptions yet.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a), showEmail: a.in_use_by !== undefined }))), troubled.length > 0 || accounts.length <= 3),
   ];
+}
+
+function githubBudgetSection(budget) {
+  const labels = { display: 'Display reads', ci_statuses: 'CI statuses', merges: 'Merges', staging: 'Staging queue', imports: 'Imports', other: 'Other' };
+  const summary = budget.remaining == null ? 'Remaining quota unknown' : `${budget.remaining.toLocaleString()} of ${budget.limit.toLocaleString()} remaining`;
+  const reset = budget.resets_at ? new Date(budget.resets_at * 1000).toLocaleTimeString() : null;
+  return statusSection('github', 'pulse', 'GitHub API', summary, h('div', { class: 'status-rows' },
+    budget.display_paused ? h('p', null, 'Display refreshes paused to reserve requests for delivery.') : null,
+    reset ? h('p', null, `Quota resets at ${reset}.`) : null,
+    h('p', null, budget.resets_at ? 'Installation requests from this server in this quota window' : 'Recent installation requests from this server'),
+    budget.used != null ? h('p', null, `${budget.used.toLocaleString()} requests charged by GitHub. At least ${(budget.unattributed_minimum ?? 0).toLocaleString()} are unattributed.`) : null,
+    ...Object.entries(labels).map(([key, label]) => h('div', { class: 'status-row' },
+      h('span', { class: 'status-row-name' }, label), h('span', { class: 'status-count' }, String(budget.attempts[key] || 0)))),
+    h('p', null, `${budget.not_modified} unchanged responses used no primary quota.`)), budget.display_paused);
 }
 
 /** Initials for an account's avatar: from the email's name part, else from the label. */
@@ -897,9 +930,12 @@ function tokenTiles(tokens) {
       `last 24 h: ${compact(spent(day))}${unknown ? ` · ${unknown} ${unknown === 1 ? 'run' : 'runs'} reported no usage` : ''}`,
     ] : 'not known yet', 'ok', perDay && weekChart('Tokens', perDay.map(spent), compact)),
     capacityTile('zap', 'API cost (7 days)', cost === null ? '—' : `≈ ${usd(cost)}`, [
-      'at Claude API list prices',
-      cost === null ? (week && spent(week) ? 'no run’s model has a price' : null)
-        : `${day && Number.isFinite(day.cost_usd) ? `last 24 h ≈ ${usd(day.cost_usd)}` : 'last 24 h: —'}${unpriced ? ` · ${unpriced} ${unpriced === 1 ? 'run' : 'runs'} of unknown models not counted` : ''}`,
+      'Recorded runs at standard API prices',
+      Number.isFinite(t.ultrafast_cost_usd) ? `≈ ${usd(t.ultrafast_cost_usd)} if eligible Codex runs used Ultrafast` : null,
+      week ? 'Separate Codex subagent sessions excluded' : null,
+      day && Number.isFinite(day.cost_usd) ? `last 24 h ≈ ${usd(day.cost_usd)}` : 'last 24 h: —',
+      [unpriced && `${unpriced} ${unpriced === 1 ? 'run' : 'runs'} without a model price`,
+        unknown && `${unknown} ${unknown === 1 ? 'run' : 'runs'} without usage`].filter(Boolean).join(' · '),
     ], 'ok', perDay && weekChart('API cost', perDay.map((d) => (Number.isFinite(d.cost_usd) ? d.cost_usd : null)), usd)),
   ];
 }

@@ -31,12 +31,15 @@ merges it. Its steps:
    files); `repo_hygiene` lists, and `repo_cleanup` removes, stale branches and the worktrees
    of merged, archived or deleted tasks.
 6. Yulius CI runs every new `dev` commit; a task's work ends at `dev`. Deploying dev is a task's
-   only when it asks (`cd_deploy`).
+   only when it asks (`cd_deploy`). Where `dev` has a merge-first staging target, as Yulius's own
+   `[cd.dev]` (ADR-0436), the task asks once with `cd_deploy` when `delivery_status` says so.
+   After asking, the task is done. Yulius reports a failed gate, deployment or verification for a fix forward.
 7. **Promotion is a person's** ([ADR-0110](../decisions/0110-only-a-person-deploys-production.md)):
    an administrator promotes on the CD page, typing the project's slug. Yulius then opens the
-   promotion pull request from `dev` into `main` and merges it with a **merge commit** when the
-   exact `dev` head has a successful `yulius/ci` status (the `yulius-main` ruleset requires it);
-   otherwise the deploy is refused with why, and the person deploys again later.
+   promotion pull request into `main` from the confirmed, verified dev revision. When a newer
+   revision is still being checked, CD can use a release ref pinned to the earlier verified SHA.
+   The `yulius-main` ruleset requires successful `yulius/ci` on the selected revision for the
+   **merge commit**. A refused deploy explains which evidence is missing.
    An agent never promotes; a task that needs production asks a person with `needs_you`.
 
 If several tested features accumulate on `dev`, a promotion includes all of them. Never
@@ -210,7 +213,7 @@ no force pushes/deletion and a successful `yulius/ci` status (published by the Y
 App). Feature branches must be up to date with `dev`. macOS has no Yulius runner: run
 `scripts/dev ci` on a Mac before promotion.
 [main rules](../../.github/rulesets/main.json) require merge-commit PRs and the same
-check; main admits only this repository's `dev`, which Yulius's merge gate checks. Both have zero
+check. A promotion comes from this repository's `dev` or a release ref pinned to its verified history by production CD ([ADR-0425](../decisions/0425-pin-a-production-deploy-to-verified-dev.md)). Both have zero
 approval requirements and no bypass actors.
 
 `main` does not require `dev` to include main's promotion-only merge commits:

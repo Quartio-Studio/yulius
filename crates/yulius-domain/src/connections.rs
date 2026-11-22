@@ -145,6 +145,34 @@ impl<K: PartialEq, T> Connections<K, T> {
 }
 
 impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
+    /// Live connection controls in original admission order. Evicted connections are absent.
+    pub fn controls_mut(&mut self) -> impl Iterator<Item = (u64, &mut T)> {
+        self.open
+            .iter_mut()
+            .map(|open| (open.id, &mut open.payload))
+    }
+
+    /// Reattach an already admitted connection at startup, preserving its byte activity.
+    /// Restore in admission order, before serving new requests.
+    ///
+    /// # Errors
+    /// Refuses a record beyond the new capacity without evicting another restored connection.
+    pub fn restore_by(
+        &mut self,
+        key: K,
+        owner: O,
+        payload: T,
+        last: u64,
+    ) -> Result<Admitted<K, T, O>, Full> {
+        if self.per_key < self.max && self.count(&key) >= self.per_key {
+            return Err(Full::Key);
+        }
+        if self.len() >= self.max {
+            return Err(Full::Total);
+        }
+        self.admit_by(key, owner, payload, last)
+    }
+
     /// A table of `max` places, `per_key` of them per key, whose connections give way once idle
     /// for `floor_ms`, or else to a connection of a less busy owner (or key).
     #[must_use]
@@ -411,6 +439,60 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn restoration_preserves_order_and_activity_and_refuses_over_capacity() -> TestResult {
+        let mut table = Connections::with_owners(3, 2, 120);
+        let first = table.restore_by("s1", "run1", "oldest", 10)?;
+        let next = table.restore_by("s1", "run2", "next", 10)?;
+        assert_eq!(
+            table.restore_by("s1", "run3", "excess", 200).err(),
+            Some(Full::Key)
+        );
+        let third = table.restore_by("s2", "run4", "newest", 110)?;
+        assert_eq!(
+            table.restore_by("s3", "run5", "excess", 200).err(),
+            Some(Full::Total)
+        );
+        assert_eq!(
+            table
+                .controls_mut()
+                .map(|(id, control)| (id, *control))
+                .collect::<Vec<_>>(),
+            [
+                (first.id, "oldest"),
+                (next.id, "next"),
+                (third.id, "newest")
+            ]
+        );
+        assert_eq!(
+            table.admit_by("s1", "run1", "fresh", 129).err(),
+            Some(Full::Key)
+        );
+        let admitted = table.admit_by("s1", "run1", "fresh", 130)?;
+        assert_eq!(admitted.evicted.ok_or("idle peer")?.payload, "oldest");
+        assert_eq!(third.activity.last(), 110);
+        Ok(())
+    }
+
+    #[test]
+    fn restoration_reports_the_limit_that_normal_admission_would_meet() -> TestResult {
+        for (max, share, keys, expected) in [
+            (1, 1, vec!["a"], Full::Total),
+            (2, 1, vec!["a", "b"], Full::Key),
+        ] {
+            let mut table = Connections::with_owners(max, share, 10);
+            for key in keys {
+                table.restore_by(key, "owner", "original", 0)?;
+            }
+            assert_eq!(
+                table.restore_by("a", "owner", "extra", 99).err(),
+                Some(expected)
+            );
+            assert_eq!(table.len(), max, "the original places are retained");
+        }
+        Ok(())
+    }
 
     /// SLR-001: free places admit; a full table closes the longest-idle connection past the
     /// floor, never one active within it.

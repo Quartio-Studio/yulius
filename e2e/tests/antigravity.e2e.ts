@@ -11,7 +11,7 @@ failOnPageErrors();
 
 type Mocked = {
   __yuliusMock: {
-    tasks: { harness: string; harness_choice?: string; model: string; effort: string }[];
+    tasks: { harness: string; harness_choice?: string; model: string; model_default: boolean; effort: string; effort_default: boolean }[];
     harnessRolls: number[];
     accounts: { id?: string; label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
@@ -224,14 +224,13 @@ test('an Antigravity task waiting for or failing without an account names Antigr
   await expect(screen.getByText('Failed (no Antigravity account)').first()).toBeVisible();
 });
 
-// With no Claude account usable, the composer asks to connect Claude only until an Antigravity
-// account is usable; an Antigravity start refused for want of one offers Connect Antigravity,
-// which opens the Antigravity dialog.
-test('the composer asks for Claude only while no Antigravity account is usable either', async ({ app, browser, screen }) => {
+// With no accounts, changing the model updates the connection prompt and the refused start.
+test('an Antigravity choice offers its sign-in until an account is usable', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&claude=0'));
   await firstShown(browser.locator('.claude-connect'));
   await screen.getByRole('button', /^Model:/).click();
   await screen.getByRole('menuitemradio', /^Gemini 4 Carbon/).click();
+  await expect(screen.getByRole('link', 'Connect Antigravity')).toHaveAttribute('href', /\/admin\/accounts\?add=antigravity$/);
   await screen.getByRole('textbox', 'Task prompt').fill('Add a health check');
   await screen.getByRole('button', 'Start task').click();
   const toast = browser.locator('.toast-error');
@@ -255,11 +254,11 @@ test('an unknown add in the address opens no dialog', async ({ app, browser, scr
   await expect(browser.locator('dialog.modal')).toHaveCount(0);
 });
 
-// SPEC-520 RHM-001/002/006: the composer and Settings start on Random (`Random agent`), drawing
+// SPEC-520 RHM-001/002/006: selecting Random in the composer persists in Settings and draws
 // uniformly across all harnesses (`claude`, `codex`, `antigravity`) that have non-exhausted
 // subscriptions regardless of subscription count, skipping finished subscriptions, and showing
 // "(drawn at random)" in the task overview; an automation's agent starts on Random (`auto`).
-test('a task started without choosing an agent draws across available harnesses, and says so', async ({ app, browser, screen }) => {
+test('a task started on Random draws across available harnesses, and says so', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await browser.evaluate(() => {
     const m = (window as unknown as Mocked).__yuliusMock;
@@ -271,7 +270,9 @@ test('a task started without choosing an agent draws across available harnesses,
     // [claude, codex, antigravity]: roll 1 picks codex, roll 2 picks antigravity.
     m.harnessRolls.push(1, 2);
   });
-  await firstShown(screen.getByRole('button', 'Model: Random agent'));
+  await firstShown(screen.getByRole('button', 'Model: Codex default'));
+  await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^Random/).click();
   await screen.getByRole('button', /^Model:/).click();
   await expect(screen.getByRole('menuitemradio', /^Random/)).toHaveAttribute('aria-checked', 'true');
   await browser.keyboard.press('Escape');
@@ -294,9 +295,16 @@ test('a task started without choosing an agent draws across available harnesses,
   const second = await browser.evaluate(() => {
     const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
     const last = tasks[tasks.length - 1];
-    return { harness: last.harness, choice: last.harness_choice };
+    return {
+      harness: last.harness, choice: last.harness_choice,
+      model: last.model, modelDefault: last.model_default,
+      effort: last.effort, effortDefault: last.effort_default,
+    };
   });
-  expect(second).toEqual({ harness: 'antigravity', choice: 'random' });
+  expect(second).toEqual({
+    harness: 'antigravity', choice: 'random',
+    model: 'gemini-4-neon', modelDefault: true, effort: 'high', effortDefault: true,
+  });
   await browser.evaluate(() => { location.hash = location.hash.replace('/t/', '/tasks/'); });
   await expect(browser.locator('main')).toContainText('Antigravity (drawn at random)');
 
@@ -338,6 +346,8 @@ test('a mixed request on Random with only Antigravity usable is created as one d
   await eventsConnected(browser);
   await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.connectAntigravity());
   await expect(browser.locator('.claude-connect')).toHaveCount(0);
+  await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^Random/).click();
   await expect(screen.getByRole('button', 'Model: Random agent')).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill([

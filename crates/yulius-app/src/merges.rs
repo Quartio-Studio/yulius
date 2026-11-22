@@ -122,7 +122,11 @@ impl App {
             }
             train
         });
-        Ok(json!({"armed": armed, "train": train}))
+        let mut queue = json!({"armed": armed, "train": train});
+        if let Some(wait) = self.github_wait() {
+            queue["github_wait"] = json!(wait);
+        }
+        Ok(queue)
     }
 
     /// Merges task `id`'s pull request for its owner (MRG-003), as the page's Merge does once
@@ -232,7 +236,6 @@ impl App {
         if merge_now {
             // The page's merge, which audits it under the person's name.
             let view = self.merge_task_pr(ctx, id).await?;
-            self.clear_armed(&task);
             return Ok(json!({
                 "merged": true,
                 "armed": false,
@@ -295,7 +298,7 @@ impl App {
             self.dlv_check_policy(&sandbox, &profile, pull.number, &facts)
                 .await?;
         }
-        if !self.arm_merge_for_person(&task, &head, &login) {
+        if !self.arm_merge_for_person(&task, &head, &login).await? {
             return Ok(json!({
                 "merged": false,
                 "armed": true,

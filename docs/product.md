@@ -3,13 +3,28 @@
 Yulius is a self-hosted coding workspace for the Quartio team, written in Rust and inspired by
 Cezar and Open Mercato Cloud. It runs native Claude Code sessions, one per task, inside
 contained sandboxes on a single Linux VM, and enforces engineering discipline around them.
-Yulius develops itself with Yulius.
+Yulius develops itself with Yulius. Its pull requests get independent results for check, lint, macOS, docs and dependencies. Pull requests and merge trains also run the Rust contracts that read changed repository files. The merged revision runs both Rust test partitions from one build and runs the browser suite. [Decision 0438](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
+
+Finished tasks keep their last observed pull request state while GitHub is unavailable. The instance shows when merges, CI status updates and staging can use GitHub again. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+
+A GitHub App subscribed to PR openings triggers CI for hand-opened pull requests as soon as GitHub delivers the event and a place is available within the sandbox’s 30 open PRs. [Decision 0441](decisions/0441-github-pr-openings-trigger-exact-head-ci.md)
 
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
-automation. GPT-6.2 Astra is the default model and inherits extra high effort. Other Codex models
-inherit high effort. A task's explicit effort takes precedence.
-[SPEC-561](../.ai/specs/SPEC-561-default-astra-6-2-to-xhigh-for-new-work.md)
+automation. GPT-6.2 Astra is the default model. Every Codex model inherits High effort.
+A task's explicit effort takes precedence, including Extra high and Max on GPT-6.2 Astra and Sol.
+[SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
 
+Continue resumes a stopped Codex task in its saved conversation. Reopening a closed Codex conversation shows Waiting until its next turn. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
+
+Automatic Codex placement uses the eligible subscription with the most quota left in its tightest
+window. An idle Codex task moved to another subscription keeps Waiting or Done.
+[SPEC-611](../.ai/specs/SPEC-611-a-moved-task-is-not-shown-as-working-and.md)
+
+Codex tasks keep their selected model when Yulius sends a message near a subscription limit.
+New and resumed sessions hide the rate-limit model switch reminder. A visible reminder holds
+automated messages until the picker is dismissed. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
+
+Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
 A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
 Codex defaults to Ultrafast for models that support it. A Codex
@@ -32,8 +47,10 @@ moves only between Antigravity subscriptions, and Yulius provides the pinned Ant
 [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
 [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)). An
 Antigravity task stays Working while its command runs in the background or its agent resumes by
-itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). A
-task created without choosing an agent (the composer's and Settings' `Random`, or `auto`) and
+itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). Reopening its
+conversation without a prompt leaves it idle and eligible for normal parking or closure, even
+with a Gemini announcement visible. A
+task created with the composer’s `Random` setting or an explicit `auto` harness and
 without a model that implies one draws uniformly across all added harnesses (`claude`, `codex`,
 `antigravity`) that currently have at least one non-exhausted subscription — one equal chance per
 eligible harness regardless of subscription count, excluding harnesses with zero or only finished
@@ -46,12 +63,22 @@ agent it names (`F 2026-11-19 Random harness`,
 superseding the no-draw part of [SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md)
 / [ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)).
 
+The composer and Settings start on Codex default in a browser without a saved model. A saved Random choice or specific model takes precedence. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)
+
 The composer and Settings offer individual Codex and Gemini models grouped by provider. Each model
 shows its supported effort levels. Choosing a model that cannot use the saved effort restores the
 High default. [SPEC-521](../.ai/specs/SPEC-521-i-should-be-able-to-selected-every-model.md)
 
+Goal tasks continue their remaining plan steps, including post-merge verification, through the existing turn-end retry budget. Owners see a request when their action is needed or the bounded attempts fail. [SPEC-589](../.ai/specs/SPEC-589-it-shouldnt-ask-for-things-like-that-fix.md)
+
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
+
+Yulius's own Rust builds share compiled artifacts across task worktrees and CI lanes on the project sandbox's disk. [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md)
+
+Agent and CI build scratch is disk-backed. Deliveries check their tests by hand. A task can request a mutation campaign by name. [Decision 0439](decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
+
+The Status panel shows how many GitHub App requests remain and which operations used them. At the reserve, task display yields requests to delivery. A completed pull request can still be read locally. [ADR-0447](decisions/0447-task-display-shares-github-reads-and-yields-to-delivery.md)
 
 ## Who it is for
 
@@ -83,7 +110,11 @@ watching, steering and unblocking.
   server's disk runs low Yulius sweeps harder, prunes idle caches and every page shows a warning
   (SPEC-276). When the egress proxy refuses a sandbox at its share, or its relay toward Yulius or
   the proxy itself is full, the sandbox's people see a warning naming the task whose run holds the
-  most connections, notified once until it has room again (SPEC-361). Removing a sandbox asks
+  most connections, notified once until it has room again (SPEC-361). On Linux, a frozen agent's established
+  opaque HTTP/1.1 CONNECT tunnel keeps its original peers and pending bytes during an orderly
+  server update, including through a surviving sandbox holder. Multiplexed HTTP/2 connections
+  to the proxy reconnect. Intercepted requests reconnect through the successor's host-bound
+  credential policy (SPEC-577). Removing a sandbox asks
   whether to delete its files permanently or keep them; kept
   ones are listed with their size for a later deletion. `yulius onboard`
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
@@ -359,7 +390,9 @@ watching, steering and unblocking.
   model Yulius picks per round: Fable 5.2 for a pull request's first two rounds, Opus 5.5 from
   the third, and Opus 5.5 when the task's subscription cannot run Fable then; each round is
   recorded with its reviewer, its model and its verdict. Continuing a reviewer after it reports
-  counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every review round, and Antigravity tasks request Gemini 4 Neon (High).
+  counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
+  review round, and their named review subagents populate the same delivery history and Review
+  card. Antigravity tasks request Gemini 4 Neon (High).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another
@@ -403,8 +436,9 @@ watching, steering and unblocking.
   placed from the tray, and the agent gets the file at that place (a file left without one comes
   after the text). A file can be up to 1 GB by default, so a screen recording of a bug fits: the
   agent extracts frames from it with `ffmpeg` and looks at them (SPEC-325).
-  A half-written task (its prompt, attached files and choices) waits in the composer while
-  people look elsewhere, also across a reload, until it starts.
+  **New draft** opens another unfinished task in the same sandbox. **Drafts** lets a person
+  return to a prompt with its attachments and task choices, even after reloading the browser.
+  Starting or discarding one draft leaves the others available. [SPEC-594](../.ai/specs/SPEC-594-i-should-be-able-to-create-many-drafts-l.md)
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they steer it: type into it, send it messages,
   answer what it asks in its terminal, continue, start, pause or deliver it. Anyone who may work in the project
@@ -472,8 +506,10 @@ watching, steering and unblocking.
   goes on with the model Yulius runs it with (its own, or the fallback of a task set to Fable),
   wherever the pool places it, the same subscription included, and says so (SPEC-493). Its
   Capacity card says what
-  is left, how fast it burns, the tokens it used and what they would cost at Claude API list
-  prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
+  is left, how fast it burns, the tokens recorded for its runs and their estimated cost at standard Claude and GPT-6 API
+  prices, with a 7-day chart for each. When eligible Codex runs contributed usage, the card also
+  shows the weekly total if those runs used Ultrafast. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
+  Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude
   does not share it, they type it in place under the name (SPEC-463). Every card says whose
   subscription it is with a badge under its name (Claude, Codex or Antigravity, the vendor on
@@ -491,7 +527,7 @@ watching, steering and unblocking.
   effort-weighted steps that hold all the work the agent knows of (a pull request delivers the
   finished part, and a plan that grew says how many steps it had at first, SPEC-484),
   independent review
-  (findings in the change's own code are fixed before merge, never deferred to an issue),
+  (agents fix findings in their own code and obtain re-review through approval under the task's existing authorization),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
   promotions) that Yulius checks before every merge. Each task records what it delivered in the
@@ -579,9 +615,10 @@ watching, steering and unblocking.
     - Pull requests merge on the quick checks. The full suite (`after_merge` jobs) runs once on
       the merged revision.
     - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
-      verifies that tested revision in revision order, once per task.
+      verifies that tested revision in revision order, once per task. The task shows the full-suite
+      or staging wait and resumes on the outcome, including a failed gate.
     - A failing candidate leaves staging on its last verified release and tells the task.
-    - Production is promoted only from the revision staging verified.
+    - A person can deploy the revision staging verified while the next dev revision is being checked. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
   - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
   - New projects with such a target are bootstrapped this way, and onboarded ones get one task
     that adopts it.
@@ -620,6 +657,7 @@ watching, steering and unblocking.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent. Their clicks and keys need the host's browser policy, which
   `yulius host setup` writes: without it the browser shows but takes none (ADR-0318).
+  After clicking a webpage’s Copy button on the virtual display, choose **Copy to my clipboard** to transfer plain text from the shared sandbox browser to your device.
   If the policy arrives after an agent used the browser, the panel offers **Restart browser** to recover input while keeping that sandbox’s profile.
   New browser launches keep Chrome’s default extension prompts off the sandbox display,
   including for existing profiles (SPEC-567).
@@ -656,12 +694,14 @@ watching, steering and unblocking.
   time and says how many more it scrolls to. Scrolling a task's terminal past its top offers the
   whole session from its first message, which Claude Code no longer shows after a compaction
   (SPEC-326). A wheel gesture on a full-screen task with mouse reporting off leaves the prompt alone
-  (SPEC-529). Messages are
+  (SPEC-529). In a Codex terminal, right-click and choose Paste to insert clipboard text in the draft
+  (SPEC-582). Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`. A Yulius restart is invisible to a session:
   its Yulius tools and `yulius wait` hold on until Yulius is back, and a task that went idle
   meanwhile is told "Yulius is back; continue" (SPEC-358). An agent removes the files its task created
-  with `yulius remove` instead of asking a person when Claude Code stops an `rm` (SPEC-192).
+  with `yulius remove` (SPEC-192). A contained Claude reviewer whose scratch cleanup uses
+  a variable or names a root-level scratch file receives a checked retry directly. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent

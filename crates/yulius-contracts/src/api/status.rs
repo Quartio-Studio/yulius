@@ -78,9 +78,69 @@ pub struct StatusAccount {
     pub in_use_by: Option<u32>,
 }
 
+/// The operation that initiated a GitHub REST request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitHubPurpose {
+    /// Task and repository display refreshes.
+    Display,
+    /// Publishing CI status.
+    CiStatuses,
+    /// Merging a change.
+    Merges,
+    /// Advancing the staging queue.
+    Staging,
+    /// Importing repositories and sessions.
+    Imports,
+    /// Remaining server requests.
+    #[default]
+    Other,
+}
+
+/// Observations for the installation that serves the instance.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubBudget {
+    /// HTTP attempts under installation credentials in GitHub's quota window, or the past hour before its first reading.
+    pub attempts: std::collections::BTreeMap<GitHubPurpose, u64>,
+    /// Conditional requests answered 304 in those buckets.
+    pub not_modified: u64,
+    /// Core quota reported by GitHub.
+    pub limit: Option<u64>,
+    /// Used core requests according to GitHub in the observed window.
+    pub used: Option<u64>,
+    /// Used quota exceeding all locally observed, potentially charged attempts.
+    pub unattributed_minimum: Option<u64>,
+    /// Unspent requests reported by GitHub in the current window.
+    pub remaining: Option<u64>,
+    /// End of the observed quota window (Unix seconds).
+    pub resets_at: Option<i64>,
+    /// Display refreshes are yielding to operational work.
+    pub display_paused: bool,
+}
+
+impl GitHubBudget {
+    /// An installation for which GitHub has supplied no quota reading yet.
+    #[must_use]
+    pub fn empty() -> Self {
+        use GitHubPurpose::{CiStatuses, Display, Imports, Merges, Other, Staging};
+        Self {
+            attempts: [Display, CiStatuses, Merges, Staging, Imports, Other]
+                .map(|p| (p, 0))
+                .into(),
+            ..Self::default()
+        }
+    }
+}
+
 /// `GET /api/status`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatusView {
+    /// GitHub installation request usage.
+    #[serde(default = "GitHubBudget::empty")]
+    pub github_budget: GitHubBudget,
+    /// End of the GitHub App request limit, in Unix milliseconds, while active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_reset_at_ms: Option<i64>,
     /// VM metrics.
     pub vm: VmStatus,
     /// Live sessions vs limit.

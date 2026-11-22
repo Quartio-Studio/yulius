@@ -57,6 +57,24 @@ fn message_from_row(row: &Row<'_>) -> rusqlite::Result<MessageRecord> {
     })
 }
 
+/// Completing a previously open step proves progress in a running goal's continuation.
+fn reset_goal_attempts_on_progress(
+    tx: &rusqlite::Transaction<'_>,
+    task: &str,
+    previous: Option<&str>,
+    next: &str,
+) -> rusqlite::Result<()> {
+    if matches!(next, "done" | "skipped")
+        && matches!(previous, Some("pending" | "in_progress" | "blocked"))
+    {
+        tx.execute(
+            "UPDATE tasks SET gate_blocks = 0 WHERE id = ?1 AND mode = 'goal' AND gate_blocks != 0",
+            [task],
+        )?;
+    }
+    Ok(())
+}
+
 /// Keeps how many steps `task`'s plan has now as its first size, once a step of it is finished
 /// and no first size is kept yet (SPEC-484 PLN-009): in the transaction of the step write, so
 /// the number is the plan as that write left it.
@@ -74,6 +92,8 @@ const MSG_COLS: &str = "m.id, m.sandbox_id, m.from_task, m.from_user, m.to_task,
 /// The most review rounds one analytics read takes: the newest merges first (a range of years
 /// of a busy project). SPEC-493 REV-006.
 const MAX_REVIEW_ROUNDS_READ: u32 = 20_000;
+const REVIEW_ROUND_COLS: &str = "id, task_id, round, head, agent, model, reason, subagent_id, \
+    model_answered, started_at, ended_at, verdict, cut_off, pr_number, merged_at";
 
 fn review_round_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewRoundRecord> {
     let task: String = row.get("task_id")?;
@@ -147,6 +167,7 @@ impl CoordinationStore for SqliteStore {
                 .map_err(db)?;
                 let previous = old.get(s.id.as_str());
                 if previous.map(String::as_str) != Some(s.status.as_str()) {
+                    reset_goal_attempts_on_progress(&tx, &task, previous.map(String::as_str), &s.status).map_err(db)?;
                     tx.execute(
                         "INSERT INTO step_events (step_id, task_id, at, actor, from_status, to_status, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                         params![s.id.as_str(), task, at.0, actor, previous, s.status, s.note],
@@ -275,6 +296,7 @@ impl CoordinationStore for SqliteStore {
                 params![id, current.task_id.as_str(), at.0, actor, current.status, status, note],
             )
             .map_err(db)?;
+            reset_goal_attempts_on_progress(&tx, current.task_id.as_str(), Some(&current.status), &status).map_err(db)?;
             let updated = tx.query_row(&format!("SELECT {STEP_COLS} FROM steps WHERE id = ?1"), [&id], step_from_row).map_err(db)?;
             keep_first_plan_size(&tx, current.task_id.as_str()).map_err(db)?;
             tx.commit().map_err(db)?;
@@ -360,6 +382,46 @@ impl CoordinationStore for SqliteStore {
         .await
     }
 
+    async fn record_codex_review_round(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        model: &str,
+        head: Option<&str>,
+        started_at: Timestamp,
+        report: Option<(Timestamp, yulius_domain::review::Verdict)>,
+    ) -> AppResult<()> {
+        // Codex's child ID is stable across duplicate starts, stops, and native resume.
+        let id = format!("codex:{task}:{subagent}");
+        let (task, subagent, model, head) = (
+            task.to_string(),
+            subagent.to_owned(),
+            model.to_owned(),
+            head.map(str::to_owned),
+        );
+        let ended_at = report.map(|(at, _)| at.0);
+        let verdict = report.map(|(_, verdict)| verdict.as_str());
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO review_rounds (id, task_id, round, head, agent, model, reason, \
+                 subagent_id, started_at, ended_at, verdict, model_answered) \
+                 SELECT ?1, ?2, COALESCE((SELECT MAX(round) \
+                 FROM review_rounds WHERE task_id = ?2 AND merged_at IS NULL \
+                 AND ended_at <= ?6), 0) + 1, ?3, 'codex-reviewer', ?4, 'round', \
+                 ?5, ?6, ?7, ?8, CASE WHEN ?7 IS NOT NULL THEN ?4 END \
+                 WHERE NOT EXISTS (SELECT 1 FROM delivery WHERE task_id = ?2 AND review_merge_at >= ?6) \
+                 ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at, \
+                 verdict = excluded.verdict, model_answered = excluded.model_answered \
+                 WHERE review_rounds.merged_at IS NULL AND review_rounds.ended_at IS NULL \
+                 AND excluded.ended_at >= review_rounds.started_at",
+                params![id, task, head, model, subagent, started_at.0, ended_at, verdict],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn review_rounds(
         &self,
         task: &TaskId,
@@ -368,12 +430,11 @@ impl CoordinationStore for SqliteStore {
         let t = task.as_str().to_owned();
         self.call(move |c| {
             let mut stmt = c
-                .prepare(
-                    "SELECT id, task_id, round, head, agent, model, reason, subagent_id, \
-                     model_answered, started_at, ended_at, verdict, cut_off, pr_number, merged_at \
+                .prepare(&format!(
+                    "SELECT {REVIEW_ROUND_COLS} \
                      FROM review_rounds WHERE task_id = ?1 AND (?2 = 0 OR merged_at IS NULL) \
                      ORDER BY started_at, rowid",
-                )
+                ))
                 .map_err(db)?;
             let rows = stmt
                 .query_map(params![t, open_only], review_round_from_row)
@@ -381,6 +442,28 @@ impl CoordinationStore for SqliteStore {
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await
+    }
+
+    async fn delivery_review_rounds(
+        &self,
+        task: &TaskId,
+        pr: Option<u64>,
+    ) -> AppResult<Vec<ReviewRoundRecord>> {
+        let task = task.to_string();
+        self.call(move |c| {
+            let mut stmt = c.prepare(&format!(
+                "WITH wanted AS (SELECT CASE WHEN EXISTS (SELECT 1 FROM review_rounds \
+                   WHERE task_id = ?1 AND pr_number IS NULL AND merged_at IS NULL) THEN NULL \
+                   ELSE (SELECT MAX(merged_at) FROM review_rounds WHERE task_id = ?1 AND pr_number IS ?2) \
+                   END AS merged) \
+                 SELECT {REVIEW_ROUND_COLS} FROM review_rounds, wanted \
+                 WHERE task_id = ?1 AND merged_at IS wanted.merged \
+                 AND pr_number IS (CASE WHEN wanted.merged IS NULL THEN NULL ELSE ?2 END) \
+                 ORDER BY started_at, rowid LIMIT {MAX_REVIEW_ROUNDS_READ}"
+            )).map_err(db)?;
+            let rows = stmt.query_map(params![task, pr.map(to_i64)], review_round_from_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        }).await
     }
 
     async fn start_review_subagent(

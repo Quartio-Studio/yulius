@@ -1,5 +1,6 @@
 //! HTTP transport: fixed headers, bounded bodies, status mapping and GET-only retries.
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
@@ -35,6 +36,7 @@ pub(crate) struct Call<'a> {
     pub(crate) url: Url,
     pub(crate) bearer: Option<&'a str>,
     pub(crate) body: Body,
+    pub(crate) etag: Option<HeaderValue>,
     pub(crate) accept: &'static str,
     /// Extra values to scrub from error messages (client secrets, codes).
     pub(crate) sensitive: Vec<&'a str>,
@@ -47,6 +49,7 @@ impl<'a> Call<'a> {
             url,
             bearer,
             body: Body::None,
+            etag: None,
             accept: API_ACCEPT,
             sensitive: Vec::new(),
         }
@@ -67,10 +70,11 @@ impl<'a> Call<'a> {
 }
 
 /// A complete response.
+#[derive(Clone)]
 pub(crate) struct Reply {
     pub(crate) status: u16,
     pub(crate) headers: HeaderMap,
-    pub(crate) body: Vec<u8>,
+    pub(crate) body: Arc<[u8]>,
 }
 
 impl Reply {
@@ -84,6 +88,9 @@ pub(crate) struct Transport {
     retry: RetryPolicy,
     request_timeout: Duration,
     clock: Arc<dyn Clock>,
+    pub(crate) meter: crate::RequestMeter,
+    pub(crate) purpose: fn() -> yulius_contracts::api::status::GitHubPurpose,
+    reset_at_ms: AtomicI64,
 }
 
 static CRYPTO_PROVIDER: Once = Once::new();
@@ -96,12 +103,18 @@ pub(crate) fn install_crypto_provider() {
 }
 
 impl Transport {
-    pub(crate) fn new(config: &GitHubConfig, clock: Arc<dyn Clock>) -> Result<Self, GitHubError> {
+    pub(crate) fn new(
+        config: &GitHubConfig,
+        clock: Arc<dyn Clock>,
+        meter: crate::RequestMeter,
+        purpose: fn() -> yulius_contracts::api::status::GitHubPurpose,
+    ) -> Result<Self, GitHubError> {
         install_crypto_provider();
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(config.request_timeout)
-            .redirect(reqwest::redirect::Policy::limited(3))
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
             .build()
             .map_err(|e| GitHubError::Transport(format!("client setup failed: {e}")))?;
         Ok(Self {
@@ -109,6 +122,9 @@ impl Transport {
             retry: config.retry,
             request_timeout: config.request_timeout,
             clock,
+            meter,
+            purpose,
+            reset_at_ms: AtomicI64::new(0),
         })
     }
 
@@ -173,12 +189,24 @@ impl Transport {
             Body::Json(value) => request.json(value),
             Body::Form(fields) => request.form(fields),
         };
-        let mut response = request
-            .send()
-            .await
-            .map_err(|e| transport_error(&e, &known))?;
+        if let Some(etag) = &call.etag {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        let request = request.build().map_err(|e| transport_error(&e, &known))?;
+        let mut response = self
+            .send_hops(request, call.bearer, &known, timeout)
+            .await?;
         let status = response.status().as_u16();
         let headers = response.headers().clone();
+        if call.bearer.is_some() && is_rate_limited(status, &headers) {
+            let now = self.now();
+            if let Some(wait) = server_wait(&headers, now) {
+                let reset = now
+                    .0
+                    .saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX));
+                self.reset_at_ms.fetch_max(reset, Ordering::Relaxed);
+            }
+        }
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
@@ -203,8 +231,79 @@ impl Transport {
         Ok(Reply {
             status,
             headers,
-            body,
+            body: body.into(),
         })
+    }
+
+    async fn send_hops(
+        &self,
+        mut request: reqwest::Request,
+        mut bearer: Option<&str>,
+        known: &[&str],
+        timeout: Duration,
+    ) -> Result<reqwest::Response, GitHubError> {
+        use reqwest::header::{
+            AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, IF_NONE_MATCH, LOCATION,
+        };
+        let deadline = Instant::now() + timeout;
+        for redirects in 0..=3 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(GitHubError::Transport("request timed out".into()));
+            }
+            *request.timeout_mut() = Some(remaining);
+            let next = request
+                .try_clone()
+                .ok_or_else(|| GitHubError::Transport("request body cannot be replayed".into()))?;
+            let attempt = self.meter.attempt(bearer, (self.purpose)(), self.now())?;
+            let response = self
+                .http
+                .execute(next)
+                .await
+                .map_err(|e| transport_error(&e, known))?;
+            let status = response.status().as_u16();
+            if let Some(attempt) = attempt {
+                attempt.response(status, response.headers());
+            }
+            if !matches!(status, 301 | 302 | 303 | 307 | 308) {
+                return Ok(response);
+            }
+            let Some(url) = response
+                .headers()
+                .get(LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| request.url().join(v).ok())
+            else {
+                return Ok(response);
+            };
+            if redirects == 3 {
+                return Err(GitHubError::Transport("too many redirects".into()));
+            }
+            if status == 303 || (matches!(status, 301 | 302) && request.method() == Method::POST) {
+                if request.method() != Method::HEAD {
+                    *request.method_mut() = Method::GET;
+                }
+                *request.body_mut() = None;
+                request.headers_mut().remove(CONTENT_LENGTH);
+                request.headers_mut().remove(CONTENT_TYPE);
+            }
+            if request.url().origin() != url.origin() {
+                // Retained POST bodies may contain OAuth credentials.
+                if request.body().is_some() {
+                    return Ok(response);
+                }
+                request.headers_mut().remove(AUTHORIZATION);
+                request.headers_mut().remove(IF_NONE_MATCH);
+                bearer = None;
+            }
+            *request.url_mut() = url;
+        }
+        Err(GitHubError::Transport("too many redirects".into()))
+    }
+
+    pub(crate) fn rate_limit_reset(&self) -> Option<Timestamp> {
+        let reset = self.reset_at_ms.load(Ordering::Relaxed);
+        (reset > self.now().0).then_some(Timestamp(reset))
     }
 
     pub(crate) fn now(&self) -> Timestamp {

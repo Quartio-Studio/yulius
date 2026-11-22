@@ -24,8 +24,15 @@ use crate::secret::Secret;
 pub const CLAUDE_PROGRAM: &str = "claude";
 /// Codex CLI executable name (resolved through `PATH` by the spawner).
 pub const CODEX_PROGRAM: &str = "codex";
-/// Hook events registered for Codex (SPEC-503 CDX-007): the same turn boundaries as Claude Code's.
-pub const CODEX_HOOK_EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"];
+/// Codex's turn boundaries and the review subagent lifecycle (SPEC-503, SPEC-605).
+pub const CODEX_HOOK_EVENTS: [&str; 6] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
+];
 /// The prompt a Codex session resumed after a usage limit gets: Codex has no way to continue the
 /// cut turn by itself.
 pub const CODEX_CONTINUE_PROMPT: &str = "Continue from where you left off.";
@@ -378,11 +385,14 @@ fn valid_effort(effort: &str) -> bool {
 }
 
 fn valid_env_name(name: &str) -> bool {
+    name.len() <= 128 && shell_identifier(name)
+}
+
+pub(crate) fn shell_identifier(name: &str) -> bool {
     let mut bytes = name.bytes();
-    name.len() <= 128
-        && bytes
-            .next()
-            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
@@ -619,6 +629,16 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             }] }]),
         );
     }
+    if request.contained {
+        hooks.insert(
+            "PermissionRequest".to_owned(),
+            json!([{ "matcher": "Bash", "hooks": [{
+                "type": "command",
+                "command": hook_command(request, "claude", "PermissionRequest")?,
+                "timeout": CLAUDE_HOOK_TIMEOUT_SECONDS,
+            }] }]),
+        );
+    }
     // Every tool result passes the in-sandbox redaction of agent secrets (SPEC-002 ADR-20):
     // a result holding one is replaced by its redacted copy before the model reads it.
     hooks.insert(
@@ -783,7 +803,8 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
 
 /// The `config.toml` Yulius writes into a Codex home before each run: credentials stay in its
 /// `auth.json` (the vault's copy, written back after the run), and Codex neither checks for
-/// updates (the operator installs it, #45) nor asks to trust the worktree. The agent's shell keeps
+/// updates (the operator installs it, #45), asks to trust the worktree or offers to switch models
+/// near the rate limit (SPEC-603). The agent's shell keeps
 /// the run's environment (Codex's default) except `CODEX_HOME`: a `codex` the agent runs there
 /// uses its own home, never this one with Yulius's hooks (SPEC-281 SSN-002).
 fn codex_config(worktree: &str, pro_500: bool) -> Vec<u8> {
@@ -794,6 +815,7 @@ fn codex_config(worktree: &str, pro_500: bool) -> Vec<u8> {
     };
     format!(
         "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n{speed}\n\
+         [notice]\nhide_rate_limit_model_nudge = true\n\n\
          [shell_environment_policy]\nignore_default_excludes = true\nexclude = [\"CODEX_HOME\"]\n\n\
          [projects.{}]\ntrust_level = \"trusted\"\n",
         toml_string(worktree)
@@ -939,7 +961,7 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     // The model and effort on every launch: without them Codex runs the account's default model
     // at its own default effort (SPEC-511 CXD-001).
     let model = request.model.as_deref().unwrap_or(DEFAULT_CODEX_MODEL);
-    let effort = yulius_domain::harness::codex_effort(model, request.effort.as_deref());
+    let effort = yulius_domain::harness::codex_effort(request.effort.as_deref());
     config("model_reasoning_effort", toml_string(effort));
     argv.extend(["-m".into(), model.to_owned()]);
     if request.contained {

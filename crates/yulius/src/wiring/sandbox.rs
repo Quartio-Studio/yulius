@@ -782,6 +782,8 @@ pub async fn install(
     // Its relays' troubles are the app's to show (SPEC-361).
     config.health = app.connection_health();
     let manager = Manager::new(config);
+    #[cfg(target_os = "linux")]
+    manager.outbound_relays.defer();
     manager.adopt().await;
     let strict = args.mode == IsolationMode::Namespaces;
     let claude_root = app.config.data_dir.join("claude-code");

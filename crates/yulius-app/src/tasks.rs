@@ -248,6 +248,7 @@ impl App {
                 && !facts.goal_unfinished
                 && self.pr_ci_progressing(task).await);
         Ok(TaskSummary {
+            github_display_paused: false,
             parked_pr: None,
             parked_needs_you: None,
             id: task.id.to_string(),
@@ -324,6 +325,9 @@ impl App {
                 .background_shells_since(&task.id)
                 .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms))),
             yulius_wait,
+            staging_wait: facts
+                .staging_wait
+                .map(|state| state.task_wait_label().to_owned()),
             merge_armed: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.merge_is_armed(&task.id),
@@ -347,6 +351,9 @@ impl App {
 
     /// Publishes a task update to the UI.
     pub async fn publish_task(&self, task_id: &TaskId) {
+        if crate::hooks::defer_task_update(task_id, false) {
+            return;
+        }
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
@@ -722,6 +729,11 @@ impl App {
                 .await?;
             out.push(summary);
         }
+        if self.github_budget().await?.display_paused {
+            for row in &mut out {
+                row.github_display_paused = true;
+            }
+        }
         Ok(out)
     }
 
@@ -870,7 +882,7 @@ impl App {
             Harness::ClaudeCode => DEFAULT_CLAUDE_MODEL.to_owned(),
         });
         let effort = match task.harness {
-            Harness::Codex => Some(codex_effort(&model, task.effort.as_deref()).to_owned()),
+            Harness::Codex => Some(codex_effort(task.effort.as_deref()).to_owned()),
             Harness::Antigravity => task
                 .effort
                 .clone()

@@ -21,7 +21,17 @@ impl std::fmt::Debug for Sealed {
 
 /// Plaintext secret with redacted formatting.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Secret(pub String);
+pub struct PlaintextSecret(pub String, bool);
+
+/// Secret passed between adapters and application services.
+pub type Secret = PlaintextSecret;
+
+/// Construct an ordinary secret, retaining the original constructor API.
+#[allow(non_snake_case)]
+#[must_use]
+pub fn Secret(value: String) -> Secret {
+    PlaintextSecret(value, false)
+}
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -30,6 +40,18 @@ impl std::fmt::Debug for Secret {
 }
 
 impl Secret {
+    /// A bearer issued by the instance's GitHub App installation.
+    #[must_use]
+    pub fn github_installation(value: String) -> Self {
+        Self(value, true)
+    }
+
+    /// Whether the bearer uses the installation's request quota.
+    #[must_use]
+    pub fn is_github_installation(&self) -> bool {
+        self.1
+    }
+
     /// The secret text (use only at an I/O boundary).
     #[must_use]
     pub fn expose(&self) -> &str {
@@ -353,6 +375,8 @@ pub struct TaskTimes {
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
+    /// Latest attempt when this read saw the task parked or ended. Derived from the attempt history.
+    pub resume_attempt_id: Option<AttemptId>,
     /// Id.
     pub id: TaskId,
     /// Sandbox.
@@ -412,10 +436,30 @@ pub struct TaskRecord {
 }
 
 impl TaskRecord {
-    /// Whether Yulius follows a goal for this task: a goal-mode task of Claude Code. A Codex or
-    /// Antigravity task in goal mode gets its request as its first message and its turns end it,
-    /// as a prompt-mode task's do (SPEC-503, SPEC-505): its launch sets no `/goal` and its Stop is
-    /// not held as a goal's.
+    /// Whether an owner's Continue still addresses the same ended run and archive.
+    pub(crate) fn matches_continuation(&self, selected: &Self) -> bool {
+        self.status == selected.status
+            && self.archived_at == selected.archived_at
+            && self.resume_attempt_id == selected.resume_attempt_id
+    }
+
+    /// Preserve the parked turn a caller selected across a later lookup of the task.
+    pub(crate) fn check_selected_park(&self, selected: &Self) -> crate::error::AppResult<()> {
+        if selected.status == TaskStatus::Parked
+            && (self.status != TaskStatus::Parked
+                || self.resume_attempt_id != selected.resume_attempt_id)
+        {
+            return Err(crate::error::AppError::Conflict(format!(
+                "task #{} changed since it was selected. Read the current task and try again.",
+                self.number
+            )));
+        }
+        Ok(())
+    }
+
+    /// Whether Yulius launches and follows the native Claude goal evaluator. Codex and
+    /// Antigravity receive the request as their first message. All goal-mode tasks use the
+    /// shared Stop gate for unfinished declared work (SPEC-589).
     #[must_use]
     pub fn follows_goal(&self) -> bool {
         self.mode == TaskMode::Goal && self.harness == yulius_domain::harness::Harness::ClaudeCode
@@ -623,6 +667,12 @@ pub enum PauseKind {
     /// No process: the task waits to start (new task, Continue, a switch that found no
     /// account).
     Start,
+    /// No process: keep an explicit fresh launch even if a session ID is already recorded.
+    FreshStart,
+    /// No process: an admitted goal continuation must start in a fresh session.
+    GoalFreshStart,
+    /// No process: an admitted goal continuation must resume the selected lineage.
+    GoalResumeStart,
 }
 
 impl PauseKind {
@@ -634,6 +684,9 @@ impl PauseKind {
             Self::Prompt => "prompt",
             Self::Limit => "limit",
             Self::Start => "start",
+            Self::FreshStart => "fresh_start",
+            Self::GoalFreshStart => "goal_fresh_start",
+            Self::GoalResumeStart => "goal_resume_start",
         }
     }
 
@@ -644,6 +697,9 @@ impl PauseKind {
             "turn" => Self::Turn,
             "prompt" => Self::Prompt,
             "limit" => Self::Limit,
+            "fresh_start" => Self::FreshStart,
+            "goal_fresh_start" => Self::GoalFreshStart,
+            "goal_resume_start" => Self::GoalResumeStart,
             _ => Self::Start,
         }
     }
@@ -651,7 +707,7 @@ impl PauseKind {
     /// Whether the agent's process stays alive during the pause.
     #[must_use]
     pub fn holds_process(self) -> bool {
-        !matches!(self, Self::Start)
+        matches!(self, Self::Turn | Self::Prompt | Self::Limit)
     }
 }
 
@@ -675,6 +731,10 @@ pub enum QueuedStartKind {
     Fresh,
     /// A resume of the task's latest session.
     Resume,
+    /// A goal Stop continuation admitted in a fresh session.
+    GoalFresh,
+    /// A goal Stop continuation admitted in a resumed session.
+    GoalResume,
     /// A resume past the usage limit that cut the turn (SPEC-034).
     AfterLimit,
 }
@@ -686,6 +746,8 @@ impl QueuedStartKind {
         match self {
             Self::Fresh => "fresh",
             Self::Resume => "resume",
+            Self::GoalFresh => "goal_fresh",
+            Self::GoalResume => "goal_resume",
             Self::AfterLimit => "after_limit",
         }
     }
@@ -696,6 +758,8 @@ impl QueuedStartKind {
         match text {
             "fresh" => Some(Self::Fresh),
             "resume" => Some(Self::Resume),
+            "goal_fresh" => Some(Self::GoalFresh),
+            "goal_resume" => Some(Self::GoalResume),
             "after_limit" => Some(Self::AfterLimit),
             _ => None,
         }
@@ -713,8 +777,7 @@ pub struct PauseRecord {
     pub kind: PauseKind,
     /// The account the paused process runs on (`None` without a process).
     pub account_id: Option<AccountId>,
-    /// Text for the resumed session when it resumes on another account: the held prompt
-    /// (`prompt`); `None` otherwise.
+    /// The held prompt or a Stop continuation owed to a turn held for capacity.
     pub continuation: Option<String>,
     /// A prompt entered while a previous turn still ran: that turn's Stop cannot end the hold.
     pub during_turn: bool,

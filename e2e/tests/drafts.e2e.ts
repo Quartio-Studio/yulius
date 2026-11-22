@@ -1,5 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
+import { surface } from '../chromium.ts';
 import { failOnPageErrors, mock, promptText } from './support.ts';
 
 failOnPageErrors();
@@ -110,7 +111,7 @@ const storedThumbs = (browser: Browser) => browser.evaluate(() => {
 type Holding = Window & { __yuliusMock: { holdUpload?: Promise<void>; holdCreate?: Promise<void>; tasks: { prompt: string }[] }; __release?: () => void };
 
 test('the draft survives a reload and is cleared once the task starts', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   await screen.getByRole('textbox', 'Task prompt').fill('Kept across a reload');
   await dropImage(browser, 'screen.png');
   await drop(browser, [['notes.pdf', 'pdf', 'application/pdf']]);
@@ -190,7 +191,7 @@ test('an upload that ends after leaving and coming back shows in the composer', 
 });
 
 test('a file whose upload ends while the prompt is being read says it was not added', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   await browser.evaluate(() => {
     const w = window as unknown as Holding & { __releaseCreate?: () => void };
     w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
@@ -209,7 +210,7 @@ test('a file whose upload ends while the prompt is being read says it was not ad
 });
 
 test('a task still starting is not started again from a returned composer', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const before = await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.length);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
@@ -235,7 +236,7 @@ const MIXED = [
 ].join('\n');
 
 test('a split into several tasks clears the draft too', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
   await drop(browser, [['spec.pdf', 'pdf', 'application/pdf']]);
@@ -354,4 +355,259 @@ test('text typed in a returned composer while an upload ends is kept with the fi
   await browser.reload();
   await expect.poll(() => promptText(browser)).toBe('Words more typed');
   await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+});
+
+async function chooseDraft(screen: Screen, name: string) {
+  await screen.getByRole('button', 'Drafts').click();
+  await screen.getByRole('menuitemradio', name).click();
+}
+
+async function discardDraft(screen: Screen, confirm: boolean) {
+  await screen.getByRole('button', 'Drafts').click();
+  await screen.getByRole('menuitem', 'Discard current draft').click();
+  await screen.getByRole('dialog', 'Discard this draft?').getByRole('button', confirm ? 'Discard draft' : 'Cancel').click();
+}
+
+test('three unfinished drafts keep their own prompts, images and choices through reload and start', async ({ app, browser, screen }) => {
+  await browser.addInitScript(() => {
+    if (sessionStorage.getItem('seeded')) return;
+    sessionStorage.setItem('seeded', '1');
+    localStorage.setItem('yulius.draft.usr_1.sb_studio', JSON.stringify({ text: 'First request', mode: 'goal' }));
+  });
+  await app.open(mock('/s/studio', '&codex=1'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await expect.poll(() => promptText(browser)).toBe('First request');
+  await dropImage(browser, 'design.png');
+  await expect.poll(() => storedThumbs(browser)).toBe(1);
+
+  const newDraft = screen.getByRole('button', 'New draft');
+  await newDraft.click();
+  await expect.poll(() => promptText(browser)).toBe('');
+  await expect.poll(() => attachmentNames(browser)).toEqual([]);
+  await expect(screen.getByRole('button', 'Mode: Auto mode')).toBeVisible();
+  await prompt.fill('Second request');
+  await newDraft.click();
+  await prompt.fill('Third request');
+  await leaveAndReturn(browser, screen);
+  await browser.reload();
+  await expect.poll(() => promptText(browser)).toBe('Third request');
+  await chooseDraft(screen, 'First request');
+  await expect.poll(() => promptText(browser)).toBe('First request[design.png]');
+  await expect.poll(() => attachmentNames(browser)).toEqual(['design.png']);
+  await expect(browser.locator('.composer-attachments img')).toHaveCount(1);
+  await expect(screen.getByRole('button', 'Mode: Goal')).toBeVisible();
+
+  await chooseDraft(screen, 'Third request');
+  await discardDraft(screen, false);
+  await expect.poll(() => promptText(browser)).toBe('Third request');
+  await discardDraft(screen, true);
+  await chooseDraft(screen, 'Second request');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ Second request$/);
+  await browser.locator('.btn-newtask').click();
+  await browser.reload();
+  await expect.poll(() => promptText(browser)).toBe('First request[design.png]');
+  expect(await storedDrafts(browser)).toHaveLength(1);
+});
+
+test('switching unfinished drafts keeps late uploads with their owner and discarding drops them', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const hold = () => browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  const release = () => browser.evaluate(() => (window as unknown as Holding).__release!());
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Owner');
+  await hold();
+  await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
+  await screen.getByRole('button', 'New draft').click();
+  await prompt.fill('Another draft');
+  await release();
+  await expect.poll(() => storedDraft(browser)).toEqual({ text: 'Owner', files: ['late.pdf'] });
+  await expect.poll(() => attachmentNames(browser)).toEqual([]);
+
+  await hold();
+  await drop(browser, [['discarded.pdf', 'pdf', 'application/pdf']]);
+  // The status belongs to the old view. Wait for its upload callback before checking storage.
+  await browser.evaluate(() => { (window as unknown as { uploadStatus: Element | null }).uploadStatus = document.querySelector('.composer-box .upload-text'); });
+  await discardDraft(screen, true);
+  await release();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { uploadStatus: Element }).uploadStatus.textContent)).toBe('Added discarded.pdf');
+  await expect.poll(() => promptText(browser)).toBe('Owner');
+  await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+  await browser.reload();
+  expect(await storedDrafts(browser)).toHaveLength(1);
+});
+
+test('a failed start preserves both unfinished drafts until sign-out', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&codex=1&failpost=/api/sandboxes/sb_studio/tasks'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Other request');
+  await screen.getByRole('button', 'New draft').click();
+  await prompt.fill('Retry this request');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(screen.getByText(/^Couldn’t start the task/)).toBeVisible();
+  await chooseDraft(screen, 'Other request');
+  await chooseDraft(screen, 'Retry this request');
+  await expect.poll(() => promptText(browser)).toBe('Retry this request');
+  expect(await storedDrafts(browser)).toHaveLength(2);
+  await screen.getByRole('button', /account menu$/).click();
+  await screen.getByRole('menuitem', 'Sign out').click();
+  await expect(browser).toHaveURL(/#\/signin/);
+  expect(await storedDrafts(browser)).toEqual([]);
+});
+
+test('the draft picker follows changes to an inactive draft in another tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('First version');
+  await screen.getByRole('button', 'New draft').click();
+  await prompt.fill('Local work');
+  // A write and then a removal as delivered to this tab through the shared browser storage.
+  const updateFromTab = (text: string | null) => browser.evaluate((value) => {
+    const key = 'yulius.draft.usr_1.sb_studio';
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify({ text: value }));
+    window.dispatchEvent(new StorageEvent('storage', { key, newValue: localStorage.getItem(key), storageArea: localStorage }));
+  }, text);
+  await updateFromTab('Updated elsewhere');
+  await screen.getByRole('button', 'Drafts').click();
+  await expect(screen.getByRole('menuitemradio', 'Updated elsewhere')).toBeVisible();
+  await screen.getByRole('menuitemradio', 'Local work').click();
+  await updateFromTab(null);
+  await screen.getByRole('button', 'Drafts').click();
+  await expect(screen.getByRole('menuitemradio')).toHaveCount(1);
+  await screen.getByRole('menuitemradio', 'Local work').click();
+  await expect.poll(() => promptText(browser)).toBe('Local work');
+});
+
+test('a task that finishes starting while another draft is open leaves that editor in place', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&codex=1'));
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdCreate = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Start this one');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser.locator('.composer-send')).toBeDisabled();
+  await screen.getByRole('button', 'New draft').click();
+  await prompt.fill('Keep writing here');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.some((task) => task.prompt === 'Start this one'))).toBe(true);
+  await expect.poll(() => storedDrafts(browser)).toHaveLength(1);
+  await expect.poll(() => promptText(browser)).toBe('Keep writing here');
+  await browser.reload();
+  await expect.poll(() => promptText(browser)).toBe('Keep writing here');
+});
+
+
+// A second real tab gets its own editor and the browser delivers its storage events.
+for (const action of ['Discard saved draft', 'Discard before typing', 'Erase prompt text']) {
+  test(`an open draft with a pending upload survives only ordinary edits in another tab: ${action}`, async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio'));
+    const prompt = screen.getByRole('textbox', 'Task prompt');
+    if (action !== 'Discard before typing') {
+      await prompt.fill('Work in both tabs');
+      await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Work in both tabs' });
+    }
+    const tab = await surface.page().context().newPage();
+    try {
+      await tab.goto(surface.page().url());
+      const otherPrompt = tab.getByRole('textbox', { name: 'Task prompt' });
+      await otherPrompt.waitFor();
+      await browser.evaluate(() => {
+        const w = window as unknown as Holding;
+        w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+      });
+      await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
+      await expect(browser.locator('.composer-box .upload-text')).toHaveText(/Uploading late.pdf/);
+      await browser.evaluate(() => { (window as unknown as { uploadStatus: Element | null }).uploadStatus = document.querySelector('.composer-box .upload-text'); });
+
+      if (action === 'Erase prompt text') {
+        await otherPrompt.fill('');
+      } else {
+        await tab.getByRole('button', { name: 'Drafts', exact: true }).click();
+        await tab.getByRole('menuitem', { name: 'Discard current draft' }).click();
+        await tab.getByRole('button', { name: 'Discard draft', exact: true }).click();
+        // The originating editor has heard the retirement before the upload completes.
+        await expect.poll(() => browser.evaluate(() => (window as unknown as { uploadStatus: Element }).uploadStatus.isConnected)).toBe(false);
+      }
+      await expect.poll(() => storedDrafts(browser)).toHaveLength(0);
+      await browser.evaluate(() => (window as unknown as Holding).__release!());
+      await expect.poll(() => browser.evaluate(() => (window as unknown as { uploadStatus: Element }).uploadStatus.textContent)).toBe('Added late.pdf');
+
+      if (action === 'Erase prompt text') {
+        await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+        await browser.reload();
+        await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+      } else {
+        await screen.getByRole('button', 'New draft').click();
+        expect(await storedDrafts(browser)).toEqual([]);
+        await browser.reload();
+        await expect.poll(() => promptText(browser)).toBe('');
+        await expect.poll(() => attachmentNames(browser)).toEqual([]);
+      }
+    } finally {
+      await tab.close();
+    }
+  });
+}
+
+for (const fail of [false, true]) {
+  test(`a reopened starting draft is read-only until creation ${fail ? 'fails' : 'succeeds'}`, async ({ app, browser, screen }) => {
+    const path = '/api/sandboxes/sb_studio/tasks';
+    await app.open(mock('/s/studio', `&codex=1&holdpost=${path}${fail ? '&failpost=' + path : ''}`));
+    const prompt = screen.getByRole('textbox', 'Task prompt');
+    await prompt.fill('Already submitted');
+    await prompt.press('ControlOrMeta+Enter');
+    await expect(browser.locator('.composer-send')).toBeDisabled();
+    await screen.getByRole('button', 'New draft').click();
+    await prompt.fill('Keep this sibling');
+    await chooseDraft(screen, 'Already submitted');
+    await expect(prompt).toHaveAttribute('aria-readonly', 'true');
+    await prompt.press('End');
+    await browser.keyboard.type('no edit');
+    await expect.poll(() => promptText(browser)).toBe('Already submitted');
+    await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+    if (fail) {
+      await expect(screen.getByText(/^Couldn’t start the task/)).toBeVisible();
+      await expect(prompt).toHaveAttribute('aria-readonly', 'false');
+      await prompt.fill('Ready to retry');
+      await chooseDraft(screen, 'Keep this sibling');
+      await chooseDraft(screen, 'Ready to retry');
+    } else {
+      await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ Already submitted$/);
+      await browser.locator('.btn-newtask').click();
+      await expect.poll(() => promptText(browser)).toBe('Keep this sibling');
+    }
+  });
+}
+
+test('leaving an untouched editor adopts another tab’s newer draft and preserves subsequent local edits', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Shared original');
+  await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Shared original' });
+  const tab = await surface.page().context().newPage();
+  try {
+    await tab.goto(surface.page().url());
+    const other = tab.getByRole('textbox', { name: 'Task prompt' });
+    await other.fill('Edited elsewhere');
+    await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Edited elsewhere' });
+    await screen.getByRole('button', 'New draft').click();
+    await prompt.fill('Sibling');
+    await chooseDraft(screen, 'Edited elsewhere');
+    await expect.poll(() => promptText(browser)).toBe('Edited elsewhere');
+    await other.fill('Another remote edit');
+    await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Another remote edit' });
+    await prompt.fill('Later local edit');
+    await chooseDraft(screen, 'Sibling');
+    await chooseDraft(screen, 'Later local edit');
+    await browser.reload();
+    await expect.poll(() => promptText(browser)).toBe('Later local edit');
+  } finally {
+    await tab.close();
+  }
 });

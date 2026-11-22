@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { afterEach, beforeEach, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
+import type { Route } from 'playwright-core';
 import { surface } from '../chromium.ts';
 import { failOnPageErrors, FIRST_LOAD_MS, mock } from './support.ts';
 
@@ -10,22 +12,47 @@ const path = mock('/s/studio/tasks', '&ambient=0');
 const entryScript = /\/assets\/app\.js$/;
 const document = /\/\?mock=1&ambient=0$/;
 
+let routes: { closing: boolean; active: number };
+
+function startupRoute(pattern: RegExp, handle: (route: Route) => Promise<void>) {
+  const owner = routes;
+  return surface.context().route(pattern, async (route) => {
+    if (owner.closing) return route.fallback();
+    owner.active++;
+    try {
+      await handle(route);
+    } finally {
+      owner.active--;
+    }
+  });
+}
+
+async function removeStartupRoutes() {
+  // Keep interception installed until each handler has finished its response. Removing
+  // it while a sibling completes lets Chromium continue a still-owned request.
+  const owner = routes;
+  owner.closing = true;
+  await expect.poll(() => owner.active, { timeout: FIRST_LOAD_MS }).toBe(0);
+  await surface.context().unrouteAll({ behavior: 'wait' });
+}
+
 // These cases control precisely which startup requests fail. Read the other loopback
 // responses from the same static server through Playwright's HTTP client so an actual
 // host network change cannot add failures to the injected sequence.
 beforeEach(async () => {
-  await surface.context().route(/^http:\/\/127\.0\.0\.1:\d+\/(?:\?mock=1|assets\/.*\.js$)/, async (route) => {
+  routes = { closing: false, active: 0 };
+  await startupRoute(/^http:\/\/127\.0\.0\.1:\d+\/(?:\?mock=1|assets\/.*\.js$)/, async (route) => {
     await route.fulfill({ response: await route.fetch({ maxRedirects: 0 }) });
   });
 });
 
-afterEach(async () => { await surface.context().unrouteAll({ behavior: 'wait' }); });
+afterEach(removeStartupRoutes);
 
 // Chromium's interception API can abort a real script load, but cannot select
 // ERR_NETWORK_CHANGED as the abort reason. Supply that reason on the failed request.
 async function interruptRequests(pattern: RegExp, failures: number, networkChanged: boolean) {
   let requests = 0;
-  await surface.context().route(pattern, async (route) => {
+  await startupRoute(pattern, async (route) => {
     requests += 1;
     if (requests > failures) return route.fallback();
     if (networkChanged) route.request().failure = () => ({ errorText: 'net::ERR_NETWORK_CHANGED' });
@@ -33,6 +60,42 @@ async function interruptRequests(pattern: RegExp, failures: number, networkChang
   });
   return () => requests;
 }
+
+test('startup teardown delivers both responses already owned by route handlers', async ({ app }) => {
+  await app.open(path);
+  const held = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  let entered = 0;
+  await startupRoute(/\/assets\/api\.js\?held=[01]$/, async (route) => {
+    const id = Number(new URL(route.request().url()).searchParams.get('held'));
+    entered++;
+    await held[id].promise;
+    await route.fulfill({ headers: { 'x-fixture-response': String(id) }, body: 'fixture' });
+  });
+  const page = surface.page();
+  const request = (id: number) => page.evaluate(async (id) => {
+    const response = await fetch('/assets/api.js?held=' + id, { cache: 'no-store' });
+    return { status: response.status, marker: response.headers.get('x-fixture-response'), body: await response.text() };
+  }, id);
+  const responses = held.map((_, id) => request(id));
+  let removed: Promise<void> | undefined;
+  try {
+    await expect.poll(() => entered, { timeout: FIRST_LOAD_MS }).toBe(2);
+    removed = removeStartupRoutes();
+    held[0].resolve();
+    assert.deepEqual(await responses[0], { status: 200, marker: '0', body: 'fixture' });
+    // During cleanup a fresh request goes to the static server while the second remains held.
+    const fresh = await request(0);
+    assert.equal(fresh.status, 200);
+    assert.equal(fresh.marker, null);
+    const script = await readFile(new URL('../../crates/yulius-server/web/assets/api.js', import.meta.url), 'utf8');
+    assert.ok(fresh.body === script, 'the fresh request must receive the static server’s api.js');
+    held[1].resolve();
+    assert.deepEqual(await responses[1], { status: 200, marker: '1', body: 'fixture' });
+  } finally {
+    held.forEach((gate) => gate.resolve());
+    await removed;
+  }
+});
 
 test('the initial mock open recovers a network change on its entry script', async ({ app, browser }) => {
   const requests = await interruptRequests(entryScript, 1, true);
@@ -80,7 +143,7 @@ test('persistent startup interruptions exhaust one recovery budget', async ({ ap
 test('an interrupted startup reports its recovery budget when the reload itself times out', async ({ app }) => {
   const gate = Promise.withResolvers<void>();
   let requests = 0;
-  await surface.context().route(entryScript, async (route) => {
+  await startupRoute(entryScript, async (route) => {
     if (++requests === 1) {
       route.request().failure = () => ({ errorText: 'net::ERR_NETWORK_CHANGED' });
       await route.abort('connectionreset');

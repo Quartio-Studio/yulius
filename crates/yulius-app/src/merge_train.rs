@@ -199,6 +199,9 @@ struct Member {
     pr: u64,
     /// The armed head it was built with.
     head: String,
+    /// The head the passed train verified and pushed while waiting for GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verified_head: Option<String>,
     /// When its merge was armed: a new arm takes it out of the train.
     armed_at: i64,
     /// The integration branch's tree once it merged.
@@ -210,6 +213,10 @@ struct Member {
 struct LeftOut {
     task: String,
     pr: u64,
+    #[serde(default)]
+    head: Option<String>,
+    #[serde(default)]
+    armed_at: Option<i64>,
     files: Vec<String>,
 }
 
@@ -223,6 +230,17 @@ pub(crate) enum Hold {
     Held,
 }
 
+/// The queue instructions and, for an included member, the run that holds its activation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct WatchedTrain {
+    pub note: QueueNote,
+    pub candidate: Option<(String, Vec<u64>)>,
+}
+
+/// The saved train and arm do not yet provide a verified queue position.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UnverifiedTrain;
+
 /// What one step of a passed train did.
 enum Step {
     /// The member merged; go on with the next.
@@ -230,6 +248,8 @@ enum Step {
     /// Not yet (GitHub has not shown the head, or a run at the head pushed still runs): next
     /// pass.
     Wait,
+    /// GitHub has yet to accept the head checked against this member’s tested tree.
+    WaitAtHead(String),
     /// The train is dissolved, for this reason.
     Stop(String),
     /// The train is dissolved, for a reason of this member's own: it goes one by one, where it
@@ -283,10 +303,71 @@ fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
 }
 
+/// An accepted queue decision and the redacted instructions its original owner received.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SingletonDecision {
+    pub head: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_at: Option<i64>,
+    /// The ordinary run still active when the queue exhausted its original wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expired_ordinary_run: Option<String>,
+    pub singleton: TestedSingleton,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TestedSingleton {
+    pub pr: u64,
+    pub base: String,
+    pub tree: String,
+    pub run: String,
+}
+
+impl SingletonDecision {
+    /// An ordinary dropped arm recorded only its head. A malformed decision
+    /// cannot establish whether a saved activation was already consumed.
+    pub(crate) fn from_span(
+        span: &crate::stages::SpanRecord,
+    ) -> crate::error::AppResult<Option<Self>> {
+        use crate::error::AppError;
+        if span.outcome.as_deref() != Some("dropped") {
+            return Ok(None);
+        }
+        let unreadable = || AppError::internal("unreadable merge wait decision");
+        let fields: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(span.detail.as_deref().ok_or_else(unreadable)?)
+                .map_err(|_| unreadable())?;
+        if fields.len() == 1
+            && fields
+                .get("head")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|head| !head.is_empty())
+        {
+            return Ok(None);
+        }
+        let decision: Self =
+            serde_json::from_value(serde_json::Value::Object(fields)).map_err(|_| unreadable())?;
+        if [
+            &decision.head,
+            &decision.message,
+            &decision.singleton.base,
+            &decision.singleton.tree,
+            &decision.singleton.run,
+        ]
+        .iter()
+        .any(|value| value.is_empty())
+        {
+            return Err(unreadable());
+        }
+        Ok(Some(decision))
+    }
+}
+
 /// Result of observing a singleton's hosted inputs and ordinary CI at its exact head.
 enum SingletonObservation {
     Changed,
-    Current(Option<RunState>),
+    Current(Option<(RunState, String)>),
 }
 
 /// Fold redacted CI text to a bounded line that can be typed into the owner's terminal.
@@ -319,9 +400,17 @@ fn singleton_failure(pr: u64, head: &str, integration: &str, run: &str) -> Strin
 }
 
 /// What `yulius wait` says about `task`'s place in `train`.
-fn note_of(train: &Train, task: &str) -> Option<QueueNote> {
+fn note_of(train: &Train, task: &str, arm: Option<(&str, i64)>) -> Option<QueueNote> {
     let prs = numbers(&train.members);
     if let Some(index) = train.members.iter().position(|m| m.task == task) {
+        let member = &train.members[index];
+        let head = member.verified_head.as_deref().unwrap_or(&member.head);
+        if arm != Some((head, member.armed_at)) {
+            return Some(QueueNote::current(
+                "The queue verifies its current head before giving this request a train position."
+                    .into(),
+            ));
+        }
         let place = format!(
             "pull request #{} is number {} of {} in merge train {}",
             train.members[index].pr,
@@ -352,6 +441,13 @@ fn note_of(train: &Train, task: &str) -> Option<QueueNote> {
         });
     }
     train.left_out.iter().find(|l| l.task == task).map(|left| {
+        if arm.is_none() || left.head.as_deref().zip(left.armed_at) != arm {
+            return QueueNote::current(format!(
+                "pull request #{} waits behind merge train {} and is considered after it ends.",
+                left.pr,
+                listed(&prs)
+            ));
+        }
         let files: Vec<String> = left
             .files
             .iter()
@@ -382,12 +478,16 @@ impl App {
     }
 
     fn read_trains(&self, sandbox: &SandboxId) -> SandboxTrains {
+        self.try_read_trains(sandbox).unwrap_or_default()
+    }
+
+    fn try_read_trains(&self, sandbox: &SandboxId) -> std::io::Result<SandboxTrains> {
         let _guard = TRAINS_FILE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        read_all(&self.trains_path())
+        Ok(read_all(&self.trains_path())?
             .remove(sandbox.as_str())
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
     /// Saves `state` for `sandbox` (written whole, then renamed into place); failures are
@@ -397,7 +497,7 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = self.trains_path();
-        let mut all = read_all(&path);
+        let mut all = read_all(&path).unwrap_or_default();
         if state.is_empty() {
             all.remove(sandbox.as_str());
         } else {
@@ -427,6 +527,54 @@ impl App {
         )
     }
 
+    /// Which run and member list belong to this PR's currently armed activation.
+    /// A reusable CI run can have been admitted for a different set of members.
+    pub(crate) fn watched_train(
+        &self,
+        task: &TaskRecord,
+        pr: u64,
+    ) -> Result<Option<WatchedTrain>, UnverifiedTrain> {
+        if !self.config.ci.enabled {
+            return Ok(None);
+        }
+        let crate::agent_wait::ArmedNow::Armed(arm) = self.armed_now(&task.id) else {
+            return Ok(None);
+        };
+        let Some(train) = self
+            .try_read_trains(&task.sandbox_id)
+            .map_err(|_| UnverifiedTrain)?
+            .train
+        else {
+            return Ok(None);
+        };
+        let Some(note) = note_of(&train, task.id.as_str(), Some((&arm.head, arm.armed_at))) else {
+            return Ok(None);
+        };
+        let candidate =
+            if let Some(member) = train.members.iter().find(|m| m.task == task.id.as_str()) {
+                if member.pr != pr || member.armed_at != arm.armed_at {
+                    return Ok(None);
+                }
+                // The queue saves the pushed arm before checkpointing the verified train head.
+                // During that interval, including after restart, a free-slot check-in is stale.
+                if member.verified_head.as_deref().unwrap_or(&member.head) != arm.head {
+                    return Err(UnverifiedTrain);
+                }
+                Some((train.run, numbers(&train.members)))
+            } else {
+                // Left-out PRs wait behind the train without sharing its failure.
+                if !train
+                    .left_out
+                    .iter()
+                    .any(|left| left.task == task.id.as_str() && left.pr == pr)
+                {
+                    return Ok(None);
+                }
+                None
+            };
+        Ok(Some(WatchedTrain { note, candidate }))
+    }
+
     /// Whether `task` is a member of its sandbox's live merge train, merged or not: the train
     /// counts on its recorded stage until it ends (SPEC-425, review finding 4).
     pub(crate) fn in_train(&self, task: &TaskRecord) -> bool {
@@ -442,7 +590,12 @@ impl App {
     /// What `yulius wait` says about `task`'s merge train, if it is in one or was left out.
     pub(crate) fn train_note(&self, task: &TaskRecord) -> Option<QueueNote> {
         let state = self.read_trains(&task.sandbox_id);
-        note_of(state.train.as_ref()?, task.id.as_str())
+        let current = self.armed_now(&task.id);
+        let arm = match &current {
+            ArmedNow::Armed(arm) => Some((arm.head.as_str(), arm.armed_at)),
+            _ => None,
+        };
+        note_of(state.train.as_ref()?, task.id.as_str(), arm)
     }
 
     /// `sandbox`'s merge train, for the person's merge queue (SPEC-487 MRG-002): its CI run, its
@@ -522,6 +675,17 @@ impl App {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "a merge pass could not fetch");
         }
         let mut state = self.read_trains(sandbox_id);
+        // During recovery a saved arm can be known before its history is readable.
+        // A fast CI completion must preserve that train and its original wait deadline.
+        if state.train.as_ref().is_some_and(|train| {
+            train.members.iter().any(|member| {
+                TaskId::parse(&member.task).is_ok_and(|task| {
+                    self.armed_now(&task) == ArmedNow::None && self.merge_is_armed(&task)
+                })
+            })
+        }) {
+            return;
+        }
         let before = state.clone();
         state.train = match state.train.take() {
             Some(train) => self.advance_train(&sandbox, &mut state, train).await,
@@ -782,6 +946,8 @@ impl App {
         .ok()
         .flatten();
         let pr = member.pr;
+        let unavailable_since = train.waiting_since;
+        let mut expired_ordinary_run = None;
         let text = match self
             .singleton_observation(sandbox, &task, member, &integration, &train.base)
             .await
@@ -791,7 +957,7 @@ impl App {
                     .await;
                 return None;
             }
-            Some(SingletonObservation::Current(Some(RunState::Failed))) => {
+            Some(SingletonObservation::Current(Some((RunState::Failed, _)))) => {
                 state.limit = None;
                 state.suspect = None;
                 self.dissolve(
@@ -809,48 +975,75 @@ impl App {
                 if text.is_some() {
                     train.waiting_since = None;
                 }
-                if matches!(ordinary, Some(RunState::Queued | RunState::Running))
-                    && train.wait_for_own(pr, self.now().0)
-                    && text.is_some()
-                {
-                    return Some(train);
+                if let Some((RunState::Queued | RunState::Running, id)) = ordinary {
+                    if train.wait_for_own(pr, self.now().0) && text.is_some() {
+                        return Some(train);
+                    }
+                    expired_ordinary_run = Some(id);
                 }
                 text
             }
             None => None,
         };
-        let Some(text) = text else {
-            let now = self.now().0;
-            let since = *train.waiting_since.get_or_insert(now);
-            if now.saturating_sub(since) <= WAIT_LIMIT_MS {
-                return Some(train);
-            }
-            // Let the original arm proceed one by one on a continuous observation outage.
+        if let Some(text) = text {
+            state.limit = None;
+            state.suspect = None;
             let member = train.members.first()?;
-            state.held_back.push((member.task.clone(), member.armed_at));
-            self.dissolve(
-                sandbox,
-                &train,
-                "its tested inputs or failure stayed unavailable",
-            )
-            .await;
-            return None;
-        };
-        state.limit = None;
-        state.suspect = None;
-        let member = train.members.first()?;
-        // Consume the arm at the final CI observation, before dissolution does I/O.
-        if let Some(deciding) = self.take_armed(&task) {
-            let verdict = if deciding.merge.armed_at == member.armed_at
-                && deciding.merge.head == member.head
-            {
-                Verdict::Decided(text)
-            } else {
-                Verdict::Keep(deciding.merge.clone())
+            let decision = SingletonDecision {
+                head: member.head.clone(),
+                message: text,
+                superseded_at: None,
+                expired_ordinary_run,
+                singleton: TestedSingleton {
+                    pr,
+                    base: train.base.clone(),
+                    tree: member.tree.clone(),
+                    run: train.run.clone(),
+                },
             };
-            self.finish_armed(&task, &deciding, verdict).await;
+            if let Some(deciding) = self.take_armed(&task) {
+                if deciding.merge.armed_at != member.armed_at || deciding.merge.head != member.head
+                {
+                    self.finish_armed(&task, &deciding, Verdict::Keep(deciding.merge.clone()))
+                        .await;
+                } else if !self
+                    .finish_singleton(&task, &sandbox.id, &deciding, &decision)
+                    .await
+                {
+                    train.waiting_since = unavailable_since;
+                    return self
+                        .wait_for_singleton_evidence(sandbox, state, train)
+                        .await;
+                }
+            }
+        } else {
+            return self
+                .wait_for_singleton_evidence(sandbox, state, train)
+                .await;
         }
         self.dissolve(sandbox, &train, "its CI run failed").await;
+        None
+    }
+
+    async fn wait_for_singleton_evidence(
+        &self,
+        sandbox: &SandboxRecord,
+        state: &mut SandboxTrains,
+        mut train: Train,
+    ) -> Option<Train> {
+        let now = self.now().0;
+        let since = *train.waiting_since.get_or_insert(now);
+        if now.saturating_sub(since) <= WAIT_LIMIT_MS {
+            return Some(train);
+        }
+        let member = train.members.first()?;
+        state.held_back.push((member.task.clone(), member.armed_at));
+        self.dissolve(
+            sandbox,
+            &train,
+            "its tested inputs, failure or decision record stayed unavailable",
+        )
+        .await;
         None
     }
 
@@ -947,7 +1140,7 @@ impl App {
                 .await
                 .ok()?;
             Some(SingletonObservation::Current(
-                run_for_pull_head(&runs, member.pr).map(|run| run.state),
+                run_for_pull_head(&runs, member.pr).map(|run| (run.state, run.id.clone())),
             ))
         };
         tokio::time::timeout(Duration::from_secs(5), confirm)
@@ -1139,6 +1332,10 @@ impl App {
             train.own_wait = None;
             match self.train_step(sandbox, &train, index).await {
                 Step::Merged => train.waiting_since = None,
+                Step::WaitAtHead(head) => {
+                    train.members[index].verified_head = Some(head);
+                    return self.train_waits(sandbox, train).await;
+                }
                 Step::Wait => return self.train_waits(sandbox, train).await,
                 Step::Stop(reason) => {
                     self.dissolve(sandbox, &train, &reason).await;
@@ -1366,7 +1563,7 @@ impl App {
             self.ci_publish(&run).await;
         }
         if !self.github_shows(sandbox, member.pr, &head).await {
-            return (Verdict::Keep(moved_armed), Step::Wait);
+            return (Verdict::Keep(moved_armed), Step::WaitAtHead(head));
         }
         let Ok(Some(user)) = self.deps.store.user(&task.owner).await else {
             return keep(
@@ -1419,9 +1616,7 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of a train merge failed");
                 }
-                let next = self
-                    .after_merge_of(task, crate::agent_wait::PROFILE_ASKS)
-                    .await;
+                let next = self.after_merge_of(task, sandbox, merged.number).await;
                 let peers = if others.is_empty() {
                     String::new()
                 } else {
@@ -1436,7 +1631,7 @@ impl App {
             }
             // GitHub could not take the pull request's new title for now: the train waits for
             // the next pass, as for a head GitHub does not show yet (SPEC-069 BPL-008).
-            Err(MergeFailure::Later(_)) => (Verdict::Keep(moved_armed), Step::Wait),
+            Err(MergeFailure::Later(_)) => (Verdict::Keep(moved_armed), Step::WaitAtHead(head)),
             Err(MergeFailure::Refused(err)) => keep(
                 moved_armed,
                 format!(
@@ -1550,6 +1745,7 @@ impl App {
                     state,
                     // A full-suite skip stays one through the copy (SPEC-575 MFS-002).
                     reason: Some(yulius_domain::ci::copied_job_reason(
+                        state,
                         job.reason.as_deref(),
                         &note,
                     )),
@@ -1746,12 +1942,15 @@ impl App {
                     task: candidate.task.id.to_string(),
                     pr: candidate.pr,
                     head: candidate.armed.head.clone(),
+                    verified_head: None,
                     armed_at: candidate.armed.armed_at,
                     tree,
                 }),
                 TrainStep::Conflict(files) => left_out.push(LeftOut {
                     task: candidate.task.id.to_string(),
                     pr: candidate.pr,
+                    head: Some(candidate.armed.head.clone()),
+                    armed_at: Some(candidate.armed.armed_at),
                     files,
                 }),
             }
@@ -1988,12 +2187,13 @@ fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
     }
 }
 
-/// Every sandbox's trains; none when the file is missing or unreadable.
-fn read_all(path: &Path) -> BTreeMap<String, SandboxTrains> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// Read the train registry. A missing file means no sandbox has a train.
+fn read_all(path: &Path) -> std::io::Result<BTreeMap<String, SandboxTrains>> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -2005,6 +2205,7 @@ mod tests {
             task: task.to_owned(),
             pr,
             head: format!("head-{task}"),
+            verified_head: None,
             armed_at: 1,
             tree: tree.to_owned(),
         }
@@ -2024,6 +2225,8 @@ mod tests {
             left_out: vec![LeftOut {
                 task: "d".to_owned(),
                 pr: 14,
+                head: Some("head-d".into()),
+                armed_at: Some(1),
                 files: vec!["shared.txt".to_owned()],
             }],
             merging: false,
@@ -2135,11 +2338,21 @@ mod tests {
         assert_eq!(tree_after(&train, 3), "t3");
     }
 
+    #[test]
+    fn a_train_member_whose_activation_is_unavailable_waits_for_verification() {
+        let train = train();
+        let text = note_of(&train, "a", None)
+            .map(|note| note.text)
+            .unwrap_or_default();
+        assert!(text.contains("verifies its current head"), "{text}");
+        assert!(!text.contains("run1"));
+    }
+
     /// TRN-007: a member hears its place; one left out hears why.
     #[test]
     fn the_wait_says_where_a_pull_request_stands() {
         let mut train = train();
-        let note = note_of(&train, "b")
+        let note = note_of(&train, "b", Some(("head-b", 1)))
             .map(|note| note.text)
             .unwrap_or_default();
         assert!(
@@ -2147,23 +2360,23 @@ mod tests {
             "{note}"
         );
         assert!(note.contains("run run1"), "{note}");
-        let left = note_of(&train, "d")
+        let left = note_of(&train, "d", Some(("head-d", 1)))
             .map(|note| note.text)
             .unwrap_or_default();
         assert!(
             left.contains("#14 was left out") && left.contains("`shared.txt`"),
             "{left}"
         );
-        assert_eq!(note_of(&train, "x"), None);
+        assert_eq!(note_of(&train, "x", None), None);
         train.own_wait = Some((12, 0));
-        assert!(note_of(&train, "b").is_some_and(|note| note.awaits_own_run));
+        assert!(note_of(&train, "b", Some(("head-b", 1))).is_some_and(|note| note.awaits_own_run));
         assert!(
-            note_of(&train, "a")
+            note_of(&train, "a", Some(("head-a", 1)))
                 .is_some_and(|note| !note.awaits_own_run && note.text.contains("#12's own"))
         );
         train.own_wait = None;
         train.merging = true;
-        let merging = note_of(&train, "a")
+        let merging = note_of(&train, "a", Some(("head-a", 1)))
             .map(|note| note.text)
             .unwrap_or_default();
         assert!(merging.contains("passed; Yulius merges them"), "{merging}");

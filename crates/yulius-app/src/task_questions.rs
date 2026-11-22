@@ -85,7 +85,7 @@ fn derived_wait_reason(facts: &AttentionFacts) -> Option<&'static str> {
                 Some("The parked task is waiting for its pull request checks.")
             }
             Some(PullSignal::Errored) => {
-                Some("The parked task's pull request could not be verified.")
+                Some("CI could not complete the checks for the parked task's pull request.")
             }
             Some(PullSignal::Behind) => {
                 Some("The parked task's pull request needs to be updated with its base branch.")
@@ -405,7 +405,10 @@ impl App {
                 ),
                 None => format!("{verb} unfinished steps in its plan ({open_count} open)."),
             };
-            let action = if task.status == TaskStatus::Parked {
+            let blocked = next_step.filter(|_| open.iter().all(|step| step.status == "blocked"));
+            let action = if blocked.is_some() {
+                "Resolve the recorded dependency so the agent can finish this step."
+            } else if task.status == TaskStatus::Parked {
                 "Open the task and resume it to continue the remaining plan steps, or close it if done."
             } else {
                 "Open the task and tell the agent to continue the remaining plan steps, or close it if done."
@@ -414,7 +417,7 @@ impl App {
                 source: "system".to_owned(),
                 episode: format!("plan_open:{open_count}:{episode_at_ms}"),
                 happened,
-                problem: None,
+                problem: blocked.and_then(|step| step.note.clone()),
                 action: action.to_owned(),
                 link: task_link,
                 decision: false,
@@ -491,8 +494,8 @@ impl App {
                 ),
                 Some(PullSignal::Errored) => (
                     "errored",
-                    "The parked task's pull request could not be verified.",
-                    "Open the task and resume it or rerun CI.",
+                    "CI could not complete the checks for the parked task's pull request.",
+                    "Read the CI run and rerun its checks.",
                 ),
                 _ => (
                     "resume",
@@ -731,6 +734,12 @@ impl App {
         let mut effective = *facts;
         effective.browser_request |= why.contains_key("needs_you");
         effective.held_prompt |= why.contains_key("held_prompt");
+        if effective.group() == TaskGroup::Working
+            && !effective.paused
+            && let Some(state) = effective.staging_wait
+        {
+            why.insert("staging_wait".into(), json!(state.task_wait_label()));
+        }
         let notice = self
             .resolve_needs_you_notice_with_pr(task, &effective, pr_hint)
             .await;

@@ -1,0 +1,8 @@
+# Host key of the staging VM Yulius's own CD deploys to (ADR-0430), as "yulius-staging <type> <key>":
+# the scripts connect with HostKeyAlias=yulius-staging and StrictHostKeyChecking=yes, so the
+# address in STAGING_VM_HOST can change without this file, but another machine cannot answer.
+# A new VM: its /etc/ssh/ssh_host_ed25519_key.pub, checked against `ssh-keygen -lf` on the VM, in a
+# pull request (docs/operations.md, "Yulius's own staging VM").
+# deciding-whale (the former production host), SHA256:jyEISzZSlZiCwSSGcLiha5+M64caekYVrWwvO4LmRAQ,
+# checked on the VM on 2026-11-21 (task #575).
+yulius-staging ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFdVdbuV7//7CeSrfLXUR6NxGdnz1p3a0yvT33KyU6Fm

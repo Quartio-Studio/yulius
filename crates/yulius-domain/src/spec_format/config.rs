@@ -1886,12 +1886,56 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-134 CDK-004: Yulius defines its own CD: dev explicitly empty, production a promotion.
+    /// SPEC-134 CDK-004, SPEC-591: Yulius defines its own CD: dev its merge-first staging VM,
+    /// production a promotion.
     #[test]
     fn the_repositorys_own_cd_is_defined() -> TestResult {
-        let cd = parse_yulius_toml_cd(include_str!("../../../../yulius.toml"))?;
+        let raw = include_str!("../../../../yulius.toml");
+        let cd = parse_yulius_toml_cd(raw)?;
         assert!(cd.is_defined());
-        assert_eq!(cd.state("dev", CdStage::Dev), CdState::Empty);
+        // SPEC-591: `[cd.dev]` deploys Yulius to its staging VM with scripts/cd (ADR-0430),
+        // with a rollback and the migrations line, and the key it needs.
+        assert_eq!(cd.state("dev", CdStage::Dev), CdState::Ready);
+        let dev = cd.target("dev").ok_or("dev")?;
+        assert_eq!(dev.deploy.as_deref(), Some("scripts/cd/deploy.sh dev"));
+        assert_eq!(dev.verify.as_deref(), Some("scripts/cd/verify.sh dev"));
+        assert_eq!(dev.rollback.as_deref(), Some("scripts/cd/rollback.sh dev"));
+        assert!(
+            dev.migrations
+                .as_deref()
+                .is_some_and(|m| m.contains("store"))
+        );
+        assert_eq!(dev.secrets, ["STAGING_VM_SSH_KEY"]);
+        let dev_about = dev.about.as_deref().unwrap_or_default();
+        assert!(dev_about.contains("staging VM"), "{dev_about}");
+        // SPEC-591 STG-007: the staging VM is the merge-first target, and the full suite (both
+        // test partitions and e2e) runs on the merged revision. PRs run all quality passes
+        // and security (SPEC-598).
+        assert!(dev.merge_first);
+        assert_eq!(cd.merge_first().map(|t| t.name.as_str()), Some("dev"));
+        let config = parse_yulius_toml(raw)?;
+        let jobs = crate::ci::project_jobs(config.commands.gate.as_deref(), &config.ci)?;
+        let after: Vec<(&str, bool)> = jobs
+            .iter()
+            .map(|j| (j.name.as_str(), j.after_merge))
+            .collect();
+        assert_eq!(
+            after,
+            [
+                ("quality", false),
+                ("lint", false),
+                ("macos", false),
+                ("docs", false),
+                ("deps", false),
+                ("file-contracts", false),
+                ("test (1/2)", true),
+                ("test (2/2)", true),
+                ("e2e", true),
+                ("security", false)
+            ],
+            "{jobs:?}"
+        );
+        assert_eq!(parse_yulius_toml_local(raw)?, None);
         let prod = cd.target("prod").ok_or("prod")?;
         assert!(prod.promote && prod.deploy.is_none());
         // SPEC-418 AC4: no rollback command (nothing to redeploy); the line says how Yulius

@@ -1136,6 +1136,14 @@ async fn parked_http_and_mcp_agree_on_cold_and_stale_observed_pulls() -> TestRes
     h.github
         .set_checks("sha1537", yulius_app::ports::github::ChecksState::Failure);
 
+    // Reading the last observed merge cannot discover an unobserved replacement.
+    let before_tick = h.app.task_detail(&owner, "t1").await?;
+    assert_eq!(before_tick.summary.parked_needs_you, Some(false));
+    assert_eq!(
+        before_tick.summary.parked_pr.as_ref().map(|pr| pr.number),
+        Some(1536)
+    );
+    h.app.reconcile_deliveries().await;
     let stale_detail = h.app.task_detail(&owner, "t1").await?;
     let stale_mcp = h
         .app

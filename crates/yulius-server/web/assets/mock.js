@@ -31,7 +31,7 @@
 // movepoll=<ms> (how often the card reads a move in flight; 3 s without it).
 
 import { counter, taskInfo } from './status.js';
-import { defaultEffort } from './models.js';
+import { DEFAULT_EFFORT } from './models.js';
 import { plausibleEmail } from './format.js';
 import { agentOfHarness, agentOfProvider, aName } from './agents.js';
 import { parsePrompt } from './promptparts.js';
@@ -185,7 +185,7 @@ function seed(params) {
     // problem), `docker=kept` (the last host check failed items but kept Docker, #674; with
     // `update=1` there is none until the update's), `docker=legacy` (sandboxes not isolated);
     // `smoke=fail` (the smoke's pull fails).
-    docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null, hostCheck: undefined },
+    docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', clock: params.get('smokeclock') === 'manual' ? manualClock(Date.now()) : null, smoke: null, hostCheck: undefined },
     // The Claude Code sandboxes run (SPEC-461): `claude=incident` (runs get the host's 2.1.311,
     // which does not know the default model; a check installs 2.1.322), `claude=ahead` (the
     // newest release was refused for it too), `claude=gap` (2.1.400 lacks another offered
@@ -196,6 +196,7 @@ function seed(params) {
     claude: { ...claudeState(params.get('claude') || 'ok'), channelFails: params.get('claude_channel_fail') === '1' },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
+    githubReset: Number(params.get('github_reset')) || null,
     // `disk=low|critical` (SPEC-276 RDA-007): the server's data disk, 386 GiB, as the warning pill reads it.
     disk: params.get('disk') === 'critical'
       ? { level: 'critical', used: 370 * 1024 ** 3, total: 386 * 1024 ** 3 }
@@ -540,6 +541,7 @@ function summary(task) {
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     ...(task.status === 'parked' && typeof task.parked_needs_you === 'boolean' ? { parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr } : {}),
+    ...(task.staging_wait ? { staging_wait: task.staging_wait } : {}),
     ...(task.needs_you_notice ? { needs_you_notice: { ...task.needs_you_notice } } : {}),
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
     attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
@@ -1508,7 +1510,7 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
 /** The effective model and effort, retaining each omitted task setting (SPEC-561). */
 function taskModelSettings(harness, options = {}) {
   const model = options.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4');
-  const effort = options.effort || (harness === 'codex' ? defaultEffort(model) : harness === 'antigravity' ? 'high' : 'default');
+  const effort = options.effort || (harness === 'claude' ? 'default' : DEFAULT_EFFORT);
   return { model, model_default: !options.model, effort, effort_default: !options.effort };
 }
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
@@ -3967,8 +3969,9 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const opts = request.view.options || {};
   const prepared = opts.prepared === true;
   const model = opts.model?.trim();
-  const drawn = (!opts.harness || opts.harness === 'auto') && !model;
-  const harness = drawn ? drawHarness(db) : chosenHarness(opts.harness, model);
+  const named = opts.harness?.trim() || (model ? undefined : 'codex');
+  const drawn = named === 'auto' && !model;
+  const harness = drawn ? drawHarness(db) : chosenHarness(named, model);
   const task = {
     id, sandbox_id: target.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen',
     status: prepared ? 'prepared' : 'queued', activity: null,
@@ -4756,10 +4759,14 @@ route('GET', '/api/analytics/tasks', ({ db, query }) => {
   }
   return rows;
 });
+route('GET', '/api/status/github-reset', ({ db }) => db.githubReset);
 route('GET', '/api/status', ({ db }) => {
   const wobble = (Date.now() / 1000) % 60;
   const admin = db.me.user.is_instance_admin || db.me.user.is_superadmin;
   return {
+    github_budget: db.githubBudget || { limit: 5000, remaining: 3700, used: 1300, unattributed_minimum: 169, resets_at: Math.floor(Date.now() / 1000) + 900,
+      attempts: { display: 1200, ci_statuses: 48, merges: 56, staging: 100, imports: 3, other: 74 }, not_modified: 350, display_paused: false },
+    github_reset_at_ms: db.githubReset,
     // Disk total unknown on purpose: unknown metrics are null, never zero.
     vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: db.sessionLimit, queued: db.tasks.filter((t) => t.status === 'queued').length + db.sessionQueue },
@@ -5130,8 +5137,9 @@ route('POST', '/api/admin/sandbox-docker/smoke', ({ db }) => {
   if (d.smoke && d.smoke.state === 'running') fail(409, 'conflict', 'a Docker smoke test is running already');
   const run = { state: 'running', started_by: db.me.user.login, started_at: new Date().toISOString(), finished_at: null, checks: [], error: null };
   d.smoke = run;
+  const schedule = d.clock?.setTimeout ?? later;
   SMOKE_CHECKS.forEach(([name, detail], i) => {
-    later(() => {
+    schedule(() => {
       if (d.smoke !== run || run.state !== 'running') return;
       const failed = d.smokeFails && i === 2;
       run.checks.push({ name, ok: !failed, detail: failed ? 'toomanyrequests: You have reached your pull rate limit' : detail });
@@ -7503,6 +7511,7 @@ export function createMockTransport(params) {
     db.accounts.push(account);
     emit(db, { type: 'account.updated', account });
   };
+  if (params.get('codex') === '1') db.connectCodex();
   // An Antigravity account signed in elsewhere (`connectAntigravity()`, SPEC-505).
   db.connectAntigravity = () => {
     db.nextId += 1;

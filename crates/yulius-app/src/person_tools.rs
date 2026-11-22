@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use yulius_contracts::api::cd::CdDeploy;
 use yulius_contracts::api::tasks::ContinueTask;
 use yulius_contracts::mcp::ToolDescriptor;
+use yulius_domain::harness::DEFAULT_CODEX_EFFORT;
 use yulius_domain::permission::Action;
 use yulius_domain::task::TaskStatus;
 
@@ -386,9 +387,13 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
             "Set a task's model, effort or both (\"use Sonnet for #12\", \"#12 at high effort\"); default goes back to the instance's default. It is stored with the task and its session takes it at its next start: a task that has not started runs with it, a running session keeps its model until then (task_switch starts it again now, with the new one), an ended task takes it when continued. The task's owner only.",
             {
                 let mut properties = task_ref.clone();
-                properties["model"] =
-                    json!({"type": "string", "description": "A Claude model id, or default"});
-                properties["effort"] = json!({"type": "string", "description": "low, medium, high, xhigh or max, or default"});
+                properties["model"] = json!({"type": "string", "description": "A model id for the task's agent, or default"});
+                properties["effort"] = json!({
+                    "type": "string",
+                    "description": format!(
+                        "Effort supported by the model. GPT-6.2 Astra and Sol accept low, medium, high, xhigh, max and ultra. Use default ({DEFAULT_CODEX_EFFORT} for Codex) to clear the override."
+                    )
+                });
                 properties
             },
             &[],
@@ -555,7 +560,11 @@ impl App {
             }
             "task_merge" => {
                 let task = self.agent_task_ref(project, args).await?;
-                self.merge_for_person(ctx, task.id.as_str()).await
+                crate::ports::github::for_purpose(
+                    crate::ports::github::GitHubPurpose::Merges,
+                    self.merge_for_person(ctx, task.id.as_str()),
+                )
+                .await
             }
             "merge_queue" => self.merge_queue_for_person(ctx, &sandbox.id).await,
             // The Subscriptions panel as everyone signed in sees it (SPEC-487 SUB-001).
@@ -598,49 +607,29 @@ impl App {
                 let task = self.agent_task_ref(project, args).await?;
                 let id = task.id.as_str();
                 let summary = match name {
-                    // Continue takes a resting task; what else the task is doing decides
-                    // what its person is told to do instead. Whose task it is comes first, as
-                    // it does in Continue: advice is for a task the person may change (review
-                    // of slice 2, R3-1). The state is the one that check read.
-                    // A parked task resumes in its session (SPEC-512 PRK-005).
-                    "task_restart" if task.status == TaskStatus::Parked => self
-                        .continue_task(
-                            ctx,
-                            id,
-                            &ContinueTask {
-                                account_id: None,
-                                prompt: None,
-                            },
-                        )
-                        .await
-                        .map_err(|err| restart_refusal(err, task.number))?,
-                    "task_restart" if !task.status.is_resting() => {
-                        let task = self.load_task(ctx, id, Action::Work).await?;
-                        if !task.status.is_resting() && task.status != TaskStatus::Parked {
-                            return Err(not_resting(task.number, task.status));
+                    "task_restart" => {
+                        crate::race::reached(
+                            crate::race::Point::SelectedTaskDispatched,
+                            std::path::Path::new(id),
+                        );
+                        // Give state-specific advice only after verifying control of this task.
+                        let current = self.load_task(ctx, id, Action::Work).await?;
+                        current.check_selected_park(&task)?;
+                        if !current.status.is_resting() && current.status != TaskStatus::Parked {
+                            return Err(not_resting(current.number, current.status));
                         }
-                        self.continue_task(
+                        self.continue_loaded_task(
                             ctx,
-                            id,
+                            task,
                             &ContinueTask {
                                 account_id: None,
                                 prompt: None,
                             },
+                            None,
                         )
                         .await
-                        .map_err(|err| restart_refusal(err, task.number))?
+                        .map_err(|err| restart_refusal(err, current.number))?
                     }
-                    "task_restart" => self
-                        .continue_task(
-                            ctx,
-                            id,
-                            &ContinueTask {
-                                account_id: None,
-                                prompt: None,
-                            },
-                        )
-                        .await
-                        .map_err(|err| restart_refusal(err, task.number))?,
                     "task_pause" => self.pause_task_for_person(ctx, id).await?,
                     "task_unpause" => self.resume_task_for_person(ctx, id).await?,
                     _ => self.start_chained_now(ctx, id).await?,

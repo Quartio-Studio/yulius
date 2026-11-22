@@ -499,6 +499,21 @@ impl App {
         start_preparation: bool,
         vidoc: Option<bool>,
     ) -> AppResult<SandboxRecord> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Imports,
+            self.import_repository_inner(user, owner, name, start_preparation, vidoc),
+        )
+        .await
+    }
+
+    async fn import_repository_inner(
+        self: &Arc<Self>,
+        user: &UserRecord,
+        owner: &str,
+        name: &str,
+        start_preparation: bool,
+        vidoc: Option<bool>,
+    ) -> AppResult<SandboxRecord> {
         let store = &self.deps.store;
         if let Some(existing) = store.sandbox_by_repo(owner, name).await? {
             return Err(AppError::Conflict(format!(

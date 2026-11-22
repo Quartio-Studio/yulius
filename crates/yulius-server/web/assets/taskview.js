@@ -2,7 +2,7 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { append, h, icon, iconButton, setChildren, toast, errorToast, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
+import { append, h, icon, iconButton, setChildren, toast, errorToast, skeleton, openMenu, statusMark, singleFlight, keepFocus, confirmDialog } from './dom.js';
 import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
@@ -17,15 +17,15 @@ import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFil
 import { mentionOf, parsePrompt } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
-import { href } from './router.js';
+import { href, refreshRoute } from './router.js';
 import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, modelPreferences } from './models.js';
 import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
-import { antigravityConnected, claudeConnected, codexConnected, connectClaudeStep } from './claude.js';
+import { antigravityConnected, claudeConnected, codexConnected, connectAccountStep } from './claude.js';
 import { aName, agentOfHarness } from './agents.js';
 import { isPhone } from './theme.js';
-import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
+import { draftFor, newDraft, otherDrafts, selectDraft, saveDraft, setDraftStarting, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
 import { handoffsPanel } from './handoffs.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
@@ -1188,7 +1188,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
-      current = { ...current, ...next, account_id: next.account_id, needs_you_notice: next.needs_you_notice,
+      current = { ...current, ...next, account_id: next.account_id, needs_you_notice: next.needs_you_notice, staging_wait: next.staging_wait,
         parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
@@ -1230,7 +1230,7 @@ export function mountTaskView(ctx, sandbox, task) {
 function pickSummary(detail) {
   const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'account_email', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request', 'control_from'];
   // The server omits the subscription ID when a task is no longer attached.
-  const out = { account_id: detail.account_id };
+  const out = { account_id: detail.account_id, staging_wait: detail.staging_wait };
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
 }
@@ -1273,13 +1273,12 @@ export function autoChoiceLabel(task) {
  * split card takes its place there: nothing above it moves. Model and effort are remembered per
  * browser.
  */
-export function mountComposer(ctx, sandbox) {
+export function mountComposer(ctx, sandbox, draft) {
   const destroyers = [];
   const write = allows(sandbox.access, 'write');
   // What was typed, attached and chosen here waits in the sandbox's draft (SPEC-026).
   const userId = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.id : null;
-  const draft = draftFor(userId, sandbox.id);
-  const remember = (options) => saveDraft(userId, sandbox.id, options);
+  const remember = (options) => saveDraft(draft, options);
   // Files added to the prompt show in the tray above it (SPEC-150), an image as a thumbnail drawn
   // from its file (an object URL of this view) or from its stored thumbnail after a reload, which
   // opens large; inside the text each sits as a placeholder (SPEC-124), `Image N` for an image (N
@@ -1440,6 +1439,7 @@ export function mountComposer(ctx, sandbox) {
   };
   // The sandbox's workflows (instance first), read once; Auto chooses among them on the server.
   const workflowsRead = ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/workflows`).then((list) => {
+    if (destroyed) return;
     workflows = Array.isArray(list) ? list : [];
     renderChips();
   }).catch(() => { /* workflows are optional */ });
@@ -1486,6 +1486,26 @@ export function mountComposer(ctx, sandbox) {
   // Says that onboarding finished and the task box is ready (the gate's text is rebuilt silently).
   // A live region without the status role: the page's own status messages stay the only ones.
   const gateNews = h('span', { class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'true' });
+  const draftName = (item) => parsePrompt(item.text).text.trim().split('\n')[0].slice(0, 80) || item.attached[0]?.name || 'Untitled draft';
+  function openDrafts(anchor) {
+    openMenu(anchor, [
+      ...[draft, ...otherDrafts(draft)].map((item) => ({
+        label: draftName(item), checked: item === draft,
+        onSelect: () => { selectDraft(item); refreshRoute(); },
+      })),
+      { separator: true },
+      { label: 'Discard current draft', danger: true, disabled: draft.starting, onSelect: async () => {
+        if (await confirmDialog({ title: 'Discard this draft?', message: draftName(draft), confirmLabel: 'Discard draft', danger: true }) && !destroyed && !draft.starting) {
+          clearDraft(draft);
+          refreshRoute();
+        }
+      } },
+    ]);
+  }
+  const draftsButton = chip('Drafts', openDrafts);
+  setChildren(draftsButton, 'Drafts', icon('down', { size: 12 }));
+  const draftControls = write ? h('div', { class: 'composer-drafts' },
+    draftsButton, h('button', { type: 'button', class: 'chip-btn', onClick: () => { newDraft(draft); refreshRoute(); } }, icon('plus', { size: 14 }), 'New draft')) : null;
   const card = h('div', { class: 'composer-card' },
       // A brand's niche for its mark (hidden unless a brand shows it; styles.css "Brand details").
       niche,
@@ -1493,6 +1513,7 @@ export function mountComposer(ctx, sandbox) {
       banner,
       box,
       h('div', { class: 'composer-hint muted xs' }, modeHint, h('span', { class: 'composer-hint-sep', 'aria-hidden': 'true' }, ' · '), hint),
+      draftControls,
       intakeSlot);
   const el = h('div', { class: 'composer' }, repoBar, card, gate, gateNews);
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
@@ -1501,7 +1522,7 @@ export function mountComposer(ctx, sandbox) {
     // left still joins the draft (DRF-002), in the tray of the composer open then (SPEC-150).
     const here = place && !destroyed;
     arriving = here;
-    attachToDraft(userId, sandbox.id, draft, items);
+    attachToDraft(draft, items);
     arriving = false;
     const paths = items.map((item) => item.path);
     if (here && items.every((item) => known.has(item.path))) place.insert(paths, draft.attached.filter((item) => paths.includes(item.path)));
@@ -1511,11 +1532,12 @@ export function mountComposer(ctx, sandbox) {
   let arriving = false;
   /**
    * The draft changed elsewhere: the tray shows the files it gained (in every undo step: they came
-   * with no edit of this prompt), a cleared draft empties it.
+   * with no edit of this prompt).
    */
-  function draftChanged() {
+  function draftChanged(kind) {
+    if (kind === 'retired') { refreshRoute(); return; }
+    if (kind === 'starting') { renderBanner(); return; }
     learn();
-    if (!draft.text && !draft.attached.length && prompt.value) prompt.setValue('');
     if (!arriving) prompt.adopt(draft.attached);
     prompt.refresh(); // numbers, or a thumbnail came
     renderTray();
@@ -1651,7 +1673,7 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function openModelMenu(anchor) {
-    openMenu(anchor, modelMenuItems(picks.model, (id) => { picks.setModel(id); renderChips(); prompt.focus(); }));
+    openMenu(anchor, modelMenuItems(picks.model, (id) => { picks.setModel(id); renderChips(); renderBanner(); prompt.focus(); }));
   }
 
   function openEffortMenu(anchor) {
@@ -1758,13 +1780,16 @@ export function mountComposer(ctx, sandbox) {
     card.hidden = preparing;
     el.classList.toggle('gated', preparing);
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
-    // A task needs an agent: without a Claude account the composer says so first (SPEC-246).
-    // Codex and Antigravity tasks start on their own accounts alone (SPEC-503 CDX-014,
-    // SPEC-505): no Claude step then.
-    else if (!connected && !codexConnected(me) && !antigravityConnected(me) && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
+    // With an empty pool, offer the subscription the current model needs.
+    else if (!connected && !codexConnected(me) && !antigravityConnected(me) && !preparing) {
+      items.push(connectAccountStep(me, 'Tasks start once one is usable.', findModel(picks.model)?.provider.harness));
+    }
     setChildren(banner, items);
-    startButton.disabled = !write;
+    startButton.disabled = !write || draft.starting;
+    startButton.classList.toggle('busy', draft.starting);
     prompt.disabled = !write;
+    prompt.readOnly = draft.starting;
+    for (const control of [modeChip, workflowChip, afterChip, modelChip, effortChip]) control.disabled = draft.starting;
     startButton.title = !write ? 'Requires write access' : `${startAction()} (${SUBMIT_KEYS})`;
     // Onboarding landed while the page was open: the task box is ready for typing, unless the
     // person is busy elsewhere on the page.
@@ -1863,7 +1888,7 @@ export function mountComposer(ctx, sandbox) {
       plan ? h('ol', { class: 'onboarding-gate-steps' }, plan.steps.map((step) => h('li', null, step)))
         : plan === null ? skeleton('Loading what onboarding will do…', 4) : null,
       h('p', null, `It changes documentation, configuration and CI only, never application code, and any change reaches ${branchOf(sb)} through a pull request. ${ready}`),
-      connected ? null : connectClaudeStep(ctx.store.state.me, 'Onboarding starts once one is usable.'),
+      connected ? null : connectAccountStep(ctx.store.state.me, 'Onboarding starts once one is usable.'),
       failed ? h('p', { class: 'onboarding-gate-failed' }, prep.status === 'failed_no_account'
         ? `Onboarding couldn’t start because no Claude account was usable.${connected ? ' One is usable now.' : ''}`
         : 'Onboarding couldn’t start last time.') : null,
@@ -1928,15 +1953,9 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function opened(task) {
-    prompt.setValue('');
-    mode = AUTO;
-    workflowId = AUTO;
-    afterTaskId = '';
-    startRule = null;
-    supertask = false;
-    prepare = null;
-    clearDraft(userId, sandbox.id);
-    ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
+    const selected = draftFor(userId, sandbox.id) === draft;
+    clearDraft(draft);
+    if (selected) ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
   }
 
   function clearSplit() {
@@ -1952,10 +1971,7 @@ export function mountComposer(ctx, sandbox) {
   let showTimer = 0;
   const autoStage = () => (mode === AUTO || workflowId === AUTO ? 'Choosing mode and workflow…' : prepare ? 'Preparing the task…' : 'Starting the task…');
   function working(text) {
-    draft.starting = true;
-    startButton.disabled = true;
-    startButton.classList.add('busy');
-    prompt.readOnly = true;
+    setDraftStarting(draft, true);
     if (status) { status.stage(text); return; }
     status = intakeStatus(text);
     clearTimeout(showTimer);
@@ -1966,11 +1982,9 @@ export function mountComposer(ctx, sandbox) {
     }, 150);
   }
   function idle() {
-    draft.starting = false;
+    setDraftStarting(draft, false);
     clearTimeout(showTimer);
     box.classList.remove('thinking');
-    prompt.readOnly = false;
-    startButton.classList.remove('busy');
     if (status && intakeSlot.contains(status.el)) setChildren(intakeSlot, null);
     status = null;
     renderBanner();
@@ -2094,7 +2108,7 @@ export function mountComposer(ctx, sandbox) {
   destroyers.push(ctx.store.on('me', renderBanner));
   // A kept "Run after" shows once the sandbox's tasks are read.
   destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) { renderBanner(); if (afterTaskId) renderChips(); } }));
-  destroyers.push(onDraftChange(userId, sandbox.id, draftChanged));
+  destroyers.push(onDraftChange(draft, draftChanged));
   const onStarts = () => { if (!destroyed) renderBanner(); };
   onboardingStartsChanged.addEventListener('change', onStarts);
   destroyers.push(() => onboardingStartsChanged.removeEventListener('change', onStarts));
@@ -2102,7 +2116,6 @@ export function mountComposer(ctx, sandbox) {
 
   return {
     el,
-    key: `composer:${sandbox.id}`,
     start() {
       // While onboarding comes first the keyboard lands on its action (SPEC-096).
       if (!isPhone()) {

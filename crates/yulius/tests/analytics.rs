@@ -43,6 +43,7 @@ struct TaskSpec<'a> {
 async fn task(h: &support::Harness, t: TaskSpec<'_>) -> TestResult {
     h.store
         .insert_task(&TaskRecord {
+            resume_attempt_id: None,
             id: TaskId::parse(t.id)?,
             sandbox_id: SandboxId::parse(t.sandbox)?,
             number: 0,

@@ -1,0 +1,10 @@
+# The context of deploy/build/Dockerfile (scripts/cd/build.sh): the sources, never build output,
+# local tools or secrets.
+.git
+target
+.tools
+**/.env
+**/.env.*
+.ai/runs
+e2e/node_modules
+e2e/.e2e

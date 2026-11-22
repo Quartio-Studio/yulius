@@ -414,6 +414,7 @@ impl FakeGitHub {
             client_secret: Secret::new(FAKE_CLIENT_SECRET),
             private_key_pem: Secret::new(FAKE_APP_KEY_PEM),
             slug: FAKE_APP_SLUG.to_owned(),
+            webhook_secret: Some(Secret::new("synthetic webhook secret")),
         }
     }
 
@@ -752,7 +753,14 @@ fn pct_decode(text: &str) -> String {
 
 fn reply(status: u16, body: Value) -> Response {
     let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (code, axum::Json(body)).into_response()
+    let mut response = (code, axum::Json(body)).into_response();
+    if status == 200 {
+        response.headers_mut().insert(
+            "etag",
+            axum::http::HeaderValue::from_static("\"fixture-etag\""),
+        );
+    }
+    response
 }
 
 /// What GitHub accepts for creating a repository (either permission suffices).
@@ -1145,7 +1153,7 @@ async fn handle(
                     "slug": FAKE_APP_SLUG,
                     "client_id": FAKE_CLIENT_ID,
                     "client_secret": FAKE_CLIENT_SECRET,
-                    "webhook_secret": Value::Null,
+                    "webhook_secret": "synthetic webhook secret",
                     "pem": FAKE_APP_KEY_PEM,
                     "owner": {"login": "fake-owner", "type": "Organization"},
                 }),

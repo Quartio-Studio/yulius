@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::ci::cd::{CdRunEnd, CdRunRecord};
 use yulius_app::error::{AppError, AppResult};
-use yulius_app::ports::store_ext::CdStore;
+use yulius_app::ports::store_ext::{CdRunHistory, CdStore};
 use yulius_domain::cd::CdStage;
 use yulius_domain::ci::RunState;
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -310,14 +310,22 @@ impl CdStore for SqliteStore {
         environment: &str,
         stage: CdStage,
         kind: CdRunKind,
+        history: CdRunHistory,
     ) -> AppResult<Option<CdRunRecord>> {
         let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
         let (stage, kind) = (stage.as_str(), kind.as_str());
+        let state = match history {
+            CdRunHistory::Latest => "",
+            CdRunHistory::Finished => " AND state != 'running'",
+            CdRunHistory::Passed => " AND state = 'passed'",
+        };
         self.call(move |c| {
             Ok(select(
                 c,
-                "sandbox_id = ?1 AND environment = ?2 AND stage = ?3 AND kind = ?4 \
-                 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                &format!(
+                    "sandbox_id = ?1 AND environment = ?2 AND stage = ?3 AND kind = ?4{state} \
+                 ORDER BY started_at DESC, rowid DESC LIMIT 1"
+                ),
                 &[&sandbox, &environment, &stage, &kind],
             )?
             .into_iter()
@@ -498,18 +506,36 @@ mod tests {
         );
         let sandbox = SandboxId::parse("s1")?;
         let newest = store
-            .last_cd_run_of_kind(&sandbox, "dev", CdStage::Dev, CdRunKind::Drill)
+            .last_cd_run_of_kind(
+                &sandbox,
+                "dev",
+                CdStage::Dev,
+                CdRunKind::Drill,
+                CdRunHistory::Latest,
+            )
             .await?;
         assert_eq!(newest.map(|r| r.id), Some("x1".to_owned()));
         assert!(
             store
-                .last_cd_run_of_kind(&sandbox, "dev", CdStage::Prod, CdRunKind::Drill)
+                .last_cd_run_of_kind(
+                    &sandbox,
+                    "dev",
+                    CdStage::Prod,
+                    CdRunKind::Drill,
+                    CdRunHistory::Latest
+                )
                 .await?
                 .is_none()
         );
         assert!(
             store
-                .last_cd_run_of_kind(&sandbox, "dev", CdStage::Dev, CdRunKind::Rollback)
+                .last_cd_run_of_kind(
+                    &sandbox,
+                    "dev",
+                    CdStage::Dev,
+                    CdRunKind::Rollback,
+                    CdRunHistory::Latest
+                )
                 .await?
                 .is_none()
         );

@@ -28,6 +28,7 @@ workspace = true
 layer = "composition"
 
 [dependencies]
+futures = { workspace = true }
 yulius-domain = { workspace = true }
 yulius-contracts = { workspace = true }
 yulius-app = { workspace = true }
@@ -69,13 +70,14 @@ flate2 = { workspace = true }
 aho-corasick = { workspace = true }
 
 [dev-dependencies]
+ring = { workspace = true }
+h2 = "0.4.20"
 yulius-app = { workspace = true, features = ["test-support"] }
 yulius-ptyhost = { workspace = true, features = ["test-support"] }
 yulius-store = { workspace = true, features = ["test-support"] }
 yulius-browser = { workspace = true, features = ["fake"] }
 yulius-github = { workspace = true, features = ["fake"] }
 tokio-tungstenite = { workspace = true }
-futures = { workspace = true }
 tempfile = { workspace = true }
 rusqlite = { workspace = true }
 tower = { workspace = true, features = ["util"] }

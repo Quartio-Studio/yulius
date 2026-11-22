@@ -332,6 +332,15 @@ pub trait TaskStore: Send + Sync {
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Starts an idle move only while its observed activity, update time and live attempt
+    /// still match. A lost claim leaves the task and attempt in place (SPEC-611).
+    async fn claim_idle_switch(
+        &self,
+        id: &TaskId,
+        from: (Activity, Timestamp),
+        attempt: &AttemptId,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Sets activity while running; the state's time moves only when it changes (SPEC-087).
     async fn set_activity(
         &self,
@@ -357,6 +366,33 @@ pub trait TaskStore: Send + Sync {
         id: &TaskId,
         from: Option<(Option<Activity>, Timestamp)>,
         reason: Option<&crate::attention::AttentionRecord>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Accepts Continue only for the ended status, attempt and archive the owner selected.
+    /// Clears that archive and question atomically with Starting or the complete queued start.
+    async fn claim_continuation(
+        &self,
+        selected: &TaskRecord,
+        queue: Option<&crate::model::QueuedStart>,
+        requested: Option<&AccountId>,
+        at: Timestamp,
+    ) -> AppResult<Option<crate::capacity::ContinuationAdmission>>;
+    /// Starts the parked owner only while its observed attempt, PR, queue decision
+    /// and absence of a human request still hold in the same transaction.
+    async fn claim_parked_candidate(
+        &self,
+        selected: &TaskRecord,
+        claim: crate::pr_watch::ParkedCandidateClaim,
+        account: &AccountId,
+        at: Timestamp,
+    ) -> AppResult<Option<crate::capacity::ContinuationAdmission>>;
+    /// Ends an unspawned candidate resume and restores its park together. A newer
+    /// task state (including a person's Stop) is preserved when settling the attempt.
+    async fn settle_unspawned_candidate(
+        &self,
+        task: &TaskId,
+        attempt: &AttemptId,
+        activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<bool>;
     /// Queues the task `id`, which must read `expected`, and keeps how it is to start, in one
@@ -531,6 +567,9 @@ pub trait TaskStore: Send + Sync {
         update: &TaskFieldUpdate,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Atomically charge one delivered Stop continuation against the current budget.
+    async fn consume_stop_attempt(&self, id: &TaskId, ceiling: u32, at: Timestamp)
+    -> AppResult<()>;
     /// Deletes a task and everything recorded for it (attempts, lineage, steps, messages to or
     /// from it, metrics, feedback, delivery, switch decisions, claims, its chain link and held
     /// prompts); references from automation runs, sandbox onboarding, chained successors and
@@ -540,6 +579,8 @@ pub trait TaskStore: Send + Sync {
     async fn insert_attempt(&self, attempt: &AttemptRecord) -> AppResult<()>;
     /// Attempt by id.
     async fn attempt(&self, id: &AttemptId) -> AppResult<Option<AttemptRecord>>;
+    /// The recorded state, independently of optional run metadata.
+    async fn attempt_state(&self, id: &AttemptId) -> AppResult<AttemptState>;
     /// Attempt by token hash.
     async fn attempt_by_token(&self, token_hash: &str) -> AppResult<Option<AttemptRecord>>;
     /// Attempts of a task in order.
@@ -764,12 +805,28 @@ pub trait CoordinationStore: Send + Sync {
     async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<MessageRecord>>;
     /// Inserts a review round (SPEC-493 REV-004).
     async fn insert_review_round(&self, round: &ReviewRoundRecord) -> AppResult<()>;
+    /// Records one round per Codex child. A report can be the first event to reach the store.
+    async fn record_codex_review_round(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        model: &str,
+        head: Option<&str>,
+        started_at: Timestamp,
+        report: Option<(Timestamp, yulius_domain::review::Verdict)>,
+    ) -> AppResult<()>;
     /// The review rounds of a task, oldest first: those of its open pull request only
     /// (`open_only`), else all.
     async fn review_rounds(
         &self,
         task: &TaskId,
         open_only: bool,
+    ) -> AppResult<Vec<ReviewRoundRecord>>;
+    /// Current rounds if any, otherwise the requested PR's latest landed rounds.
+    async fn delivery_review_rounds(
+        &self,
+        task: &TaskId,
+        pr: Option<u64>,
     ) -> AppResult<Vec<ReviewRoundRecord>>;
     /// Links a new reviewer, resumes an unfinished round, or reserves `continuation_id`
     /// for a reviewer that previously reported. Delayed events cannot change a later round.

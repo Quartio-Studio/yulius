@@ -10,6 +10,7 @@ use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::coordination::{Channel, ProjectCaller};
 use yulius_app::cross_sandbox::CrossAction;
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::TaskStatus;
 use yulius_ptyhost::test_support::locate_fake_agent;
@@ -109,8 +110,10 @@ fn a_prepared_task_of_another_sandbox_is_started_and_messaged_from_a_superagent(
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
         assert_eq!(task.sandbox_id, pool);
         assert_eq!(task.status, TaskStatus::Prepared);
+        assert_eq!(task.harness, Harness::Codex);
 
         // It should have been queued: started from home, no delete and no new task.
+        crate::codex::connect_codex(&app).await?;
         let started = approved(
             &app,
             &person,

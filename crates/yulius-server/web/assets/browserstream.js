@@ -107,6 +107,10 @@ export function createStreamView(ctx, sandbox, hooks) {
   let lastAgent = null;
   let agentTimer = 0;
   let copiedTimer = 0;
+  let closeCopyOffer = null;
+  let acceptedPageOffer = null;
+  let pageCopyVersion = 0;
+  let pageCopyTimer = 0;
   let pendingCopy = null; // {resolve, reject, timer}
   let compositionText = null;
   let fit = 1;
@@ -372,6 +376,7 @@ export function createStreamView(ctx, sandbox, hooks) {
   }
 
   surface.addEventListener('pointerdown', (event) => {
+    clearPageCopy();
     if (event.pointerType === 'touch') { touchStart(event); return; }
     event.preventDefault();
     keys.focus({ preventScroll: true });
@@ -593,6 +598,72 @@ export function createStreamView(ctx, sandbox, hooks) {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(value).then(showCopied, () => toast('The browser blocked the clipboard; copy again with the page focused.', { kind: 'warn' }));
   }
 
+  function clearPageCopy() {
+    clearTimeout(pageCopyTimer);
+    acceptedPageOffer = null;
+    pageCopyVersion += 1;
+    if (closeCopyOffer) closeCopyOffer();
+    closeCopyOffer = null;
+  }
+
+  const copyExpired = 'Copy expired. Click Copy on the webpage again.';
+
+  function offerPageCopy(tabId, offer) {
+    clearPageCopy();
+    const notice = document.createTextNode('The sandbox clipboard changed.');
+    let expired = false;
+    pageCopyTimer = setTimeout(() => { expired = true; notice.data = copyExpired; }, 15000);
+    closeCopyOffer = toast(notice, {
+      action: { label: 'Copy to my clipboard', run: () => {
+        clearTimeout(pageCopyTimer);
+        if (expired) { toast(copyExpired, { kind: 'warn' }); return; }
+        acceptedPageOffer = offer;
+        if (send({ type: 'accept_page_copy', tab_id: tabId, offer })) {
+          pageCopyTimer = setTimeout(() => {
+            clearPageCopy();
+            toast('The clipboard did not respond. Click Copy on the webpage again.', { kind: 'warn' });
+          }, 6000);
+        } else {
+          clearPageCopy();
+          toast('The browser disconnected. Click Copy on the webpage again.', { kind: 'warn' });
+        }
+      } },
+    });
+  }
+
+  /** The viewer explicitly requested this selection from the shared sandbox clipboard. */
+  async function copyPageText(value) {
+    clearPageCopy();
+    const version = pageCopyVersion;
+    try {
+      await navigator.clipboard.writeText(value);
+      if (version === pageCopyVersion) showCopied();
+    } catch {
+      if (version !== pageCopyVersion) return;
+      const notice = document.createTextNode('Your browser needs another click to write to the clipboard.');
+      pageCopyTimer = setTimeout(() => { value = ''; notice.data = copyExpired; }, 15000);
+      const dismiss = toast(notice, {
+        action: { label: 'Retry copy', run: () => {
+          if (!value) { toast(copyExpired, { kind: 'warn' }); return; }
+          let filled = false;
+          const fill = (event) => {
+            if (!event.clipboardData) return;
+            event.clipboardData.setData('text/plain', value);
+            event.preventDefault();
+            filled = true;
+          };
+          document.addEventListener('copy', fill, true);
+          try {
+            if (document.execCommand('copy') && filled) { showCopied(); return; }
+          } catch { /* the browser refused this gesture too */ }
+          finally { document.removeEventListener('copy', fill, true); clearPageCopy(); }
+          toast('Your browser blocked the clipboard write.', { kind: 'warn' });
+        } },
+      });
+      closeCopyOffer = () => { value = ''; dismiss(); };
+    }
+  }
+
   function showCopied() {
     copied.hidden = false;
     clearTimeout(copiedTimer);
@@ -673,6 +744,12 @@ export function createStreamView(ctx, sandbox, hooks) {
         clearTimeout(awaitingTimer);
         layout();
         break;
+      case 'page_copy_available':
+        if (message.tab_id === watched && Number.isInteger(message.offer)) offerPageCopy(watched, message.offer);
+        break;
+      case 'page_clipboard':
+        if (message.tab_id === watched && acceptedPageOffer !== null && message.offer === acceptedPageOffer && typeof message.text === 'string' && message.text) copyPageText(message.text);
+        break;
       case 'clipboard':
         onClipboard(typeof message.text === 'string' ? message.text : '');
         break;
@@ -686,6 +763,7 @@ export function createStreamView(ctx, sandbox, hooks) {
         if (hooks.onActionCleared) hooks.onActionCleared(message);
         break;
       case 'error':
+        if (message.code === 'clipboard_unavailable' && acceptedPageOffer !== null) clearPageCopy();
         if (message.code === 'input_locked_until_restart') {
           if (lockReason.textContent !== message.message) lockReason.textContent = message.message;
           restartNotice.hidden = false;
@@ -762,7 +840,7 @@ export function createStreamView(ctx, sandbox, hooks) {
       },
       onMessage,
       onStatus: (status, detail = {}) => {
-        if (status !== 'open') restartNotice.hidden = true;
+        if (status !== 'open') { restartNotice.hidden = true; clearPageCopy(); }
         if (status === 'reconnecting' && detail.code === CLOSE_SERVER_ERROR) {
           // The browser failed to start or stopped (e.g. Chromium missing): do not hammer it.
           const reason = lastError && lastError.message ? lastError.message : 'The sandbox Chrome stopped.';
@@ -793,6 +871,7 @@ export function createStreamView(ctx, sandbox, hooks) {
       const changed = watched !== tabId;
       watched = tabId || null;
       if (changed) {
+        clearPageCopy();
         agentCursor.hidden = true;
         agentPill.hidden = true;
         lastAgent = null;
@@ -815,12 +894,14 @@ export function createStreamView(ctx, sandbox, hooks) {
     layout,
     start() { connect(); setTimeout(() => { sendViewport(); layout(); }, 0); },
     stop() {
+      clearPageCopy();
       if (socket) socket.stop();
       socket = null;
       closeDecoder();
       hasPicture = false;
     },
     destroy() {
+      clearPageCopy();
       observer.disconnect();
       clearTimeout(viewportTimer);
       clearTimeout(awaitingTimer);

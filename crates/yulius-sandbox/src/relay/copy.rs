@@ -1,6 +1,6 @@
 //! Buffered state of an established opaque tunnel or its host-side relay (SPEC-577).
 
-use std::io::{self, Cursor};
+use std::io::{self, BufRead as _, Cursor};
 
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, copy_buf, split};
 
@@ -19,7 +19,7 @@ struct Direction {
     phase: Phase,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Copying,
     ShuttingDown,
@@ -71,6 +71,82 @@ impl Direction {
 }
 
 impl CopyState {
+    /// Maximum pending bytes in each direction, including HTTP upgrade lookahead.
+    pub const BUFFER_BYTES: usize = BUFFER_BYTES;
+
+    /// Begin with the opaque bytes already read by the HTTP listener after the headers.
+    /// No forwarding has to complete before the connection can accept a checkpoint.
+    ///
+    /// # Errors
+    /// Rejects a prefix larger than the listener's single-read bound.
+    pub fn from_prefix(prefix: &[u8]) -> io::Result<Self> {
+        if prefix.len() > BUFFER_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CONNECT lookahead exceeds the copy buffer",
+            ));
+        }
+        let mut state = Self::default();
+        state.to_peer.pending.get_mut().extend_from_slice(prefix);
+        Ok(state)
+    }
+
+    /// Append the two write-half phases and exactly the unsent bytes to private handoff state.
+    ///
+    /// # Errors
+    /// The pending byte count must fit the direction's buffer.
+    pub fn encode(self, output: &mut Vec<u8>) -> io::Result<()> {
+        for mut direction in [self.to_peer, self.to_client] {
+            let bytes = direction.pending.fill_buf()?;
+            let size = u16::try_from(bytes.len()).map_err(io::Error::other)?;
+            output.push(match direction.phase {
+                Phase::Copying => 0,
+                Phase::ShuttingDown => 1,
+                Phase::Closed => 2,
+            });
+            output.extend_from_slice(&size.to_be_bytes());
+            output.extend_from_slice(bytes);
+        }
+        Ok(())
+    }
+
+    /// Recreate the bounded copy buffers and their original half-close positions.
+    ///
+    /// # Errors
+    /// Rejects truncated, oversized, inconsistent or trailing private state.
+    pub fn decode(mut input: &[u8]) -> io::Result<Self> {
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid tunnel copy state");
+        let mut direction = || {
+            let ([phase, high, low], rest) = input.split_first_chunk::<3>().ok_or_else(invalid)?;
+            let len = usize::from(u16::from_be_bytes([*high, *low]));
+            if len > BUFFER_BYTES {
+                return Err(invalid());
+            }
+            let phase = match (phase, len) {
+                (0, _) => Phase::Copying,
+                (1, 0) => Phase::ShuttingDown,
+                (2, 0) => Phase::Closed,
+                _ => return Err(invalid()),
+            };
+            let (pending, rest) = rest.split_at_checked(len).ok_or_else(invalid)?;
+            input = rest;
+            let mut bytes = Vec::with_capacity(BUFFER_BYTES);
+            bytes.extend_from_slice(pending);
+            Ok(Direction {
+                phase,
+                pending: Cursor::new(bytes),
+            })
+        };
+        let state = Self {
+            to_peer: direction()?,
+            to_client: direction()?,
+        };
+        if !input.is_empty() {
+            return Err(invalid());
+        }
+        Ok(state)
+    }
+
     /// Copies in both directions until both write halves close or an I/O error occurs.
     /// Dropping the future pauses the copy. Call again with this state and the same sockets
     /// in the same order to resume. Each direction buffers up to 8 KiB.
@@ -112,6 +188,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn copy_records_accept_the_bound_and_reject_invalid_phases_and_lengths() -> io::Result<()> {
+        let mut valid = vec![0, 0x20, 0];
+        valid.resize(3 + super::BUFFER_BYTES, 0x42);
+        valid.extend_from_slice(&[1, 0, 0]);
+        let mut encoded = Vec::new();
+        CopyState::decode(&valid)?.encode(&mut encoded)?;
+        assert_eq!(encoded, valid);
+        let mut oversized = valid.clone();
+        oversized[2] = 1;
+        oversized.insert(3, 0x42);
+        assert!(CopyState::decode(&oversized).is_err());
+        for bad in [
+            &[][..],
+            &[0, 0, 2, 1],
+            &[0, 0x20, 1],
+            &[1, 0, 1, 0, 0, 0, 0],
+            &[2, 0, 1, 0, 0, 0, 0],
+            &[3, 0, 0, 0, 0, 0],
+            &[0, 0, 0, 0, 0, 0, 1],
+        ] {
+            assert!(CopyState::decode(bad).is_err(), "{bad:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_stalled_maximum_upgrade_prefix_checkpoints_while_the_peer_can_reply()
+    -> io::Result<()> {
+        let (mut client, mut left) = duplex(4);
+        let (mut right, mut peer) = duplex(4);
+        let prefix = vec![b'X'; CopyState::BUFFER_BYTES];
+        assert!(CopyState::from_prefix(&vec![0; CopyState::BUFFER_BYTES + 1]).is_err());
+        peer.write_all(b"HELO").await?;
+        let mut copy = CopyState::from_prefix(&prefix)?;
+        pause(copy.transfer(&mut left, &mut right)).await;
+        assert_eq!(client.read_u32().await?.to_be_bytes(), *b"HELO");
+        // The destination is full, with most of the original header's lookahead still pending.
+        let mut encoded = Vec::new();
+        copy.encode(&mut encoded)?;
+        let mut resumed = CopyState::decode(&encoded)?;
+        client.write_all(b"TAIL").await?;
+        client.shutdown().await?;
+        peer.shutdown().await?;
+        let mut received = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::try_join!(
+                resumed.transfer(&mut left, &mut right),
+                peer.read_to_end(&mut received)
+            )
+        })
+        .await??;
+        assert_eq!(received.len(), prefix.len() + 4);
+        assert!(received.starts_with(&prefix));
+        assert!(received.ends_with(b"TAIL"));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn repeated_pauses_preserve_partial_writes_in_both_directions() -> io::Result<()> {
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -126,6 +260,11 @@ mod tests {
             pause(copy.transfer(&mut left, &mut right)).await;
             assert_eq!(client.read_u32().await?.to_be_bytes(), *b"aaaW");
             assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"bbb1");
+
+            // Model reconstructing the copy in a new server process.
+            let mut encoded = Vec::new();
+            copy.encode(&mut encoded)?;
+            copy = CopyState::decode(&encoded)?;
 
             // Each destination can take its three pending bytes and one of the next four.
             client.write_all(b"5678").await?;
@@ -167,6 +306,9 @@ mod tests {
             );
             assert_eq!(client.read_u32().await?.to_be_bytes(), *b"aaap");
 
+            let mut encoded = Vec::new();
+            copy.encode(&mut encoded)?;
+            copy = CopyState::decode(&encoded)?;
             peer.write_all(b"done").await?;
             peer.shutdown().await?;
             let mut reply = Vec::new();
@@ -291,6 +433,9 @@ mod tests {
         let mut peer = tokio::io::join(&b"reply"[..], PendingShutdownOnce { calls: 0 });
         let mut copy = CopyState::default();
         pause(copy.transfer(&mut client, &mut peer)).await;
+        let mut encoded = Vec::new();
+        copy.encode(&mut encoded)?;
+        copy = CopyState::decode(&encoded)?;
         copy.transfer(&mut client, &mut peer).await?;
         assert_eq!(
             peer.into_inner().1.calls,

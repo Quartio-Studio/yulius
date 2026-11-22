@@ -18,4 +18,6 @@ toolchain_bin = Path(compiler).parent
 os.environ["PATH"] = os.pathsep.join([str(root / ".tools/bin"), str(toolchain_bin), os.environ.get("PATH", "")])
 os.environ["RUSTC"] = compiler
 os.environ["RUSTDOC"] = str(toolchain_bin / "rustdoc")
+if os.environ.get("YULIUS_SANDBOX"):
+    os.environ["YULIUS_PROJECT_CARGO"] = str(toolchain_bin / "cargo")
 os.execv(rustup, [rustup, "run", channel, "cargo", "xtask", *sys.argv[1:]])

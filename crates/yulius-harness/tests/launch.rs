@@ -186,6 +186,14 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
             }] }])
         );
     }
+    assert_eq!(
+        settings["hooks"]["PermissionRequest"],
+        json!([{
+            "matcher": "Bash", "hooks": [{
+                "type": "command", "command": "'/opt/yulius/bin/yulius' hook claude PermissionRequest", "timeout": 15
+            }]
+        }])
+    );
     // Before a tool runs: Bash is checked in the sandbox, the edit tools by Yulius's edit gate
     // (SPEC-426 EDG-001); both through the same client, never held.
     assert_eq!(
@@ -263,6 +271,11 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
     request.effort = None;
     request.mcp_servers.clear();
     let plan = plan_launch(&request)?;
+    assert!(
+        json_of(file(&plan, "claude-settings.json")?)?["hooks"]
+            .get("PermissionRequest")
+            .is_none()
+    );
     // The reviewer agents (SPEC-493 REV-001): their content is its own test's.
     let agents = plan.argv[plan
         .argv
@@ -468,6 +481,14 @@ fn invalid_requests_are_rejected_without_echoing_values() {
     );
     let error = format!("{:?}", plan_launch(&bad_prompt));
     assert!(!error.contains("a\\0b"));
+    for (length, valid) in [(128, true), (129, false)] {
+        let name = format!("_{}", "1".repeat(length - 1));
+        bad_env.mcp_servers[0].transport = McpTransport::Http {
+            url: "https://example.invalid/mcp".into(),
+            bearer_env: Some(name),
+        };
+        assert_eq!(plan_launch(&bad_env).is_ok(), valid, "{length}");
+    }
 }
 
 #[test]
@@ -1385,6 +1406,7 @@ fn codex_new_session_argv_snapshot_and_files() -> TestResult {
     assert_eq!(
         config,
         "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n\n\
+         [notice]\nhide_rate_limit_model_nudge = true\n\n\
          [shell_environment_policy]\nignore_default_excludes = true\nexclude = [\"CODEX_HOME\"]\n\n\
          [projects.\"/data/sandboxes/s1/worktrees/t1\"]\ntrust_level = \"trusted\"\n"
     );
@@ -1394,6 +1416,8 @@ fn codex_new_session_argv_snapshot_and_files() -> TestResult {
         ("UserPromptSubmit", 694_800),
         ("Stop", 694_800),
         ("SessionEnd", 3),
+        ("SubagentStart", 15),
+        ("SubagentStop", 15),
     ] {
         assert_eq!(
             hooks["hooks"][event],
@@ -1459,6 +1483,11 @@ fn codex_resume_argv() -> TestResult {
             .any(|a| a == "--dangerously-bypass-approvals-and-sandbox")
     );
     assert_eq!(plan.session_id.as_deref(), Some(CODEX_SESSION));
+    let config = std::str::from_utf8(&file(&plan, "config.toml")?.contents)?;
+    assert!(
+        config.contains("\n[notice]\nhide_rate_limit_model_nudge = true\n"),
+        "{config}"
+    );
     request.mode = LaunchMode::Resume {
         session_id: CODEX_SESSION.into(),
         prompt: Some("ignored".into()),
@@ -1560,7 +1589,7 @@ fn codex_ultrafast_follows_the_assigned_subscription() -> TestResult {
     Ok(())
 }
 
-/// SPEC-561: resolve effort from the effective model on each process start.
+/// SPEC-607: inherit High or pass the chosen effort on each Codex process start.
 #[test]
 fn codex_resolves_effort_for_new_and_resumed_tasks() -> TestResult {
     let modes = [
@@ -1577,8 +1606,17 @@ fn codex_resolves_effort_for_new_and_resumed_tasks() -> TestResult {
     for mode in modes {
         let mut request = codex_request(mode, true);
         for (model, effort, expected_model, expected_effort) in [
-            (None, None, "gpt-6.2-astra", "xhigh"),
-            (Some("gpt-6.2-astra"), None, "gpt-6.2-astra", "xhigh"),
+            (None, None, "gpt-6.2-astra", "high"),
+            (Some("gpt-6.2-astra"), None, "gpt-6.2-astra", "high"),
+            (
+                Some("gpt-6.2-astra"),
+                Some("xhigh"),
+                "gpt-6.2-astra",
+                "xhigh",
+            ),
+            (Some("gpt-6.2-astra"), Some("max"), "gpt-6.2-astra", "max"),
+            (Some("gpt-6.2-sol"), None, "gpt-6.2-sol", "high"),
+            (Some("gpt-6.2-sol"), Some("max"), "gpt-6.2-sol", "max"),
             (None, Some("high"), "gpt-6.2-astra", "high"),
             (Some("gpt-6.2-astra"), Some("low"), "gpt-6.2-astra", "low"),
             (Some("gpt-6-astra"), None, "gpt-6-astra", "high"),
@@ -1603,7 +1641,8 @@ fn codex_resolves_effort_for_new_and_resumed_tasks() -> TestResult {
             assert_eq!(
                 efforts,
                 [format!("model_reasoning_effort=\"{expected_effort}\"")],
-                "{model:?} {effort:?}"
+                "{:?}: {model:?} {effort:?}",
+                request.mode
             );
         }
     }

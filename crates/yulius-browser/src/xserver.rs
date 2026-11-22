@@ -46,6 +46,9 @@ use crate::keys::{SHIFT_KEYCODES, us_char};
 #[derive(Debug)]
 pub(crate) enum XCommand {
     Input(DisplayInput),
+    /// Arm a clipboard transfer and deliver the primary press as one command.
+    CopyPress(tokio::sync::oneshot::Sender<u32>),
+    AcceptCopy(u32, tokio::sync::oneshot::Sender<String>),
     /// Apply the move slot if it still belongs to this generation (a wake-up for moves).
     Motion(u64),
     /// Answer once the server has processed every earlier request (a round trip).
@@ -273,7 +276,9 @@ impl XController {
             (screen.width_in_pixels, screen.height_in_pixels)
         });
         let (keysyms_per_keycode, scratch) = spare_keycodes(&conn);
+        let clipboard = crate::xclipboard::Clipboard::new(&conn);
         let mut state = XState {
+            clipboard,
             keysyms_per_keycode,
             scratch,
             typed: HashMap::new(),
@@ -326,7 +331,7 @@ impl XController {
         rx.await.is_ok()
     }
 
-    fn queue(&self, command: XCommand) -> Result<(), XSendError> {
+    pub(super) fn queue(&self, command: XCommand) -> Result<(), XSendError> {
         if !self.alive.load(Ordering::Relaxed) {
             return Err(XSendError::Gone);
         }
@@ -340,6 +345,7 @@ impl XController {
 }
 
 struct XState {
+    clipboard: Option<crate::xclipboard::Clipboard>,
     conn: RustConnection,
     root: Window,
     /// The screen's current size.
@@ -423,6 +429,9 @@ impl XState {
                     }
                 }
             }
+            if let Some(clipboard) = &mut self.clipboard {
+                clipboard.expire(&self.conn);
+            }
             if self.conn.flush().is_err() {
                 return;
             }
@@ -440,7 +449,28 @@ impl XState {
 
     fn command(&mut self, command: XCommand) {
         match command {
-            XCommand::Input(input) => self.apply(input),
+            XCommand::Input(input) => {
+                if input.supersedes_copy()
+                    && let Some(clipboard) = &mut self.clipboard
+                {
+                    clipboard.cancel(&self.conn);
+                }
+                self.apply(input);
+            }
+            XCommand::AcceptCopy(offer, result) => {
+                if let Some(clipboard) = &mut self.clipboard {
+                    clipboard.accept(&self.conn, offer, result);
+                }
+            }
+            XCommand::CopyPress(result) => {
+                if let Some(clipboard) = &mut self.clipboard {
+                    clipboard.start(&self.conn, self.root, result);
+                }
+                self.apply(DisplayInput::Button {
+                    button: 1,
+                    press: true,
+                });
+            }
             XCommand::Motion(generation) => {
                 if let Some((x, y)) = self.motion.take_motion(generation) {
                     self.apply(DisplayInput::Motion { x, y });
@@ -619,6 +649,9 @@ impl XState {
     }
 
     fn on_event(&mut self, event: &Event) {
+        if let Some(clipboard) = &mut self.clipboard {
+            clipboard.on_event(&self.conn, event);
+        }
         match event {
             Event::MapNotify(map) if map.event == self.root && !map.override_redirect => {
                 if !self.mapped.contains(&map.window) {
@@ -824,6 +857,11 @@ mod tests {
                     while let Some(command) = next.take() {
                         match command {
                             XCommand::Input(input) => apply(input),
+                            XCommand::AcceptCopy(_, _) => {}
+                            XCommand::CopyPress(_) => apply(DisplayInput::Button {
+                                button: 1,
+                                press: true,
+                            }),
                             XCommand::Motion(generation) => {
                                 if let Some((x, y)) = lane.take_motion(generation) {
                                     apply(DisplayInput::Motion { x, y });

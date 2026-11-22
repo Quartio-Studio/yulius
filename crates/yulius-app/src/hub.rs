@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
+use yulius_domain::harness::Harness;
 
 pub mod control;
 
@@ -253,10 +254,15 @@ impl Hub {
     }
 
     /// Positive evidence from live renderer output at the current terminal geometry.
-    pub(crate) fn prompt_box_shown_empty(&self) -> bool {
-        self.screen
-            .lock()
-            .is_ok_and(|s| s.redraw.rendered() && crate::prompt_box::shown_empty(s.parser.screen()))
+    pub(crate) fn prompt_box_shown_empty(&self, harness: Harness) -> bool {
+        self.screen.lock().is_ok_and(|s| {
+            s.redraw.rendered()
+                && match harness {
+                    Harness::ClaudeCode => crate::prompt_box::shown_empty(s.parser.screen()),
+                    Harness::Codex => crate::prompt_box::codex_shown_empty(s.parser.screen()),
+                    Harness::Antigravity => false,
+                }
+        })
     }
 
     /// Whether the live VT screen shows text in Claude Code's conversation input.
@@ -264,6 +270,25 @@ impl Hub {
         self.screen
             .lock()
             .is_ok_and(|s| crate::visible_draft::shown(s.parser.screen()))
+    }
+
+    /// Whether the current grid shows Codex's rate-limit model picker. An
+    /// alternate grid needs a repaint and a visible input cursor to rule it out.
+    /// While a partial redraw shows only the title, the native picker still hides the cursor.
+    pub(crate) fn codex_rate_limit_picker_shown(&self) -> Option<bool> {
+        let screen = self.screen.lock().ok()?;
+        let grid = screen.parser.screen();
+        if crate::prompt_box::codex_rate_limit_picker_shown(grid) {
+            return Some(true);
+        }
+        if grid.alternate_screen()
+            && (!screen.redraw.rendered()
+                || grid.hide_cursor()
+                || grid.rows(0, grid.size().1).all(|row| row.trim().is_empty()))
+        {
+            return None;
+        }
+        Some(false)
     }
 
     /// Visible screen text (for previews and tests).
@@ -452,6 +477,7 @@ fn viewer_snapshot(screen: &vt100::Screen) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use super::Harness;
     use super::*;
 
     #[test]
@@ -530,35 +556,38 @@ mod tests {
         let mut stashed = frame(40);
         stashed.push_str("\x1b[7;31H› stashed\x1b[9;3H");
         hub.output(1, stashed.as_bytes());
-        assert!(!hub.prompt_box_shown_empty());
+        assert!(!hub.prompt_box_shown_empty(Harness::ClaudeCode));
         hub.resize(20, 12);
         assert!(
-            !hub.prompt_box_shown_empty(),
+            !hub.prompt_box_shown_empty(Harness::ClaudeCode),
             "a local crop is not a redraw"
         );
         let recovered = Hub::new(20, 12);
         recovered.reset(1, &hub.subscribe().snapshot, 20, 12);
         assert!(
-            !recovered.prompt_box_shown_empty(),
+            !recovered.prompt_box_shown_empty(Harness::ClaudeCode),
             "a host snapshot can carry the same crop"
         );
         recovered.output(2, b"\x1b]0;title\x1b[2J\x07");
         assert!(
-            !recovered.prompt_box_shown_empty(),
+            !recovered.prompt_box_shown_empty(Harness::ClaudeCode),
             "a title cannot certify a redraw"
         );
         hub.output(2, b"\x1b[11;1Hstatus\x1b[9;3H");
         assert!(
-            !hub.prompt_box_shown_empty(),
+            !hub.prompt_box_shown_empty(Harness::ClaudeCode),
             "a status update leaves the crop unproven"
         );
         hub.output(
             3,
             format!("{}\x1b[7;10H› stashed\x1b[9;3H", frame(20)).as_bytes(),
         );
-        assert!(!hub.prompt_box_shown_empty());
+        assert!(!hub.prompt_box_shown_empty(Harness::ClaudeCode));
         hub.output(4, frame(20).as_bytes());
-        assert!(hub.prompt_box_shown_empty(), "Claude redrew an empty box");
+        assert!(
+            hub.prompt_box_shown_empty(Harness::ClaudeCode),
+            "Claude redrew an empty box"
+        );
     }
 
     #[test]
@@ -573,7 +602,7 @@ mod tests {
                 hub.output(2, &output.as_bytes()[..cut]);
                 hub.output(3, &output.as_bytes()[cut..]);
                 assert!(
-                    hub.prompt_box_shown_empty(),
+                    hub.prompt_box_shown_empty(Harness::ClaudeCode),
                     "partition {cut} of {prefix:?}"
                 );
             }
@@ -599,7 +628,11 @@ mod tests {
         ] {
             let hub = Hub::new(20, 6);
             hub.output(1, framed(row).as_bytes());
-            assert_eq!(hub.prompt_box_shown_empty(), empty, "{row:?}");
+            assert_eq!(
+                hub.prompt_box_shown_empty(Harness::ClaudeCode),
+                empty,
+                "{row:?}"
+            );
             let snapshot = hub
                 .screen
                 .lock()
@@ -608,12 +641,12 @@ mod tests {
             let again = Hub::new(20, 6);
             again.restore(1, &snapshot, 20, 6, super::ScreenUpdate::Park);
             assert!(
-                !again.prompt_box_shown_empty(),
+                !again.prompt_box_shown_empty(Harness::ClaudeCode),
                 "a parked snapshot cannot release typing"
             );
             again.reset(2, &snapshot, 20, 6);
             assert!(
-                !again.prompt_box_shown_empty(),
+                !again.prompt_box_shown_empty(Harness::ClaudeCode),
                 "a snapshot may contain a host-side crop"
             );
             let repaint = framed(row);
@@ -623,7 +656,7 @@ mod tests {
             again.output(3, before_clear.as_bytes());
             again.output(4, format!("2J{after_clear}").as_bytes());
             assert_eq!(
-                again.prompt_box_shown_empty(),
+                again.prompt_box_shown_empty(Harness::ClaudeCode),
                 empty,
                 "after a renderer repaint: {row:?}"
             );
@@ -635,7 +668,7 @@ mod tests {
                 super::ScreenUpdate::Host { rendered: true },
             );
             assert_eq!(
-                again.prompt_box_shown_empty(),
+                again.prompt_box_shown_empty(Harness::ClaudeCode),
                 empty,
                 "rendered host: {row:?}"
             );
@@ -661,6 +694,29 @@ mod tests {
             again.contains("\x1b[?1049h") && again.contains("\x1b[?1002h"),
             "after a host reset: {again:?}"
         );
+    }
+
+    #[test]
+    fn a_partial_codex_picker_repaint_cannot_take_automated_input() {
+        let hub = Hub::new(120, 40);
+        hub.output(
+            1,
+            b"\x1b[?1049h\x1b[?25l\x1b[34;1HApproaching rate limits\r\nSwitch to gpt-6-luna",
+        );
+        assert_eq!(hub.codex_rate_limit_picker_shown(), Some(true));
+        hub.resize(120, 24);
+        assert_eq!(hub.codex_rate_limit_picker_shown(), None);
+
+        hub.output(2, b"\x1b[H\x1b[J\x1b[18;1HApproaching rate limits");
+        assert_eq!(hub.codex_rate_limit_picker_shown(), None);
+        hub.output(3, b"\r\nSwitch to gpt-6-luna");
+        assert_eq!(hub.codex_rate_limit_picker_shown(), Some(true));
+
+        hub.output(
+            4,
+            "\x1b[H\x1b[J\x1b[18;1H› Ask Codex to do anything\x1b[?25h".as_bytes(),
+        );
+        assert_eq!(hub.codex_rate_limit_picker_shown(), Some(false));
     }
 
     /// Every viewer's hello repeats its size: the same size again changes nothing and tells

@@ -81,6 +81,16 @@ pub enum DisplayInput {
     },
 }
 
+impl DisplayInput {
+    /// A new press or typed character supersedes the pending clipboard offer.
+    pub(crate) fn supersedes_copy(self) -> bool {
+        matches!(
+            self,
+            Self::Button { press: true, .. } | Self::Key { press: true, .. } | Self::Type(_)
+        )
+    }
+}
+
 /// Settings of the virtual displays.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayConfig {
@@ -238,6 +248,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn display_error(detail: impl Into<String>) -> BrowserError {
     BrowserError::Display(detail.into())
+}
+
+fn input_error(error: XSendError) -> BrowserError {
+    match error {
+        XSendError::Busy => BrowserError::InputBacklog,
+        XSendError::Gone => display_error("the display stopped"),
+    }
 }
 
 /// Creates `dir` (and missing parents) owner-only.
@@ -537,12 +554,7 @@ impl VirtualDisplay {
 
     fn send(&self, input: DisplayInput) -> Result<(), BrowserError> {
         match &self.backend {
-            Backend::Xvfb { x, .. } => x.send(input).map_err(|error| match error {
-                // Only discrete input queues (moves are coalesced): the X server stopped
-                // taking input.
-                XSendError::Busy => BrowserError::InputBacklog,
-                XSendError::Gone => display_error("the display stopped"),
-            }),
+            Backend::Xvfb { x, .. } => x.send(input).map_err(input_error),
             #[cfg(feature = "fake")]
             Backend::Fake(fake) => {
                 fake.record(input);
@@ -592,6 +604,38 @@ impl VirtualDisplay {
             x: device(x, width),
             y: device(y, height),
         })
+    }
+
+    pub(crate) async fn accept_copy(&self, offer: u32) -> Option<String> {
+        match &self.backend {
+            Backend::Xvfb { x, .. } => {
+                let (reply, text) = tokio::sync::oneshot::channel();
+                x.queue(xserver::XCommand::AcceptCopy(offer, reply)).ok()?;
+                tokio::time::timeout(Duration::from_secs(3), text)
+                    .await
+                    .ok()?
+                    .ok()
+            }
+            #[cfg(feature = "fake")]
+            Backend::Fake(fake) => fake.accept_copy(offer),
+        }
+    }
+
+    /// Queues a primary press together with a one-shot recipient for a fresh clipboard write.
+    pub(crate) fn copy_press(
+        &self,
+        result: tokio::sync::oneshot::Sender<u32>,
+    ) -> Result<(), BrowserError> {
+        match &self.backend {
+            Backend::Xvfb { x, .. } => x
+                .queue(xserver::XCommand::CopyPress(result))
+                .map_err(input_error),
+            #[cfg(feature = "fake")]
+            Backend::Fake(fake) => {
+                fake.copy_press(result);
+                Ok(())
+            }
+        }
     }
 
     /// Presses or releases a pointer button (`None` does nothing).
@@ -849,5 +893,152 @@ mod tests {
     #[test]
     fn keyframes_are_on_demand_by_default() {
         assert_eq!(DisplayConfig::new("/run".into()).keyframe_interval, None);
+    }
+}
+
+#[cfg(test)]
+mod copy_input_tests {
+    use super::DisplayInput;
+
+    /// The X selection owner is a fixture on a display created just for this test.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_private_display_requests_fresh_text_only_after_acceptance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::Event;
+        use x11rb::protocol::xproto::{
+            ConnectionExt as _, EventMask, PropMode, SELECTION_NOTIFY_EVENT, SelectionNotifyEvent,
+        };
+        use x11rb::wrapper::ConnectionExt as _;
+
+        let dir = tempfile::tempdir()?;
+        let sandbox = SandboxId::parse("clipboard-test")?;
+        let mut config = DisplayConfig::new(dir.path().to_owned());
+        if crate::resolve_executable(&config.xvfb).is_err() {
+            eprintln!("Xvfb unavailable; private-display clipboard check did not run");
+            return Ok(());
+        }
+        config.max_size = (640, 480);
+        let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (640, 480))
+            .await?
+            .ok_or("no test display")?;
+        let result = async {
+            let auth = std::fs::read(dir.path().join(sandbox.as_str()).join(XAUTHORITY_FILE))?;
+            let number = display.name().trim_start_matches(':').parse()?;
+            let owner = xserver::connect(number, &auth[auth.len() - 16..])?;
+            let window = owner.setup().roots[0].root;
+            let selection = owner.intern_atom(false, b"CLIPBOARD")?.reply()?.atom;
+            let utf8 = owner.intern_atom(false, b"UTF8_STRING")?.reply()?.atom;
+            let write = || -> Result<(), Box<dyn std::error::Error>> {
+                owner
+                    .set_selection_owner(window, selection, x11rb::CURRENT_TIME)?
+                    .check()?;
+                Ok(())
+            };
+            write()?;
+            let (send, mut pending) = tokio::sync::oneshot::channel();
+            display.copy_press(send)?;
+            display.settle().await;
+            // The selection already had an owner before the click.
+            assert!(matches!(
+                pending.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            write()?;
+            let offer = tokio::time::timeout(Duration::from_secs(2), pending).await??;
+            // Order the X thread's flushed requests and their delivery to the fixture owner
+            // before checking for a premature read, including one rejected by its token.
+            let no_request = || async {
+                display.settle().await;
+                owner.get_input_focus()?.reply()?;
+                while let Some(event) = owner.poll_for_event()? {
+                    assert!(
+                        !matches!(event, Event::SelectionRequest(_)),
+                        "selection requested before acceptance"
+                    );
+                }
+                Ok::<_, Box<dyn std::error::Error>>(())
+            };
+            no_request().await?;
+            assert!(display.accept_copy(offer.wrapping_add(1)).await.is_none());
+            no_request().await?;
+            let respond = || async {
+                loop {
+                    if let Some(Event::SelectionRequest(req)) = owner.poll_for_event()? {
+                        assert_eq!((req.target, req.selection), (utf8, selection));
+                        owner.change_property8(
+                            PropMode::REPLACE,
+                            req.requestor,
+                            req.property,
+                            utf8,
+                            b"fixture copy",
+                        )?;
+                        owner.send_event(
+                            false,
+                            req.requestor,
+                            EventMask::NO_EVENT,
+                            SelectionNotifyEvent {
+                                response_type: SELECTION_NOTIFY_EVENT,
+                                sequence: 0,
+                                time: req.time,
+                                requestor: req.requestor,
+                                selection,
+                                target: utf8,
+                                property: req.property,
+                            },
+                        )?;
+                        owner.flush()?;
+                        return Ok::<_, Box<dyn std::error::Error>>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            };
+            let (text, sent) = tokio::join!(
+                display.accept_copy(offer),
+                tokio::time::timeout(Duration::from_secs(2), respond())
+            );
+            sent??;
+            assert_eq!(text.as_deref(), Some("fixture copy"));
+            assert!(display.accept_copy(offer).await.is_none());
+            // A second write invalidates the first offer before acceptance.
+            let (send, pending) = tokio::sync::oneshot::channel();
+            display.copy_press(send)?;
+            display.settle().await;
+            write()?;
+            let stale = tokio::time::timeout(Duration::from_secs(2), pending).await??;
+            write()?;
+            let acceptance = display.accept_copy(stale);
+            tokio::pin!(acceptance);
+            let text = tokio::select! {
+                text = &mut acceptance => text,
+                sent = respond() => { sent?; acceptance.await }
+            };
+            assert!(
+                text.is_none(),
+                "the old offer delivered the replacement text"
+            );
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        display.stop(crate::StopTimeouts::default()).await?;
+        result
+    }
+
+    #[test]
+    fn cleanup_when_an_observer_leaves_preserves_the_offered_copy() {
+        assert!(!DisplayInput::ReleaseAll.supersedes_copy());
+        assert!(DisplayInput::Type('x').supersedes_copy());
+        for press in [false, true] {
+            assert_eq!(
+                DisplayInput::Key { keycode: 1, press }.supersedes_copy(),
+                press
+            );
+            assert_eq!(
+                DisplayInput::Button { button: 1, press }.supersedes_copy(),
+                press
+            );
+        }
     }
 }

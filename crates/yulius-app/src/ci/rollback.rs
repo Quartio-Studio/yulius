@@ -36,6 +36,7 @@ use crate::delivery::delivery_profile;
 use crate::delivery::runner::OutputRing;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
+use crate::ports::store_ext::CdRunHistory;
 
 /// Why a production deploy is refused for its rollback.
 pub(super) struct GateRefusal {
@@ -424,11 +425,38 @@ impl App {
         let seen = match self
             .deps
             .store
-            .last_cd_run_of_kind(&sandbox.id, drill_env, CdStage::Dev, CdRunKind::Drill)
+            .last_cd_run_of_kind(
+                &sandbox.id,
+                drill_env,
+                CdStage::Dev,
+                CdRunKind::Drill,
+                CdRunHistory::Latest,
+            )
             .await?
         {
             None => None,
             Some(run) if run.state == RunState::Running => {
+                let git = &self.deps.git;
+                let deploying = git.tree_of(repo, sha).await?;
+                if run.sha != sha
+                    && let Some(tree) = deploying
+                    && let Some(proof) = self
+                        .deps
+                        .store
+                        .last_cd_run_of_kind(
+                            &sandbox.id,
+                            drill_env,
+                            CdStage::Dev,
+                            CdRunKind::Drill,
+                            CdRunHistory::Finished,
+                        )
+                        .await?
+                    && proof.sha != run.sha
+                    && proof.state == RunState::Passed
+                    && git.tree_of(repo, &proof.sha).await?.as_ref() == Some(&tree)
+                {
+                    return Ok(None);
+                }
                 return Ok(Some(GateRefusal {
                     why: format!(
                         "the rollback drill of {drill_env} is running: deploy production once it \
@@ -816,6 +844,7 @@ impl App {
                 &drill_environment,
                 CdStage::Dev,
                 CdRunKind::Drill,
+                CdRunHistory::Latest,
             )
             .await?
         {

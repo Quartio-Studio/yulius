@@ -171,18 +171,58 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # While it waits for a subscription the message is retained and its last parked screen stays visible.
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
+# A failed integration candidate keeps the author live while its PR head and tested base match.
+# If that decision arrives after parking, its failing job reaches the same task as its next prompt.
+# A pending human decision keeps the task parked. When capacity returns, the watcher checks
+# the PR and integration base again before starting the session.
+# A change to the saved merge decision during verification also keeps the session live.
 # A failed single-PR merge candidate names its source run, failing job and a redacted
 # excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
 # If it cannot verify them, read ordinary CI at that head or safely read the failing job,
 # the queue keeps the candidate for up to 15 minutes.
 # After a continuous outage, its arm can proceed one by one.
+# Restart reconciles a failed single-PR candidate with its saved merge request. An interrupted
+# receipt write keeps the original request recoverable. A later request keeps its queue position
+# while its earlier receipt is retired, including when a retry finds the PR already merged.
+# When a person merges the armed head from the task page, yulius wait reports the accepted merge.
+# The first PR watch can occur while the queue decides its arm. Advice waits for the decision.
+# The owner still hears the merge once if a new arm finishes between watch observations.
+# While a saved merge request is being restored, the owner’s PR check-in waits.
+# When a passed train updates a member’s head, yulius wait keeps its position while GitHub catches up.
+# If a saved arm is ahead of the train checkpoint, yulius wait reports that the queue is verifying the head.
+# An excluded PR’s conflict files belong to the request and head that were tested.
+# A legacy exclusion or later request reports that the PR waits behind the train.
 # Hourly history cleanup retains the latest merge wait of each existing task, even when
 # its activation began more than 180 days ago. Removing the task releases this history.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
+# The armed owner hears an ordinary CI failure once, even while its train runs or the train
+# registry cannot be read. A train failure names the PRs currently held by its run.
+# An armed notice checks the hosted PR head even if another clone published the repair.
+# A pending scope decision holds the notice until the person resolves it. Once a train failure
+# has been reported, further check-ins wait for the queue to act on it.
+
+# When a failed train has one PR left, its owner gets the run ID while Yulius verifies the head
+# and checks. The accepted decision provides the bounded, redacted job diagnostic.
+# If the server restarts after the queue drops the arm, the owner hears the recorded job failure
+# once. A newer ordinary run gets 15 minutes from the watcher’s first observation, including across restart.
+# A replacement head gets its current CI or conflict.
+# A busy terminal writer defers the notice. On its next pass the watcher checks the owner again.
 # When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
 # rerun for the owner takes precedence in yulius wait and in its merge queue decision.
 # If a later run finds the integration CI configuration invalid, earlier completed runs
 # at that head become obsolete. After repair, even an owner that passed can show queued.
+# If a parked task resumes and parks again while your message is being prepared,
+# read the current screen and send the message again. Its current decision stays open.
+# If Yulius says the parked screen is still being saved, send the message again after
+# parking finishes. The task keeps its question open and the timed-out message starts no turn.
+# A merge request being armed keeps the session live. If Yulius says the session
+# is parking, resume it before requesting the merge again.
+# If you stopped the task during parking and Continue says the previous session is still
+# settling, retry after terminal exit. The settlement timeout preserves the archive and question.
+# If Continue on a named subscription reports that it needs a new sign-in or has no room
+# for the model, the task keeps its archive and question. You can choose another subscription.
+# A bulk message lists the changed task under refused. A Telegram reply or remote restart
+# also reports the change so you can check the latest turn.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
 # can clear it. Refreshing this display sends no message to the parked task.
 # A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor
@@ -672,6 +712,19 @@ that only points at one: serve it on one of the sandbox's ports and open it as
 `localhost:<port>`. Do not set a proxy in a managed Chrome policy on the host (`ProxyMode`,
 `ProxySettings`): a policy wins over what Yulius starts Chrome with.
 
+Each sandbox's profile (`<data>/sandboxes/<id>/browser`) holds Chrome's lock: `SingletonLock`,
+a link to `<host>-<pid>`, with `SingletonCookie` and `SingletonSocket`. Chrome refuses a profile
+whose lock names another host. On a virtual display it shows a dialog and never answers, so
+the start timed out after 30 s with its display. Before every start Yulius removes these three
+entries when no running browser can hold them: the lock names another host, names this host
+with a pid that is not running, or is not a Chrome lock, or the links remain without a lock. A
+lock of this host whose pid runs is kept and Chrome decides. If that start fails, the panel
+says "the browser profile is in use by process N on this host": look at it with `ps -p N -o
+pid,user,args`. A Chrome left over from a crashed server holds the profile until you stop it
+(`kill N`); then open the panel again. If a stale entry cannot be
+removed, the start fails before a display starts and names the entry
+([ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)).
+
 ### Sandbox isolation
 
 Each sandbox has one **namespace holder** (SPEC-002 ADR-22). Agents' task sessions, users'
@@ -1003,7 +1056,8 @@ silent. It types none of them while a person's draft may sit in the session's pr
   last empty (the session's start, or the last prompt sent from the box), however long ago.
   A keystroke holds every message for one minute. After that, Yulius can release the hold
   when Claude Code shows its empty conversation input, including its dim suggestion.
-  A stashed draft, a named input, a dialog or an unfamiliar layout keeps the hold.
+  Codex can also release it when the focused composer shows its dim “Ask Codex to do anything” placeholder and the footer offers agents or shortcuts. A recalled image keeps the hold. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md)
+  A stashed Claude draft, a named Claude input, a dialog or an unfamiliar layout keeps the hold.
   Text that Claude restores after a submit also holds a message. [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 - **Who is told.** A message sent with `task_message` is refused with that reason at once, and
   the Superagent or the person's agent says so. A message of Yulius's own waits and is tried
@@ -1406,6 +1460,12 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
    `studio` delivery presets.
 
+### Immediate CI for pull requests opened on GitHub
+
+New Yulius GitHub Apps subscribe to pull request openings during registration. For an existing App, set `YULIUS_GITHUB_WEBHOOK_SECRET_FILE` on the Yulius service to an owner-only file containing a random signing secret (for example, the output of `openssl rand -hex 32`). Restart the service. In the GitHub App registration, activate the webhook, enter the instance’s public URL followed by `/api/github/webhook`, and set the same secret. Select **Pull request** under **Permissions & events**. The configured file takes precedence over a secret issued at registration.
+
+Open a same-repository PR into the integration branch. In the App’s recent deliveries, check that the `pull_request.opened` delivery received HTTP 202. In the sandbox’s CI page, compare its queue timestamp and head with the PR opening. A worker starts when a lane is available. The periodic CI sync recovers missed deliveries and admits waiting PRs when one of the sandbox’s 30 PR places becomes available. [GitHub App webhook settings](https://docs.github.com/en/webhooks/using-webhooks/editing-webhooks)
+
 ### GitHub App permissions
 
 Yulius uses one GitHub App (SPEC-002 ADR-08). The App's tokens can do only what its permissions
@@ -1736,6 +1796,109 @@ after each run; a production run's are in `<data>/cd/<id>/runs/cd-<run>/work` or
   unknown") at the next start, its process host stopped and its files removed, and is never started
   again by itself: check the environment and deploy again.
 
+### Yulius's own staging VM
+
+Yulius's own repository deploys `dev` to a staging VM: `[cd.dev]` in its `yulius.toml`, scripts in
+`scripts/cd/` ([ADR-0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
+SPEC-591). It is a Yulius instance like any other, but no person relies on it. Each deploy runs
+the exact build of a dev revision on the store an older release wrote, which is where a migration
+first meets real data. Production instances still install `main` through their update helper
+(§8). Today's VM is the former production host, `deciding-whale`; its production data was
+erased.
+
+**What a deploy does** (`scripts/cd/deploy.sh dev`, run by Yulius CD in the sandbox):
+
+1. It builds the commit in the sandbox's Docker (`scripts/cd/build.sh`, `deploy/build/Dockerfile`:
+   Ubuntu 24.04, the pinned toolchain, `YULIUS_BUILD_COMMIT`). Each build is kept in the CD cache,
+   and a rollback never builds.
+2. It connects as `root@$STAGING_VM_HOST` with `STAGING_VM_SSH_KEY` in an ssh-agent and the host
+   key pinned in `scripts/cd/known_hosts`.
+3. It uploads the binary to `/var/lib/yulius-releases/<commit>/yulius`, checked by SHA-256.
+4. Before anything stops, the new binary migrates a copy of the live store (`yulius store-migrate`).
+   No table may vanish or lose rows, but those a migration this deploy applies deletes from by
+   design (its own `DELETE FROM`, not a trigger's; `scripts/cd/migration_deletes.py`). Otherwise the deploy fails with nothing changed.
+5. It stops **only** `yulius.service`. Sessions live in `yulius-sandboxes.service`.
+6. It keeps the replaced binary and the store it left (`yulius.db` with its WAL) in
+   `/var/lib/yulius-releases/<old commit>/`.
+7. It installs the new binary, starts the service and waits until `/internal/version` reports the
+   commit; otherwise it puts the old binary and store back. The last 10 releases are kept.
+
+It does not pause tasks as the update helper's restart does: a staging instance's tasks see their
+server restart. A lost connection does not stop a switch half way, and any other failure after
+the stop starts the server again with a binary and store that belong together; when the
+previous store cannot be put back, the server stays stopped and the run says to restore it by hand
+(never a start on another store or an empty one). One CD step runs at a time (`/var/lib/yulius-releases/.lock`).
+
+**What verify proves** (`scripts/cd/verify.sh dev`):
+
+- the recorded release is installed and reported at `/internal/version`;
+- the unit's `YULIUS_PUBLIC_URL` answers `/healthz` 200 over HTTPS (a Caddy that never loaded its
+  configuration fails here);
+- `yulius doctor` passes as the service user with the unit's environment (contained);
+- the live store passes SQLite's check; after a deploy its schema is the number of the tree's
+  migrations and the release's migration check is kept (`<commit>/migration.json`); after a
+  rollback its schema is the one the release left;
+- after a deploy, `yulius doctor --docker-smoke` passes where the doctor offers sandboxes Docker.
+
+**Rollback** (`scripts/cd/rollback.sh dev`; a person on the CD page, an agent with
+`cd_rollback`, and Yulius's drill after every deploy):
+
+- It puts back a kept release.
+- Across a schema change it restores the store that release left. What staging wrote since is
+  kept in `/var/lib/yulius-releases/<newer>/store`, not served. Without a schema change it keeps
+  the live store.
+- By hand, as root: `systemctl stop yulius`, copy the binary and the store back from
+  `/var/lib/yulius-releases/<commit>/`, `chown yulius:yulius` the store files, then
+  `systemctl start yulius`.
+- **Held staging.** A run that could not put the previous store back leaves the server stopped and
+  writes `/var/lib/yulius-releases/HELD`, naming the release. It also prints a rollback barrier,
+  so Yulius starts no rollback of staging by itself. Every deploy, rollback and verify refuses
+  while the file exists. Restore the store by hand as above, then remove the file and ask for a
+  deploy again.
+
+**Who deploys.** Staging is Yulius's merge-first target
+([ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
+A pull request merges on `quality` and `security`. Both `test` shards and `e2e` run once on each
+merged revision of `dev`.
+
+- **Staging changes only through its queue** (ADR-0411). The agent of a task whose work merged
+  asks with `cd_deploy`. Yulius deploys that revision, or a newer verified one that contains it,
+  once its full suite passed. The rollback drill follows by itself.
+- **A person cannot deploy the head from the CD page.** A person can still roll staging back
+  there.
+- **A red `dev` never reaches staging.** The request ends `gate_failed`, its task fixes forward,
+  and no promotion happens meanwhile.
+- **Production is promoted only from what staging verified**, by a person (ADR-0425).
+
+**The update helper stays off there.** `yulius-update.path` is disabled: "Update now" would
+install `main` over a dev release. A deploy refuses while `yulius-update.service` runs. Root's
+Rust toolchain and `/var/lib/yulius-update/src`, left from production, are not used.
+
+**Preparing a staging VM (or swapping it for a smaller one).** Nothing depends on the VM's size
+or address beyond the variable and the pinned key.
+
+1. Install Yulius as in §2 on Ubuntu 24.04 or later, x86_64: the binary in
+   `/usr/local/bin/yulius` and `sudo yulius host setup --public-url https://<name>`.
+2. Put Caddy in front (§4) with a certificate, so `https://<name>/healthz` answers 200.
+3. Leave the one-time setup token unused, or set the instance up with a GitHub App of its own,
+   never production's.
+4. Add the public half of `STAGING_VM_SSH_KEY` to `/root/.ssh/authorized_keys`, or make a new key
+   with `secret_create_from_file` and allow it for `.env` files (dev CD runs get it then).
+5. Set the project variable `STAGING_VM_HOST` (`[user@]host[:port]`, root unless named; another
+   user needs passwordless sudo).
+6. Pin the new host key in a pull request: the line `yulius-staging ssh-ed25519 <key>` from
+   `/etc/ssh/ssh_host_ed25519_key.pub` in `scripts/cd/known_hosts`. Check its fingerprint on the
+   VM (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) before committing it.
+7. Have a task's agent ask for staging with `cd_deploy` once its work merged, for example the task
+   that pinned the new key (a merge-first target is not deployed from the CD page). The first
+   deploy keeps the binary it finds (and its store) on the VM, but Yulius's CD never recorded it as a release: the CD page and `cd_rollback` cannot
+   return to it, and the first deploy has no drill (it needs two). Return to it by hand (above).
+
+**Who can reach it.** `STAGING_VM_SSH_KEY` may be copied to `.env` files, so dev CD runs get it,
+and so can every task of this project: an agent can be root on the staging VM. Keep nothing of
+value there. Never give its instance production's GitHub App or credentials; a GitHub App of its
+own is a credential such an agent could read.
+
 ## 6. Onboarding a repository and your Claude sessions (`yulius onboard`)
 
 On a developer machine with the `yulius` binary:
@@ -1960,7 +2123,17 @@ record of the installed commit, the move helper's units when the old host has th
 URL and host name are replaced; environment and key files travel as they are, and the plan names
 one that mentions the old host, for you to edit; Caddy's directory
 and drop-ins for the new host name, validated and started, so its certificate is there before the
-cutover; ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
+cutover. Caddy is restarted with the carried Caddyfile and drop-ins on every pass, even when the
+files were already there (the package starts Caddy with its default site before they are copied,
+and only a restart reads the drop-ins' environment). With an `https://` public URL the new host's
+own port 443 is then asked for the public host (`curl --resolve <host>:443:127.0.0.1`, past any
+proxy setting): any HTTP answer passes, a failed TLS handshake is said (no certificate yet while
+the name still leads to the old host), and a closed port stops the move, pointing to
+`systemctl status caddy` and `journalctl -u caddy -n 50`. A Caddy with no site on port 443 (TLS
+ending in front of it, at a CDN or another proxy) therefore cannot be moved with an `https://` URL.
+The check proves port 443 is open, not which configuration answers: the restart is what loads the
+carried one ([SPEC-592](../.ai/specs/SPEC-592-instance-move-caddy-keeps-serving-its-pr.md));
+ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
 are named; the new instance re-sizes those that no longer fit (SPEC-459).
 
 **Copy** (the old instance still runs). The data directory is copied into a staged copy on the
@@ -2179,6 +2352,11 @@ when it is not. So after a run that ended with `FAIL … must be frozen and disa
 same command says the same and ends with exit 1 until the old instance is held; and a move that
 was finished long ago fails the same way when its old unit was thawed, started or enabled
 since.
+
+The sandbox browsers' profiles come over with the old host's Chrome locks. The first start on
+the new host removes them (§ "Sandbox browser"), so nobody needs to delete `Singleton*` files by
+hand. Before this fix (2026-11-21 move), Chrome refused every profile. Its display restarted
+every 30 s until the files were removed.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so

@@ -275,8 +275,8 @@ Flag any of these on sight:
 Mark every finding **own code** (in code or tests the change added or modified) or **pre-existing**
 (present on the integration branch before the change, with the evidence).
 
-- An own-code finding of any severity is fixed in the same pull request, test-first, and never becomes a follow-up issue — including a test that cannot fail, a weak or missing assertion, a race or a missing regression test. The round limit does not excuse it: the author keeps fixing, splits the change, or stops and asks a person.
-- Only a pre-existing bug, a flaky test the change did not cause, or a cosmetic nit (naming, wording) left at the round limit may become a new issue, and the issue says why it is outside the change (for example "present on the integration branch before this change").
+- An own-code finding of any severity is fixed in the same pull request, test-first, and never becomes a follow-up issue — including a test that cannot fail, a weak or missing assertion, a race or a missing regression test. Re-review until approval under the task's existing authorization. The author can split unwieldy work within scope.
+- Only a pre-existing bug, a flaky test the change did not cause, or a cosmetic nit (naming, wording) left after 3 rounds may become a new issue, and the issue says why it is outside the change (for example "present on the integration branch before this change").
 - The pull request answers every finding.
 
 ## Verdict Rule

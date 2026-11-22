@@ -774,6 +774,220 @@ async fn a_bulk_call_whose_client_went_away_still_reaches_every_task() -> TestRe
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bulk_message_keeps_the_second_targets_selected_park() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let first = support::seed_task(
+        &w.h,
+        "t-bulk-dispatch-first",
+        "s1",
+        "u-alice",
+        TaskStatus::Queued,
+        None,
+    )
+    .await?;
+    let target = support::seed_task(
+        &w.h,
+        "t-bulk-dispatch-target",
+        "s1",
+        "u-alice",
+        TaskStatus::Parked,
+        None,
+    )
+    .await?;
+    support::replace_park_at(
+        &w.h,
+        yulius_app::race::Point::SelectedTaskDispatched,
+        &first.id,
+        &target,
+    )
+    .await?;
+    let (error, said, bulk) = remote(
+        &w,
+        &alice,
+        "tasks_bulk",
+        json!({
+            "project": "acme/shop", "do": "message", "numbers": [first.number, target.number],
+            "text": "Message for the original targets"
+        }),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(bulk["done"].as_array().map(Vec::len), Some(1), "{bulk}");
+    assert_eq!(bulk["done"][0]["number"], first.number);
+    assert_eq!(bulk["refused"][0]["number"], target.number);
+    assert!(
+        text(&bulk["refused"][0]["why"]).contains("changed"),
+        "{bulk}"
+    );
+    support::assert_replacement_parked(&w.h, &target.id).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remote_restart_keeps_the_selected_park() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let target = support::seed_task(
+        &w.h,
+        "t-restart-dispatch-target",
+        "s1",
+        "u-alice",
+        yulius_domain::task::TaskStatus::Parked,
+        None,
+    )
+    .await?;
+    support::replace_park_at(
+        &w.h,
+        yulius_app::race::Point::SelectedTaskDispatched,
+        &target.id,
+        &target,
+    )
+    .await?;
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "task_restart",
+        json!({"project":"acme/shop","number":target.number}),
+    )
+    .await?;
+    assert!(error && said.contains("changed"), "{said}");
+    support::assert_replacement_parked(&w.h, &target.id).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remote_restart_preserves_an_archive_after_its_first_read() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let task = support::seed_task(
+        &w.h,
+        "t-closed-restart",
+        "s1",
+        "u-alice",
+        yulius_domain::task::TaskStatus::Closed,
+        None,
+    )
+    .await?;
+    let store = w.h.store.clone();
+    let target = task.id.clone();
+    let at = w.h.app.now();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        yulius_app::race::Point::SelectedTaskDispatched,
+        std::path::Path::new(task.id.as_str()),
+        move || {
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(store.update_task(
+                    &target,
+                    &yulius_app::ports::store::TaskFieldUpdate {
+                        archived_at: Some(Some(at)),
+                        ..Default::default()
+                    },
+                    at,
+                ))
+            });
+            assert!(result.is_ok(), "{result:?}");
+        },
+    );
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "task_restart",
+        json!({"project":"acme/shop","number":task.number}),
+    )
+    .await?;
+    assert!(error && said.contains("changed"), "{said}");
+    let current = w.h.store.task(&task.id).await?.ok_or("archived task")?;
+    assert_eq!(current.archived_at, Some(at));
+    assert_eq!(current.status, task.status);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_named_bulk_reply_keeps_the_selected_park() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    w.user("alice", false).await?;
+    let (_, _, bob) = person(&w, "bob").await?;
+    w.grant("bob", "acme/shop", "push");
+    let target = support::seed_task(
+        &w.h,
+        "t-named-bulk-dispatch",
+        "s1",
+        "u-alice",
+        yulius_domain::task::TaskStatus::Parked,
+        None,
+    )
+    .await?;
+    support::replace_park_at(
+        &w.h,
+        yulius_app::race::Point::SelectedTaskDispatched,
+        &target.id,
+        &target,
+    )
+    .await?;
+    let args = json!({
+        "project": "acme/shop", "do": "message", "numbers": [target.number],
+        "text": "Approve the original turn"
+    });
+    let (error, said, bulk) = remote(&w, &bob, "tasks_bulk", args).await?;
+    assert!(!error, "{said}");
+    assert_eq!(bulk["done"], json!([]), "{bulk}");
+    assert!(
+        text(&bulk["refused"][0]["why"]).contains("changed"),
+        "{bulk}"
+    );
+    support::assert_replacement_parked(&w.h, &target.id).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_named_browser_reply_keeps_the_park_selected_before_authorization() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    w.user("alice", false).await?;
+    let (bob, _) = w.user("bob", false).await?;
+    let browser = w.browser(&bob).await?;
+    w.grant("bob", "acme/shop", "push");
+    let target = support::seed_task(
+        &w.h,
+        "t-named-browser-answer",
+        "s1",
+        "u-alice",
+        yulius_domain::task::TaskStatus::Parked,
+        None,
+    )
+    .await?;
+    support::replace_park_at(
+        &w.h,
+        yulius_app::race::Point::AnswerAuthorized,
+        &target.id,
+        &target,
+    )
+    .await?;
+    let answer = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/tasks/{}/needs-you/answer", target.id),
+        Some(json!({"text": "Approve the original turn"})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(answer.status, StatusCode::CONFLICT, "{}", answer.body);
+    assert!(
+        answer.body.to_string().contains("changed"),
+        "{}",
+        answer.body
+    );
+    support::assert_replacement_parked(&w.h, &target.id).await
+}
+
 /// RMT-022, RMT-023: tasks are restarted, paused and followed, and CI and CD are read and run,
 /// through the functions of the web UI for the person.
 #[tokio::test]
@@ -1799,6 +2013,80 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
     )
     .await?;
     assert_eq!(code, Some(0), "{out}{err}");
+    let create = [
+        "task",
+        "create",
+        "Check the docs",
+        "-p",
+        "acme/shop",
+        "--json",
+    ];
+    let (code, out, err) = yulius_cli(home, &create, "").await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(format!("{out}{err}").contains("Codex"), "{out}{err}");
+    crate::codex::connect_codex(&w.h.app).await?;
+    let (code, out, err) = yulius_cli(home, &create, "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    let created: Value = serde_json::from_str(&out)?;
+    assert_eq!(created["task"]["harness"], "codex");
+    let id = created["task"]["task_id"].as_str().ok_or("task id")?;
+    let detail = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/tasks/{id}"),
+        None,
+        &browser,
+    )
+    .await?;
+    assert_eq!(detail.status, StatusCode::OK, "{}", detail.body);
+    assert_eq!(detail.body["harness_choice"], "chosen");
+    assert_eq!(detail.body["model"], "gpt-6.2-astra");
+    assert_eq!(detail.body["model_default"], true);
+    assert_eq!(detail.body["effort"], "high");
+    assert_eq!(detail.body["effort_default"], true);
+
+    let creds = bearer(&token);
+    let listed = rpc(&w, &creds, "tools/list", json!({})).await?;
+    let tools = listed.body["result"]["tools"].as_array().ok_or("tools")?;
+    let tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "task_model")
+        .ok_or("task_model")?;
+    let described = text(&tool["inputSchema"]["properties"]["effort"]["description"]);
+    assert!(
+        described.contains("Codex")
+            && described.contains("xhigh")
+            && described.contains("max")
+            && described.contains("default (high for Codex)"),
+        "{described}"
+    );
+    for (effort, stored) in [
+        ("xhigh", json!("xhigh")),
+        ("max", json!("max")),
+        ("default", Value::Null),
+    ] {
+        let (is_error, said, changed) = remote(
+            &w,
+            &creds,
+            "task_model",
+            json!({"project": "acme/shop", "task_id": id, "effort": effort}),
+        )
+        .await?;
+        assert!(!is_error, "{said}");
+        assert_eq!(changed["effort"], stored, "{changed}");
+        let detail = call(
+            &w.h.router,
+            Method::GET,
+            &format!("/api/tasks/{id}"),
+            None,
+            &browser,
+        )
+        .await?;
+        assert_eq!(detail.status, StatusCode::OK);
+        assert_eq!(detail.body["effort"], stored.as_str().unwrap_or("high"));
+        assert_eq!(detail.body["effort_default"], stored.is_null());
+    }
+
     let (code, out, _) = yulius_cli(home, &["remote", "tools"], "").await?;
     assert_eq!(code, Some(0));
     assert!(
@@ -2006,7 +2294,7 @@ async fn a_repository_is_onboarded_end_to_end_from_a_laptop() -> TestResult {
         &w,
         &agent,
         "task_create",
-        shop(json!({"prompt": "Add a /health endpoint that answers 200 with the version", "title": "Health endpoint"})),
+        shop(json!({"prompt": "Add a /health endpoint that answers 200 with the version", "harness": "claude", "title": "Health endpoint"})),
     )
     .await?)?;
     let number = created["task"]["number"]
@@ -3056,7 +3344,7 @@ async fn a_hand_over_is_added_once_and_only_where_it_can_be_read() -> TestResult
         &w,
         &agent,
         "task_create",
-        shop(json!({"prompt": "Add a /health endpoint"})),
+        shop(json!({"prompt": "Add a /health endpoint", "harness": "claude"})),
     )
     .await?;
     assert!(!error, "{said}");

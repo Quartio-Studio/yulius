@@ -1310,6 +1310,98 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
 }
 
 #[tokio::test]
+async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult {
+    with_fixture(|f| async move {
+        let mut task = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("task")?;
+        task.id = TaskId::parse("browser-goal")?;
+        task.mode = yulius_app::model::TaskMode::Goal;
+        task.activity = Some(Activity::Working);
+        let task = f.h.store.insert_task(&task).await?;
+        let token = "fixture-browser-goal";
+        let mut run =
+            f.h.store
+                .live_attempt(&TaskId::parse("t1")?)
+                .await?
+                .ok_or("fixture run")?;
+        run.id = yulius_domain::ids::AttemptId::parse("browser-goal-run")?;
+        run.task_id = task.id.clone();
+        run.account_id =
+            Some(crate::pool_supervision::add_account(&f.h.app, "browser-account").await?);
+        run.token_hash = f.h.app.deps.crypto.sha256_hex(token.as_bytes());
+        let run_dir = tempfile::tempdir()?;
+        run.run_dir = run_dir.path().to_string_lossy().into_owned();
+        f.h.store.insert_attempt(&run).await?;
+        let ctx = f.h.app.agent_context(token).await?;
+        f.h.app
+            .tool_steps_set(
+                &ctx,
+                &json!({"steps":[{"title":"Verify dev","status":"in_progress"}]}),
+            )
+            .await?;
+        let opened = mcp_tool(
+            &f.h,
+            token,
+            "browser_open",
+            json!({"url":"https://fixture.test"}),
+        )
+        .await?;
+        assert_eq!(opened["isError"], false, "{opened}");
+        let browser =
+            f.h.app
+                .deps
+                .browser
+                .running(&task.sandbox_id)
+                .await
+                .ok_or("browser")?;
+        let tab = browser.tabs().first().ok_or("tab")?.id.clone();
+        // The live tab already owns a human action before the task activity has caught up.
+        browser.request_user_action(&tab, "Sign in to the test account", Some(&task.id))?;
+        use yulius_app::ports::browser::BrowserPort;
+        let lookup = Arc::new(crate::delivery::HeldBrowserLookup::with_session(
+            browser.clone(),
+        ));
+        let (entered, release) = lookup.hold_publication_lookup(&task.id);
+        lookup.running(&task.sandbox_id).await;
+        let mut deps = f.h.app.deps.clone();
+        deps.browser = lookup;
+        let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+        let observing = app.clone();
+        let stop = tokio::spawn(async move {
+            observing
+                .hook_event(token, "claude", "Stop", &Default::default(), None)
+                .await
+        });
+        tokio::time::timeout(WAIT, entered.notified()).await?;
+        release.notify_one();
+        let yulius_app::hooks::HookReply::Output(held) = stop.await?? else {
+            return Err("capacity hold".into());
+        };
+        assert!(held.decision.is_none());
+        assert!(browser.clear_action(&tab));
+        browser.request_user_action(
+            &tab,
+            "Sign in for a different task",
+            Some(&TaskId::parse("t1")?),
+        )?;
+        let yulius_app::hooks::HookReply::Output(resumed) = app
+            .hook_event(token, "claude", "Stop", &Default::default(), None)
+            .await?
+        else {
+            return Err("capacity hold".into());
+        };
+        assert_eq!(resumed.decision.as_deref(), Some("block"));
+        assert!(
+            resumed
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("Verify dev"))
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
 async fn user_action_requests_mark_the_task_notify_viewers_and_return_a_link() -> TestResult {
     with_fixture(|f| async move {
         let served = serve(f.h.router.clone()).await?;
@@ -1925,6 +2017,49 @@ async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) 
         Ok(())
     })
     .await
+}
+
+#[tokio::test]
+async fn a_page_button_returns_its_fresh_copy_only_to_the_clicking_socket() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let path = "/api/sandboxes/s1/browser";
+        let mut viewer = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
+        let mut observer = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut viewer).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?;
+        wait_json(&mut observer, |m| m["type"] == "tabs").await?;
+        let press = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        let release = json!({"type": "mouse", "tab_id": tab, "event": "up", "x": 10, "y": 20, "button": "left"});
+        display.copy_on_next_press("copied by button");
+        send(&mut viewer, press.clone()).await?;
+        send(&mut viewer, release.clone()).await?;
+        let offer = wait_json(&mut viewer, |m| m["type"] == "page_copy_available" || m["type"] == "page_clipboard").await?;
+        assert_eq!(offer["type"], "page_copy_available");
+        assert!(offer.get("text").is_none(), "the offer contains no clipboard contents");
+        let accept = json!({"type":"accept_page_copy", "tab_id":tab, "offer":offer["offer"]});
+        send(&mut observer, accept.clone()).await?;
+        assert_eq!(wait_json(&mut observer, |m| matches!(m["type"].as_str(), Some("error" | "page_copy_available" | "page_clipboard"))).await?["type"], "error");
+        observer.close(None).await?;
+        assert!(display.wait_for_input(|i| *i == DisplayInput::ReleaseAll, WAIT).await);
+        send(&mut viewer, accept.clone()).await?;
+        assert_eq!(wait_json(&mut viewer, |m| m["type"] == "page_clipboard").await?,
+            json!({"type":"page_clipboard", "tab_id":tab, "offer":offer["offer"], "text":"copied by button"}));
+        send(&mut viewer, accept).await?;
+        assert_eq!(wait_json(&mut viewer, |m| matches!(m["type"].as_str(), Some("error" | "page_copy_available" | "page_clipboard"))).await?["type"], "error");
+
+        // An ordinary click copies nothing. The keyboard selection reply is a barrier.
+        let mut observer = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
+        wait_json(&mut observer, |m| m["type"] == "tabs").await?;
+        send(&mut observer, press).await?;
+        send(&mut observer, release).await?;
+        f.fake.set_selection("keyboard selection");
+        send(&mut observer, json!({"type":"copy", "tab_id":tab})).await?;
+        let reply = wait_json(&mut observer, |m| matches!(m["type"].as_str(), Some("clipboard" | "page_copy_available" | "page_clipboard"))).await?;
+        assert_eq!(reply, json!({"type":"clipboard", "text":"keyboard selection"}));
+        Ok(())
+    }).await
 }
 
 /// ADR-15: a viewer's pointer and keys are real input on the display (XTest), the wheel scrolls
@@ -3086,22 +3221,25 @@ async fn browser_handoff_allows_inline_answer_clears_without_viewers_and_emits_o
         assert!(f.h.store.task_needs_you(&task_id).await?.is_some());
 
         // Close `tab2` with zero viewer sockets attached: the sandbox watcher must clear DB state.
+        let mut close_events = f.h.app.events.subscribe();
         browser
             .apply_viewer(yulius_contracts::browser::ViewerClientMsg::Close {
                 tab_id: tab2.clone(),
             })
             .await?;
-        let deadline = tokio::time::Instant::now() + WAIT;
-        loop {
-            if f.h.store.task_needs_you(&task_id).await?.is_none() {
-                break;
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let env = close_events.recv().await?;
+                if matches!(env.event, yulius_contracts::events::UiEvent::BrowserActionCleared {
+                    tab_id, task_id: Some(id), ..
+                } if tab_id == tab2.as_str() && id == task_id.as_str())
+                {
+                    return Ok::<_, tokio::sync::broadcast::error::RecvError>(());
+                }
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "zero-viewer tab close must clear persisted browser needs_you"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        })
+        .await??;
+        assert!(f.h.store.task_needs_you(&task_id).await?.is_none());
         assert!(f.h.store.stored_task_attention(&task_id).await?.is_none());
 
         // Finding #3 (N viewers): connect TWO viewer WebSockets, request action on `tab1`, clear

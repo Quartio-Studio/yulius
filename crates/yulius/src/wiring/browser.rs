@@ -50,6 +50,7 @@ fn failure(error: BrowserError) -> BrowserFailure {
         BrowserError::Spawn(_)
         | BrowserError::StartupTimeout { .. }
         | BrowserError::ExitedEarly { .. }
+        | BrowserError::ProfileInUse { .. }
         | BrowserError::Cdp(_)
         | BrowserError::NavigationFailed(_)
         | BrowserError::Display(_)
@@ -268,12 +269,36 @@ impl BrowserSession for Session {
         Box::new(Notices(self.0.subscribe_events()))
     }
 
-    async fn apply_viewer(&self, message: ViewerClientMsg) -> Result<(), BrowserFailure> {
-        self.0
-            .apply_viewer_msg(message)
-            .await
-            .map(|_| ())
-            .map_err(failure)
+    async fn apply_viewer(
+        &self,
+        message: ViewerClientMsg,
+    ) -> Result<Option<tokio::sync::oneshot::Receiver<u32>>, BrowserFailure> {
+        use yulius_contracts::browser::{MouseButton, MouseEventKind};
+        if matches!(
+            message,
+            ViewerClientMsg::Mouse {
+                event: MouseEventKind::Down,
+                button: Some(MouseButton::Left),
+                ..
+            }
+        ) {
+            let (result, copy) = tokio::sync::oneshot::channel();
+            self.0
+                .apply_viewer_msg_with_copy(message, Some(result))
+                .await
+                .map_err(failure)?;
+            Ok(Some(copy))
+        } else {
+            self.0
+                .apply_viewer_msg(message)
+                .await
+                .map(|_| None)
+                .map_err(failure)
+        }
+    }
+
+    async fn accept_page_copy(&self, offer: u32) -> Option<String> {
+        self.0.accept_page_copy(offer).await
     }
 
     async fn frames(&self, tab: &TabId) -> Result<Box<dyn BrowserFrames>, BrowserFailure> {

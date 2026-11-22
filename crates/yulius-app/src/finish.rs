@@ -33,12 +33,12 @@
 //! finished task back to Working, and a goal achieved while Yulius was down is not lost.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use yulius_domain::harness::is_compact_command;
-use yulius_domain::ids::TaskId;
+use yulius_domain::ids::{AttemptId, TaskId};
 use yulius_domain::task::{Activity, GoalOutcome, TaskStatus};
 
 use crate::context::App;
@@ -369,40 +369,48 @@ pub(crate) fn live_launches(
     live
 }
 
-/// The clean Stop (ms) whose turn waits for its goal verdict (0 = none). Whoever takes it settles
+/// The attempt and clean Stop time whose turn waits for its goal verdict. Whoever takes it settles
 /// that turn: the verdict, agent work, a prompt, an interrupt, the turn record or the waiter's
 /// timeout (SPEC-079 BGW-005).
 #[derive(Debug, Default)]
-pub(crate) struct VerdictSlot(AtomicI64);
+pub(crate) struct VerdictSlot(Mutex<Option<(AttemptId, i64)>>);
 
 impl VerdictSlot {
-    /// The turn of the Stop at `stop_ms` waits for its verdict (a newer Stop replaces an older).
-    pub fn open(&self, stop_ms: i64) {
-        self.0.store(stop_ms, Ordering::SeqCst);
+    /// The run's Stop waits for its verdict. A newer Stop replaces it.
+    pub fn open(&self, attempt: &AttemptId, stop_ms: i64) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((attempt.clone(), stop_ms));
     }
 
-    /// No turn waits (a prompt or an interrupt started or ended one; a new session).
+    /// A prompt, interrupt or new run cancels the outstanding verdict.
     pub fn clear(&self) {
-        self.0.store(0, Ordering::SeqCst);
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
 
-    /// The Stop whose turn waits (0 = none).
-    pub fn pending(&self) -> i64 {
-        self.0.load(Ordering::SeqCst)
+    /// The time of this run's pending Stop.
+    pub fn pending(&self, attempt: &AttemptId) -> Option<i64> {
+        let slot = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.as_ref()
+            .filter(|(owner, _)| owner == attempt)
+            .map(|(_, stamp)| *stamp)
     }
 
-    /// Takes the slot if the turn of the Stop at `stop_ms` still waits.
-    pub fn take(&self, stop_ms: i64) -> bool {
-        stop_ms != 0
-            && self
-                .0
-                .compare_exchange(stop_ms, 0, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-    }
-
-    /// Takes the slot whatever Stop waits.
-    pub fn take_any(&self) -> bool {
-        self.0.swap(0, Ordering::SeqCst) != 0
+    /// A transcript verdict takes its run's slot. A timeout also matches the Stop time.
+    pub fn take(&self, attempt: &AttemptId, stop_ms: Option<i64>) -> bool {
+        let mut slot = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.take_if(|(owner, stamp)| owner == attempt && stop_ms.is_none_or(|at| at == *stamp))
+            .is_some()
     }
 }
 
@@ -661,7 +669,12 @@ impl App {
     /// A clean Stop ended the turn (TSK-014): remembers when, and settles it now, or once the goal
     /// verdict came while a goal is open (SPEC-079 BGW-005; Claude Code's evaluator is a Stop
     /// hook that runs after this one, so the hook cannot wait for it).
-    pub(crate) async fn clean_stop(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
+    pub(crate) async fn clean_stop(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        attempt: &AttemptId,
+        pending_goal: bool,
+    ) -> AppResult<()> {
         let runtime = self.runtime(&task.id);
         crate::race::reached(
             crate::race::Point::StopClean,
@@ -669,35 +682,63 @@ impl App {
         );
         // After a prompt the transcript watcher is applying: it passed its last-Stop check and
         // starts its turn first (SPEC-453 TPO-001).
-        let stop_ms = {
-            let _order = runtime.turn_order.lock().await;
-            let stop_ms = self.now().0;
-            runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
-            stop_ms
-        };
-        runtime.resumed_turn.store(false, Ordering::SeqCst);
-        if runtime.goal_open.load(Ordering::SeqCst) && !runtime.goal_achieved.load(Ordering::SeqCst)
-        {
-            runtime.verdict_stop_ms.open(stop_ms);
-            let (app, task_id) = (Arc::clone(self), task.id.clone());
-            tokio::spawn(async move { app.await_goal_verdict(&task_id, stop_ms).await });
-            return Ok(());
-        }
-        runtime.verdict_stop_ms.clear();
-        // That prompt set Working by now: the Stop settles the task as it is, not as it was read
-        // on arrival (the copy if the store fails; SPEC-453 TPO-002).
-        let current = self.deps.store.task(&task.id).await.ok().flatten();
-        self.settle_clean_turn(current.as_ref().unwrap_or(task))
-            .await
+        self.publish_after_updates(
+            task,
+            Box::pin(async {
+                let _order = runtime.turn_order.lock().await;
+                if !self.attempt_live(&task.id, attempt).await {
+                    return Ok(());
+                }
+                let stop_ms = self.now().0;
+                runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
+                runtime.resumed_turn.store(false, Ordering::SeqCst);
+                if (pending_goal || runtime.goal_open.load(Ordering::SeqCst))
+                    && !runtime.goal_achieved.load(Ordering::SeqCst)
+                {
+                    runtime.verdict_stop_ms.open(attempt, stop_ms);
+                    let (app, task_id) = (Arc::clone(self), task.id.clone());
+                    let attempt = attempt.clone();
+                    tokio::spawn(async move {
+                        app.await_goal_verdict(&task_id, &attempt, stop_ms).await
+                    });
+                    return Ok(());
+                }
+                runtime.verdict_stop_ms.clear();
+                // That prompt set Working by now: the Stop settles the task as it is, not as it was read
+                // on arrival (the copy if the store fails; SPEC-453 TPO-002).
+                let current = self.deps.store.task(&task.id).await.ok().flatten();
+                self.settle_clean_turn(current.as_ref().unwrap_or(task))
+                    .await
+            }),
+        )
+        .await
     }
 
     /// A clean turn's end: Done when the goal is achieved, waiting otherwise (TSK-014). Its
     /// background work is probed, a finished task's pull request opens (#35), and once it is Done
     /// its chains start (TSK-012) and the queue may use its slot (SES-101).
     async fn settle_clean_turn(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
-        let achieved = self.runtime(&task.id).goal_achieved.load(Ordering::SeqCst);
-        let next = Activity::after_clean_turn(achieved);
-        self.set_task_activity(task, next).await?;
+        let runtime = self.runtime(&task.id);
+        let achieved = runtime.goal_achieved.load(Ordering::SeqCst);
+        // Harnesses without a transcript turn-end record (Antigravity) close the turn here,
+        // and Claude/Codex avoid staying `turn_in_progress` before their record is read
+        // (SPEC-580 AWM-001).
+        runtime.end_turn();
+        runtime
+            .turn_closed_ms
+            .fetch_max(self.now().0, Ordering::SeqCst);
+        let next = if !achieved
+            && task.mode == crate::model::TaskMode::Goal
+            && task.activity == Some(Activity::NeedsAttention)
+        {
+            // A Stop alone does not answer the question. A prompt or the permission's
+            // normal answer path clears the flag, including its original reason.
+            Activity::NeedsAttention
+        } else {
+            let settled = Activity::after_clean_turn(achieved);
+            self.set_task_activity(task, settled).await?;
+            settled
+        };
         let (app, task_id) = (Arc::clone(self), task.id.clone());
         tokio::spawn(async move {
             // The background work first: chains and the queue read it.
@@ -717,32 +758,67 @@ impl App {
     /// Waits (bounded by [`GOAL_VERDICT_WAIT`]) for something to settle the turn of the clean
     /// Stop at `stop_ms`: the verdict, agent work, a prompt, an interrupt, the turn's record or a
     /// newer Stop takes the slot. Nothing did: the turn settles as it did before (BGW-005).
-    async fn await_goal_verdict(self: &Arc<Self>, task_id: &TaskId, stop_ms: i64) {
+    async fn await_goal_verdict(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptId,
+        stop_ms: i64,
+    ) {
         let runtime = self.runtime(task_id);
         let deadline = tokio::time::Instant::now() + GOAL_VERDICT_WAIT;
         // A resumed process can send Stop before its watcher attaches. The run’s exit or loss
         // cancels the slot directly.
-        while runtime.verdict_stop_ms.pending() == stop_ms && tokio::time::Instant::now() < deadline
+        while runtime.verdict_stop_ms.pending(attempt) == Some(stop_ms)
+            && tokio::time::Instant::now() < deadline
         {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        if runtime.verdict_stop_ms.take(stop_ms) {
-            tracing::info!(task = %task_id, "no goal verdict came: the turn settles");
-            self.settle_waited_turn(task_id).await;
+        if runtime.verdict_stop_ms.pending(attempt) == Some(stop_ms) {
+            self.settle_waited_turn(task_id, attempt, stop_ms).await;
         }
     }
 
     /// Settles a turn that waited for its verdict as the Stop would have, unless
     /// [`waited_turn_settles`] says it reads settled already.
-    async fn settle_waited_turn(self: &Arc<Self>, task_id: &TaskId) {
+    async fn settle_waited_turn(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptId,
+        stop_ms: i64,
+    ) {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
-        let achieved = self.runtime(task_id).goal_achieved.load(Ordering::SeqCst);
-        if !waited_turn_settles(task.activity, achieved) {
+        crate::race::reached(
+            crate::race::Point::GoalVerdictReady,
+            std::path::Path::new(task_id.as_str()),
+        );
+        self.publish_after_updates(
+            &task,
+            Box::pin(async {
+                let runtime = self.runtime(task_id);
+                let _order = runtime.turn_order.lock().await;
+                if !self.attempt_live(task_id, attempt).await
+                    || !runtime.verdict_stop_ms.take(attempt, Some(stop_ms))
+                {
+                    return;
+                }
+                self.settle_verdict_stop(task_id).await;
+            }),
+        )
+        .await;
+    }
+
+    /// The caller owns the live attempt's verdict slot and the turn lock.
+    async fn settle_verdict_stop(self: &Arc<Self>, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        let Ok(Some(current)) = self.deps.store.task(task_id).await else {
             return;
-        }
-        if let Err(err) = self.settle_clean_turn(&task).await {
+        };
+        let achieved = runtime.goal_achieved.load(Ordering::SeqCst);
+        if waited_turn_settles(current.activity, achieved)
+            && let Err(err) = self.settle_clean_turn(&current).await
+        {
             tracing::warn!(task = %task_id, error = %err, "could not settle the turn");
         }
     }
@@ -875,13 +951,16 @@ impl App {
     pub(crate) async fn agent_worked(
         self: &Arc<Self>,
         task_id: &TaskId,
+        attempt: &AttemptId,
         at: Option<yulius_domain::time::Timestamp>,
     ) {
         let runtime = self.runtime(task_id);
         // Work after a Stop whose verdict is awaited: the session went on (a Stop hook continued
         // the turn), and the task, still Working, never read idle (BGW-005, STA-005).
-        let waiting = runtime.verdict_stop_ms.pending();
-        if at.is_some_and(|at| at.0 > waiting) && runtime.verdict_stop_ms.take(waiting) {
+        if let Some(waiting) = runtime.verdict_stop_ms.pending(attempt)
+            && at.is_some_and(|at| at.0 > waiting)
+            && runtime.verdict_stop_ms.take(attempt, Some(waiting))
+        {
             runtime.resumed_turn.store(true, Ordering::SeqCst);
         }
         let notice_ms = runtime.notice_attention_ms.load(Ordering::SeqCst);
@@ -958,61 +1037,75 @@ impl App {
     pub(crate) async fn goal_observed(
         self: &Arc<Self>,
         task_id: &TaskId,
+        attempt: &AttemptId,
         outcome: GoalOutcome,
         at: Option<yulius_domain::time::Timestamp>,
     ) {
-        if !goal_stays_open(outcome) {
-            self.goal_ended_during_retry(task_id, outcome == GoalOutcome::Met)
-                .await;
-        }
-        let runtime = self.runtime(task_id);
-        runtime
-            .goal_open
-            .store(goal_stays_open(outcome), Ordering::SeqCst);
-        // The UI reads it beside an idle task (Answered or Your turn): a record that came after the
-        // turn settled is published (SPEC-429 ANS-008).
-        let unfinished = goal_unfinished(outcome);
-        if runtime.replace_goal_unfinished(unfinished).await != unfinished {
-            self.publish_task(task_id).await;
-        }
-        let verdict = matches!(
-            outcome,
-            GoalOutcome::Met | GoalOutcome::NotMet | GoalOutcome::Failed
+        crate::race::reached(
+            crate::race::Point::NativeVerdictRead,
+            std::path::Path::new(attempt.as_str()),
         );
-        // A verdict ends the turn's evaluation: a prompt sent before Claude Code recorded it is
-        // over. The record's own time, not when the watcher read it: the next turn's prompt is
-        // sent after it (SPEC-346 LPH-002).
-        if verdict {
-            let now = self.now().0;
-            let recorded = at.map_or(now, |at| at.0.min(now));
-            let _order = runtime.turn_order.lock().await;
-            runtime.turn_end_ms.fetch_max(recorded, Ordering::SeqCst);
-        }
-        // The verdict on a clean Stop whose turn waited for it (BGW-005).
-        let waited = verdict && runtime.verdict_stop_ms.take_any();
-        if waited && outcome == GoalOutcome::NotMet {
-            // The agent goes on, and the task never read idle.
-            runtime.resumed_turn.store(true, Ordering::SeqCst);
-        } else if outcome == GoalOutcome::NotMet
-            && let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && task.status == TaskStatus::Running
-            && let Some(next) = activity_on_goal_not_met(task.activity)
-        {
-            // The evaluator sent the agent back to work after Yulius's own Stop hook ended the
-            // turn (STA-004).
-            self.resume_working(&task, next, at).await;
-        }
-        let achieved = outcome == GoalOutcome::Met;
-        runtime.goal_submitted.store(true, Ordering::SeqCst);
-        runtime.goal_achieved.store(achieved, Ordering::SeqCst);
-        if waited && outcome != GoalOutcome::NotMet {
-            if achieved {
-                tracing::info!(task = %task_id, "the agent achieved the task's goal");
-            }
-            self.settle_waited_turn(task_id).await;
-        } else if achieved {
-            tracing::info!(task = %task_id, "the agent achieved the task's goal");
-            self.settle_idle(task_id, None).await;
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        let idle = self
+            .publish_after_updates(
+                &task,
+                Box::pin(async {
+                    let runtime = self.runtime(task_id);
+                    let _order = runtime.turn_order.lock().await;
+                    if !self.attempt_live(task_id, attempt).await {
+                        return None;
+                    }
+                    let achieved = outcome == GoalOutcome::Met;
+                    if achieved {
+                        tracing::info!(task = %task_id, "the agent achieved the task's goal");
+                    }
+                    if !goal_stays_open(outcome) {
+                        self.goal_ended_during_retry(task_id, achieved).await;
+                    }
+                    runtime
+                        .goal_open
+                        .store(goal_stays_open(outcome), Ordering::SeqCst);
+                    let unfinished = goal_unfinished(outcome);
+                    if runtime.replace_goal_unfinished(unfinished).await != unfinished {
+                        self.publish_task(task_id).await;
+                    }
+                    runtime.goal_submitted.store(true, Ordering::SeqCst);
+                    runtime.goal_achieved.store(achieved, Ordering::SeqCst);
+                    if !matches!(
+                        outcome,
+                        GoalOutcome::Met | GoalOutcome::NotMet | GoalOutcome::Failed
+                    ) {
+                        return None;
+                    }
+                    // A prompt sent before the recorded verdict belongs to the turn it ended.
+                    let now = self.now().0;
+                    runtime
+                        .turn_end_ms
+                        .fetch_max(at.map_or(now, |at| at.0.min(now)), Ordering::SeqCst);
+                    let waited = runtime.verdict_stop_ms.take(attempt, None);
+                    if outcome == GoalOutcome::NotMet {
+                        if waited {
+                            runtime.resumed_turn.store(true, Ordering::SeqCst);
+                        } else if let Ok(Some(current)) = self.deps.store.task(task_id).await
+                            && current.status == TaskStatus::Running
+                            && let Some(next) = activity_on_goal_not_met(current.activity)
+                        {
+                            self.resume_working(&current, next, at).await;
+                        }
+                    } else if waited {
+                        self.settle_verdict_stop(task_id).await;
+                    } else if achieved {
+                        // The timeout may already have set Waiting. Apply Met to that settled state.
+                        return self.settle_idle_activity(task_id, None).await;
+                    }
+                    None
+                }),
+            )
+            .await;
+        if let Some(done) = idle {
+            self.after_idle_settlement(task_id, done).await;
         }
     }
 
@@ -1123,11 +1216,20 @@ impl App {
         task_id: &TaskId,
         replay: Option<TranscriptFacts>,
     ) {
-        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
-            return;
-        };
+        if let Some(done) = self.settle_idle_activity(task_id, replay).await {
+            self.after_idle_settlement(task_id, done).await;
+        }
+    }
+
+    /// Apply the durable idle activity before probing shells or waking dependent tasks.
+    async fn settle_idle_activity(
+        &self,
+        task_id: &TaskId,
+        replay: Option<TranscriptFacts>,
+    ) -> Option<bool> {
+        let task = self.deps.store.task(task_id).await.ok()??;
         if task.status != TaskStatus::Running {
-            return;
+            return None;
         }
         let achieved = self.runtime(task_id).goal_achieved.load(Ordering::SeqCst);
         let next = match (task.activity, replay) {
@@ -1152,8 +1254,12 @@ impl App {
                 .await;
             self.publish_task(task_id).await;
         }
+        Some(next == Some(Activity::Done))
+    }
+
+    async fn after_idle_settlement(self: &Arc<Self>, task_id: &TaskId, done: bool) {
         self.probe_idle_shells(task_id).await;
-        if next == Some(Activity::Done) {
+        if done {
             // Tasks chained after this one start once it is Done (TSK-012), and a Done task no
             // longer counts against the session limit (SES-101): a queued task can start now.
             // Not from this loop, which must go on reading the record that says what is still
@@ -1194,6 +1300,7 @@ impl App {
     pub(crate) async fn turn_record_seen(
         self: &Arc<Self>,
         task_id: &TaskId,
+        attempt: &AttemptId,
         at: Option<yulius_domain::time::Timestamp>,
     ) {
         let runtime = self.runtime(task_id);
@@ -1205,14 +1312,14 @@ impl App {
         // Claude Code retries the turn an error ended by itself (SPEC-333 AER-001): the task stays
         // Working until the retry's prompt starts the next turn.
         if runtime.goal_retry_armed.load(Ordering::SeqCst) {
-            runtime.verdict_stop_ms.clear();
+            runtime.verdict_stop_ms.take(attempt, None);
             runtime.resumed_turn.store(false, Ordering::SeqCst);
             runtime.end_turn();
             return;
         }
         // The turn closed with no verdict (the evaluator deferred or failed): it settles now.
-        if runtime.verdict_stop_ms.take_any() {
-            self.settle_waited_turn(task_id).await;
+        if let Some(stop_ms) = runtime.verdict_stop_ms.pending(attempt) {
+            self.settle_waited_turn(task_id, attempt, stop_ms).await;
             return;
         }
         // The turn closed with no Stop Yulius answered (its hook failed open on an error answer
@@ -1288,7 +1395,7 @@ impl App {
 
     /// Probes the background shells of an idle task (bounded) and publishes the task when their
     /// number changed. Busy or ended tasks are not probed; their count is forgotten.
-    pub(crate) async fn probe_idle_shells(self: &Arc<Self>, task_id: &TaskId) {
+    pub async fn probe_idle_shells(self: &Arc<Self>, task_id: &TaskId) {
         let runtime = self.runtime(task_id);
         let idle = matches!(
             self.deps.store.task(task_id).await,
@@ -1595,11 +1702,37 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Whether the idle task's agent waits in `yulius wait` (its checks, its delivery or an armed
-    /// merge), as last probed: it goes on by itself when Yulius has news (SPEC-085 STT-002).
-    pub(crate) fn agent_waits_on_yulius(&self, task_id: &TaskId) -> bool {
+    /// Bounded live process probe of `task_id`'s background shells and `yulius wait` processes;
+    /// `None` when no live child pid exists or the probe timed out / could not read the table.
+    pub(crate) async fn background_probe_now(
+        &self,
+        task_id: &TaskId,
+    ) -> Option<crate::ports::session::BackgroundProbe> {
+        let attempt = self.deps.store.live_attempt(task_id).await.ok()?;
+        let pid = attempt.and_then(|attempt| attempt.child_pid)?;
+        let host = Arc::clone(&self.deps.session_host);
+        let probe = tokio::task::spawn_blocking(move || host.background_probe(pid));
+        tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+    }
+
+    /// Number of open `POST /internal/agent/wait` requests currently served for `task_id`.
+    pub fn active_waits_of(&self, task_id: &TaskId) -> u32 {
         self.existing_runtime(task_id)
-            .is_some_and(|runtime| runtime.background_waits.load(Ordering::SeqCst) > 0)
+            .map_or(0, |runtime| runtime.active_waits.load(Ordering::SeqCst))
+    }
+
+    /// Whether the idle task's agent waits in `yulius wait` (its checks, its delivery or an armed
+    /// merge), as last probed or currently long-polling: it goes on by itself when Yulius has
+    /// news (SPEC-085 STT-002, SPEC-580 AWM-001).
+    pub(crate) fn agent_waits_on_yulius(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id).is_some_and(|runtime| {
+            runtime.background_waits.load(Ordering::SeqCst) > 0
+                || runtime.active_waits.load(Ordering::SeqCst) > 0
+        })
     }
 
     /// Whether Claude Code last recorded the task's goal as set or not met yet, as its transcript
@@ -2377,24 +2510,28 @@ mod tests {
     /// SPEC-079 BGW-005: one slot holds the Stop whose turn waits for its verdict; the first to
     /// take it settles the turn, a newer Stop replaces it and a prompt clears it.
     #[test]
-    fn the_first_to_take_the_verdict_slot_settles_the_turn() {
+    fn the_first_to_take_the_verdict_slot_settles_the_turn()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let first = AttemptId::parse("first")?;
+        let next = AttemptId::parse("next")?;
         let slot = VerdictSlot::default();
-        assert!(!slot.take_any(), "nothing waits");
-        assert!(!slot.take(0));
-        slot.open(100);
-        // The verdict (or the turn record) takes it; the waiter's timeout then settles nothing.
-        assert!(slot.take_any());
-        assert!(!slot.take(100));
-        // The waiter of an older Stop does not take a newer Stop's turn.
-        slot.open(100);
-        slot.open(200);
-        assert!(!slot.take(100));
-        assert_eq!(slot.pending(), 200);
-        assert!(slot.take(200), "the newer Stop's waiter settles it");
-        // A prompt clears it: nothing settles the turn that went on.
-        slot.open(300);
+        assert!(!slot.take(&first, None));
+        slot.open(&first, 100);
+        assert!(slot.take(&first, None));
+        assert!(!slot.take(&first, Some(100)));
+        slot.open(&first, 100);
+        slot.open(&first, 200);
+        assert!(!slot.take(&first, Some(100)));
+        assert_eq!(slot.pending(&first), Some(200));
+        slot.open(&next, 200);
+        assert_eq!(slot.pending(&first), None);
+        assert!(!slot.take(&first, None));
+        assert!(!slot.take(&first, Some(200)));
+        assert!(slot.take(&next, Some(200)));
+        slot.open(&next, 300);
         slot.clear();
-        assert!(!slot.take(300) && !slot.take_any());
+        assert!(!slot.take(&next, Some(300)) && !slot.take(&next, None));
+        Ok(())
     }
 
     /// SPEC-079 BGW-001 (review): Claude Code's own wake-up (background work ended) keeps an

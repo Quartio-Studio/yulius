@@ -1076,7 +1076,16 @@ fn a_move_runs_from_the_plan_to_the_finish() -> TestResult {
     assert!(new.ran("apt-get install -y --allow-remove-essential coreutils-from-gnu"));
     let caddy = new.text(profile::CADDYFILE).unwrap_or_default();
     assert!(caddy.starts_with(&format!("{NEW_HOST} {{")), "{caddy}");
-    assert!(new.ran("systemctl reload-or-restart caddy"));
+    assert!(new.ran("systemctl restart caddy"));
+    // SPEC-592 CKS-002: port 443 is asked for the new public host, on the new host itself.
+    let asked = new.runs("curl");
+    assert!(
+        asked.iter().any(|l| {
+            l.contains(&format!("--resolve {NEW_HOST}:443:127.0.0.1"))
+                && l.ends_with(&format!("https://{NEW_HOST}/"))
+        }),
+        "{asked:?}"
+    );
     assert!(new.ran("systemctl start yulius.service"));
     assert!(new.ran("systemctl enable --now yulius-update.path"));
     assert!(new.ran("ufw --force enable"));
@@ -2512,6 +2521,47 @@ fn a_name_that_does_not_lead_to_the_new_host_is_asked_for_first_and_again_after(
         Some(HostOutcome::Failed)
     );
     assert_eq!(s.old_unit(), (false, false));
+    Ok(())
+}
+
+/// SPEC-592 CKS-003/005 (AC-4, AC-5): behind an `http://` public URL the carried Caddy is
+/// restarted but port 443 is not asked: nothing there has to answer HTTPS.
+#[test]
+fn an_http_public_url_asks_no_port_443() -> TestResult {
+    let mut s = setup()?;
+    let http = "http://109-199-123-240.sslip.io";
+    let unit = "/etc/systemd/system/yulius.service";
+    let text = s
+        .local
+        .text(unit)
+        .ok_or("no unit")?
+        .replace(super::fake::OLD_URL, http);
+    s.local.file(unit, &text);
+    let show = ["systemctl", "show", "yulius.service"];
+    let shown = s
+        .local
+        .rules
+        .iter()
+        .rev()
+        .find(|r| r.prefix == show)
+        .map(|r| r.out.stdout.replace(super::fake::OLD_URL, http))
+        .ok_or("no show rule")?;
+    s.local.says(&show, &shown);
+    s.run()?;
+    let status = s.status()?;
+    let proxy = status
+        .lines
+        .iter()
+        .rfind(|l| l.name == "reverse proxy" && l.detail.contains("Caddy"))
+        .ok_or_else(|| s.shown())?;
+    assert_ne!(proxy.outcome, HostOutcome::Failed, "{}", proxy.detail);
+    assert!(proxy.detail.contains("no https://"), "{}", proxy.detail);
+    assert!(s.remote.host.ran("systemctl restart caddy"));
+    assert!(
+        !s.remote.host.ran("curl"),
+        "{:?}",
+        s.remote.host.runs("curl")
+    );
     Ok(())
 }
 

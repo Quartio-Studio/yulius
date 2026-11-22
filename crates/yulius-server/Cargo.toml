@@ -17,6 +17,8 @@ workspace = true
 layer = "interface"
 
 [dependencies]
+hex = { workspace = true }
+ring = { workspace = true }
 yulius-app = { workspace = true }
 yulius-contracts = { workspace = true }
 serde = { workspace = true }

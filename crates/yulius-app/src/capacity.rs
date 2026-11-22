@@ -32,7 +32,7 @@ use yulius_domain::capacity::{
     ForecastInput, PoolMember, PoolTokens, Span, TokenRun, TokenSpend, WeeklySample,
 };
 use yulius_domain::ids::{AccountId, TaskId};
-use yulius_domain::rotation::{self, Decision, RotationInput, Trigger};
+use yulius_domain::rotation::{self, AccountView, Decision, RotationInput, Trigger};
 use yulius_domain::task::{Activity, TaskEvent, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, LIMIT_RESET_MAX_MS, ModelFamily, UsageWindow};
@@ -40,8 +40,10 @@ use yulius_domain::usage::{AccountUsage, LIMIT_RESET_MAX_MS, ModelFamily, UsageW
 use crate::accounts::{account_usage, in_use_count, usage_view};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
-use crate::error::AppResult;
-use crate::model::{PauseKind, PauseRecord, TaskRecord, USAGE_FROM_SESSION, UsageSampleRecord};
+use crate::error::{AppError, AppResult};
+use crate::model::{
+    AccountRecord, PauseKind, PauseRecord, TaskRecord, USAGE_FROM_SESSION, UsageSampleRecord,
+};
 use crate::supervisor::RunStart;
 
 /// Default wait between two resumes of paused tasks ("resumed gently").
@@ -224,6 +226,88 @@ pub(crate) fn task_model(task: &TaskRecord) -> Option<&str> {
     })
 }
 
+/// The result of accepting a resting owner's Continue in the store.
+pub enum ContinuationAdmission {
+    /// The pool will choose the subscription at launch.
+    Pool,
+    /// Placement from the model and subscription records at acceptance.
+    Named {
+        /// The subscription the owner requested.
+        account: Box<AccountRecord>,
+        /// The task's model at acceptance.
+        model: Option<String>,
+        /// The fallback chosen by the pool policy for this launch.
+        fallback: Option<&'static str>,
+    },
+}
+
+pub(crate) fn rotation_view(account: &AccountRecord, in_use: u32) -> AccountView {
+    AccountView {
+        id: account.id.clone(),
+        provider: account.provider,
+        healthy: account.status.healthy(),
+        usage: account_usage(account),
+        in_use,
+    }
+}
+
+fn start_input(task: &TaskRecord, accounts: Vec<AccountView>, at: Timestamp) -> RotationInput {
+    let model = task_model(task);
+    RotationInput {
+        current: None,
+        task_provider: task.harness.provider(),
+        family: model_family(model),
+        fallback: fallback_of(model).map(|fallback| model_family(Some(fallback))),
+        running: None,
+        accounts,
+        now: at,
+        threshold: rotation::THRESHOLD,
+    }
+}
+
+impl ContinuationAdmission {
+    /// Decide a named start from one transaction's task and account records. A manual
+    /// choice needs eligibility and the pool's fallback family, neither of which ranks load.
+    ///
+    /// # Errors
+    /// Returns the usual subscription refusal when the selected account cannot take the task.
+    pub fn named(
+        task: &TaskRecord,
+        accounts: Vec<AccountRecord>,
+        requested: &AccountId,
+        at: Timestamp,
+    ) -> AppResult<Self> {
+        let views = accounts
+            .iter()
+            .filter(|account| account.credential.is_some())
+            .map(|account| rotation_view(account, 0))
+            .collect();
+        let input = start_input(task, views, at);
+        let (decision, reason) = rotation::decide(
+            &input,
+            Trigger::Manual {
+                account: requested.clone(),
+            },
+        );
+        let account = accounts
+            .into_iter()
+            .find(|account| &account.id == requested);
+        if !matches!(decision, Decision::Switch { .. }) {
+            return Err(AppError::Capacity(crate::supervisor::refused_choice(
+                account.as_ref().map(|account| account.label.as_str()),
+                input.task_provider,
+                &reason,
+            )));
+        }
+        Ok(Self::Named {
+            account: Box::new(account.ok_or(AppError::NotFound)?),
+            model: task.model.clone(),
+            fallback: fallback_of(task.model.as_deref())
+                .filter(|_| rotation::placing_family(&input) != input.family),
+        })
+    }
+}
+
 impl App {
     /// Wakes the resume loop: usage changed, an account was added or removed, a task paused.
     pub fn capacity_changed(&self) {
@@ -254,14 +338,8 @@ impl App {
         };
         Ok(RotationInput {
             current,
-            task_provider: task.harness.provider(),
-            // A task without a model runs the default, Opus 5.5.
-            family: model_family(model),
-            fallback: fallback_of(model).map(|fallback| model_family(Some(fallback))),
             running,
-            accounts: self.account_views().await?,
-            now: self.now(),
-            threshold: rotation::THRESHOLD,
+            ..start_input(task, self.account_views().await?, self.now())
         })
     }
 
@@ -455,7 +533,7 @@ impl App {
             // A start with no account to run on waits for one to be connected, and says so
             // (SPEC-246 CLA-004); otherwise (or when the accounts cannot be read) the pool is only
             // out of capacity.
-            let accounts = if kind == PauseKind::Start {
+            let accounts = if !kind.holds_process() {
                 self.agent_accounts(task.harness.provider())
                     .await
                     .unwrap_or(crate::account_gate::AgentAccounts::Usable)
@@ -829,11 +907,22 @@ impl App {
         if !self.pause_open(pause).await {
             return Resume::Gone;
         }
+        crate::race::reached(
+            crate::race::Point::CapacityPauseObserved,
+            std::path::Path::new(pause.task_id.as_str()),
+        );
         let store = &self.deps.store;
         let task = match store.task(&pause.task_id).await {
             Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => task,
             Ok(_) => {
-                self.end_pause(&pause.task_id, "ended").await;
+                crate::race::reached(
+                    crate::race::Point::CapacityStaleCleanup,
+                    std::path::Path::new(pause.task_id.as_str()),
+                );
+                if let Err(err) = self.end_stale_pause(pause).await {
+                    tracing::warn!(error = %err, task = %pause.task_id, "could not close the observed capacity pause");
+                    return Resume::Waiting(None);
+                }
                 return Resume::Gone;
             }
             Err(_) => return Resume::Waiting(None),
@@ -908,10 +997,21 @@ impl App {
                             let continuation = match kind {
                                 PauseKind::Prompt => pause.continuation.clone(),
                                 PauseKind::Turn => self.stop_continuation(&task).await,
-                                PauseKind::Limit | PauseKind::Start => None,
+                                _ => None,
                             };
-                            self.switch_task_now(&task.id, account, &reason, continuation)
-                                .await
+                            self.switch_with(
+                                &task.id,
+                                account,
+                                &reason,
+                                RunStart::Resume {
+                                    prompt: continuation,
+                                }
+                                .with_goal_continuation(
+                                    task.mode == crate::model::TaskMode::Goal
+                                        && kind == PauseKind::Turn,
+                                ),
+                            )
+                            .await
                         }
                     };
                     if let Err(err) = switched {
@@ -926,37 +1026,72 @@ impl App {
                     }
                     // The start ends the pause once it is made or waits in the queue
                     // (`start_run`); one that is refused (the queue is full) leaves it open.
-                    let start = match store.provider_sessions(&task.id).await {
-                        Ok(_)
-                            if pause.kind == PauseKind::Prompt
-                                && self.held_opening(&task.id).await =>
-                        {
-                            RunStart::Fresh { prompt: None }
-                        }
-                        Ok(lineage) if !lineage.is_empty() && pause.kind == PauseKind::Limit => {
-                            RunStart::AfterLimit
-                        }
-                        Ok(lineage) if !lineage.is_empty() => RunStart::Resume {
-                            prompt: pause.continuation.clone(),
-                        },
-                        Ok(_) => RunStart::Fresh {
-                            prompt: pause.continuation.clone(),
-                        },
+                    let start = match self.start_for_capacity_pause(&task, pause).await {
+                        Ok(start) => start,
                         Err(err) => {
                             tracing::warn!(error = %err, task = %task.id, "cannot select a session for the capacity retry");
                             return Resume::Waiting(None);
                         }
                     };
-                    if let Err(err) = self.start_run(&task.id, start, account).await {
-                        tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
-                        // Nothing was resumed: the next task of this round need not wait the
-                        // stagger for it.
-                        return Resume::Waiting(None);
+                    crate::race::reached(
+                        crate::race::Point::CapacityStartReady,
+                        std::path::Path::new(task.id.as_str()),
+                    );
+                    match self.start_paused_run(pause, start, account).await {
+                        Ok(true) => {}
+                        Ok(false) => return Resume::Gone,
+                        Err(err) => {
+                            tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
+                            return Resume::Waiting(None);
+                        }
                     }
                 }
                 Resume::Resumed
             }
         }
+    }
+
+    /// Rebuild a start that waited without a process. An admitted goal keeps both its
+    /// launch mode and its instruction. An older turn hold decides from current work and lineage.
+    pub(crate) async fn start_for_capacity_pause(
+        &self,
+        task: &TaskRecord,
+        pause: &PauseRecord,
+    ) -> AppResult<RunStart> {
+        let prompt = pause.continuation.clone();
+        match pause.kind {
+            PauseKind::FreshStart => return Ok(RunStart::Fresh { prompt }),
+            PauseKind::GoalFreshStart => {
+                return Ok(RunStart::GoalFresh {
+                    prompt: crate::hooks::retained_goal_instruction(prompt),
+                });
+            }
+            PauseKind::GoalResumeStart => {
+                return Ok(RunStart::GoalResume {
+                    prompt: crate::hooks::retained_goal_instruction(prompt),
+                });
+            }
+            PauseKind::Prompt if self.held_opening(&task.id).await => {
+                return Ok(RunStart::Fresh { prompt: None });
+            }
+            _ => {}
+        }
+        let prompt = if pause.kind == PauseKind::Turn {
+            self.stop_continuation(task).await
+        } else {
+            prompt
+        };
+        let lineage = self.deps.store.provider_sessions(&task.id).await?;
+        let start = if lineage.is_empty() {
+            RunStart::Fresh { prompt }
+        } else if pause.kind == PauseKind::Limit {
+            RunStart::AfterLimit
+        } else {
+            RunStart::Resume { prompt }
+        };
+        Ok(start.with_goal_continuation(
+            task.mode == crate::model::TaskMode::Goal && pause.kind == PauseKind::Turn,
+        ))
     }
 
     /// Whether a move of the task's session, whose turn is held at its Stop, would lose a
@@ -968,8 +1103,25 @@ impl App {
         self.prompt_waits_for_turns_end(task_id, prompts_before)
     }
 
+    /// An ended task may already have continued into a different pause by the time the
+    /// worker cleans up. End the observed row and its observed subscription request only.
+    async fn end_stale_pause(&self, pause: &PauseRecord) -> AppResult<()> {
+        let store = &self.deps.store;
+        let request = store.task_needs_you(&pause.task_id).await?;
+        if store
+            .end_pause_if(&pause.task_id, Some(&pause.id), self.now(), "ended")
+            .await?
+            && let Some(request) =
+                request.filter(|r| crate::moves::is_no_subscription_action(&r.action))
+        {
+            self.end_needs_you_asked_at(&pause.task_id, request.at, request.cause)
+                .await;
+        }
+        Ok(())
+    }
+
     /// Whether `pause` is still the task's open pause.
-    async fn pause_open(&self, pause: &PauseRecord) -> bool {
+    pub(crate) async fn pause_open(&self, pause: &PauseRecord) -> bool {
         matches!(
             self.deps.store.open_pause(&pause.task_id).await,
             Ok(Some(open)) if open.id == pause.id
@@ -984,7 +1136,13 @@ impl App {
         self.end_pause(&task.id, "released").await;
         if let Ok(next) = task.status.apply(TaskEvent::CapacityReturned) {
             let activity = match pause.kind {
-                PauseKind::Turn => Activity::Waiting,
+                PauseKind::Turn
+                    if task.mode == crate::model::TaskMode::Prompt
+                        || (pause.continuation.is_none()
+                            && self.stop_continuation(task).await.is_none()) =>
+                {
+                    Activity::Waiting
+                }
                 _ => Activity::Working,
             };
             let _ = store
@@ -1243,6 +1401,9 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
         per_day,
         unknown_usage_runs: pool.unknown_usage_runs,
         unpriced_runs: pool.unpriced_runs,
+        ultrafast_cost_usd: pool
+            .ultrafast_premium_usd
+            .map(|premium| all.cost_usd + premium),
     }
 }
 
@@ -1279,6 +1440,68 @@ fn rollout_reading(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_pool_prices_only_the_weeks_eligible_tokens_at_ultrafast()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let promotion_ends = Timestamp(1_803_888_000_000);
+        let hour = 3_600_000;
+        for (now, astra_multiplier) in
+            [(promotion_ends.plus_millis(-1), 3.0), (promotion_ends, 6.0)]
+        {
+            let run = |model: &str, start: i64, end: i64| TokenRun {
+                span: Span {
+                    start: now.plus_millis(start * hour),
+                    end: Some(now.plus_millis(end * hour)),
+                },
+                model: Some(model.into()),
+                input: Some(1_000_000),
+                output: Some(1_000_000),
+                cache_read: Some(1_000_000),
+                cache_write: Some(1_000_000),
+            };
+            let runs = [
+                run("gpt-6.2-astra", -170, -166), // only half in the window
+                run("gpt-6.2-sol", -40, 0),       // spans two days
+                run("gpt-6-astra", -18, -17),
+                run("gpt-6.1-sol", -10, -9),
+                run("gpt-6-luna", -1, 0),
+                run("claude-opus-5-5", -1, 0),
+                run("unknown", -1, 0),
+            ];
+            let view =
+                |runs: &[TokenRun]| pool_view(&yulius_domain::capacity::pool_tokens(runs, now, 7));
+            let base_eligible = 58.4 / 2.0 + 14.6;
+            let older_eligible = 73.5 + 14.6;
+            let ineligible = 0.735 + 29.2;
+            let priced = serde_json::to_value(view(&runs))?;
+            assert_eq!(priced["unpriced_runs"], 1);
+            let base = priced["last_7d"]["cost_usd"].as_f64().ok_or("base")?;
+            assert!((base - (base_eligible + older_eligible + ineligible)).abs() < 1e-9);
+            let scenario = priced["ultrafast_cost_usd"].as_f64().ok_or("Ultrafast")?;
+            let expected = base_eligible * astra_multiplier + older_eligible * 6.0 + ineligible;
+            assert!((scenario - expected).abs() < 1e-9);
+            let no_eligible = serde_json::to_value(view(&runs[4..]))?;
+            assert!(no_eligible["ultrafast_cost_usd"].is_null());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_pause_kinds_identify_which_pauses_hold_a_process() {
+        for (kind, holds_process) in [
+            (PauseKind::Start, false),
+            (PauseKind::FreshStart, false),
+            (PauseKind::GoalFreshStart, false),
+            (PauseKind::GoalResumeStart, false),
+            (PauseKind::Prompt, true),
+            (PauseKind::Turn, true),
+            (PauseKind::Limit, true),
+        ] {
+            assert_eq!(PauseKind::parse(kind.as_str()), kind);
+            assert_eq!(kind.holds_process(), holds_process);
+        }
+    }
 
     /// SPEC-503 CDX-004: a Codex rollout's windows replace the stored ones only when they are not
     /// older than what is stored (a watch reads its rollout again from the start after a

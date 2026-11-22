@@ -19,6 +19,15 @@ use crate::{SqliteStore, bad_column, db};
 const COLS: &str = "sandbox_id, subject_kind, subject_id, key, parent_key, kind, name, environment, \
     job, started_at, ended_at, outcome, source, detail";
 
+// Reads and retirement select the same completed decision through migration 82's partial index.
+const LATEST_MERGE_WAIT: &str = "subject_kind = 'task' AND subject_id = ?1
+    AND kind = 'wait' AND name = 'merge_armed' AND ended_at IS NOT NULL
+    ORDER BY started_at DESC, id DESC LIMIT 1";
+
+pub(crate) fn latest_merge_wait(conn: &Connection, task: &str) -> AppResult<Option<SpanRecord>> {
+    Ok(select(conn, LATEST_MERGE_WAIT, &[Value::Text(task.to_owned())])?.pop())
+}
+
 fn span_row(row: &Row<'_>) -> rusqlite::Result<SpanRecord> {
     let sandbox: String = row.get("sandbox_id")?;
     let kind: String = row.get("subject_kind")?;
@@ -146,6 +155,34 @@ impl SpanStore for SqliteStore {
             tx.commit().map_err(db)
         })
         .await
+    }
+
+    async fn retire_singleton(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        observed: &SpanRecord,
+        now: Timestamp,
+    ) -> AppResult<bool> {
+        let task = task.as_str().to_owned();
+        let (key, detail) = (observed.key.clone(), observed.detail.clone());
+        self.call(move |c| {
+            let updated = c.execute(
+                &format!("UPDATE spans SET detail=json_set(detail, '$.superseded_at', COALESCE(json_extract(detail,'$.superseded_at'), ?2))
+                 WHERE id=(SELECT id FROM spans WHERE {LATEST_MERGE_WAIT})
+                 AND outcome='dropped' AND key=?3 AND detail=?4
+                 AND json_valid(detail) AND json_type(detail,'$.singleton')='object'"),
+                params![task, now.0, key, detail],
+            ).map_err(db)?;
+            Ok(updated != 0)
+        }).await
+    }
+
+    async fn latest_merge_wait(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+    ) -> AppResult<Option<SpanRecord>> {
+        let task = task.to_string();
+        self.call(move |c| latest_merge_wait(c, &task)).await
     }
 
     async fn subject_spans(
@@ -440,6 +477,118 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn only_the_latest_merge_wait_of_the_rearming_owner_is_retired() -> TestResult {
+        let store = seeded().await?;
+        let owner = TaskId::parse("t1")?;
+        let peer = TaskId::parse("t2")?;
+        let first = NewSpan {
+            sandbox_id: SandboxId::parse("s1")?,
+            subject_kind: SubjectKind::Task,
+            subject_id: owner.as_str().into(),
+            key: "wait@10".into(),
+            parent_key: None,
+            kind: "wait".into(),
+            name: "merge_armed".into(),
+            environment: None,
+            job: None,
+            started_at: Timestamp(10),
+            ended_at: Some(Timestamp(15)),
+            outcome: Some("dropped".into()),
+            detail: Some(r#"{"head":"same","singleton":{"pr":1}}"#.into()),
+        };
+        assert!(store.insert_span(&first).await?);
+        assert!(
+            store
+                .insert_span(&NewSpan {
+                    subject_id: peer.as_str().into(),
+                    ..first.clone()
+                })
+                .await?
+        );
+        assert!(
+            store
+                .insert_span(&NewSpan {
+                    key: "unfinished".into(),
+                    started_at: Timestamp(50),
+                    ended_at: None,
+                    outcome: None,
+                    ..first.clone()
+                })
+                .await?
+        );
+        let original = store.latest_merge_wait(&owner).await?.ok_or("owner")?;
+        assert_eq!(
+            original.key, "wait@10",
+            "the owner still has its completed decision"
+        );
+        assert!(
+            store
+                .retire_singleton(&owner, &original, Timestamp(16))
+                .await?
+        );
+        assert!(
+            !store
+                .retire_singleton(&owner, &original, Timestamp(17))
+                .await?
+        );
+        let retired = store.latest_merge_wait(&owner).await?.ok_or("owner")?;
+        assert!(
+            store
+                .retire_singleton(&owner, &retired, Timestamp(17))
+                .await?
+        );
+        assert_eq!(
+            detail(&store.latest_merge_wait(&owner).await?.ok_or("owner")?)["superseded_at"],
+            16
+        );
+        assert!(
+            detail(&store.latest_merge_wait(&peer).await?.ok_or("peer")?)["superseded_at"]
+                .is_null()
+        );
+        assert!(
+            store
+                .insert_span(&NewSpan {
+                    key: "wait@20".into(),
+                    started_at: Timestamp(20),
+                    ended_at: Some(Timestamp(21)),
+                    detail: Some(r#"{"head":"same"}"#.into()),
+                    ..first.clone()
+                })
+                .await?
+        );
+        assert!(
+            store
+                .insert_span(&NewSpan {
+                    key: "late-write".into(),
+                    started_at: Timestamp(19),
+                    ended_at: Some(Timestamp(22)),
+                    ..first
+                })
+                .await?
+        );
+        assert_eq!(
+            store
+                .latest_merge_wait(&owner)
+                .await?
+                .ok_or("ordinary decision")?
+                .key,
+            "wait@20"
+        );
+        let ordinary = store.latest_merge_wait(&owner).await?.ok_or("ordinary")?;
+        assert!(
+            !store
+                .retire_singleton(&owner, &retired, Timestamp(24))
+                .await?
+        );
+        assert!(
+            !store
+                .retire_singleton(&owner, &ordinary, Timestamp(24))
+                .await?
+        );
+        Ok(())
+    }
+
     /// STG-101..103: a task's states, needs-you request, step (with the tokens its runs recorded
     /// meanwhile), run and pause are spans written with the state's own time.
     #[tokio::test]
@@ -606,6 +755,25 @@ mod tests {
             ("limit", Some(990), Some("switched"))
         );
         assert!(all.iter().all(|s| s.source == "recorded"));
+        let mut later_question = request;
+        later_question.at = 1100;
+        store
+            .set_task_needs_you(&task, Some(&later_question), Timestamp(1100))
+            .await?;
+        let selected = store.task(&task).await?.ok_or("ended task")?;
+        assert!(
+            store
+                .claim_continuation(&selected, None, None, Timestamp(5400))
+                .await?
+                .is_some()
+        );
+        let after = spans(&store, SubjectKind::Task, "t1").await?;
+        let answered = after
+            .iter()
+            .find(|s| s.name == "needs_you" && s.started_at == Timestamp(1100))
+            .ok_or("continued owner's question")?;
+        assert_eq!(answered.ended_at, Some(Timestamp(5400)));
+        assert_eq!(answered.outcome.as_deref(), Some("answered"));
         Ok(())
     }
 

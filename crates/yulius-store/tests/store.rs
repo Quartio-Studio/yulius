@@ -67,6 +67,7 @@ fn task(
     by: &UserId,
 ) -> Result<TaskRecord, Box<dyn std::error::Error>> {
     Ok(TaskRecord {
+        resume_attempt_id: None,
         id: TaskId::parse(id)?,
         sandbox_id: sandbox.clone(),
         number: 0,
@@ -178,6 +179,49 @@ async fn task_numbers_and_status_cas() -> R {
     let closed = store.task(&a.id).await?.ok_or("task")?;
     assert_eq!(closed.status, TaskStatus::Closed);
     assert_eq!(closed.closed_at, Some(Timestamp(40)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_idle_switch_claims_the_observed_activity_and_live_attempt() -> R {
+    use yulius_domain::task::Activity;
+
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let mut run = attempt("a1", &t.id, 1)?;
+    run.state = AttemptState::Live;
+    store.insert_attempt(&run).await?;
+    let idle = (Activity::Done, Timestamp(30));
+    assert!(
+        store
+            .transition_task(
+                &t.id,
+                Some(TaskStatus::Starting),
+                TaskStatus::Running,
+                Some(idle.0),
+                idle.1
+            )
+            .await?
+    );
+
+    let at = Timestamp(40);
+    let wrong = AttemptId::parse("a2")?;
+    assert!(!store.claim_idle_switch(&t.id, idle, &wrong, at).await?);
+    assert!(
+        !store
+            .claim_idle_switch(&t.id, (idle.0, Timestamp(29)), &run.id, at)
+            .await?
+    );
+    assert!(
+        !store
+            .claim_idle_switch(&t.id, (Activity::Waiting, idle.1), &run.id, at)
+            .await?
+    );
+    assert!(store.claim_idle_switch(&t.id, idle, &run.id, at).await?);
+    let switching = store.task(&t.id).await?.ok_or("switching task")?;
+    assert_eq!(switching.status, TaskStatus::Switching);
+    assert_eq!(switching.activity, None);
     Ok(())
 }
 
@@ -3350,12 +3394,58 @@ async fn staging_requests_are_idempotent_and_move_once() -> R {
         ["a", "a3"],
         "a superseded request is told too"
     );
-    assert!(store.mark_staging_told("a").await?);
-    assert!(!store.mark_staging_told("a").await?);
-    assert!(store.mark_staging_told("a3").await?);
+    assert!(store.mark_staging_told(&untold[0]).await?);
+    assert!(!store.mark_staging_told(&untold[0]).await?);
+    assert!(store.mark_staging_told(&untold[1]).await?);
     assert!(store.untold_staging_requests().await?.is_empty());
     let recent = store.recent_staging_requests(&sid, "staging", 2).await?;
     assert_eq!(recent.len(), 2);
+    Ok(())
+}
+
+/// A notification that already wrote to an agent can only acknowledge the outcome it read.
+/// Even another failure on the same request and wall-clock tick has its own delivery.
+#[tokio::test]
+async fn an_old_staging_acknowledgment_leaves_the_retried_verdict_untold() -> R {
+    use yulius_app::ports::store_ext::{StagingChange, StagingStore as _};
+    use yulius_domain::staging::StagingState::{DeployFailed, Deploying, Ready};
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let task = task("retry", &sid, &uid)?;
+    store.insert_task(&task).await?;
+    let first = staging_request("retry", &sid, Some(&task.id), "r1", DeployFailed);
+    assert!(store.insert_staging_request(&first).await?);
+    for (from, to) in [
+        (DeployFailed, Ready),
+        (Ready, Deploying),
+        (Deploying, DeployFailed),
+    ] {
+        assert!(
+            store
+                .move_staging_request(
+                    &first.id,
+                    from,
+                    to,
+                    &StagingChange::default(),
+                    first.updated_at
+                )
+                .await?
+        );
+    }
+    assert!(
+        !store.mark_staging_told(&first).await?,
+        "the first notification cannot acknowledge the retried verdict"
+    );
+    let current = store
+        .staging_request(&first.id)
+        .await?
+        .ok_or("retried request")?;
+    assert_eq!(
+        store.untold_staging_requests().await?.as_slice(),
+        std::slice::from_ref(&current)
+    );
+    assert!(store.mark_staging_told(&current).await?);
+    assert!(store.untold_staging_requests().await?.is_empty());
     Ok(())
 }
 

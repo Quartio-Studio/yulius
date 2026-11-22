@@ -14,7 +14,10 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   lint      Check formatting and Clippy warnings
   macos     Compile every target for macOS (aarch64-apple-darwin) with Clippy warnings denied
   test      Run nextest and documentation tests; in a CI matrix job valued `i/n`
-            ($YULIUS_CI_MATRIX) only shard i of n, the doctests in shard 1
+            ($YULIUS_CI_MATRIX) only shard i of n, the doctests in shard 1; --archive-file PATH
+            runs the tests using an existing nextest archive
+  docs      Build workspace documentation with warnings denied
+  test-shard Build or acquire the current CI run's test archive and run this matrix partition
   deps      Check advisories, licenses, sources, and unused dependencies
   ci        Run all required gates, failing on the first failed command (the checker's tests,
             beside the Rust gates, fail it at its end)
@@ -22,12 +25,9 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings
             and on open medium ones in the changed lines;
             --all scans the whole repository (needs a Vidoc key; not in ci)
-  mutants   Mutation-test the Rust lines the branch changed, beside the first review (SPEC-506):
-            --base REF (origin/<integration branch>; the reviewed head for a fix's lines),
-            --minutes N (30), --mutant-seconds N (300), --jobs N (one per 8 mutants, 2 to 7,
-            at most a third of $YULIUS_CPUS; 2 without it), --tests FILTER (the product's tests
-            to run in place of those the branch changed); the last line is the summary for the
-            spec's Evidence";
+  mutants   On request, mutation-test changed Rust lines against --base REF (default origin/dev).
+            --minutes N, --mutant-seconds N, --jobs N and --tests FILTER configure the campaign.
+            The final line reports its baseline, test filter, budget and outcomes";
 
 /// The line that names a stage of a Yulius CI job (SPEC-137): Yulius times the stage from when
 /// it reads this line until the next one or the job's end.
@@ -148,7 +148,7 @@ fn gates(with_tests: bool, cargo: &str, python: &str) -> io::Result<()> {
     let (first, rest) = gates.split_at(2);
     for gate in first {
         stage(gate);
-        execute_in(gate, true)?;
+        execute_in(gate, true, None)?;
     }
     let (tests, rest) = beside(
         || checker_tests(python),
@@ -159,7 +159,7 @@ fn gates(with_tests: bool, cargo: &str, python: &str) -> io::Result<()> {
                     stage(gate);
                 }
                 // The wait for the checker's tests is their stage's, not the last Rust gate's.
-                if let Err(error) = execute_in(gate, true) {
+                if let Err(error) = execute_in(gate, true, None) {
                     stage("checker-tests");
                     return Err(error);
                 }
@@ -186,13 +186,13 @@ fn beside<A: Send, B>(first: impl FnOnce() -> A + Send, second: impl FnOnce() ->
     })
 }
 
-fn execute(task: &str) -> io::Result<()> {
-    execute_in(task, false)
-}
-
 /// Runs `task`; `after_quick` leaves out of `check` and `lint` what `quick` already ran.
-fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Result<()> {
+    let mut cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    // scripts/dev names the pinned Cargo it launched. Preserve explicit overrides by callers.
+    if env::var("YULIUS_PROJECT_CARGO").as_deref() == Ok(cargo.as_str()) {
+        cargo = "scripts/cargo".to_owned();
+    }
     let python = env::var("PYTHON").unwrap_or_else(|_| "python3".into());
     match task {
         "doctor" => run(&python, &["scripts/check_repository.py", "--doctor"]),
@@ -261,19 +261,20 @@ fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
                 &macos_env(cfg!(target_os = "macos"), &tools),
             )
         }
+        "docs" => docs(&cargo),
         "test" => {
             // Its own stage, first (the quarantine's listing builds the tests), so the test
             // stage's history goes on in the shards' job (SPEC-137).
             stage("test");
-            let mut args = vec![
-                "nextest",
-                "run",
-                "--locked",
-                "--workspace",
-                "--all-features",
-                "--profile",
-                "ci",
-            ];
+            let mut args = vec!["nextest", "run"];
+            if let Some(archive) = archive {
+                // The archive carries all build options. Fixtures and JUnit belong to this
+                // shard's checkout even when the other shard built the binaries.
+                args.extend(["--archive-file", archive, "--workspace-remap", "."]);
+            } else {
+                args.extend(["--locked", "--workspace", "--all-features"]);
+            }
+            args.extend(["--profile", "ci"]);
             // Tests Yulius CI quarantined as flaky are left out (SPEC-497 OFC-002), each in its
             // own binary where this head builds it.
             let names = std::env::var("YULIUS_CI_QUARANTINE").unwrap_or_default();
@@ -350,14 +351,12 @@ fn shard_of(matrix: &str) -> Option<(u32, u32)> {
     (1..=count).contains(&index).then_some((index, count))
 }
 
-/// The security gate keeps its exit code: 2 (not run here) must stay distinct from 1 (failed).
-/// On Unix Python replaces this process, so a signal sent to `scripts/dev` reaches the gate, which
-/// then kills the scan it started.
-fn security(args: &[String]) -> io::Result<ExitCode> {
+/// Execute the checker directly so its skip status and termination signals reach CI.
+fn python_gate(script: &str, args: &[String]) -> io::Result<ExitCode> {
     let python = env::var("PYTHON").unwrap_or_else(|_| "python3".into());
-    println!("+ {python} scripts/vidoc_scan.py {}", args.join(" "));
+    println!("+ {python} {script} {}", args.join(" "));
     let mut command = Command::new(&python);
-    command.arg("scripts/vidoc_scan.py").args(args);
+    command.arg(script).args(args);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -408,10 +407,28 @@ fn main() -> ExitCode {
         println!("{HELP}");
         return ExitCode::SUCCESS;
     }
-    if (args.len() != 1 && args[0] != "security" && args[0] != "mutants")
+    let archive = match args.as_slice() {
+        [task, flag, path] if task == "test" && flag == "--archive-file" && !path.is_empty() => {
+            Some(path.as_str())
+        }
+        _ => None,
+    };
+    if (args.len() != 1 && archive.is_none() && args[0] != "security" && args[0] != "mutants")
         || ![
-            "doctor", "quick", "check", "fmt", "lint", "macos", "test", "deps", "ci", "checks",
-            "security", "mutants",
+            "doctor",
+            "quick",
+            "check",
+            "fmt",
+            "lint",
+            "macos",
+            "test",
+            "deps",
+            "ci",
+            "checks",
+            "security",
+            "mutants",
+            "docs",
+            "test-shard",
         ]
         .contains(&args[0].as_str())
     {
@@ -419,9 +436,14 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    if args[0] == "security" {
+    let script = match args[0].as_str() {
+        "security" => Some("scripts/vidoc_scan.py"),
+        "test-shard" => Some("scripts/ci_test_shard.py"),
+        _ => None,
+    };
+    if let Some(script) = script {
         return env::set_current_dir(root)
-            .and_then(|()| security(&args[1..]))
+            .and_then(|()| python_gate(script, &args[1..]))
             .unwrap_or_else(|error| {
                 eprintln!("Gate failed: {error}");
                 ExitCode::FAILURE
@@ -445,7 +467,9 @@ fn main() -> ExitCode {
             }
         };
     }
-    if let Err(error) = env::set_current_dir(root).and_then(|()| execute(&args[0])) {
+    if let Err(error) =
+        env::set_current_dir(root).and_then(|()| execute_in(&args[0], false, archive))
+    {
         eprintln!("Gate failed: {error}");
         return ExitCode::FAILURE;
     }

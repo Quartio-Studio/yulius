@@ -4,7 +4,102 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-22
+
+- The task-list loading test measures offscreen row height through a live list repaint. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+
 ## 2026-11-21
+
+- Task reads reuse terminal pull requests and share open refreshes. Status reports the installation quota and request purposes, including when display yields capacity to delivery. [SPEC-609](../.ai/specs/SPEC-609-reading-tasks-must-not-spend-the-github.md)
+- Parked-task deadline tests cover a blocked browser lookup, concurrent Git reads and recovery from a verified PR failure. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+- A parked PR owner receives the failing integration job in its resumed session. A busy subscription or a human decision keeps the notice pending until the watcher can verify it again.
+
+- Claude Code and Codex task delivery show the just-landed pull request's review rounds
+  and whether each round reported. Parking integration tests exercise an attached idle session.
+  [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
+- Codex tasks start with the rate-limit model switch reminder hidden. If an existing session shows it, Yulius holds automated input so a message cannot confirm the switch. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
+- Claude Code task delivery shows current review rounds. Codex task delivery also keeps the
+  just-merged PR's review visible. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
+- Task lists retain observed pull request state during a GitHub outage. The Status panel and task lists report when the GitHub App’s request budget resets. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+- Claude Code task delivery shows current review rounds. Codex task delivery also keeps the
+  just-merged PR's review visible. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
+- An idle task stays live while its merge request is being armed. If parking wins, Yulius asks the owner to resume before arming the merge. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+- Pull requests and merge trains run the Rust tests that read changed UI assets, catalog entries and documentation. Task briefings call for every test in a touched binary. [SPEC-610](../.ai/specs/SPEC-610-a-pull-request-runs-the-tests-that-read.md)
+
+- Codex starts and resumes prefer the subscription with the most remaining quota. Idle tasks keep Waiting or Done after a subscription move and can be closed without another turn. [SPEC-611](../.ai/specs/SPEC-611-a-moved-task-is-not-shown-as-working-and.md)
+- The opaque tunnel restart tests reserve their internal port through both server generations and check that each child bound it before probing health. [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
+- A signed GitHub PR opening queues CI for its exact head without a discovery API read. Existing Apps can enable the webhook in their registration. [SPEC-606](../.ai/specs/SPEC-606-a-pull-request-not-opened-by-a-task-wait.md)
+- Antigravity conversations reopened without a prompt show Waiting and can release their session slots while the Gemini announcement is visible. The composer regression checks the inherited model and effort of a task drawn to Antigravity. [SPEC-604](../.ai/specs/SPEC-604-an-idle-antigravity-session-under-the-ge.md)
+- `scripts/cargo --scratch-target` supports Clippy and nextest alongside built-in commands. Eligible builds reuse the sandbox compiler cache, and the command removes the private disk target after its workers stop. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
+- Codex reviewers now contribute their reviewed head, timestamps, answering model and verdict
+  to task delivery and Pipeline review numbers. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
+- Antigravity conversations reopened without a prompt show Waiting and can release their session slots while the Gemini announcement is visible. [SPEC-604](../.ai/specs/SPEC-604-an-idle-antigravity-session-under-the-ge.md)
+- Codex tasks inherit High effort on new and resumed processes for every model. GPT-6.2 Astra and Sol offer explicit Extra high and Max. The UI contract checks Antigravity’s inherited High against the shared mock default. [SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
+- `scripts/cargo --scratch-target` gives an ad-hoc build a private disk target and removes it when its workers stop. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
+
+- Agent and CI attempts receive private disk scratch for build trees. The process host caps each session’s memory-backed `/tmp` at 1 GiB. Named mutation campaigns reclaim their disk copies when workers exit. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
+- Merge-first tasks show their full-suite and staging waits until Yulius delivers the outcome.
+  [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
+
+- Repeating a decided staging request gives the recorded verdict and the action its revision needs.
+  [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
+- CI gives each quality pass its own budget and verdict. Both Rust test partitions use one build. [SPEC-598](../.ai/specs/SPEC-598-shorten-a-yulius-ci-run-parallel-quality.md)
+- Continue on a named subscription checks the current model and subscription before starting or queuing the task. A refusal keeps the task stopped and preserves its archive and question. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+
+- Deliveries check new tests by hand and request staging once after merge. The project mutation command runs only when a task requests it by name. New projects receive the same rule at bootstrap. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
+- Continuing a stopped task waits for its previous terminal to finish parking. A timeout, a later archive or a replacement run leaves the task’s question and archive intact. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+- Instance disk upkeep clears idle Rust compiler stores over 20 GiB or under remaining disk pressure. Removing a store refreshes sandbox quota usage and gives a blocked task one admission retry. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
+- The seven-day API estimate includes recorded GPT-6 Codex runs at Standard prices and shows what the pool would cost if eligible runs used Ultrafast. [SPEC-602](../.ai/specs/SPEC-602-it-doesnt-seem-real-verify-i-think-it-s.md)
+
+- Load-sensitive browser and merge-train tests wait for observable progress under contention.
+  The Docker smoke fixture holds its first result until the browser displays it.
+  [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
+- Goal tasks continue unfinished plan and spec work, including verification after merge, without asking their owner to type “continue”. [SPEC-589](../.ai/specs/SPEC-589-it-shouldnt-ask-for-things-like-that-fix.md)
+- Resuming a parked task waits for its old screen to finish saving. If that takes too long, Yulius asks the sender to retry and keeps the outstanding question open. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+
+- A message prepared for an earlier parked attempt asks the sender to try again if another turn resumes and parks first. The new turn keeps its own outstanding decision. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+- Replaying the terminal-redraw fix caught all seven mutants with zero sampled growth in session tmpfs, down from 862 MiB. The spec records elapsed time for the earlier full campaign and the by-hand rollback check. [SPEC-601](../.ai/specs/SPEC-601-mutation-testing-sized-to-the-change-wit.md)
+- The Rust compiler cache served 12 of 12 eligible requests in a fresh CI lane replay. The first two scheduled gates each recorded zero hits in 27 eligible requests. The spec records execution and queue times for the physical runs. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
+- Yulius's own delivery is merge-first. A pull request merges on `quality` and `security`, and both test shards and e2e run once on the merged revision. Staging changes only to a revision whose full suite passed. A promotion to `main` comes only from what staging verified, and a red `dev` is fixed forward. Staging's deploy keeps the server stopped when it cannot put back the previous store, instead of starting it on another one. [ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md), [SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md)
+- Contained Claude tasks and reviewers now receive a checked retry for variable-path and root-level scratch removals. The retry preserves the script’s conditions and file-only deletions. They can finish cleanup without waiting for a person to reply. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)
+
+- Yulius's own Rust builds reuse compiled artifacts in a bounded local disk cache across task worktrees and CI lanes. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
+- Continue now gives a stopped Codex task its next turn in the saved conversation. A Codex conversation reopened at an empty prompt shows Waiting. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
+- A sandbox browser whose profile came from another host now starts. Chrome's stale `Singleton*` lock files from the old host are removed before Chrome and its display start. A lock held by a running process here is kept, and a failed start names that process. Before this, after the 2026-11-21 move, the display restarted every 30 s. [SPEC-593](../.ai/specs/SPEC-593-sandbox-browser-never-starts-on-a-moved.md)
+- Yulius's own `[cd.dev]` now deploys the exact build of a dev revision to its staging VM, the former production host. Each deploy keeps the store the replaced release left. A deploy first migrates a copy of the live store and is refused when it would lose rows. Verify checks the commit, HTTPS, the contained doctor, the store's schema and the Docker smoke test. Rollback restores a release with its own store. [ADR-0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md), [SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md)
+- The new-task composer now keeps multiple unfinished drafts in one sandbox, each with its own text, attachments and task choices. [SPEC-594](../.ai/specs/SPEC-594-i-should-be-able-to-create-many-drafts-l.md)
+
+- An instance move now restarts the new host's Caddy with the carried Caddyfile and drop-ins on every pass and asks that host's port 443 for the public host before it reports the reverse proxy done, stopping with where to look when nothing answers there. Before, a Caddy the package had started with its default `:80` site kept serving it until a person ran `systemctl reload caddy`. [SPEC-592](../.ai/specs/SPEC-592-instance-move-caddy-keeps-serving-its-pr.md), [ADR-0431](decisions/0431-the-move-restarts-caddy-and-asks-its-own-port-443.md)
+- Production CD can release the last verified dev revision while a newer verification runs. The confirmation shows the SHA that will be promoted. [SPEC-586](../.ai/specs/SPEC-586-we-should-be-able-to-deploy-on-prod-last.md)
+- Finished parked tasks with a recorded merge stay under Done when GitHub cannot check for a follow-up PR. Existing false waits resolve on refresh, and known open replacements still show their checks. [SPEC-585](../.ai/specs/SPEC-585-i-got-this-everywhere-fix.md)
+- Parking keeps the original PR owner live when its recorded integration candidate failed on the current head and base, or the queue decision changes during verification (SPEC-558).
+- Agents now fix findings and obtain independent re-review through approval without asking the task owner to authorize another round. [SPEC-588](../.ai/specs/SPEC-588-it-shouldn-t-ask-me-for-this-agents-must.md)
+- The sandbox Browser panel now offers **Copy to my clipboard** after a webpage’s Copy button writes text on the virtual display. Accepting transfers the text to your device. [SPEC-584](../.ai/specs/SPEC-584-in-browser-i-clicked-copy-button-but-not.md)
+- New tasks in the browser default to Codex. Settings and the composer remember explicit model choices, including Random. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)
+
+- CLI and Superagent task creation now defaults to GPT-6.2 Astra at extra high effort, with Ultrafast on ChatGPT Pro 500. [SPEC-583](../.ai/specs/SPEC-583-cli-nad-superagents-should-spawn-tasks-i.md)
+
+- Clearing the Codex prompt lets waiting PR news through after one quiet minute and clears the held-message warning. [SPEC-581](../.ai/specs/SPEC-581-i-keep-getting-this-even-is-nothing-is-t.md)
+- Antigravity tasks parked on background `yulius wait` now settle cleanly to Waiting (`yulius_wait = true`, never stuck as Working) so their armed green PRs enter the merge queue on parity with Claude Code and Codex while non-wait background commands still hold the queue; `delivery_status` and `task_delivery` now refresh stale clones to report live PR conflicts (`pr.conflicts = true`) while preserving SPEC-491 union-driver merges and dropping conflicting armed merges with conflicting file names; and armed green PRs stuck outside a merge train now receive an agent check-in after 10 minutes and escalate via SPEC-578 Needs You after 20 minutes, auto-clearing once the PR moves or merges ([ADR-0419](decisions/0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md), [SPEC-580](../.ai/specs/SPEC-580-an-armed-green-pr-merges-when-its-agent.md)).
+- A plain right-click in a Codex terminal opens the clipboard menu. Paste now uses the viewer’s clipboard, fixing “clipboard text is unavailable” on headless sandboxes. [SPEC-582](../.ai/specs/SPEC-582-fix-clipboard-on-codex.md)
+
+- After a restart, a failed single-PR merge train reports its recorded job failure once to the original task. The watcher checks for repairs, reruns and human decisions before sending it (SPEC-558).
+
+- The staging line in `delivery_status` names the fix's revision as due after a failed request, and carries each request's next step. Reading the merge-first target fetches the clone only when it lacks the verified head. [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)
+- In a merge-first project, `delivery_status` tells a task whose work merged that its staging request is due, then where that request stands with its run ids. In the rollout, three upgrade tasks switched their project and ended without asking, because their briefing predated the switch. [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)
+- Recorded Yulius's Infra bootstrap revision 1 posture in `yulius.toml` (`[cd.dev] about`) and `AGENTS.md`: the repository has no shared staging target, so all CI jobs remain on pull requests ([SPEC-579](../.ai/specs/SPEC-579-adopt-merge-first-staging-infra-bootstra.md)).
+- An armed PR’s owner now hears its current ordinary CI failure once, including a run shared at the same head. A train notice identifies the current members and waits if a repair is published or a person takes the decision during the read (SPEC-558).
+
+- Established opaque HTTP/1.1 CONNECT tunnels through the sandbox holder now resume on the same sockets after an orderly Linux server restart. Frozen clients receive queued bytes after thaw, and the restored relay counts against its original limits. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+- A live task’s PR notice stays pending when a terminal resize or another input owns the writer. The next watch checks whether the owner can receive it (SPEC-558).
+
+- A saved merge request holds its owner’s PR check-in during startup. A passed train keeps the verified member head while GitHub catches up, and `yulius wait` names conflicting files only for the excluded request that produced them (SPEC-558).
+- During orderly Linux server shutdown, live sandbox outbound relays stop accepting new connections without reporting a capacity warning. An admitted copy can return its original sockets, pending bytes and write-half state for restart. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- A running task whose first PR watch occurs during a live merge queue decision still hears about the resulting merge once. Check-ins wait for the queue (SPEC-558).
+- On Linux in legacy mode, established opaque HTTP/1.1 CONNECT tunnels retain the agent’s original TCP peers and queued bytes across an orderly server restart. Multiplexed HTTP/2 sessions to the proxy reconnect. Intercepted connections reconnect through the host-bound secret policy. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- The merge queue saves a failed single-PR decision before clearing its request. After restart it preserves a later request for the same head, including a retry that finds the PR already merged. When a person merges the armed head, its agent can read the merge receipt immediately in `yulius wait` (SPEC-558).
 
 - Hourly history cleanup preserves each existing task’s latest merge queue decision, even if the arm began before the telemetry cutoff (SPEC-558).
 
@@ -33,6 +128,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Browser task rows keep verified unfinished parked work under Needs you, including when the Git overview shows healthy checks (SPEC-558).
 
 ## 2026-11-20
+
+- The Linux tunnel custodian preserves final TCP receive queues and drops a lost connection independently. Original sockets transfer after the receiver has their complete identity metadata. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 
 - 2026-11-20 Browser task lists keep the newest successful snapshot when requests overlap. A task page can recover from its initial load error as soon as the sidebar receives the list.
 - Every task entering Needs You now carries a redacted, actionable notice explaining what happened, what a person needs to do, and where to do it—shown beside the task status (even when stopped or parked), in the attention bar, Needs You lists, notifications, and identically in `tasks_list` and `task_get`—alongside deduplicated timestamped wait-episode history (`task_wait_messages`). Browser handoffs persist across activity transitions, parking, and restarts and clear cleanly when answered, dismissed, superseded, closed, or marked done; untold agent-recoverable CI failures and progressing reruns stay in Working until human action is needed ([ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md), [SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md)).

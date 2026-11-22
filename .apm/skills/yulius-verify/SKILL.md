@@ -46,18 +46,16 @@ Before completion inspect the diff, verify acceptance against actual results,
 and update evidence/state. Review findings are own code or pre-existing
 (`docs/engineering/workflow.md`, Review output): every finding in code or tests the
 change added or modified is fixed and proven test-first in the same PR and never
-becomes a follow-up issue, whatever the round limit (keep fixing, split the change or
-ask a person), and the PR answers every finding; only a
-pre-existing bug, a flaky test the change did not cause or a cosmetic nit left at
-the round limit becomes an issue that says why it is outside the change. An
+becomes a follow-up issue. Answer every finding in the PR. Re-review until approval
+under the task's existing authorization. Only a pre-existing bug, a flaky test the
+change did not cause or a cosmetic nit left after 3 rounds becomes an issue that
+says why it is outside the change. An
 own-code finding deferred to an issue is unresolved: the review verdict is request
 changes and the change is not done. Report passed, failed and unrun checks separately.
 Yulius CI is unrun until its run for the exact head exists; local equivalence is not
 a claim that `yulius/ci` passed. Leave product acceptance open if its evidence
 is absent, even when the harness passes.
 
-For published delivery, also verify the required PR check and the `yulius/ci` status
-of the exact post-merge dev commit per `docs/engineering/git.md`. Local green checks do
-not replace that post-merge gate.
+For published delivery, verify the required PR check on the exact head. After the merge, request staging once. Yulius records integration CI on the landed revision and reports a failed gate, deployment or verification. The task ends after asking.
 
-Mutation testing runs beside the review: when you ask for a pull request's first review, start the project's mutation command in the background and let the reviewer read meanwhile; when it ends, put its summary line in the spec's Evidence and fix each missed mutant test-first before the merge. After a later round's fix, run it on that fix's lines alone. A project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.
+Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the on-request command is `scripts/dev mutants`.

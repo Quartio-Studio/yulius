@@ -192,6 +192,29 @@ impl GitHubClient {
         Ok(wire.into())
     }
 
+    /// Confirms a contradictory display observation against the numbered resource.
+    ///
+    /// # Errors
+    /// Reports a display pause, inaccessible pull or network error.
+    pub async fn confirm_pull(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PullRequest, GitHubError> {
+        repo_args(owner, repo)?;
+        let url = self.api_url(&["repos", owner, repo, "pulls", &number.to_string()])?;
+        let call = Call::new(Method::GET, url, Some(token.expose()));
+        let reply = self
+            .inner
+            .display
+            .read_after(call, &self.inner.transport, Some(std::time::Instant::now()))
+            .await?;
+        let wire: WirePull = decode(&reply)?;
+        Ok(wire.into())
+    }
+
     /// Sets the title of pull request `number`; its body, base and state stay.
     ///
     /// # Errors
@@ -436,6 +459,32 @@ impl GitHubClient {
                 return Some((pull, computing));
             }
             tokio::time::sleep(delay).await;
+        }
+    }
+
+    /// Creates a new branch at an exact SHA. An existing ref is never updated.
+    ///
+    /// # Errors
+    /// Input validation, a GitHub refusal (including an existing ref), or transport failure.
+    pub async fn create_branch_ref(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        sha: &str,
+    ) -> Result<(), GitHubError> {
+        repo_args(owner, repo)?;
+        validate::branch(branch)?;
+        validate::sha(sha)?;
+        let url = self.api_url(&["repos", owner, repo, "git", "refs"])?;
+        let call = Call::new(Method::POST, url, Some(token.expose()))
+            .json(serde_json::json!({"ref": format!("refs/heads/{branch}"), "sha": sha}));
+        let reply = self.send_any(&call).await?;
+        if reply.is_success() {
+            Ok(())
+        } else {
+            Err(self.error_for(&reply, &call))
         }
     }
 

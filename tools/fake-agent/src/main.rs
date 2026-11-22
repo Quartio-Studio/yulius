@@ -1323,8 +1323,14 @@ impl Transcript {
         self.append(&[record])
     }
 
-    /// The person interrupted the turn: Claude Code's user line, shaped like 2.1.292's.
+    /// The person interrupted the turn, as recorded in the provider's transcript.
     fn interrupted(&mut self) -> io::Result<()> {
+        if self.codex {
+            return self.append_codex(&[Self::codex_event(
+                &rfc3339(now_ms()),
+                json!({"type": "turn_aborted", "turn_id": self.turns.to_string(), "reason": "interrupted"}),
+            )]);
+        }
         let uuid = format!("fake-{}-{}-interrupt", self.session_id, self.turns);
         let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
         user["message"] = json!({"role": "user",

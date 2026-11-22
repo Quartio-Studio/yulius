@@ -249,6 +249,7 @@ mod tests {
         for (task, sandbox, created) in [("t1", "s1", 100), ("t2", "s1", 200), ("t3", "s2", 150)] {
             store
                 .insert_task(&TaskRecord {
+                    resume_attempt_id: None,
                     id: TaskId::parse(task)?,
                     sandbox_id: SandboxId::parse(sandbox)?,
                     number: 0,
