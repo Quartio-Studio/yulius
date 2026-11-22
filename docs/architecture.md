@@ -2166,6 +2166,7 @@ possible draft or keystroke within the grace period, and is not an onboarding ta
 A task keeps its session while its plan has an open step, its spec is unfinished, or its goal still needs work. Both grace and digest parking recheck these facts before stopping the session, including when a person has been asked.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
+A run parked before that snapshot existed has only its final screen. When the task is parked or a recorded park transition ended with that run, the readers show the final screen with one parking notice (with the idle time when the transition records it) and, for Codex, drop a trailing exit block of token usage, `codex resume <id>` and its selection hint. A `codex resume` line that is part of the answer stays. [SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md)
 Parked admission waits outside the launch lock for in-flight terminal cleanup, up to the stop escalation bound. The observer that records the attempt’s terminal outcome saves the final screen. A late exit reader leaves the replacement run alone. Successor and onboarding checks may continue after terminal cleanup finishes.
 [Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
 
@@ -3309,8 +3310,9 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - When a test fails, first-parent gate evidence identifies its origin. Candidate runs are queued
   one at a time. The queue records inherited tests and completes those requests in revision
   order once a verified deployment contains them. One available worker owns the red branch.
-  Other workers receive the assignee's number. With no worker available, CI and Status return
-  the unresolved tests, their origins and the latest affected run. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
+  Other workers receive the assignee's number. When no worker is available, CI and Status show
+  each unresolved test and its introducing merge. Writers can retry the latest affected run
+  or start a task in that project. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).
