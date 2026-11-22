@@ -26,8 +26,9 @@ screen and transcript.
   callers also get its `screen`: Claude Code shows a prompt Yulius held and a person's draft
   there, which never reach an agent. The read changes nothing of the task. No tool or argument
   that messages, starts, stops or changes a task is added.
-- A task's agent reads its own project only and only while its owner may view it (enabled, read
-  access), the rule a person's view follows (ADR-0331).
+- A task's agent reads its own project only, and the status and list of its tasks only while its
+  owner may view it (enabled, read access, settled now), the rule a person's view follows
+  (ADR-0331); transcripts and claims keep their existing rule.
 - When the peer reaches its owner's personal secrets or MCP servers and the reading task does not
   hold the same person's, every free text (request, plan titles and notes, waiting texts, claim
   notes, last words, transcript) is withheld from `task_get`, `tasks_list`, `session_read`,

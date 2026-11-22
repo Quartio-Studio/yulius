@@ -250,27 +250,59 @@ async fn a_task_reads_a_neighbours_owner_delivery_claims_waits_and_screen() -> T
         assert!(text.contains(said), "`{said}` in:\n{text}");
     }
     assert!(!text.contains("held words"), "{text}");
+
+    // A person's own caller (the Superagent) reads the screen as the page shows it.
+    let person = yulius_app::coordination::ProjectCaller {
+        sandbox: yulius_domain::ids::SandboxId::parse("s1")?,
+        user: UserId::parse("u-alice")?,
+        task: None,
+        channel: yulius_app::coordination::Channel::Superagent,
+        actor: "cockpit:alice".into(),
+        detail: json!({"via": "cockpit"}),
+    };
+    let theirs =
+        w.h.app
+            .tool_task_get(&person, &json!({"number": bob}))
+            .await?;
+    assert!(
+        theirs["screen"]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("BOB screen line")),
+        "{theirs}"
+    );
     Ok(())
 }
 
-/// SPEC-625 PSV-001: an ended task's claims, which nothing released, are not shown as held.
+/// SPEC-625 PSV-001: a task shows the claims it holds while live or waiting to start (a chained
+/// task holds the paths it was created with); an ended task's, which nothing released, are not
+/// shown.
 #[tokio::test]
-async fn an_ended_tasks_claims_are_not_shown() -> TestResult {
+async fn only_the_claims_a_task_still_holds_are_shown() -> TestResult {
     let w = world().await?;
-    let ended = seed_task(&w.h, "t9", "s1", "u-bob", TaskStatus::Closed, None).await?;
-    w.h.store
-        .insert_claim(&ScopeClaimRecord {
-            id: "claim-t9".into(),
-            task_id: ended.id.clone(),
-            sandbox_id: ended.sandbox_id.clone(),
-            pattern: "src/**".into(),
-            note: Some("left over".into()),
-            created_at: Timestamp(1),
-        })
-        .await?;
-    let (peer, error) = tool(&w, ALICE, "task_get", json!({"number": ended.number})).await?;
-    assert!(!error, "{peer}");
-    assert_eq!(peer["claims"], json!([]), "{peer}");
+    for (id, status, pattern) in [
+        ("t9", TaskStatus::Closed, "src/**"),
+        ("t11", TaskStatus::Chained, "web/**"),
+    ] {
+        let task = seed_task(&w.h, id, "s1", "u-bob", status, None).await?;
+        w.h.store
+            .insert_claim(&ScopeClaimRecord {
+                id: format!("claim-{id}"),
+                task_id: task.id.clone(),
+                sandbox_id: task.sandbox_id.clone(),
+                pattern: pattern.into(),
+                note: None,
+                created_at: Timestamp(1),
+            })
+            .await?;
+        let (peer, error) = tool(&w, ALICE, "task_get", json!({"number": task.number})).await?;
+        assert!(!error, "{peer}");
+        let expected = if status == TaskStatus::Closed {
+            json!([])
+        } else {
+            json!([{"pattern": pattern, "note": null}])
+        };
+        assert_eq!(peer["claims"], expected, "{id}: {peer}");
+    }
     Ok(())
 }
 
@@ -530,6 +562,37 @@ async fn a_personal_tasks_free_text_stays_with_tasks_holding_the_same_secrets() 
         shows(&context).contains("PRIVATE closed request"),
         "{context}"
     );
+
+    // task_update's answer too (the automation's task, which holds nobody's secrets, changes
+    // how alice's prepared task starts).
+    let prepared = seed_task(&w.h, "t12", "s1", "u-alice", TaskStatus::Prepared, None).await?;
+    w.h.store
+        .replace_steps(
+            &prepared.id,
+            &[StepRecord {
+                id: StepId::parse("step-t12")?,
+                task_id: prepared.id.clone(),
+                ordinal: 1,
+                status: "in_progress".into(),
+                title: "PRIVATE prepared step".into(),
+                note: None,
+                updated_by: None,
+                updated_at: Some(Timestamp(1)),
+                effort: 1,
+            }],
+            "task:test",
+            Timestamp(1),
+        )
+        .await?;
+    let (answer, error) = tool(
+        &w,
+        AUTOMATION,
+        "task_update",
+        json!({"number": prepared.number, "prepared": true}),
+    )
+    .await?;
+    assert!(!error, "{answer}");
+    assert!(!shows(&answer).contains("PRIVATE"), "{answer}");
 
     // Alice's other task holds the same secret: it reads everything.
     let (own, error) = tool(&w, ALICE_TWO, "task_get", json!({"number": number})).await?;

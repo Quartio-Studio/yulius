@@ -110,8 +110,9 @@ impl App {
             .active_claims(&task.sandbox_id)
             .await?
             .into_iter()
-            // Nothing releases an ended task's claims: it holds them only while live or waiting.
-            .filter(|claim| claim.task_id == task.id && task.status.holds_claims())
+            // Nothing releases an ended task's claims: it holds them only while live or waiting to
+            // start, as `task_create`'s planned overlaps count them.
+            .filter(|claim| claim.task_id == task.id && !task.status.is_resting())
             .map(|claim| json!({"pattern": claim.pattern, "note": claim.note}))
             .collect();
         let requests = self.browser_requests(&task.sandbox_id).await;
