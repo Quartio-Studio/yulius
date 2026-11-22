@@ -316,7 +316,6 @@ pub struct TaskRuntime {
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
-    pub(crate) candidate_observation: Mutex<crate::pr_watch::CandidateObservation>,
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
@@ -422,7 +421,7 @@ pub struct TaskRuntime {
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
     pub(crate) armed: Mutex<crate::agent_wait::ArmedSlot>,
     /// Orders durable singleton decisions with an operator or agent changing its arm.
-    pub(crate) arm_writer: Arc<tokio::sync::RwLock<()>>,
+    pub(crate) arm_writer: tokio::sync::Mutex<()>,
     /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
     /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
     pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
@@ -902,7 +901,6 @@ impl TaskRuntime {
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
-            candidate_observation: Mutex::default(),
             typed_at_ms: AtomicI64::new(0),
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
@@ -931,7 +929,7 @@ impl TaskRuntime {
             typing_message: AtomicBool::new(false),
             spawned_ms: AtomicI64::new(0),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
-            arm_writer: Arc::default(),
+            arm_writer: tokio::sync::Mutex::new(()),
             push_problem: Mutex::new(None),
             repair_checked_head: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
@@ -2543,14 +2541,10 @@ impl App {
             // A pending supertask of the project, or the running work a supertask waits for,
             // keeps a new run queued (SPEC-071); a live run is never held.
             let held = !task.status.is_live() && self.held_by_supertask(&task).await?;
-            let (working, mut cleared) = self.working_capacity().await?;
-            let live = u32::try_from(working.len()).unwrap_or(u32::MAX);
+            let live = self.sessions_in_use().await?;
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
             let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
-            if full {
-                cleared.clear();
-            }
             if full && decision.is_some() {
                 return Ok(false);
             }
@@ -2615,14 +2609,7 @@ impl App {
                 },
                 _ => (start, account),
             };
-            // This start reserves the free slot under the launch lock. Completed owners
-            // can accept a replacement merge once the reservation has been made.
-            crate::race::reached(
-                crate::race::Point::CandidateCapacityCleared,
-                Path::new(task.id.as_str()),
-            );
             let launching = Launching::start(&self.supervisor.launching, &task.id);
-            drop(cleared);
             let admission = if owner_continue {
                 self.prepare_start_claim(&task.id).await?;
                 let Some(admitted) = self
@@ -2638,7 +2625,7 @@ impl App {
                     return Ok(false);
                 };
                 let runtime = self.runtime(&task.id);
-                let Ok(writer) = runtime.arm_writer.try_write() else {
+                let Ok(writer) = runtime.arm_writer.try_lock() else {
                     return Ok(false);
                 };
                 if !self.parked_notice_current(&task, notice).await {
@@ -5507,38 +5494,18 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn working_attempts(&self) -> AppResult<Vec<AttemptRecord>> {
-        Ok(self.working_capacity().await?.0)
-    }
-
-    /// Collect idle owners first, then validate their deliveries together. Later rows
-    /// can take long enough for a previously idle owner's replacement arm to arrive.
-    async fn working_capacity(
-        &self,
-    ) -> AppResult<(
-        Vec<AttemptRecord>,
-        Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
-    )> {
         let store = &self.deps.store;
-        let mut rows = Vec::new();
-        for attempt in store.live_attempts().await? {
-            let completion = match store.task(&attempt.task_id).await? {
-                Some(task) => self.local_completion(task).await,
-                None => None,
-            };
-            rows.push((attempt, completion));
-        }
         let mut working = Vec::new();
-        let mut cleared = Vec::new();
-        for (attempt, completion) in rows {
-            if let Some((task, record)) = completion
-                && let Some(guard) = self.hold_live_delivery(&task, record.as_ref()).await
-            {
-                cleared.push(guard);
-            } else {
+        for attempt in store.live_attempts().await? {
+            let done = match store.task(&attempt.task_id).await? {
+                Some(task) => self.task_is_done_locally(&task).await,
+                None => false,
+            };
+            if !done {
                 working.push(attempt);
             }
         }
-        Ok((working, cleared))
+        Ok(working)
     }
 
     /// Starts queued tasks while capacity allows, supertasks first, then FIFO (SPEC-071 SUP-004);
@@ -5771,7 +5738,7 @@ impl App {
             return Ok(false);
         };
         // A queue decision or replacement request must finish on one side of the park.
-        let Ok(arm_writer) = runtime.arm_writer.try_write() else {
+        let Ok(arm_writer) = runtime.arm_writer.try_lock() else {
             return Ok(false);
         };
         if crate::sandboxes::plan_open(&self.deps.store.steps(task_id).await?)

@@ -69,8 +69,10 @@ for name, version in tools.items():
     shared = shared_root / "bin" / exe_name
     with exclusive(cache / f".{name}-{version}.lock"):  # parallel tasks wait for one build
         if not shared.exists():
-            subprocess.run([rustup, "run", channel, "cargo", "install", "--locked", "--version", version,
-                            "--root", str(shared_root), name], cwd=root, env=install_env, check=True)
+            with tempfile.TemporaryDirectory(dir=os.environ.get("YULIUS_BUILD_SCRATCH") or cache) as target:
+                subprocess.run([rustup, "run", channel, "cargo", "install", "--locked", "--version", version,
+                                "--root", str(shared_root), "--target-dir", target, name],
+                               cwd=root, env=install_env, check=True)
     if executable.exists() or executable.is_symlink():
         executable.unlink()
     try:

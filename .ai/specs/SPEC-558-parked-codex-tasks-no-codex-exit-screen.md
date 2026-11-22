@@ -69,6 +69,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Order parking and replacement merge requests through run settlement
 - [x] Deliver the recorded integration failure once to an already parked owner
 - [x] Hold the original owner’s session slot while its open delivery cannot be verified
+- [ ] Unpack CI test shards on disk within the one-GiB temporary-filesystem cap
+- [ ] Restore the reviewed session-capacity slice after the CI repair
 - [ ] Verify live owners when constructing and releasing dependent tasks or closing their sessions
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -92,8 +94,6 @@ The failed-integration-candidate step covers the owner's November 20 observation
 Use the fake Codex executable, its rollout, real PTY shutdown and the application Stop hook. Exercise saved-screen and terminal readers, terminal restoration, step and pull combinations and historical statuses. Run scoped Rust and web tests, repository quick checks, the security command and Yulius CI.
 
 ## Decisions
-
-An achieved live owner with a recorded failed singleton keeps its session slot until the watcher verifies that the hosted PR closed or the candidate inputs changed. Capacity reads stay local and bind the observation to the exact saved decision and branch. A launch holds shared delivery guards for the owners it clears until it reserves the slot. The watcher applies the same guard when it rechecks the PR before delivering a notice. If a launch holds the guard, the watcher checks again on a later pass.
 
 An automatic continuation for a parked PR owner verifies the recorded integration decision before launching. A human decision or unavailable capacity leaves the original session parked. The next watcher pass checks the PR again before delivering a prompt.
 
@@ -129,23 +129,13 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- The isolated CI repair precedes delivery of the reviewed session-capacity change preserved at `5f216ef4e`. The user's host report traced the gate failure on both protected branches to the installed 1 GiB run tmpfs at `aabf37091`; the same error ended main run `c51054f9-4e67-440e-abd7-8d0b3ba35e05`.
+- The cold tools-cache test reproduced Cargo’s default temporary target for a registry install. Removing the explicit disk target by hand reproduced it again. The restored bootstrap reclaims the target after an install failure on both the job scratch and the tools-cache fallback.
+
 - PR #1679 run `a4cf8907-9726-44f9-ad63-575d039ded21` failed before executing shard 2. Nextest exhausted `/tmp` while unpacking the 45-binary archive for the quarantine listing. The shard regression failed on the default extraction path before the fix. Both nextest commands now unpack in a private directory on disk. [Test build contract](../../docs/decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
 
-- Hand check of the CI repair. Removing the extraction arguments reproduced the missing disk path in the quarantine listing. Restored code passed the xtask CLI tests. With a real nextest domain archive, both extraction passes used the same private disk directory, all 316 selected shard-2 tests passed in `89d7355e-3d95-48c0-810c-d00aed5e4db0`, and the extraction directory was removed.
-- Independent review approved `209c14add834c30963b982028e2a834bc198435d` for session capacity. Its fresh session passed all 78 candidate tests in `c1d4b94e-1ec2-42ab-8a9a-a4ec8a06c86b`. The review's documentation correction removed the obsolete statement about which method counts occupied slots.
-
-- All 688 scoped tests passed in `90908811-75d5-4039-a4d8-aa09fe7495db`. Restoring the raw final PR read by hand made the peer see a free slot again in `5cbff53b-d244-4a9b-8cc4-29c5828892d9`. The guarded read was restored. Clippy and repository quick checks passed. Vidoc was disabled.
-
-- Review of `765003503` found an unguarded hosted read immediately before publishing the ordinary green notice. In `76da3c6d-d3cb-4308-a11d-65da58b58d10` that read saw the original integration base return and suppressed the notice, yet the queued peer saw a free slot. The final notice read now invalidates and refreshes the same capacity observation as the first read.
-
-- Reopening PR #1481 during a peer's final session reservation triggered two premature hosted reads in `9c8d1cf5-7838-4342-aeee-17db761e72dd`. With the observation ordered against reservation, the next watcher pass delivered the shard 2 latency reason once to the same live task. All 687 scoped tests passed in `52c2c3e8-d0a0-4128-b74f-066cddbf18b3`, including every delivery and agent hook test. The fixture uses SQLite, Git, a real PTY and a simulated GitHub service.
-- Hand check in `09b5c791-ca32-4bf6-9014-ba1f3ce4d2ee`. Removing only the guard before invalidating the cached PR observation increased the hosted read count from one to three while the reservation was paused. The guard was restored.
-
-- Removing the final multi-owner delivery check by hand admitted a second live session under a one-session limit in `b86f378e-069a-4afd-9e35-ad19c7d532b0`. Restoring the check kept the peer queued.
-
-- The baseline called an occupied session free in `6512297f-8dc6-4d2f-b64e-21e7ea81aea4`. Run `8b6ad1aa-0839-4b96-9c55-321e7ea3dc0e` admitted a queued launch after the first owner rearmed during the second owner’s check. Removing the final candidate read by hand also freed the occupied slot in `2aa9e50d-eca3-4f95-b76e-94708fd9d7fe`.
-
-- PR #1670 merged into dev at `20c04fd9f` after head `62c08ec9d` passed Yulius CI run `5494c81f-a93d-4129-adf2-6de7fe6bfe7e`. The integrated hook, delivery and parking run passed 467 of 469 checks. Both remaining failures concern the separately tracked PR lookup timeout. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/20c04fd9f32a75de80c317541b33568fccb5ce6f)
+- Hand check of the shard repair. Removing the extraction arguments reproduced the missing disk path in the quarantine listing. Restored code passed all nine xtask CLI tests. In a separate container with a 1,073,741,824-byte tmpfs, the full 45-binary archive reproduced the CI failure unpacking `yulius_contracts`. On job disk it unpacked to 2,286,202,018 bytes, listed the tests and ran all 316 selected shard-2 domain tests in `0cf9f7e2-e045-43dd-9ce9-b3a50740c72f`. The CLI regression checks cleanup after both shard commands.
+- Gate audit. Cargo targets, CI archives, tool and browser caches, and the npm installation use disk. PR run `eb097f6c-a01f-45d9-b8ea-a6810cee4fd0` passed lint, macOS, docs, dependencies and file contracts under the new host. Quality failed three compiler-cache fixture assertions assigned to task #596. Vidoc was disabled.
 
 - Independent review approved `71b6f42ba1cf5293f1cc5f8625775b2ce06e4659`. Run `3c27def5-99f4-4252-bc2d-8dd7faeb942d` passed all 211 parking, PR-watch and Codex tests. The agent echoed the recorded diagnosis in its original provider session and the next watcher pass started no second attempt. Clippy passed for all targets of `yulius-app`, `yulius-store` and `yulius` with all features and warnings denied. The complete hook and delivery modules passed 241 of 258 tests in `2781ac61-a2f5-4545-8c1d-977daab1faf5`; the 17 failures matched the dev control exactly. Vidoc was disabled. The terminal tests used a synthetic agent and a real PTY.
 - Hand check of the final claim. Removing the ordinary-run comparison and splitting the exit from park restoration reproduced both failures in `3377e959-72cb-4d13-9c4b-517f2b6053d1`. The reviewed source was restored.
