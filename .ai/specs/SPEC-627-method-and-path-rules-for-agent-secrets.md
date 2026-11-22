@@ -211,7 +211,7 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
 ## Evidence
 
 Head before this section: `4c8417c01` (origin/dev with #1701 merged in; this change's migration is
-file 0088 at schema version 89, after #1701's 0089 at 88). Vidoc is switched off for this project:
+file 0088 at schema version 90, after #1701's 0089 at 88 and #1705's 0091 at 89). Vidoc is switched off for this project:
 the `security` job ends skipped, unrun, not passed.
 
 - **Red first.** `secrets_rules.rs` failed before enforcement (`expected a 403 refusal, got

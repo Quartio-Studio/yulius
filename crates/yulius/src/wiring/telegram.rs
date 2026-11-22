@@ -370,6 +370,14 @@ impl NotificationChannel for TelegramBot {
             .map(|id| id.to_string()))
     }
 
+    async fn delete(&self, chat: &str, message: &str) -> Result<(), ChannelError> {
+        let chat: i64 = chat.parse().map_err(|_| ChannelError::Blocked)?;
+        let message: i64 = message.parse().map_err(|_| ChannelError::Invalid)?;
+        let body = json!({"chat_id": chat, "message_id": message});
+        self.call("deleteMessage", &body, CALL_DEADLINE).await?;
+        Ok(())
+    }
+
     async fn fetch_file(&self, id: &str, max: u64) -> Result<Vec<u8>, ChannelError> {
         let file = self
             .call("getFile", &json!({ "file_id": id }), CALL_DEADLINE)

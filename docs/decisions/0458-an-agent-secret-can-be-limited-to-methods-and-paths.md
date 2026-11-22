@@ -87,5 +87,5 @@ gRPC-Web over HTTP/1.1 is an ordinary `POST /package.Service/Method`.
   host it is bound to.
 - HTTP/2 interception, if added, inherits the rules unchanged: they are checked in the policy,
   not in the HTTP/1 code.
-- Schema version 89 adds `vault_secrets.rules` (JSON, `[]` for every existing secret); a stored
+- Schema version 90 adds `vault_secrets.rules` (JSON, `[]` for every existing secret); a stored
   rule that no longer parses makes the row unreadable rather than unlimited.
