@@ -3017,6 +3017,105 @@ async fn codex_goal_stop_leaves_an_untold_failure_uncharged() -> TestResult {
     Ok(())
 }
 
+/// The run is found by its commit, however many newer runs the sandbox has.
+#[tokio::test]
+async fn codex_goal_stop_finds_its_red_run_in_a_busy_sandbox() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+        .await?;
+    install_compatibility_pull(&f).await?;
+    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    told_red_run(&f, "red-at-head")?;
+    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    for n in 0..100_i64 {
+        super::delivery::insert_ci_attempt(
+            &f.h.store,
+            &format!("other-pr-{n}"),
+            "0123456789abcdef0123456789abcdef01234567",
+            yulius_domain::ci::CiRef::PullRequest(5000 + u64::try_from(n)?),
+            yulius_domain::ci::RunState::Passed,
+            11 + n,
+            &[],
+        )
+        .await?;
+    }
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert_eq!(stop["decision"], "block", "{stop}");
+    assert!(
+        stop["reason"].as_str().is_some_and(|s| s.contains("#1461")),
+        "{stop}"
+    );
+    Ok(())
+}
+
+/// A told failure at the worktree's commit is superseded by a newer run of the pull request on
+/// another commit (the branch was updated outside the worktree): the turn ends uncharged.
+#[tokio::test]
+async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+        .await?;
+    install_compatibility_pull(&f).await?;
+    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    told_red_run(&f, "red-at-head")?;
+    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    super::delivery::insert_ci_attempt(
+        &f.h.store,
+        "newer-green-elsewhere",
+        "0123456789abcdef0123456789abcdef01234567",
+        yulius_domain::ci::CiRef::PullRequest(1461),
+        yulius_domain::ci::RunState::Passed,
+        11,
+        &[],
+    )
+    .await?;
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert!(stop["decision"].is_null(), "{stop}");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.gate_blocks, 0);
+    Ok(())
+}
+
+/// A head pushed past the failed commit from elsewhere supersedes the failure, as it does for
+/// the watch (`run_superseded_by_pushed_head`): the turn ends uncharged.
+#[tokio::test]
+async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+        .await?;
+    install_compatibility_pull(&f).await?;
+    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let head = head.trim();
+    told_red_run(&f, "red-at-head")?;
+    red_ordinary_run(&f, "red-at-head", head, 10).await?;
+    let branch = ctx.task.branch.clone().ok_or("branch")?;
+    crate::pr_watch::git(
+        &f.worktree,
+        &["commit", "-q", "--allow-empty", "-m", "updated elsewhere"],
+    )?;
+    let pushed = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    crate::pr_watch::git(
+        &f.worktree,
+        &[
+            "update-ref",
+            &format!("refs/remotes/origin/{branch}"),
+            pushed.trim(),
+        ],
+    )?;
+    crate::pr_watch::git(&f.worktree, &["reset", "-q", "--hard", head])?;
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert!(stop["decision"].is_null(), "{stop}");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.gate_blocks, 0);
+    Ok(())
+}
+
 /// A pull request merged while red leaves nothing on this branch to repair: a told failure at
 /// the head does not continue the goal or spend an attempt.
 #[tokio::test]
@@ -3045,10 +3144,7 @@ async fn codex_goal_stop_ends_after_its_red_pr_merged() -> TestResult {
         )
         .await?;
     let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(
-        !stop["reason"].as_str().is_some_and(|s| s.contains("#1461")),
-        "{stop}"
-    );
+    assert!(stop["decision"].is_null(), "{stop}");
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
     assert_eq!(task.gate_blocks, 0);
     Ok(())

@@ -1256,15 +1256,22 @@ impl App {
             return StopPull::Settled;
         };
         let reference = yulius_domain::ci::CiRef::PullRequest(pr);
-        match runs.into_iter().find(|run| run.reference == reference) {
-            // Untold, the failure is the watch's to paste in first (SPEC-578).
-            Some(run)
-                if run.state == yulius_domain::ci::RunState::Failed
-                    && self.run_failure_told(&task.id, pr, &run.id) =>
-            {
-                StopPull::Failing(pr)
-            }
-            _ => StopPull::Settled,
+        let Some(run) = runs.into_iter().find(|run| run.reference == reference) else {
+            return StopPull::Settled;
+        };
+        // Untold, the failure is the watch's to paste in first (SPEC-578). A newer run of the
+        // pull request, or a pushed head past this commit, supersedes it as the watch says.
+        if run.state == yulius_domain::ci::RunState::Failed
+            && self.run_failure_told(&task.id, pr, &run.id)
+            && self
+                .latest_pr_ci_run(&task.sandbox_id, pr)
+                .await
+                .is_none_or(|newest| newest.id == run.id)
+            && !self.run_superseded_by_pushed_head(task, &run.sha).await
+        {
+            StopPull::Failing(pr)
+        } else {
+            StopPull::Settled
         }
     }
 

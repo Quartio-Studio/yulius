@@ -2287,7 +2287,11 @@ impl App {
     /// Whether a failed CI run at `failed_sha` has already been superseded by a newer commit
     /// pushed to `task`'s feature branch (SPEC-553 REP-002). Keeps stale failed-run notices
     /// suppressed across repeated `watch_prs` passes (and restarts) when no new CI run exists yet.
-    async fn run_superseded_by_pushed_head(&self, task: &TaskRecord, failed_sha: &str) -> bool {
+    pub(crate) async fn run_superseded_by_pushed_head(
+        &self,
+        task: &TaskRecord,
+        failed_sha: &str,
+    ) -> bool {
         let Some(worktree) = task.worktree_path.as_deref() else {
             return false;
         };
