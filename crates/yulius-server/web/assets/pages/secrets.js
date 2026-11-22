@@ -498,7 +498,7 @@ function agentForm(ctx, secret, scope = 'sandbox') {
   // Method and path rules (SPEC-627), set after adding, as hosts are; a production secret goes
   // through no proxy.
   if (secret && !secret.cd_prod) {
-    form.rules = h('textarea', { class: 'textarea mono', rows: 2, placeholder: 'GET, HEAD /repos/*' });
+    form.rules = h('textarea', { class: 'textarea mono', rows: 2, 'aria-label': 'Rules', placeholder: 'GET, HEAD /repos/*' });
     form.rules.value = rulesText(secret.rules || []);
     parts.push(field('Rules', form.rules, 'Optional: only these requests get it. One rule per line: methods, then a path where * matches anything (also /). Other requests that would use it are refused. Empty: any request to its hosts. Hosts agents ask for then wait for you, and allowing .env copies would give their code the value itself.'));
   }

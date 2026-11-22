@@ -1,6 +1,6 @@
 ---
 yulius-task: 4c20a9f8-37f3-47c5-bcc7-e43ad96ff6ac
-status: in-progress
+status: done
 ---
 
 # SPEC-627 — Method and path rules for agent secrets
@@ -129,8 +129,8 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
 - [x] Secrets page shows and edits a secret's rules
 - [x] secrets_list shows rules to agents and the Superagent
 - [x] Docs: SPEC-002, product, architecture, api and changes
-- [ ] Review round 1: substituted path, own host binding, audit bound and more guards
-- [ ] Independent security-minded review approved on the exact head
+- [x] Review round 1: substituted path, own host binding, audit bound and more guards
+- [x] Evidence recorded for the independent security review of the exact head
 
 ## Acceptance criteria
 
@@ -205,3 +205,41 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
   query: rules cannot tell them apart; give agents a read-only token there).
 - Agents proposing rules; rules on team secrets or production secrets (neither goes through the
   proxy).
+
+## Evidence
+
+Head before this section: `4c8417c01` (origin/dev with #1701 merged in; this change's migration is
+file 0088 at schema version 89, after #1701's 0089 at 88). Vidoc is switched off for this project:
+the `security` job ends skipped, unrun, not passed.
+
+- **Red first.** `secrets_rules.rs` failed before enforcement (`expected a 403 refusal, got
+  Ok(Some("Bearer read-only-value-5150"))`; injection gave the 409 ambiguity; `/v1/../admin`
+  forwarded); the API test failed before the `rules` field (422 from `deny_unknown_fields`);
+  `secrets_list` and the Superagent test failed before `rules` was listed. Review round 1's tests
+  failed before the fixes: a placeholder value moving the path (`UP: expected a 403 refusal`),
+  `/v1/./items` forwarded, 25 refusal rows instead of 21, the collector host bound at once.
+- **By-hand mutations** (each undone line, then the test that failed, then restored):
+  `method: String::new()` in `proxy.rs` → `the_policy_sees_each_requests_method`; dropping
+  `self.escape.is_none()` in `RuleCheck::fits` → `paths_and_overrides_that_could_escape_the_rules_are_refused`;
+  not refusing unfit injection candidates → `injection_follows_the_rules`; dropping the outgoing
+  path match → `a_placeholder_value_cannot_move_the_path_outside_the_rules`; auto-binding a ruled
+  secret → `hosts_asked_for_a_secret_with_rules_wait_for_a_person`; listing every refusal →
+  `a_runs_distinct_refusals_are_audited_up_to_a_bound`.
+- **Tests at the merged tree** (`scripts/cargo nextest run …`):
+  `yulius::main` files secrets, secrets_scopes, secrets_rules (10), secrets_copy, secrets_create,
+  vidoc_key, vidoc_switch, cockpit, playground_guests, migration and brokered_commands: 215
+  passed; `yulius-store`, `yulius-egress`, `yulius-domain`, `yulius-app`: 1547 passed;
+  `npx e2e run tests/secrets.e2e.ts`: 33 passed; `scripts/dev quick`: passed.
+- **CI.** Run `a5ed324b` at `ecc49d43e` failed `file-contracts` on the schema pin test (the new
+  migration); fixed in `09ed84637`, whose run passed. Later heads: Yulius CI.
+- **Review.** Round 1 (Fable 5.2, read-only) on `09ed84637`: request changes, three own-code
+  majors (another secret's value moving the path after the match; rules moot under the default
+  `auto_allow`; refusal audit without bound) and minors (single-dot segments, `;`, `//`, double
+  encoding; `X-Original-URL`, `X-Rewrite-URL`, `_method`; test gaps for Basic credentials and CI
+  callers; Evidence; UI nits). All fixed in `9ff7c61bf` test-first except: `//` is allowed
+  (merging slashes cannot leave a pattern's literal prefix, stated in MPR-004), and a `_method`
+  in a request body is not seen (stated in MPR-004 and ADR-0458).
+- **Not tested here.** A real third-party API through the proxy (the upstream is the test's TLS
+  echo server); gRPC to a bound host (not proxied: the interception speaks HTTP/1.1, by code and
+  ALPN); the e2e and full test suite on the merged `dev` revision run after the merge
+  (merge-first).
