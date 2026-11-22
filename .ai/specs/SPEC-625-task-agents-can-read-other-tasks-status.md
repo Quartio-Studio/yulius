@@ -211,6 +211,33 @@ Final head before review: the branch after merging `origin/dev` at 10d6ae619.
   and `.claude/skills/yulius-spec`.
 - Security scan: `yulius security-scan` printed "Security scan disabled: Vidoc is turned off in
   Yulius". It is disabled, not passed.
+- Review round 1 (head 19511ec92) requested changes, all answered in d2917d80e:
+  - The screen carried a held prompt's words. A task's agent now gets `last_words` from the
+    transcript, and only a person's callers get `screen`.
+  - Ended tasks' leftover claims were shown. Claims now show only while `holds_claims()`.
+  - `task_stop`, `task_archive` and `task_update` briefs now withhold.
+  - The transcript search and by-id read now have tests.
+  - Minors: access errors are refused with a sentence naming the cause, a `tasks_list` row says
+    its texts are withheld, claim notes stay on one line, and the briefing's recent changes
+    leave out a personal request. PSV-003's wording is narrowed to the task status, the
+    description says texts are data, and AC-5 no longer names the audit.
+  - Nits: architecture wording fixed; the screen is no longer read for a task's agent.
+  - Answered in words: the present-tense holder rule and the shared file system are recorded in
+    Decisions and ADR-0460. Not changed (nit): the second `task_attention_facts` read, the
+    pre-existing `runtime()` in `task_screen_of` (now reached by person callers only), and
+    the per-row personal lookups of `tasks_list`.
+- Round 1 tests first: the new checks failed before the fix:
+  `an_ended_tasks_claims_are_not_shown`; AC-1 (screen present, no `last_words`); AC-4 (the
+  `task_archive` brief carried the private step).
+- Round 1 hand mutations, one at a time, each restored, each failing its test:
+  - the screen for task readers (AC-1);
+  - without the `holds_claims` filter (the ended-claims test);
+  - without the withholding of the tidy brief (AC-4);
+  - without the `sessions_search` filter (AC-4);
+  - without the by-id `session_read` check (AC-4);
+  - without the briefing's withholding (AC-4).
+- After merging `origin/dev` at a94510e71, `scripts/cargo nextest run -p yulius -p yulius-app`:
+  4045 passed. `scripts/dev quick`, clippy `-D warnings` and `cargo doc -D warnings` passed.
 - Not tested: a real Claude Code session reading a neighbour, and a personal MCP server held by a
   live run. The holder rule comes from `reaches_owners_personal`, which SPEC-245 and SPEC-332
   already test for personal MCP servers.
