@@ -604,10 +604,8 @@ async fn a_deleted_or_failed_supertask_releases_its_project() -> TestResult {
     .await
 }
 
-/// SPEC-487 CHN-002 (review round 1, M3): a task whose pull request is merged while its agent
-/// has not heard of it goes on by itself. A supertask does not take it for finished, and Home
-/// counts it as working. A task the watch never saw with its pull request open is told
-/// nothing, and is Done as before.
+/// SPEC-487 CHN-002 and SPEC-612 GF-006: a verification step keeps one merged task
+/// working until it receives PR news. A completed delivery releases the supertask.
 #[tokio::test]
 async fn a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge() -> TestResult {
     use yulius_app::delivery::DeliveryRecord;
@@ -621,6 +619,7 @@ async fn a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge() -> TestR
         .task(&TaskId::parse("t-agent")?)
         .await?
         .ok_or("agent")?;
+    crate::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
     let unseen = seed_task(&h, "t-unseen", "s1", "u-alice", TaskStatus::Running, None).await?;
     seed_live_attempt(&h, "t-unseen", "tok-unseen").await?;
     for task in [&agent, &unseen] {
@@ -666,7 +665,7 @@ async fn a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge() -> TestR
     assert_eq!(
         held_by(&h, &alice, &s).await?,
         json!([agent.number]),
-        "the one that will hear of its merge and go on, not the one that is Done"
+        "the delivery with an unfinished verification step still holds the supertask"
     );
     assert_eq!(
         summary(&h, &alice, agent.id.as_str()).await?["yulius_wait"],
@@ -708,6 +707,7 @@ async fn a_merge_during_an_updates_hold_is_still_news_due() -> TestResult {
         .task(&TaskId::parse("t-agent")?)
         .await?
         .ok_or("agent")?;
+    crate::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
     h.store
         .set_activity(&agent.id, Some(Activity::Waiting), h.app.now())
         .await?;
