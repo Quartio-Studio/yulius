@@ -38,6 +38,8 @@ class CompileCache(unittest.TestCase):
         home.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, HOME=str(home), CARGO=str(cargo), YULIUS_SANDBOX="project",
                    YULIUS_TOOLS_CACHE=str(home / ".cache/yulius-tools"), XDG_CONFIG_HOME=str(home / ".config"))
+        # mbx's default free-space reserve is at least 5 GiB. The fixture shares CI's 1 GiB /tmp.
+        env["MBX_GC_MIN_FREE_SIZE"] = "64MiB"
         for name in ("RUSTC_WRAPPER", "CARGO_INCREMENTAL", "MAKEFLAGS", "MFLAGS", "CARGO_MAKEFLAGS",
                      "MBX_REMOTE_URL", "YULIUS_CI", "YULIUS_CI_RUN"):
             env.pop(name, None)

@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-22
 
+- The quality job’s compiler-cache fixtures retain warm builds on the 1 GiB temporary filesystem. [Issue #1680](https://github.com/Quartio-Studio/yulius/issues/1680)
 - CI reuses the current integration head’s candidate verdict even after newer pull requests fill its planning history. An active staging candidate holds the full-suite slot until it finishes. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
 - The task-list loading test measures offscreen row height through a live list repaint. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
 
