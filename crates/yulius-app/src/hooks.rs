@@ -17,7 +17,7 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
-use yulius_domain::task::{Activity, PullSignal, TaskStatus};
+use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
@@ -89,13 +89,12 @@ enum StopGate {
     Continue(String),
 }
 
-/// What a Codex goal's own pull request leaves to do at Stop, read within the probe budget
-/// (SPEC-558 PKR-003): its checks fail, or its open checks could not be read in time.
+/// What a Codex goal's own pull request leaves to do at Stop (SPEC-558 PKR-003): its Yulius
+/// CI run at the head the agent is on failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StopPull {
     Settled,
     Failing(u64),
-    Unverified(u64),
 }
 
 /// Joins a repository-relative path, refusing absolute paths and `..` components.
@@ -1206,7 +1205,8 @@ impl App {
             tokio::time::timeout(budget, self.background_or_wait_now(&task.id)),
             tokio::time::timeout(budget, self.pr_news_due(task)),
             tokio::time::timeout(budget, self.browser_tab_requests(&task.sandbox_id)),
-            self.stop_pull(task, budget)
+            // Local reads only; a slow store or Git ends this turn as on a settled PR.
+            tokio::time::timeout(budget, self.stop_pull(task))
         );
         Ok(
             if matches!(background, Ok(Some(true)))
@@ -1215,27 +1215,42 @@ impl App {
             {
                 StopGate::Handoff
             } else {
-                StopGate::Declared(pull)
+                StopGate::Declared(pull.unwrap_or(StopPull::Settled))
             },
         )
     }
 
-    /// A Codex goal has no native goal check: its own red pull request is work left
-    /// (SPEC-558 PKR-003). Read through the display verifier the task list uses.
-    async fn stop_pull(&self, task: &TaskRecord, budget: std::time::Duration) -> StopPull {
+    /// A Codex goal has no native goal check: its own pull request failing Yulius CI at the
+    /// head its worktree is on is work left (SPEC-558 PKR-003). The evidence is local: an
+    /// action never rests on a display read of GitHub (ADR-0447), and a head the agent has
+    /// moved past, pushed or not, is not charged to the retry budget.
+    async fn stop_pull(&self, task: &TaskRecord) -> StopPull {
         if task.harness != Harness::Codex || task.mode != TaskMode::Goal {
             return StopPull::Settled;
         }
-        let requests = tokio::sync::OnceCell::new_with(Some(std::collections::HashSet::new()));
-        let deadline = tokio::time::Instant::now() + budget;
-        let status = self.parked_status(task, &requests, deadline).await;
-        match status.pr.filter(|pr| pr.open) {
-            Some(pr) if status.facts.pull == Some(PullSignal::Failing) => {
-                StopPull::Failing(pr.number)
-            }
-            Some(pr) if status.followup_unverified || status.facts.pull.is_none() => {
-                StopPull::Unverified(pr.number)
-            }
+        let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
+            return StopPull::Settled;
+        };
+        let (yulius_domain::delivery::DeliveryStage::PrOpen, Some(pr), Some(worktree)) = (
+            &record.stage,
+            record.pr_number,
+            task.worktree_path.as_deref(),
+        ) else {
+            return StopPull::Settled;
+        };
+        let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await else {
+            return StopPull::Settled;
+        };
+        if run.state != yulius_domain::ci::RunState::Failed {
+            return StopPull::Settled;
+        }
+        match self
+            .deps
+            .git
+            .resolve_commit(Path::new(worktree), "HEAD")
+            .await
+        {
+            Ok(Some(head)) if head.eq_ignore_ascii_case(&run.sha) => StopPull::Failing(pr),
             _ => StopPull::Settled,
         }
     }
@@ -1290,10 +1305,7 @@ impl App {
             match pull {
                 StopPull::Settled => return Ok(StopGate::Pass),
                 StopPull::Failing(pr) => format!(
-                    "{GOAL_CONTINUATION}The checks of pull request #{pr} are failing. Read the failure, repair it on this branch and push the fix."
-                ),
-                StopPull::Unverified(pr) => format!(
-                    "{GOAL_CONTINUATION}The checks of pull request #{pr} could not be read in time. Verify them and repair any failure on this branch."
+                    "{GOAL_CONTINUATION}Yulius CI failed on pull request #{pr} at this head. Read the failure (ci_status), repair it on this branch and commit the fix."
                 ),
             }
         };
