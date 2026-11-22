@@ -128,6 +128,8 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Review of `5235d48ce` found the all-tasks rule omitted an achieved owner and archive admitted a replacement arm after the Done read. Both reproduced in `8c3e28e9-57ac-4ae8-8dcd-fe51941be91f`. The compound-rule regression reproduced a queued successor in `5f0879fa-e2bd-47f1-8d36-9dc3c01055d4` using the second task’s allocated number. The reverse-order close regression accepted a replacement arm while the terminal reader was settling Close in `9ac22a6e-b068-4394-af2c-fbe7517e084d`. All four passed with the guarded claims. Run `d3b562ba-da99-4084-b959-f267923a29a1` passed 675 scoped tests. The integrated revision `6ef3e2a28` passed 646 in `0205a695-505f-490b-8266-0f67d3fd34da`.
+
 - On the step 47 baseline, all seven admission regressions failed in run `6512297f-8dc6-4d2f-b64e-21e7ea81aea4`. Capacity reported a free slot and the successor entered Queued. The initial implementation passed all 279 parking, PR watcher and Done tests in `d76f3d5c-04aa-4ae5-adb6-9ac3b3c4d403`. All 293 delivery, hook, intake and limit tests passed in `d76099b6-7384-4ff3-920a-86e6eca26983`.
 - Hand check for the final candidate read. Removing it released the successor and freed the occupied slot in all three targeted tests in `2aa9e50d-eca3-4f95-b76e-94708fd9d7fe`. The guard was restored.
 

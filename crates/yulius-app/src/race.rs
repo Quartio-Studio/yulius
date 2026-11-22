@@ -48,6 +48,8 @@ pub enum Point {
     CandidateCapacityRead,
     /// A compound start rule is reading a named predecessor. Keyed by task ID.
     RuleOwnerRead,
+    /// An all-tasks start rule classified one live Done row. Keyed by task ID.
+    StartRuleLiveChecked,
     /// A queued row reads session capacity to explain its wait. Keyed by task ID.
     QueuedRowCapacity,
     /// The capacity worker selected a saved start and has not yet claimed the task.

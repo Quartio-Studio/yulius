@@ -356,7 +356,7 @@ impl App {
     ) -> AppResult<bool> {
         self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
-        let _writer = runtime.arm_writer.lock().await;
+        let _writer = runtime.arm_writer.write().await;
         crate::race::reached(
             crate::race::Point::ArmWriteStarted,
             std::path::Path::new(task.id.as_str()),
@@ -505,7 +505,7 @@ impl App {
     pub(crate) async fn settle_armed(&self, task: &TaskRecord, landed: Option<(&str, String)>) {
         self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
-        let _writer = runtime.arm_writer.lock().await;
+        let _writer = runtime.arm_writer.write().await;
         if let Err(err) = self.reconcile_arm_change(&task.id, &runtime).await {
             tracing::warn!(task = %task.id, error = %err, "retaining the saved merge arm until its decision can be reconciled");
             return;
@@ -591,7 +591,7 @@ impl App {
                 continue;
             };
             let runtime = self.runtime(&task_id);
-            let _writer = runtime.arm_writer.lock().await;
+            let _writer = runtime.arm_writer.write().await;
             // Every activation, including restoration, has a generation. The writer
             // keeps this snapshot from displacing any decision made in this process.
             if lock_slot(&runtime).generation != 0 {
@@ -907,7 +907,7 @@ impl App {
         decision: &crate::merge_train::SingletonDecision,
     ) -> bool {
         let runtime = self.runtime(task);
-        let _writer = runtime.arm_writer.lock().await;
+        let _writer = runtime.arm_writer.write().await;
         if lock_slot(&runtime).generation != deciding.generation {
             lock_slot(&runtime).finish(deciding, Verdict::Keep(deciding.merge.clone()));
             return true;
@@ -1021,7 +1021,7 @@ impl App {
             // reads as armed for `yulius wait` until the decision ends, in one step (WAI-003).
             let runtime = self.runtime(&task.id);
             if lock_slot(&runtime).retirement_pending.is_some() {
-                let _writer = runtime.arm_writer.lock().await;
+                let _writer = runtime.arm_writer.write().await;
                 if self.finish_retirement(&task.id, &runtime).await.is_err() {
                     continue;
                 }

@@ -422,7 +422,7 @@ pub struct TaskRuntime {
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
     pub(crate) armed: Mutex<crate::agent_wait::ArmedSlot>,
     /// Orders durable singleton decisions with an operator or agent changing its arm.
-    pub(crate) arm_writer: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) arm_writer: Arc<tokio::sync::RwLock<()>>,
     /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
     /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
     pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
@@ -2549,10 +2549,14 @@ impl App {
             // A pending supertask of the project, or the running work a supertask waits for,
             // keeps a new run queued (SPEC-071); a live run is never held.
             let held = !task.status.is_live() && self.held_by_supertask(&task).await?;
-            let live = self.sessions_in_use().await?;
+            let (working, mut cleared) = self.working_capacity().await?;
+            let live = u32::try_from(working.len()).unwrap_or(u32::MAX);
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
             let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
+            if full {
+                cleared.clear();
+            }
             if full && decision.is_some() {
                 return Ok(false);
             }
@@ -2617,7 +2621,10 @@ impl App {
                 },
                 _ => (start, account),
             };
+            // This start reserves the free slot under the launch lock. Completed owners
+            // can accept a replacement merge once the reservation has been made.
             let launching = Launching::start(&self.supervisor.launching, &task.id);
+            drop(cleared);
             let admission = if owner_continue {
                 self.prepare_start_claim(&task.id).await?;
                 let Some(admitted) = self
@@ -2633,7 +2640,7 @@ impl App {
                     return Ok(false);
                 };
                 let runtime = self.runtime(&task.id);
-                let Ok(writer) = runtime.arm_writer.try_lock() else {
+                let Ok(writer) = runtime.arm_writer.try_write() else {
                     return Ok(false);
                 };
                 if !self.parked_notice_current(&task, notice).await {
@@ -5502,18 +5509,37 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn working_attempts(&self) -> AppResult<Vec<AttemptRecord>> {
+        Ok(self.working_capacity().await?.0)
+    }
+
+    /// Collect idle owners first, then validate their deliveries together. Later rows
+    /// can take long enough for a previously idle owner's replacement arm to arrive.
+    async fn working_capacity(
+        &self,
+    ) -> AppResult<(
+        Vec<AttemptRecord>,
+        Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
+    )> {
         let store = &self.deps.store;
         let mut working = Vec::new();
+        let mut idle = Vec::new();
         for attempt in store.live_attempts().await? {
-            let done = match store.task(&attempt.task_id).await? {
-                Some(task) => self.task_is_done_locally(&task).await,
-                None => false,
-            };
-            if !done {
+            if let Some(task) = store.task(&attempt.task_id).await?
+                && let Some(completion) = self.local_completion(task).await
+            {
+                idle.push((attempt, completion));
+            } else {
                 working.push(attempt);
             }
         }
-        Ok(working)
+        let mut cleared = Vec::new();
+        for (attempt, (task, record)) in idle {
+            match self.hold_live_delivery(&task, record.as_ref()).await {
+                Some(guard) => cleared.push(guard),
+                None => working.push(attempt),
+            }
+        }
+        Ok((working, cleared))
     }
 
     /// Starts queued tasks while capacity allows, supertasks first, then FIFO (SPEC-071 SUP-004);
@@ -5767,7 +5793,7 @@ impl App {
             return Ok(false);
         };
         // A queue decision or replacement request must finish on one side of the park.
-        let Ok(arm_writer) = runtime.arm_writer.try_lock() else {
+        let Ok(arm_writer) = runtime.arm_writer.try_write() else {
             return Ok(false);
         };
         if crate::sandboxes::plan_open(&self.deps.store.steps(task_id).await?)

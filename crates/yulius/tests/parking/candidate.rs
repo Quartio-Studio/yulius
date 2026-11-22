@@ -13,6 +13,87 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{AttemptId, TaskId};
 
 #[test]
+fn overlapping_start_rules_leave_an_answered_task_out_of_both_rules() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _) = app_with_pulls(&data, 8, 0).await?;
+        let (owner, caller) = answered(&app, &data).await?;
+        let (checked, release) = super::pause_watch_or_queue(super::Point::StartRuleLiveChecked, &owner);
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 0)].into()).await;
+        let first_app = app.clone();
+        let first_caller = caller.clone();
+        let args = json!({"prompt":"After all outstanding tasks","harness":"claude","after_all_tasks":true});
+        let first_args = args.clone();
+        let first = tokio::spawn(async move { first_app.tool_task_create(&first_caller, &first_args).await });
+        tokio::time::timeout(Duration::from_secs(15), checked.notified()).await?;
+        let second = app.tool_task_create(&caller, &args).await;
+        release.notify_one();
+        let first = first.await??;
+        let second = second?;
+        assert!(first["task"]["start_rule"].is_null(), "{first}");
+        assert!(second["task"]["start_rule"].is_null(), "{second}");
+        app.stop_task_now(&owner).await?;
+        Ok::<(), Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_rearm_on_an_earlier_capacity_row_keeps_a_queued_launch_in_line() -> TestResult {
+    use yulius_domain::task::{Activity, TaskStatus};
+    with_idle_candidate(async |data, app, remote, id, head| {
+        let _ = pending_owner_merge(app, remote, &id, &head).await?;
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let second = super::new_task(
+            app,
+            &owner.sandbox_id,
+            &owner.owner,
+            "Second capacity owner",
+            yulius_app::model::TaskMode::Prompt,
+        )
+        .await?;
+        super::wait_for("second owner idle", Duration::from_secs(20), || async {
+            super::status_of(app, &second).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        app.deps
+            .store
+            .set_activity(&second, Some(Activity::Done), app.now())
+            .await?;
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        let peer = candidate_peer(app, &owner, TaskStatus::Queued).await?;
+        let file = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        let arm = replacement_request(&owner)?;
+        yulius_app::race::on(
+            super::Point::CandidateCapacityRead,
+            Path::new(second.as_str()),
+            move || {
+                assert!(std::fs::write(&file, &arm).is_ok());
+            },
+        );
+        app.start_run(
+            &peer,
+            yulius_app::supervisor::RunStart::Fresh { prompt: None },
+            None,
+        )
+        .await?;
+        let state = super::status_of(app, &peer).await.0;
+        let premature = app.deps.store.live_attempt(&peer).await?.is_some();
+        app.stop_task_now(&second).await?;
+        app.stop_task_now(&peer).await?;
+        assert_eq!((state, premature), (Some(TaskStatus::Queued), false));
+        Ok(())
+    })
+}
+
+#[test]
 fn after_all_tasks_includes_the_owner_of_the_current_failed_candidate() -> TestResult {
     with_idle_candidate(async |_, app, _, id, _| {
         let owner = app.deps.store.task(&id).await?.ok_or("owner")?;

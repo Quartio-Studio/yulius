@@ -2211,8 +2211,10 @@ successor check can verify that the recorded head or base changed, or that the P
 closed. Capacity accounting reads that observation locally for up to two watch intervals.
 A restart, a new decision or a failed verification requires another hosted observation.
 A start rule for all outstanding tasks includes an owner that cannot be cleared locally.
-Compound Done rules recheck their live owners under their merge writers before queueing the
-successor. Archive and delete recheck the delivery before claiming a finished session’s close.
+Compound Done rules and session capacity recheck the live owners together. They hold
+shared read guards until the successor enters the queue or the launch reserves a slot.
+Merge requests take the exclusive writer. Overlapping reads can both omit an Answered
+task with no open delivery. Archive and delete recheck the delivery before claiming a finished session’s close.
 An explicit `#N merged` rule follows the recorded merge.
 
 The individual HTTP task detail verifies both recorded and branch PRs.

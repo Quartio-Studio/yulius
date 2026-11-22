@@ -609,7 +609,7 @@ impl App {
         self: &Arc<Self>,
         task: &TaskRecord,
         evaluated: Option<&ChainRecord>,
-        delivery_holds: Vec<tokio::sync::OwnedMutexGuard<()>>,
+        delivery_holds: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
     ) -> AppResult<bool> {
         let next = task
             .status

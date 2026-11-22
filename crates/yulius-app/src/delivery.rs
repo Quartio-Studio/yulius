@@ -5044,37 +5044,41 @@ impl App {
     /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
     /// session limit counts tasks by it (SES-101), many times a minute.
     pub(crate) async fn task_is_done_locally(&self, task: &TaskRecord) -> bool {
+        let Some((task, record)) = self.local_completion(task.clone()).await else {
+            return false;
+        };
+        self.hold_live_delivery(&task, record.as_ref())
+            .await
+            .is_some()
+    }
+
+    /// Read the task-local part of capacity eligibility. Its delivery is rechecked
+    /// after the other live attempts have been read and before releasing the slot.
+    pub(crate) async fn local_completion(
+        &self,
+        task: TaskRecord,
+    ) -> Option<(TaskRecord, Option<DeliveryRecord>)> {
         use yulius_domain::task::{Activity, TaskStatus};
         if task.status != TaskStatus::Running
             || !task.activity.is_some_and(Activity::is_idle)
             || self.background_shells_of(&task.id).unwrap_or(0) > 0
+            || self.delivery_will_wake_task(&task.id).await
         {
-            return false;
-        }
-        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
-        if self.delivery_will_wake_task(&task.id).await {
-            return false;
+            return None;
         }
         crate::race::reached(
             crate::race::Point::CandidateCapacityRead,
             std::path::Path::new(task.id.as_str()),
         );
-        let Ok(record) = self.deps.store.delivery(&task.id).await else {
-            return false;
-        };
-        if task.activity == Some(Activity::Done) {
-            return self
-                .hold_live_delivery(task, record.as_ref())
-                .await
-                .is_some();
+        let record = self.deps.store.delivery(&task.id).await.ok()?;
+        if task.activity != Some(Activity::Done)
+            && (!record.as_ref().is_some_and(|r| past_merge(&r.stage))
+                || self.pr_news_due_of(&task, record.as_ref(), false).await
+                || self.work_left(&task.id).await)
+        {
+            return None;
         }
-        if self.pr_news_due_of(task, record.as_ref(), false).await {
-            return false;
-        }
-        if self.work_left(&task.id).await {
-            return false;
-        }
-        matches!(record, Some(record) if past_merge(&record.stage))
+        Some((task, record))
     }
 
     /// Whether work the task declared is left (SPEC-491 DON-004): steps of its plan not
@@ -5138,12 +5142,12 @@ impl App {
         &self,
         task: &TaskRecord,
         record: Option<&DeliveryRecord>,
-    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    ) -> Option<tokio::sync::OwnedRwLockReadGuard<()>> {
         let writer = self
             .runtime(&task.id)
             .arm_writer
             .clone()
-            .try_lock_owned()
+            .try_read_owned()
             .ok()?;
         let store = &self.deps.store;
         if self

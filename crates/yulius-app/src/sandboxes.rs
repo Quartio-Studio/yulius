@@ -539,12 +539,20 @@ impl App {
                 if for_start_rule && group == TaskGroup::Done && task.status == TaskStatus::Running
                 {
                     let settled = match self.deps.store.delivery(&task.id).await {
+                        // Answered with no delivery never becomes a #N done prerequisite.
+                        Ok(None) if task.activity != Some(yulius_domain::task::Activity::Done) => {
+                            true
+                        }
                         Ok(record) => self
                             .hold_live_delivery(task, record.as_ref())
                             .await
                             .is_some(),
                         Err(_) => false,
                     };
+                    crate::race::reached(
+                        crate::race::Point::StartRuleLiveChecked,
+                        std::path::Path::new(task.id.as_str()),
+                    );
                     if settled { group } else { TaskGroup::Working }
                 } else {
                     group
