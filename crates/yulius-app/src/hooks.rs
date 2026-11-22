@@ -17,7 +17,7 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::{Activity, PullSignal, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
@@ -85,8 +85,17 @@ enum StopGate {
     /// Claude’s first native goal record has yet to reach the transcript watcher.
     NativeGoal,
     /// Observe the current plan and budget together after the live probes and before acting.
-    Declared,
+    Declared(StopPull),
     Continue(String),
+}
+
+/// What a Codex goal's own pull request leaves to do at Stop, read within the probe budget
+/// (SPEC-558 PKR-003): its checks fail, or its open checks could not be read in time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopPull {
+    Settled,
+    Failing(u64),
+    Unverified(u64),
 }
 
 /// Joins a repository-relative path, refusing absolute paths and `..` components.
@@ -1193,10 +1202,11 @@ impl App {
         // confirmed work owns a wake. An unavailable probe can safely continue this same
         // turn; the separate rotation decision still requires proof before moving a run.
         let budget = std::time::Duration::from_millis(750);
-        let (background, delivery, browser) = tokio::join!(
+        let (background, delivery, browser, pull) = tokio::join!(
             tokio::time::timeout(budget, self.background_or_wait_now(&task.id)),
             tokio::time::timeout(budget, self.pr_news_due(task)),
-            tokio::time::timeout(budget, self.browser_tab_requests(&task.sandbox_id))
+            tokio::time::timeout(budget, self.browser_tab_requests(&task.sandbox_id)),
+            self.stop_pull(task, budget)
         );
         Ok(
             if matches!(background, Ok(Some(true)))
@@ -1205,9 +1215,29 @@ impl App {
             {
                 StopGate::Handoff
             } else {
-                StopGate::Declared
+                StopGate::Declared(pull)
             },
         )
+    }
+
+    /// A Codex goal has no native goal check: its own red pull request is work left
+    /// (SPEC-558 PKR-003). Read through the display verifier the task list uses.
+    async fn stop_pull(&self, task: &TaskRecord, budget: std::time::Duration) -> StopPull {
+        if task.harness != Harness::Codex || task.mode != TaskMode::Goal {
+            return StopPull::Settled;
+        }
+        let requests = tokio::sync::OnceCell::new_with(Some(std::collections::HashSet::new()));
+        let deadline = tokio::time::Instant::now() + budget;
+        let status = self.parked_status(task, &requests, deadline).await;
+        match status.pr.filter(|pr| pr.open) {
+            Some(pr) if status.facts.pull == Some(PullSignal::Failing) => {
+                StopPull::Failing(pr.number)
+            }
+            Some(pr) if status.followup_unverified || status.facts.pull.is_none() => {
+                StopPull::Unverified(pr.number)
+            }
+            _ => StopPull::Settled,
+        }
     }
 
     async fn turn_handoff_pending(&self, task: &TaskRecord) -> AppResult<bool> {
@@ -1225,6 +1255,7 @@ impl App {
         &self,
         task: &TaskRecord,
         run_dir: Option<&Path>,
+        pull: StopPull,
     ) -> AppResult<StopGate> {
         if self.turn_handoff_pending(task).await? {
             return Ok(StopGate::Handoff);
@@ -1256,7 +1287,15 @@ impl App {
                 "{GOAL_CONTINUATION}The spec still declares unfinished work. Check its acceptance criteria, complete any remaining work and record the evidence."
             )
         } else {
-            return Ok(StopGate::Pass);
+            match pull {
+                StopPull::Settled => return Ok(StopGate::Pass),
+                StopPull::Failing(pr) => format!(
+                    "{GOAL_CONTINUATION}The checks of pull request #{pr} are failing. Read the failure, repair it on this branch and push the fix."
+                ),
+                StopPull::Unverified(pr) => format!(
+                    "{GOAL_CONTINUATION}The checks of pull request #{pr} could not be read in time. Verify them and repair any failure on this branch."
+                ),
+            }
         };
 
         Ok(StopGate::Continue(reason))
@@ -1278,13 +1317,13 @@ impl App {
         if task.gate_blocks >= MAX_GATE_BLOCKS {
             return None;
         }
-        let gate = if matches!(gate, StopGate::Declared) {
+        let gate = if let StopGate::Declared(pull) = gate {
             let run = if task.follows_goal() {
                 self.deps.store.live_attempt(&task.id).await.ok()?
             } else {
                 None
             };
-            self.declared_stop_work(&task, run.as_ref().map(|run| Path::new(&run.run_dir)))
+            self.declared_stop_work(&task, run.as_ref().map(|run| Path::new(&run.run_dir)), pull)
                 .await
                 .ok()?
         } else {
@@ -1292,7 +1331,9 @@ impl App {
         };
         match gate {
             StopGate::Continue(reason) => Some(reason),
-            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared => None,
+            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared(_) => {
+                None
+            }
         }
     }
 
@@ -1494,7 +1535,7 @@ impl App {
         let version = if matches!(decision.0, Decision::Stay)
             && move_reviewer.is_none()
             && !self.keeps_own_goal(task)
-            && ((matches!(gate, StopGate::Continue(_) | StopGate::Declared)
+            && ((matches!(gate, StopGate::Continue(_) | StopGate::Declared(_))
                 && (task.mode == TaskMode::Goal || task.gate_blocks < MAX_GATE_BLOCKS))
                 || (task.mode == TaskMode::Goal && self.goal_is_open(&task.id)))
         {
@@ -1507,7 +1548,7 @@ impl App {
         // Plan writers reset the budget under this lock. Keep it from the final local
         // read through issuing the continuation or recording exhaustion.
         let runtime = self.runtime(&task.id);
-        let declared = matches!(gate, StopGate::Declared);
+        let declared = matches!(gate, StopGate::Declared(_));
         let _work = if declared {
             Some(runtime.steps_lock.lock().await)
         } else {
@@ -1518,8 +1559,8 @@ impl App {
         }
         let current_task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         task = &current_task;
-        let gate = if declared {
-            self.declared_stop_work(task, Some(Path::new(&ctx.attempt.run_dir)))
+        let gate = if let StopGate::Declared(pull) = gate {
+            self.declared_stop_work(task, Some(Path::new(&ctx.attempt.run_dir)), pull)
                 .await?
         } else {
             gate
@@ -1531,7 +1572,9 @@ impl App {
         let pending_goal = matches!(gate, StopGate::NativeGoal);
         let mut reason = match gate {
             StopGate::Continue(reason) => Some(reason),
-            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared => None,
+            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared(_) => {
+                None
+            }
         };
         if task.mode == TaskMode::Goal
             && let Some(reason) = &reason

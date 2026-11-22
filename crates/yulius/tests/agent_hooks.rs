@@ -2860,6 +2860,92 @@ async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> Tes
     Ok(())
 }
 
+/// Quartio-v2 #325 stopped after five of seven steps with its pull request red (SPEC-558
+/// AC-3): either unfinished condition alone continues the goal, up to the Stop bound.
+#[tokio::test]
+async fn codex_goal_stop_continues_the_325_shape_and_a_red_pr_alone() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Step 1").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let steps: Vec<_> = (1..=7)
+        .map(|n| {
+            let status = match n {
+                1..=5 => "done",
+                6 => "in_progress",
+                _ => "pending",
+            };
+            json!({"title": format!("Step {n}"), "status": status})
+        })
+        .collect();
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps": steps}))
+        .await?;
+    install_compatibility_pull(&f).await?;
+    f.h.github.set_checks("abc123", ChecksState::Failure);
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert_eq!(stop["decision"], "block", "{stop}");
+    assert!(
+        stop["reason"]
+            .as_str()
+            .is_some_and(|s| s.contains("Step 6")),
+        "{stop}"
+    );
+    // The plan is finished; only the red pull request is left.
+    for n in [6, 7] {
+        f.h.app
+            .tool_step_update(&ctx, &json!({"ordinal": n, "status": "done"}))
+            .await?;
+    }
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        let stop = stop_of(&f, Agent::Codex).await?;
+        assert_eq!(stop["decision"], "block", "{stop}");
+        assert!(
+            stop["reason"]
+                .as_str()
+                .is_some_and(|s| s.contains("#1461") && s.contains("failing")),
+            "{stop}"
+        );
+        assert_ne!(activity(&f).await?, Some(Activity::NeedsAttention));
+    }
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert!(stop["decision"].is_null(), "{stop}");
+    assert_eq!(activity(&f).await?, Some(Activity::NeedsAttention));
+    Ok(())
+}
+
+/// A finished Codex goal with a green pull request ends its turn; one whose checks cannot be
+/// read in time is asked to verify them, still within the hook's deadline (SPEC-558 PKR-003).
+#[tokio::test]
+async fn codex_goal_stop_ends_on_green_and_verifies_a_slow_check_read() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+        .await?;
+    install_compatibility_pull(&f).await?;
+    f.h.github.set_checks("abc123", ChecksState::Success);
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert!(stop["decision"].is_null(), "{stop}");
+    f.h.github.set_checks("abc123", ChecksState::Failure);
+    let hold = f.h.github.hold_checks();
+    let stop = tokio::time::timeout(
+        yulius_harness::hook_client::HOOK_TIMEOUT,
+        stop_of(&f, Agent::Codex),
+    )
+    .await
+    .map_err(|_| "the Codex hook client timed out on a held checks read")??;
+    f.h.github.release_checks(&hold);
+    assert_eq!(stop["decision"], "block", "{stop}");
+    assert!(
+        stop["reason"]
+            .as_str()
+            .is_some_and(|s| s.contains("#1461") && s.contains("Verify")),
+        "{stop}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn goal_stop_counts_consecutive_attempts_on_unresolved_work() -> TestResult {
     for replace in [false, true] {

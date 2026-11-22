@@ -1890,7 +1890,11 @@ async fn legacy_queued_park_screen(
     let kept = cold_task_screen(data, id, caller).await?;
     assert!(kept.starts_with("The budget answer"), "{kept}");
     assert!(kept.contains("codex resume 01a1f59f"), "{kept}");
-    assert_eq!(kept.matches("Yulius parked this session").count(), 1, "{kept}");
+    assert_eq!(
+        kept.matches("Yulius parked this session").count(),
+        1,
+        "{kept}"
+    );
     rusqlite::Connection::open(data.join("yulius.db"))?.execute(
         "UPDATE attempts SET harness = 'codex' WHERE id = ?1",
         [last.id.as_str()],
