@@ -1820,8 +1820,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         assert!(refused.to_string().contains("unknown tool"), "{refused}");
     }
 
-    // A task for alice (MGT-001, MGT-007).
-    crate::codex::connect_codex(&f.h.app).await?;
+    // A task for alice (MGT-001, MGT-007), on Claude Code by default (SPEC-620).
     let (created, is_error) = cockpit_tool(
         &f,
         &token,
@@ -1838,7 +1837,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             .await?
             .ok_or("task")?;
     assert_eq!(task.created_by, alice);
-    assert_eq!(task.harness, yulius_domain::harness::Harness::Codex);
+    assert_eq!(task.harness, yulius_domain::harness::Harness::ClaudeCode);
     assert_eq!(f.h.app.task_summary(&task).await?.harness_choice, "chosen");
     assert_eq!(task.origin, TaskOrigin::Agent);
     let (listed, is_error) = cockpit_tool(&f, &token, "tasks_list", json!({})).await?;

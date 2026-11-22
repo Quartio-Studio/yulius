@@ -110,10 +110,10 @@ fn a_prepared_task_of_another_sandbox_is_started_and_messaged_from_a_superagent(
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
         assert_eq!(task.sandbox_id, pool);
         assert_eq!(task.status, TaskStatus::Prepared);
-        assert_eq!(task.harness, Harness::Codex);
+        // On Claude Code by default (SPEC-620).
+        assert_eq!(task.harness, Harness::ClaudeCode);
 
         // It should have been queued: started from home, no delete and no new task.
-        crate::codex::connect_codex(&app).await?;
         let started = approved(
             &app,
             &person,

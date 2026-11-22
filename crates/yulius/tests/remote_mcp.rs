@@ -2021,14 +2021,12 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
         "acme/shop",
         "--json",
     ];
-    let (code, out, err) = yulius_cli(home, &create, "").await?;
-    assert_eq!(code, Some(1), "{out}{err}");
-    assert!(format!("{out}{err}").contains("Codex"), "{out}{err}");
+    // SPEC-620 CDM-001: Claude Code on Opus 5.5 by default, even with Codex usable too.
     crate::codex::connect_codex(&w.h.app).await?;
     let (code, out, err) = yulius_cli(home, &create, "").await?;
     assert_eq!(code, Some(0), "{out}{err}");
     let created: Value = serde_json::from_str(&out)?;
-    assert_eq!(created["task"]["harness"], "codex");
+    assert_eq!(created["task"]["harness"], "claude");
     let id = created["task"]["task_id"].as_str().ok_or("task id")?;
     let detail = call(
         &w.h.router,
@@ -2040,7 +2038,7 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
     .await?;
     assert_eq!(detail.status, StatusCode::OK, "{}", detail.body);
     assert_eq!(detail.body["harness_choice"], "chosen");
-    assert_eq!(detail.body["model"], "gpt-6.2-astra");
+    assert_eq!(detail.body["model"], "claude-opus-5-5");
     assert_eq!(detail.body["model_default"], true);
     assert_eq!(detail.body["effort"], "high");
     assert_eq!(detail.body["effort_default"], true);
