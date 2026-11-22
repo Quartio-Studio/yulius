@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for [SPEC-613](../../.ai/specs/SPEC-613-an-idle-codex-session-takes-messages-aft.md).
+Accepted for [SPEC-613](../../.ai/specs/SPEC-613-an-idle-codex-session-takes-messages-aft.md), finished by [SPEC-623](../../.ai/specs/SPEC-623-finish-597-on-claude-code-an-idle-codex.md).
 
 ## Context
 
@@ -10,7 +10,7 @@ The model picker can be cropped or partway through a redraw. After reattachment,
 
 ## Decision
 
-Use a temporary PTY size change to request a repaint from the attached child. Restore the original dimensions, including when the host reconnects or the server restarts midway through the probe, and judge the current screen before sending input. An unreadable screen after the bounded probe raises a Needs you on the task. Keep an owed PR event pending until submission succeeds. Before the first temporary resize, atomically record the intended width and height in the run directory. Later viewer resizes update that record. A retrying automatic prompt releases its own request once the terminal is readable. A private message stays with its sender to resend. Its Needs you stays open when the screen becomes readable.
+Use a temporary PTY size change to request a repaint from the attached child. Restore the original dimensions, including when the host reconnects or the server restarts midway through the probe, and judge the current screen before sending input. An unreadable screen after the bounded probe raises a Needs you on the task. Keep an owed PR event pending until submission succeeds. Before the first temporary resize, atomically record the intended width and height in the run directory. Later viewer resizes update that record; a viewer resize whose record cannot be saved still applies and drops the record, so a reattachment keeps the host size. An automatic prompt (the wake after an outage) raises its own action, which its next send releases once the terminal is readable, matched by its redacted text. A private message stays with its sender to resend. Its Needs you stays open when the screen becomes readable.
 
 ## Alternatives
 
