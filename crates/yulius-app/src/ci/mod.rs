@@ -534,7 +534,7 @@ pub const LAST_VALID_NOTE: &str = "judged by the integration branch's last valid
 
 /// How a run refused for the integration branch's invalid `yulius.toml` begins its reason: it
 /// is queued again once that file is valid (SPEC-504 CFG-002).
-const DEV_INVALID_PREFIX: &str = "yulius.toml is invalid on ";
+pub const DEV_INVALID_PREFIX: &str = "yulius.toml is invalid on ";
 
 /// The job of a run refused for its `yulius.toml` (SPEC-504 CFG-002).
 pub const CONFIG_JOB: &str = "yulius.toml";
@@ -1724,7 +1724,7 @@ impl App {
         }
         let integration_head = targets.iter().find_map(|(target, _)| {
             matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
-                .then_some(target.sha.as_str())
+                .then_some(target)
         });
         let runs = self
             .deps

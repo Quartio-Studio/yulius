@@ -3273,7 +3273,7 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - **Candidate gate.** The integration branch's run of that exact commit, or a
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
-  Inventory includes retained runs of the current integration head after unrelated PR runs fill its planning window. An active staging candidate defers admission of a new integration suite.
+  Inventory includes retained full integration and candidate runs and configuration refusals at the current integration head after unrelated PR runs fill its planning window. An active staging candidate defers admission of a new integration suite.
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).

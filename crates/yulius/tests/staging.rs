@@ -1612,6 +1612,66 @@ async fn a_completed_old_candidate_is_still_the_current_heads_verdict() -> TestR
     Ok(())
 }
 
+#[tokio::test]
+async fn an_old_pr_that_skipped_the_full_suite_cannot_cover_the_integration_head() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let sha = f.push("dev", &[("merged", Some("merged"))])?;
+    let pr = gate(&f, &sha, RunState::Passed).await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET reference='pr/17' WHERE id='{pr}';
+         UPDATE ci_jobs SET state='skipped',reason='{}' WHERE id='{pr}-full'",
+            yulius_domain::ci::AFTER_MERGE_SKIP_REASON
+        ))
+        .await?;
+    fill_planning_window(&f).await?;
+    let project = sandbox(&f).await?;
+    f.h.app.ci_sync_sandbox(&project).await?;
+    let runs = f.h.store.ci_runs_for_sha(&project.id, &sha).await?;
+    assert!(
+        runs.iter().any(
+            |run| run.reference == CiRef::Branch("dev".into()) && run.state == RunState::Queued
+        ),
+        "the merged revision still needs its full gate: {runs:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_later_configuration_refusal_invalidates_an_old_candidate_outside_recent_history()
+-> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let sha = f.push("dev", &[("merged", Some("merged"))])?;
+    let earlier = gate(&f, &sha, RunState::Failed).await?;
+    let project = sandbox(&f).await?;
+    let (mut refusal, job) = crate::pr_watch::run(
+        &project.id,
+        "refused",
+        &sha,
+        RunState::Failed,
+        None,
+        f.h.app.now().0 + 1,
+    );
+    refusal.reason =
+        Some("yulius.toml is invalid on dev and this change does not repair it".into());
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET reference='candidate/' || sha WHERE id='{earlier}'"
+        ))
+        .await?;
+    f.h.store.insert_ci_run(&refusal, &[job]).await?;
+    fill_planning_window(&f).await?;
+    f.h.app.ci_sync_sandbox(&project).await?;
+    let runs = f.h.store.ci_runs_for_sha(&project.id, &sha).await?;
+    assert!(
+        runs.iter().any(
+            |run| run.reference == CiRef::Branch("dev".into()) && run.state == RunState::Queued
+        ),
+        "the current valid configuration still needs its gate: {runs:?}"
+    );
+    Ok(())
+}
+
 /// SPEC-575 MFS-003 (review round 1 of slice 2): the candidate run queued for a revision is not
 /// superseded when the branch moves on, CI runs it to its verdict, the request deploys on that
 /// verdict, and the branch reaching the same commit queues no second full run of it.

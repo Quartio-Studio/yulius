@@ -525,13 +525,14 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         commits: &[String],
     ) -> AppResult<Vec<String>>;
-    /// Recent admissions plus retained runs of the current integration head, newest admission first.
+    /// Recent admissions plus full integration and candidate runs at the current integration head.
+    /// Retained configuration refusals invalidate earlier verdicts there.
     /// A new run may inherit an older queue position from the head it superseded.
     async fn ci_planning_runs(
         &self,
         sandbox: &SandboxId,
         limit: u32,
-        integration_head: Option<&str>,
+        integration_head: Option<&yulius_domain::ci::Target>,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Runs of a sandbox for one commit, newest first.
     async fn ci_runs_for_sha(

@@ -341,16 +341,20 @@ impl CiStore for SqliteStore {
         &self,
         sandbox: &SandboxId,
         limit: u32,
-        integration_head: Option<&str>,
+        integration_head: Option<&yulius_domain::ci::Target>,
     ) -> AppResult<Vec<CiRunRecord>> {
         let sandbox = sandbox.as_str().to_owned();
-        let head = integration_head.map(str::to_owned);
+        let head = integration_head.map(|target| target.sha.clone());
+        let branch = integration_head.map(|target| target.reference.key());
         self.call(move |c| {
             select_runs(
                 c,
                 "rowid IN (SELECT rowid FROM (SELECT rowid FROM ci_runs WHERE sandbox_id = ?1 ORDER BY rowid DESC LIMIT ?2)
-                   UNION ALL SELECT rowid FROM ci_runs WHERE sandbox_id = ?1 AND sha = ?3) ORDER BY rowid DESC",
-                &[&sandbox, &i64::from(limit), &head],
+                   UNION ALL SELECT r.rowid FROM ci_runs r WHERE r.sandbox_id = ?1 AND r.sha = ?3
+                   AND (instr(r.reason, ?5) = 1 OR ((r.reference = ?4 OR r.reference = 'candidate/' || ?3)
+                       AND NOT EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id AND j.state = 'skipped'
+                           AND instr(j.reason, ?6) = 1)))) ORDER BY rowid DESC",
+                &[&sandbox, &i64::from(limit), &head, &branch, &yulius_app::ci::DEV_INVALID_PREFIX, &yulius_domain::ci::AFTER_MERGE_SKIP_REASON],
             )
         })
         .await
