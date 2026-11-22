@@ -29,13 +29,15 @@ but nothing prevented it.
   file that pull request changed against its merge base with the integration branch
   (`App::ci_changed_paths`, the files that also pick its jobs), that failure is not recorded in
   `ci_test_failures`, so it makes no test flaky. The job's output says so: "`<test>` names
-  `<file>`, which this change touched: its failure is the change's own and makes no test flaky".
+  `<file>`, which this change touched: its failure is taken as the change's own and makes no test
+  flaky", for a name a quarantine could hold.
 - **Named** (`yulius_domain::ci::flaky::named_changed_file`): a block names a repository path
-  whole, or after a `/` (an absolute path of the checkout), or as a relative path of at least two
-  components that ends it after a character no path holds or `./` (a test running in its crate
-  prints `tests/x.rs` for `crates/app/tests/x.rs`). A top-level file is named only whole. A match
-  continued by a path character (`x.rs.bak`, `x.rsx`, `x.rs/`) or inside a longer path
-  (`src/lib.rs` in `crates/other/src/lib.rs`) does not count.
+  whole, a nested one also after any `/` (an absolute path of the checkout), or as a relative path
+  of at least two components that ends it after a character no path holds or `./` (a test running
+  in its crate prints `tests/x.rs` for `crates/app/tests/x.rs`). A top-level file is named only
+  whole and not after a `/`. A match continued by a path character (`x.rs.bak`, `x.rsx`, `x.rs/`)
+  or inside a word does not count. A suffix of another path does: changed `src/lib.rs` is named by
+  `crates/other/src/lib.rs` or a toolchain's `/rustc/…/src/lib.rs`, which only delays.
 - **Everything else counts as before**: a failure naming no changed file, any failure when the
   changed files cannot be told (too many, a head the clone lacks), and every branch's failure. A
   job failing more than 10 tests still quarantines none, counting its own failures.
@@ -55,10 +57,14 @@ but nothing prevented it.
 
 ## Consequences
 
-- A content check fails the pull request that breaks it and stays in the gate, however many pull
-  requests break it.
+- A content check that names the file it refuses (fixture_hygiene) fails the pull request that
+  breaks it and stays in the gate, however many pull requests break it. A check whose output names
+  another file than the one changed (`ui_contract` naming the UI call when a route was removed in
+  Rust) still counts as before.
 - A flaky test whose block happens to name a file the pull request changed (its own test file
-  edited, a path both print) is not counted for that pull request. Its quarantine waits for two
-  other pull requests; it is never made wrongly.
+  edited, since a panic prints its location; a path both print; a top-level file named like a word
+  of the runner's, such as `test`) is not counted for that pull request. In often edited test files
+  that delays real flake detection. Its quarantine waits for two other pull requests; it is never
+  made wrongly.
 - The quarantine of #1545 was made before this rule. Closing the issue ends it and forgets its
   failures.

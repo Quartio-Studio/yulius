@@ -5070,7 +5070,7 @@ async fn a_failure_naming_its_own_changed_file_makes_no_test_flaky() -> TestResu
         assert!(
             output.contains(&format!(
                 "`app tests::content` names `{file}`, which this change touched: its failure is \
-                 the change's own and makes no test flaky (SPEC-618)"
+                 taken as the change's own and makes no test flaky (SPEC-618)"
             )),
             "{output}"
         );
@@ -5089,6 +5089,46 @@ async fn a_failure_naming_its_own_changed_file_makes_no_test_flaky() -> TestResu
         body.contains("It failed in:\n- pull request #3\n- pull request #4\n\n"),
         "{body}"
     );
+    Ok(())
+}
+
+/// SPEC-618 (review round 1): a job failing more than 10 tests is broken and quarantines none,
+/// counting the failures that are its change's own: ten tests another pull request failed too
+/// and one naming the file this one added still file no issue.
+#[tokio::test]
+async fn a_broken_job_counts_its_own_failures_too() -> TestResult {
+    let blocks = |names: &str| {
+        format!(
+            "for t in {names}; do printf \"        FAIL [   0.004s] (1/11) app tests::$t\\n  \
+             stderr ───\\n\\n    the race lost\\n\\n\"; done"
+        )
+    };
+    let ten = "t1 t2 t3 t4 t5 t6 t7 t8 t9 t10";
+    let f = fixture_with(false, |_| {
+        format!(
+            "[[ci.jobs]]\nname = \"quality\"\ncommand = 'if [ -e feature.txt ]; then {}; exit \
+             100; fi; if [ -e two.txt ]; then {}; printf \"        FAIL [   0.004s] (11/11) app \
+             tests::own\\n  stderr ───\\n\\n    two.txt:1: refused\\n\\n\"; exit 100; fi'\n",
+            blocks(ten),
+            blocks(ten)
+        )
+    })
+    .await?;
+    sync_and_settle(&f).await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let job = job_of(&f, "reference", "pr/2").await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    let output = job["output"].as_str().unwrap_or_default();
+    assert!(
+        output.contains("`app tests::own` names `two.txt`"),
+        "{output}"
+    );
+    assert!(
+        issue_titles(&f)?.is_empty(),
+        "a broken job, not a flaky test"
+    );
+    assert!(f.h.store.quarantined_tests(None).await?.is_empty());
     Ok(())
 }
 

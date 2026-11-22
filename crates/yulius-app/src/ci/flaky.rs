@@ -4,7 +4,8 @@
 //! quarantined at once with an issue in the project's repository, and every later job of the
 //! project is told it in its environment ([`yulius_domain::ci::flaky`]). The quarantine ends when
 //! its issue is closed (looked at hourly), and its failures are forgotten with it. A failing test
-//! is never run again until it passes: nothing here runs anything.
+//! is never run again until it passes: nothing here runs anything. A pull request's failure whose
+//! block names a file that pull request changed is not kept (SPEC-618, ADR-0453).
 
 use std::collections::HashMap;
 
@@ -72,10 +73,11 @@ impl App {
                 .as_deref()
                 .and_then(|changed| named_changed_file(&block, changed))
             {
-                Some(file) => noted.lines.push(format!(
+                Some(file) if quarantinable(&test) => noted.lines.push(format!(
                     "[yulius] `{test}` names `{file}`, which this change touched: its failure is \
-                     the change's own and makes no test flaky (SPEC-618)"
+                     taken as the change's own and makes no test flaky (SPEC-618)"
                 )),
+                Some(_) => {}
                 None => tests.push(test),
             }
         }

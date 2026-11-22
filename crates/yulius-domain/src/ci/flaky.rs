@@ -8,6 +8,8 @@
 //! branch fails is broken there, not flaky). Its failures are named as the failing tests' blocks
 //! name them (nextest's `crate tests::name`, libtest's `tests::name`,
 //! [`super::failures::failed_test_names`]); only a name [`quarantinable`] accepts is quarantined.
+//! A pull request's failure whose block names a file it changed ([`named_changed_file`]) is taken
+//! as the change's own and does not count (SPEC-618, ADR-0453).
 //!
 //! A quarantined test is told to every CI job of its project in its environment: the names one
 //! per line in [`QUARANTINE_ENV`], and a nextest filter of their test paths in
@@ -104,10 +106,11 @@ pub fn is_flaky(
 /// flaky (SPEC-618 FOC-001). A test that checks the repository's content names the file it
 /// refuses, and fails in every pull request that breaks its rule.
 ///
-/// A path is named whole, after a path boundary (an absolute path of the checkout ends with it),
-/// or as a printed relative path of at least two components that ends it (a test running in its
-/// crate prints `tests/x.rs` for `crates/app/tests/x.rs`); never inside a longer path or word, so
-/// `src/lib.rs` in `crates/other/src/lib.rs` names only that file (FOC-002).
+/// A path is named whole, also after any `/` when it is nested (an absolute path of the checkout
+/// ends with it), or as a printed relative path of at least two components that ends it (a test
+/// running in its crate prints `tests/x.rs` for `crates/app/tests/x.rs`); never continued by a
+/// path character or inside a word. So changed `src/lib.rs` is named by `crates/other/src/lib.rs`
+/// too: such a match only keeps a failure from counting, a delayed quarantine (FOC-002).
 ///
 /// # Examples
 /// ```
@@ -359,6 +362,12 @@ mod tests {
         ] {
             assert_eq!(named(none), None, "{none:?}");
         }
+        // A nested path after any `/`: a delay at worst, never a wrong quarantine (review round 1).
+        let one_crate = ["src/lib.rs".to_owned()];
+        assert_eq!(
+            named_changed_file("panicked at crates/other/src/lib.rs:3:5", &one_crate),
+            Some("src/lib.rs")
+        );
         assert_eq!(named_changed_file("x", &[String::new()]), None);
         assert_eq!(named_changed_file("anything", &[]), None);
     }

@@ -43,10 +43,10 @@ were not its own, fix the cause, prove it, and say what lifts the quarantine.
   request changed (against its merge base with the integration branch), that failure is the
   change's own: it is not recorded as a failure that can make the test flaky, and the job's output
   says so, naming the file.
-- FOC-002: A file is named when the block holds its repository path, or a suffix of it of at least
-  two path components (a test running in its crate prints `tests/x.rs` for
-  `crates/app/tests/x.rs`), not inside a longer path or word. A one-component path is named only
-  whole.
+- FOC-002: A file is named when the block holds its repository path (a nested one also after any
+  `/`), or a suffix of it of at least two path components (a test running in its crate prints
+  `tests/x.rs` for `crates/app/tests/x.rs`), not continued by a path character or inside a word. A
+  one-component path is named only whole.
 - FOC-003: A failure that names no changed file counts as before; so does every failure when the
   changed files cannot be told, and every branch's failure.
 - FOC-004: The quarantined test is proven deterministic: it fails at both pull requests' heads,
