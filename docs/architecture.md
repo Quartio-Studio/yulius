@@ -4357,8 +4357,11 @@ The dispatcher keeps each lane's last run (`CiState::lane_runs`); a run takes th
 checkouts last built what it builds on (`preferred_lanes`: a candidate's members' own runs, a pull
 request's previous run), and each job's output names it
 ([decision 0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
-A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit); one
-that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
+A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit), except
+a pull request's failure whose block names a file that pull request changed
+(`failed_test_blocks`, `named_changed_file`, `App::ci_changed_paths`): that failure is the change's
+own ([decision 0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
+One that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
 all on the integration branch (`GitPort::merge_bases`), while the integration branch did not fail it
 (`yulius_domain::ci::flaky`), is quarantined with an issue filed through the GitHub port, one at
 a time (`ci_quarantine`, `App::ci_note_failing_tests`). Every later job of the sandbox gets the list in
