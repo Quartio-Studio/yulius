@@ -3,12 +3,12 @@
 //! Every [`REBALANCE_EVERY`] a pass ([`App::rebalance_now`]) looks at the running tasks whose
 //! live run sits on a subscription past its harness's rebalance threshold and moves each idle one
 //! to the best subscription below it (`rebalance::idle_move`), through a person's move
-//! ([`App::move_task`]) and only when a restart loses nothing (`agent_cli::kept_idle`). A task
+//! (`App::move_task`) and only when a restart loses nothing (`agent_cli::kept_idle`). A task
 //! mid-turn, switching or paused is not looked at; it is looked at again in the next pass.
 //!
-//! A person's choice of a subscription pins the task to it ([`App::pin_task`]): the rebalance
+//! A person's choice of a subscription pins the task to it (`App::pin_task`): the rebalance
 //! never moves a task running on its pin, and a parked task resumes on it while it can take the
-//! task ([`App::pinned_start`]).
+//! task (`App::pinned_start`).
 
 use std::sync::Arc;
 use std::time::Duration;
