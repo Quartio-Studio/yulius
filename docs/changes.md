@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-22
+
+- The task-list loading test measures offscreen row height through a live list repaint. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+
 ## 2026-11-21
 
 - Parked-task deadline tests cover a blocked browser lookup, concurrent Git reads and recovery from a verified PR failure. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
