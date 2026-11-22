@@ -31,6 +31,31 @@ pub enum NoticeKind {
     Account,
 }
 
+impl NoticeKind {
+    /// Its wire name (a stored notice's category, SPEC-624).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NeedsYou => "needs_you",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Account => "account",
+        }
+    }
+
+    /// The kind named `text`, if any.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "needs_you" => Some(Self::NeedsYou),
+            "done" => Some(Self::Done),
+            "failed" => Some(Self::Failed),
+            "account" => Some(Self::Account),
+            _ => None,
+        }
+    }
+}
+
 /// Which notifications a person wants (TGC-020): Needs you by default, nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]

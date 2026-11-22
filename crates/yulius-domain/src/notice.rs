@@ -18,6 +18,43 @@ pub const GOOD_NEWS_MS: i64 = 3 * DAY_MS;
 /// Default for a failure.
 pub const FAILURE_MS: i64 = 7 * DAY_MS;
 
+/// How a notice reads: its colour in the bell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeTone {
+    /// Something to know.
+    Info,
+    /// Good news.
+    Ok,
+    /// Something to look at.
+    Warn,
+    /// A failure.
+    Error,
+}
+
+impl NoticeTone {
+    /// Its wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Ok => "ok",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+
+    /// The tone named `text`; an unknown name reads as [`NoticeTone::Info`].
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "ok" => Self::Ok,
+            "warn" => Self::Warn,
+            "error" => Self::Error,
+            _ => Self::Info,
+        }
+    }
+}
+
 /// A notice's key (NTC-001): 1 to [`KEY_MAX`] characters of ASCII letters, digits and
 /// `:._/@#-`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -202,7 +239,10 @@ mod tests {
             NoticeKey::lossy("gate:", "suite::a test (x)").as_str(),
             "gate:suite::a-test--x-"
         );
-        assert_eq!(NoticeKey::lossy("gate:", &"t".repeat(300)).as_str().len(), KEY_MAX);
+        assert_eq!(
+            NoticeKey::lossy("gate:", &"t".repeat(300)).as_str().len(),
+            KEY_MAX
+        );
         assert!(NoticeKey::parse(NoticeKey::lossy("gate:", "ą b").as_str()).is_ok());
     }
 

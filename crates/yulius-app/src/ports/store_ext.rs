@@ -1147,6 +1147,89 @@ pub trait DigestStore: Send + Sync {
     async fn latest_digest(&self, user: &UserId) -> AppResult<Option<StoredDigest>>;
 }
 
+/// A stored notice for people (SPEC-624, migration 0091).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoticeRecord {
+    /// Its id (`nt_<hex>`); a replacement has a new one.
+    pub id: String,
+    /// Its project; `None`: instance-wide.
+    pub sandbox: Option<SandboxId>,
+    /// Its one recipient; `None`: everyone the project (or `admin_only`) lets see it.
+    pub user: Option<UserId>,
+    /// Only instance administrators see it.
+    pub admin_only: bool,
+    /// Its key: newest wins per project, recipient and key (NTC-003).
+    pub key: yulius_domain::notice::NoticeKey,
+    /// Which of a person's channel choices it falls under.
+    pub category: yulius_domain::notify::NoticeKind,
+    /// How it reads.
+    pub tone: yulius_domain::notice::NoticeTone,
+    /// One line.
+    pub title: String,
+    /// More, if any.
+    pub detail: Option<String>,
+    /// A path in Yulius (`/…`) it leads to, if any.
+    pub link: Option<String>,
+    /// It waits for a person's decision: never expires (NTC-005).
+    pub decision: bool,
+    /// When it was posted.
+    pub created_at: Timestamp,
+    /// When it expires; `None`: never.
+    pub expires_at: Option<Timestamp>,
+}
+
+/// Notices for people (SPEC-624): newest per project, recipient and key, hidden once expired,
+/// dismissed per person, pruned; and the bot's last message per key in each chat.
+#[async_trait]
+pub trait NoticeStore: Send + Sync {
+    /// Stores `notice`, replacing (and clearing the dismissals of) the one with its project,
+    /// recipient and key in the same transaction; returns the replaced one. Only the newest
+    /// `keep` of its project and recipient stay.
+    async fn put_notice(
+        &self,
+        notice: &NoticeRecord,
+        keep: usize,
+    ) -> AppResult<Option<NoticeRecord>>;
+    /// Removes the notice with this project, recipient and key; the one removed.
+    async fn remove_notice(
+        &self,
+        sandbox: Option<&SandboxId>,
+        user: Option<&UserId>,
+        key: &yulius_domain::notice::NoticeKey,
+    ) -> AppResult<Option<NoticeRecord>>;
+    /// One notice, expired or not.
+    async fn notice(&self, id: &str) -> AppResult<Option<NoticeRecord>>;
+    /// The notices addressed to `user` or to nobody in particular, live at `now` and not
+    /// dismissed by `user`, newest first, at most `limit`; who may see each is the caller's.
+    async fn live_notices(
+        &self,
+        user: &UserId,
+        now: Timestamp,
+        limit: usize,
+    ) -> AppResult<Vec<NoticeRecord>>;
+    /// Live notices of one project (or instance-wide ones) whose key starts with `prefix`, for
+    /// every recipient: what a producer reconciles.
+    async fn notices_by_prefix(
+        &self,
+        sandbox: Option<&SandboxId>,
+        prefix: &str,
+        now: Timestamp,
+    ) -> AppResult<Vec<NoticeRecord>>;
+    /// Records that `user` dismissed notice `id`; `false` when there is no such notice.
+    async fn dismiss_notice(&self, id: &str, user: &UserId, at: Timestamp) -> AppResult<bool>;
+    /// Deletes the notices expired at `now`; how many went.
+    async fn prune_notices(&self, now: Timestamp) -> AppResult<u64>;
+    /// Remembers `message` as the bot's message for `scope` in `chat`; the earlier one, which
+    /// the new one replaces (NTC-007).
+    async fn swap_keyed_message(
+        &self,
+        chat: &str,
+        scope: &str,
+        message: &str,
+        at: Timestamp,
+    ) -> AppResult<Option<String>>;
+}
+
 /// One timestamped Needs You system or agent message recorded in a task's history (SPEC-578).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaitMessageRecord {
@@ -1337,6 +1420,7 @@ pub trait ExtensionStores:
     + CdStore
     + NeedsYouStore
     + DigestStore
+    + NoticeStore
     + HandoffStore
     + StagingStore
     + crate::ports::session_docs::SessionDocStore
@@ -1365,6 +1449,7 @@ impl<T> ExtensionStores for T where
         + CdStore
         + NeedsYouStore
         + DigestStore
+        + NoticeStore
         + HandoffStore
         + StagingStore
         + crate::ports::session_docs::SessionDocStore
