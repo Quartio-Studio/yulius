@@ -32,7 +32,7 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 - [x] Show people the rerun and start-task actions when no worker remains
 - [x] Preserve unresolved job evidence across reruns of the same revision
 - [x] Deliver candidate scheduling independently
-- [ ] Verify the incident regressions and review the delivery
+- [x] Verify the incident regressions and review the delivery
 - [ ] Deliver the project CI and Status repair actions on the verified API
 
 ## Acceptance criteria
@@ -73,3 +73,4 @@ The ownership and staging regressions first ran on the combined implementation. 
 - At `2c1c49d49` the receipt regression passed. Of 3,436 selected tests, the sole failure was an intermittent EOF in the unchanged opaque tunnel restart test, also reproduced on the inventory delivery and tracked in issue #1676. Review found that output from a passed retry kept a repaired test active when a sibling job failed. The regression reproduced the incorrect inherited `full::retried` alongside the new `quick::new`. The history now consults the job's final verdict before retaining a failure name. The task page and list passed all 28 Chromium cases with the project notice UI reserved for the final delivery.
 - On the split backend head `a60bde75b`, all 3,437 selected Rust tests passed in run `89a5554e-1663-47f2-a7d7-72d5e717c081`, including the successful retry. Extending the manual cancellation case through a failed replacement run then exposed a stale `cancelled` notice beside `suite::broken`. The history now replaces a run-level verdict when a suite settles and retains unresolved job evidence separately.
 - At `0f6b911c8`, all 3,437 selected Rust tests passed in run `7b27268e-89b0-40aa-a3f1-41e82f71f8ef`. A further regression reran a green ancestor through HTTP and pruned the red integration head's logs. Status incorrectly returned an empty notice. The archive now retains the run metadata, so the original run ID opens the head's detail and retries its exact SHA even after its logs expire.
+- Independent backend review approved `904d7f8e0` after seven focused incident checks. All 3,438 selected Rust tests passed in run `2869beb4-0e8e-43b5-b81b-b32d256e66c6` with 24 configured skips. The archived head regression exercised both notices, run detail and the public rerun endpoint. Project notice presentation follows in the final UI delivery.
