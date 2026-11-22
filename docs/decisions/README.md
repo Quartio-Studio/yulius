@@ -525,6 +525,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0457 -->
 <!-- ADR 0458 -->
 <!-- ADR 0459 -->
+- [0460](0460-a-task-reads-its-neighbours-status-and-never-steers-them.md): A task reads its neighbours' status (owner, PR and stage, claims, waits, screen) read-only and never steers them; a personal task shows other people's tasks only its shape.
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
 <!-- ADR 0462 -->
