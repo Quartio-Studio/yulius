@@ -16,14 +16,15 @@ default in a browser with no saved model. Claude Code's own defaults are Opus 5.
 
 ## Decision
 
-- `task_create` from a caller without a task, with neither harness nor model, creates a Claude
-  Code task (`harness_choice: chosen`) with model and effort unset, so it runs Opus 5.5 at high
-  and reports both as inherited.
+- `task_create` from a caller without a task, with neither harness nor model, and a task a
+  person starts with a Telegram message create a Claude Code task (`harness_choice: chosen`)
+  with model and effort unset, so it runs Opus 5.5 at high and reports both as inherited.
 - In a browser with no saved model, an unreadable one or one no longer offered, the composer and
   Settings select Opus 5.5, the first Anthropic model, which a contract test keeps equal to
   `DEFAULT_CLAUDE_MODEL`. A saved model, Codex default included, and a saved Random stay.
 - A named harness, a model's harness, explicit Random, a running task's follow-up, automations
-  (`auto`) and the HTTP API's absent harness (Random's wire form) keep their rules.
+  (`auto`), the HTTP API's absent harness (Random's wire form), an agent's handoff without a
+  harness and Yulius's own bootstrap upgrade task keep their rules.
 
 ## Alternatives
 

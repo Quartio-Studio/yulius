@@ -25,6 +25,7 @@ New and resumed sessions hide the rate-limit model switch reminder. A visible re
 automated messages until the picker is dismissed. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
 
 Tasks created by the CLI or either Superagent run Claude Code on Opus 5.5 at High effort when harness and model are omitted. [SPEC-620](../.ai/specs/SPEC-620-make-opus-and-claude-default-model.md)
+A task started with a Telegram message runs Claude Code on Opus 5.5 too.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
 A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
 Codex defaults to Ultrafast for models that support it. A Codex
