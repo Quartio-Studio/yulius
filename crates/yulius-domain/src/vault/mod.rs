@@ -1,6 +1,6 @@
-//! Secrets vault rules (SPEC-001 VLT, SPEC-002 ADR-20): names and host bindings of agent
-//! secrets, placeholders, the encodings a value is recognised in, exact-value redaction (plain
-//! and fingerprinted), TOTP arithmetic, re-authentication freshness and the egress destination
+//! Secrets vault rules (SPEC-001 VLT, SPEC-002 ADR-20): names, host bindings and method and path
+//! rules of agent secrets, placeholders, the encodings a value is recognised in, exact-value
+//! redaction (plain and fingerprinted), TOTP arithmetic, re-authentication freshness and the egress destination
 //! policy. Pure functions only: hashing and HMAC are injected by callers.
 
 pub mod dotenv;
@@ -10,6 +10,7 @@ pub mod names;
 pub mod ordinary;
 pub mod plain;
 pub mod redact;
+pub mod rules;
 pub mod totp;
 
 use std::net::IpAddr;
@@ -18,6 +19,7 @@ use crate::time::Timestamp;
 
 pub use hosts::HostPattern;
 pub use names::SecretName;
+pub use rules::SecretRule;
 pub use ordinary::{OrdinaryText, ordinary_text};
 
 /// Errors validating vault input. Messages never contain secret values.
@@ -32,6 +34,9 @@ pub enum VaultError {
     /// A malformed header name.
     #[error("{0}")]
     Header(String),
+    /// A malformed method and path rule (SPEC-627).
+    #[error("{0}")]
+    Rule(String),
     /// A value Yulius cannot hold for agents (too short, control characters, too long).
     #[error("{0}")]
     Value(String),
