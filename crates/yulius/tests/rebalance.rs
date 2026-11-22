@@ -393,3 +393,32 @@ fn nothing_has_room_is_told_once() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// RBL-005: a pin ends once the pool moves the task to another subscription (here as at a usage
+/// limit): back on the old one later, it is not pinned there by chance.
+#[test]
+fn the_pools_move_ends_a_pin() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(&data, &fake, probe.clone(), agent())?;
+        let (id, user) = idle_on_a_full_first(&app, &probe, &data).await?;
+        run_on(&app, &user, &id, "b-second", 2).await?;
+        assert!(app.deps.store.task_pin(&id).await?.is_some());
+        app.switch_with(
+            &id,
+            Some(yulius_domain::ids::AccountId::parse("a-first")?),
+            "LimitReached",
+            yulius_app::supervisor::RunStart::Resume { prompt: None },
+        )
+        .await?;
+        live_run(&app, &id, 3).await?;
+        assert_eq!(app.deps.store.task_pin(&id).await?, None);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

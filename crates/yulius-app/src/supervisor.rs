@@ -6409,6 +6409,13 @@ impl App {
                 outcome: "started".into(),
             })
             .await?;
+        // A pin ends once the task runs on another subscription (SPEC-629 RBL-005); a person's
+        // move pins the new one after this.
+        if let Some(target) = &account
+            && matches!(store.task_pin(task_id).await, Ok(Some(pin)) if &pin != target)
+        {
+            self.pin_task(task_id, None).await;
+        }
         let runtime = self.runtime(task_id);
         // The subscription changes under the hood (F 2026-10-10): viewers see that the session
         // continues, not which accounts are involved (Task details lists the switches).

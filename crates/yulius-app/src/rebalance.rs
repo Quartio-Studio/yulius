@@ -124,18 +124,24 @@ impl App {
         let Ok(input) = self.rotation_input(task, Some(current.clone())).await else {
             return Looked::Nothing;
         };
+        // A pin holds while the task runs on it; one that names another subscription ended
+        // when the task left it (SPEC-629 RBL-005), whichever way it was placed there.
+        let pinned = match store.task_pin(&task.id).await {
+            Ok(Some(pin)) if pin == current => true,
+            Ok(Some(_)) => {
+                self.pin_task(&task.id, None).await;
+                false
+            }
+            _ => false,
+        };
         let decision = idle_move(&input);
         if decision == IdleMove::Stay {
             // Below the threshold again: an episode without room ended.
             self.end_no_room(&task.id);
             return Looked::Nothing;
         }
-        // A pin holds while the task runs on it; one that names another subscription ended
-        // when the task left it (SPEC-629 RBL-005).
-        match store.task_pin(&task.id).await {
-            Ok(Some(pin)) if pin == current => return Looked::Pinned,
-            Ok(Some(_)) => self.pin_task(&task.id, None).await,
-            _ => {}
+        if pinned {
+            return Looked::Pinned;
         }
         let label = self.account_label(&current).await;
         let (account, from) = match decision {
