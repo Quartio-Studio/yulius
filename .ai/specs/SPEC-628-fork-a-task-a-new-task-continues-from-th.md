@@ -116,3 +116,36 @@ separately. The owner approved this on 22 Nov 2026 after a review of iTermX, who
   (not its owner's control) and work access to the project, as New task does.
 - **Two pull requests.** The backend (store, harness, use case, API, MCP, tests, docs) first,
   then the web UI, each within the size rule.
+
+## Evidence
+
+Backend pull request (Plan items 1–7):
+
+- Real Claude Code 2.1.330 against a local stub API (`$HOME/.cache/yulius-task-612/probe/fork_probe.py`):
+  a session in folder A, its transcript copied to folder B's project folder with `cwd`
+  rewritten, then `claude -p --resume SRC --fork-session --session-id NEW <prompt>` in B. The second
+  API request held A's user message and the new prompt (`users=2`). `NEW.jsonl` held every record
+  under the new id, and the copied records kept their timestamps. SRC's file stayed byte-identical
+  (`source unchanged True`). Without the copy (`nocopy`) 2.1.330 also found SRC in A's folder.
+- Codex 0.170.0 (pinned, from npm): `codex fork --help` shows
+  `codex fork [OPTIONS] [SESSION_ID] [PROMPT]`. Antigravity 1.5.12 (pinned): `--help` lists no
+  fork flag; `/fork` appears only as an in-session command in its strings.
+- `scripts/cargo nextest run -p yulius-store -p yulius-harness -p yulius-app`: 1138 passed.
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main)'` (after merging dev):
+  2621 passed, 24 skipped.
+- New tests: `yulius-store` `fork_links_persist_and_outlive_a_deleted_source`;
+  `yulius-harness/tests/launch.rs` `claude_fork_resumes_a_copy_under_a_new_session_id`,
+  `codex_fork_argv`, `antigravity_fork_is_refused`; `forks::a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_alone`,
+  `forks::forks_that_cannot_continue_are_refused_and_create_nothing`;
+  `manage_tools::task_fork_refuses_a_task_without_a_conversation`,
+  `manage_tools::a_writer_may_fork_another_persons_task_and_a_reader_may_not`;
+  `forks.rs` unit tests for the complete-line copy and the opening message.
+- Mutation checks by hand: each was undone and then restored. Without the fork base in
+  `ensure_worktree`, the fork's HEAD was not the source's head (forks.rs:240). With the copy not
+  placed, the fork's agent could not read the conversation ("fork run"). With the fork arm of the
+  launch disabled, the launch was `New` (forks.rs:195). Without
+  `UPDATE task_forks SET source_task_id = NULL`, deleting the source was refused ("conflicting
+  record"). With owner control asked of the source, a writer's fork of another person's task got
+  403.
+- `scripts/dev quick` passed. The security scan is switched off for this project in Yulius
+  (`yulius security-scan` prints "Security scan disabled"): not run, not passed.
