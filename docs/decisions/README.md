@@ -528,6 +528,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
 <!-- ADR 0462 -->
+- [0463](0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md): a fork continues a stored copy of its source's Claude Code session (`--resume --fork-session --session-id`) or Codex's own `fork`, from the source branch's recorded commit; Antigravity is refused (SPEC-628)
 <!-- ADR 0463 -->
 <!-- ADR 0464 -->
 <!-- ADR 0465 -->

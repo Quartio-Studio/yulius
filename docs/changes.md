@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-22
 
+- Fork a task: a new task on the same agent continues a copy of a task's conversation from its branch's last commit, on a branch, worktree and spec of its own with a copy of its plan, and the task forked goes on untouched (`POST /api/tasks/{tid}/fork`, the `task_fork` tool). Claude Code forks with `--fork-session` and Codex with `codex fork`; Antigravity tasks cannot be forked. [ADR-0463](decisions/0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md), [SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md)
 - Tasks parked before the parked-screen snapshot existed (every Codex task parked from #1412 to #1493) no longer end on Codex's exit text: their page and `task_screen` show the last answer and one parking notice. [SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md)
 - New tasks run Claude Code on Opus 5.5 at High effort when nothing is chosen: the composer and Settings start on Opus 5.5 in a browser with no saved model, and `yulius task create`, both Superagents and approved cross-sandbox requests default to Claude Code. Saved choices, Random and Codex default included, stay. [ADR-0457](decisions/0457-new-tasks-default-to-claude-code-on-opus-5-5.md), [SPEC-620](../.ai/specs/SPEC-620-make-opus-and-claude-default-model.md)
 - A task started with a Telegram message runs Claude Code on Opus 5.5 too. `url` 2.5.9 fixes RUSTSEC-2026-0592.
