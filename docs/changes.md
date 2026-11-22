@@ -8,6 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - An idle Codex session can recover input after reattachment through a PTY repaint. Held PR results remain pending, and a persistent delivery failure reaches the task owner through Needs you. [SPEC-613](../.ai/specs/SPEC-613-an-idle-codex-session-takes-messages-aft.md)
 
+- CI shards unpack their test binaries on disk, and bootstrap uses disk for cold builds of pinned tools. [CI build storage](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
 - A red integration branch gets one repair owner among the working tasks. Finished tasks keep their outcomes on their deliveries. Staging serves inherited requests with the verified fix. When nobody is working, the project CI and Status APIs identify the failing test, merge owner and run to retry. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
 - The quality job’s compiler-cache fixtures retain warm builds on the 1 GiB temporary filesystem. [Issue #1680](https://github.com/Quartio-Studio/yulius/issues/1680)
 - CI reuses the current integration head’s candidate verdict even after newer pull requests fill its planning history. An active staging candidate holds the full-suite slot until it finishes. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
