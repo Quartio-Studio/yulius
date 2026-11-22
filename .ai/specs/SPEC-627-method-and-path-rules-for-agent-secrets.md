@@ -113,7 +113,9 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
   into; they hold against a misled agent only while it cannot learn the value. So hosts an agent
   asks for a secret with rules wait for a person even when `auto_allow` is on (bound at once, a
   server of the agent's own would receive the value and the rules would be moot), and the Edit
-  dialog, the docs and ADR-0458 say that allowing `.env` copies gives code the value itself.
+  dialog, the docs and ADR-0458 say that allowing `.env` copies gives code the value itself, as a
+  brokered command bound to it does ([SPEC-626](SPEC-626-brokered-commands-a-cli-that-needs-a-key.md):
+  its CLI gets the value as a file, outside the proxy).
 - **MPR-008 Unchanged.** A secret without rules is sent exactly as before (placeholders, injection,
   `X-Yulius-Secret`, 409 for ambiguous injection). Opaque tunnels, the browser's proxy and
   `browser_fill_secret` are unchanged: rules are about requests the egress proxy rewrites.

@@ -1070,6 +1070,11 @@ only, F 2026-10-08), GitHub rulesets and Actions (paid), DORA dashboards.
 
 Status: accepted and implemented (issue #141). Requirements VLT-001..009 (SPEC-001 §5.19).
 
+Amended by [ADR-0459](../../docs/decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md)
+([SPEC-626](SPEC-626-brokered-commands-a-cli-that-needs-a-key.md)): an agent secret also reaches a
+brokered command's run as a temporary file in the project's production holder, outside every
+agent's sandbox; the agent gets the run's redacted output.
+
 **Request.** "We want to have 2 sections for storing secrets. One section is for team secrets:
 passwords to shared mails, infra etc. The second one is something similar but for agents: API
 keys, also passwords etc. Agent can access them but never see them. … You should probably use some
@@ -1688,7 +1693,7 @@ Schema version 1 (tables; columns abbreviated):
 | `audit_log` | id, at, actor, action, target, detail |
 | `task_chains` | task_id (PK), after_task_id (NULL once the predecessor is deleted), after_number, blocked_reason, created_at — ADR-16 |
 | `update_runs` | id, target_commit, from_commit, summary, state (building/draining/installing/resuming/succeeded/failed/rolled_back/cancelled), outcome (while resuming), error, requested_by, created_at, state_since, finished_at; at most one open (unique partial index) — ADR-18 |
-| `vault_secrets` | id, section (team/agent), sandbox_id (agent: one sandbox, NULL = every sandbox), name, description, hosts (json), rules (json `[{methods, path}]`, `[]` = any request; version 88, SPEC-627), injection, header_name, fields (json, names only), kek_id, wrapped_key, ciphertext, created/updated by and at, value_updated_at, last_used_at; agent names unique where they apply — ADR-20 (version 9) |
+| `vault_secrets` | id, section (team/agent), sandbox_id (agent: one sandbox, NULL = every sandbox), name, description, hosts (json), rules (json `[{methods, path}]`, `[]` = any request; version 89, SPEC-627), injection, header_name, fields (json, names only), kek_id, wrapped_key, ciphertext, created/updated by and at, value_updated_at, last_used_at; agent names unique where they apply — ADR-20 (version 9) |
 | `vault_reauth` | session_hash (PK), at: a browser session's last re-authentication — ADR-20 |
 | `vault_meta` | name (PK), kek_id, wrapped_key, ciphertext, created_at: sealed vault key material (the egress CA) — ADR-20 |
 | `prompt_holds` | id, task_id, class, prompt, prompt_sha256, percent, typed_by, state (pending/sent/consumed/parallel/after/skipped_after/reverted/dismissed/superseded), created_at, resolved_by, resolved_at, new_task_id — ADR-16 |

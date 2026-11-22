@@ -77,12 +77,14 @@ gRPC-Web over HTTP/1.1 is an ordinary `POST /package.Service/Method`.
 
 - A token for reading can be limited to reading, against an agent misled by what it reads, while
   that agent cannot learn the value: its hosts are a person's, and no `.env` copy is allowed
-  (code reading `.env` holds the value itself and can send it anywhere). Rules cannot see request
+  (code reading `.env` holds the value itself and can send it anywhere). A brokered command bound
+  to the secret ([0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md))
+  gives its CLI the value as a file: rules do not limit what that CLI does. Rules cannot see request
   bodies: a GraphQL mutation and a query are both `POST /graphql`, and a `_method` field in a
   `POST` body is not seen; a read-only token is still the answer there.
 - A secret's rules apply to agent runs, CI jobs and Superagents alike (one policy), and to every
   host it is bound to.
 - HTTP/2 interception, if added, inherits the rules unchanged: they are checked in the policy,
   not in the HTTP/1 code.
-- Schema version 88 adds `vault_secrets.rules` (JSON, `[]` for every existing secret); a stored
+- Schema version 89 adds `vault_secrets.rules` (JSON, `[]` for every existing secret); a stored
   rule that no longer parses makes the row unreadable rather than unlimited.

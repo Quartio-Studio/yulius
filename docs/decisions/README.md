@@ -526,11 +526,13 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0457 -->
 - [0458](0458-an-agent-secret-can-be-limited-to-methods-and-paths.md): An agent secret can be limited to HTTP methods and path patterns; a request that would use it outside them is refused with 403 and audited, never forwarded without the value (SPEC-627, #611).
 <!-- ADR 0458 -->
+- [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md): Brokered commands run in the production holder with a temporary key file; amends SPEC-002 ADR-20
 <!-- ADR 0459 -->
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
 <!-- ADR 0462 -->
 <!-- ADR 0463 -->
+- [0464](0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md): A Codex goal whose plan is finished continues on its own red Yulius CI run at its current head; extends 0428.
 <!-- ADR 0464 -->
 <!-- ADR 0465 -->
 <!-- ADR 0466 -->

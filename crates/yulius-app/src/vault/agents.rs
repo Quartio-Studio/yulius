@@ -156,7 +156,7 @@ impl App {
     /// bound to, `.env` files, or wherever agents bind it themselves (SPEC-483 V5, ADR-0317).
     /// Sending a value to a server of one's choice reads it, so it needs what a reveal needs.
     /// Nothing is asked for a secret agents set up: they bind its hosts without a person.
-    pub(super) async fn fresh_to_widen(
+    pub(crate) async fn fresh_to_widen(
         &self,
         ctx: &AuthContext,
         record: &VaultSecretRecord,
@@ -175,7 +175,7 @@ impl App {
     }
 
     /// Whether `ctx` may change, delete, reveal and answer for a secret of `scope` (MAN-001..003).
-    pub(super) async fn require_manage_agent(
+    pub(crate) async fn require_manage_agent(
         &self,
         ctx: &AuthContext,
         scope: &AgentScope,

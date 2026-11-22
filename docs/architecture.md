@@ -2888,7 +2888,7 @@ secrets have their own scopes (below).
 Since SPEC-627 ([decision 0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md))
 a person who manages an agent secret can limit it to requests: `vault_secrets.rules` holds 0–32
 rules, each 1–16 HTTP methods and a path pattern (`*` matching any characters, `/` included;
-schema version 88, `[]` = any request). The domain parses and matches them
+schema version 89, `[]` = any request). The domain parses and matches them
 (`yulius-domain` `vault/rules.rs`: the pattern is split on `*` and its pieces found in order, linear
 in the path); the egress policy applies them (`yulius-app` `vault/rules.rs`, called from
 `egress_apply` in `vault/runtime.rs`), so they hold for agent runs, CI jobs and Superagents alike.
@@ -3039,6 +3039,28 @@ sequenceDiagram
     UI->>App: POST agent-secrets/{id}/request {allow: true}
     A->>X: request to model.vidocsecurity.com with the placeholder
     X-->>A: placeholder replaced by the value, response redacted
+```
+
+## Brokered commands
+
+A CLI that needs a key file (a deploy tool, a cloud SDK with a service-account JSON, a signing
+tool) runs outside the agent's sandbox
+([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
+[decision 0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md),
+`crates/yulius-app/src/commands.rs`, rules in `yulius_domain::commands`). A project's
+administrators define a command next to its secrets (`commands`, migration 0089, one JSON
+definition per row, names unique in the project): its binary on the host's system, the agent
+secret its runs get as a file (the project's, else a global one switched on there, never a
+personal or production one: `App::command_secret`), the tasks that may run it, its approval,
+fixed arguments and env with `{keyfile}`, `{home}` and, in env only, `{secret}`, allowed
+subcommands, flags Yulius owns and a time limit. Agents and the Superagent list them with
+`commands_list`.
+
+```mermaid
+flowchart LR
+  ADM["Administrator (Secrets page, API)"] -->|"define, change, remove (audited command.*)"| DEF[("commands: one JSON definition per project and name")]
+  DEF --> L["commands_list: task agents, the Superagent"]
+  DEF -.->|"secret NAME → project or global agent secret, never personal or production"| V[("vault")]
 ```
 
 ## Agent secrets in CI jobs
@@ -4094,7 +4116,7 @@ hands on alone leaves one end later
 flowchart LR
     prompt["prompt / wake-up\n(hook, user line)"] --> working
     stop["clean Stop hook"] -->|"turn may settle"| idle["waiting / done"]
-    stop -->|"goal has actionable plan or spec work, within retry bound"| working
+    stop -->|"goal has actionable plan or spec work, or a Codex goal's own red CI run, within retry bound"| working
     turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
     launch["transcript: monitor started,\nagent launched (until it ends)"] --> bg
     idle --> bg
@@ -4107,6 +4129,7 @@ flowchart LR
 ```
 
 A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
+A Codex goal has no native evaluator, so its own red pull request counts as declared work too: once the PR watcher has pasted the failure (SPEC-578), a Stop with the plan and spec finished continues the goal under the same retry bound when the task's latest Yulius CI run for its open pull request failed at the commit its worktree is on. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
 
 A `needs_attention` flag keeps its reason with the task
 ([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),

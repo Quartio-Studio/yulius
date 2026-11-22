@@ -23,6 +23,7 @@ mod auto_choice;
 mod automation_start;
 mod automations;
 mod bootstrap_upgrade;
+mod brokered_commands;
 mod browser;
 mod browser_network;
 mod cd;

@@ -35,7 +35,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
 /// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
-pub const COCKPIT_TOOLS: [&str; 84] = [
+pub const COCKPIT_TOOLS: [&str; 85] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -55,6 +55,7 @@ pub const COCKPIT_TOOLS: [&str; 84] = [
     "sessions_search",
     "session_read",
     "secrets_list",
+    "commands_list",
     "secret_verify",
     "secret_copy_to_env",
     "secret_request_hosts",
@@ -782,6 +783,11 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
 fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
+            name: "commands_list".into(),
+            description: "List this project's brokered commands (SPEC-626): CLIs that need a key file (a deploy tool, a cloud SDK, a signing tool), which run outside your sandbox with their agent secret as a file you never see. Each shows its binary and fixed arguments ({keyfile} and {home} are filled in at run time), allowed subcommands, flags you may not pass, whether owner/repo arguments pass, the approval it needs (always, send: when it changes something, never) and whether your task may run it. Never ask for such a key's value or copy it into the sandbox.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
             name: "secrets_list".into(),
             description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to (and requested_hosts waiting for a person to allow, see secret_request_hosts), the method and path rules that limit some to certain requests, and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
             input_schema: schema(json!({}), &[]),
@@ -1020,6 +1026,8 @@ impl App {
             {
                 self.cockpit_person_tool(&project, name, &args).await
             }
+            // A project's brokered commands (SPEC-626 BRK-004): agents' and the Superagent's.
+            "commands_list" => self.tool_commands_list(&project).await,
             _ if PROJECT_TOOLS.contains(&name) => self.project_tool(&project, name, &args).await,
             _ => match caller {
                 McpCaller::Cockpit(caller) if name == "task_message" => {
