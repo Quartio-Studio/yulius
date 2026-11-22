@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-22
 
+- Terminal output of a replaced run that arrives late, a released redaction tail included, no longer draws on the replacement run's screen or reaches its viewers. [SPEC-614](../.ai/specs/SPEC-614-a-delayed-terminal-output-chunk-must-not.md)
 - A merge the ordinary queue already decided is not armed again after a restart when removing its saved entry failed. A later re-arm of the same head keeps its place, and an unreadable verdict keeps the saved arm until it can be reconciled. [SPEC-615](../.ai/specs/SPEC-615-a-consumed-merge-arm-stays-consumed-acro.md)
 - A sandbox display that fails to start keeps its Xvfb when stopping it fails too. The browser stops it again before the sandbox gets another X server, and reports the failed stop. [SPEC-616](../.ai/specs/SPEC-616-keep-ownership-of-xvfb-when-display-star.md)
 - A pull request's failing test that names a file the pull request changed no longer counts towards a flaky-test quarantine, so a content check such as fixture_hygiene keeps failing only the pull request that breaks it. [ADR-0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md), [SPEC-618](../.ai/specs/SPEC-618-make-the-quarantined-fixture-hygiene-tes.md)

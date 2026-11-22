@@ -29,6 +29,7 @@ use crate::task_message::superagent;
 
 mod armed_notice;
 mod candidate;
+mod replaced_output;
 
 type Error = Box<dyn std::error::Error>;
 
