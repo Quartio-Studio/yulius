@@ -405,7 +405,9 @@ impl App {
             .filter(|screen| screen.parked)
     }
 
-    /// Restore the capture for a committed park, or the ordinary final screen.
+    /// Restore the capture for a committed park, the final screen of a park recorded before
+    /// captures existed (with its notice, and without a trailing Codex exit block), or the
+    /// ordinary final screen.
     pub(crate) async fn ended_screen(
         &self,
         run: &AttemptRecord,
@@ -627,6 +629,24 @@ mod tests {
         let shown = hub.screen_text();
         assert!(shown.starts_with("Yulius parked"), "{shown}");
         assert!(!shown.contains("codex resume"), "{shown}");
+    }
+
+    #[test]
+    fn a_wrapped_codex_exit_block_under_an_answer_is_removed() {
+        let usage = "Token usage: total=389,557 input=321,715 (+ 49,132,928 cached) output=67,842 (reasoning 21,418)";
+        let hint = "Or run codex resume and select Resolve GitHub issue #1453 about the parked Codex screen and its notice";
+        let screen = format!(
+            "The answer\r\n{usage}\r\nTo continue this session, run:\r\n  codex resume 01a1f59f-f713-7aa2-a183-1466175f06b5\r\n{hint}"
+        );
+        let (cols, rows, bytes) = with_park_notice(80, 24, screen.as_bytes(), None, true);
+        let hub = crate::hub::Hub::new(cols, rows);
+        hub.reset(1, &bytes, cols, rows);
+        let shown = hub.screen_text();
+        assert!(shown.starts_with("The answer"), "{shown}");
+        for gone in ["Token usage", "21,418", "codex resume", "its notice"] {
+            assert!(!shown.contains(gone), "{gone}: {shown}");
+        }
+        assert_eq!(shown.matches("Yulius parked").count(), 1, "{shown}");
     }
 
     #[test]
