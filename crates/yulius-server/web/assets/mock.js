@@ -4764,6 +4764,8 @@ route('GET', '/api/status', ({ db }) => {
   const wobble = (Date.now() / 1000) % 60;
   const admin = db.me.user.is_instance_admin || db.me.user.is_superadmin;
   return {
+    github_budget: db.githubBudget || { limit: 5000, remaining: 3700, used: 1300, unattributed_minimum: 169, resets_at: Math.floor(Date.now() / 1000) + 900,
+      attempts: { display: 1200, ci_statuses: 48, merges: 56, staging: 100, imports: 3, other: 74 }, not_modified: 350, display_paused: false },
     github_reset_at_ms: db.githubReset,
     // Disk total unknown on purpose: unknown metrics are null, never zero.
     vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },

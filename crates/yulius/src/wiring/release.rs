@@ -25,6 +25,7 @@ const MAX_COMMITS: usize = 250;
 
 /// `main` of the update repository on GitHub.
 pub struct GitHubReleases {
+    meter: yulius_github::RequestMeter,
     http: reqwest::Client,
     api: String,
 }
@@ -34,8 +35,10 @@ impl GitHubReleases {
     ///
     /// # Errors
     /// When the HTTP client cannot be built.
-    pub fn new() -> Result<Self, String> {
-        Self::with_api(GITHUB_API.to_owned(), true)
+    pub fn new(meter: yulius_github::RequestMeter) -> Result<Self, String> {
+        let mut source = Self::with_api(GITHUB_API.to_owned(), true)?;
+        source.meter = meter;
+        Ok(source)
     }
 
     /// A source for another API base (tests).
@@ -51,18 +54,24 @@ impl GitHubReleases {
     /// # Errors
     /// When the HTTP client cannot be built.
     pub fn with_deadline(api: String, https_only: bool, timeout: Duration) -> Result<Self, String> {
+        let http = Self::client_builder(https_only, timeout)
+            .build()
+            .map_err(|e| format!("GitHub client setup failed: {e}"))?;
+        Ok(Self {
+            meter: yulius_github::RequestMeter::default(),
+            http,
+            api: api.trim_end_matches('/').to_owned(),
+        })
+    }
+
+    fn client_builder(https_only: bool, timeout: Duration) -> reqwest::ClientBuilder {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
+        reqwest::Client::builder()
             .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
             .timeout(timeout)
             .https_only(https_only)
             .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| format!("GitHub client setup failed: {e}"))?;
-        Ok(Self {
-            http,
-            api: api.trim_end_matches('/').to_owned(),
-        })
+            .retry(reqwest::retry::never())
     }
 
     async fn get(&self, token: Option<&Secret>, path: &str) -> Result<Option<Value>, SourceError> {
@@ -74,8 +83,20 @@ impl GitHubReleases {
         if let Some(token) = token {
             request = request.bearer_auth(token.expose());
         }
+        use yulius_github::Clock;
+        let attempt = self
+            .meter
+            .attempt(
+                token.map(Secret::expose),
+                yulius_app::ports::github::GitHubPurpose::Other,
+                yulius_github::SystemClock.now(),
+            )
+            .map_err(|_| SourceError::RateLimited)?;
         let mut response = request.send().await.map_err(|e| failure(&e))?;
         let status = response.status();
+        if let Some(attempt) = attempt {
+            attempt.response(status.as_u16(), response.headers());
+        }
         let limited = response
             .headers()
             .get("x-ratelimit-remaining")
@@ -220,6 +241,39 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+    #[tokio::test]
+    async fn a_refused_http2_stream_is_one_update_request() -> TestResult {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let count = attempts.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let mut connection = h2::server::handshake(stream).await?;
+            while let Some(request) = connection.accept().await {
+                let (_, mut response) = request?;
+                count.fetch_add(1, Ordering::SeqCst);
+                response.send_reset(h2::Reason::REFUSED_STREAM);
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        });
+        let source = GitHubReleases {
+            api: format!("http://{address}"),
+            http: GitHubReleases::client_builder(false, Duration::from_secs(2))
+                .http2_prior_knowledge()
+                .build()?,
+            meter: yulius_github::RequestMeter::default(),
+        };
+        let result = source.get(None, "/commits/main").await;
+        drop(source);
+        server.abort();
+        let _ = server.await;
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
     const A: &str = "1111111111111111111111111111111111111111";
     const B: &str = "2222222222222222222222222222222222222222";
     const C: &str = "3333333333333333333333333333333333333333";

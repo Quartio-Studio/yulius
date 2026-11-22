@@ -43,6 +43,8 @@ impl Clock for TestClock {
 /// Fake GitHub: OAuth codes map to users; permissions per (login, repo).
 #[derive(Default)]
 pub struct FakeGitHub {
+    pub branch_read_purposes: Mutex<Vec<yulius_app::ports::github::GitHubPurpose>>,
+    pub budget_view: Mutex<Option<yulius_app::ports::github::GitHubBudget>>,
     pub users_by_code: Mutex<HashMap<String, GhUser>>,
     pub perms: Mutex<HashMap<(String, String), GitHubPermissions>>,
     pub fail_permissions: std::sync::atomic::AtomicBool,
@@ -59,6 +61,10 @@ pub struct FakeGitHub {
     /// When set, a callback question waits for it; `callback_entered` says one began.
     pub callback_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub callback_entered: tokio::sync::Notify,
+    pub pull_get_count: std::sync::atomic::AtomicUsize,
+    pub pull_list_count: std::sync::atomic::AtomicUsize,
+    /// A lagging open-PR list can omit a PR its numbered endpoint still serves.
+    pub omit_listed_pull: Mutex<Option<u64>>,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
     /// REST calls to get or list PRs for discovery.
@@ -185,6 +191,13 @@ fn login_of(token: &Secret) -> String {
 
 #[async_trait]
 impl GitHubPort for FakeGitHub {
+    fn budget(&self, _: Option<u64>) -> yulius_app::ports::github::GitHubBudget {
+        self.budget_view
+            .lock()
+            .ok()
+            .and_then(|v| v.clone())
+            .unwrap_or_else(yulius_app::ports::github::GitHubBudget::empty)
+    }
     fn authorize_url(&self, _: &GitHubAppConfig, state: &str, _: &str, select: bool) -> String {
         let prompt = if select { "&prompt=select_account" } else { "" };
         format!("https://github.test/login/oauth/authorize?state={state}{prompt}")
@@ -479,6 +492,7 @@ impl GitHubPort for FakeGitHub {
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
         self.pull_reads.fetch_add(1, Ordering::SeqCst);
+        self.pull_get_count.fetch_add(1, Ordering::SeqCst);
         let hold = self
             .pull_read_hold
             .lock()
@@ -546,6 +560,7 @@ impl GitHubPort for FakeGitHub {
         head: Option<&str>,
     ) -> AppResult<Vec<GhPull>> {
         self.pull_reads.fetch_add(1, Ordering::SeqCst);
+        self.pull_list_count.fetch_add(1, Ordering::SeqCst);
         let hold = self
             .pull_list_hold
             .lock()
@@ -580,12 +595,15 @@ impl GitHubPort for FakeGitHub {
         {
             *pull = replacement;
         }
+        let omitted = *self.omit_listed_pull.lock().map_err(AppError::internal)?;
         Ok(self
             .pulls
             .lock()
             .map_err(AppError::internal)?
             .iter()
-            .filter(|p| p.state == "open" && head.is_none_or(|h| p.head == h))
+            .filter(|p| {
+                Some(p.number) != omitted && p.state == "open" && head.is_none_or(|h| p.head == h)
+            })
             .cloned()
             .collect())
     }
@@ -812,6 +830,16 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         branch: &str,
     ) -> AppResult<Option<String>> {
+        let purpose = yulius_app::ports::github::current_purpose();
+        self.branch_read_purposes
+            .lock()
+            .map_err(AppError::internal)?
+            .push(purpose);
+        if purpose == yulius_app::ports::github::GitHubPurpose::Display
+            && self.budget(None).display_paused
+        {
+            return Err(AppError::Upstream("display refreshes paused".into()));
+        }
         if self.fail_pinned_merge_read.load(Ordering::SeqCst)
             && self
                 .pulls

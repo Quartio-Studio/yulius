@@ -132,6 +132,18 @@ impl App {
     /// `Invalid` arguments; `Conflict` while the review does not cover the head or the checks
     /// have not passed; every refusal of the delivery path (`merge_task_pr`).
     pub async fn tool_delivery_merge(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Merges,
+            self.tool_delivery_merge_inner(ctx, args),
+        )
+        .await
+    }
+
+    async fn tool_delivery_merge_inner(
+        &self,
+        ctx: &AgentContext,
+        args: &Value,
+    ) -> AppResult<Value> {
         let mut since = String::new();
         let mut answer = self.delivery_merge_answer(ctx, args, &mut since).await?;
         // An accepted call past the reviewed head says what it counted (SPEC-493 APR-004).

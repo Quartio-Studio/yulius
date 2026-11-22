@@ -221,6 +221,8 @@ const MIGRATIONS: &[&str] = &[
     // SPEC-605. The position is the schema version, 0084 is the reserved file number.
     include_str!("migrations/0084_review_round_delivery.sql"),
     include_str!("migrations/0085_ci_pull_window.sql"),
+    // Schema 85 follows the shipped review and CI-window migrations.
+    include_str!("migrations/0083_terminal_pulls.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -554,6 +556,7 @@ mod tests {
                 include_str!("migrations/0084_review_round_delivery.sql"),
             ),
             (84, include_str!("migrations/0085_ci_pull_window.sql")),
+            (85, include_str!("migrations/0083_terminal_pulls.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -562,7 +565,60 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 84, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 85, "a new migration is pinned here too");
+    }
+
+    #[test]
+    fn terminal_pull_upgrade_keeps_the_confirmed_landing_of_a_parked_task()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..84] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", 84)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1);
+             INSERT INTO tasks (id,sandbox_id,number,title,prompt,harness,status,branch,origin,created_by,created_at,updated_at)
+             VALUES ('t','s',1,'Checkout','Change checkout','codex','parked','feature','user','u',1,2);
+             INSERT INTO delivery (task_id,stage,pr_number,updated_at) VALUES ('t','merged_integration',41,2);
+             INSERT INTO task_merges (task_id,sandbox_id,merged_sha,branch,pr_number,head_sha)
+             VALUES ('t','s','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','dev',41,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');",
+        )?;
+        conn.execute_batch(
+            "INSERT INTO tasks (id,sandbox_id,number,title,prompt,harness,status,branch,origin,created_by,created_at,updated_at)
+             VALUES ('older','s',2,'Renamed task','Old prompt','codex','parked','renamed','user','u',1,2);
+             INSERT INTO delivery (task_id,stage,pr_number,updated_at) VALUES ('older','merged_integration',42,2);"
+        )?;
+        prepare(&mut conn)?;
+        let json: String = conn.query_row(
+            "SELECT snapshot FROM task_pull_observations WHERE task_id='t'",
+            [],
+            |r| r.get(0),
+        )?;
+        let pull: yulius_app::ports::github::GhPull = serde_json::from_str(&json)?;
+        assert_eq!(
+            (pull.number, pull.merged, pull.base.as_str()),
+            (41, true, "dev")
+        );
+        assert_eq!(pull.head_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(
+            pull.merge_commit_sha.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        let json: String = conn.query_row(
+            "SELECT snapshot FROM task_pull_observations WHERE task_id='older'",
+            [],
+            |r| r.get(0),
+        )?;
+        let older: yulius_app::ports::github::GhPull = serde_json::from_str(&json)?;
+        assert!(older.merged && older.merge_commit_sha.is_none());
+        assert_eq!(older.title, "Pull request #42");
+        assert!(older.head.is_empty() && older.head_sha.is_empty());
+        Ok(())
     }
 
     #[test]
