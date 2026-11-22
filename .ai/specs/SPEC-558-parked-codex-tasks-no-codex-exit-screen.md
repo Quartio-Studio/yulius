@@ -93,7 +93,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-An achieved live owner with a recorded failed singleton keeps its session slot until the watcher verifies that the hosted PR closed or the candidate inputs changed. Capacity reads stay local and bind the observation to the exact saved decision and branch. A launch holds shared delivery guards for the owners it clears until it reserves the slot. A watcher checks again on a later pass if a launch holds that guard.
+An achieved live owner with a recorded failed singleton keeps its session slot until the watcher verifies that the hosted PR closed or the candidate inputs changed. Capacity reads stay local and bind the observation to the exact saved decision and branch. A launch holds shared delivery guards for the owners it clears until it reserves the slot. The watcher applies the same guard when it rechecks the PR before delivering a notice. If a launch holds the guard, the watcher checks again on a later pass.
 
 An automatic continuation for a parked PR owner verifies the recorded integration decision before launching. A human decision or unavailable capacity leaves the original session parked. The next watcher pass checks the PR again before delivering a prompt.
 
@@ -128,6 +128,10 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- All 688 scoped tests passed in `90908811-75d5-4039-a4d8-aa09fe7495db`. Restoring the raw final PR read by hand made the peer see a free slot again in `5cbff53b-d244-4a9b-8cc4-29c5828892d9`. The guarded read was restored. Clippy and repository quick checks passed. Vidoc was disabled.
+
+- Review of `765003503` found an unguarded hosted read immediately before publishing the ordinary green notice. In `76da3c6d-d3cb-4308-a11d-65da58b58d10` that read saw the original integration base return and suppressed the notice, yet the queued peer saw a free slot. The final notice read now invalidates and refreshes the same capacity observation as the first read.
 
 - Reopening PR #1481 during a peer's final session reservation triggered two premature hosted reads in `9c8d1cf5-7838-4342-aeee-17db761e72dd`. With the observation ordered against reservation, the next watcher pass delivered the shard 2 latency reason once to the same live task. All 687 scoped tests passed in `52c2c3e8-d0a0-4128-b74f-066cddbf18b3`, including every delivery and agent hook test. The fixture uses SQLite, Git, a real PTY and a simulated GitHub service.
 - Hand check in `09b5c791-ca32-4bf6-9014-ba1f3ce4d2ee`. Removing only the guard before invalidating the cached PR observation increased the hosted read count from one to three while the reservation was paused. The guard was restored.

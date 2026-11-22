@@ -13,6 +13,47 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{AttemptId, TaskId};
 
 #[test]
+fn final_notice_verification_keeps_the_session_when_the_candidate_applies_again() -> TestResult {
+    use yulius_domain::task::{Activity, TaskStatus};
+    with_idle_candidate(async |data, app, remote, id, _| {
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        let peer = candidate_peer(app, &owner, TaskStatus::Queued).await?;
+        let queued = app.deps.store.task(&peer).await?.ok_or("queued")?;
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        let base = crate::pr_watch::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
+        remote.pulls.lock().map_err(|_| "pulls")?[0].base_sha = "moved-base".into();
+        let (checking, release) =
+            super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, &id);
+        let pass = {
+            let app = app.clone();
+            tokio::spawn(async move { app.watch_prs(&WatchBounds::default()).await })
+        };
+        tokio::time::timeout(Duration::from_secs(10), checking.notified()).await?;
+        remote.pulls.lock().map_err(|_| "pulls")?[0].base_sha = base;
+        release.notify_one();
+        assert!(
+            pass.await?.is_empty(),
+            "the earlier green notice was obsolete"
+        );
+        assert_eq!(
+            app.task_summary(&queued).await?.queue_reason.as_deref(),
+            Some("Waiting for a free session: 1 of 1 in use")
+        );
+        let retry = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(retry.len(), 1, "{retry:?}");
+        assert_eq!(retry[0].0, id);
+        assert!(retry[0].1.contains("292.1 ms"));
+        Ok(())
+    })
+}
+
+#[test]
 fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> TestResult {
     use std::sync::atomic::Ordering;
     use yulius_app::supervisor::RunStart;

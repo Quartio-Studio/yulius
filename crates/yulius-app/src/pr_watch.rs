@@ -2076,18 +2076,6 @@ impl App {
         (pull.base_sha == decision.singleton.base).then_some(PullSignal::Failing)
     }
 
-    /// A second clone can publish a repair without advancing this checkout's tracking ref.
-    async fn hosted_owner_pull(
-        &self,
-        task: &TaskRecord,
-        sandbox: &SandboxRecord,
-        pr: u64,
-    ) -> Option<crate::ports::github::GhPull> {
-        let pull = self.read_notice_pull(sandbox, pr).await.ok()?;
-        self.notice_pull_owned(task, sandbox, pr, &pull)
-            .then_some(pull)
-    }
-
     async fn read_notice_pull(
         &self,
         sandbox: &SandboxRecord,
@@ -2136,8 +2124,18 @@ impl App {
             crate::race::Point::ArmedNoticePublicationRead,
             std::path::Path::new(task.id.as_str()),
         );
-        let pull = self.hosted_owner_pull(task, sandbox, pr).await?;
-        if !pull.head_sha.eq_ignore_ascii_case(head) {
+        // The last hosted read also decides whether the live owner still occupies its slot.
+        let pull = if let Some((span, _)) = &source.decision {
+            let decision = crate::merge_train::SingletonDecision::from_span(span).ok()??;
+            self.observe_candidate_pull(task, sandbox, span, &decision)
+                .await
+                .ok()?
+        } else {
+            self.read_notice_pull(sandbox, pr).await.ok()?
+        };
+        if !self.notice_pull_owned(task, sandbox, pr, &pull)
+            || !pull.head_sha.eq_ignore_ascii_case(head)
+        {
             return None;
         }
         if let Some((span, base)) = &source.decision
