@@ -26,8 +26,8 @@ The sibling `final_bytes_and_fin_during_restart_reach_the_half_closed_peer` fail
 ## Plan
 
 - [x] Identify the connection and restart phase that lose the surviving tunnel
-- [ ] Name the failing read and keep both servers' logs in the restart fixture
-- [ ] Correct the cause with a test that fails without it
+- [x] Name the failing read and keep both servers' logs in the restart fixture
+- [x] Correct the cause with a test that fails without it
 - [ ] Verify both directions on the surviving tunnel under concurrent load
 - [ ] Approve the restart fix for delivery
 - [ ] Merge into dev on green CI, request staging and comment on the issue
