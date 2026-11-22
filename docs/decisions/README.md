@@ -525,6 +525,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0457](0457-new-tasks-default-to-claude-code-on-opus-5-5.md): New tasks default to Claude Code on Opus 5.5 when nothing is chosen; supersedes 0422 and 0426.
 <!-- ADR 0457 -->
 <!-- ADR 0458 -->
+- [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md): Brokered commands run in the production holder with a temporary key file; amends SPEC-002 ADR-20
 <!-- ADR 0459 -->
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
