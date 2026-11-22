@@ -370,6 +370,15 @@ pub(crate) mod tests {
             }
         }
 
+        /// Names `session` as its root thread instead of the test's.
+        pub(crate) fn session(mut self, session: &str) -> Self {
+            self.lines[0] = self.lines[0].replace(
+                &format!("\"session_id\":\"{ROOT}\""),
+                &format!("\"session_id\":\"{session}\""),
+            );
+            self
+        }
+
         pub(crate) fn line(mut self, value: serde_json::Value) -> Self {
             self.lines.push(value.to_string());
             self

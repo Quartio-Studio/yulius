@@ -5,12 +5,12 @@
 //! into zero or more [`Observed`] values. Unknown record types yield nothing; lines that are not
 //! JSON objects or lack required fields yield [`Observed::Malformed`].
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use yulius_domain::agent_cli::QueueChange;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, LimitScope, TokenUsage};
+use yulius_domain::usage::{AccountUsage, LimitScope, ModelTokens, TokenUsage};
 
 /// Maximum number of recent Claude message ids remembered for de-duplication.
 pub const MESSAGE_ID_MEMORY: usize = 65_536;
@@ -305,7 +305,10 @@ pub const CLI_VERSION_BYTES: usize = 64;
 #[derive(Debug, Clone, Default)]
 pub struct UsageAccumulator {
     finalized: Option<TokenUsage>,
-    current: Option<(String, TokenUsage)>,
+    /// The message being refined: its id, usage and the model a Codex subagent's answer names.
+    current: Option<(String, TokenUsage, Option<String>)>,
+    /// The finalized usage of Codex subagents' answers, by the model that answered (SPEC-619).
+    parts: BTreeMap<String, Option<TokenUsage>>,
     seen: HashSet<String>,
     seen_order: VecDeque<String>,
     limit: Option<LimitSignal>,
@@ -350,7 +353,7 @@ impl UsageAccumulator {
                 if let Some(model) = model {
                     self.model = Some(model.clone());
                 }
-                self.observe_message(message_id, *usage);
+                self.observe_message(message_id, *usage, None);
             }
             Observed::LimitReached {
                 resets_at,
@@ -406,7 +409,20 @@ impl UsageAccumulator {
             message_id, usage, ..
         } = observed
         {
-            self.observe_message(message_id, *usage);
+            self.observe_message(message_id, *usage, None);
+        }
+    }
+
+    /// Folds a response of a Codex subagent's rollout (SPEC-619 CSA-3): its usage counts, at the
+    /// model it names. The run's model, limits and turns stay its own thread's.
+    pub fn observe_child(&mut self, observed: &Observed) {
+        if let Observed::AssistantMessage {
+            message_id,
+            usage,
+            model,
+        } = observed
+        {
+            self.observe_message(message_id, *usage, model.clone());
         }
     }
 
@@ -417,8 +433,8 @@ impl UsageAccumulator {
         }
     }
 
-    fn observe_message(&mut self, id: &str, usage: TokenUsage) {
-        if let Some((current_id, current_usage)) = &mut self.current
+    fn observe_message(&mut self, id: &str, usage: TokenUsage, part: Option<String>) {
+        if let Some((current_id, current_usage, _)) = &mut self.current
             && current_id == id
         {
             *current_usage = TokenUsage {
@@ -432,8 +448,12 @@ impl UsageAccumulator {
         if self.seen.contains(id) {
             return;
         }
-        if let Some((_, previous)) = self.current.take() {
+        if let Some((_, previous, model)) = self.current.take() {
             self.finalized = add_known(self.finalized, previous);
+            if let Some(model) = model {
+                let part = self.parts.entry(model).or_default();
+                *part = add_known(*part, previous);
+            }
         }
         if self.seen_order.len() >= MESSAGE_ID_MEMORY
             && let Some(oldest) = self.seen_order.pop_front()
@@ -442,7 +462,7 @@ impl UsageAccumulator {
         }
         self.seen.insert(id.to_owned());
         self.seen_order.push_back(id.to_owned());
-        self.current = Some((id.to_owned(), usage));
+        self.current = Some((id.to_owned(), usage, part));
     }
 
     /// Usage of the observed lines: the sum of distinct messages. All fields are `None` when
@@ -450,10 +470,31 @@ impl UsageAccumulator {
     #[must_use]
     pub fn usage(&self) -> TokenUsage {
         let mut total = self.finalized;
-        if let Some((_, current)) = &self.current {
+        if let Some((_, current, _)) = &self.current {
             total = add_known(total, *current);
         }
         total.unwrap_or(TokenUsage::UNKNOWN)
+    }
+
+    /// The parts of [`Self::usage`] that another model than the run's own ([`Self::model`])
+    /// answered, by model (SPEC-619 CSA-4); a subagent of the run's model is in the rest.
+    #[must_use]
+    pub fn model_parts(&self) -> Vec<ModelTokens> {
+        let mut parts = self.parts.clone();
+        if let Some((_, usage, Some(model))) = &self.current {
+            let part = parts.entry(model.clone()).or_default();
+            *part = add_known(*part, *usage);
+        }
+        parts
+            .into_iter()
+            .filter(|(model, _)| self.model.as_deref() != Some(model.as_str()))
+            .filter_map(|(model, usage)| {
+                Some(ModelTokens {
+                    model,
+                    usage: usage?,
+                })
+            })
+            .collect()
     }
 
     /// Latest limit signal, if any.
