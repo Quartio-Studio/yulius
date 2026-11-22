@@ -13,9 +13,10 @@ use yulius_contracts::api::admin::AccountView;
 use yulius_contracts::api::tasks::TaskSummary;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{TaskId, UserId};
+use yulius_domain::notice::NoticeKey;
 use yulius_domain::notify::{
     AskedOf, NoticeKind, TaskNotice, Throttle, account_problem, account_text, control_text,
-    shared_cause, taken_text, task_notice, task_signature,
+    posted_text, shared_cause, taken_text, task_notice, task_signature,
 };
 
 use crate::context::App;
@@ -75,6 +76,14 @@ struct Notice {
     headline: String,
     text: String,
     about: Option<crate::ports::notify::SentAbout>,
+    /// Its project and key (`<sandbox or ->:<key>`): the bot's next message with them replaces
+    /// this one in the chat (SPEC-624 NTC-007, NTC-008).
+    scope: Option<String>,
+}
+
+/// A notice's scope in a chat: its project (`-` for none) and key.
+fn chat_scope(sandbox: Option<&yulius_domain::ids::SandboxId>, key: &NoticeKey) -> String {
+    format!("{}:{key}", sandbox.map_or("-", |s| s.as_str()))
 }
 
 impl NotifierState {
@@ -174,6 +183,7 @@ impl App {
                 | UiEvent::AccountUpdated { .. }
                 | UiEvent::ControlTaken { .. }
                 | UiEvent::ControlTakenBack { .. }
+                | UiEvent::NoticePosted { .. }
         ) {
             return;
         }
@@ -204,6 +214,14 @@ impl App {
                         .map(|n| n.and_then(|n| envelope.user.clone().map(|only| (n, Some(only))))),
                 );
             }
+            // A posted notice (SPEC-624): to whom its envelope reaches, its recipient only when
+            // it has one.
+            UiEvent::NoticePosted { notice } => {
+                notices.push(Ok(self
+                    .posted_notice(notice)
+                    .await
+                    .map(|n| (n, envelope.user.clone()))));
+            }
             UiEvent::ControlTakenBack { task_id, by, .. } => {
                 notices.push(
                     self.taken_notice(task_id, by, true)
@@ -226,6 +244,38 @@ impl App {
                 }
             }
         }
+    }
+
+    /// A posted notice for the chat (SPEC-624 NTC-007): its project's name, title, detail and
+    /// link, already redacted when it was posted; keyed, so the next one replaces it.
+    async fn posted_notice(
+        &self,
+        notice: &yulius_contracts::api::notices::NoticeView,
+    ) -> Option<Notice> {
+        let kind = NoticeKind::parse(&notice.category)?;
+        let key = NoticeKey::parse(&notice.key).ok()?;
+        let sandbox = match notice.sandbox_id.as_deref() {
+            Some(id) => {
+                let id = yulius_domain::ids::SandboxId::parse(id).ok()?;
+                Some(self.deps.store.sandbox(&id).await.ok().flatten()?)
+            }
+            None => None,
+        };
+        let base = self.config.public_url.trim_end_matches('/');
+        let link = notice.link.as_ref().map(|path| format!("{base}{path}"));
+        let (headline, text) = posted_text(
+            sandbox.as_ref().map(|s| s.repo_name.as_str()),
+            &notice.title,
+            notice.detail.as_deref(),
+            link.as_deref(),
+        );
+        Some(Notice {
+            kind,
+            headline,
+            text,
+            about: None,
+            scope: Some(chat_scope(sandbox.as_ref().map(|s| &s.id), &key)),
+        })
     }
 
     /// A take of a task by `by` (`back`: its giver took it back), for whoever it was taken from
@@ -263,6 +313,10 @@ impl App {
                 task: task.id.clone(),
                 asked_at: None,
             }),
+            scope: Some(chat_scope(
+                Some(&task.sandbox_id),
+                &NoticeKey::lossy("control:", task.id.as_str()),
+            )),
         }))
     }
 
@@ -307,6 +361,10 @@ impl App {
                     task: task.id.clone(),
                     asked_at: None,
                 }),
+                scope: Some(chat_scope(
+                    Some(&task.sandbox_id),
+                    &NoticeKey::lossy("control:", task.id.as_str()),
+                )),
             },
         )))
     }
@@ -539,6 +597,14 @@ impl App {
                 task: task.id.clone(),
                 asked_at: asked.as_ref().map(|a| a.at),
             }),
+            // One message per task, or per sandbox-wide problem (the spec's table).
+            scope: Some(chat_scope(
+                Some(&task.sandbox_id),
+                &shared.map_or_else(
+                    || NoticeKey::task(task.id.as_str()),
+                    |(cause, _, _)| NoticeKey::lossy("needs-you:", cause),
+                ),
+            )),
         }))
     }
 
@@ -571,6 +637,7 @@ impl App {
             headline: redact(headline),
             text: redact(text),
             about: None,
+            scope: Some(chat_scope(None, &NoticeKey::lossy("account:", &account.id))),
         })
     }
 
@@ -609,7 +676,12 @@ impl App {
                 throttle.offer(now, notice.headline.clone())
             });
             if send {
-                self.enqueue_about(link.chat.clone(), notice.text.clone(), notice.about.clone());
+                self.enqueue_keyed(
+                    link.chat.clone(),
+                    notice.text.clone(),
+                    notice.about.clone(),
+                    notice.scope.clone(),
+                );
             }
         }
         Ok(())

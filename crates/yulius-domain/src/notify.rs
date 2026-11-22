@@ -298,6 +298,29 @@ pub fn account_text(
     (headline, truncate(&lines.join("\n")))
 }
 
+/// A posted notice (SPEC-624): (headline, text), before redaction: its project, its title, its
+/// detail and its link.
+#[must_use]
+pub fn posted_text(
+    project: Option<&str>,
+    title: &str,
+    detail: Option<&str>,
+    link: Option<&str>,
+) -> (String, String) {
+    let headline = match project {
+        Some(project) => format!("{}: {}", one_line(project), one_line(title)),
+        None => one_line(title),
+    };
+    let mut lines = vec![headline.clone()];
+    if let Some(detail) = detail.filter(|d| !d.trim().is_empty()) {
+        lines.push(plain(detail));
+    }
+    if let Some(link) = link {
+        lines.push(link.to_owned());
+    }
+    (headline, truncate(&lines.join("\n")))
+}
+
 /// A request for control of a task, for its owner: (headline, text), before redaction (TGC-027),
 /// in the notification center's words.
 #[must_use]

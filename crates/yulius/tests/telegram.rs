@@ -60,6 +60,11 @@ struct FakeTelegram {
     file_asked: tokio::sync::Notify,
     /// Woken by every poll, once it has dropped the updates it confirms.
     polled: tokio::sync::Notify,
+    /// Messages deleted, as `(chat, message id)` (SPEC-624 NTC-007), and a wake-up for each.
+    deleted: Mutex<Vec<(String, String)>>,
+    deleted_changed: tokio::sync::Notify,
+    /// While set, a delete is refused as Telegram refuses an old message's.
+    fail_deletes: std::sync::atomic::AtomicBool,
 }
 
 impl FakeTelegram {
@@ -169,6 +174,36 @@ impl FakeTelegram {
             .unwrap_or_default()
     }
 
+    /// The id the fake gave the `nth` message (from 0) sent to `chat`: its place among all sent.
+    fn id_of(&self, chat: i64, nth: usize) -> Option<String> {
+        let chat = chat.to_string();
+        let sent = self.sent.lock().ok()?;
+        sent.iter()
+            .enumerate()
+            .filter(|(_, (c, _))| *c == chat)
+            .nth(nth)
+            .map(|(place, _)| (place + 1).to_string())
+    }
+
+    fn deleted(&self) -> Vec<(String, String)> {
+        self.deleted.lock().map(|d| d.clone()).unwrap_or_default()
+    }
+
+    /// Waits until `count` messages were deleted (10 s at most); they all.
+    async fn wait_deleted(&self, count: usize) -> Result<Vec<(String, String)>, String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let changed = self.deleted_changed.notified();
+            let deleted = self.deleted();
+            if deleted.len() >= count {
+                return Ok(deleted);
+            }
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
+                return Err(format!("{} of {count} deleted: {deleted:?}", deleted.len()));
+            }
+        }
+    }
+
     /// Waits until `chat` was sent `count` messages (10 s at most); they all.
     async fn wait_sent(&self, chat: i64, count: usize) -> Result<Vec<String>, String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -211,6 +246,18 @@ async fn bot_api(
             });
             fake.sent_changed.notify_waiters();
             json!({"message_id": id})
+        }
+        "deleteMessage" => {
+            if fake.fail_deletes.load(Ordering::SeqCst) {
+                return (StatusCode::BAD_REQUEST, Json(json!({"ok": false})));
+            }
+            let chat = body["chat_id"].as_i64().unwrap_or_default().to_string();
+            let message = body["message_id"].as_i64().unwrap_or_default().to_string();
+            if let Ok(mut deleted) = fake.deleted.lock() {
+                deleted.push((chat, message));
+            }
+            fake.deleted_changed.notify_waiters();
+            json!(true)
         }
         "getUpdates" => {
             loop {
@@ -1213,6 +1260,114 @@ async fn a_failure_after_a_restart_is_told_again() -> TestResult {
     move_to(&w, "t1", crashed, None).await?;
     let sent = w.fake.wait_sent(100, 3).await?;
     assert!(sent[2].contains("crashed"), "{sent:?}");
+    Ok(())
+}
+
+/// SPEC-624 NTC-008, AC-6, AC-7: a task's newer state replaces its earlier message in the chat
+/// (the bot deletes it once the new one is sent); a delete Telegram refuses still lets the new
+/// message through; a message that is no notice deletes nothing.
+#[tokio::test]
+async fn a_tasks_newer_state_replaces_its_message() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    let chose = api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/choices",
+        Some(json!({"needs_you": true, "done": true, "failed": true, "account": false})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(chose.status, StatusCode::OK, "{}", chose.body);
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    ask(&w, "t1", "The checkout fails").await?;
+    let asked = w.fake.wait_sent(100, 2).await?;
+    assert!(asked[1].starts_with("Needs you"), "{asked:?}");
+    let asked_id = w.fake.id_of(100, 1).ok_or("asked id")?;
+    assert!(w.fake.deleted().is_empty(), "the link reply is no notice");
+
+    let id = TaskId::parse("t1")?;
+    w.h.store
+        .set_task_needs_you(&id, None, w.h.app.now())
+        .await?;
+    w.h.store
+        .set_activity(&id, Some(Activity::Done), w.h.app.now())
+        .await?;
+    w.h.app.publish_task(&id).await;
+    let done = w.fake.wait_sent(100, 3).await?;
+    assert!(done[2].starts_with("Done"), "{done:?}");
+    assert_eq!(
+        w.fake.wait_deleted(1).await?,
+        vec![("100".to_owned(), asked_id)],
+        "the Needs you message is replaced"
+    );
+
+    // An old message Telegram will not delete stays; the new one is sent all the same.
+    w.fake.fail_deletes.store(true, Ordering::SeqCst);
+    w.h.store.set_activity(&id, None, w.h.app.now()).await?;
+    w.h.clock.0.fetch_add(MINUTE_MS, Ordering::SeqCst);
+    ask(&w, "t1", "The checkout fails again").await?;
+    let again = w.fake.wait_sent(100, 4).await?;
+    assert!(again[3].starts_with("Needs you"), "{again:?}");
+    barrier(&w, "c1").await?;
+    assert_eq!(w.fake.deleted().len(), 1);
+    Ok(())
+}
+
+/// SPEC-624 NTC-007: a posted notice reaches the chats of the people who see its project and
+/// chose its kind; the next one with its key replaces it, another key stands beside it.
+#[tokio::test]
+async fn a_posted_notice_replaces_its_message_by_key() -> TestResult {
+    use yulius_app::notices::NewNotice;
+    use yulius_domain::notice::{NoticeKey, NoticeTone};
+    use yulius_domain::notify::NoticeKind;
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    let notice = |key: &str, title: &str| -> Result<NewNotice, Box<dyn std::error::Error>> {
+        Ok(NewNotice {
+            link: Some("/s/app/ci".into()),
+            ..NewNotice::new(
+                Some(yulius_domain::ids::SandboxId::parse("s1")?),
+                NoticeKey::parse(key)?,
+                NoticeKind::NeedsYou,
+                NoticeTone::Error,
+                title,
+            )
+        })
+    };
+    w.h.app
+        .post_notice(notice("gate:quick::a", "quick::a fails")?)
+        .await?;
+    let first = w.fake.wait_sent(100, 2).await?;
+    assert_eq!(
+        first[1], "app: quick::a fails\nhttps://yulius.test/s/app/ci",
+        "{first:?}"
+    );
+    let first_id = w.fake.id_of(100, 1).ok_or("first id")?;
+    w.h.app
+        .post_notice(notice("gate:quick::a", "quick::a fails again")?)
+        .await?;
+    w.fake.wait_sent(100, 3).await?;
+    assert_eq!(
+        w.fake.wait_deleted(1).await?,
+        vec![("100".to_owned(), first_id)]
+    );
+    w.h.app
+        .post_notice(notice("gate:quick::b", "quick::b fails")?)
+        .await?;
+    w.fake.wait_sent(100, 4).await?;
+    barrier(&w, "c1").await?;
+    assert_eq!(w.fake.deleted().len(), 1, "another key stands beside it");
+    assert_eq!(
+        w.fake.sent_to(300).len(),
+        2,
+        "carol cannot see s1: her link reply and the barrier only"
+    );
     Ok(())
 }
 
