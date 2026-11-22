@@ -29,6 +29,16 @@ fn vm_view(s: &SystemSnapshot) -> VmStatus {
 }
 
 impl App {
+    pub(crate) async fn github_budget(&self) -> AppResult<crate::ports::github::GitHubBudget> {
+        let installation = self
+            .deps
+            .store
+            .instance()
+            .await?
+            .and_then(|i| i.installation_id);
+        Ok(self.deps.github.budget(installation))
+    }
+
     pub(crate) fn github_wait(&self) -> Option<String> {
         self.deps.github.rate_limit_reset().map(|reset| format!(
             "GitHub rate limit reached. Merges, CI status updates and the staging queue are waiting until {}.",
@@ -98,6 +108,7 @@ impl App {
             .collect();
         let queued = store.tasks_with_status(&[TaskStatus::Queued]).await?.len();
         Ok(StatusView {
+            github_budget: self.github_budget().await?,
             github_reset_at_ms: self.deps.github.rate_limit_reset().map(|t| t.0),
             vm: vm_view(&snapshot),
             sessions: SessionCounts {

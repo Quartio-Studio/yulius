@@ -113,7 +113,8 @@ export function mountTasksPage(ctx, sandbox) {
   const graphHost = h('div', { hidden: true });
   const toolbar = h('div', { class: 'tl-toolbar' }, tabs, chips, summary);
   const footer = h('div', { class: 'tl-footer' }, h('a', { href: href('/archived'), dataset: { route: '/archived' } }, 'View archived tasks', icon('right', { size: 12 })));
-  frame.body.append(toolbar, listHost, graphHost, footer);
+  const githubPause = h('div', { class: 'banner banner-info', hidden: true }, 'Live GitHub display refreshes are paused to reserve requests for delivery.');
+  frame.body.append(toolbar, githubPause, listHost, graphHost, footer);
 
   function syncUrl() {
     const params = new URLSearchParams();
@@ -221,6 +222,7 @@ export function mountTasksPage(ctx, sandbox) {
     if (!alive) return;
     syncUrl();
     const tasks = ctx.store.tasksOf(sandbox.id);
+    githubPause.hidden = !tasks?.some(task => task.github_display_paused);
     if (tasks === null) {
       const error = ctx.store.tasksError(sandbox.id);
       const failed = error ? loadError(`Couldn’t load the tasks of ${sandbox.name}: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {})) : null;

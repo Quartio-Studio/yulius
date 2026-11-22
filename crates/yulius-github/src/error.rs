@@ -13,6 +13,14 @@ use yulius_domain::redact::scrub_github_tokens;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum GitHubError {
+    /// The installation has reached the capacity reserved for operational work.
+    #[error(
+        "GitHub display refreshes paused to reserve requests for delivery until the quota resets"
+    )]
+    DisplayPaused,
+    /// The bounded display cache is occupied by outstanding requests.
+    #[error("GitHub display refresh is busy")]
+    DisplayBusy,
     /// 401: missing, invalid or expired credentials.
     #[error("GitHub rejected the credentials (HTTP 401)")]
     Unauthorized,

@@ -135,7 +135,7 @@ impl ParkedPullRead {
         }
     }
 
-    fn note_current(&mut self, pull: &GhPull) {
+    pub(crate) fn note_current(&mut self, pull: &GhPull) {
         let Some(pr) = self.pr.as_mut().filter(|pr| pr.number == pull.number) else {
             return;
         };
@@ -264,6 +264,11 @@ impl FollowupDiscovery {
             }
         }
     }
+}
+
+enum ObserveAccess<'a> {
+    Display(Option<&'a UserRecord>),
+    Provided(Option<&'a Secret>),
 }
 
 /// The persisted delivery stage of one task.
@@ -1958,6 +1963,21 @@ impl App {
         (dir, None)
     }
 
+    pub(crate) async fn display_terminal(
+        &self,
+        task: &TaskRecord,
+        record: Option<&DeliveryRecord>,
+    ) -> AppResult<Option<GhPull>> {
+        let number = record.and_then(|r| r.pr_number).or_else(|| {
+            self.observed_pulls
+                .known_pull(&task.sandbox_id, &task.id)
+                .flatten()
+                .filter(|pull| pull.open)
+                .map(|pull| pull.number)
+        });
+        self.deps.store.terminal_pull(&task.id, number).await
+    }
+
     /// Gathers the facts of one task and reconciles its stage with GitHub (a pull request
     /// opened, merged or closed outside Yulius).
     async fn dlv_observe(
@@ -1965,7 +1985,7 @@ impl App {
         sandbox: &SandboxRecord,
         task: &TaskRecord,
         profile: &DeliveryProfile,
-        token: Option<&Secret>,
+        access: ObserveAccess<'_>,
     ) -> AppResult<Observed> {
         let store = &self.deps.store;
         let record = store
@@ -2002,9 +2022,32 @@ impl App {
                 }
             }
         }
-        let mut pr = None;
+        let terminal = if matches!(access, ObserveAccess::Display(_))
+            && crate::ports::github::current_purpose()
+                == crate::ports::github::GitHubPurpose::Display
+        {
+            self.display_terminal(task, Some(&record)).await?
+        } else {
+            None
+        };
+        let display_token;
+        let token = match access {
+            ObserveAccess::Display(_) if terminal.is_some() => None,
+            ObserveAccess::Display(user) => {
+                display_token = match self.dlv_read_token(sandbox, user).await {
+                    Ok(token) => Some(token),
+                    Err(note) => {
+                        notes.push(note);
+                        None
+                    }
+                };
+                display_token.as_ref()
+            }
+            ObserveAccess::Provided(token) => token,
+        };
+        let mut pr = terminal.filter(|_| record.pr_number.is_some());
         // Only an answer from GitHub may change the recorded stage; failures never do.
-        let mut pr_known = false;
+        let mut pr_known = record.stage == DeliveryStage::PrOpen && pr.is_some();
         let mut checks = ChecksState::None;
         let mut checks_unreadable = Vec::new();
         let mut checks_errored = false;
@@ -2014,6 +2057,9 @@ impl App {
             if let Some(number) = record.pr_number {
                 match github.get_pull(token, owner, repo, number).await {
                     Ok(pull) if pull.number == number => {
+                        if !is_open(&pull) {
+                            store.remember_pull_observation(&task.id, &pull).await?;
+                        }
                         pr = Some(pull);
                         pr_known = true;
                     }
@@ -2257,18 +2303,23 @@ impl App {
         task: &TaskRecord,
         user: Option<&UserRecord>,
     ) -> AppResult<Delivery> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Display,
+            self.delivery_view_inner(task, user),
+        )
+        .await
+    }
+
+    async fn delivery_view_inner(
+        &self,
+        task: &TaskRecord,
+        user: Option<&UserRecord>,
+    ) -> AppResult<Delivery> {
         let sandbox = self.dlv_sandbox_of(task).await?;
         let profile = delivery_profile(&sandbox);
         let mut notes = Vec::new();
-        let token = match self.dlv_read_token(&sandbox, user).await {
-            Ok(token) => Some(token),
-            Err(note) => {
-                notes.push(note);
-                None
-            }
-        };
         let observed = self
-            .dlv_observe(&sandbox, task, &profile, token.as_ref())
+            .dlv_observe(&sandbox, task, &profile, ObserveAccess::Display(user))
             .await?;
         // Where an armed merge stands, and what a merge counts as (SPEC-441 MQ-007, MQ-009).
         if let Some(note) = self.merge_queue_note(task) {
@@ -2396,6 +2447,18 @@ impl App {
         ctx: &AuthContext,
         sandbox_id: &str,
     ) -> AppResult<GitOverview> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Display,
+            self.git_overview_inner(ctx, sandbox_id),
+        )
+        .await
+    }
+
+    async fn git_overview_inner(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+    ) -> AppResult<GitOverview> {
         let sandbox = self
             .dlv_require_sandbox(ctx, sandbox_id, Action::View)
             .await?;
@@ -2507,6 +2570,29 @@ impl App {
                 pr: listed.map(|p| pull_view(p, checks_of(p.number))),
                 worktree: worktree_state(&task),
             };
+            // A branch list may lag a closure. Before invalidating a closed-unmerged
+            // snapshot on a positive overview, confirm the same PR itself reopened.
+            if let Some(token) = &token
+                && let Some(listed) = open_pulls.iter().find(|p| !p.from_fork && p.head == branch)
+                && self
+                    .deps
+                    .store
+                    .terminal_pull(&task.id, Some(listed.number))
+                    .await?
+                    .is_some_and(|prior| !prior.merged)
+                && let Ok(direct) = self
+                    .deps
+                    .github
+                    .confirm_pull(token, owner, name, listed.number)
+                    .await
+                && direct.number == listed.number
+                && is_open(&direct)
+                && !direct.from_fork
+                && direct.head == branch
+            {
+                self.bind_observed_open_pull(&sandbox, &task.id, &direct)
+                    .await?;
+            }
             // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
             if let Some(pull) = listed
                 && self.pull_conflicts(&task, &sandbox, pull).await
@@ -2563,6 +2649,12 @@ impl App {
                         }
                     }
             {
+                if !is_open(&pull) {
+                    self.deps
+                        .store
+                        .remember_pull_observation(&task.id, &pull)
+                        .await?;
+                }
                 head = Some(Arc::from(pull.head_sha.as_str()));
                 // Merged or closed outside Yulius: show it and reconcile the stage. An open one
                 // missing from the listed page has unread checks (#68).
@@ -3031,7 +3123,12 @@ impl App {
         }
         let token = self.dlv_author_token(&ctx.user, &sandbox).await?;
         let observed = self
-            .dlv_observe(&sandbox, &task, &profile, Some(&token))
+            .dlv_observe(
+                &sandbox,
+                &task,
+                &profile,
+                ObserveAccess::Provided(Some(&token)),
+            )
             .await?;
         dlv::apply(
             &observed.record.stage,
@@ -3717,7 +3814,12 @@ impl App {
         // they had pressed Deliver…, F 2026-10-11); without a usable token the App does.
         let token = self.task_github_token(&task, &sandbox).await?;
         let observed = self
-            .dlv_observe(&sandbox, &task, &profile, Some(&token))
+            .dlv_observe(
+                &sandbox,
+                &task,
+                &profile,
+                ObserveAccess::Provided(Some(&token)),
+            )
             .await?;
         // Nothing new to deliver: the open pull request has this head already. `delivery_merge`
         // asks on every call, and a delivered head is not "undelivered" (SPEC-116 DMG-001).
@@ -4070,7 +4172,12 @@ impl App {
             return false;
         };
         let Ok(observed) = self
-            .dlv_observe(&sandbox, &task, &profile, Some(&token))
+            .dlv_observe(
+                &sandbox,
+                &task,
+                &profile,
+                ObserveAccess::Provided(Some(&token)),
+            )
             .await
         else {
             return false;
@@ -4459,6 +4566,22 @@ impl App {
         observed
     }
 
+    pub(crate) async fn restore_parked_followup(
+        &self,
+        task: &TaskRecord,
+        observed: &mut ParkedPullRead,
+    ) -> AppResult<()> {
+        if observed.pr.is_none_or(|pr| !pr.open)
+            && let Some(number) = self.deps.store.open_followup(&task.id).await?
+        {
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
+            observed.head = None;
+            observed.signal = None;
+            observed.fresh_head = false;
+        }
+        Ok(())
+    }
+
     pub(crate) fn last_pull_signal(
         &self,
         task: &TaskRecord,
@@ -4539,6 +4662,13 @@ impl App {
                 })
             })
             .transpose()?;
+        // A confirmed follow-up belongs to the task even if an overview lists a newer
+        // PR or omits it. Start-rule decisions and parking must check it by number too.
+        let stored_open = self
+            .deps
+            .store
+            .open_followups(&task.id, MAX_PULLS + 1)
+            .await?;
         let sandbox = self.dlv_sandbox_of(task).await?;
         // A playground or an instance with no GitHub App can still park an answered task.
         // A known open PR requires verification, even when its installation is unavailable.
@@ -4546,7 +4676,10 @@ impl App {
             .filter(|r| past_merge(&r.stage))
             .and_then(|r| r.pr_number);
         if sandbox.is_playground() || !self.github_configured().await? {
-            return Ok((observed.pr.is_none_or(|pr| !pr.open)).then(ParkingPrs::default));
+            return Ok(
+                (stored_open.is_empty() && observed.pr.is_none_or(|pr| !pr.open))
+                    .then(ParkingPrs::default),
+            );
         }
         let branch_pulls = async |token: &Secret| {
             let Some(branch) = task.branch.as_deref() else {
@@ -4575,7 +4708,10 @@ impl App {
             Ok::<_, AppError>((token, branch))
         };
         let inconclusive = |observed: &mut ParkedPullRead| {
-            *observed = self.known_parked_pull(task, record);
+            let latest = self.known_parked_pull(task, record);
+            if latest.pr.is_some_and(|pr| pr.open) || observed.pr.is_none_or(|pr| !pr.open) {
+                *observed = latest;
+            }
             observed.unavailable = true;
             observed.pr.filter(|pr| !pr.open).map(|_| ParkingPrs {
                 followup_unverified: true,
@@ -4595,8 +4731,12 @@ impl App {
             read.listed(&branch, &closed);
         }
         if purpose != PrVerification::Display
-            || tracked.is_none()
-            || observed.pr.map(|pr| pr.number) != tracked
+            || observed.pr.is_none_or(|pr| {
+                !pr.open
+                    || (Some(pr.number) != tracked
+                        && !stored_open.contains(&pr.number)
+                        && branch.iter().all(|listed| listed.number != pr.number))
+            })
         {
             *observed = ParkedPullRead::recorded(record);
         }
@@ -4604,8 +4744,15 @@ impl App {
         if branch.len() > MAX_PULLS {
             return Ok(None);
         }
-        let numbers: std::collections::BTreeSet<_> =
-            branch.iter().map(|p| p.number).chain(tracked).collect();
+        let numbers: std::collections::BTreeSet<_> = branch
+            .iter()
+            .map(|p| p.number)
+            .chain(tracked)
+            .chain(stored_open.iter().copied())
+            .collect();
+        if numbers.len() > MAX_PULLS {
+            return Ok(None);
+        }
         if numbers.is_empty() {
             return Ok(Some(ParkingPrs::default()));
         }
@@ -4618,8 +4765,15 @@ impl App {
             } else {
                 purpose
             };
+            // Recorded deliveries may originate on a different branch. An independent
+            // follow-up identified only by its number must still belong to this task.
+            let source = task.branch.as_deref().filter(|_| {
+                stored_open.contains(&number)
+                    && tracked != Some(number)
+                    && branch.iter().all(|pr| pr.number != number)
+            });
             let pull = self
-                .pull_allows_parking(task, &sandbox, &token, number, checks, observed)
+                .pull_allows_parking(task, &sandbox, &token, (number, source), checks, observed)
                 .await?;
             if observed
                 .pr
@@ -4678,6 +4832,16 @@ impl App {
         };
         if let Some(read) = discovery {
             read.listed(&current, &closed);
+            if let Some(number) = observed.pr.filter(|pr| pr.open).map(|pr| pr.number)
+                && stored_open.contains(&number)
+                && observed.fresh_head
+                && !observed.unavailable
+                && branch.iter().all(|pr| pr.number != number)
+                && let Some(open) = &mut read.open
+                && !open.contains(&number)
+            {
+                open.push(number);
+            }
         }
         if purpose != PrVerification::Display {
             return Ok((current == branch).then_some(facts));
@@ -4695,7 +4859,8 @@ impl App {
                 if let Some(pr) = current.iter().find(|pr| pr.number == number) {
                     unchanged(pr) && head.is_none_or(|sha| sha == pr.head_sha)
                 } else {
-                    tracked == Some(number) && branch.iter().all(|pr| pr.number != number)
+                    (tracked == Some(number) || stored_open.contains(&number))
+                        && branch.iter().all(|pr| pr.number != number)
                 }
             };
             let blocker_survived = !verified
@@ -4791,15 +4956,43 @@ impl App {
         task: &TaskRecord,
         sandbox: &SandboxRecord,
         token: &Secret,
-        number: u64,
+        (number, source): (u64, Option<&str>),
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
     ) -> AppResult<Option<GhPull>> {
         use yulius_domain::ci::CiRef;
-        let read = || {
-            self.deps
+        let read = async || {
+            if purpose == PrVerification::Display
+                && crate::ports::github::current_purpose()
+                    == crate::ports::github::GitHubPurpose::Display
+                && let Some(pull) = self
+                    .deps
+                    .store
+                    .terminal_pull(&task.id, Some(number))
+                    .await?
+            {
+                return Ok(pull);
+            }
+            let pull = self
+                .deps
                 .github
                 .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, number)
+                .await?;
+            if pull.number != number
+                || (is_open(&pull)
+                    && source.is_some_and(|branch| pull.from_fork || branch != pull.head))
+            {
+                return Err(AppError::Upstream(
+                    "GitHub returned a different pull request or source branch".into(),
+                ));
+            }
+            if !is_open(&pull) {
+                self.deps
+                    .store
+                    .remember_pull_observation(&task.id, &pull)
+                    .await?;
+            }
+            Ok::<_, AppError>(pull)
         };
         // Each unfinished or unreadable check belongs to the PR being verified.
         if observed.pr.is_none_or(|pr| pr.number != number) {
@@ -5196,7 +5389,12 @@ impl App {
         };
         let profile = delivery_profile(&sandbox);
         match self
-            .dlv_observe(&sandbox, task, &profile, Some(&token))
+            .dlv_observe(
+                &sandbox,
+                task,
+                &profile,
+                ObserveAccess::Provided(Some(&token)),
+            )
             .await
         {
             Ok(observed) => match observed.pr_state() {
@@ -5305,6 +5503,164 @@ impl App {
         }
     }
 
+    // A confirmed branch identity must outlive the process that observed it. The normal
+    // opening transaction also retires a closed-unmerged snapshot and records the base for
+    // landing recovery. Its compare-and-set preserves a competing or already merged delivery.
+    async fn bind_observed_open_pull(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskId,
+        pull: &GhPull,
+    ) -> AppResult<()> {
+        if pull.base == delivery_profile(sandbox).integration_branch {
+            let next = DeliveryRecord {
+                task_id: task.clone(),
+                stage: DeliveryStage::PrOpen,
+                pr_number: Some(pull.number),
+                updated_at: self.now(),
+            };
+            if self
+                .dlv_transition_at(
+                    &sandbox.id,
+                    &DeliveryStage::None,
+                    &next,
+                    Some(&pull.base),
+                    None,
+                )
+                .await?
+            {
+                return Ok(());
+            }
+        }
+        // The primary delivery can stay merged while its task branch has an open follow-up.
+        // Replacing the observation retires any stale closure atomically, on any base branch.
+        self.deps.store.remember_pull_observation(task, pull).await
+    }
+
+    /// Discover external follow-ups once per repository on the delivery tick. A task read
+    /// can then verify a new number without probing each terminal branch for replacements.
+    async fn refresh_terminal_branches(&self, sandbox: &SandboxRecord) -> AppResult<()> {
+        const PAGE: u32 = 24;
+        let after = self
+            .terminal_scan_after
+            .lock()
+            .map_err(AppError::internal)?
+            .get(&sandbox.id)
+            .cloned();
+        let store = &self.deps.store;
+        let candidates = store
+            .terminal_branches_for_discovery(&sandbox.id, after.as_ref(), PAGE)
+            .await?;
+        // At most one page reserves branch publication slots on a tick. Rotate even if a
+        // credential or a single upstream pull is unavailable, so other pages get their turn.
+        {
+            let mut cursors = self
+                .terminal_scan_after
+                .lock()
+                .map_err(AppError::internal)?;
+            if candidates.len() == PAGE as usize
+                && let Some(last) = candidates.last()
+            {
+                cursors.insert(sandbox.id.clone(), last.task.clone());
+            } else {
+                cursors.remove(&sandbox.id);
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let reads: Vec<_> = candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                let task = &candidate.task;
+                let read = self.observed_pulls.begin_branch(&sandbox.id, task).ok()?;
+                let known = self
+                    .observed_pulls
+                    .known_pull(&sandbox.id, task)
+                    .flatten()
+                    .filter(|p| p.open)
+                    .map(|p| p.number)
+                    .or_else(|| {
+                        is_open(&candidate.observation).then_some(candidate.observation.number)
+                    });
+                Some((candidate, read, known))
+            })
+            .collect();
+        let token = self.dlv_installation_token(sandbox).await?;
+        let (owner, repo) = (&sandbox.repo_owner, &sandbox.repo_name);
+        let github = &self.deps.github;
+        for (candidate, _, _) in &reads {
+            if let Some(number) = candidate.pending_landing {
+                let refreshed = crate::ports::github::for_purpose(
+                    crate::ports::github::GitHubPurpose::Merges,
+                    github.get_pull(&token, owner, repo, number),
+                )
+                .await;
+                if let Ok(pull) = refreshed
+                    && pull.number == number
+                    && let Some(landing) = evidence::Landing::closed_pull(&pull)
+                {
+                    store
+                        .remember_pull_observation(&candidate.task, &pull)
+                        .await?;
+                    store
+                        .landed_sha(&candidate.task, Some(pull.number), Some(&landing))
+                        .await?;
+                }
+            }
+        }
+        let pulls = github.list_pulls(&token, owner, repo, None).await?;
+        for (candidate, read, known) in reads {
+            let (task, branch, terminal) =
+                (candidate.task, candidate.branch, candidate.observation);
+            let newest = pulls
+                .iter()
+                .filter(|p| !p.from_fork && p.head == branch && is_open(p))
+                .max_by_key(|p| p.number);
+            // A listing may lag a closure. Only a current numbered response can reopen
+            // an already closed identity. A missing listing alone cannot retire a follow-up.
+            let mut confirm = known;
+            if let Some(listed) = newest {
+                match store.terminal_pull(&task, Some(listed.number)).await? {
+                    Some(closed) if !closed.merged => confirm = Some(listed.number),
+                    None if listed.number >= terminal.number || known == Some(listed.number) => {
+                        if !is_open(&terminal) || terminal.number != listed.number {
+                            self.bind_observed_open_pull(sandbox, &task, listed).await?;
+                        }
+                        read.record_branch(&task, terminal.number, Some(listed.number));
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            let Some(number) = confirm else { continue };
+            let Ok(pull) = github.confirm_pull(&token, owner, repo, number).await else {
+                continue;
+            };
+            if pull.number != number {
+                continue;
+            }
+            if is_open(&pull) {
+                if !pull.from_fork
+                    && pull.head == branch
+                    && !(number == terminal.number && terminal.merged)
+                {
+                    self.bind_observed_open_pull(sandbox, &task, &pull).await?;
+                    read.record_branch(&task, terminal.number, Some(number));
+                }
+            } else {
+                store.remember_pull_observation(&task, &pull).await?;
+                if let Some(landing) = evidence::Landing::closed_pull(&pull) {
+                    store
+                        .landed_sha(&task, Some(number), Some(&landing))
+                        .await?;
+                }
+                read.record_terminal(&task, &pull);
+            }
+        }
+        Ok(())
+    }
+
     /// Reconciles deliveries in progress with GitHub in the background (#35): a pull request
     /// merged or closed outside Yulius moves its task on the Git board without anyone opening
     /// the task. Uses each sandbox's installation token; failures leave the stage as recorded.
@@ -5314,6 +5670,14 @@ impl App {
             return;
         };
         for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+            if let Err(error) = crate::ports::github::for_purpose(
+                crate::ports::github::GitHubPurpose::Display,
+                self.refresh_terminal_branches(sandbox),
+            )
+            .await
+            {
+                tracing::debug!(%error, "could not refresh open follow-up pull requests");
+            }
             let Ok(records) = store.deliveries(&sandbox.id).await else {
                 continue;
             };
@@ -5339,7 +5703,12 @@ impl App {
             let profile = delivery_profile(sandbox);
             for (task, before) in open {
                 if let Ok(observed) = self
-                    .dlv_observe(sandbox, &task, &profile, Some(&token))
+                    .dlv_observe(
+                        sandbox,
+                        &task,
+                        &profile,
+                        ObserveAccess::Provided(Some(&token)),
+                    )
                     .await
                 {
                     self.retry_errored_checks(&task, &observed).await;
@@ -5625,10 +5994,28 @@ impl App {
         task: &TaskRecord,
         token: &Secret,
     ) -> Result<MergedPull, MergeFailure> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Merges,
+            self.dlv_merge_inner(ctx, task, token),
+        )
+        .await
+    }
+
+    async fn dlv_merge_inner(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+        token: &Secret,
+    ) -> Result<MergedPull, MergeFailure> {
         let sandbox = self.dlv_sandbox_of(task).await?;
         let profile = delivery_profile(&sandbox);
         let observed = self
-            .dlv_observe(&sandbox, task, &profile, Some(token))
+            .dlv_observe(
+                &sandbox,
+                task,
+                &profile,
+                ObserveAccess::Provided(Some(token)),
+            )
             .await?;
         dlv::apply(
             &observed.record.stage,
@@ -5675,21 +6062,31 @@ impl App {
             .await?;
         // GitHub guards the head in the merge request, but the PR can be retargeted.
         // Bind evidence only when the closed PR confirms where this merge actually landed.
-        let landing = self
+        let closed = self
             .deps
             .github
             .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, pull.number)
             .await
             .ok()
-            .and_then(|merged| {
-                evidence::Landing::confirmed_merge(
-                    &merged,
-                    &profile.integration_branch,
-                    pull.number,
-                    &pull.head_sha,
-                    &merge_sha,
-                )
-            });
+            .filter(|p| p.number == pull.number && p.merged);
+        if let Some(closed) = &closed
+            && let Err(error) = self
+                .deps
+                .store
+                .remember_pull_observation(&task.id, closed)
+                .await
+        {
+            tracing::warn!(%error, task = %task.id, "could not retain the merged pull for display");
+        }
+        let landing = closed.as_ref().and_then(|merged| {
+            evidence::Landing::confirmed_merge(
+                merged,
+                &profile.integration_branch,
+                pull.number,
+                &pull.head_sha,
+                &merge_sha,
+            )
+        });
         let commits = crate::agent_wait::merge_commits(
             landing.as_ref().map(|l| l.branch.as_str()),
             Some(&merge_sha),
@@ -7126,6 +7523,14 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn tool_delivery_status(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Display,
+            self.delivery_status_read(ctx, args),
+        )
+        .await
+    }
+
+    async fn delivery_status_read(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
         let task = self
             .deps
             .store

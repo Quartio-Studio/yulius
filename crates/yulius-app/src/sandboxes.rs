@@ -288,6 +288,23 @@ impl OverviewRead {
         self.publish(PullObservation::Branch(task.clone(), pr));
     }
 
+    pub(crate) fn record_terminal(self, task: &TaskId, pull: &crate::ports::github::GhPull) {
+        self.record_identity(
+            task,
+            ObservedPull {
+                head: Some(Arc::from(pull.head_sha.as_str())),
+                number: pull.number,
+                open: false,
+                conflicts: false,
+                signal: Some(if pull.merged {
+                    PullSignal::Merged
+                } else {
+                    PullSignal::InReview
+                }),
+            },
+        );
+    }
+
     pub(crate) fn verified(self, task: &TaskId, pr: Option<ObservedPull>) {
         self.publish(PullObservation::Verified(task.clone(), pr));
     }
@@ -316,7 +333,11 @@ impl ObservedPulls {
         self.begin_read(sandbox, None)
     }
 
-    fn begin_branch(&self, sandbox: &SandboxId, task: &TaskId) -> AppResult<OverviewRead> {
+    pub(crate) fn begin_branch(
+        &self,
+        sandbox: &SandboxId,
+        task: &TaskId,
+    ) -> AppResult<OverviewRead> {
         self.begin_read(sandbox, Some(task))
     }
 
@@ -509,9 +530,16 @@ impl App {
         for_start_rule: bool,
     ) -> AppResult<Vec<TaskGroup>> {
         let requests = OnceCell::new();
-        let parked = self
-            .parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect())
-            .await;
+        let purpose = if for_start_rule {
+            crate::ports::github::GitHubPurpose::Other
+        } else {
+            crate::ports::github::GitHubPurpose::Display
+        };
+        let parked = crate::ports::github::for_purpose(
+            purpose,
+            self.parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect()),
+        )
+        .await;
         self.groups_with_parked(tasks, &requests, &parked, for_start_rule)
             .await
     }
@@ -571,6 +599,19 @@ impl App {
         requests: &OnceCell<HashSet<String>>,
         deadline: Instant,
     ) -> ParkedStatus {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Display,
+            self.parked_status_inner(task, requests, deadline),
+        )
+        .await
+    }
+
+    async fn parked_status_inner(
+        &self,
+        task: &TaskRecord,
+        requests: &OnceCell<HashSet<String>>,
+        deadline: Instant,
+    ) -> ParkedStatus {
         use crate::delivery::PrVerification;
         // Seed from memory before waiting on any store or browser lock. Once
         // the record is read, a timed-out lookup can still name its delivery.
@@ -586,12 +627,29 @@ impl App {
         let check = async {
             let record = self.deps.store.delivery(&task.id).await?;
             observed = self.known_parked_pull(task, record.as_ref());
+            self.restore_parked_followup(task, &mut observed).await?;
             let requested = requests
                 .get_or_init(|| self.browser_requests(&task.sandbox_id))
                 .await;
             self.read_parked_local_work(task, Some(requested), &mut status)
                 .await?;
             if status.facts.parked_has_local_work_or_request() {
+                return Ok(());
+            }
+            if crate::ports::github::current_purpose()
+                == crate::ports::github::GitHubPurpose::Display
+                && let Some(pull) = self.display_terminal(task, record.as_ref()).await?
+                && observed
+                    .pr
+                    .is_none_or(|known| !known.open || known.number == pull.number)
+            {
+                observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                    number: pull.number,
+                    open: false,
+                });
+                observed.note_current(&pull);
+                status.facts.pull = observed.signal;
+                verified = true;
                 return Ok(());
             }
             if let Some(pr) = observed.pr.filter(|pr| pr.open)
@@ -611,6 +669,18 @@ impl App {
                     deadline,
                 ));
             }
+            // An open delivery can close and reveal a different PR in this very read.
+            // Publish that replacement in request order so the terminal shortcut sees it.
+            let tracking = record
+                .as_ref()
+                .filter(|r| r.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
+                .and_then(|r| r.pr_number)
+                .and_then(|number| {
+                    self.observed_pulls
+                        .begin_branch(&task.sandbox_id, &task.id)
+                        .ok()
+                        .map(|read| (number, read))
+                });
             let prs = self
                 .verify_task_prs(
                     task,
@@ -620,6 +690,11 @@ impl App {
                     discovery.as_mut(),
                 )
                 .await?;
+            if let Some((number, read)) = tracking
+                && let Some(replacement) = observed.pr.filter(|pr| pr.open && pr.number != number)
+            {
+                read.record_branch(&task.id, number, Some(replacement.number));
+            }
             let current = if let Some(prs) = prs {
                 status.followup_unverified = prs.followup_unverified;
                 let current = self
@@ -635,6 +710,7 @@ impl App {
                 if status.followup_unverified {
                     // Another reader can discover an open replacement while we are rechecking local work.
                     observed = self.known_parked_pull(task, record.as_ref());
+                    self.restore_parked_followup(task, &mut observed).await?;
                 }
                 current && !(status.followup_unverified && observed.pr.is_some_and(|pr| pr.open))
             } else {

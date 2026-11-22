@@ -61,6 +61,8 @@ flowchart LR
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
 ```
 
+Task delivery stores observed terminal PR metadata in SQLite. The GitHub adapter coalesces credential-scoped display GETs, revalidates with ETags and records installation attempts at the HTTP transport. The delivery reconciliation tick discovers new PRs on parked terminal branches. GitHub response headers supply the remaining quota and reset time. [ADR-0447](decisions/0447-task-display-shares-github-reads-and-yields-to-delivery.md)
+
 ## Codex
 
 A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,
@@ -3283,6 +3285,7 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - **Candidate gate.** The integration branch's run of that exact commit, or a
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
+  Inventory includes retained full integration and candidate runs and configuration refusals at the current integration head after unrelated PR runs fill its planning window. An active staging candidate defers admission of a new integration suite.
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).

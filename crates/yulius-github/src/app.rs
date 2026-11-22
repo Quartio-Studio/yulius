@@ -135,6 +135,10 @@ impl GitHubClient {
             token: Secret::new(wire.token),
             expires_at,
         };
+        self.inner
+            .transport
+            .meter
+            .register(installation_id, token.token.expose(), expires_at, now);
         if let Ok(mut cache) = self.inner.tokens.lock() {
             if cache.len() >= MAX_CACHED_TOKENS {
                 cache.retain(|_, t| t.expires_at.millis_since(now) > TOKEN_REFRESH_MARGIN_MS);

@@ -1,0 +1,83 @@
+---
+yulius-task: 70138e35-5fd4-4a6e-992f-34354142a209
+status: done
+---
+
+# SPEC-609 Reading tasks within the GitHub request budget
+
+## Goal
+
+Keep task polling affordable and show operators which work consumed GitHub requests during a shortage.
+
+## Context
+
+On 21 November the instance reported exhaustion at 14:18:07 and 22:13:06 UTC, with 579 and 904 seconds until retry. The staging warning identifies a refused caller. The incident report names 15 parked tasks with merged pull requests across two projects and a script that read two lists and approximately 20 deliveries every two minutes. The existing transport retains neither a successful-request journal nor hourly counters. The task sandbox has no host journal. The historical distribution must therefore distinguish measured polling costs, extrapolation and unattributed traffic. Task #592 owns task presentation on refusal.
+
+### Baseline before product changes
+
+At revision 47e0d70e2 the two consecutive task-list reads of a parked merged fixture made 0 and 1 branch-list calls within their display deadline. Both delivery reads made one numbered PR call and zero checks calls. Three concurrent authenticated open-list readers made three HTTP GETs on the fake server. The repeated delivery and concurrent-reader assertions failed on those counts.
+
+At 30 polls/hour, 15 merged parked rows at the warmed fixture rate of one branch-list request per row give 450 branch lists. Twenty merged delivery reads per cycle give 600 numbered GETs. This models 1,050 PR requests (21% of 5,000) in a full hour, assuming one page per listing. A delivery using the caller's user token spends that user's quota. The installation share depends on the actual credential. Open PRs add checks, UI poll counts are unknown, and the observed 15 tasks are a snapshot at 22:13. The warnings and this replay cannot attribute the remaining traffic to staging, CI, merges, imports, other readers or external clients. The first attempt to read organization API Insights for the earlier window returned HTTP 403 because the installation itself was rate limited. After reset, the same installation received HTTP 403 “Resource not accessible by integration” for the 13:27:46–14:27:46 UTC window. The organization owner reports HTTP 404 for both route-stat windows and no outside counts are available. They report approximately 13 merges, an open web UI, and three extra bulk passes of roughly 55, 18 and 60 delivery reads before 22:13. If all those deliveries were merged, the bulk passes add 133 GETs, bringing the estimated script total to 1,183 (23.7% of 5,000). Even if every modeled request used the installation, that scenario leaves about 3,817 calls unexplained. Each merge involves head and check reads, the merge and confirmation; CI status publication, staging reconciliation, general server traffic, other clients and UI polls also use GitHub. The log gives neither their successful-request counts nor credentials. The earlier hour has only the exhaustion and retry evidence. The script has since stopped.
+
+These figures depend on the paths that actually completed. The old parked verifier can re-list a branch after checking it. Two completed one-page branch lists per parked row would raise the modeled script total from 1,183 to 1,633. The web sidebar's visible project watch refreshes its parked-task list and Git overview once per minute, plus event-driven reads paced at three seconds per source. For a single tab showing eight parked merged tasks for a full hour, one branch list per row implies another 480 requests; two imply 960. An overview adds an open-PR listing and, for readable checks, a check-runs and combined-status read per open head. The staging tick is once per minute per eligible queue and reads the integration ref even to evaluate its target. Open deliveries are reconciled every three minutes. Hours spent open, active queue counts, open-head lifetimes, retries and actual UI events are unknown. These rates explain how the recorded operations could add up without identifying a dominant caller. [Confirmed regression, issue #1650](https://github.com/Quartio-Studio/yulius/issues/1650) [GitHub organization API Insights](https://docs.github.com/en/rest/orgs/api-insights#get-route-stats-by-actor)
+
+The hour ending at the warning and GitHub's quota window also differ. If the reported retry interval ends at the hourly reset, the evening window was 21:28:10–22:28:10 UTC and ran for 44 minutes 56 seconds before exhaustion. A two-minute poller then had 22 or 23 cycles in that window before refusal. At 35 modeled PR reads per cycle, that is 770–805 regular reads, or 903–938 if all 133 bulk reads also landed in the window. With two completed branch listings per parked row, the corresponding estimate including all bulk reads is 1,233–1,283. The afternoon retry implies a reset at 14:27:46 and 50 minutes 21 seconds elapsed. No matching afternoon workload was reported.
+
+## Requirements
+
+- GB-001 Measure list and delivery requests on the existing implementation before changing them. Report the workload assumptions and what can be attributed.
+- GB-002 Serve observed terminal pull requests locally. Coalesce open display refreshes and use the response ETag on expiry. Scope cached evidence to its repository and access rights. Keep fresh action checks.
+- GB-003 Attribute actual HTTP attempts to display, CI statuses, merges, staging, imports and other. Serve counters and GitHub's remaining quota with reset time in the Status panel and instance tool.
+- GB-004 Suspend display refreshes when the remaining quota reaches its reserve. Report the pause, allow operational requests, and resume display refreshes when the window resets.
+
+## Plan
+
+- [x] Measure the existing polling paths and document the incident evidence
+- [x] Share conditional display reads and retain terminal pull requests
+- [x] Attribute hourly requests and reserve capacity for delivery
+- [x] Serve budget evidence in instance status and the Status panel
+- [x] Persist confirmed reopenings across a restart before any display read
+- [x] Keep fresh prerequisite verification when scheduling after all tasks
+- [x] Verify the behavior, obtain independent review and deliver to dev
+
+## Acceptance criteria
+
+Repeated list and delivery reads of a known merged or closed-unmerged PR make zero GitHub requests about that number. A replacement PR is tracked independently. Concurrent readers share the open refresh and revalidate with its ETag. The Status panel and instance tool report observed hourly counts and remaining capacity. At the reserve the pause is visible, merges, CI status writes and staging can proceed, and the next window admits display reads. Count retries and 304 responses as HTTP attempts. GitHub supplies the actual remaining quota.
+
+## Test plan
+
+Count calls at list and delivery entry points on a synthetic parked task. Exercise concurrent readers, conditional responses, distinct credentials, low remaining capacity and reset at the transport. Verify delivery actions and status serialization through existing interfaces.
+
+## Decisions
+
+[Decision 0447](../../docs/decisions/0447-task-display-shares-github-reads-and-yields-to-delivery.md) describes the reserve and cache lifetime. Use the same transport to observe response headers and count attempts, including retries. Reading the counters itself must cost zero GitHub requests.
+
+## Evidence
+
+The fake GitHub transport suite exercised concurrent readers of an open PR, credential isolation, ETag revalidation, physical retries, all six purposes, quota-window rollover and the reserve. The two parked-task regressions saw zero branch-list and zero numbered-PR calls on consecutive list and delivery reads. The counter readings are process-local, with a separate lower bound for GitHub-charged requests outside the observed attempts.
+
+Manually changing the reserve from 10% to zero in an isolated source copy made the transport regression fail: it expected DisplayPaused at 500 remaining and received a successful repository read. The unmodified suite passed. Vidoc is disabled for this project.
+
+Against the first reviewed implementation, four integration regressions failed. A reopened PR still showed stage `none`, the vanished replacement caused two unnecessary branch reads, the late merge SHA yielded no evidence, and reading the staging receipt still fetched a ref while display was paused. The upgrade test covers recorded merges both with and without landing evidence. Historical PR titles use their number and unknown source branches are left empty. Reconciliation rotates through a maximum of 24 terminal tasks per repository every three minutes. The Status panel and instance tool read their counters without calling GitHub.
+
+The pre-fix HTTP adapter accounted for one attempt on a same-origin redirect that made two requests. The explicit-hop regression checks both the two counts and refusal of a second display hop at the reserve. The full browser run passed 1,323 tests with one existing skip. After syncing the latest dev browser test, the affected Status, subscriptions and Antigravity files passed all 62 tests.
+
+The terminal receipt integration test exposed an existing mismatch after merging dev. SPEC-605 requires the receipt to retain the just-merged PR’s review round, and its old assertion expected an empty array. The test now checks the bound number, exact head and verdict. [Issue #1656](https://github.com/Quartio-Studio/yulius/issues/1656)
+
+Confirming a contradictory open listing uses a numbered, credential-scoped conditional request subject to the display reserve. In a regression with a warm numbered response, the pre-fix adapter returned it without revalidation (zero 304s, expected one). A local HTTP/2 server that refused the update request observed three streams for one metered send before implicit retries were disabled.
+
+The restart recovery slice uses the existing compare-and-set delivery transaction to bind a confirmed open PR, record its base for landing recovery, and retire its old closure together. A pre-fix restart test lost the open number (expected PR 1), and an external merge before any intervening delivery read remained at stage none. Background reconciliation and Git overview exercise both entry points. The compare-and-set leaves an already merged delivery on its recorded stage.
+
+Both restart regressions then passed. Local verification included `scripts/dev quick`, workspace Clippy with warnings denied, 45 fake GitHub HTTP tests, six release adapter tests and five database migration and discovery tests. The scoped task, staging and cockpit suite passed all 231 tests before the recovery slice.
+
+For a parked task with a merged primary PR, a directly confirmed open follow-up has its own stored observation. It cannot replace the primary delivery. Only its identity seeds a cold display read, which verifies open checks under the display budget. A closed follow-up no longer supplies that hint. On the earlier implementation the restart regression showed merged PR #1 instead of reopened PR #2.
+
+The reopened-follow-up test passed after the fix, including #2’s failed checks on a cold task list, #1’s preserved merged delivery, and the later independent closure of #2. All 46 HTTP adapter tests passed after integrating SPEC-608. An isolated checkout of dev reproduced the two bounded-read expectation failures tracked in [issue #1666](https://github.com/Quartio-Studio/yulius/issues/1666) and the empty review-round receipt in the gated-merge test at 792913c65. The four task-list race tests passed individually on that dev revision. Task #592 owns the parked Git timeout repair and task #540 owns the review-round repairs.
+
+The final recovery checks cover an open follow-up that disappears from a branch listing, and a primary merge whose SHA arrives after a later follow-up opens and closes. The earlier implementation returned null for the primary’s landing evidence. Reconciliation now selects an incomplete landing independently of the PR shown on the task, within the same bounded scan.
+
+The prerequisite regression created a task with `after_all_tasks` between an external failing follow-up opening and the next reconciliation tick. Its rule included the parked predecessor. The existing request-purpose inheritance already gives this action a fresh read. The cold-display regression now seeds a finished spec in the database and checks that the numbered endpoint was actually read. An expired memory-only listing can clear, while a durably confirmed follow-up survives omission. The full browser suite passed 1,325 tests with one existing skip.
+
+On the isolated pre-fix head fa770bd0d, the chain queued its successor while the omitted confirmed PR was failing, and the task showed merged #1 after temporary #3 vanished instead of showing failing #2. Both regressions passed after the candidate set included the stored follow-up. With two independently persisted open follow-ups targeting different bases, the one-number query showed healthy #3 while omitted #2 was behind. Verification now takes the union of stored, listed and tracked numbers. Verification admits up to 30 distinct PRs. With more candidates the prerequisite stays chained and no numbered reads start.
+
+All 265 tests in the complete `delivery` and `agent_hooks` modules passed with process isolation after merging #540’s review-round repair and #592’s timeout repair from dev. The bounded follow-up control failed on d868c20c1 and passed after the fix, including the 31-PR overflow and release after the checks settle. Independent review approved 30fcf2f8a. The Status panel and MCP counter tests passed on synthetic responses. No historical per-purpose export exists, and the verification did not induce a live installation shortage.

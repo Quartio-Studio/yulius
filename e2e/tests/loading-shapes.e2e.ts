@@ -256,13 +256,21 @@ test('the sidebar and Tasks lists load as task rows of the real rows’ height',
   // next rendering update. A fresh offscreen copy exercises that state on demand.
   const skippedHeight = await browser.evaluate(async () => {
     const row = document.querySelector<HTMLElement>('#main .tl-row')!;
+    const list = row.closest<HTMLElement>('.tl')!;
+    // Match the live container query width. A list repaint must not remove the measured row.
+    const probe = list.cloneNode(false) as HTMLElement;
+    probe.inert = true;
+    probe.style.position = 'fixed';
+    probe.style.top = '100000px';
+    probe.style.width = `${list.getBoundingClientRect().width}px`;
     const copy = row.cloneNode(true) as HTMLElement;
-    copy.style.position = 'absolute';
-    copy.style.top = '100000px';
-    row.parentElement!.prepend(copy);
+    probe.append(copy);
+    document.body.append(probe);
+    // Selecting the active filter triggers the same list repaint as a store update.
+    document.querySelector<HTMLButtonElement>('#main .tl-tab[aria-checked="true"]')!.click();
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     const height = copy.getBoundingClientRect().height;
-    copy.remove();
+    probe.remove();
     return height;
   });
   expect(skippedHeight).toBe(pageRow!.height);

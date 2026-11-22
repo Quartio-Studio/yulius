@@ -129,6 +129,18 @@ pub trait McpStore: Send + Sync {
     async fn delete_mcp_server(&self, id: &str) -> AppResult<bool>;
 }
 
+/// One task in the bounded background scan of GitHub observations.
+pub struct PullDiscovery {
+    /// Task owning the source branch.
+    pub task: TaskId,
+    /// The task's current source branch.
+    pub branch: String,
+    /// Open follow-up identity if known, otherwise the most recent terminal PR.
+    pub observation: super::github::GhPull,
+    /// A merged PR whose landing still needs confirmation, independent of the open identity.
+    pub pending_landing: Option<u64>,
+}
+
 /// Delivery and environment-run persistence (CP8). Records live in [`crate::delivery`].
 #[async_trait]
 pub trait DeliveryStore: Send + Sync {
@@ -137,6 +149,31 @@ pub trait DeliveryStore: Send + Sync {
         &self,
         task: &yulius_domain::ids::TaskId,
     ) -> crate::error::AppResult<Option<crate::delivery::DeliveryRecord>>;
+    /// Parked merged branches and branches whose last PR closed that may acquire a new PR.
+    async fn terminal_branches_for_discovery(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        after: Option<&TaskId>,
+        limit: u32,
+    ) -> crate::error::AppResult<Vec<PullDiscovery>>;
+    /// Last directly observed terminal PR of the task, optionally by number.
+    async fn terminal_pull(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        number: Option<u64>,
+    ) -> crate::error::AppResult<Option<super::github::GhPull>>;
+    /// Last observed open follow-up identity, independently of the primary delivery stage.
+    async fn open_followup(&self, task: &TaskId) -> AppResult<Option<u64>> {
+        Ok(self.open_followups(task, 1).await?.first().copied())
+    }
+    /// Up to `limit` confirmed open PR numbers, newest first, including other bases.
+    async fn open_followups(&self, task: &TaskId, limit: usize) -> AppResult<Vec<u64>>;
+    /// Records a terminal pull or a positively observed open follow-up. A merged number stays merged.
+    async fn remember_pull_observation(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        pull: &super::github::GhPull,
+    ) -> crate::error::AppResult<()>;
     /// One coherent read of the open owner PR, task, decisions and pauses before typing.
     /// An unavailable recipient or an unreadable current attention reason defers the notice.
     async fn armed_notice_recipient(
@@ -525,12 +562,14 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         commits: &[String],
     ) -> AppResult<Vec<String>>;
-    /// Bounded scheduler history, most recently admitted first. A new run may
-    /// inherit an older queue position from the head it superseded.
+    /// Recent admissions plus full integration and candidate runs at the current integration head.
+    /// Retained configuration refusals invalidate earlier verdicts there.
+    /// A new run may inherit an older queue position from the head it superseded.
     async fn ci_planning_runs(
         &self,
         sandbox: &SandboxId,
         limit: u32,
+        integration_head: Option<&yulius_domain::ci::Target>,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Runs of a sandbox for one commit, newest first.
     async fn ci_runs_for_sha(

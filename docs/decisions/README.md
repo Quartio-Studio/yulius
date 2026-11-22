@@ -502,11 +502,13 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0445 -->
 - [0446](0446-keep-github-availability-separate-from-task-state.md): Keep GitHub availability separate from task state.
 <!-- ADR 0446 -->
+- [0447](0447-task-display-shares-github-reads-and-yields-to-delivery.md): Task display shares GitHub reads and yields to delivery.
 <!-- ADR 0447 -->
 - [0448](0448-repository-file-readers-run-before-merge.md): Repository file readers run before merge.
 <!-- ADR 0448 -->
 - [0449](0449-use-codex-quota-headroom-and-preserve-idle-moves.md) Automatic Codex placement prefers the most remaining quota in the tightest binding window. A moved idle Codex task keeps its activity when the replacement opens without a turn.
 <!-- ADR 0449 -->
+- [0450](0450-attribute-integration-test-failures-in-first-parent-order.md) Attribute integration test failures in first-parent order.
 <!-- ADR 0450 -->
 <!-- ADR 0451 -->
 <!-- ADR 0452 -->

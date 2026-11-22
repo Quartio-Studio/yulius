@@ -7,9 +7,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-22
 
 - A live task with an achieved goal keeps its session slot and chained successor while Yulius verifies a recorded integration failure on its open PR. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+- CI reuses the current integration head’s candidate verdict even after newer pull requests fill its planning history. An active staging candidate holds the full-suite slot until it finishes. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
+- The task-list loading test measures offscreen row height through a live list repaint. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
 
 ## 2026-11-21
 
+- Task reads reuse terminal pull requests and share open refreshes. Status reports the installation quota and request purposes, including when display yields capacity to delivery. [SPEC-609](../.ai/specs/SPEC-609-reading-tasks-must-not-spend-the-github.md)
 - Parked-task deadline tests cover a blocked browser lookup, concurrent Git reads and recovery from a verified PR failure. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
 - A parked PR owner receives the failing integration job in its resumed session. A busy subscription or a human decision keeps the notice pending until the watcher can verify it again.
 
