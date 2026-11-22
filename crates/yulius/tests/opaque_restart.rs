@@ -94,7 +94,8 @@ async fn start_from(
         .stdout(log.try_clone()?)
         .stderr(log)
         .kill_on_drop(true)
-        .spawn()?;
+        .spawn()
+        .map_err(|error| format!("starting the server from {}: {error}", exe.display()))?;
     let health = format!("http://{internal}/internal/healthz");
     let _ = rustls::crypto::ring::default_provider().install_default();
     let http = reqwest::Client::builder().no_proxy().build()?;
@@ -689,10 +690,16 @@ async fn an_invalid_handoff_directory_reports_the_kind_and_still_serves() -> Res
         let port = InternalPort::reserve()?;
         let mut server = start(dir.path(), &port, Route::Direct).await?;
         stop(&mut server).await?;
-        let warnings = std::fs::read_to_string(dir.path().join("fixture-serve.log"))?;
-        assert!(
-            warnings.contains("cannot adopt opaque tunnels")
-                && warnings.contains("PermissionDenied")
+        let mut next = start(dir.path(), &port, Route::Direct).await?;
+        stop(&mut next).await?;
+        // A failed restart read reports both generations' warnings as plain text.
+        let warnings = handoff_warnings(dir.path());
+        assert_eq!(
+            warnings
+                .matches("cannot adopt opaque tunnels kind=PermissionDenied")
+                .count(),
+            2,
+            "{warnings}"
         );
         Ok(())
     })

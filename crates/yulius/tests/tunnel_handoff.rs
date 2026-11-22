@@ -73,6 +73,46 @@ async fn a_successor_adopts_the_original_unix_and_tcp_peers_once() -> io::Result
     .await?
 }
 
+// The departing server runs the helper from /proc/self/exe; process lists still name Yulius.
+#[tokio::test]
+async fn the_waiting_helper_names_itself_yulius_in_process_lists() -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        let (_held, left) = UnixStream::pair()?;
+        let (_other, right) = UnixStream::pair()?;
+        let pair = Pair {
+            established: None,
+            expires: None,
+            sockets: [left.into_std()?.into(), right.into_std()?.into()],
+            state: b"named".to_vec(),
+        };
+        deposit(
+            Path::new(env!("CARGO_BIN_EXE_yulius")),
+            dir.path(),
+            vec![pair],
+        )
+        .await?;
+        let mut helpers = Vec::new();
+        for task in std::fs::read_dir("/proc/self/task")? {
+            let children = std::fs::read_to_string(task?.path().join("children"))?;
+            for pid in children.split_whitespace() {
+                let Ok(line) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                    continue;
+                };
+                let args: Vec<_> = line.split(|b| *b == 0).collect();
+                if args.contains(&b"hold-tunnels".as_slice()) {
+                    helpers.push(String::from_utf8_lossy(args[0]).into_owned());
+                }
+            }
+        }
+        assert_eq!(helpers, ["yulius"]);
+        assert_eq!(adopt(dir.path()).await?.len(), 1);
+        Ok(())
+    })
+    .await?
+}
+
 #[tokio::test]
 async fn an_overlapping_deposit_leaves_the_live_batch_for_its_successor() -> io::Result<()> {
     tokio::time::timeout(Duration::from_secs(10), async {

@@ -1,6 +1,6 @@
 ---
 yulius-task: 53390d34-4d7a-4418-9fd6-196d1dcb2d79
-status: done
+status: in-progress
 ---
 
 # SPEC-617 The opaque tunnel custodian runs the departing server's own image
@@ -30,6 +30,8 @@ The sibling `final_bytes_and_fin_during_restart_reach_the_half_closed_peer` fail
 - [x] Correct the cause with a test that fails without it
 - [x] Verify both directions on the surviving tunnel under concurrent load
 - [x] Approve the restart fix for delivery
+- [ ] Hold the fixture's handoff report with a test and name the custodian in process lists
+- [ ] Approve the review follow-up for delivery
 
 ## Acceptance criteria
 
