@@ -1,6 +1,6 @@
 ---
 yulius-task: 2a6cef0e-5b68-403c-8cea-fb84cb13271e
-status: in-progress
+status: done
 ---
 
 # SPEC-618 A test failure that names the change's own file makes no test flaky
@@ -60,7 +60,7 @@ were not its own, fix the cause, prove it, and say what lifts the quarantine.
 - [x] Leave a pull request's own-file failures out of the flaky count
 - [x] Record the rule in an ADR, the architecture and the changes
 - [x] Run the quarantined test and every touched test binary
-- [ ] Independent review approves the head
+- [x] Independent review approves the head
 
 ## Acceptance criteria
 
@@ -115,3 +115,13 @@ were not its own, fix the cause, prove it, and say what lifts the quarantine.
   `cargo doc -D warnings` for both libraries clean; `scripts/check_repository.py` passed.
 - The Yulius instance runs `aabf37091` (main); the rule acts on CI once a build with it is
   deployed there. Vidoc: disabled for this project, nothing scanned.
+- Review round 1 (yulius-reviewer) approved `f60ce3726` with three minors and three nits on own
+  code. Answered in the next commit: the texts now say a nested changed path is also named after
+  any `/` (pinned: `src/lib.rs` named by `crates/other/src/lib.rs`), a delay and never a wrong
+  quarantine; `local_ci::a_broken_job_counts_its_own_failures_too` pins the over-ten rule (with
+  `tests.len()` in place of `failing` it failed, "a broken job, not a flaky test"); the operations
+  guide and both module docs state the exception; the output line is printed only for a
+  quarantinable name and says "taken as the change's own"; ADR-0453's Consequences narrow the
+  content-check claim and name the `test`-like top-level file case, kept as a documented delay.
+  Afterwards: 1307 library tests, the full `yulius --test main` (2595 passed, fixture_hygiene
+  included), clippy, rustdoc, doctests and the repository check passed.
