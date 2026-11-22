@@ -418,3 +418,66 @@ async fn a_bad_notice_is_refused() -> TestResult {
     assert_eq!(long.title.chars().count(), yulius_app::notices::TITLE_MAX);
     Ok(())
 }
+
+/// NTC-009, AC-8: the digest lists a person's live notices with their keys, and leaves out the
+/// expired one and the one they dismissed; someone who sees none of them gets no digest.
+#[tokio::test]
+async fn the_digest_lists_live_notices_only() -> TestResult {
+    let p = people().await?;
+    p.w.h
+        .app
+        .post_notice(gate(&p.shop, "live", "Still red")?)
+        .await?;
+    p.w.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    p.w.h
+        .app
+        .post_notice(NewNotice {
+            expiry: Some(Expiry::parse("30m")?),
+            ..gate(&p.shop, "soon", "Soon gone")?
+        })
+        .await?;
+    p.w.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let dismissed =
+        p.w.h
+            .app
+            .post_notice(gate(&p.shop, "seen", "Seen already")?)
+            .await?;
+    p.w.h.app.dismiss_notice(&p.bob.0, &dismissed.id).await?;
+    p.w.h.clock.0.fetch_add(31 * MINUTE_MS, Ordering::SeqCst);
+
+    p.w.h.app.send_digests_now(None).await;
+    let digest = call(&p.w.h.router, Method::GET, "/api/me/digest", None, &p.bob.1).await?;
+    assert_eq!(digest.status, StatusCode::OK, "{}", digest.body);
+    let keys: Vec<&str> = digest.body["notices"]
+        .as_array()
+        .ok_or("notices")?
+        .iter()
+        .filter_map(|n| n["key"].as_str())
+        .collect();
+    assert_eq!(keys, ["gate:live"], "{}", digest.body);
+    let alice = call(
+        &p.w.h.router,
+        Method::GET,
+        "/api/me/digest",
+        None,
+        &p.alice.1,
+    )
+    .await?;
+    let alice_keys: Vec<&str> = alice.body["notices"]
+        .as_array()
+        .ok_or("notices")?
+        .iter()
+        .filter_map(|n| n["key"].as_str())
+        .collect();
+    assert_eq!(alice_keys, ["gate:seen", "gate:live"]);
+    let carol = call(
+        &p.w.h.router,
+        Method::GET,
+        "/api/me/digest",
+        None,
+        &p.carol.1,
+    )
+    .await?;
+    assert_eq!(carol.body, Value::Null, "carol sees no notice and no task");
+    Ok(())
+}
