@@ -96,10 +96,13 @@ pub(crate) async fn restore(
     }
 }
 
+// The departing server's own image, even after an update, a package upgrade or a rebuild
+// removed or rewrote the file at its install path (ADR-0456).
+const RUNNING_IMAGE: &str = "/proc/self/exe";
+
 pub(crate) async fn deposit(
     proxy: &EgressProxy,
     directory: &Path,
-    executable: &Path,
     relays: Option<&OutboundRelays>,
 ) -> io::Result<()> {
     let mut pairs = proxy.take_opaque_tunnels().await?;
@@ -132,7 +135,7 @@ pub(crate) async fn deposit(
         .recursive(true)
         .mode(0o700)
         .create(directory)?;
-    custodian::deposit(executable, directory, pairs).await
+    custodian::deposit(Path::new(RUNNING_IMAGE), directory, pairs).await
 }
 
 // On a delegated systemd service, a surviving child must leave the unit startable (ADR-0298).

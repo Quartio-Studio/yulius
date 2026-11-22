@@ -3976,7 +3976,9 @@ their copy state. Pausing preserves the first unwritten byte in each direction. 
 the copy resumes any pending write-half shutdown before marking that half closed.
 [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected descriptors
-and private copy state for one successor. Its two-minute deadline includes the time spent
+and private copy state for one successor. The departing server starts it from its own running
+image (`/proc/self/exe`), so a removed or half-written install path cannot stop the handoff
+([ADR-0456](decisions/0456-the-tunnel-custodian-runs-the-departing-servers-own-image.md)). Its two-minute deadline includes the time spent
 receiving and returning the batch. Each timed pair also retains its original monotonic
 deadline. The helper releases expired pairs while a successor receives the remaining live
 records. A timed pair can carry its original kernel socket identities. The sender supplies

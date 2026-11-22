@@ -519,6 +519,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0454 -->
 - [0455](0455-count-codex-subagents-under-their-sessions-run-by-model.md). A Codex run counts its session's subagents' responses once, in the run whose window holds them, and prices them at the model that answered; amends 0440's one model per run.
 <!-- ADR 0455 -->
+- [0456](0456-the-tunnel-custodian-runs-the-departing-servers-own-image.md): The tunnel custodian runs the departing server's own image.
 <!-- ADR 0456 -->
 <!-- ADR 0457 -->
 <!-- ADR 0458 -->
