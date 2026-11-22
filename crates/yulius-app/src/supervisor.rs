@@ -676,8 +676,8 @@ pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 /// A write that found the run's writer taken by another one: nothing was written.
 pub(crate) const SESSION_WRITER_BUSY: &str = "the session writer is busy";
-pub(crate) const CODEX_UNREADABLE: &str =
-    "Codex's terminal could not confirm a safe input screen after a repaint";
+/// Said on every path that found the screen unreadable; only Yulius's messages repaint first.
+pub(crate) const CODEX_UNREADABLE: &str = "Codex's terminal could not confirm a safe input screen";
 pub(crate) const CODEX_PICKER: &str = "Codex's rate-limit model picker is open. Choose Keep current model or dismiss the picker in the terminal.";
 
 impl TaskRuntime {
@@ -8992,6 +8992,54 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-613 CID-001: the saved Codex size is two big-endian u16s, columns then rows,
+    /// within the host's dimensions; anything else is no record.
+    #[test]
+    fn the_codex_size_record_round_trips_and_rejects_malformed_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let run = dir.path().to_str().ok_or("path")?;
+        let record = dir.path().join("codex-repaint-size");
+        let mut input = super::CodexInput::load(run);
+        assert_eq!(input.repaint_size, None, "an older run has no record");
+        input.remember_size((120, 40))?;
+        assert_eq!(std::fs::read(&record)?, [0, 120, 0, 40]);
+        assert_eq!(super::CodexInput::load(run).repaint_size, Some((120, 40)));
+        let max = yulius_contracts::ptyhost::MAX_DIMENSION;
+        for bytes in [
+            vec![0, 120, 0],
+            vec![0, 120, 0, 40, 0],
+            vec![0, 0, 0, 40],
+            [(max + 1).to_be_bytes(), 40u16.to_be_bytes()].concat(),
+        ] {
+            std::fs::write(&record, &bytes)?;
+            assert_eq!(super::CodexInput::load(run).repaint_size, None, "{bytes:?}");
+        }
+        Ok(())
+    }
+
+    /// SPEC-623 FIN-002: a viewer's size updates a probed run's record, a run never probed
+    /// keeps none, and a record that cannot be saved is dropped.
+    #[test]
+    fn a_viewer_size_follows_the_codex_record_or_drops_it() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let run = dir.path().to_str().ok_or("path")?;
+        let record = dir.path().join("codex-repaint-size");
+        let mut input = super::CodexInput::load(run);
+        input.follow_viewer((90, 30));
+        assert!(!record.exists(), "no probe, no record");
+        input.remember_size((120, 40))?;
+        input.follow_viewer((100, 30));
+        assert_eq!(std::fs::read(&record)?, [0, 100, 0, 30]);
+        // The temporary file's name is taken, so the record can no longer be replaced.
+        std::fs::create_dir(record.with_extension("tmp"))?;
+        input.follow_viewer((80, 24));
+        assert_eq!(input.repaint_size, None);
+        assert!(!record.exists(), "the stale record is dropped");
+        Ok(())
+    }
+
     /// SPEC-505 AGY-003: a contained Antigravity run binds the `.gemini` of its run's own home,
     /// in the server's run directory, over the sandbox home's.
     #[test]

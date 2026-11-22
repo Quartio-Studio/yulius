@@ -1183,6 +1183,20 @@ impl App {
             .await?
         {
             self.publish_task(&task.id).await;
+            if let Err(err) = self
+                .deps
+                .store
+                .audit(
+                    now,
+                    "system",
+                    "task.needs_you.input_blocked",
+                    Some(task.id.as_str()),
+                    request.problem.as_deref(),
+                )
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "auditing the blocked-input Needs You failed");
+            }
         }
         Ok(())
     }

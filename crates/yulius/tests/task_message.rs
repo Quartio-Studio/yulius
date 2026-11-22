@@ -2242,6 +2242,13 @@ fn a_repeated_codex_notice_write_failure_raises_the_pending_result() -> TestResu
                 .as_deref()
                 .is_some_and(|s| s.contains("#7"))
         );
+        let blocked: i64 = rusqlite::Connection::open(data.join("yulius.db"))?.query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'task.needs_you.input_blocked' \
+             AND target = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(blocked, 1, "the raised request is audited once");
         stop(&app, &id).await
     })
 }
