@@ -320,7 +320,8 @@ pub trait VaultStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Binds the hosts an agent asked for of a secret it sets up itself (SPEC-216 SSA-002):
     /// `hosts` replace its bindings and `requested` its waiting request, only while they still
-    /// are `bound` and `waiting` and the secret still has `auto_allow`; `false` otherwise.
+    /// are `bound` and `waiting` and the secret still has `auto_allow` and no rules (SPEC-627);
+    /// `false` otherwise.
     async fn vault_auto_bind(
         &self,
         id: &str,

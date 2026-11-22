@@ -251,6 +251,12 @@ the `security` job ends skipped, unrun, not passed.
   action (weaker than the redaction oracle of R-15). After the fixes: secrets_rules, secrets,
   secrets_scopes and the Superagent test 64 passed; yulius-store, yulius-app, yulius-domain 1494
   passed; secrets.e2e.ts 33 passed; `scripts/dev quick` passed.
+- **Review round 3** on `97d6be923` (delta of round 2's fixes): approved; CI passed. Fixed after
+  it, test-first: the "a secret's value replaced in its path" reason shows only when the path as
+  sent fits the refused secrets' rules (a wrong method with a placeholder in the path was blamed
+  on the value first); the `vault_auto_bind` port doc names the no-rules condition. Merged
+  origin/dev with #1705 (its 0091 is schema version 89, this change's 0088 now 90); store 171
+  passed.
 - **Not tested here.** A real third-party API through the proxy (the upstream is the test's TLS
   echo server); gRPC to a bound host (not proxied: the interception speaks HTTP/1.1, by code and
   ALPN); the e2e and full test suite on the merged `dev` revision run after the merge

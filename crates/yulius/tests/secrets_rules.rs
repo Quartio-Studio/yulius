@@ -539,7 +539,7 @@ async fn a_placeholder_value_cannot_move_the_path_outside_the_rules() -> TestRes
             "never the value: {message}"
         );
         if name == "QUERY" {
-            assert!(message.contains("another secret's value"), "{message}");
+            assert!(message.contains("value replaced"), "{message}");
         }
     }
     // An ordinary value there still goes, with the commenter's header.
@@ -560,6 +560,20 @@ async fn a_placeholder_value_cannot_move_the_path_outside_the_rules() -> TestRes
             )
             .await;
     assert_eq!(outcome(&fine), Ok(Some(format!("Bearer {READ}"))));
+    // Review round 3: a wrong method is not blamed on the value in the path.
+    let wrong =
+        w.h.app
+            .egress_apply(
+                &s1,
+                request(
+                    "GET",
+                    "/repos/acme/issues/yulius-secret-ISSUE/comments",
+                    &[],
+                ),
+            )
+            .await;
+    let message = refusal(&wrong)?;
+    assert!(!message.contains("value replaced"), "{message}");
     Ok(())
 }
 

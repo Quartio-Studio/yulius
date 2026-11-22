@@ -82,9 +82,12 @@ impl<'a> RuleCheck<'a> {
             .collect();
         let why = match &self.escape {
             Some(why) => format!(" ({why})"),
-            // Never the outgoing path: it holds another secret's value.
-            None if self.path != self.sent => {
-                " (another secret's value replaced in its path takes it outside them)".into()
+            // Only the outgoing path failed; never shown: it holds a secret's value.
+            None if denied
+                .iter()
+                .all(|r| rules_allow(&r.rules, self.method, self.path)) =>
+            {
+                " (a secret's value replaced in its path takes it outside them)".into()
             }
             None => String::new(),
         };
