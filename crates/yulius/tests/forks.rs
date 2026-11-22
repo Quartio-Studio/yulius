@@ -446,18 +446,26 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
         let named = crate::codex::add_codex_account(
             &app,
             "a-codex-2",
-            r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-access-2","refresh_token":"SYNTHETIC-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-01T10:00:00Z"}"#,
+            concat!(
+                r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","#,
+                r#""access_token":"SYNTHETIC-access-2","refresh_token":"SYNTHETIC-refresh","#,
+                r#""account_id":"acc-synthetic"},"last_refresh":"2026-11-01T10:00:00Z"}"#
+            ),
         )
         .await?;
         let source_id = crate::codex::new_codex_task(&app, &sandbox, &user, "Parser").await?;
-        wait_for("the source's conversation", Duration::from_secs(30), || async {
-            app.deps
-                .store
-                .provider_sessions(&source_id)
-                .await
-                .is_ok_and(|rows| !rows.is_empty())
-                && screen_contains(&app, &source_id, "ECHO: Parser").await
-        })
+        wait_for(
+            "the source's conversation",
+            Duration::from_secs(30),
+            || async {
+                app.deps
+                    .store
+                    .provider_sessions(&source_id)
+                    .await
+                    .is_ok_and(|rows| !rows.is_empty())
+                    && screen_contains(&app, &source_id, "ECHO: Parser").await
+            },
+        )
         .await?;
         let source_session = latest_session(&app, &source_id).await?;
         let ctx = ctx(&app, &user).await?;
@@ -483,20 +491,39 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
             .ok_or("the fork's start is kept")?;
         assert_eq!(kept.account_id.as_ref(), Some(&named));
         support::stop_tasks(&app, &[&source_id]).await?;
-        wait_for("the fork's own session", Duration::from_secs(30), || async {
-            app.deps
-                .store
-                .provider_sessions(&fork_id)
-                .await
-                .is_ok_and(|rows| !rows.is_empty())
-                && screen_contains(&app, &fork_id, "Try another parser.").await
-        })
+        wait_for(
+            "the fork's own session",
+            Duration::from_secs(30),
+            || async {
+                app.deps
+                    .store
+                    .provider_sessions(&fork_id)
+                    .await
+                    .is_ok_and(|rows| !rows.is_empty())
+                    && screen_contains(&app, &fork_id, "Try another parser.").await
+            },
+        )
         .await?;
-        let first = app.deps.store.live_attempt(&fork_id).await?.ok_or("fork run")?;
-        assert_eq!(first.account_id.as_ref(), Some(&named), "the named subscription");
+        let first = app
+            .deps
+            .store
+            .live_attempt(&fork_id)
+            .await?
+            .ok_or("fork run")?;
+        assert_eq!(
+            first.account_id.as_ref(),
+            Some(&named),
+            "the named subscription"
+        );
         let launch = launch_of(&first)?;
-        assert!(launch.contains(&format!("session_id: \"{source_session}\"")), "{launch}");
-        assert!(launch.contains("fork: Some(SessionFork { session_id: None })"), "{launch}");
+        assert!(
+            launch.contains(&format!("session_id: \"{source_session}\"")),
+            "{launch}"
+        );
+        assert!(
+            launch.contains("fork: Some(SessionFork { session_id: None })"),
+            "{launch}"
+        );
         let fork_session = latest_session(&app, &fork_id).await?;
         assert_ne!(fork_session, source_session);
         assert_eq!(app.deps.store.provider_sessions(&fork_id).await?.len(), 1);
@@ -514,9 +541,17 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
                 .is_ok_and(|run| run.is_some_and(|run| run.id != first.id))
         })
         .await?;
-        let second = app.deps.store.live_attempt(&fork_id).await?.ok_or("second run")?;
+        let second = app
+            .deps
+            .store
+            .live_attempt(&fork_id)
+            .await?
+            .ok_or("second run")?;
         let launch = launch_of(&second)?;
-        assert!(launch.contains(&format!("session_id: \"{fork_session}\"")), "{launch}");
+        assert!(
+            launch.contains(&format!("session_id: \"{fork_session}\"")),
+            "{launch}"
+        );
         assert!(launch.contains("fork: None"), "{launch}");
         support::stop_tasks(&app, &[&fork_id]).await
     })?;
@@ -731,6 +766,80 @@ fn the_task_fork_tool_forks_a_task_of_the_project() -> TestResult {
         ready(&app, &fork_id).await?;
         stop(&app, &fork_id).await?;
         stop(&app, &source_id).await?;
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-628 FRK-001 (review round 2): a fork whose record cannot be written leaves nothing: its
+/// source is deleted before the record is written, so the record's link fails, and the task, its
+/// stored copy and the staged copy are removed again.
+#[test]
+fn a_fork_whose_record_fails_leaves_nothing_behind() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a1"]).await?;
+        let source_id = new_task(&app, &sandbox, &user, "Parser").await?;
+        ready(&app, &source_id).await?;
+        let source = task(&app, &source_id).await?;
+        let source_session = latest_session(&app, &source_id).await?;
+        let path = transcript(&app, &source, &source_session)?;
+        std::fs::create_dir_all(path.parent().ok_or("folder")?)?;
+        std::fs::write(&path, "{\"type\":\"user\",\"uuid\":\"fixture-user-1\"}\n")?;
+        stop(&app, &source_id).await?;
+        let (at, reached) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::ForkInserted,
+            &app.config.data_dir.join("sandboxes").join(sandbox.as_str()),
+            move || {
+                let _ = at.send(());
+                let _ = wait.recv_timeout(Duration::from_secs(60));
+            },
+        );
+        let ctx = ctx(&app, &user).await?;
+        let forking = {
+            let (app, id) = (app.clone(), source_id.clone());
+            tokio::spawn(
+                async move { app.fork_task(&ctx, id.as_str(), &ForkTask::default()).await },
+            )
+        };
+        tokio::task::spawn_blocking(move || reached.recv_timeout(Duration::from_secs(60)))
+            .await??;
+        let fork_id = app
+            .deps
+            .store
+            .tasks(&sandbox, false)
+            .await?
+            .into_iter()
+            .find(|t| t.id != source_id)
+            .ok_or("the fork's task")?
+            .id;
+        assert!(app.deps.store.delete_task(&source_id).await?);
+        go.send(())?;
+        assert!(forking.await?.is_err(), "the fork fails");
+        assert!(
+            app.deps.store.task(&fork_id).await?.is_none(),
+            "its task is gone"
+        );
+        let transcripts = app.config.data_dir.join("transcripts");
+        assert!(
+            !transcripts.join(fork_id.as_str()).exists(),
+            "its stored copy is gone"
+        );
+        let staging = transcripts.join(".staging");
+        assert!(
+            !staging.exists() || std::fs::read_dir(&staging)?.next().is_none(),
+            "nothing stays staged"
+        );
         Ok::<_, BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
