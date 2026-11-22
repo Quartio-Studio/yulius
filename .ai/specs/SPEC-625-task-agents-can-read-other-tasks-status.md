@@ -1,6 +1,6 @@
 ---
 yulius-task: 9a60dad8-697d-4edb-92fe-729524e293ae
-status: in-progress
+status: done
 ---
 
 # SPEC-625 — Task agents read the status of their project's other tasks, read-only
@@ -101,14 +101,14 @@ much chaos"). Task #609.
 ## Plan
 
 - [x] Write the spec and the decision for the read-only peer view
-- [ ] Tests that fail without the peer view: status, other project, no write path, private fields
-- [ ] task_get answers owner, delivery, claims, waits_for and screen
-- [ ] A task reads only what its owner may view, in its own project
-- [ ] Withhold free text of a peer holding another person's personal secrets
-- [ ] Render the new fields and say read-only in the instructions and descriptions
-- [ ] Skills and catalog: look before overlapping work, no relay requests
-- [ ] Docs: api, product, architecture, changes
-- [ ] Independent review approves the exact head
+- [x] Tests that fail without the peer view: status, other project, no write path, private fields
+- [x] task_get answers owner, delivery, claims, waits_for and screen
+- [x] A task reads only what its owner may view, in its own project
+- [x] Withhold free text of a peer holding another person's personal secrets
+- [x] Render the new fields and say read-only in the instructions and descriptions
+- [x] Skills and catalog: look before overlapping work, no relay requests
+- [x] Docs: api, product, architecture, changes
+- [x] Independent review approves the exact head
 
 ## Acceptance criteria
 
@@ -131,8 +131,11 @@ much chaos"). Task #609.
   present).
 - `crates/yulius-app/src/mcp_text.rs` unit tests: the text of `task_get` shows the owner, the
   delivery, claims, `waits_for`, the screen and `withheld`.
-- `crates/yulius-app/src/mcp.rs` unit test: the instructions and descriptions say read-only and
-  stay within `CLIENT_TEXT_MAX`; the existing MSR-001 check (no "message" in the instructions).
+- `crates/yulius-app/src/peer_status.rs` unit tests: what `withhold` removes and keeps, and that
+  `waits_for` holds only Yulius's sentences.
+- The `task_get` description says read-only (AC-5 in `peer_status.rs`); the existing checks keep
+  every description within `CLIENT_TEXT_MAX` and the instructions free of "message" (MSR-001,
+  `mcp_coordination.rs`).
 - Run whole: `binary_id(yulius::main) & test(/^(peer_status|mcp_coordination|remote_mcp|cockpit|cross_sandbox|secrets_scopes)::/)`,
   the `yulius-app` unit tests, `scripts/dev quick`.
 
@@ -147,3 +150,38 @@ much chaos"). Task #609.
 - Persons (Superagent, remote MCP) keep their full view: their access rule is unchanged.
 - Out of scope: removing the existing tidy tools of task agents (`task_stop`, `task_archive`,
   `task_delete`, `task_update`); notifying a task when a neighbour changes (no push, read only).
+
+## Evidence
+
+Final head before review: the branch after merging `origin/dev` at 10d6ae619.
+
+- Test first: `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^peer_status::/)'`
+  before the change, 5 of 5 failed: `owner` and `claims` were null, a disabled owner's task got
+  `tasks_list`, and a personal task's text reached bob's task. After the change, 5 of 5 pass.
+- Whole binaries: `scripts/cargo nextest run -p yulius -p yulius-app` after the dev merge,
+  4030 tests run, 4030 passed, 24 skipped. A first run found 5 failures: 4 in
+  `mcp_coordination` (its fixture owner had no GitHub token, so the new view check refused; the
+  fixture now signs in as `seed_github_user` with write access) and
+  `skills::tests::every_place_says_what_to_do_on_an_overlap` (the canonical overlap sentence
+  is kept word for word in `delivery-pipeline`). Both are fixed.
+- Mutation checks by hand, each one undo rerunning `peer_status::` and then restored. Six of them
+  were run through a small loop over the edits, which AGENTS.md asks not to do; each loop step
+  was still one undo:
+  - without `withhold_from` in `task_get`, AC-4 fails;
+  - without `require_reader` in `tasks_list`, AC-3 fails;
+  - without the project filter in `agent_task_ref`, AC-2 fails;
+  - without `require_transcript_reader` in `session_read`, AC-4 fails;
+  - without the row withholding in `tasks_list`, AC-4 fails;
+  - with `withholds_from` ignoring the holder comparison, AC-4 fails (alice's own task then
+    reads nothing);
+  - with `LiveClaims::note` always answering the note (done by hand), AC-4 fails.
+- `scripts/dev quick` passed: the repository contracts and `cargo fmt --check`.
+- `scripts/cargo clippy -p yulius-app -p yulius --all-targets -- -D warnings` passed.
+- `RUSTDOCFLAGS='-D warnings' scripts/cargo doc -p yulius-app --no-deps` passed.
+- `apm install` (apm-cli 0.37.0, as in `apm.lock.yaml`) regenerated `.agents/skills/yulius-spec`
+  and `.claude/skills/yulius-spec`.
+- Security scan: `yulius security-scan` printed "Security scan disabled: Vidoc is turned off in
+  Yulius". It is disabled, not passed.
+- Not tested: a real Claude Code session reading a neighbour, and a personal MCP server held by a
+  live run. The holder rule comes from `reaches_owners_personal`, which SPEC-245 and SPEC-332
+  already test for personal MCP servers.
