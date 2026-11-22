@@ -28,7 +28,7 @@ Open on dev: steps 50 to 53 of SPEC-558. #540 left prepared patches in its hando
 ## Plan
 
 - [x] Write the takeover spec and confirm steps 48 and 49 on dev
-- [ ] Recover screens from tasks parked before the upgrade
+- [x] Recover screens from tasks parked before the upgrade
 - [ ] Review and deliver the pre-upgrade screen recovery
 - [ ] Port bounded Codex goal continuation onto current dev
 - [ ] Prove the #325 shape and the retry bound for Codex goals
@@ -61,3 +61,4 @@ Each slice starts with a regression that fails on dev: the cockpit `task_screen`
 ## Evidence
 
 - `git apply --check -R` of `34f395357` (crates only) succeeds on `2a6e07423`; `git merge-base --is-ancestor 8855f295b origin/main` fails.
+- Step 53: on dev the extended cockpit fixture `the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout` failed at its first new assertion, showing `Token usage: total=389,557`, `To continue this session, run:` and `codex resume synthetic-rollout` under the answer. With the port it passes; `parking::tests` (9) and the `cockpit::`, `parking::`, `codex::` scope (287 tests) passed, Clippy on `yulius-app` and `yulius` passed, `scripts/dev quick` passed. The red run on dev is the mutation check for the whole recovery path.

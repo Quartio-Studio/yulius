@@ -74,7 +74,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [ ] Verify live owners when constructing and releasing dependent tasks or closing their sessions
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
-- [ ] Recover screens from tasks parked before the upgrade
+- [x] Recover screens from tasks parked before the upgrade
 
 The owner supplied the ordering of #325. On November 20 UTC the last answer at 04:22:19 reported pending CI, review and mutation checks on `f86cbd49f`. Ordinary PR #1461 CI failed at 04:30:56. The digest parked the waiting session at 04:52:52. It resumed at 10:30:20 and resubmitted at 10:36:52. The process was absent for 337.46 minutes. Step 10 covers this ordering, including a lagging GitHub status, a newer local commit during the parking decision, and a published head that exists only in another clone.
 
@@ -626,6 +626,8 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 - Repeating the five missed blocker mutations with the strengthened branch-change fixture reported `5 mutants tested in 4m: 5 caught`. The final nextest scope passed all 106 parking, PR-watch and eligibility tests. Repository contracts and Rust formatting passed. Vidoc was disabled. The historical Quartio page and board require a platform release to check live. This delivery used synthetic PRs and real local Git repositories.
 
 ## Delivery slices
+
+Task #605 (SPEC-621) took over steps 50 to 53 on 22 November. It delivered the pre-upgrade screen recovery from #540's prepared patch: the cockpit `task_screen` fixture reproduced the #517 exit block on dev and passes with it.
 
 PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. PR #1539 shared that verification across parked HTTP task-list rows and Home. PR #1542 delivered verified MCP rows. Subsequent deliveries through PR #1560 updated the page, sidebar, terminal and Task Info. Remaining work covers shared-head CI, failed integration candidates, bounded Codex goals and pre-upgrade screens.
 
