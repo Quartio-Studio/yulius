@@ -6557,6 +6557,132 @@ async fn a_second_restore_cannot_rearm_a_decided_cold_generation() -> TestResult
     Ok(())
 }
 
+/// Issue #1564: the ordinary queue's final verdict for the armed head, with the clear of its
+/// saved entry refused (a directory where the replacement file is written). Returns the saved
+/// file's path and the entry the verdict consumed, still on disk.
+async fn decided_with_a_refused_clear(t: &ArmedTask) -> BoxResult<(PathBuf, Vec<u8>)> {
+    t.arm().await?;
+    let path =
+        t.f.h
+            .app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved = std::fs::read(&path)?;
+    let blocker = path.with_extension("json.tmp");
+    std::fs::create_dir(&blocker)?;
+    commit_file(&t.wt, "landing.txt", "v2", "Later work")?;
+    t.f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let decided = t.outcome().await?;
+    assert!(decided.contains("dropped"), "{decided}");
+    std::fs::remove_dir(&blocker)?;
+    git(&t.wt, &["reset", "--hard", &t.head])?;
+    assert_eq!(std::fs::read(&path)?, saved, "the clear was refused");
+    Ok((path, saved))
+}
+
+fn saved_arms(path: &Path) -> BoxResult<Value> {
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
+/// SPEC-615 CMA-001 (issue #1564): a fresh server reading the entry of an activation the ordinary
+/// queue already decided does not arm it again; the restore clears it.
+#[tokio::test]
+async fn an_ordinary_verdict_consumes_its_saved_arm_when_the_clear_failed() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let (path, _) = decided_with_a_refused_clear(&t).await?;
+    let fresh = yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
+    fresh.restore_armed_merges().await;
+    let state = fresh.agent_wait_state("tok-agent", Some(&t.head)).await?;
+    assert!(!state.merge_armed, "the consumed activation was armed again");
+    assert_eq!(saved_arms(&path)?, json!([]));
+    Ok(())
+}
+
+/// SPEC-615 CMA-002: a re-arm of the same head after that verdict is a new activation; a fresh
+/// server restores it with the place it was saved with.
+#[tokio::test]
+async fn a_later_rearm_of_the_same_head_keeps_its_place_across_a_restart() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let (path, saved) = decided_with_a_refused_clear(&t).await?;
+    let consumed = serde_json::from_slice::<Value>(&saved)?[0]["armed_at"]
+        .as_i64()
+        .ok_or("old stamp")?;
+    t.f.h
+        .clock
+        .0
+        .fetch_add(1000, std::sync::atomic::Ordering::SeqCst);
+    t.arm().await?;
+    let rearmed = saved_arms(&path)?[0]["armed_at"]
+        .as_i64()
+        .ok_or("new stamp")?;
+    assert!(rearmed > consumed, "{rearmed} after {consumed}");
+    let fresh = yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
+    fresh.restore_armed_merges().await;
+    let state = fresh.agent_wait_state("tok-agent", Some(&t.head)).await?;
+    assert!(state.merge_armed, "the later re-arm was lost");
+    assert_eq!(saved_arms(&path)?[0]["armed_at"], rearmed);
+    Ok(())
+}
+
+/// SPEC-615 CMA-003: while the verdict cannot be read (the read fails, or its detail is damaged),
+/// the saved activation stays on disk and cannot be replaced; the restore that reads it again
+/// consumes it, and a re-arm then takes a new place.
+#[tokio::test]
+async fn an_unreadable_verdict_keeps_the_saved_arm_until_it_is_reconciled() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let (path, saved) = decided_with_a_refused_clear(&t).await?;
+    let consumed = serde_json::from_slice::<Value>(&saved)?[0]["armed_at"]
+        .as_i64()
+        .ok_or("old stamp")?;
+    let store = &t.f.h.store;
+    store
+        .execute_for_tests(
+            "CREATE TEMP TABLE verdict AS SELECT id, detail FROM spans \
+             WHERE kind = 'wait' AND name = 'merge_armed'",
+        )
+        .await?;
+    let ctx = t.f.h.app.agent_context("tok-agent").await?;
+    let args = json!({"reviewed_head": t.head, "review_summary": "approve"});
+    for damage in [
+        "UPDATE spans SET detail = CAST(detail AS BLOB) WHERE id IN (SELECT id FROM verdict)",
+        "UPDATE spans SET detail = '{' WHERE id IN (SELECT id FROM verdict)",
+    ] {
+        std::fs::write(&path, &saved)?;
+        store.execute_for_tests(damage).await?;
+        let fresh =
+            yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
+        fresh.restore_armed_merges().await;
+        assert_eq!(std::fs::read(&path)?, saved, "lost: {damage}");
+        let refused = fresh.tool_delivery_merge(&ctx, &args).await;
+        assert!(
+            matches!(refused, Err(AppError::Conflict(_))),
+            "{damage}: {refused:?}"
+        );
+        assert_eq!(std::fs::read(&path)?, saved, "replaced: {damage}");
+
+        store
+            .execute_for_tests(
+                "UPDATE spans SET detail = (SELECT detail FROM verdict \
+                 WHERE verdict.id = spans.id) WHERE id IN (SELECT id FROM verdict)",
+            )
+            .await?;
+        fresh.restore_armed_merges().await;
+        let state = fresh.agent_wait_state("tok-agent", Some(&t.head)).await?;
+        assert!(!state.merge_armed, "came back after: {damage}");
+        assert_eq!(saved_arms(&path)?, json!([]), "{damage}");
+    }
+    let fresh = yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
+    fresh.restore_armed_merges().await;
+    let accepted = fresh.tool_delivery_merge(&ctx, &args).await?;
+    assert_eq!(accepted["armed"], true, "{accepted}");
+    let rearmed = saved_arms(&path)?[0]["armed_at"]
+        .as_i64()
+        .ok_or("new stamp")?;
+    assert!(rearmed > consumed, "{rearmed} after {consumed}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_newly_reviewed_head_gets_a_new_place_and_an_immediate_merge_clears_it() -> TestResult {
     let t = ArmedTask::new().await?;
