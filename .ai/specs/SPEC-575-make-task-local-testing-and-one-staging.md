@@ -55,6 +55,8 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 
 ## Requirements
 
+SPEC-612 supersedes automatic parked-session wakes and finished-task repair instructions. A person resumes a parked task. Working project tasks own integration repairs.
+
 - **MFS-001 Merge-first environment.**
   - A dev-stage `[cd.<name>]` may set `merge_first = true`; at most one per project.
   - That table needs `deploy`, `verify` and `rollback`.

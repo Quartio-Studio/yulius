@@ -104,7 +104,7 @@ pub struct CdStagingRequest {
     pub task_number: Option<u32>,
     /// The integration branch's commit it deploys.
     pub revision: String,
-    /// `testing`, `ready`, `deploying`, `verified`, `included`, `gate_failed`, `deploy_failed` or
+    /// `testing`, `ready`, `deploying`, `verified`, `included`, `gate_failed`, `inherited`, `deploy_failed` or
     /// `superseded`.
     pub state: String,
     /// The full gate's run that judged its revision.

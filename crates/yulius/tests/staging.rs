@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
-use yulius_app::ports::store::{AuditStore as _, SandboxStore as _, UserStore as _};
+use yulius_app::ports::store::{
+    AuditStore as _, SandboxStore as _, TaskStore as _, UserStore as _,
+};
 use yulius_app::ports::store_ext::{
     CdStore as _, CiStore as _, DeliveryStore as _, StagingChange, StagingRequestRecord,
     StagingStore as _,
@@ -60,6 +62,16 @@ async fn land(f: &Fixture, task: &str, file: &str) -> BoxResult<String> {
 
 /// The integration branch's CI run at `sha`: the quick checks passed, the full suite `full`.
 async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
+    recorded_gate(&f.h.app, &SandboxId::parse("s1")?, sha, full, None).await
+}
+
+pub(crate) async fn recorded_gate(
+    app: &yulius_app::context::App,
+    sandbox: &SandboxId,
+    sha: &str,
+    full: RunState,
+    failures: Option<&str>,
+) -> BoxResult<String> {
     let id = format!("ci-{}", &sha[..12]);
     let state = if full == RunState::Passed {
         RunState::Passed
@@ -68,7 +80,7 @@ async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
     };
     let run = CiRunRecord {
         id: id.clone(),
-        sandbox_id: SandboxId::parse("s1")?,
+        sandbox_id: sandbox.clone(),
         reference: CiRef::Branch("dev".into()),
         sha: sha.to_owned(),
         source: GateSource::ProjectConfig,
@@ -78,9 +90,9 @@ async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
         status_for: None,
         status_note: None,
         status_attempts: 0,
-        queued_at: f.h.app.now(),
-        started_at: Some(f.h.app.now()),
-        ended_at: Some(f.h.app.now()),
+        queued_at: app.now(),
+        started_at: Some(app.now()),
+        ended_at: Some(app.now()),
     };
     let job = |name: &str, state: RunState| CiJobRecord {
         id: format!("{id}-{name}"),
@@ -102,10 +114,63 @@ async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
         exclusive: false,
         waited_ms: None,
     };
-    f.h.store
+    app.deps
+        .store
         .insert_ci_run(&run, &[job("quick", RunState::Passed), job("full", full)])
         .await?;
+    if let Some(failures) = failures {
+        assert!(
+            app.deps
+                .store
+                .transition_ci_job(
+                    &format!("{id}-full"),
+                    &[full],
+                    full,
+                    &yulius_app::ci::CiJobUpdate {
+                        failures: Some(failures.to_owned()),
+                        ..Default::default()
+                    }
+                )
+                .await?
+        );
+    }
     Ok(id)
+}
+
+/// Whether a new red gate asks people for help in a native-goal session fixture.
+pub(crate) async fn red_gate_needs_people(
+    app: &yulius_app::context::App,
+    project: &SandboxId,
+    owner: &yulius_domain::ids::UserId,
+) -> BoxResult<bool> {
+    let repo = app
+        .config
+        .data_dir
+        .join("sandboxes")
+        .join(project.as_str())
+        .join("repo");
+    let sha = crate::cd::git(&repo, &["rev-parse", "HEAD"])?;
+    crate::cd::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
+    recorded_gate(
+        app,
+        project,
+        &sha,
+        RunState::Failed,
+        Some("---- gate::test stdout ----"),
+    )
+    .await?;
+    let ctx = yulius_app::auth::AuthContext {
+        user: app.deps.store.user(owner).await?.ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let status = app.status(&ctx).await?;
+    Ok(status
+        .sandboxes
+        .iter()
+        .flat_map(|s| &s.gate_notices)
+        .any(|n| n.test == "gate::test"))
 }
 
 /// `task`'s agent asks for staging; the request it was given.
@@ -184,6 +249,721 @@ async fn deployed(f: &Fixture) -> BoxResult<Vec<String>> {
     Ok(runs.into_iter().map(|run| run.sha).collect())
 }
 
+/// A gate run with the same retained test blocks the CI executor records.
+async fn named_gate(f: &Fixture, revision: &str, tests: &[&str]) -> BoxResult<String> {
+    let run = gate(f, revision, RunState::Failed).await?;
+    let blocks = tests
+        .iter()
+        .map(|name| format!("---- {name} stdout ----\nassertion failed\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET failures = '{blocks}' WHERE id = '{run}-full'"
+        ))
+        .await?;
+    Ok(run)
+}
+
+#[tokio::test]
+async fn inherited_gate_receipts_preserve_the_origin_and_leave_finished_tasks_quiet() -> TestResult
+{
+    let f = fixture(&staging_toml()).await?;
+    let mut inherited = Vec::new();
+    let mut origin = String::new();
+    let mut owner = String::new();
+    for task in ["breaker", "later1", "later2", "later3", "mixed"] {
+        agent(&f, task).await?;
+        let revision = land(&f, task, task).await?;
+        let tests: &[&str] = if task == "mixed" {
+            &["delivery::gate", "store::writes"]
+        } else {
+            &["delivery::gate"]
+        };
+        let run = named_gate(&f, &revision, tests).await?;
+        if task == "mixed" {
+            f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state = 'cancelled', reason = 'stopped early: job full failed', failures = '---- ui::dialog stdout ----' WHERE id = '{run}-quick'")).await?;
+        }
+        let row = ask(&f, task).await?;
+        settle(&f).await?;
+        let id = row["id"].as_str().ok_or("request id")?;
+        let receipt = request(&f, id).await?;
+        let note = receipt.note.as_deref().ok_or("failure attribution")?;
+        assert!(note.contains("delivery::gate"), "{note}");
+        if task == "breaker" {
+            origin = revision;
+            owner = format!(
+                "task #{}",
+                f.h.store
+                    .task(&yulius_domain::ids::TaskId::parse(task)?)
+                    .await?
+                    .ok_or("task")?
+                    .number
+            );
+            assert_eq!(receipt.state, StagingState::GateFailed);
+        } else {
+            assert!(
+                note.contains(&origin[..12]) && note.contains(&owner),
+                "{note}"
+            );
+            if task == "mixed" {
+                assert_eq!(receipt.state, StagingState::GateFailed);
+                assert!(
+                    note.contains("store::writes") && note.contains("ui::dialog"),
+                    "{note}"
+                );
+            } else {
+                assert_eq!(receipt.state.as_str(), "inherited");
+                inherited.push(id.to_owned());
+            }
+        }
+    }
+    assert_eq!(f.h.app.tell_staging_outcomes().await, 0);
+    assert!(
+        f.h.store.untold_staging_requests().await?.is_empty(),
+        "recorded outcomes of finished tasks must consume no session input"
+    );
+    for id in ["breaker", "later1", "later2", "later3", "mixed"] {
+        assert_eq!(f.h.store.attempts(&TaskId::parse(id)?).await?.len(), 1);
+    }
+    agent(&f, "fix").await?;
+    let fix = land(&f, "fix", "fix").await?;
+    gate(&f, &fix, RunState::Passed).await?;
+    ask(&f, "fix").await?;
+    settle(&f).await?;
+    f.h.app.tell_staging_outcomes().await;
+    for id in inherited {
+        let receipt = request(&f, &id).await?;
+        assert_eq!(receipt.state, StagingState::Included);
+        assert!(
+            receipt
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains(&fix[..12]) && n.contains(&origin[..12])),
+            "{receipt:?}"
+        );
+        assert!(receipt.told, "a carried delivery must not wake its task");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_closed_merge_owners_failed_test_reaches_the_project_without_a_staging_request()
+-> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    let run = named_gate(&f, &revision, &["flaky::result"]).await?;
+    agent(&f, "answered").await?;
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET activity='waiting' WHERE id='answered'")
+        .await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    for view in [
+        f.get("/api/sandboxes/s1/ci").await?,
+        f.get("/api/status").await?,
+    ] {
+        let notices = view
+            .get("gate_notices")
+            .unwrap_or(&view["sandboxes"][0]["gate_notices"]);
+        assert!(
+            notices.to_string().contains("flaky::result") && notices.to_string().contains(&run),
+            "{notices}"
+        );
+    }
+    let fix = f.push("dev", &[("fixed", Some("yes"))])?;
+    gate(&f, &fix, RunState::Passed).await?;
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let status = f.get("/api/status").await?;
+    assert_eq!(status["sandboxes"][0]["gate_notices"], json!([]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_later_candidate_waits_for_the_older_full_gate() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "older").await?;
+    agent(&f, "later").await?;
+    let older = land(&f, "older", "older").await?;
+    let judging = gate(&f, &older, RunState::Running).await?;
+    ask(&f, "older").await?;
+    let later = land(&f, "later", "later").await?;
+    ask(&f, "later").await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert!(
+        f.h.store
+            .ci_runs_for_sha(&sandbox.id, &later)
+            .await?
+            .is_empty()
+    );
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET state = 'failed' WHERE id = '{judging}'"
+        ))
+        .await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let runs = f.h.store.ci_runs_for_sha(&sandbox.id, &later).await?;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].reference, CiRef::Candidate(later));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_passed_rerun_clears_a_missing_owners_notice_and_resets_test_ownership() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let orphan = f.push("dev", &[("old", Some("old"))])?;
+    named_gate(&f, &orphan, &["delivery::gate"]).await?;
+    let descendant = f.push("dev", &[("later", Some("later"))])?;
+    let run = named_gate(&f, &descendant, &["delivery::gate"]).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+    assert_eq!(notices[0]["revision"], orphan);
+    assert_eq!(notices[0]["run_id"], run);
+    let rerun = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        &format!("/api/sandboxes/s1/ci/runs/{run}/rerun"),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(rerun.status, axum::http::StatusCode::OK, "{}", rerun.body);
+    assert_eq!(rerun.body["sha"], descendant);
+    let rerun_id = rerun.body["id"].as_str().ok_or("rerun id")?;
+    assert_eq!(
+        f.get("/api/status").await?["sandboxes"][0]["gate_notices"],
+        notices
+    );
+    f.h.store
+        .transition_ci_run(
+            rerun_id,
+            &[RunState::Queued],
+            RunState::Passed,
+            &Default::default(),
+        )
+        .await?;
+    assert_eq!(
+        f.get("/api/status").await?["sandboxes"][0]["gate_notices"],
+        json!([])
+    );
+    agent(&f, "new").await?;
+    let new = land(&f, "new", "new").await?;
+    named_gate(&f, &new, &["delivery::gate"]).await?;
+    let asked = ask(&f, "new").await?;
+    settle(&f).await?;
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::GateFailed);
+    assert!(
+        row.note
+            .as_deref()
+            .is_some_and(|note| note.contains("new failures: delivery::gate"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_inherited_verification_step_waits_and_receives_its_inclusion() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let first = f.push("dev", &[("first", Some("first"))])?;
+    named_gate(&f, &first, &["delivery::gate"]).await?;
+    agent(&f, "verify").await?;
+    let later = land(&f, "verify", "later").await?;
+    named_gate(&f, &later, &["delivery::gate"]).await?;
+    let task = TaskId::parse("verify")?;
+    crate::pr_watch::leave_verification_step(&f.h.app, &task).await?;
+    ask(&f, "verify").await?;
+    settle(&f).await?;
+    assert_eq!(
+        f.h.store.task_staging_wait(&task).await?,
+        Some(StagingState::Inherited)
+    );
+    agent(&f, "fix").await?;
+    let fix = land(&f, "fix", "fix").await?;
+    gate(&f, &fix, RunState::Passed).await?;
+    ask(&f, "fix").await?;
+    settle(&f).await?;
+    assert!(
+        f.h.store
+            .untold_staging_requests()
+            .await?
+            .iter()
+            .any(|r| r.task_id.as_ref() == Some(&task) && r.state == StagingState::Included)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_partial_later_gate_keeps_the_unknown_job_and_offers_its_current_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let first = f.push("dev", &[("first", Some("first"))])?;
+    gate(&f, &first, RunState::Error).await?;
+    let later = f.push("dev", &[("later", Some("later"))])?;
+    let run = named_gate(&f, &later, &["ui::fresh"]).await?;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='cancelled',reason='stopped early: job quick failed',failures=NULL WHERE id='{run}-full';
+        UPDATE ci_jobs SET state='failed',failures='---- ui::fresh stdout ----' WHERE id='{run}-quick'")).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let status = f.get("/api/status").await?;
+    let notices = status["sandboxes"][0]["gate_notices"]
+        .as_array()
+        .ok_or("notices")?;
+    assert!(
+        notices
+            .iter()
+            .any(|n| n["test"] == "full" && n["revision"] == first && n["run_id"] == run)
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|n| n["test"] == "ui::fresh" && n["revision"] == later && n["run_id"] == run)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_retention()
+-> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let sha = f.push("dev", &[("broken", Some("broken"))])?;
+    let first = gate(&f, &sha, RunState::Error).await?;
+    let project = sandbox(&f).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let mut current = String::new();
+    for retry in 1..=2 {
+        current = format!("rerun-{retry}");
+        let (mut run, mut quick) = crate::pr_watch::run(
+            &project.id,
+            &current,
+            &sha,
+            RunState::Failed,
+            None,
+            f.h.app.now().0 + retry,
+        );
+        run.reference = CiRef::Branch("dev".into());
+        quick.name = "quick".into();
+        quick.key = quick.name.clone();
+        let mut full = quick.clone();
+        full.id = format!("{current}-full");
+        full.name = "full".into();
+        full.key = full.name.clone();
+        full.ordinal = 1;
+        full.state = RunState::Cancelled;
+        full.failures = None;
+        full.reason = Some("stopped early: job quick failed".into());
+        let quick_id = quick.id.clone();
+        f.h.store.insert_ci_run(&run, &[quick, full]).await?;
+        f.h.store
+            .transition_ci_job(
+                &quick_id,
+                &[RunState::Failed],
+                RunState::Failed,
+                &yulius_app::ci::CiJobUpdate {
+                    failures: Some("---- ui::fresh stdout ----".into()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+    }
+    for prune in [false, true] {
+        if prune {
+            f.h.store.prune_ci_runs(0, f.h.app.now()).await?;
+            assert!(f.h.store.ci_run(&first).await?.is_none());
+            assert!(f.h.store.ci_run("rerun-1").await?.is_none());
+        }
+        let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+        assert_eq!(notices.as_array().ok_or("notices")?.len(), 2, "{notices}");
+        for test in ["full", "ui::fresh"] {
+            assert!(
+                notices
+                    .as_array()
+                    .ok_or("notices")?
+                    .iter()
+                    .any(|n| n["test"] == test && n["revision"] == sha && n["run_id"] == current),
+                "{notices}"
+            );
+        }
+    }
+    let (mut pass, job) = crate::pr_watch::run(
+        &project.id,
+        "passing-rerun",
+        &sha,
+        RunState::Passed,
+        None,
+        f.h.app.now().0 + 3,
+    );
+    pass.reference = CiRef::Branch("dev".into());
+    f.h.store.insert_ci_run(&pass, &[job]).await?;
+    assert_eq!(
+        f.get("/api/status").await?["sandboxes"][0]["gate_notices"],
+        json!([])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rerunning_an_ancestor_keeps_the_archived_red_heads_notice_and_rerun_target() -> TestResult
+{
+    let f = fixture(&staging_toml()).await?;
+    let earlier = f.push("dev", &[("earlier", Some("earlier"))])?;
+    let passed = gate(&f, &earlier, RunState::Passed).await?;
+    agent(&f, "owner").await?;
+    let head = land(&f, "owner", "broken").await?;
+    let failed = named_gate(&f, &head, &["suite::broken"]).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let replay = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        &format!("/api/sandboxes/s1/ci/runs/{passed}/rerun"),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(replay.body["sha"], earlier);
+    let replay_id = replay.body["id"].as_str().ok_or("ancestor rerun")?;
+    f.h.store
+        .transition_ci_run(
+            replay_id,
+            &[RunState::Queued],
+            RunState::Passed,
+            &Default::default(),
+        )
+        .await?;
+    f.h.store.prune_ci_runs(0, f.h.app.now()).await?;
+    assert!(f.h.store.ci_run(&failed).await?.is_none());
+    let owner =
+        f.h.store
+            .task(&TaskId::parse("owner")?)
+            .await?
+            .ok_or("owner")?
+            .number;
+    for view in [
+        f.get("/api/status").await?,
+        f.get("/api/sandboxes/s1/ci").await?,
+    ] {
+        let notices = view
+            .get("gate_notices")
+            .unwrap_or(&view["sandboxes"][0]["gate_notices"]);
+        assert_eq!(
+            *notices,
+            json!([{"test":"suite::broken","merge_task":owner,"revision":head,"run_id":failed}])
+        );
+    }
+    let path = format!("/api/sandboxes/s1/ci/runs/{failed}");
+    assert_eq!(f.get(&path).await?["sha"], head);
+    let retry = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        &format!("{path}/rerun"),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(retry.status, axum::http::StatusCode::OK, "{}", retry.body);
+    assert_eq!(retry.body["sha"], head);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_passed_retry_closes_its_failure_while_a_sibling_job_fails() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let origin = f.push("dev", &[("first", Some("first"))])?;
+    named_gate(&f, &origin, &["full::retried"]).await?;
+    agent(&f, "later").await?;
+    let later = land(&f, "later", "later").await?;
+    let run = named_gate(&f, &later, &["full::retried"]).await?;
+    f.h.store.execute_for_tests(&format!(
+        "UPDATE ci_jobs SET state='passed' WHERE id='{run}-full';
+         UPDATE ci_jobs SET state='failed', failures='---- quick::new stdout ----' WHERE id='{run}-quick'"
+    )).await?;
+    let asked = ask(&f, "later").await?;
+    settle(&f).await?;
+    let receipt = request(&f, asked["id"].as_str().ok_or("receipt")?).await?;
+    let note = receipt.note.ok_or("gate receipt")?;
+    assert!(
+        note.contains("quick::new") && !note.contains("full::retried"),
+        "{note}"
+    );
+    let status = f.get("/api/status").await?;
+    let notices = status["sandboxes"][0]["gate_notices"]
+        .as_array()
+        .ok_or("notices")?;
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0]["test"], "quick::new");
+    assert_eq!(notices[0]["revision"], later);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_red_descendant_records_inheritance_from_observed_and_unobserved_jobs() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "origin").await?;
+    let origin = land(&f, "origin", "broken").await?;
+    let first = named_gate(&f, &origin, &["full::broken"]).await?;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='failed', failures='---- quick::broken stdout ----' WHERE id='{first}-quick'")).await?;
+    let number =
+        f.h.store
+            .task(&TaskId::parse("origin")?)
+            .await?
+            .ok_or("origin")?
+            .number;
+    for (task, state) in [("skipped", "skipped"), ("short", "cancelled")] {
+        agent(&f, task).await?;
+        let sha = land(&f, task, task).await?;
+        let run = gate(&f, &sha, RunState::Failed).await?;
+        f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='{state}', failures=NULL, reason='stopped early: job quick failed' WHERE id='{run}-full';
+            UPDATE ci_jobs SET state='failed', failures='---- quick::broken stdout ----' WHERE id='{run}-quick'")).await?;
+        let asked = ask(&f, task).await?;
+        settle(&f).await?;
+        let receipt = request(&f, asked["id"].as_str().ok_or("receipt")?).await?;
+        assert_eq!(receipt.state, StagingState::Inherited, "{receipt:?}");
+        let note = receipt.note.ok_or("inheritance note")?;
+        for test in ["full::broken", "quick::broken"] {
+            assert!(
+                note.contains(&format!("{test} from {} (task #{number})", &origin[..12])),
+                "{note}"
+            );
+        }
+    }
+    agent(&f, "mixed").await?;
+    let sha = land(&f, "mixed", "mixed").await?;
+    let run = gate(&f, &sha, RunState::Failed).await?;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='skipped', failures=NULL WHERE id='{run}-full';
+        UPDATE ci_jobs SET state='failed', failures='---- quick::new stdout ----' WHERE id='{run}-quick'")).await?;
+    let asked = ask(&f, "mixed").await?;
+    settle(&f).await?;
+    let receipt = request(&f, asked["id"].as_str().ok_or("mixed receipt")?).await?;
+    assert_eq!(receipt.state, StagingState::GateFailed);
+    let note = receipt.note.ok_or("mixed note")?;
+    assert!(
+        note.contains("new failures: quick::new")
+            && note.contains(&format!(
+                "full::broken from {} (task #{number})",
+                &origin[..12]
+            )),
+        "{note}"
+    );
+    assert!(!note.contains("quick::broken"), "{note}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_green_rerun_that_skips_an_unresolved_job_keeps_the_notice_and_staging_wait() -> TestResult
+{
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "owner").await?;
+    let sha = land(&f, "owner", "broken").await?;
+    let first = gate(&f, &sha, RunState::Error).await?;
+    let project = sandbox(&f).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    for id in ["skip-one", "skip-two"] {
+        let (mut run, quick) = crate::pr_watch::run(
+            &project.id,
+            id,
+            &sha,
+            RunState::Passed,
+            None,
+            f.h.app.now().0,
+        );
+        run.reference = CiRef::Branch("dev".into());
+        let mut skipped = quick.clone();
+        skipped.name = "full".into();
+        skipped.key = skipped.name.clone();
+        skipped.id = format!("{id}-skipped");
+        skipped.ordinal = 1;
+        skipped.state = RunState::Skipped;
+        f.h.store.insert_ci_run(&run, &[quick, skipped]).await?;
+    }
+    for prune in [false, true] {
+        if prune {
+            f.h.store.prune_ci_runs(0, f.h.app.now()).await?;
+            assert!(f.h.store.ci_run(&first).await?.is_none());
+            assert!(f.h.store.ci_run("skip-one").await?.is_none());
+        }
+        let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+        assert_eq!(notices[0]["test"], "full", "{notices}");
+        assert_eq!(notices[0]["run_id"], "skip-two");
+    }
+    agent(&f, "later").await?;
+    let descendant = land(&f, "later", "later").await?;
+    let later = gate(&f, &descendant, RunState::Passed).await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET state='skipped' WHERE id='{later}-full'"
+        ))
+        .await?;
+    let asked = ask(&f, "later").await?;
+    settle(&f).await?;
+    let receipt = request(&f, asked["id"].as_str().ok_or("receipt")?).await?;
+    assert_eq!(receipt.state, StagingState::Inherited, "{receipt:?}");
+    assert!(
+        receipt
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("full") && n.contains(&sha[..12]))
+    );
+    agent(&f, "fix").await?;
+    let fix = land(&f, "fix", "fixed").await?;
+    gate(&f, &fix, RunState::Passed).await?;
+    ask(&f, "fix").await?;
+    settle(&f).await?;
+    assert_eq!(
+        request(&f, &receipt.id).await?.state,
+        StagingState::Included
+    );
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    assert_eq!(
+        f.get("/api/status").await?["sandboxes"][0]["gate_notices"],
+        json!([])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pruning_a_manually_cancelled_candidate_preserves_its_verdict_and_rerun() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "owner").await?;
+    let sha = land(&f, "owner", "merge").await?;
+    let stopped = gate(&f, &sha, RunState::Cancelled).await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET reference='candidate/' || sha WHERE id='{stopped}'"
+        ))
+        .await?;
+    f.h.store.prune_ci_runs(0, f.h.app.now()).await?;
+    let id = ask(&f, "owner").await?;
+    f.h.app
+        .staging_advance(&sandbox(&f).await?, "staging")
+        .await?;
+    let row = request(&f, id["id"].as_str().ok_or("receipt")?).await?;
+    assert_eq!(row.state, StagingState::GateFailed, "{row:?}");
+    assert_eq!(row.ci_run_id.as_deref(), Some(stopped.as_str()));
+    let project = sandbox(&f).await?;
+    f.h.app.ci_sync_sandbox(&project).await?;
+    assert_eq!(
+        f.h.store.ci_runs_for_sha(&project.id, &sha).await?.len(),
+        1,
+        "inventory must also honor the cancelled suite"
+    );
+    let notes = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+    assert_eq!(notes[0]["run_id"], stopped);
+    let rerun = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        &format!("/api/sandboxes/s1/ci/runs/{stopped}/rerun"),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(rerun.body["sha"], sha);
+    let rerun_id = rerun.body["id"].as_str().ok_or("rerun id")?;
+    f.h.store.execute_for_tests(&format!(
+        "UPDATE ci_jobs SET state='passed' WHERE run_id='{rerun_id}';
+         UPDATE ci_jobs SET state='failed', failures='---- suite::broken stdout ----' WHERE run_id='{rerun_id}' AND name='full';
+         UPDATE ci_runs SET state='failed' WHERE id='{rerun_id}'"
+    )).await?;
+    for view in [
+        f.get("/api/status").await?,
+        f.get("/api/sandboxes/s1/ci").await?,
+    ] {
+        let notices = view
+            .get("gate_notices")
+            .unwrap_or(&view["sandboxes"][0]["gate_notices"]);
+        assert_eq!(notices.as_array().ok_or("notices")?.len(), 1, "{notices}");
+        assert_eq!(notices[0]["test"], "suite::broken");
+        assert_eq!(notices[0]["run_id"], rerun_id);
+    }
+    agent(&f, "later").await?;
+    let later = land(&f, "later", "later").await?;
+    named_gate(&f, &later, &["suite::broken"]).await?;
+    let asked = ask(&f, "later").await?;
+    settle(&f).await?;
+    let receipt = request(&f, asked["id"].as_str().ok_or("later receipt")?).await?;
+    assert_eq!(receipt.state, StagingState::Inherited);
+    let note = receipt.note.ok_or("inheritance")?;
+    assert!(
+        note.contains("suite::broken") && !note.contains("cancelled"),
+        "{note}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_pruned_gate_and_deleted_task_still_identify_the_inherited_test() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "old", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let old = land(&f, "old", "old").await?;
+    let first = named_gate(&f, &old, &["delivery::gate"]).await?;
+    let number =
+        f.h.store
+            .task(&TaskId::parse("old")?)
+            .await?
+            .ok_or("old")?
+            .number;
+    f.h.store
+        .execute_for_tests("DELETE FROM tasks WHERE id = 'old'")
+        .await?;
+    agent(&f, "later").await?;
+    let later = land(&f, "later", "later").await?;
+    let live_run = named_gate(&f, &later, &["delivery::gate"]).await?;
+    f.h.store.prune_ci_runs(0, f.h.app.now()).await?;
+    assert!(f.h.store.ci_run(&first).await?.is_none());
+    let row = ask(&f, "later").await?;
+    settle(&f).await?;
+    let receipt = request(&f, row["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(receipt.state.as_str(), "inherited");
+    let note = receipt.note.ok_or("note")?;
+    assert!(
+        note.contains(&format!("task #{number}")) && note.contains(&old[..12]),
+        "{note}"
+    );
+    let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+    assert_eq!(
+        notices,
+        json!([{ "test": "delivery::gate", "revision": old, "run_id": live_run, "merge_task": number }])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_requests_for_one_failed_landing_record_the_same_merge_origin() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "landing").await?;
+    agent(&f, "duplicate").await?;
+    let sha = land(&f, "landing", "landing").await?;
+    f.h.store.execute_for_tests(&format!("INSERT INTO task_merges(task_id,sandbox_id,merged_sha,branch,head_sha) VALUES ('duplicate','s1','{sha}','dev','{sha}')")).await?;
+    named_gate(&f, &sha, &["delivery::gate"]).await?;
+    ask(&f, "landing").await?;
+    let other = ask(&f, "duplicate").await?;
+    settle(&f).await?;
+    assert_eq!(
+        request(&f, other["id"].as_str().ok_or("id")?)
+            .await?
+            .state
+            .as_str(),
+        "inherited"
+    );
+    let recipients = f.h.store.untold_staging_requests().await?;
+    assert_eq!(recipients.len(), 1);
+    assert_eq!(
+        recipients[0].task_id.as_ref().map(TaskId::as_str),
+        Some("landing")
+    );
+    Ok(())
+}
+
 /// SPEC-575 acceptance (failed candidate, then a fix; a duplicate request): a task's request
 /// deploys its merged revision once its full gate passed. A later task's failing candidate is
 /// reported with its run id while staging keeps serving the earlier release. Its fix lands,
@@ -258,7 +1038,7 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
     assert_eq!(repeated["staging"]["id"], failing["id"]);
     let text = repeated["text"].as_str().ok_or("receipt text")?;
     assert!(
-        text.contains("fix it forward") && text.contains(&ci2),
+        text.contains("working task assigned the repair") && text.contains(&ci2),
         "{text}"
     );
     assert!(
@@ -378,9 +1158,7 @@ async fn a_gate_failure_without_a_run_directs_the_task_to_a_new_landing() -> Tes
     assert_eq!(repeated["staging"]["id"], pending.id);
     let text = repeated["text"].as_str().ok_or("terminal receipt")?;
     assert!(
-        text.contains("no CI run")
-            && text.contains("fix it forward")
-            && text.contains("delivery_merge"),
+        text.contains("no CI run") && text.contains("working task to restore the gate"),
         "{text}"
     );
     assert!(deployed(&f).await?.is_empty());
@@ -1593,7 +2371,7 @@ async fn fill_planning_window(f: &Fixture) -> TestResult {
 async fn a_completed_old_candidate_is_still_the_current_heads_verdict() -> TestResult {
     let f = fixture(&staging_toml()).await?;
     let sha = f.push("dev", &[("broken", Some("broken"))])?;
-    let run = gate(&f, &sha, RunState::Failed).await?;
+    let run = named_gate(&f, &sha, &["gate::broken"]).await?;
     f.h.store
         .execute_for_tests(&format!(
             "UPDATE ci_runs SET reference='candidate/' || sha WHERE id='{run}'"
@@ -1669,6 +2447,34 @@ async fn a_later_configuration_refusal_invalidates_an_old_candidate_outside_rece
         ),
         "the current valid configuration still needs its gate: {runs:?}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_test_that_moves_cells_keeps_its_origin_until_the_new_cell_passes() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let first = f.push("dev", &[("first", Some("first"))])?;
+    named_gate(&f, &first, &["moved::test"]).await?;
+    let second = f.push("dev", &[("second", Some("second"))])?;
+    let run = named_gate(&f, &second, &["moved::test"]).await?;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='passed',failures=NULL WHERE id='{run}-full';
+        UPDATE ci_jobs SET state='failed',failures='---- moved::test stdout ----' WHERE id='{run}-quick'")).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+    assert_eq!(notices[0]["revision"], first);
+    let third = f.push("dev", &[("third", Some("third"))])?;
+    let run = named_gate(&f, &third, &["new::test"]).await?;
+    // The quick cell passed, a different cell failed, and full did not run.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET name='other' WHERE id='{run}-full'"
+        ))
+        .await?;
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+    assert_eq!(notices.as_array().ok_or("notices")?.len(), 1, "{notices}");
+    assert_eq!(notices[0]["test"], "new::test");
     Ok(())
 }
 
@@ -2228,8 +3034,16 @@ async fn the_final_step_waits_for_staging_until_its_answer_is_delivered() -> Tes
         .execute_for_tests("UPDATE tasks SET status = 'parked' WHERE id = 't1'")
         .await?;
     let parked = summary().await?;
-    assert!(parked["needs_you_notice"].is_null(), "{parked}");
-    assert_eq!(parked["staging_wait"], view["staging_wait"]);
+    assert!(
+        parked["needs_you_notice"]["action"]
+            .as_str()
+            .is_some_and(|action| action.contains("resume")),
+        "{parked}"
+    );
+    assert!(parked["staging_wait"].is_null());
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET status = 'running' WHERE id = 't1'")
+        .await?;
     assert!(
         f.h.store
             .transition_ci_job(
@@ -2284,7 +3098,7 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
             "Staging ([cd.staging], merge-first): your merged revision {short} has no staging \
              request. Once your whole delivery has landed, ask once with cd_deploy {{\"environment\":\"staging\"}} \
              before ending your turn. Yulius runs the full suite, then deploys and verifies that revision. \
-             If your final step requires the outcome, leave it in progress. Yulius wakes this task with the outcome."
+             If your final step requires the outcome, leave it in progress. A running task with work left receives the outcome."
         )),
         "{asks}"
     );
@@ -2324,20 +3138,20 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     let id = asked["id"].as_str().ok_or("id")?;
     let done = request(&f, id).await?;
     assert_eq!(done.state, StagingState::Verified, "{done:?}");
-    let mut labels = Vec::new();
+    let mut receipts = Vec::new();
     while let Ok(event) = updates.try_recv() {
         if let yulius_contracts::events::UiEvent::TaskUpdated { task } = event.event
             && task.id == "t1"
-            && let Some(label) = task.staging_wait
+            && let Some(receipt) = task.staging_outcome
         {
-            labels.push(label);
+            receipts.push(receipt);
         }
     }
     assert!(
-        labels
+        receipts
             .iter()
-            .any(|label| label == StagingState::Deploying.task_wait_label()),
-        "the task's mounted view must see the deploy start: {labels:?}"
+            .any(|receipt| receipt.contains("Staging verified")),
+        "the finished task view must retain its verified receipt: {receipts:?}"
     );
     let after = delivery_text(&f, "t1").await?;
     assert!(
@@ -2388,9 +3202,7 @@ async fn delivery_status_after_a_failed_gate_names_the_fix() -> TestResult {
         failed.contains(&format!(
             "request {id1} for revision {} is gate_failed, CI run {ci1}",
             &r1[..12]
-        )) && failed.contains(
-            "fix it forward on this branch, merge with delivery_merge, then cd_deploy again"
-        ),
+        )) && failed.contains("working task assigned the repair"),
         "{failed}"
     );
     let r2 = land(&f, "t1", "fix.txt").await?;
