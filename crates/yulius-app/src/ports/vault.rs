@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
+use yulius_domain::vault::SecretRule;
 
 use crate::error::AppResult;
 use crate::ports::Envelope;
@@ -56,6 +57,8 @@ pub struct VaultSecretRecord {
     pub description: String,
     /// Agent: host bindings as entered (normalized).
     pub hosts: Vec<String>,
+    /// Agent: method and path rules (SPEC-627); empty: any request to its hosts.
+    pub rules: Vec<SecretRule>,
     /// Agent: injection kind.
     pub injection: String,
     /// Agent: header of the `header` injection.

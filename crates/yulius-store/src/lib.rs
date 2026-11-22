@@ -225,6 +225,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0083_terminal_pulls.sql"),
     include_str!("migrations/0086_inherited_staging.sql"),
     include_str!("migrations/0087_metrics_model_parts.sql"),
+    include_str!("migrations/0088_agent_secret_rules.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -561,6 +562,7 @@ mod tests {
             (85, include_str!("migrations/0083_terminal_pulls.sql")),
             (86, include_str!("migrations/0086_inherited_staging.sql")),
             (87, include_str!("migrations/0087_metrics_model_parts.sql")),
+            (88, include_str!("migrations/0088_agent_secret_rules.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(

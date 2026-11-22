@@ -11,17 +11,49 @@ use yulius_app::ports::vault::{
 };
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
+use yulius_domain::vault::SecretRule;
+use yulius_domain::vault::rules::parse_rules;
 
 use crate::{SqliteStore, bad_column, db, to_i64, to_u32};
 
 const COLS: &str = "id, section, sandbox_id, name, description, hosts, injection, header_name, \
      fields, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
      value_updated_at, last_used_at, requested_hosts, requested_by, env_files, env_requested_by, \
-     auto_allow, owner_id";
+     auto_allow, owner_id, rules";
 
 fn json_list(row: &Row<'_>, column: &str) -> rusqlite::Result<Vec<String>> {
     let text: String = row.get(column)?;
     serde_json::from_str(&text).map_err(|_| bad_column(column, &text))
+}
+
+/// A secret's rules as stored: `[{"methods": [..], "path": ".."}]`.
+fn rules_json(rules: &[SecretRule]) -> String {
+    let list: Vec<serde_json::Value> = rules
+        .iter()
+        .map(|r| serde_json::json!({"methods": r.methods(), "path": r.path()}))
+        .collect();
+    serde_json::Value::Array(list).to_string()
+}
+
+/// The stored rules, parsed again: a row whose rules do not parse is an error, never "no rules"
+/// (which would send the secret for any request).
+fn rules_column(row: &Row<'_>) -> rusqlite::Result<Vec<SecretRule>> {
+    let text: String = row.get("rules")?;
+    let bad = || bad_column("rules", &text);
+    let stored: Vec<serde_json::Value> = serde_json::from_str(&text).map_err(|_| bad())?;
+    let mut pairs: Vec<(Vec<String>, String)> = Vec::with_capacity(stored.len());
+    for rule in &stored {
+        let methods: Option<Vec<String>> = rule["methods"].as_array().and_then(|list| {
+            list.iter()
+                .map(|m| m.as_str().map(str::to_owned))
+                .collect()
+        });
+        match (methods, rule["path"].as_str()) {
+            (Some(methods), Some(path)) => pairs.push((methods, path.to_owned())),
+            _ => return Err(bad()),
+        }
+    }
+    parse_rules(&pairs).map_err(|_| bad())
 }
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
@@ -42,6 +74,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
         name: row.get("name")?,
         description: row.get("description")?,
         hosts: json_list(row, "hosts")?,
+        rules: rules_column(row)?,
         injection: row.get("injection")?,
         header_name: row.get("header_name")?,
         fields: json_list(row, "fields")?,
@@ -133,7 +166,7 @@ fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
     tx.execute(
         &format!(
             "INSERT INTO vault_secrets ({COLS}, cd_prod) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-             ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"
+             ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)"
         ),
         params![
             r.id,
@@ -160,6 +193,7 @@ fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
             r.env_requested_by,
             i64::from(r.auto_allow),
             r.owner_id.as_ref().map(UserId::as_str),
+            rules_json(&r.rules),
             i64::from(r.cd_prod),
         ],
     )
@@ -237,6 +271,8 @@ impl VaultStore for SqliteStore {
         // The sealed value the edit read: an edit writes it back, so one read before a
         // rotation would undo it (SPEC-483 V3).
         let seen_value = seen.envelope.ciphertext.clone();
+        // The rules the edit read: a stale edit never writes older (wider) rules back (SPEC-627).
+        let seen_rules = rules_json(&seen.rules);
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             ensure_agent_unique(&tx, &r)?;
@@ -244,10 +280,11 @@ impl VaultStore for SqliteStore {
                 .execute(
                     "UPDATE vault_secrets SET name = ?2, description = ?3, hosts = ?4, injection = ?5, \
                      header_name = ?6, fields = ?7, kek_id = ?8, wrapped_key = ?9, ciphertext = ?10, \
-                     updated_by = ?11, updated_at = ?12, value_updated_at = ?13, auto_allow = ?14 \
+                     updated_by = ?11, updated_at = ?12, value_updated_at = ?13, auto_allow = ?14, \
+                     rules = ?18 \
                      WHERE id = ?1 AND NOT (?14 = 1 AND cd_prod = 1) AND hosts = ?15 \
                      AND auto_allow = ?16 AND NOT (cd_prod = 1 AND ?4 != '[]' AND ?4 != ?15) \
-                     AND ciphertext = ?17",
+                     AND ciphertext = ?17 AND rules = ?19",
                     params![
                         r.id,
                         r.name,
@@ -266,6 +303,8 @@ impl VaultStore for SqliteStore {
                         seen_hosts,
                         seen_auto,
                         seen_value,
+                        rules_json(&r.rules),
+                        seen_rules,
                     ],
                 )
                 .map_err(db)?;
@@ -997,6 +1036,7 @@ mod tests {
             name: name.into(),
             description: String::new(),
             hosts: vec!["api.example.com".into()],
+            rules: Vec::new(),
             injection: "bearer".into(),
             header_name: None,
             fields: vec!["value".into()],
@@ -1175,6 +1215,44 @@ mod tests {
             EnvFiles::Allowed,
             "an edit keeps the allowance"
         );
+        Ok(())
+    }
+
+    /// SPEC-627 MPR-001, MPR-006: rules round-trip, an edit replaces them only from the rules it
+    /// read, and a row whose stored rules do not parse is an error, never "no rules".
+    #[tokio::test]
+    async fn rules_round_trip_and_change_only_from_what_was_seen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let mut first = record("a", VaultSection::Agent, Some("s1"), "KEY");
+        first.rules = parse_rules(&[(vec!["GET".into(), "HEAD".into()], "/v1/*".into())])?;
+        store.vault_insert(&first).await?;
+        let seen = store.vault_get("a").await?.ok_or("row")?;
+        assert_eq!(seen.rules, first.rules);
+        let mut narrowed = seen.clone();
+        narrowed.rules = parse_rules(&[(vec!["GET".into()], "/v1/issues/*".into())])?;
+        assert!(store.vault_update(&narrowed, &seen).await?);
+        // An edit that read the wider rules does not write them back.
+        let mut stale = seen.clone();
+        stale.description = "stale".into();
+        assert!(!store.vault_update(&stale, &seen).await?, "stale rules");
+        let now = store.vault_get("a").await?.ok_or("row")?;
+        assert_eq!(now.rules, narrowed.rules);
+        let mut cleared = now.clone();
+        cleared.rules = Vec::new();
+        assert!(store.vault_update(&cleared, &now).await?);
+        assert!(store.vault_get("a").await?.ok_or("row")?.rules.is_empty());
+        store
+            .call(|c| {
+                c.execute(
+                    "UPDATE vault_secrets SET rules = '[{\"methods\":[],\"path\":\"/\"}]' \
+                     WHERE id = 'a'",
+                    [],
+                )
+                .map_err(db)
+            })
+            .await?;
+        assert!(store.vault_get("a").await.is_err(), "unparsable rules");
         Ok(())
     }
 

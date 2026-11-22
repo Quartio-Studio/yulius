@@ -260,6 +260,7 @@ impl App {
                     hosts: request.hosts.clone(),
                     injection: Injection::parse(&record.injection, record.header_name.as_deref())
                         .unwrap_or(Injection::None),
+                    rules: Vec::new(),
                 },
                 description: description(Some(&about))
                     .unwrap_or_else(|_| about.chars().take(1000).collect()),

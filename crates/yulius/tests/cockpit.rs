@@ -4246,6 +4246,7 @@ fn egress_request(
     headers: &[(&str, &str)],
 ) -> yulius_app::ports::egress::EgressRequest {
     yulius_app::ports::egress::EgressRequest {
+        method: "GET".into(),
         host: host.into(),
         port: 443,
         path_and_query: "/v1/deploys".into(),

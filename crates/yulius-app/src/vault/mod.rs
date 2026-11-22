@@ -544,6 +544,7 @@ fn instance_vidoc_record() -> VaultSecretRecord {
                       scan, `yulius security-scan`"
             .into(),
         hosts: vec![VIDOC_HOST.into()],
+        rules: Vec::new(),
         injection: "none".into(),
         header_name: None,
         fields: vec!["value".into()],

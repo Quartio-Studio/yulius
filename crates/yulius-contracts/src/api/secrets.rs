@@ -164,6 +164,9 @@ pub struct AgentSecretView {
     pub hosts: Vec<String>,
     /// Hosts an agent proposed, waiting for a person who manages it to allow or dismiss them.
     pub requested_hosts: Vec<String>,
+    /// The only requests on its hosts the proxy puts it into (SPEC-627); empty: any request.
+    #[serde(default)]
+    pub rules: Vec<SecretRuleView>,
     /// The task that asked last (`#107`).
     pub requested_by: Option<String>,
     /// Whether agents may copy the value into the project's git-ignored `.env` files
@@ -217,6 +220,17 @@ pub struct AgentSecretView {
     pub copy_request: Option<CopyRequestView>,
 }
 
+/// An allow rule of an agent secret (SPEC-627): requests with one of `methods` whose path (without
+/// the query) matches `path`, `*` matching any characters, `/` included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretRuleView {
+    /// HTTP methods, upper-case (`GET`, `POST`).
+    pub methods: Vec<String>,
+    /// Path pattern (`/repos/*`).
+    pub path: String,
+}
+
 /// A copy of a production secret an agent asked for (SPEC-440): a new project secret `name`,
 /// bound to `hosts`, waiting for a person.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,6 +264,10 @@ pub struct AgentSecretInput {
     /// Bound hosts; none by default: agents propose them and a person allows them (SPEC-121).
     #[serde(default)]
     pub hosts: Vec<String>,
+    /// Method and path rules (SPEC-627); none by default: any request to its hosts. Not sent when
+    /// absent, so older servers take the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<SecretRuleView>>,
     /// `none` (default: agents send the placeholder themselves), `bearer`, `basic` or `header`.
     #[serde(default)]
     pub injection: Option<String>,
@@ -286,6 +304,9 @@ pub struct AgentSecretPatch {
     /// Bound hosts.
     #[serde(default)]
     pub hosts: Option<Vec<String>>,
+    /// Method and path rules replacing its own (SPEC-627); `[]` removes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<SecretRuleView>>,
     /// Injection kind.
     #[serde(default)]
     pub injection: Option<String>,
