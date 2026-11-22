@@ -4671,7 +4671,11 @@ impl App {
             .transpose()?;
         // A confirmed follow-up belongs to the task even if an overview lists a newer
         // PR or omits it. Start-rule decisions and parking must check it by number too.
-        let stored_open = self.deps.store.open_followup(&task.id).await?;
+        let stored_open = self
+            .deps
+            .store
+            .open_followups(&task.id, MAX_PULLS + 1)
+            .await?;
         let sandbox = self.dlv_sandbox_of(task).await?;
         // A playground or an instance with no GitHub App can still park an answered task.
         // A known open PR requires verification, even when its installation is unavailable.
@@ -4680,7 +4684,7 @@ impl App {
             .and_then(|r| r.pr_number);
         if sandbox.is_playground() || !self.github_configured().await? {
             return Ok(
-                (stored_open.is_none() && observed.pr.is_none_or(|pr| !pr.open))
+                (stored_open.is_empty() && observed.pr.is_none_or(|pr| !pr.open))
                     .then(ParkingPrs::default),
             );
         }
@@ -4737,7 +4741,7 @@ impl App {
             || observed.pr.is_none_or(|pr| {
                 !pr.open
                     || (Some(pr.number) != tracked
-                        && Some(pr.number) != stored_open
+                        && !stored_open.contains(&pr.number)
                         && branch.iter().all(|listed| listed.number != pr.number))
             })
         {
@@ -4751,8 +4755,11 @@ impl App {
             .iter()
             .map(|p| p.number)
             .chain(tracked)
-            .chain(stored_open)
+            .chain(stored_open.iter().copied())
             .collect();
+        if numbers.len() > MAX_PULLS {
+            return Ok(None);
+        }
         if numbers.is_empty() {
             return Ok(Some(ParkingPrs::default()));
         }
@@ -4768,7 +4775,7 @@ impl App {
             // Recorded deliveries may originate on a different branch. An independent
             // follow-up identified only by its number must still belong to this task.
             let source = task.branch.as_deref().filter(|_| {
-                stored_open == Some(number)
+                stored_open.contains(&number)
                     && tracked != Some(number)
                     && branch.iter().all(|pr| pr.number != number)
             });
@@ -4832,10 +4839,10 @@ impl App {
         };
         if let Some(read) = discovery {
             read.listed(&current, &closed);
-            if let Some(number) = stored_open
+            if let Some(number) = observed.pr.filter(|pr| pr.open).map(|pr| pr.number)
+                && stored_open.contains(&number)
                 && observed.fresh_head
                 && !observed.unavailable
-                && observed.pr.is_some_and(|pr| pr.open && pr.number == number)
                 && branch.iter().all(|pr| pr.number != number)
                 && let Some(open) = &mut read.open
                 && !open.contains(&number)
@@ -4859,7 +4866,7 @@ impl App {
                 if let Some(pr) = current.iter().find(|pr| pr.number == number) {
                     unchanged(pr) && head.is_none_or(|sha| sha == pr.head_sha)
                 } else {
-                    (tracked == Some(number) || stored_open == Some(number))
+                    (tracked == Some(number) || stored_open.contains(&number))
                         && branch.iter().all(|pr| pr.number != number)
                 }
             };

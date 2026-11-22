@@ -148,13 +148,14 @@ impl DeliveryStore for SqliteStore {
         .await
     }
 
-    async fn open_followup(&self, task: &TaskId) -> AppResult<Option<u64>> {
+    async fn open_followups(&self, task: &TaskId, limit: usize) -> AppResult<Vec<u64>> {
         let task = task.to_string();
+        let limit = i64::try_from(limit).map_err(yulius_app::error::AppError::internal)?;
         self.call(move |c| {
-            c.query_row("SELECT pr_number FROM task_pull_observations WHERE task_id=?1
-                         AND json_extract(snapshot,'$.state')='open' ORDER BY pr_number DESC LIMIT 1",
-                        [task], |r| r.get::<_, i64>(0))
-                .optional().map(|n| n.map(to_u64)).map_err(db)
+            let mut statement = c.prepare("SELECT pr_number FROM task_pull_observations WHERE task_id=?1
+                         AND json_extract(snapshot,'$.state')='open' ORDER BY pr_number DESC LIMIT ?2").map_err(db)?;
+            statement.query_map(params![task, limit], |row| row.get::<_, i64>(0).map(to_u64))
+                .map_err(db)?.collect::<rusqlite::Result<Vec<_>>>().map_err(db)
         }).await
     }
 

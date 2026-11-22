@@ -163,7 +163,11 @@ pub trait DeliveryStore: Send + Sync {
         number: Option<u64>,
     ) -> crate::error::AppResult<Option<super::github::GhPull>>;
     /// Last observed open follow-up identity, independently of the primary delivery stage.
-    async fn open_followup(&self, task: &TaskId) -> crate::error::AppResult<Option<u64>>;
+    async fn open_followup(&self, task: &TaskId) -> AppResult<Option<u64>> {
+        Ok(self.open_followups(task, 1).await?.first().copied())
+    }
+    /// Up to `limit` confirmed open PR numbers, newest first, including other bases.
+    async fn open_followups(&self, task: &TaskId, limit: usize) -> AppResult<Vec<u64>>;
     /// Records a terminal pull or a positively observed open follow-up. A merged number stays merged.
     async fn remember_pull_observation(
         &self,

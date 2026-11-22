@@ -11085,6 +11085,55 @@ async fn after_all_tasks_includes_a_new_failing_followup_before_discovery() -> T
         TaskStatus::Chained
     );
     f.h.github.set_checks(&head, ChecksState::Success);
+    edit_pull(&f, 2, |pr| pr.behind = true);
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+        let newer = GhPull {
+            number: 3,
+            base: "release".into(),
+            behind: false,
+            ..pulls[1].clone()
+        };
+        pulls.push(newer);
+    }
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.h.store.open_followup(&task).await?, Some(3));
+    let status = f.h.app.task_detail(&owner, task.as_str()).await?.summary;
+    assert_eq!(status.parked_pr.as_ref().map(|pr| pr.number), Some(2));
+    assert_eq!(status.parked_needs_you, Some(true));
+    f.h.app.advance_chains(&task).await;
+    assert_eq!(
+        f.h.store.task(&successor).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    edit_pull(&f, 2, |pr| pr.behind = false);
+    let mut extra = f.h.github.pulls.lock().map_err(|_| "pull fixture")?[2].clone();
+    let extra_numbers = 4..=u64::try_from(yulius_app::delivery::MAX_PULLS)? + 2;
+    for number in extra_numbers.clone() {
+        extra.number = number;
+        f.h.store.remember_pull_observation(&task, &extra).await?;
+    }
+    let direct_before =
+        f.h.github
+            .pull_get_count
+            .load(std::sync::atomic::Ordering::SeqCst);
+    f.h.app.advance_chains(&task).await;
+    assert_eq!(
+        f.h.store.task(&successor).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    assert_eq!(
+        f.h.github
+            .pull_get_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        direct_before
+    );
+    extra.state = "closed".into();
+    for number in extra_numbers {
+        extra.number = number;
+        f.h.store.remember_pull_observation(&task, &extra).await?;
+    }
+
     f.h.app.advance_chains(&task).await;
     assert_ne!(
         f.h.store.task(&successor).await?.ok_or("successor")?.status,
