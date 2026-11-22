@@ -342,7 +342,7 @@ impl Hub {
     ) {
         let deadline = tokio::time::Instant::now() + limit;
         let mut redrawn = self.output_seq() > since;
-        loop {
+        while tokio::time::Instant::now() < deadline {
             let until = if redrawn {
                 (tokio::time::Instant::now() + SETTLE_QUIET).min(deadline)
             } else {

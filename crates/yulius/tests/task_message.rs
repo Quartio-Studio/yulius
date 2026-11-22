@@ -1768,6 +1768,13 @@ const CODEX_EMPTY_COMPOSER: &str = concat!(
 async fn codex_with_pr_news(
     data: &Path,
 ) -> Result<(Arc<App>, TaskId, ProjectCaller, TcpListener), Error> {
+    codex_with_pr_fixture(data, fake_agent()).await
+}
+
+async fn codex_with_pr_fixture(
+    data: &Path,
+    options: FakeAgentOptions,
+) -> Result<(Arc<App>, TaskId, ProjectCaller, TcpListener), Error> {
     use yulius_app::pr_watch::WatchBounds;
     use yulius_domain::ci::RunState;
 
@@ -1777,7 +1784,7 @@ async fn codex_with_pr_news(
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
     let accepting = tokio::net::TcpListener::from_std(listener.try_clone()?)?;
-    let app = start_on_listener(data, &fake, fake_agent(), accepting, probe, clock).await?;
+    let app = start_on_listener(data, &fake, options, accepting, probe, clock).await?;
     let (sandbox, user) = seed(&app, data, &[]).await?;
     crate::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#).await?;
     let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
@@ -1806,6 +1813,370 @@ fn paint_codex(app: &App, id: &TaskId, picture: &str) {
 }
 
 #[test]
+fn reattached_idle_codex_repaints_and_receives_its_ci_notice() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (id, listener) = first.block_on(async {
+        let (_app, id, _, listener) = codex_with_pr_fixture(&data, full_screen()).await?;
+        Ok::<_, Error>((id, listener))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    runtime()?.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let app = start_on_listener(
+            &data,
+            &fake,
+            full_screen(),
+            tokio::net::TcpListener::from_std(listener)?,
+            Arc::new(ScriptedUsage::default()),
+            Arc::new(ShiftedClock(AtomicI64::new(0))),
+        )
+        .await?;
+        app.reconcile().await?;
+        let rt = app.runtime(&id);
+        let (cols, rows) = rt.hub.size();
+        // Legacy hosts supply a snapshot without redraw provenance. Only the child's
+        // SIGWINCH handler can replace this synthetic snapshot with a complete frame.
+        rt.hub.reset(
+            rt.hub.output_seq(),
+            CODEX_EMPTY_COMPOSER.as_bytes(),
+            cols,
+            rows,
+        );
+        let news = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(news.len(), 1, "{news:?}");
+        wait_for(
+            "PR news read by the reattached child",
+            Duration::from_secs(10),
+            || async { screen(&app, &id).contains("ECHO: Yulius, about your pull request #7") },
+        )
+        .await?;
+        assert_eq!(rt.hub.size(), (cols, rows));
+        assert!(screen(&app, &id).contains(&format!("{cols}×{rows}")));
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn unreadable_codex_raises_the_undelivered_ci_notice_on_the_task() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        let news = tokio::time::timeout(
+            Duration::from_secs(3),
+            app.watch_prs(&WatchBounds::default()),
+        )
+        .await?;
+        assert!(news.is_empty());
+        let request = app
+            .deps
+            .store
+            .task_needs_you(&id)
+            .await?
+            .ok_or("no Needs you for unreadable Codex")?;
+        assert!(request.action.contains("terminal"), "{request:?}");
+        assert!(
+            request
+                .happened
+                .as_deref()
+                .is_some_and(|s| s.contains("#7") && s.contains("fail")),
+            "{request:?}"
+        );
+        assert!(!screen(&app, &id).contains("ECHO:"));
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert_eq!(app.watch_prs(&WatchBounds::default()).await.len(), 1);
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn restarting_the_server_during_a_codex_repaint_restores_the_childs_size() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (id, listener, size) = first.block_on(async {
+        let (app, id, caller, listener) = codex_with_pr_news(&data).await?;
+        let rt = app.runtime(&id);
+        let size = rt.hub.size();
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let token: [u8; 32] = app
+            .deps
+            .crypto
+            .open(&attempt.host_token)?
+            .try_into()
+            .map_err(|_| "invalid fixture token")?;
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        let (writing, target) = (Arc::clone(&app), id.clone());
+        tokio::spawn(async move { send(&writing, &caller, &target).await });
+        wait_for("temporary width", Duration::from_secs(3), || async {
+            rt.hub.size() != size
+        })
+        .await?;
+        let observed = app
+            .deps
+            .session_host
+            .attach(Path::new(&attempt.run_dir), &token)
+            .await?;
+        assert_ne!(
+            observed.welcome.cols, size.0,
+            "host is at probe width before shutdown"
+        );
+        Ok::<_, Error>((id, listener, size))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    runtime()?.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let app = start_on_listener(
+            &data,
+            &fake,
+            fake_agent(),
+            tokio::net::TcpListener::from_std(listener)?,
+            Arc::new(ScriptedUsage::default()),
+            Arc::new(ShiftedClock(AtomicI64::new(0))),
+        )
+        .await?;
+        app.reconcile().await?;
+        assert_eq!(
+            app.runtime(&id).hub.size(),
+            size,
+            "reattached viewer geometry"
+        );
+        app.send_input(&id, b"/size\r").await?;
+        let expected = format!("SIZE {} {}", size.1, size.0);
+        wait_for(
+            "child's recovered PTY size",
+            Duration::from_secs(5),
+            || async { screen(&app, &id).contains(&expected) },
+        )
+        .await?;
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn a_refused_codex_outage_wake_resumes_on_repaint_without_an_owner_resend() -> TestResult {
+    use yulius_domain::time::Timestamp;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        // The Stop hook can mark the task idle before the rollout watcher reads
+        // the turn timestamps that make the outage wake eligible.
+        let runtime = app.runtime(&id);
+        let round = runtime.transcript_rounds();
+        wait_for("outage turn replay", Duration::from_secs(15), || async {
+            runtime.transcript_rounds() >= round + 2
+        })
+        .await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let answered = Path::new(&attempt.run_dir).join(yulius_app::outage::STOP_ANSWERED_FILE);
+        if answered.exists() {
+            std::fs::remove_file(answered)?;
+        }
+        // The last recorded turn closed during this simulated outage.
+        let (down, started) = (Timestamp(1), Timestamp(i64::MAX - 1));
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        assert!(app.wake_after_outage(down, started, false).await.is_empty());
+        assert!(app.deps.store.task_needs_you(&id).await?.is_some());
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert!(
+            app.watch_prs(&yulius_app::pr_watch::WatchBounds::default())
+                .await
+                .is_empty(),
+            "the PR watcher cannot clear an undelivered outage wake"
+        );
+        assert_eq!(
+            app.wake_after_outage(down, started, false).await,
+            std::slice::from_ref(&id)
+        );
+        wait_for("delivered outage wake", Duration::from_secs(5), || async {
+            screen(&app, &id).contains("ECHO: Yulius is back; continue")
+        })
+        .await?;
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn a_reconnecting_host_restores_the_width_of_an_interrupted_codex_repaint() -> TestResult {
+    use yulius_app::hub::HubFrame;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        let rt = app.runtime(&id);
+        let (cols, rows) = rt.hub.size();
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let token: [u8; 32] = app
+            .deps
+            .crypto
+            .open(&attempt.host_token)?
+            .try_into()
+            .map_err(|_| "invalid fixture token")?;
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        let mut frames = rt.hub.watch();
+        let (writing, target) = (Arc::clone(&app), id.clone());
+        let sending = tokio::spawn(async move { send(&writing, &caller, &target).await });
+        wait_for("temporary width", Duration::from_secs(3), || async {
+            rt.hub.size().0 != cols
+        })
+        .await?;
+        // A second authenticated attachment disconnects the supervisor. Its reconnect
+        // receives a snapshot taken at the temporary width before it regains the writer.
+        let displaced = app
+            .deps
+            .session_host
+            .attach(Path::new(&attempt.run_dir), &token)
+            .await?;
+        assert_ne!(displaced.welcome.cols, cols);
+        assert!(sending.await?.is_err());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(frames.recv().await?, HubFrame::Snapshot { .. }) {
+                    break Ok::<_, Error>(());
+                }
+            }
+        })
+        .await??;
+        assert_eq!(
+            rt.hub.size(),
+            (cols, rows),
+            "viewer geometry after reconnect"
+        );
+        app.send_input(&id, b"/size\r").await?;
+        let expected = format!("SIZE {rows} {cols}");
+        wait_for(
+            "child's restored PTY size",
+            Duration::from_secs(5),
+            || async { screen(&app, &id).contains(&expected) },
+        )
+        .await?;
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn cancelling_a_codex_message_during_repaint_restores_the_size_without_typing() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        let rt = app.runtime(&id);
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        let original = rt.hub.size();
+        let (writing, target) = (Arc::clone(&app), id.clone());
+        let sending = tokio::spawn(async move { send(&writing, &caller, &target).await });
+        wait_for(
+            "temporary repaint width",
+            Duration::from_secs(3),
+            || async { rt.hub.size() != original },
+        )
+        .await?;
+        sending.abort();
+        assert!(sending.await.is_err_and(|error| error.is_cancelled()));
+        wait_for("restored PTY geometry", Duration::from_secs(3), || async {
+            rt.hub.size() == original
+        })
+        .await?;
+        assert!(audited(&data, &id)?.is_empty());
+        assert!(!screen(&app, &id).contains("ECHO:"));
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn an_unreadable_codex_prompt_asks_its_owner_without_replacing_an_open_question() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        let refused =
+            tokio::time::timeout(Duration::from_secs(3), send(&app, &caller, &id)).await?;
+        assert!(matches!(refused, Err(AppError::Conflict(_))));
+        let mut question = app
+            .deps
+            .store
+            .task_needs_you(&id)
+            .await?
+            .ok_or("missing owner request")?;
+        assert_eq!(
+            question.happened.as_deref(),
+            Some("A message could not be submitted to Codex.")
+        );
+        question.action = "Confirm the project choice".into();
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&question), app.now())
+            .await?;
+        assert!(send(&app, &caller, &id).await.is_err());
+        assert_eq!(app.deps.store.task_needs_you(&id).await?, Some(question));
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn a_readable_terminal_keeps_the_private_message_request_until_its_owner_resends() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        assert!(send(&app, &caller, &id).await.is_err());
+        let request = app
+            .deps
+            .store
+            .task_needs_you(&id)
+            .await?
+            .ok_or("missing private message request")?;
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        assert_eq!(app.deps.store.task_needs_you(&id).await?, Some(request));
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn a_repeated_codex_notice_write_failure_raises_the_pending_result() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        std::fs::create_dir(Path::new(&attempt.run_dir).join("codex-submit-held"))?;
+        let bounds = WatchBounds::default();
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        let request = app
+            .deps
+            .store
+            .task_needs_you(&id)
+            .await?
+            .ok_or("missing PR delivery refusal")?;
+        assert!(
+            request
+                .problem
+                .as_deref()
+                .is_some_and(|s| s.contains("record the Codex paste"))
+        );
+        assert!(
+            request
+                .happened
+                .as_deref()
+                .is_some_and(|s| s.contains("#7"))
+        );
+        stop(&app, &id).await
+    })
+}
+
+#[test]
 fn the_codex_rate_limit_picker_holds_messages_until_it_is_dismissed() -> TestResult {
     use yulius_app::pr_watch::WatchBounds;
 
@@ -1821,6 +2192,9 @@ fn the_codex_rate_limit_picker_holds_messages_until_it_is_dismissed() -> TestRes
             "{reply:?}"
         );
         assert!(app.watch_prs(&bounds).await.is_empty());
+        let held = app.deps.store.task_needs_you(&id).await?.ok_or("picker refusal did not raise PR news")?;
+        assert!(held.problem.as_deref().is_some_and(|s| s.contains("rate-limit model picker")));
+        assert!(held.happened.as_deref().is_some_and(|s| s.contains("#7") && s.contains("fail")));
         assert!(audited(&data, &id)?.is_empty());
         assert!(!screen(&app, &id).contains("ECHO: "));
 
