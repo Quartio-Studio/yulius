@@ -98,6 +98,9 @@ pub trait NotificationChannel: Send + Sync {
     /// Sends plain `text` to `chat`; the sent message's id, when the service gives one (a reply
     /// to it names it, SPEC-512 TGI-002).
     async fn send(&self, chat: &str, text: &str) -> Result<Option<String>, ChannelError>;
+    /// Deletes the bot's own `message` in `chat` (a keyed notice replaced it, SPEC-624 NTC-007).
+    /// The service may refuse an old one (Telegram: after 48 hours).
+    async fn delete(&self, chat: &str, message: &str) -> Result<(), ChannelError>;
     /// Fetches a received file, at most `max` bytes ([`ChannelError::TooLarge`] beyond).
     async fn fetch_file(&self, id: &str, max: u64) -> Result<Vec<u8>, ChannelError>;
     /// Waits for messages after `cursor`, at most the channel's own long-poll bound.
