@@ -249,6 +249,8 @@ impl App {
             let Some(runtime) = self.existing_runtime(&task.id) else {
                 continue;
             };
+            self.settle_codex_input_hold(&task, &attempt.id, Some(WAKE_TEXT))
+                .await;
             let facts = WakeFacts {
                 running: task.status == TaskStatus::Running,
                 turn_open: runtime.turn_in_progress(),

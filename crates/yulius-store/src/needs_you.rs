@@ -55,6 +55,28 @@ impl NeedsYouStore for SqliteStore {
         .await
     }
 
+    async fn ask_for_live_attempt(
+        &self,
+        task: &TaskId,
+        attempt: &yulius_domain::ids::AttemptId,
+        request: &NeedsYouRecord,
+    ) -> AppResult<bool> {
+        let (task, attempt) = (task.to_string(), attempt.to_string());
+        let text = serde_json::to_string(request).map_err(AppError::internal)?;
+        let at = request.at;
+        self.call(move |c| {
+            c.execute(
+                "UPDATE tasks SET needs_you = ?3, updated_at = ?4 WHERE id = ?1 \
+                 AND status = 'running' AND needs_you IS NULL AND EXISTS \
+                 (SELECT 1 FROM attempts WHERE task_id = ?1 AND id = ?2 AND state = 'live')",
+                params![task, attempt, text, at],
+            )
+            .map(|changed| changed == 1)
+            .map_err(db)
+        })
+        .await
+    }
+
     async fn end_task_needs_you_asking(
         &self,
         task: &TaskId,
