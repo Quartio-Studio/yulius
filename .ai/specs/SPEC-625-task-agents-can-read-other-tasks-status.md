@@ -119,7 +119,8 @@ much chaos"). Task #609.
 - [x] Skills and catalog: look before overlapping work, no relay requests
 - [x] Docs: api, product, architecture, changes
 - [x] Independent review approves the exact head
-- [ ] Answer every independent review finding on the exact head
+- [x] Answer review round 1: last words not screen, held claims, tidy briefs, transcript tests
+- [ ] Review round 2 approves the fixes on the exact head
 
 ## Acceptance criteria
 
