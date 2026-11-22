@@ -94,7 +94,7 @@ impl App {
                 tally.gone,
                 tally.failed
             );
-            tracing::info!(%detail, "metrics of runs recorded before SPEC-087 recounted");
+            tracing::info!(%detail, "metrics of queued runs recounted from their transcripts");
             if let Err(err) = self
                 .deps
                 .store

@@ -27,7 +27,7 @@ pub(crate) fn pauses_since_sql(cols: &str) -> String {
 /// at or after it, with their metrics (`token_runs`).
 pub(crate) const TOKEN_RUNS_SQL: &str = "SELECT a.account_id, a.started_at, a.ended_at, m.attempt_id AS metrics_attempt, \
      m.model, m.input_tokens, m.output_tokens, m.cache_read, m.cache_write, \
-     m.turns, m.active_ms FROM attempts a LEFT JOIN metrics m ON m.attempt_id = a.id \
+     m.turns, m.active_ms, m.model_parts FROM attempts a LEFT JOIN metrics m ON m.attempt_id = a.id \
      WHERE a.ended_at IS NULL AND a.state IN ('spawning', 'live') OR a.ended_at >= ?1";
 
 pub(crate) const PAUSE_COLS: &str =

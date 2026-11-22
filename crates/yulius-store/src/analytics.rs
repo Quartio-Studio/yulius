@@ -69,6 +69,7 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<AnalyticsRun> {
             cache_write: opt_u64(row, "cache_write")?,
             turns: row.get::<_, Option<i64>>("turns")?.map(to_u32),
             active_ms: opt_u64(row, "active_ms")?,
+            parts: Vec::new(),
         }),
     };
     Ok(AnalyticsRun {

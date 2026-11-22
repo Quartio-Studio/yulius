@@ -450,14 +450,16 @@ fn account_cost(
             if used.iter().all(Option::is_none) {
                 return None;
             }
-            let price = yulius_domain::pricing::price_of(m.model.as_deref()?)?;
-            Some(yulius_domain::pricing::cost_usd(
-                price,
-                m.input_tokens,
-                m.output_tokens,
-                m.cache_read,
-                m.cache_write,
-            ))
+            let totals = yulius_domain::usage::TokenUsage {
+                input: m.input_tokens,
+                output: m.output_tokens,
+                cache_read: m.cache_read,
+                cache_write: m.cache_write,
+            };
+            // A Codex subagent's part at its own model (SPEC-619 CSA-4). The time only dates the
+            // Ultrafast rate, which this Standard cost does not use.
+            yulius_domain::pricing::run_cost(m.model.as_deref(), totals, &m.parts, since)
+                .map(|cost| cost.standard)
         })
         .reduce(|a, b| a + b)
 }
@@ -2635,6 +2637,23 @@ mod tests {
         assert_eq!(account_cost(&unpriced, &a, Timestamp(60)), None);
         let codex = vec![run("a", 100, "gpt-6.2-astra", Some(1_000_000))?];
         assert_eq!(account_cost(&codex, &a, Timestamp(60)), Some(48.0));
+        // SPEC-619 AC-4: a Codex subagent's part at its own model, the rest at the run's.
+        let mut spawned = run("a", 100, "gpt-6.2-sol", Some(1_000_000))?;
+        if let Some(metrics) = &mut spawned.metrics {
+            metrics.parts = vec![yulius_domain::usage::ModelTokens {
+                model: "gpt-6.2-astra".into(),
+                usage: yulius_domain::usage::TokenUsage {
+                    input: Some(500_000),
+                    output: Some(500_000),
+                    cache_read: None,
+                    cache_write: None,
+                },
+            }];
+        }
+        assert_eq!(
+            account_cost(&[spawned], &a, Timestamp(60)),
+            Some(6.0 + 24.0)
+        );
         Ok(())
     }
 

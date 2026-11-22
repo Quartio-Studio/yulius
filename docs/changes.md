@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-22
 
+- A Codex task's metrics and the API cost estimate count its subagents' responses once each, in the run that answered them and at the model that answered. The last week's Codex runs are recounted after the upgrade. [SPEC-619](../.ai/specs/SPEC-619-count-the-usage-of-codex-subagents-in-th.md)
 - Terminal output of a replaced run that arrives late, a released redaction tail included, no longer draws on the replacement run's screen or reaches its viewers. [SPEC-614](../.ai/specs/SPEC-614-a-delayed-terminal-output-chunk-must-not.md)
 - A merge the ordinary queue already decided is not armed again after a restart when removing its saved entry failed. A later re-arm of the same head keeps its place, and an unreadable verdict keeps the saved arm until it can be reconciled. [SPEC-615](../.ai/specs/SPEC-615-a-consumed-merge-arm-stays-consumed-acro.md)
 - A sandbox display that fails to start keeps its Xvfb when stopping it fails too. The browser stops it again before the sandbox gets another X server, and reports the failed stop. [SPEC-616](../.ai/specs/SPEC-616-keep-ownership-of-xvfb-when-display-star.md)

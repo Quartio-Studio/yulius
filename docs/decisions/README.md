@@ -517,6 +517,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0453 -->
 - [0454](0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md) Terminal output, released tails and snapshots reach a task's hub only while it shows the run that printed them.
 <!-- ADR 0454 -->
+- [0455](0455-count-codex-subagents-under-their-sessions-run-by-model.md). A Codex run counts its session's subagents' responses once, in the run whose window holds them, and prices them at the model that answered; amends 0440's one model per run.
 <!-- ADR 0455 -->
 <!-- ADR 0456 -->
 <!-- ADR 0457 -->

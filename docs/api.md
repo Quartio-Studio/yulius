@@ -1990,8 +1990,9 @@ end, or now) inside it; `last_24h` is the last period and `last_7d` their sum. `
 the standard API price of recorded Claude and GPT-6 tokens. Claude cache writes use the
 5-minute rate. GPT-6 uses short-context rates and 30-minute cache writes. When eligible Codex
 usage contributes, `tokens.ultrafast_cost_usd` gives the entire week's estimate repriced with
-eligible models at today's Ultrafast rate. Separate Codex subagent rollouts are outside the
-attempt metrics. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
+eligible models at today's Ultrafast rate. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
+A Codex run's tokens include its subagents', and the parts that another model answered are
+priced at that model. [Decision 0455](decisions/0455-count-codex-subagents-under-their-sessions-run-by-model.md)
 
 Runs of a model without a price add tokens but no cost
 (`unpriced_runs`), and `cost_usd` is `null` when every run that spent tokens there lacks a price

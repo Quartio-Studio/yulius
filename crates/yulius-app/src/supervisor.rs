@@ -1801,6 +1801,7 @@ pub(crate) fn metrics_of(snapshot: UsageSnapshot) -> MetricsRecord {
         cache_write: snapshot.tokens.cache_write,
         turns: u32::try_from(snapshot.turns).ok().filter(|t| *t > 0),
         active_ms: snapshot.active_ms.filter(|ms| *ms > 0),
+        parts: snapshot.parts,
     }
 }
 

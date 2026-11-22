@@ -224,6 +224,7 @@ const MIGRATIONS: &[&str] = &[
     // Schema 85 follows the shipped review and CI-window migrations.
     include_str!("migrations/0083_terminal_pulls.sql"),
     include_str!("migrations/0086_inherited_staging.sql"),
+    include_str!("migrations/0087_metrics_model_parts.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -559,6 +560,7 @@ mod tests {
             (84, include_str!("migrations/0085_ci_pull_window.sql")),
             (85, include_str!("migrations/0083_terminal_pulls.sql")),
             (86, include_str!("migrations/0086_inherited_staging.sql")),
+            (87, include_str!("migrations/0087_metrics_model_parts.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -567,7 +569,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 86, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 87, "a new migration is pinned here too");
     }
 
     #[test]
@@ -1078,6 +1080,94 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-619 CSA-4, CSA-7: the upgrade queues the Codex runs of the last week for one more
+    /// recount, also one recounted before; the parts of a run's tokens other models answered
+    /// are stored and read back with its figures.
+    #[tokio::test]
+    async fn codex_runs_of_the_last_week_are_recounted_and_parts_are_kept()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::MetricsRecord;
+        use yulius_app::ports::store::TaskStore as _;
+        use yulius_app::ports::store_ext::CapacityStore as _;
+        use yulius_domain::ids::{AttemptId, TaskId};
+        use yulius_domain::time::Timestamp;
+        use yulius_domain::usage::{ModelTokens, TokenUsage};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v86.db");
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis(),
+        )?;
+        let day = 86_400_000;
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..86] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 86)?;
+            conn.execute_batch(&format!(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{{}}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'codex', 'closed', 'ui', 'u1', 1, 1);
+                 INSERT INTO attempts (id, task_id, seq, harness, launch_kind, state, run_dir, token_hash, host_token, started_at, ended_at) VALUES
+                   ('recent', 't1', 3, 'codex', 'resume', 'exited', '/r/3', 'h3', x'00', {r0}, {r1}),
+                   ('old', 't1', 1, 'codex', 'new', 'exited', '/r/1', 'h1', x'00', {o0}, {o1}),
+                   ('claude', 't1', 2, 'claude', 'new', 'exited', '/r/2', 'h2', x'00', {r0}, {r1}),
+                   ('live', 't1', 4, 'codex', 'resume', 'live', '/r/4', 'h4', x'00', {r1}, NULL);
+                 INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) VALUES
+                   ('recent', 't1', 'gpt-6.2-sol', 5, 50, 0, 0, 1, 0, 200);
+                 INSERT INTO metrics_recounts (attempt_id, task_id, outcome, done_at) VALUES ('recent', 't1', 'recomputed', 9);",
+                r0 = now - 2 * day,
+                r1 = now - day,
+                o0 = now - 10 * day,
+                o1 = now - 9 * day,
+            ))?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let queued = store.queued_metrics_recounts().await?;
+        assert_eq!(queued, vec![AttemptId::parse("recent")?]);
+        let (outcome, before, _, done) = recount_row(&path, "recent")?;
+        assert_eq!((outcome, done), (None, None));
+        assert!(before.is_some_and(|b| b.contains("gpt-6.2-sol")));
+
+        let parts = vec![ModelTokens {
+            model: "gpt-6.2-astra".into(),
+            usage: TokenUsage {
+                input: Some(3),
+                output: Some(30),
+                cache_read: Some(0),
+                cache_write: None,
+            },
+        }];
+        let metrics = MetricsRecord {
+            model: Some("gpt-6.2-sol".into()),
+            input_tokens: Some(8),
+            output_tokens: Some(80),
+            parts: parts.clone(),
+            ..MetricsRecord::default()
+        };
+        let (attempt, task) = (AttemptId::parse("recent")?, TaskId::parse("t1")?);
+        store
+            .put_metrics(&attempt, &task, &metrics, Timestamp(now))
+            .await?;
+        assert_eq!(store.task_metrics(&task).await?, vec![metrics.clone()]);
+        let runs = store.token_runs(Timestamp(now - 3 * day)).await?;
+        let stored: Vec<_> = runs.iter().filter_map(|r| r.metrics.as_ref()).collect();
+        assert_eq!(stored, vec![&metrics]);
+        // A count with no parts clears them.
+        let plain = MetricsRecord {
+            parts: Vec::new(),
+            ..metrics
+        };
+        store
+            .put_metrics(&attempt, &task, &plain, Timestamp(now))
+            .await?;
+        assert_eq!(store.task_metrics(&task).await?, vec![plain]);
+        Ok(())
+    }
+
     /// A recount's outcome, figures before and after, and when.
     type RecountRow = (Option<String>, Option<String>, Option<String>, Option<i64>);
 
@@ -1178,6 +1268,7 @@ mod tests {
             cache_write: Some(1),
             turns: Some(3),
             active_ms: Some(220_200),
+            parts: Vec::new(),
         };
         assert!(
             store
