@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
 use yulius_app::ci::{
     CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, GateJob,
-    GateVerdict, PullHead, Quarantined, RepairRecipient,
+    GateRead, GateVerdict, PullHead, Quarantined, RepairRecipient,
 };
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
@@ -214,7 +214,7 @@ impl CiStore for SqliteStore {
         sandbox: &SandboxId,
         branch: &str,
         revisions: &[String],
-        settled_only: bool,
+        read: GateRead,
     ) -> AppResult<Vec<GateVerdict>> {
         let (sandbox, branch) = (sandbox.to_string(), branch.to_owned());
         let revisions = serde_json::to_string(revisions).map_err(AppError::internal)?;
@@ -234,9 +234,9 @@ impl CiStore for SqliteStore {
                  ), ranked AS (SELECT *, row_number() OVER (PARTITION BY sha ORDER BY (?5 != 0 AND state IN ('running','queued')), queued_at DESC, seq DESC) AS newest FROM runs)
                  SELECT r.id, r.sha, r.state, r.jobs, o.task_number
                  FROM ranked r LEFT JOIN gate_merge_owners o ON o.sandbox_id = ?1 AND o.branch = ?2 AND o.sha = r.sha
-                 WHERE r.newest = 1 ORDER BY r.key"
+                 WHERE r.newest = 1 OR (?6 AND r.state NOT IN ('running','queued')) ORDER BY r.key, r.newest"
             ).map_err(db)?;
-            let mut rows = stmt.query(params![sandbox, branch, revisions, yulius_domain::ci::AFTER_MERGE_SKIP_REASON, settled_only]).map_err(db)?;
+            let mut rows = stmt.query(params![sandbox, branch, revisions, yulius_domain::ci::AFTER_MERGE_SKIP_REASON, read == GateRead::SettledHistory, read != GateRead::Latest]).map_err(db)?;
             let mut result = Vec::new();
             while let Some(row) = rows.next().map_err(db)? {
                 let run: String = row.get(0).map_err(db)?;
@@ -1318,9 +1318,7 @@ impl CiStore for SqliteStore {
             for id in ids {
                 let jobs = serde_json::to_string(&gate_jobs(&tx, &id)?).map_err(AppError::internal)?;
                 tx.execute("INSERT INTO archived_gate_verdicts SELECT r.sandbox_id,r.reference,r.sha,r.id,r.state,r.queued_at,r.rowid,?2
-                       FROM ci_runs r WHERE r.id = ?1
-                       ON CONFLICT(sandbox_id,sha,reference) DO UPDATE SET run_id=excluded.run_id,state=excluded.state,queued_at=excluded.queued_at,sequence=excluded.sequence,jobs=excluded.jobs
-                       WHERE (excluded.queued_at,excluded.sequence) > (queued_at,sequence)", params![id, jobs]).map_err(db)?;
+                       FROM ci_runs r WHERE r.id = ?1", params![id, jobs]).map_err(db)?;
             }
             let changed = tx.execute(&format!("DELETE FROM ci_runs {prune}"), params![before.0, i64::from(keep)]).map_err(db)?;
             tx.commit().map_err(db)?;

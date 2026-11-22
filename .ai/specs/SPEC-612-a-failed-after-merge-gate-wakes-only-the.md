@@ -15,7 +15,7 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 
 ## Requirements
 
-- GF-001 Compare full integration and candidate verdicts along first-parent history. Identify each test at its first failing revision since it last passed. Report the introducing revision and task separately from the repair assignment. Keep an unknown job failure actionable while later runs skip or cancel that job.
+- GF-001 Compare full integration and candidate verdicts along first-parent history. Identify each test at its first failing revision since it last passed. Report the introducing revision and task separately from the repair assignment. Keep an unknown job failure actionable while later runs skip or cancel that job, including reruns of the same revision and after CI log retention.
 - GF-002 Record the inherited test, originating revision and task on the later request. The staging queue owns that wait until a verified descendant serves it, the request is replaced or the target disappears. Restart and repeated ticks preserve the outcome. The inherited request never directs its task to fix the test.
 - GF-003 Reuse the revision's integration or candidate verdict. Admit outstanding candidate suites in first-parent order, one at a time. A candidate runs once and is compared because any merge can both repair an open failure and introduce a new one.
 - GF-004 Tell each running project task with work left about open failures. Keep one repair assignment until that worker leaves. A worker has a live attempt and an active turn, unfinished steps, an open delivery or outstanding goal or spec work before merge. Exclude paused and held workers. Choose the lowest project task number among eligible workers when a new assignment is needed. Tell the assignee first and notify peers once its session received the assignment. Persist delivery to avoid repeating the instruction at every merge, restart or tick.
@@ -30,6 +30,8 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 - [x] Keep finished and parked tasks quiet on automatic outcomes
 - [x] Assign the repair to one working task and inform its peers
 - [x] Show people the rerun and start-task actions when no worker remains
+- [x] Preserve unresolved job evidence across reruns of the same revision
+- [ ] Deliver candidate scheduling independently
 - [ ] Verify the incident regressions and review the delivery
 
 ## Acceptance criteria
@@ -45,6 +47,8 @@ Exercise real staging requests against a temporary Git repository and recorded C
 
 ## Decisions
 
+The first delivery covers CI inventory reuse and admission. The second covers staging queue order, failure history, task input and project notices. Request staging once after both deliveries.
+
 Running each candidate once in order preserves evidence of mixed failures and accepts a fix from any task. Reuse existing gate and deployment receipts. Only a verified descendant can satisfy an inherited delivery. A durable project assignment follows the lowest-numbered eligible worker initially and survives other tasks joining. A person can resume finished work. See ADR-0450.
 
 ## Evidence
@@ -57,3 +61,4 @@ Running each candidate once in order preserves evidence of mixed failures and ac
 - The same six regressions passed with the fixes. The rerun fixture submits the action through HTTP, verifies the tested SHA and clears the notice on a passing result. The terminal fixture verifies that a drafted worker receives no repair instruction.
 - Four assertions failed on the second reviewed head. CI ran a finished candidate twice after 201 newer admissions. A test remained in the repair notice after it moved matrix cells and passed. A cleared native goal hid the people’s notice, and an outstanding native goal in a prompt-mode session showed it. The goal fixtures use actual CLI sessions and native transcript outcomes.
 - All four second-review regressions passed after the fixes. The scheduler retains the current head’s verdict independently of the recent-run window. Gate history releases a passing matrix cell’s earlier test, and worker selection reads the native session’s outstanding goal.
+- On the third reviewed head, a partial rerun at the same SHA lost the first job error. The corrected comparison passed all 50 staging and parked-candidate cases, including a test that prunes both earlier attempts, checks both failures still target the current run, then clears them on a full pass.

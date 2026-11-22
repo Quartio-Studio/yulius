@@ -467,7 +467,7 @@ impl App {
                     &sandbox.id,
                     &integration,
                     std::slice::from_ref(&request.revision),
-                    false,
+                    super::GateRead::Latest,
                 )
                 .await?;
             match verdicts.into_iter().next() {
@@ -542,7 +542,7 @@ impl App {
                     let scheduler = self.ci_sync_lock(&sandbox.id);
                     let guard = scheduler.schedule.lock().await;
                     if !self.deps.store.integration_verdicts(&sandbox.id, &integration,
-                        std::slice::from_ref(&request.revision), false).await?.is_empty()
+                        std::slice::from_ref(&request.revision), super::GateRead::Latest).await?.is_empty()
                         || self.deps.store.active_ci_runs().await?.iter().any(|r| {
                             r.sandbox_id == sandbox.id && (matches!(r.reference, CiRef::Candidate(_))
                             || matches!(&r.reference, CiRef::Branch(branch) if branch == &integration))

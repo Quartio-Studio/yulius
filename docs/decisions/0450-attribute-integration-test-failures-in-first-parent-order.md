@@ -22,6 +22,6 @@ Holding all candidates for a designated fixing task misses fixes from other task
 
 ## Consequences
 
-New candidate suites wait for the previous candidate. Already scheduled integration runs remain usable. A red revision can reach staging only through a verified descendant. A person's rerun can resolve a flaky verdict on the same revision.
+New candidate suites wait for the previous candidate. Already scheduled integration runs remain usable. Retain compact job observations from unsuccessful reruns of the same revision so an interrupted rerun preserves the previous failure. A red revision can reach staging only through a verified descendant. A person's rerun can resolve a flaky verdict on the same revision.
 
 On upgrade, an undelivered failed receipt with retained CI evidence returns to judgement. Previously delivered receipts preserve what the old instance told their tasks.

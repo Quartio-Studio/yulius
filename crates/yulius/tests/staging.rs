@@ -527,6 +527,89 @@ async fn a_partial_later_gate_keeps_the_unknown_job_and_offers_its_current_run()
 }
 
 #[tokio::test]
+async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_retention()
+-> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let sha = f.push("dev", &[("broken", Some("broken"))])?;
+    let first = gate(&f, &sha, RunState::Error).await?;
+    let project = sandbox(&f).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let mut current = String::new();
+    for retry in 1..=2 {
+        current = format!("rerun-{retry}");
+        let (mut run, mut quick) = crate::pr_watch::run(
+            &project.id,
+            &current,
+            &sha,
+            RunState::Failed,
+            None,
+            f.h.app.now().0 + retry,
+        );
+        run.reference = CiRef::Branch("dev".into());
+        quick.name = "quick".into();
+        quick.key = quick.name.clone();
+        let mut full = quick.clone();
+        full.id = format!("{current}-full");
+        full.name = "full".into();
+        full.key = full.name.clone();
+        full.ordinal = 1;
+        full.state = RunState::Cancelled;
+        full.failures = None;
+        full.reason = Some("stopped early: job quick failed".into());
+        let quick_id = quick.id.clone();
+        f.h.store.insert_ci_run(&run, &[quick, full]).await?;
+        f.h.store
+            .transition_ci_job(
+                &quick_id,
+                &[RunState::Failed],
+                RunState::Failed,
+                &yulius_app::ci::CiJobUpdate {
+                    failures: Some("---- ui::fresh stdout ----".into()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+    }
+    for prune in [false, true] {
+        if prune {
+            f.h.store.prune_ci_runs(0, f.h.app.now()).await?;
+            assert!(f.h.store.ci_run(&first).await?.is_none());
+            assert!(f.h.store.ci_run("rerun-1").await?.is_none());
+        }
+        let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+        assert_eq!(notices.as_array().ok_or("notices")?.len(), 2, "{notices}");
+        for test in ["full", "ui::fresh"] {
+            assert!(
+                notices
+                    .as_array()
+                    .ok_or("notices")?
+                    .iter()
+                    .any(|n| n["test"] == test && n["revision"] == sha && n["run_id"] == current),
+                "{notices}"
+            );
+        }
+    }
+    let (mut pass, job) = crate::pr_watch::run(
+        &project.id,
+        "passing-rerun",
+        &sha,
+        RunState::Passed,
+        None,
+        f.h.app.now().0 + 3,
+    );
+    pass.reference = CiRef::Branch("dev".into());
+    f.h.store.insert_ci_run(&pass, &[job]).await?;
+    assert_eq!(
+        f.get("/api/status").await?["sandboxes"][0]["gate_notices"],
+        json!([])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_pruned_gate_and_deleted_task_still_identify_the_inherited_test() -> TestResult {
     let f = fixture(&staging_toml()).await?;
     support::seed_task(&f.h, "old", "s1", "u-alice", TaskStatus::Closed, None).await?;

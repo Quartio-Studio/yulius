@@ -17,6 +17,17 @@ use crate::delivery::delivery_profile;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 
+/// Select either the verdict that judges a request or observations for failure attribution.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GateRead {
+    /// Latest admission, including a run in progress.
+    Latest,
+    /// Earlier completed attempts and the newest admission for each revision.
+    History,
+    /// Prefer completed evidence while a rerun is in progress.
+    SettledHistory,
+}
+
 /// The facts about a job needed after its console output expires.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GateJob {
@@ -198,13 +209,18 @@ impl App {
     ) -> AppResult<GateFailures> {
         let branch = delivery_profile(sandbox).integration_branch;
         let search = async {
+            let read = if settled_only {
+                GateRead::SettledHistory
+            } else {
+                GateRead::History
+            };
             let mut revisions = vec![head.to_owned()];
             let mut history = Vec::new();
             while let Some(oldest) = revisions.last() {
                 let verdicts = self
                     .deps
                     .store
-                    .integration_verdicts(&sandbox.id, &branch, &revisions, settled_only)
+                    .integration_verdicts(&sandbox.id, &branch, &revisions, read)
                     .await?;
                 let mut passed = false;
                 for verdict in verdicts {

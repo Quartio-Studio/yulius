@@ -498,13 +498,13 @@ pub trait UpdateStore: Send + Sync {
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
 #[async_trait]
 pub trait CiStore: Send + Sync {
-    /// The newest full verdict of each supplied integration revision in the given history order.
+    /// Gate attempts in the supplied revision order, newest admission first within a revision.
     async fn integration_verdicts(
         &self,
         sandbox: &SandboxId,
         branch: &str,
         revisions: &[String],
-        settled_only: bool,
+        read: crate::ci::GateRead,
     ) -> AppResult<Vec<crate::ci::GateVerdict>>;
     /// Whether this running task still accepts machine-generated input.
     async fn accepts_machine_notice(&self, task: &TaskId, unfinished_goal: bool)

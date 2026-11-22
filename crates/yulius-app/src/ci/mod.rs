@@ -41,7 +41,7 @@ mod findings;
 mod flaky;
 mod gate_history;
 pub use flaky::Noted;
-pub use gate_history::{GateJob, GateVerdict, RepairRecipient};
+pub use gate_history::{GateJob, GateRead, GateVerdict, RepairRecipient};
 pub mod hygiene;
 mod opening;
 pub use opening::PullOpening;

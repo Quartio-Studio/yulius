@@ -47,7 +47,7 @@ CREATE TABLE archived_gate_verdicts (
     queued_at INTEGER NOT NULL,
     sequence INTEGER NOT NULL,
     jobs TEXT NOT NULL,
-    PRIMARY KEY (sandbox_id, sha, reference)
+    PRIMARY KEY (sandbox_id, sha, reference, run_id)
 );
 
 -- A task's deletion removes task_merges. Keep its public number with its landing for receipts.
