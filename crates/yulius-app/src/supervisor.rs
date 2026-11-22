@@ -286,6 +286,9 @@ pub struct TaskRuntime {
     pub last_input_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
     pub proactive_switch: AtomicBool,
+    /// The subscription past its rebalance threshold this idle task stays on because no other
+    /// has room, and when that episode was told (SPEC-629 RBL-007): told once per episode.
+    pub(crate) rebalance_no_room: Mutex<Option<(AccountId, Timestamp)>>,
     /// A review round's reviewer a usage limit cut off, not yet resumed: a relaunch tells the
     /// session to resume it (SPEC-493 RLM-002).
     pub(crate) cut_off_reviewer: tokio::sync::Mutex<Option<crate::review::CutOffReviewer>>,
@@ -914,6 +917,7 @@ impl TaskRuntime {
             watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
+            rebalance_no_room: Mutex::new(None),
             cut_off_reviewer: tokio::sync::Mutex::new(None),
             reviewer_move: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),

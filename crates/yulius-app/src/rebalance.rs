@@ -15,10 +15,11 @@ use std::time::Duration;
 
 use yulius_domain::agent_cli::{IdleFacts, kept_idle};
 use yulius_domain::ids::{AccountId, TaskId};
-use yulius_domain::rebalance::{IdleMove, idle_move};
+use yulius_domain::rebalance::{Fullest, IdleMove, idle_move};
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::task::TaskStatus;
 
+use crate::account_gate::account_kind;
 use crate::context::App;
 use crate::model::TaskRecord;
 
@@ -125,6 +126,8 @@ impl App {
         };
         let decision = idle_move(&input);
         if decision == IdleMove::Stay {
+            // Below the threshold again: an episode without room ended.
+            self.end_no_room(&task.id);
             return Looked::Nothing;
         }
         // A pin holds while the task runs on it; one that names another subscription ended
@@ -134,9 +137,13 @@ impl App {
             Ok(Some(_)) => self.pin_task(&task.id, None).await,
             _ => {}
         }
+        let label = self.account_label(&current).await;
         let (account, from) = match decision {
             IdleMove::Move { account, from } => (account, from),
-            IdleMove::NoRoom { .. } => return Looked::NoRoom,
+            IdleMove::NoRoom { from } => {
+                self.tell_no_room(task, &current, &label, &from).await;
+                return Looked::NoRoom;
+            }
             IdleMove::Stay => return Looked::Nothing,
         };
         if let Some(why) = self.idle_kept_by(task).await {
@@ -150,13 +157,18 @@ impl App {
         if !still {
             return Looked::Kept;
         }
-        let label = match store.account(&current).await {
-            Ok(Some(record)) => record.label,
-            _ => current.as_str().to_owned(),
-        };
         let reason = move_reason(&label, &from.said());
-        match self.move_task(&task.id, Some(account), &reason).await {
-            Ok(()) => Looked::Moved,
+        match self
+            .move_task(&task.id, Some(account.clone()), &reason)
+            .await
+        {
+            Ok(()) => {
+                self.end_no_room(&task.id);
+                let to = self.account_label(&account).await;
+                self.tell_moved(task, (&label, &to), &from, run.id.as_str())
+                    .await;
+                Looked::Moved
+            }
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "rebalance: the move was refused");
                 Looked::Kept
@@ -213,5 +225,102 @@ impl App {
             Decision::Switch { .. } => Some(pin),
             Decision::Stay | Decision::Wait { .. } => None,
         }
+    }
+
+    async fn account_label(&self, account: &AccountId) -> String {
+        match self.deps.store.account(account).await {
+            Ok(Some(record)) => record.label,
+            _ => account.as_str().to_owned(),
+        }
+    }
+
+    /// Says a rebalance move once (SPEC-629 RBL-006): one line in the task's terminal and one
+    /// notification center entry for its person, keyed by the run it left.
+    async fn tell_moved(
+        &self,
+        task: &TaskRecord,
+        (from, to): (&str, &str),
+        how: &Fullest,
+        left: &str,
+    ) {
+        let said = how.said();
+        self.runtime(&task.id).hub.notice(format!(
+            "↻ {from} {said}: this idle session continues on {to}."
+        ));
+        self.events.publish_to_user(
+            task.owner.clone(),
+            rebalanced(
+                task,
+                from,
+                Some(to),
+                &said,
+                format!("rebalance:{}:{left}", task.id),
+            ),
+        );
+    }
+
+    /// Says once per episode that an idle task stays on a subscription past the threshold
+    /// because no other has room (SPEC-629 RBL-007). The episode is remembered in this process:
+    /// a restart of Yulius may tell it once more.
+    async fn tell_no_room(
+        &self,
+        task: &TaskRecord,
+        account: &AccountId,
+        label: &str,
+        how: &Fullest,
+    ) {
+        let now = self.now();
+        let began = {
+            let runtime = self.runtime(&task.id);
+            let Ok(mut told) = runtime.rebalance_no_room.lock() else {
+                return;
+            };
+            if told.as_ref().is_some_and(|(on, _)| on == account) {
+                return;
+            }
+            *told = Some((account.clone(), now));
+            now
+        };
+        let said = how.said();
+        let kind = account_kind(task.harness.provider());
+        self.runtime(&task.id).hub.notice(format!(
+            "⏸ {label} {said} and no other {kind} subscription has room: this task stays on it \
+             and moves when one has."
+        ));
+        let key = format!("rebalance:{}:{account}:{}", task.id, began.0);
+        self.events.publish_to_user(
+            task.owner.clone(),
+            rebalanced(task, label, None, &said, key),
+        );
+    }
+
+    /// An episode without room ended: the task moved, or its subscription is below the
+    /// threshold again.
+    fn end_no_room(&self, task: &TaskId) {
+        if let Some(runtime) = self.existing_runtime(task)
+            && let Ok(mut told) = runtime.rebalance_no_room.lock()
+        {
+            *told = None;
+        }
+    }
+}
+
+/// The event that tells `task`'s person of a rebalance move (`to`) or of no room (SPEC-629).
+fn rebalanced(
+    task: &TaskRecord,
+    from: &str,
+    to: Option<&str>,
+    said: &str,
+    key: String,
+) -> yulius_contracts::events::UiEvent {
+    yulius_contracts::events::UiEvent::TaskRebalanced {
+        task_id: task.id.as_str().to_owned(),
+        sandbox_id: task.sandbox_id.as_str().to_owned(),
+        number: task.number,
+        title: task.title.clone(),
+        from: from.to_owned(),
+        to: to.map(str::to_owned),
+        said: said.to_owned(),
+        key,
     }
 }

@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
+import { eventsConnected, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -97,4 +97,45 @@ test('a session moved while it works tells its person when its turn ends', async
   // Its turn ends: its person is told.
   await touchTask(browser, 'sb_three', 1, { activity: 'waiting' });
   await expect.poll(() => notified(browser)).toEqual([[...YOUR_TURN, false]]);
+});
+
+// SPEC-629 RBL-006, RBL-007: an idle task moved off a nearly used-up subscription is told once in
+// the bell, keyed per move; one that stays because nothing has room gets one entry per episode.
+type Rebalanced = Window & { __yuliusMock: { sendRebalance: (event: Record<string, unknown>) => void } };
+
+/** The notification center's entries about subscription moves, newest first. */
+const moves = (browser: Browser) => browser.evaluate(() => {
+  const entries: [string, string][] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const name = localStorage.key(i) || '';
+    if (!name.startsWith('yulius.notifications.') || name === 'yulius.notifications.filter') continue;
+    for (const entry of JSON.parse(localStorage.getItem(name) || '[]')) {
+      if (String(entry.key || '').startsWith('rebalance:')) entries.push([entry.title, entry.detail]);
+    }
+  }
+  return entries;
+});
+
+test('a task moved off a nearly used-up subscription is told once (SPEC-629)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await firstShown(browser.locator('.notif-btn'));
+  await eventsConnected(browser);
+  const send = (event: Record<string, unknown>) => browser.evaluate((e) => (window as unknown as Rebalanced).__yuliusMock.sendRebalance(e), event);
+  const task = { task_id: 't_explore', sandbox_id: 'sb_three', number: 1, title: 'Explore data model' };
+  const moved = { ...task, from: 'Claude a-first', to: 'Claude b-second', said: 'is at 96% of its 5-hour window', key: 'rebalance:t_explore:run-1' };
+  await send(moved);
+  await send(moved);
+  await expect.poll(() => moves(browser)).toEqual([
+    ['#1 Explore data model moved to Claude b-second', 'Claude a-first is at 96% of its 5-hour window'],
+  ]);
+  const stays = { ...task, from: 'Claude b-second', said: 'is at 97% of its week', key: 'rebalance:t_explore:b-second:1700000000000' };
+  await send(stays);
+  await send(stays);
+  await expect.poll(() => moves(browser)).toEqual([
+    ['#1 Explore data model stays on Claude b-second', 'Claude b-second is at 97% of its week and no other subscription has room'],
+    ['#1 Explore data model moved to Claude b-second', 'Claude a-first is at 96% of its 5-hour window'],
+  ]);
+  await browser.locator('.notif-btn').click();
+  await screen.getByRole('dialog', 'Notifications').getByRole('button', /^Unread: #1 Explore data model moved to Claude b-second/).click();
+  await expect.poll(() => browser.evaluate(() => location.hash)).toBe('#/s/sandbox-3/t/1');
 });

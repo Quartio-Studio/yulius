@@ -6,16 +6,19 @@ use crate::pool_supervision::{
     HOUR, ScriptedUsage, build_served_tuned, build_with, new_task, refresh, runtime, seed, stop,
     task, temp, usage, wait_for,
 };
-use crate::subscription_moves::{live_run, ready, run_accounts};
+use crate::subscription_moves::{live_run, notices, ready, run_accounts};
 use crate::support::agents::FakeAgentOptions;
 use crate::support::{FakeGitHub, TestResult};
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::broadcast;
 use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
+use yulius_app::events::Envelope;
 use yulius_contracts::api::tasks::ContinueTask;
+use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
@@ -79,6 +82,28 @@ async fn idle(app: &App, id: &TaskId) -> TestResult {
         .set_activity(id, Some(Activity::Waiting), app.now())
         .await?;
     Ok(())
+}
+
+/// The rebalance events sent so far, each with the person it was sent to: (to, from, to
+/// subscription, said, key).
+fn rebalanced(
+    events: &mut broadcast::Receiver<Envelope>,
+) -> Vec<(Option<String>, String, Option<String>, String, String)> {
+    let mut seen = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        if let UiEvent::TaskRebalanced {
+            from,
+            to,
+            said,
+            key,
+            ..
+        } = envelope.event
+        {
+            let person = envelope.user.map(|u| u.as_str().to_owned());
+            seen.push((person, from, to, said, key));
+        }
+    }
+    seen
 }
 
 /// A person moves `id` to `account` with "Run on…" (it is pinned there) and waits for it to
@@ -195,10 +220,36 @@ fn an_idle_task_leaves_a_subscription_past_the_threshold() -> TestResult {
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let app = build_with(&data, &fake, probe.clone(), agent())?;
-        let (id, _user) = idle_on_a_full_first(&app, &probe, &data).await?;
+        let (id, user) = idle_on_a_full_first(&app, &probe, &data).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let mut events = app.events.subscribe();
+        let left = app.deps.store.live_attempt(&id).await?.ok_or("run")?.id;
         let pass = app.rebalance_now().await;
         assert_eq!(pass.moved, 1, "{pass:?}");
         live_run(&app, &id, 2).await?;
+        // Told once (RBL-006): its terminal, and its person's notification center.
+        // The switch's own lines say that the session goes on; this one says why, once.
+        let said: Vec<String> = notices(&mut watch)
+            .into_iter()
+            .filter(|n| n.contains("a-first"))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                "↻ Claude a-first is at 96% of its 5-hour window: this idle session continues on \
+              Claude b-second."
+            ]
+        );
+        assert_eq!(
+            rebalanced(&mut events),
+            [(
+                Some(user.as_str().to_owned()),
+                "Claude a-first".to_owned(),
+                Some("Claude b-second".to_owned()),
+                "is at 96% of its 5-hour window".to_owned(),
+                format!("rebalance:{id}:{left}"),
+            )]
+        );
         let attempts = app.deps.store.attempts(&id).await?;
         assert_eq!(
             attempts[1].account_id.as_ref().map(|a| a.as_str()),
@@ -282,6 +333,60 @@ fn a_pinned_task_stays_on_its_subscription() -> TestResult {
         .await?;
         live_run(&app, &id, 3).await?;
         assert_eq!(app.deps.store.task_pin(&id).await?, None);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// RBL-007, AC-5: with every other subscription at or above 95 %, an idle task on one at 97 %
+/// stays, and its terminal and its person are told once; later passes tell nothing more until
+/// the episode ends, when one has room again and the task moves.
+#[test]
+fn nothing_has_room_is_told_once() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(&data, &fake, probe.clone(), agent())?;
+        let (id, user) = idle_on_a_full_first(&app, &probe, &data).await?;
+        probe.set("a-first", usage(10.0, 4 * HOUR, 97.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        probe.set("b-second", usage(95.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let mut events = app.events.subscribe();
+        for _ in 0..3 {
+            let pass = app.rebalance_now().await;
+            assert_eq!((pass.moved, pass.no_room), (0, 1), "{pass:?}");
+        }
+        assert_eq!(run_accounts(&app, &id).await.len(), 1, "it stays");
+        let said: Vec<String> = notices(&mut watch)
+            .into_iter()
+            .filter(|n| n.starts_with('⏸'))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                "⏸ Claude a-first is at 97% of its week and no other Claude subscription has room: \
+              this task stays on it and moves when one has."
+            ]
+        );
+        let told = rebalanced(&mut events);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert_eq!(told[0].0.as_deref(), Some(user.as_str()));
+        assert_eq!(told[0].2, None);
+        assert!(
+            told[0].4.starts_with(&format!("rebalance:{id}:a-first:")),
+            "{told:?}"
+        );
+        // Room again: the task moves, and that ends the episode.
+        probe.set("b-second", usage(20.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        assert_eq!(app.rebalance_now().await.moved, 1);
+        live_run(&app, &id, 2).await?;
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

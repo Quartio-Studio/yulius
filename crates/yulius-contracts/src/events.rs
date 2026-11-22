@@ -52,6 +52,28 @@ pub enum UiEvent {
         /// Who took it back.
         by: String,
     },
+    /// An idle task moved off a nearly used-up subscription, or stays on it because no other
+    /// subscription has room (SPEC-629 RBL-006, RBL-007): sent only to the task's person.
+    #[serde(rename = "task.rebalanced")]
+    TaskRebalanced {
+        /// Task id.
+        task_id: String,
+        /// Its sandbox.
+        sandbox_id: String,
+        /// Its number in the sandbox.
+        number: u32,
+        /// Its title.
+        title: String,
+        /// The subscription it left, or stays on.
+        from: String,
+        /// Where it went; absent when no other subscription has room.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+        /// How full `from` is, after its name: "is at 96% of its 5-hour window".
+        said: String,
+        /// The notification center's key: one entry per move, and one per episode without room.
+        key: String,
+    },
     /// Steps changed.
     #[serde(rename = "steps.updated")]
     StepsUpdated {

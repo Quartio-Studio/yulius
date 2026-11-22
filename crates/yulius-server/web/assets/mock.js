@@ -7428,6 +7428,9 @@ export function createMockTransport(params) {
     db.digest.latest = mockDigest(id);
     emit(db, { type: 'digest.ready', digest: db.digest.latest });
   };
+  // A task moved off a nearly used-up subscription, or stays on it (SPEC-629): `event` carries the
+  // fields of `task.rebalanced`.
+  db.sendRebalance = (event) => emit(db, { type: 'task.rebalanced', ...event });
   // The Editor's shared text (SPEC-411): a window this one opened shares its hub and files.
   let opener = null;
   try { opener = window.opener && window.opener.__yuliusMock && window.opener.__yuliusMock.live ? window.opener.__yuliusMock : null; } catch { opener = null; }
