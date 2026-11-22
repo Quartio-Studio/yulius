@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Specified in [SPEC-497](../../.ai/specs/SPEC-497-an-armed-pull-request-merges-in-about-on.md)
-slice B (task #479), OFC-002. Complements
+slice B (task #479), OFC-002. Amended by
+[ADR-0453](0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md): a pull request's
+failure that names a file it changed is not recorded. Complements
 [ADR-0354](0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md): a failure
 there is the infrastructure's, here it is a test's that is not the change's.
 
