@@ -1099,9 +1099,17 @@ async fn a_writer_may_fork_another_persons_task_and_a_reader_may_not() -> TestRe
     };
     // Past the access checks: refused only because the task has no conversation yet.
     let written = fork(&alice).await?;
-    assert_eq!(written.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", written.body);
+    assert_eq!(
+        written.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        written.body
+    );
     assert!(
-        written.body.to_string().contains("no conversation to fork yet"),
+        written
+            .body
+            .to_string()
+            .contains("no conversation to fork yet"),
         "{}",
         written.body
     );
