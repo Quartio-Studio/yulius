@@ -11,7 +11,11 @@ section stays; one that does not apply says why). The product brief is SPEC-001 
 distinguish reference observations, user requirements and proposed defaults.
 
 1. Inspect the affected behavior/code and scope authorized by the user. Record
-   the concrete outcome and current failure or missing capability.
+   the concrete outcome and current failure or missing capability. Read the
+   neighbours first: `tasks_list`, then `task_get` on each task near the change
+   (plan, PR and stage, claims, waits, screen). Extend or wait for one that
+   overlaps; never ask a person to relay a status you can read there. The view is
+   read-only: only a person, through the Superagent, writes to a task.
 2. Assign requirement IDs and observable acceptance scenarios. Include invalid
    input, cancellation, retries, recovery and old-default behavior where affected.
 3. Define ownership, boundary types, persistence/compatibility and the exit trigger

@@ -347,8 +347,7 @@ impl App {
         let paths = crate::scopes::paths_arg(args)?;
         let start_anyway = flag_arg(args, "start_anyway")?;
         if !paths.is_empty() && after_task_id.is_none() && !start_anyway {
-            let own = caller.task.as_ref().map(|t| &t.id);
-            let overlaps = self.planned_overlaps(&caller.sandbox, &paths, own).await?;
+            let overlaps = self.planned_overlaps(caller, &paths).await?;
             if let Some(first) = overlaps.first() {
                 return Ok(json!({
                     "created": false,
@@ -488,7 +487,10 @@ impl App {
             .task(&task.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let mut answer = json!({"task": self.task_brief(&task).await?});
+        let mut brief = self.task_brief(&task).await?;
+        // A personal task's free text stays with tasks holding the same secrets (SPEC-625).
+        self.withhold_from(caller, &task, &mut brief).await?;
+        let mut answer = json!({"task": brief});
         if all_tasks == Some(None) {
             answer["note"] = json!(NOTHING_LEFT);
         }
@@ -598,7 +600,10 @@ impl App {
             .task(&task.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        Ok(json!({"task": self.task_brief(&task).await?}))
+        let mut brief = self.task_brief(&task).await?;
+        // A personal task's free text stays with tasks holding the same secrets (SPEC-625).
+        self.withhold_from(caller, &task, &mut brief).await?;
+        Ok(json!({"task": brief}))
     }
 
     /// `automation_delete` (SPEC-066 MGT-011): the UI's delete of an automation of the caller's
