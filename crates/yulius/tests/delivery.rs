@@ -4869,7 +4869,8 @@ async fn a_parked_detail_bounds_its_initial_browser_lookup_and_keeps_the_recorde
     let detail = serde_json::to_value(
         detail.map_err(|_| "browser startup consumed the parked task read budget")???,
     )?;
-    assert_eq!(detail["parked_needs_you"], true);
+    assert_eq!(detail["parked_needs_you"], false);
+    assert!(detail["needs_you_notice"].is_null(), "{detail}");
     assert_eq!(detail["parked_pr"], json!({"number":1,"open":true}));
     Ok(())
 }
@@ -5444,8 +5445,17 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
     config.parked_pr_read_ms = 5_000;
     let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
     *f.h.github.remote.lock().map_err(|_| "remote")? = None;
-    f.h.github.set_checks(&head, ChecksState::Success);
     edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
+    // Observe a genuine failure before Git stalls. Recovery needs a completed read.
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    let failure = app
+        .task_detail(&owner, task.id.as_str())
+        .await?
+        .summary
+        .needs_you_notice
+        .ok_or("expected a notice for the failing PR")?;
+    assert!(failure.episode.starts_with("pr_fail:1:"), "{failure:?}");
+    f.h.github.set_checks(&head, ChecksState::Success);
     let hold = Arc::new(ParkedGitHold {
         started: Default::default(),
         released: tokio::sync::Semaphore::new(0),
@@ -5457,6 +5467,7 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
             let reads = (0..12).map(|_| app.task_detail(&owner, task.id.as_str()));
             for row in futures::future::try_join_all(reads).await? {
                 assert_eq!(row.summary.parked_needs_you, Some(true));
+                assert_eq!(row.summary.needs_you_notice.as_ref(), Some(&failure));
             }
         }
         Ok::<_, AppError>(())
@@ -5470,26 +5481,19 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
         "{started} Git workers started before any finished"
     );
     // The native work received its release and is still finishing. Its permits remain in use.
-    let draining = app
-        .task_detail(&owner, task.id.as_str())
-        .await?
-        .summary
-        .parked_needs_you;
+    let draining = app.task_detail(&owner, task.id.as_str()).await?.summary;
     *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = None;
     hold.finishing.close();
-    assert_eq!(draining, Some(true));
+    assert_eq!(draining.parked_needs_you, Some(true));
+    assert_eq!(draining.needs_you_notice.as_ref(), Some(&failure));
     tokio::time::timeout(
         Duration::from_secs(30),
         app.wait_for_parked_git_workers_for_test(),
     )
     .await??;
-    assert_eq!(
-        app.task_detail(&owner, task.id.as_str())
-            .await?
-            .summary
-            .parked_needs_you,
-        Some(false)
-    );
+    let recovered = app.task_detail(&owner, task.id.as_str()).await?.summary;
+    assert_eq!(recovered.parked_needs_you, Some(false));
+    assert!(recovered.needs_you_notice.is_none());
     Ok(())
 }
 
