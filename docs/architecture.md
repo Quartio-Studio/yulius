@@ -1611,7 +1611,9 @@ with no candidate under test, whose agent is idle). It fetches the clone,
 then decides the armed merges in arm order. An armed merge lives with the run that armed it
 (`TaskStatus::keeps_an_armed_merge`): while the task runs, its run is only held (no capacity,
 a subscription switch) or it waits in the queue to start again, it stays armed, also across a
-restart; once the run ended (the task was closed, stopped or failed) the next pass ends it and
+restart (a saved arm not later than the task's latest recorded merge wait was decided already and
+is dropped, [decision 0452](decisions/0452-a-recorded-merge-wait-consumes-every-earlier-saved-arm.md));
+once the run ended (the task was closed, stopped or failed) the next pass ends it and
 says so (a pull request merged meanwhile is said to be merged), and Yulius leaves the pull
 request as it is:
 

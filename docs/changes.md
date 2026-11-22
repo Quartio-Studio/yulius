@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-22
 
+- A merge the ordinary queue already decided is not armed again after a restart when removing its saved entry failed. A later re-arm of the same head keeps its place, and an unreadable verdict keeps the saved arm until it can be reconciled. [SPEC-615](../.ai/specs/SPEC-615-a-consumed-merge-arm-stays-consumed-acro.md)
 - A live task keeps its session slot while its open PR has an unresolved integration failure. The PR watcher verifies when the slot can be released. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - CI shards unpack their test binaries on disk, and bootstrap uses disk for cold builds of pinned tools. [CI build storage](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
 - A red integration branch gets one repair owner among the working tasks. Finished tasks keep their outcomes on their deliveries. Staging serves inherited requests with the verified fix. When nobody is working, the project CI and Status APIs identify the failing test, merge owner and run to retry. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)

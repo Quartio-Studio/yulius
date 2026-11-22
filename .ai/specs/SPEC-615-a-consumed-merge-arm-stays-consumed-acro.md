@@ -31,10 +31,10 @@ decision, stamped with the decided activation's `armed_at`.
 - **CMA-001** At startup a saved activation whose `armed_at` is not later than the start of the
   task's latest finished merge wait is consumed: its entry is cleared and nothing is armed,
   whether the verdict came from the ordinary queue or from a singleton decision, and whatever its
-  detail says.
+  readable detail says.
 - **CMA-002** A saved activation later than that wait (a re-arm of the same head after the
   verdict) is restored with its own `armed_at`, so it keeps its place in the queue.
-- **CMA-003** When the latest merge wait cannot be read, the saved entry stays on disk, the
+- **CMA-003** When the latest merge wait or its detail cannot be read, the saved entry stays on disk, the
   task reads as armed and arm changes are refused, until a later restore reads the verdict and
   reconciles it.
 
@@ -61,8 +61,8 @@ decision, stamped with the decided activation's `armed_at`.
 Integration tests in `crates/yulius/tests/delivery.rs` with the `ArmedTask` fixture (real Git,
 the in-memory store, the fake GitHub): a directory at `armed-merges.json.tmp` refuses the file
 clear, a moved branch gives the ordinary final verdict, `App::new` on the same config and store
-is the fresh process, and `execute_for_tests` turns the span's detail into a blob (row decode
-fails) and back. AC-1 and AC-3 fail without the change; AC-2 guards the boundary.
+is the fresh process, and `execute_for_tests` damages the span's detail (a blob the row decode
+refuses, then malformed JSON) and puts it back. AC-1 and AC-3 fail without the change; AC-2 guards the boundary.
 
 ## Decisions
 
@@ -70,5 +70,6 @@ The restore treats any finished merge wait at or after the activation stamp as c
 (ADR-0452), instead of making the ordinary queue hold its verdict until the file clear succeeds
 as `finish_singleton` does: the verdict is already the durable record, the restore already
 consumes singleton verdicts by the same comparison, and an agent waiting on the decision is not
-kept waiting by a file-system error. Detail is not parsed for this comparison, so an unreadable
-detail of a consuming span cannot revive the activation.
+kept waiting by a file-system error. The verdict is read in full before the comparison: an
+unreadable detail keeps the entry recoverable (CMA-003), as SPEC-558 already does for a damaged
+singleton receipt.
