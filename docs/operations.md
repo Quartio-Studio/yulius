@@ -1866,8 +1866,8 @@ merged revision of `dev`.
   there.
 - A red `dev` leaves staging on the verified release. A new failure records `gate_failed`.
   An inherited failure records its original revision and task. One working task owns the repair.
-  If none is working, project CI and Status offer a rerun or a new task. Staging serves the
-  inherited requests when it verifies the fix.
+  If none is working, the project CI and Status APIs name the tests and the run to retry.
+  Staging serves the inherited requests when it verifies the fix.
 - **Production is promoted only from what staging verified**, by a person (ADR-0425).
 
 **The update helper stays off there.** `yulius-update.path` is disabled: "Update now" would

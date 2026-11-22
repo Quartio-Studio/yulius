@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-22
 
-- A red integration branch gets one repair owner among the working tasks. Finished tasks keep their outcomes on their deliveries. Staging serves inherited requests with the verified fix. When nobody is working, project CI and Status offer a rerun or a new task. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
+- A red integration branch gets one repair owner among the working tasks. Finished tasks keep their outcomes on their deliveries. Staging serves inherited requests with the verified fix. When nobody is working, the project CI and Status APIs identify the failing test, merge owner and run to retry. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
 - CI reuses the current integration head’s candidate verdict even after newer pull requests fill its planning history. An active staging candidate holds the full-suite slot until it finishes. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
 - The task-list loading test measures offscreen row height through a live list repaint. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
 

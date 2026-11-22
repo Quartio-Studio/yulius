@@ -619,7 +619,7 @@ watching, steering and unblocking.
       or staging wait. Finished tasks keep the outcome on their delivery. Later deliveries
       record inherited failures and complete when staging serves the verified fix.
     - Working tasks hear the failing tests and their introducing merges. One worker takes the repair.
-      With no worker available, the project CI page and Status offer people a rerun or a new task.
+      With no worker available, the project CI and Status APIs return the unresolved tests and the run a writer can retry.
     - A person can deploy the revision staging verified while the next dev revision is being checked. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
   - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
   - New projects with such a target are bootstrapped this way, and onboarded ones get one task

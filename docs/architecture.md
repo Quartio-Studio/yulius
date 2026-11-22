@@ -3275,8 +3275,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - When a test fails, first-parent gate evidence identifies its origin. Candidate runs are queued
   one at a time. The queue records inherited tests and completes those requests in revision
   order once a verified deployment contains them. One available worker owns the red branch.
-  Other workers receive the assignee's number. CI and Status offer a rerun or a new task when
-  no worker is available. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
+  Other workers receive the assignee's number. With no worker available, CI and Status return
+  the unresolved tests, their origins and the latest affected run. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).

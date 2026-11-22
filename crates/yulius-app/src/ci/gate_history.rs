@@ -122,7 +122,12 @@ impl GateFailures {
         };
         // A named failure can move between matrix cells. Compare all the job verdicts
         // together. Cancelled siblings and truncated failure lists cannot close a failure.
-        let reported: BTreeSet<_> = verdict.jobs.iter().flat_map(|job| &job.tests).collect();
+        let reported: BTreeSet<_> = verdict
+            .jobs
+            .iter()
+            .filter(|job| !job.passed && !job.skipped)
+            .flat_map(|job| &job.tests)
+            .collect();
         let complete: BTreeSet<_> = verdict
             .jobs
             .iter()

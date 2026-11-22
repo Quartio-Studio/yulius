@@ -610,6 +610,36 @@ async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_ret
 }
 
 #[tokio::test]
+async fn a_passed_retry_closes_its_failure_while_a_sibling_job_fails() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let origin = f.push("dev", &[("first", Some("first"))])?;
+    named_gate(&f, &origin, &["full::retried"]).await?;
+    agent(&f, "later").await?;
+    let later = land(&f, "later", "later").await?;
+    let run = named_gate(&f, &later, &["full::retried"]).await?;
+    f.h.store.execute_for_tests(&format!(
+        "UPDATE ci_jobs SET state='passed' WHERE id='{run}-full';
+         UPDATE ci_jobs SET state='failed', failures='---- quick::new stdout ----' WHERE id='{run}-quick'"
+    )).await?;
+    let asked = ask(&f, "later").await?;
+    settle(&f).await?;
+    let receipt = request(&f, asked["id"].as_str().ok_or("receipt")?).await?;
+    let note = receipt.note.ok_or("gate receipt")?;
+    assert!(
+        note.contains("quick::new") && !note.contains("full::retried"),
+        "{note}"
+    );
+    let status = f.get("/api/status").await?;
+    let notices = status["sandboxes"][0]["gate_notices"]
+        .as_array()
+        .ok_or("notices")?;
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0]["test"], "quick::new");
+    assert_eq!(notices[0]["revision"], later);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_red_descendant_records_inheritance_from_observed_and_unobserved_jobs() -> TestResult {
     let f = fixture(&staging_toml()).await?;
     agent(&f, "origin").await?;

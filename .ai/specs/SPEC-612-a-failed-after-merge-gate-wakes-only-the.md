@@ -33,6 +33,7 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 - [x] Preserve unresolved job evidence across reruns of the same revision
 - [x] Deliver candidate scheduling independently
 - [ ] Verify the incident regressions and review the delivery
+- [ ] Deliver the project CI and Status repair actions on the verified API
 
 ## Acceptance criteria
 
@@ -47,7 +48,7 @@ Exercise real staging requests against a temporary Git repository and recorded C
 
 ## Decisions
 
-The first delivery covers CI inventory reuse and admission. The second covers staging queue order, failure history, task input and project notices. Request staging once after both deliveries.
+The first delivery covers CI inventory reuse and admission. The second covers staging queue order, failure history, task input and the project notice API. The third exposes the repair actions in the project CI page and Status panel. Request staging once after all three deliveries.
 
 Running each candidate once in order preserves evidence of mixed failures and accepts a fix from any task. Reuse existing gate and deployment receipts. Only a verified descendant can satisfy an inherited delivery. A durable project assignment follows the lowest-numbered eligible worker initially and survives other tasks joining. A person can resume finished work. See ADR-0450.
 
@@ -69,3 +70,4 @@ The ownership and staging regressions first ran on the combined implementation. 
 - On the ownership review head, a green rerun that skipped the unresolved job returned an empty Status notice. A manually cancelled candidate became a fresh testing request after pruning. Both regressions failed before the corrections.
 - At `a572d4924`, all 3,435 selected Rust tests passed (run `7fbcca68-bcea-4397-b2c7-293bf89e61f7`). Both retention regressions passed in a separate six-case incident run. Chromium passed 1,326 tests with one configured skip on the integrated UI. Clippy passed with warnings denied.
 - On the next review head the project notice kept both unresolved tests but the red descendant’s durable receipt named only the observed one. The regression failed with `quick::broken` in the receipt and `full::broken` missing. The receipt now uses the same open test history as the project notice.
+- At `2c1c49d49` the receipt regression passed. Of 3,436 selected tests, the sole failure was an intermittent EOF in the unchanged opaque tunnel restart test, also reproduced on the inventory delivery and tracked in issue #1676. Review found that output from a passed retry kept a repaired test active when a sibling job failed. The regression reproduced the incorrect inherited `full::retried` alongside the new `quick::new`. The history now consults the job's final verdict before retaining a failure name. The task page and list passed all 28 Chromium cases with the project notice UI reserved for the final delivery.
