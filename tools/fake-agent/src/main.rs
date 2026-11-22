@@ -3046,9 +3046,6 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             Transcript::open_antigravity(path.clone(), session_id)?,
         ))),
         Some(path) => {
-            if let Some(source) = &options.fork_from {
-                fork_transcript(source, path, session_id)?;
-            }
             let mut transcript = Transcript::open(path.clone(), session_id)?;
             if options.resume && !options.forget_goal {
                 transcript.restore_goal()?;
@@ -3675,6 +3672,14 @@ fn run(options: &Options) -> io::Result<i32> {
     }
     if options.tui {
         start_tui(&session_id)?;
+    }
+    // The forked conversation is in place before the agent says it is ready, as Claude Code
+    // reads it before it draws anything (`--fork-from`).
+    if let (Some(source), Some(path)) = (&options.fork_from, &options.transcript)
+        && !options.codex
+        && !options.antigravity
+    {
+        fork_transcript(source, path, &session_id)?;
     }
     say(&format!("FAKE-AGENT READY session={session_id}"))?;
     report_env(&options.report_env)?;

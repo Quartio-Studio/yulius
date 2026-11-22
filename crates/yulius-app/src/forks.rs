@@ -8,7 +8,7 @@
 //! with `cwd` rewritten, and resumes it as a fork (`SessionMode::Resume { fork }`).
 
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -16,6 +16,7 @@ use yulius_contracts::api::tasks::{ForkLink, ForkOrigin, ForkTask, TaskSummary};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, StepId};
 use yulius_domain::permission::Action;
+use yulius_domain::task::TaskStatus;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -145,6 +146,8 @@ impl App {
         self.ensure_tasks_may_start(&source.sandbox_id, origin)
             .await?;
         self.ensure_agent_account(source.harness.provider()).await?;
+        // Read before the copy, so a failure leaves nothing staged.
+        let steps = store.steps(&source.id).await?;
         let staged = match source.harness {
             Harness::ClaudeCode => Some(
                 self.stage_fork_transcript(source, &session.session_id)
@@ -152,7 +155,6 @@ impl App {
             ),
             Harness::Codex | Harness::Antigravity => None,
         };
-        let steps = store.steps(&source.id).await?;
         let pending = PendingFork {
             record: ForkRecord {
                 task_id: source.id.clone(),
@@ -262,7 +264,8 @@ impl App {
             let file = crate::transcripts::open(&anchor, &path).map_err(|err| {
                 if crate::transcripts::unreadable(&err) {
                     AppError::Invalid(format!(
-                        "#{number} has no conversation to fork yet: its transcript is not there"
+                        "#{number} has no conversation to fork: its transcript is not on the \
+                         server (not written yet, or removed after the task ended)"
                     ))
                 } else {
                     AppError::internal(err)
@@ -283,13 +286,58 @@ impl App {
         Ok(staging)
     }
 
-    /// Writes what a new fork needs before it starts (called by task creation once the task
-    /// exists): its stored transcript, its record and its copied plan.
-    pub(crate) async fn record_fork(
+    /// Makes a new fork, created `prepared` so that nothing starts it yet, ready to run (called
+    /// by task creation right after the task exists): its record, stored transcript and copied
+    /// plan are written, then it joins the queue with its start and the subscription the person
+    /// named, in one step, so the queue and a later start keep that choice (SPEC-483 QST-001).
+    /// Returns that subscription. On failure the task and its files are removed again: a fork
+    /// without its record would start as a new conversation.
+    ///
+    /// # Errors
+    /// Store and I/O failures; `Conflict` when the task changed meanwhile.
+    pub(crate) async fn start_fork(
         &self,
         task: &TaskRecord,
-        mut pending: PendingFork,
-    ) -> AppResult<()> {
+        pending: PendingFork,
+    ) -> AppResult<Option<AccountId>> {
+        let store = &self.deps.store;
+        let account = pending.account.clone();
+        let staged = pending.staged.clone();
+        let kept = crate::supervisor::RunStart::Fresh { prompt: None }.kept(account.as_ref());
+        let made = match self.record_fork(task, pending).await {
+            Ok(()) => store
+                .queue_task(&task.id, TaskStatus::Prepared, &kept, self.now())
+                .await
+                .and_then(|queued| {
+                    queued.then_some(()).ok_or_else(|| {
+                        AppError::Conflict("the fork changed while it was made".into())
+                    })
+                }),
+            Err(err) => Err(err),
+        };
+        if let Err(err) = made {
+            let _ = store.delete_task(&task.id).await;
+            let stored = self
+                .config
+                .data_dir
+                .join("transcripts")
+                .join(task.id.as_str());
+            let _ = crate::projects::blocking(move || {
+                for dir in [Some(stored), staged].into_iter().flatten() {
+                    if dir.exists() {
+                        fs::remove_dir_all(&dir).map_err(AppError::internal)?;
+                    }
+                }
+                Ok(())
+            })
+            .await;
+            return Err(err);
+        }
+        Ok(account)
+    }
+
+    /// Writes a new fork's stored transcript, record and copied plan.
+    async fn record_fork(&self, task: &TaskRecord, mut pending: PendingFork) -> AppResult<()> {
         let store = &self.deps.store;
         let now = self.now();
         pending.record.task_id = task.id.clone();
@@ -325,9 +373,16 @@ impl App {
     }
 
     /// The commit a fork's worktree starts from, while it has none (FRK-005).
-    pub(crate) async fn fork_base(&self, task: &TaskRecord) -> Option<String> {
-        let fork = self.deps.store.fork_of(&task.id).await.ok()??;
-        Some(fork.source_commit)
+    ///
+    /// # Errors
+    /// Store failures: a worktree made without the fork's commit would stay on the wrong base.
+    pub(crate) async fn fork_base(&self, task: &TaskRecord) -> AppResult<Option<String>> {
+        Ok(self
+            .deps
+            .store
+            .fork_of(&task.id)
+            .await?
+            .map(|fork| fork.source_commit))
     }
 
     /// The fork to launch: a fork whose own session has not started yet (FRK-006). A Claude
@@ -416,7 +471,8 @@ impl App {
 
 fn no_commit(source: &TaskRecord) -> AppError {
     AppError::Invalid(format!(
-        "#{} has no commit on its branch to fork from yet",
+        "#{} has no commit on its branch to fork from: it has not started yet, or its branch was \
+         removed after it ended",
         source.number
     ))
 }
@@ -485,27 +541,37 @@ pub(crate) fn copy_complete_lines(file: fs::File, dest: &Path, max: u64) -> AppR
         .create_new(true)
         .open(dest)
         .map_err(AppError::internal)?;
-    let mut reader = BufReader::new(file.take(max.saturating_add(1)));
-    let (mut written, mut line) = (0_u64, Vec::new());
-    let mut copy = || -> io::Result<Option<u64>> {
+    // In chunks, never a whole line in memory (a line the agent wrote can be huge); the copy is
+    // cut after its last newline at the end.
+    let mut reader = file.take(max.saturating_add(1));
+    let mut buf = vec![0_u8; 64 * 1024];
+    let (mut written, mut complete) = (0_u64, 0_u64);
+    let copied = (|| -> io::Result<bool> {
         loop {
-            line.clear();
-            let n = reader.read_until(b'\n', &mut line)?;
-            if n == 0 || !line.ends_with(b"\n") {
-                return Ok(Some(written));
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            let chunk = &buf[..n];
+            if let Some(last) = chunk.iter().rposition(|&b| b == b'\n') {
+                complete = written + last as u64 + 1;
             }
             written += n as u64;
             if written > max {
-                return Ok(None);
+                return Ok(false);
             }
-            out.write_all(&line)?;
+            out.write_all(chunk)?;
         }
-    };
-    match copy().map_err(AppError::internal)? {
-        Some(copied) => Ok(copied),
-        None => {
+        out.set_len(complete)?;
+        Ok(true)
+    })()
+    .map_err(AppError::internal);
+    match copied {
+        Ok(true) => Ok(complete),
+        Ok(false) | Err(_) => {
+            drop(out);
             let _ = fs::remove_file(dest);
-            Err(too_large())
+            copied.and_then(|_| Err(too_large()))
         }
     }
 }
@@ -529,6 +595,18 @@ mod tests {
         let refused = copy_complete_lines(fs::File::open(&src)?, &dir.path().join("x"), 10);
         assert!(matches!(refused, Err(AppError::Invalid(_))));
         assert!(!dir.path().join("x").exists(), "nothing is left behind");
+        // Lines longer than a chunk: the cut still falls after the last newline.
+        let long = format!(
+            "{}\n{}\n{}",
+            "a".repeat(100_000),
+            "b".repeat(70_000),
+            "c".repeat(90_000)
+        );
+        fs::write(&src, &long)?;
+        let dest = dir.path().join("long.jsonl");
+        let copied = copy_complete_lines(fs::File::open(&src)?, &dest, 1 << 20)?;
+        assert_eq!(copied, 170_002);
+        assert_eq!(fs::read_to_string(&dest)?, long[..170_002]);
         Ok(())
     }
 

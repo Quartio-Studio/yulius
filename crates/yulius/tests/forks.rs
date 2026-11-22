@@ -26,6 +26,7 @@ use yulius_app::model::{StepRecord, TaskMode, TaskOrigin, TaskRecord};
 use yulius_contracts::api::tasks::ForkTask;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, StepId, TaskId, UserId};
+use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
 
@@ -381,7 +382,197 @@ fn forks_that_cannot_continue_are_refused_and_create_nothing() -> TestResult {
             app.fork_task(&ctx, unstarted.id.as_str(), &codex_model)
                 .await,
         )?;
+        // A subscription of another provider, or one that is gone (FRK-002).
+        crate::codex::connect_codex(&app).await?;
+        for (account, said) in [
+            ("a-codex", "is not a Claude subscription"),
+            ("gone", "no longer exists"),
+        ] {
+            let named = ForkTask {
+                account_id: Some(account.into()),
+                ..ForkTask::default()
+            };
+            match app.fork_task(&ctx, unstarted.id.as_str(), &named).await {
+                Err(AppError::Capacity(text)) => assert!(text.contains(said), "{text}"),
+                other => return Err(format!("expected a refusal, got {other:?}").into()),
+            }
+        }
         assert_eq!(count().await?, before, "nothing was created");
+        let staging = app.config.data_dir.join("transcripts/.staging");
+        assert!(
+            !staging.exists() || std::fs::read_dir(&staging)?.next().is_none(),
+            "nothing was staged"
+        );
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The launch request the fake recorded for `attempt` (its `fake-launch.txt`).
+fn launch_of(attempt: &yulius_app::model::AttemptRecord) -> Result<String, BoxError> {
+    Ok(std::fs::read_to_string(
+        Path::new(&attempt.run_dir).join("fake-launch.txt"),
+    )?)
+}
+
+/// SPEC-628 FRK-002, FRK-006: a Codex fork that waits in the queue (the source holds the only
+/// session slot) keeps the subscription the person named, launches as `codex fork <source>`
+/// once the slot frees, adopts a session of its own, and its next launch resumes that session.
+#[test]
+fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> TestResult {
+    use crate::supervision::{build_full, screen_contains, seed_records, seed_repo};
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            answers_first_message: true,
+            resume_prompts: true,
+            ..Default::default()
+        };
+        let app = build_full(&data, Some(&fake), agent, 1)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        crate::codex::connect_codex(&app).await?;
+        let named = crate::codex::add_codex_account(
+            &app,
+            "a-codex-2",
+            r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-access-2","refresh_token":"SYNTHETIC-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-01T10:00:00Z"}"#,
+        )
+        .await?;
+        let source_id = crate::codex::new_codex_task(&app, &sandbox, &user, "Parser").await?;
+        wait_for("the source's conversation", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .provider_sessions(&source_id)
+                .await
+                .is_ok_and(|rows| !rows.is_empty())
+                && screen_contains(&app, &source_id, "ECHO: Parser").await
+        })
+        .await?;
+        let source_session = latest_session(&app, &source_id).await?;
+        let ctx = ctx(&app, &user).await?;
+        let summary = app
+            .fork_task(
+                &ctx,
+                source_id.as_str(),
+                &ForkTask {
+                    message: Some("Try another parser.".into()),
+                    account_id: Some(named.as_str().into()),
+                    ..ForkTask::default()
+                },
+            )
+            .await?;
+        let fork_id = TaskId::parse(&summary.id)?;
+        assert_eq!(summary.harness, "codex");
+        assert_eq!(task(&app, &fork_id).await?.status, TaskStatus::Queued);
+        let kept = app
+            .deps
+            .store
+            .queued_start(&fork_id)
+            .await?
+            .ok_or("the fork's start is kept")?;
+        assert_eq!(kept.account_id.as_ref(), Some(&named));
+        support::stop_tasks(&app, &[&source_id]).await?;
+        wait_for("the fork's own session", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .provider_sessions(&fork_id)
+                .await
+                .is_ok_and(|rows| !rows.is_empty())
+                && screen_contains(&app, &fork_id, "Try another parser.").await
+        })
+        .await?;
+        let first = app.deps.store.live_attempt(&fork_id).await?.ok_or("fork run")?;
+        assert_eq!(first.account_id.as_ref(), Some(&named), "the named subscription");
+        let launch = launch_of(&first)?;
+        assert!(launch.contains(&format!("session_id: \"{source_session}\"")), "{launch}");
+        assert!(launch.contains("fork: Some(SessionFork { session_id: None })"), "{launch}");
+        let fork_session = latest_session(&app, &fork_id).await?;
+        assert_ne!(fork_session, source_session);
+        assert_eq!(app.deps.store.provider_sessions(&fork_id).await?.len(), 1);
+        assert_eq!(latest_session(&app, &source_id).await?, source_session);
+
+        // Its next launch resumes its own session, not another copy of the source's.
+        support::stop_tasks(&app, &[&fork_id]).await?;
+        app.continue_task(&ctx, fork_id.as_str(), &Default::default())
+            .await?;
+        wait_for("the fork's second run", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .live_attempt(&fork_id)
+                .await
+                .is_ok_and(|run| run.is_some_and(|run| run.id != first.id))
+        })
+        .await?;
+        let second = app.deps.store.live_attempt(&fork_id).await?.ok_or("second run")?;
+        let launch = launch_of(&second)?;
+        assert!(launch.contains(&format!("session_id: \"{fork_session}\"")), "{launch}");
+        assert!(launch.contains("fork: None"), "{launch}");
+        support::stop_tasks(&app, &[&fork_id]).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-628 FRK-006: a fork whose first launch fails before a process runs has no session of its
+/// own, so its next launch is still a fork of the source's session.
+#[test]
+fn a_fork_whose_first_launch_failed_launches_as_a_fork_again() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fail = dir.path().join("fail-launch");
+        let agent = FakeAgentOptions {
+            transcript: true,
+            fail_launch_file: Some(fail.clone()),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a1"]).await?;
+        let source_id = new_task(&app, &sandbox, &user, "Parser").await?;
+        ready(&app, &source_id).await?;
+        let source = task(&app, &source_id).await?;
+        let source_session = latest_session(&app, &source_id).await?;
+        let path = transcript(&app, &source, &source_session)?;
+        std::fs::create_dir_all(path.parent().ok_or("folder")?)?;
+        std::fs::write(&path, "{\"type\":\"user\",\"uuid\":\"fixture-user-1\"}\n")?;
+        std::fs::write(&fail, "")?;
+        let ctx = ctx(&app, &user).await?;
+        let summary = app
+            .fork_task(&ctx, source_id.as_str(), &ForkTask::default())
+            .await?;
+        let fork_id = TaskId::parse(&summary.id)?;
+        wait_for("the failed launch", Duration::from_secs(30), || {
+            let (app, id) = (app.clone(), fork_id.clone());
+            async move { task(&app, &id).await.is_ok_and(|t| t.status.is_resting()) }
+        })
+        .await?;
+        assert!(app.deps.store.provider_sessions(&fork_id).await?.is_empty());
+        std::fs::remove_file(&fail)?;
+        app.continue_task(&ctx, fork_id.as_str(), &Default::default())
+            .await?;
+        ready(&app, &fork_id).await?;
+        let run = app
+            .deps
+            .store
+            .live_attempt(&fork_id)
+            .await?
+            .ok_or("fork run")?;
+        let launch = launch_of(&run)?;
+        assert!(
+            launch.contains(&format!("session_id: \"{source_session}\"")),
+            "{launch}"
+        );
+        assert!(
+            launch.contains("fork: Some(SessionFork { session_id: Some("),
+            "{launch}"
+        );
+        stop(&app, &fork_id).await?;
+        stop(&app, &source_id).await?;
         Ok::<_, BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

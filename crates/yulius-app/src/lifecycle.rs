@@ -332,9 +332,11 @@ impl App {
                 || title_from_prompt(&prompt),
                 |t| t.chars().take(120).collect(),
             );
+        // A fork waits where the queue does not start it until its record and transcript copy
+        // are written, then joins the queue with its start in one step (SPEC-628 FRK-001).
         let status = if after.is_some() {
             TaskStatus::Chained
-        } else if prepared.is_some() {
+        } else if prepared.is_some() || fork.is_some() {
             TaskStatus::Prepared
         } else if req.start {
             TaskStatus::Queued
@@ -366,13 +368,19 @@ impl App {
             // The time of the close the task is in (SPEC-483 CLT-001).
             closed_at: (status == TaskStatus::Closed).then_some(now),
             archived_at: (!req.start).then_some(now),
-            queued_at: (req.start && after.is_none() && prepared.is_none()).then_some(now),
+            queued_at: (req.start && after.is_none() && prepared.is_none() && fork.is_none())
+                .then_some(now),
             gate_blocks: 0,
             wake_enabled: true,
             mode: req.mode,
             supertask: req.supertask,
         };
         let task = store.insert_task(&record).await?;
+        let account = match fork {
+            Some(fork) => Some(self.start_fork(&task, fork).await?),
+            None => None,
+        }
+        .flatten();
         if let Some(before) = &after {
             self.link_chain(&task, before, rule).await?;
         }
@@ -416,15 +424,6 @@ impl App {
         }
         if harness_drawn {
             store.record_harness_draw(&task.id, now).await?;
-        }
-        let mut account = None;
-        if let Some(fork) = fork {
-            account = fork.account.clone();
-            if let Err(err) = self.record_fork(&task, fork).await {
-                // A fork without its record would start as a new conversation: none is left.
-                let _ = store.delete_task(&task.id).await;
-                return Err(err);
-            }
         }
         store
             .audit(

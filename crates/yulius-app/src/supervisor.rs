@@ -1280,7 +1280,7 @@ impl RunStart {
 
     /// This start for `account`, as the queue keeps it for a task whose start has to wait
     /// (SPEC-483 QST-001).
-    fn kept(&self, account: Option<&AccountId>) -> QueuedStart {
+    pub(crate) fn kept(&self, account: Option<&AccountId>) -> QueuedStart {
         let kind = match self {
             Self::Fresh { .. } => QueuedStartKind::Fresh,
             Self::Resume { .. } => QueuedStartKind::Resume,
@@ -2389,7 +2389,7 @@ impl App {
         // A chained task starts where its predecessor ended, until that is merged (TSK-012).
         let base = if let Some(branch) = self.chain_base(task).await {
             branch
-        } else if let Some(commit) = self.fork_base(task).await {
+        } else if let Some(commit) = self.fork_base(task).await? {
             // A fork starts at the source's commit it recorded (SPEC-628 FRK-005).
             commit
         } else if self
