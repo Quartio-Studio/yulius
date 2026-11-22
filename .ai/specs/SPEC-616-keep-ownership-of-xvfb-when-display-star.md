@@ -1,6 +1,6 @@
 ---
 yulius-task: 8fc3f6f7-5e0a-4b3d-8599-8f5c0d378751
-status: in-progress
+status: done
 ---
 
 # SPEC-616 Keep ownership of Xvfb when display startup and cleanup both fail
@@ -29,7 +29,7 @@ The browser slot already keeps a display or browser whose stop failed. `BrowserS
 - [x] Strand the Xvfb the same way when X controller setup fails
 - [x] Retry the stranded Xvfb's stop in the browser slot before any replacement display
 - [x] Document the stranded display in the architecture and changes
-- [ ] Answer the independent review of the delivery
+- [x] Answer the independent review of the delivery
 
 ## Acceptance criteria
 
@@ -76,4 +76,5 @@ Reproduction: the double failure was injected with the test-only seam `display::
   - Nits: `DisplayStartFailure` no longer repeats its error as `source`. The message now reads "<cause>; then the X server of display :N (pid P) did not exit after SIGKILL, and this sandbox gets no other display until it is stopped", which stays true when a later retry succeeds. `stop_xvfb` keeps its `dir` argument, because the fault seam is keyed by it and it costs nothing in production.
   - The pre-existing cancellation gap is filed as #1688.
   - After the fixes: `scripts/cargo test -p yulius-browser --all-features` (76, 11, 40, 19, 6 passed), clippy on both crates clean, `scripts/dev quick` passed.
+- Review round 2 (head `ab65bd624`): approve. All round-1 findings were resolved, and the reviewer's contention runs passed: 0 of 36, 0 of 18 and 0 of 48 failed, and 0 of 101 delay offsets. Its one optional nit, that the `silent` pid is read after a 300 ms start, is left as it is. The script writes its pid before it execs `sleep`, and 20 of 20 runs passed on one loaded CPU.
 - Security scan: Vidoc is switched off for this project in Yulius (disabled, not passed).
