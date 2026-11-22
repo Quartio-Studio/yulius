@@ -45,6 +45,10 @@ pub const CHILD_LINE_BYTES: usize = 1024 * 1024;
 /// How often a live watch lists the sessions folders again.
 pub const LIST_INTERVAL: Duration = Duration::from_secs(2);
 
+/// How much older than the window's start a file's modification time may be and the file still
+/// be read: file systems keep whole seconds, Codex's lines milliseconds.
+pub const MODIFIED_SLACK: Duration = Duration::from_secs(2);
+
 /// What a rollout's first line says of its thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Link {
@@ -74,6 +78,10 @@ pub struct CodexChildren {
     until: Option<Timestamp>,
     /// Each examined file's link (`None`: not a session's first line), read once.
     examined: BTreeMap<PathBuf, Option<Link>>,
+    /// Files whose first line was incomplete, with their length then: read again once it grew.
+    pending: BTreeMap<PathBuf, u64>,
+    /// A bound stopped discovery: some subagents may not be counted.
+    bounded: bool,
     /// The session's root thread and its descendants found so far.
     family: BTreeSet<String>,
     children: BTreeMap<PathBuf, Child>,
@@ -103,19 +111,14 @@ impl CodexChildren {
             since,
             until,
             examined: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            bounded: false,
             children: BTreeMap::new(),
             listed_at: None,
             interval: LIST_INTERVAL,
             max_examined: MAX_EXAMINED,
             max_children: MAX_CHILDREN,
         }
-    }
-
-    /// Lists the folders on every poll: an ended run's recount reads everything at once.
-    #[must_use]
-    pub fn listing_every_poll(mut self) -> Self {
-        self.interval = Duration::ZERO;
-        self
     }
 
     /// The responses the subagents' new lines count in the window, each with the model that
@@ -159,6 +162,13 @@ impl CodexChildren {
             .all(|child| child.tail.at_end() || child.window.ended())
     }
 
+    /// Whether a bound ([`MAX_EXAMINED`], [`MAX_CHILDREN`]) stopped discovery, so that some
+    /// subagents may not be counted.
+    #[must_use]
+    pub fn bounded(&self) -> bool {
+        self.bounded
+    }
+
     /// Number of subagent rollouts followed.
     #[must_use]
     pub fn files(&self) -> usize {
@@ -171,7 +181,9 @@ impl CodexChildren {
         };
         // A file not changed since the window began holds none of its lines.
         let changed_since = self.since.map(|since| {
-            SystemTime::UNIX_EPOCH + Duration::from_millis(since.0.max(0).unsigned_abs())
+            (SystemTime::UNIX_EPOCH + Duration::from_millis(since.0.max(0).unsigned_abs()))
+                .checked_sub(MODIFIED_SLACK)
+                .unwrap_or(SystemTime::UNIX_EPOCH)
         });
         let mut found = Vec::new();
         paths::walk_codex_days(&self.sessions, first_day, |entry| {
@@ -179,23 +191,30 @@ impl CodexChildren {
             if self.examined.contains_key(&path) || path == self.rollout {
                 return Ok(());
             }
-            if let Some(since) = changed_since
-                && entry.metadata()?.modified()? < since
+            let meta = entry.metadata()?;
+            if changed_since.is_some_and(|since| meta.modified().is_ok_and(|at| at < since))
+                || self.pending.get(&path) == Some(&meta.len())
             {
                 return Ok(());
             }
-            found.push(path);
+            found.push((path, meta.len()));
             Ok(())
         })?;
         found.sort();
-        for path in found {
-            if self.examined.len() >= self.max_examined {
+        for (path, len) in found {
+            if self.examined.len() + self.pending.len() >= self.max_examined
+                && !self.pending.contains_key(&path)
+            {
+                self.bounded = true;
                 break;
             }
             match read_link(&path) {
-                // Its first line is still being written: examined again next time.
-                Err(()) => {}
+                // Its first line is still being written: read again once the file grew.
+                Err(()) => {
+                    self.pending.insert(path, len);
+                }
                 Ok(link) => {
+                    self.pending.remove(&path);
                     self.examined.insert(path, link);
                 }
             }
@@ -212,6 +231,7 @@ impl CodexChildren {
                     continue;
                 }
                 if self.children.len() >= self.max_children {
+                    self.bounded = true;
                     return Ok(());
                 }
                 self.family.insert(link.thread.clone());
@@ -241,7 +261,7 @@ impl Child {
         let payload = obj_of(&record, "payload")?;
         match str_of(&record, "type")? {
             // The model answers the turns that follow, in the window or not.
-            "turn_context" if !self.window.ended() => {
+            "turn_context" => {
                 if let Some(model) = owned_str(payload, "model") {
                     self.model = Some(model);
                 }
@@ -634,7 +654,8 @@ pub(crate) mod tests {
         let partial = complete.path.clone();
         let full = format!("{}\n", complete.lines.join("\n"));
         fs::write(&partial, &full[..20])?;
-        let mut children = CodexChildren::between(&root, None, None).listing_every_poll();
+        let mut children = CodexChildren::between(&root, None, None);
+        children.interval = Duration::ZERO;
         assert_eq!(
             counted(&drain(&mut children)?),
             vec![entry_unknown("resp_slack", 2)]
@@ -687,9 +708,12 @@ pub(crate) mod tests {
         few.max_children = 2;
         assert_eq!(drain(&mut few)?.len(), 2);
         assert_eq!((few.examined.len(), few.files()), (4, 2));
+        assert!(few.bounded(), "said, for the watch to warn");
 
         let mut live = CodexChildren::between(&root, None, None);
+        live.interval = Duration::from_secs(3_600);
         assert_eq!(drain(&mut live)?.len(), 6);
+        assert!(!live.bounded());
         Rollout::new(
             dir.path(),
             day,
@@ -703,8 +727,167 @@ pub(crate) mod tests {
             live.poll()?.is_empty(),
             "not listed again within the interval"
         );
-        live.listed_at = Instant::now().checked_sub(LIST_INTERVAL);
+        live.interval = Duration::ZERO;
         assert_eq!(counted(&live.poll()?), vec![entry_unknown("resp_new", 1)]);
+        Ok(())
+    }
+
+    /// Sets the modification time of `path` to `at`.
+    fn modified(path: &Path, at: Timestamp) -> io::Result<()> {
+        let time = SystemTime::UNIX_EPOCH + Duration::from_millis(at.0.unsigned_abs());
+        fs::File::options()
+            .write(true)
+            .open(path)?
+            .set_modified(time)
+    }
+
+    /// CSA-1: a subagent that names the session as its root counts even when the rollout of the
+    /// thread that spawned it is not followed (unchanged since the window began); one that
+    /// names another root and an unknown parent does not.
+    #[test]
+    fn a_child_whose_parent_is_not_followed_counts_by_its_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let day = "2026/11/21";
+        let since = at("2026-11-21T10:00:00Z");
+        let root = Rollout::new(dir.path(), day, "2026-11-21T09:00:00.000Z", ROOT, None).write()?;
+        let child = "01a1f900-0000-7000-8000-000000000001";
+        let idle = Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:01:00.000Z",
+            child,
+            Some(ROOT),
+        )
+        .response("2026-11-21T09:01:02.000Z", "resp_before", 1, 1)
+        .write()?;
+        modified(&idle, since.plus_millis(-3_600_000))?;
+        let nested = Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:02:00.000Z",
+            "01a1f900-0000-7000-8000-000000000002",
+            Some(child),
+        )
+        .model("2026-11-21T09:02:01.000Z", "gpt-6-luna")
+        .response("2026-11-21T10:05:00.000Z", "resp_nested", 1, 7)
+        .write()?;
+        modified(&nested, since.plus_millis(3_600_000))?;
+        let stray = Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:03:00.000Z",
+            "01a1f900-0000-7000-8000-000000000003",
+            Some("01a1f900-0000-7000-8000-0000000000ff"),
+        )
+        .session("01a1f900-0000-7000-8000-0000000000fe")
+        .response("2026-11-21T10:05:00.000Z", "resp_stray", 1, 9)
+        .write()?;
+        modified(&stray, since.plus_millis(3_600_000))?;
+        let mut children = CodexChildren::between(&root, Some(since), None);
+        assert_eq!(
+            counted(&drain(&mut children)?),
+            vec![entry("resp_nested", "gpt-6-luna", 7)]
+        );
+        assert!(!children.examined.contains_key(&idle), "not read at all");
+        Ok(())
+    }
+
+    /// CSA-6: a file system that keeps whole seconds dates a file up to a second before its
+    /// last line; such a file is still read.
+    #[test]
+    fn a_modification_time_in_whole_seconds_still_reads_the_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let day = "2026/11/21";
+        let since = at("2026-11-21T10:00:00.400Z");
+        let root = Rollout::new(dir.path(), day, "2026-11-21T09:00:00.000Z", ROOT, None).write()?;
+        let child = Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:01:00.000Z",
+            "01a1f900-0000-7000-8000-000000000001",
+            Some(ROOT),
+        )
+        .response("2026-11-21T10:00:00.900Z", "resp_same_second", 1, 5)
+        .write()?;
+        modified(&child, at("2026-11-21T10:00:00Z"))?;
+        let mut children = CodexChildren::between(&root, Some(since), None);
+        assert_eq!(
+            counted(&drain(&mut children)?),
+            vec![entry_unknown("resp_same_second", 5)]
+        );
+        Ok(())
+    }
+
+    /// CSA-6: a first line longer than the bound is examined once and never followed; an
+    /// incomplete first line is read again only once the file grew.
+    #[test]
+    fn first_lines_are_read_within_their_bound() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let day = "2026/11/21";
+        let root = Rollout::new(dir.path(), day, "2026-11-21T09:00:00.000Z", ROOT, None).write()?;
+        let mut long = Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:01:00.000Z",
+            "01a1f900-0000-7000-8000-000000000001",
+            Some(ROOT),
+        )
+        .response("2026-11-21T09:01:02.000Z", "resp_long", 1, 1);
+        let padding = "x".repeat(usize::try_from(SESSION_META_BYTES)?);
+        long.lines[0] = long.lines[0].replace("Synthetic.", &padding);
+        let long = long.write()?;
+        let partial = dir
+            .path()
+            .join(day)
+            .join("rollout-2026-11-21T09-02-00-01a1f900-0000-7000-8000-000000000002.jsonl");
+        fs::write(&partial, "{\"timestamp\":")?;
+        let mut children = CodexChildren::between(&root, None, None);
+        children.interval = Duration::ZERO;
+        assert!(drain(&mut children)?.is_empty());
+        assert_eq!(children.examined.get(&long), Some(&None));
+        assert_eq!(children.pending.get(&partial), Some(&13));
+        assert!(drain(&mut children)?.is_empty());
+        assert_eq!((children.examined.len(), children.pending.len()), (1, 1));
+        Ok(())
+    }
+
+    /// A followed rollout that cannot be read fails the poll (a recount is then not counted);
+    /// once it can be read again, its new lines count.
+    #[test]
+    fn a_child_that_cannot_be_read_fails_the_poll_until_it_can()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let day = "2026/11/21";
+        let root = Rollout::new(dir.path(), day, "2026-11-21T09:00:00.000Z", ROOT, None).write()?;
+        let child = Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:01:00.000Z",
+            "01a1f900-0000-7000-8000-000000000001",
+            Some(ROOT),
+        )
+        .response("2026-11-21T09:01:02.000Z", "resp_1", 1, 1);
+        let text = format!("{}\n", child.lines.join("\n"));
+        let path = child.write()?;
+        let mut children = CodexChildren::between(&root, None, None);
+        children.interval = Duration::from_secs(3_600);
+        assert_eq!(drain(&mut children)?.len(), 1);
+        fs::remove_file(&path)?;
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU)?;
+        assert!(children.poll().is_err(), "a FIFO in its place is not read");
+        fs::remove_file(&path)?;
+        let more = Rollout::new(dir.path(), day, "2026-11-21T09:01:00.000Z", "x", None)
+            .response_of(
+                Some("01a1f900-0000-7000-8000-000000000001"),
+                "2026-11-21T09:01:03.000Z",
+                "resp_2",
+                1,
+                2,
+            );
+        fs::write(&path, format!("{text}{}\n", more.lines[1]))?;
+        assert_eq!(counted(&children.poll()?), vec![entry_unknown("resp_2", 2)]);
         Ok(())
     }
 

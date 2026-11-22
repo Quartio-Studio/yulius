@@ -154,7 +154,8 @@ pub struct RunCost {
 
 /// What a run whose own thread ran `model` would cost, its `totals` including `parts` that
 /// other models answered (SPEC-619 CSA-4): each part at its model's price, the rest at `model`'s.
-/// `None` when a part with tokens, or a rest with tokens, has no price.
+/// `None` when a part with tokens has no price, or the rest has none and has tokens or the run
+/// has no parts (a run of an unpriced model costs what nobody knows, also with zero tokens).
 #[must_use]
 pub fn run_cost(
     model: Option<&str>,
@@ -175,11 +176,15 @@ pub fn run_cost(
         standard: 0.0,
         ultrafast_premium: 0.0,
     };
-    for (model, usage) in std::iter::once((model, rest)).chain(
-        parts
-            .iter()
-            .map(|part| (Some(part.model.as_str()), part.usage)),
-    ) {
+    let rest_counts = parts.is_empty();
+    for (index, (model, usage)) in std::iter::once((model, rest))
+        .chain(
+            parts
+                .iter()
+                .map(|part| (Some(part.model.as_str()), part.usage)),
+        )
+        .enumerate()
+    {
         let spent = [
             usage.input,
             usage.output,
@@ -188,7 +193,7 @@ pub fn run_cost(
         ]
         .iter()
         .any(|tokens| tokens.is_some_and(|t| t > 0));
-        if !spent {
+        if !spent && !(index == 0 && rest_counts) {
             continue;
         }
         let (price, tier) = model.and_then(model_prices)?;
@@ -244,6 +249,15 @@ mod tests {
         );
         let luna = run_cost(Some("gpt-6-luna"), million("x", 1).usage, &[], now);
         assert!(luna.is_some_and(|c| c.ultrafast_premium == 0.0), "{luna:?}");
+        // A run of an unpriced model without parts stays unpriced, also with zero tokens.
+        let zero = TokenUsage {
+            input: Some(0),
+            output: Some(0),
+            cache_read: Some(0),
+            cache_write: Some(0),
+        };
+        assert_eq!(run_cost(Some("mystery"), zero, &[], now), None);
+        assert!(run_cost(Some("gpt-6.2-sol"), zero, &[], now).is_some_and(|c| c.standard == 0.0));
         // Only subagents spent: the run's own unknown model costs nothing.
         let only = run_cost(None, million("x", 1).usage, &astra, now);
         assert!(only.is_some_and(|c| close(c.standard, 58.4)), "{only:?}");

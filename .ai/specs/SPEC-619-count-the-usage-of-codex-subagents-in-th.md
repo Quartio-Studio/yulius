@@ -54,12 +54,15 @@ in their session's run (SPEC-087 MET-004).
   model counts as a run without a model price.
 - **CSA-5** The live watch and the recount of the same window give the same figures.
 - **CSA-6** Discovery and reads are bounded while other tasks write to the same folder. Only date
-  folders from the day before the session's own are listed. Only files changed since the window
-  began are opened. Each file's first line is read once and at most 1 MiB of it. At most 4,096
-  rollouts are examined and 1,024 children followed. The live watch lists the folder at most
-  every 2 seconds.
-- **CSA-7** The migration queues Codex runs of the last 7 days and running ones for one recount,
-  so the weekly estimate counts their children. The disclosure is removed.
+  folders from the day before the session's own are listed. Only files changed since 2 seconds
+  before the window began are opened (file times may keep whole seconds). Each file's first line
+  is read once, at most 1 MiB of it, and an incomplete one again only once the file grew. At most
+  4,096 rollouts are examined and 1,024 children followed; reaching a bound, or a rollout that
+  cannot be read, is logged once. A run keeps parts of at most 16 models, of names of at most 128
+  bytes. The live watch lists the folder at most every 2 seconds.
+- **CSA-7** The migration queues the Codex runs that ended in the last 7 days for one recount, so
+  the weekly estimate counts their children. A running run's watch reads its window again after
+  the restart. The disclosure is removed.
 
 ## Plan
 

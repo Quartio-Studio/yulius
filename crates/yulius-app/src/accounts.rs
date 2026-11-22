@@ -456,7 +456,8 @@ fn account_cost(
                 cache_read: m.cache_read,
                 cache_write: m.cache_write,
             };
-            // A Codex subagent's part at its own model (SPEC-619 CSA-4).
+            // A Codex subagent's part at its own model (SPEC-619 CSA-4). The time only dates the
+            // Ultrafast rate, which this Standard cost does not use.
             yulius_domain::pricing::run_cost(m.model.as_deref(), totals, &m.parts, since)
                 .map(|cost| cost.standard)
         })

@@ -15,6 +15,12 @@ use yulius_domain::usage::{AccountUsage, LimitScope, ModelTokens, TokenUsage};
 /// Maximum number of recent Claude message ids remembered for de-duplication.
 pub const MESSAGE_ID_MEMORY: usize = 65_536;
 
+/// Most models a run keeps parts of (SPEC-619); another model's tokens stay in the rest.
+pub const MAX_MODEL_PARTS: usize = 16;
+
+/// Longest model name a part is kept under; a longer one's tokens stay in the rest.
+pub const MODEL_PART_BYTES: usize = 128;
+
 /// One normalized fact from a transcript line.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Observed {
@@ -335,6 +341,18 @@ fn add_known(total: Option<TokenUsage>, usage: TokenUsage) -> Option<TokenUsage>
     Some(total.map_or(usage, |t| t.checked_add(usage)))
 }
 
+/// Adds `usage` to `model`'s part, within [`MAX_MODEL_PARTS`] and [`MODEL_PART_BYTES`]: the
+/// model is the agent's to write.
+fn add_part(parts: &mut BTreeMap<String, Option<TokenUsage>>, model: String, usage: TokenUsage) {
+    if model.len() > MODEL_PART_BYTES
+        || (parts.len() >= MAX_MODEL_PARTS && !parts.contains_key(&model))
+    {
+        return;
+    }
+    let part = parts.entry(model).or_default();
+    *part = add_known(*part, usage);
+}
+
 impl UsageAccumulator {
     /// An empty accumulator.
     #[must_use]
@@ -451,8 +469,7 @@ impl UsageAccumulator {
         if let Some((_, previous, model)) = self.current.take() {
             self.finalized = add_known(self.finalized, previous);
             if let Some(model) = model {
-                let part = self.parts.entry(model).or_default();
-                *part = add_known(*part, previous);
+                add_part(&mut self.parts, model, previous);
             }
         }
         if self.seen_order.len() >= MESSAGE_ID_MEMORY
@@ -482,8 +499,7 @@ impl UsageAccumulator {
     pub fn model_parts(&self) -> Vec<ModelTokens> {
         let mut parts = self.parts.clone();
         if let Some((_, usage, Some(model))) = &self.current {
-            let part = parts.entry(model.clone()).or_default();
-            *part = add_known(*part, *usage);
+            add_part(&mut parts, model.clone(), *usage);
         }
         parts
             .into_iter()
@@ -558,6 +574,37 @@ impl UsageAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-619 CSA-6: a run keeps parts of at most so many models, of names of at most so many
+    /// bytes; the other tokens stay in the rest, priced at the run's model.
+    #[test]
+    fn model_parts_are_bounded() {
+        let mut acc = UsageAccumulator::new();
+        let usage = TokenUsage {
+            input: Some(1),
+            output: Some(1),
+            cache_read: Some(0),
+            cache_write: Some(0),
+        };
+        let answer = |n: usize, model: String| Observed::AssistantMessage {
+            message_id: format!("codex-resp_{n}"),
+            model: Some(model),
+            usage,
+        };
+        for n in 0..MAX_MODEL_PARTS + 4 {
+            acc.observe_child(&answer(n, format!("model-{n:02}")));
+        }
+        acc.observe_child(&answer(99, "m".repeat(MODEL_PART_BYTES + 1)));
+        acc.observe_child(&answer(100, "model-00".into()));
+        let parts = acc.model_parts();
+        assert_eq!(parts.len(), MAX_MODEL_PARTS);
+        assert_eq!(
+            parts[0].usage.output,
+            Some(2),
+            "a known model still adds up"
+        );
+        assert_eq!(acc.usage().output, Some(22), "every token in the totals");
+    }
 
     fn message(id: &str, input: Option<u64>, output: Option<u64>) -> Observed {
         Observed::AssistantMessage {

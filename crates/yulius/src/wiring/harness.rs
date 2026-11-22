@@ -566,6 +566,8 @@ impl HarnessPort for HarnessAdapter {
             // Its subagents have rollouts of their own (SPEC-619).
             children: (harness == Harness::Codex)
                 .then(|| codex_children::CodexChildren::between(path, since, None)),
+            children_warned: false,
+            children_bounded: false,
             acc: UsageAccumulator::new(),
             limits: WorkflowLimits::default(),
             requested: None,
@@ -721,6 +723,10 @@ struct Watch {
     subagents: SubagentTails,
     /// A Codex session's subagents' rollouts: their responses are the run's too (SPEC-619).
     children: Option<codex_children::CodexChildren>,
+    /// A subagent's rollout could not be read, which was logged once.
+    children_warned: bool,
+    /// The subagents' discovery reached its bound, which was logged.
+    children_bounded: bool,
     acc: UsageAccumulator,
     /// What the session's own thread and its workflows' agents last said of a usage limit.
     limits: WorkflowLimits,
@@ -1060,7 +1066,8 @@ impl TranscriptWatch for Watch {
             }
             Err(err) => tracing::debug!(error = %err, "a sub-agent transcript could not be read"),
         }
-        // A subagent's rollout that cannot be read leaves the session's own observations alone.
+        // A subagent's rollout that cannot be read leaves the session's own observations alone;
+        // the run's figures then lack it, which is said once.
         if let Some(children) = &mut self.children {
             match children.poll() {
                 Ok(responses) => {
@@ -1068,9 +1075,20 @@ impl TranscriptWatch for Watch {
                         self.acc.observe_child(response);
                     }
                 }
+                Err(err) if !self.children_warned => {
+                    self.children_warned = true;
+                    tracing::warn!(error = %err, "a Codex subagent's rollout could not be read");
+                }
                 Err(err) => {
                     tracing::debug!(error = %err, "a Codex subagent's rollout could not be read");
                 }
+            }
+            if children.bounded() && !self.children_bounded {
+                self.children_bounded = true;
+                tracing::warn!(
+                    followed = children.files(),
+                    "a Codex session's subagent discovery reached its bound; later subagents are not counted"
+                );
             }
         }
         let mut heard = 0;
@@ -1321,6 +1339,8 @@ mod tests {
                 }),
                 subagents: SubagentTails::new(&path, None),
                 children: None,
+                children_warned: false,
+                children_bounded: false,
                 acc: UsageAccumulator::new(),
                 limits: WorkflowLimits::default(),
                 requested: None,
@@ -1351,6 +1371,8 @@ mod tests {
             since: LinesSince::new(None),
             subagents: SubagentTails::new(path, None),
             children: None,
+            children_warned: false,
+            children_bounded: false,
             acc: UsageAccumulator::new(),
             limits: WorkflowLimits::default(),
             requested: None,
@@ -2435,6 +2457,80 @@ mod tests {
             [("gpt-6-luna", Some(100)), ("gpt-6.2-astra", Some(1_010))]
         );
         assert_eq!(counted.model.as_deref(), Some("gpt-6.2-sol"));
+        Ok(())
+    }
+
+    /// SPEC-619 AC-2, AC-3: the live watch of a resumed Codex run counts only the subagent
+    /// responses of its own window, as the recount of that window does; a subagent's rollout that
+    /// cannot be read leaves the session's own figures counting.
+    #[test]
+    fn a_resumed_codex_runs_live_watch_counts_its_own_window_of_subagents()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const ROOT: &str = "01a1f882-35c2-7413-b525-14d9ee43e464";
+        const CHILD: &str = "01a1f900-0000-7000-8000-000000000001";
+        let dir = tempfile::tempdir()?;
+        let home = dir.path().join("home");
+        let day = codex_sessions_of(&home).join("2026/11/21");
+        let root = day.join(format!("rollout-2026-11-21T09-00-00-{ROOT}.jsonl"));
+        let child = day.join(format!("rollout-2026-11-21T09-01-00-{CHILD}.jsonl"));
+        append(
+            &root,
+            &[
+                codex_meta("2026-11-21T09:00:00.000Z", ROOT, ROOT, None),
+                codex_model("2026-11-21T09:00:01.000Z", "gpt-6.2-sol"),
+                codex_response("2026-11-21T09:00:02.000Z", ROOT, "resp_first_run", 1),
+                codex_model("2026-11-21T10:00:01.000Z", "gpt-6.2-sol"),
+                codex_response("2026-11-21T10:00:02.000Z", ROOT, "resp_resumed", 10),
+            ],
+        )?;
+        append(
+            &child,
+            &[
+                codex_meta("2026-11-21T09:01:00.000Z", CHILD, ROOT, Some(ROOT)),
+                codex_model("2026-11-21T09:01:01.000Z", "gpt-6.2-astra"),
+                codex_response("2026-11-21T09:01:02.000Z", CHILD, "resp_child_first", 100),
+                codex_response(
+                    "2026-11-21T10:01:00.000Z",
+                    CHILD,
+                    "resp_child_resumed",
+                    1_000,
+                ),
+            ],
+        )?;
+        let resumed =
+            yulius_domain::time::parse_rfc3339("2026-11-21T10:00:00.000Z").ok_or("a time")?;
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
+        let mut watch = adapter.watch(Harness::Codex, &root, WatchFrom::Since(resumed))?;
+        watch.poll()?;
+        let live = watch.usage();
+        assert_eq!(live.tokens.output, Some(1_010), "not the first run's");
+        let counted = adapter
+            .recount(
+                Harness::Codex,
+                &home,
+                Path::new("/w"),
+                ROOT,
+                WatchFrom::Since(resumed),
+                None,
+            )?
+            .ok_or("the rollout")?;
+        assert_eq!(live, counted);
+        assert_eq!(counted.parts.len(), 1);
+
+        // The subagent's rollout gives way to a FIFO: the session's own lines still count.
+        std::fs::remove_file(&child)?;
+        nix::unistd::mkfifo(&child, nix::sys::stat::Mode::S_IRWXU)?;
+        append(
+            &root,
+            &[codex_response(
+                "2026-11-21T10:02:00.000Z",
+                ROOT,
+                "resp_later",
+                10_000,
+            )],
+        )?;
+        watch.poll()?;
+        assert_eq!(watch.usage().tokens.output, Some(11_010));
         Ok(())
     }
 }

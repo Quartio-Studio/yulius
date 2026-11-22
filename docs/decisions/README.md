@@ -514,7 +514,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0452 -->
 <!-- ADR 0453 -->
 <!-- ADR 0454 -->
-- [0455](0455-count-codex-subagents-under-their-sessions-run-by-model.md). A Codex run counts its session's subagents' responses once, in the run whose window holds them, and prices them at the model that answered.
+- [0455](0455-count-codex-subagents-under-their-sessions-run-by-model.md). A Codex run counts its session's subagents' responses once, in the run whose window holds them, and prices them at the model that answered; amends 0440's one model per run.
 <!-- ADR 0455 -->
 <!-- ADR 0456 -->
 <!-- ADR 0457 -->
