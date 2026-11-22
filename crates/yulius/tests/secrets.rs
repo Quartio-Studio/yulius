@@ -893,6 +893,7 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
             name: "Shared Gmail".into(),
             description: String::new(),
             hosts: Vec::new(),
+            rules: Vec::new(),
             injection: "none".into(),
             header_name: None,
             fields: vec!["password".into(), "notes".into(), "totp".into()],
@@ -1292,6 +1293,7 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
             name: "DOCS_LOGIN".into(),
             description: "Docs admin login".into(),
             hosts: vec!["docs.example".into()],
+            rules: Vec::new(),
             injection: "none".into(),
             header_name: None,
             fields: vec!["value".into(), "username".into(), "totp".into()],
@@ -1422,6 +1424,7 @@ async fn a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers(
             name: "OLD_DEPLOY_KEY".into(),
             description: "Deploy key".into(),
             hosts: Vec::new(),
+            rules: Vec::new(),
             injection: "none".into(),
             header_name: None,
             fields: vec!["value".into()],
@@ -1787,6 +1790,7 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
 
 fn request(host: &str, path: &str, headers: &[(&str, &str)]) -> EgressRequest {
     EgressRequest {
+        method: "GET".into(),
         host: host.into(),
         port: 443,
         path_and_query: path.into(),
@@ -3736,6 +3740,7 @@ async fn the_egress_policy_never_sends_a_value_with_a_line_break() -> TestResult
             name: "CRLF_KEY".into(),
             description: "Stored before the check".into(),
             hosts: vec!["crlf.test".into()],
+            rules: Vec::new(),
             injection: "bearer".into(),
             header_name: None,
             fields: vec!["value".into()],

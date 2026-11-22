@@ -31,6 +31,31 @@ pub enum NoticeKind {
     Account,
 }
 
+impl NoticeKind {
+    /// Its wire name (a stored notice's category, SPEC-624).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NeedsYou => "needs_you",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Account => "account",
+        }
+    }
+
+    /// The kind named `text`, if any.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "needs_you" => Some(Self::NeedsYou),
+            "done" => Some(Self::Done),
+            "failed" => Some(Self::Failed),
+            "account" => Some(Self::Account),
+            _ => None,
+        }
+    }
+}
+
 /// Which notifications a person wants (TGC-020): Needs you by default, nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
@@ -270,6 +295,29 @@ pub fn account_text(
         lines.push(plain(detail));
     }
     lines.push(link.to_owned());
+    (headline, truncate(&lines.join("\n")))
+}
+
+/// A posted notice (SPEC-624): (headline, text), before redaction: its project, its title, its
+/// detail and its link.
+#[must_use]
+pub fn posted_text(
+    project: Option<&str>,
+    title: &str,
+    detail: Option<&str>,
+    link: Option<&str>,
+) -> (String, String) {
+    let headline = match project {
+        Some(project) => format!("{}: {}", one_line(project), one_line(title)),
+        None => one_line(title),
+    };
+    let mut lines = vec![headline.clone()];
+    if let Some(detail) = detail.filter(|d| !d.trim().is_empty()) {
+        lines.push(plain(detail));
+    }
+    if let Some(link) = link {
+        lines.push(link.to_owned());
+    }
     (headline, truncate(&lines.join("\n")))
 }
 

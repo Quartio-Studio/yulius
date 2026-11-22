@@ -83,6 +83,7 @@ mod migration;
 mod model_fallback;
 mod needs_you_messages;
 mod notes;
+mod notices;
 #[cfg(target_os = "linux")]
 mod opaque_restart;
 mod parking;
@@ -111,6 +112,7 @@ mod secrets_copy;
 mod secrets_create;
 mod secrets_env;
 mod secrets_redaction;
+mod secrets_rules;
 mod secrets_scopes;
 mod self_update;
 mod session_sync;

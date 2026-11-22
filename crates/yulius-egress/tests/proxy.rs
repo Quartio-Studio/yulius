@@ -88,6 +88,13 @@ impl EgressPolicy for Policy {
                 message: "refused by policy".into(),
             };
         }
+        // A secret's rules decide by the method (SPEC-627): this one allows no DELETE.
+        if request.method == "DELETE" {
+            return EgressDecision::Refuse {
+                status: 403,
+                message: format!("DELETE {} is outside the rules", request.path_and_query),
+            };
+        }
         let mut headers = request.headers;
         headers.retain(|(name, _)| name != "authorization");
         headers.push((
@@ -410,6 +417,40 @@ async fn refusals() -> TestResult {
     let metadata = client.get("http://169.254.169.254/latest").send().await?;
     assert_eq!(metadata.status(), 403);
     assert!(setup.seen.lock().map_err(|_| "lock")?.is_empty());
+    Ok(())
+}
+
+/// SPEC-627 AC-8: the policy decides by the request's method as the agent sent it, inside an
+/// intercepted connection and for a plain `http://` request: a method its rules refuse never
+/// reaches the upstream, and another request on the same kept-alive connection still does.
+#[tokio::test]
+async fn the_policy_sees_each_requests_method() -> TestResult {
+    let setup = setup().await?;
+    let client = agent(&setup, "good-token")?;
+    for scheme in ["https", "http"] {
+        let refused = client
+            .delete(format!("{scheme}://{BOUND}/v1/items/7"))
+            .send()
+            .await?;
+        assert_eq!(refused.status(), 403, "{scheme}");
+        assert_eq!(
+            refused.text().await?.trim_end(),
+            "DELETE /v1/items/7 is outside the rules",
+            "{scheme}"
+        );
+        assert!(
+            setup.seen.lock().map_err(|_| "lock")?.is_empty(),
+            "{scheme}"
+        );
+    }
+    let allowed = client
+        .get(format!("https://{BOUND}/v1/items/7"))
+        .send()
+        .await?;
+    assert_eq!(allowed.status(), 200);
+    let seen = setup.seen.lock().map_err(|_| "lock")?.clone();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].contains("path=/v1/items/7"), "{}", seen[0]);
     Ok(())
 }
 

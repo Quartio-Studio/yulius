@@ -35,7 +35,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
 /// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
-pub const COCKPIT_TOOLS: [&str; 85] = [
+pub const COCKPIT_TOOLS: [&str; 87] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -101,6 +101,8 @@ pub const COCKPIT_TOOLS: [&str; 85] = [
     "instance",
     "instance_update",
     "docker_restart",
+    "notices_list",
+    "notice_dismiss",
     "ci_runs",
     "ci_run",
     "ci_rerun",
@@ -789,7 +791,7 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "secrets_list".into(),
-            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to (and requested_hosts waiting for a person to allow, see secret_request_hosts) and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
+            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to (and requested_hosts waiting for a person to allow, see secret_request_hosts), the method and path rules that limit some to certain requests, and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
@@ -1124,7 +1126,6 @@ impl App {
         name: &str,
         args: &Value,
     ) -> AppResult<Value> {
-        use yulius_domain::permission::Action;
         let action = crate::person_tools::action(name)
             .ok_or_else(|| AppError::Invalid(format!("unknown tool: {name}")))?;
         let (app, caller, name, args) = (
@@ -1153,7 +1154,7 @@ impl App {
                     .await
             }
             .await;
-            if action != Action::View {
+            if crate::person_tools::changes(&name, action) {
                 let mut about = crate::person_tools::subject(&name, &args);
                 about["tool"] = json!(name);
                 about["ok"] = json!(outcome.is_ok());
