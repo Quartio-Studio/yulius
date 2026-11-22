@@ -195,6 +195,19 @@ pub enum BrowserError {
         /// Process id.
         pid: u32,
     },
+    /// A virtual display failed to start, and its X server then survived SIGKILL: the sandbox's
+    /// browser keeps it and stops it again before the sandbox gets another display (SPEC-616).
+    #[error(
+        "virtual display {display} failed to start ({cause}), and its X server (pid {pid}) did not exit after SIGKILL; it is stopped again before this sandbox gets another display"
+    )]
+    DisplayNotStopped {
+        /// The display name, e.g. `:101`.
+        display: String,
+        /// The X server's process id.
+        pid: u32,
+        /// Why the display did not start.
+        cause: String,
+    },
 }
 
 impl BrowserError {
@@ -230,7 +243,9 @@ impl BrowserError {
             | Self::ProfileInUse { .. }
             | Self::Display(_)
             | Self::Network(_) => ViewerErrorCode::Upstream,
-            Self::Profile(_) | Self::NotReaped { .. } => ViewerErrorCode::Internal,
+            Self::Profile(_) | Self::NotReaped { .. } | Self::DisplayNotStopped { .. } => {
+                ViewerErrorCode::Internal
+            }
         }
     }
 }

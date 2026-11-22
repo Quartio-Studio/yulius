@@ -14,7 +14,7 @@ use yulius_domain::ids::SandboxId;
 
 use crate::cdp::{CdpClient, CdpConfig};
 use crate::discovery::resolve_executable;
-use crate::display::{DisplayMode, VirtualDisplay};
+use crate::display::{DisplayMode, StrandedXvfb, VirtualDisplay};
 use crate::error::{BrowserError, CdpError};
 use crate::instance::{BrowserInstance, InstanceConfig, ScreencastConfig, SecretMemory};
 use crate::network::BrowserNetwork;
@@ -171,6 +171,9 @@ enum BrowserState {
         display: Option<Arc<VirtualDisplay>>,
         process: Option<Arc<Supervised>>,
     },
+    /// A display failed to start and its X server survived the stop (SPEC-616): stopped again
+    /// before anything else starts for the sandbox.
+    Stranded(StrandedXvfb),
     Unpublished(Arc<BrowserInstance>),
     Ready(Arc<BrowserInstance>),
 }
@@ -207,6 +210,7 @@ impl BrowserSlot {
                     display.stop(timeouts).await?;
                 }
             }
+            BrowserState::Stranded(xvfb) => xvfb.stop(timeouts).await?,
             BrowserState::Ready(instance) | BrowserState::Unpublished(instance) => {
                 instance.terminate(timeouts).await?
             }
@@ -320,7 +324,8 @@ impl BrowserManager {
     ///
     /// # Errors
     /// Executable, profile, startup or CDP connection failures; a failed start leaves no
-    /// process behind.
+    /// process behind, except one that survived its stop, which the sandbox keeps and stops
+    /// again before anything else starts for it (SPEC-616).
     pub async fn ensure(
         &self,
         sandbox: &SandboxId,
@@ -432,10 +437,21 @@ impl BrowserManager {
             .config
             .chromium_args(profile_dir, network.as_ref().map(|lease| lease.proxy));
         // Own each resource before the next fallible or cancellable startup operation.
-        let display =
-            VirtualDisplay::start(&self.config.display, sandbox, self.config.default_viewport)
-                .await?
-                .map(Arc::new);
+        let display = match VirtualDisplay::start(
+            &self.config.display,
+            sandbox,
+            self.config.default_viewport,
+        )
+        .await
+        {
+            Ok(display) => display.map(Arc::new),
+            Err(failure) => {
+                if let Some(xvfb) = failure.stranded {
+                    *state = BrowserState::Stranded(xvfb);
+                }
+                return Err(failure.error);
+            }
+        };
         *state = BrowserState::Starting {
             display: display.clone(),
             process: None,
@@ -592,6 +608,79 @@ mod tests {
             .restart(&sandbox, Path::new("/unused"))
             .now_or_never();
         assert!(matches!(result, Some(Err(e)) if e.viewer_code() == ViewerErrorCode::Capacity));
+        Ok(())
+    }
+
+    /// SPEC-616 XS-003 (#1519): a display that failed to start, whose X server then survived
+    /// its stop, keeps the sandbox from getting another X server until a stop reaps it.
+    #[tokio::test]
+    async fn a_stranded_xvfb_is_stopped_before_the_sandbox_gets_another_display()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::display::stop_faults::{self, FakeXvfb};
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir()?;
+        let real = resolve_executable(Path::new("Xvfb")).ok();
+        let fake = FakeXvfb::new(root.path(), real.as_deref(), "silent")?;
+        let chromium = root.path().join("chromium");
+        std::fs::write(&chromium, "#!/bin/sh\nexit 3\n")?;
+        std::fs::set_permissions(&chromium, std::fs::Permissions::from_mode(0o755))?;
+        let mut display = crate::DisplayConfig::new(root.path().join("displays"));
+        display.xvfb = fake.program.clone();
+        display.max_size = (320, 240);
+        display.startup_timeout = Duration::from_millis(300);
+        let mut config = BrowserConfig::new(chromium, root.path().join("profiles"));
+        config.display = DisplayMode::Virtual(display);
+        config.default_viewport = (320, 240);
+        config.startup_timeout = Duration::from_secs(10);
+        config.stop = StopTimeouts {
+            graceful: Duration::ZERO,
+            term: Duration::from_secs(2),
+            kill: Duration::from_secs(5),
+        };
+        let manager = BrowserManager::new(config);
+        let sandbox = SandboxId::parse("stranded")?;
+        let profile = manager.default_profile_dir(&sandbox);
+        let dir = root.path().join("displays").join(sandbox.as_str());
+        let not_stopped = |result: Result<Arc<BrowserInstance>, BrowserError>| {
+            matches!(result, Err(BrowserError::DisplayNotStopped { .. }))
+        };
+
+        stop_faults::hold(&dir);
+        assert!(not_stopped(manager.ensure(&sandbox, &profile).await));
+        let first = fake.starts();
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(stop_faults::running(first[0]), "the Xvfb survived its stop");
+        // Every way to the sandbox's browser stops it first, and fails while it survives.
+        assert!(not_stopped(manager.ensure(&sandbox, &profile).await));
+        assert!(not_stopped(manager.restart(&sandbox, &profile).await));
+        assert!(manager.reap_idle(Instant::now()).await.is_empty());
+        assert_eq!(fake.starts(), first, "no second X server started");
+        assert!(stop_faults::running(first[0]));
+
+        stop_faults::release(&dir);
+        if real.is_some() {
+            // The display starts; the stand-in Chrome exits, which only a started display reaches.
+            fake.set_mode("real")?;
+            let result = manager.ensure(&sandbox, &profile).await;
+            assert!(
+                matches!(result, Err(BrowserError::ExitedEarly { .. })),
+                "{result:?}"
+            );
+        } else {
+            eprintln!("Xvfb unavailable; the replacement display's start is not checked");
+            assert!(manager.ensure(&sandbox, &profile).await.is_err());
+        }
+        let starts = fake.starts();
+        assert_eq!(starts.len(), 2, "{starts:?}");
+        assert!(
+            !stop_faults::running(first[0]),
+            "the stranded Xvfb was stopped first"
+        );
+        assert!(
+            !stop_faults::running(starts[1]),
+            "the failed start cleaned up"
+        );
+        assert!(!manager.shutdown(&sandbox).await?, "nothing left to stop");
         Ok(())
     }
 

@@ -46,7 +46,9 @@ fn failure(error: BrowserError) -> BrowserFailure {
         | BrowserError::ElementNotVisible
         | BrowserError::SecretOnPage => BrowserFailureKind::Invalid,
         BrowserError::ResultTooLarge { .. } => BrowserFailureKind::TooLarge,
-        BrowserError::Profile(_) | BrowserError::NotReaped { .. } => BrowserFailureKind::Internal,
+        BrowserError::Profile(_)
+        | BrowserError::NotReaped { .. }
+        | BrowserError::DisplayNotStopped { .. } => BrowserFailureKind::Internal,
         BrowserError::Spawn(_)
         | BrowserError::StartupTimeout { .. }
         | BrowserError::ExitedEarly { .. }
