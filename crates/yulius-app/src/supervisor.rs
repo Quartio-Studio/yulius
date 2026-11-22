@@ -674,6 +674,8 @@ impl Drop for Finalizing<'_> {
 /// (the agent keeps working on its current subscription meanwhile).
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
+/// A write that found the run's writer taken by another one: nothing was written.
+pub(crate) const SESSION_WRITER_BUSY: &str = "the session writer is busy";
 pub(crate) const CODEX_UNREADABLE: &str =
     "Codex's terminal could not confirm a safe input screen after a repaint";
 pub(crate) const CODEX_PICKER: &str = "Codex's rate-limit model picker is open. Choose Keep current model or dismiss the picker in the terminal.";
@@ -692,7 +694,7 @@ impl TaskRuntime {
             SessionInput::Paste(_) | SessionInput::ContinuePaste(_) if immediate_paste => self
                 .run
                 .try_lock()
-                .map_err(|_| AppError::Conflict("the session writer is busy".into()))?,
+                .map_err(|_| AppError::Conflict(SESSION_WRITER_BUSY.into()))?,
             _ => self.run.lock().await,
         };
         let run = run
@@ -832,7 +834,7 @@ impl TaskRuntime {
             let mut slot = rt
                 .run
                 .try_lock()
-                .map_err(|_| AppError::Conflict("the session writer is busy".into()))?;
+                .map_err(|_| AppError::Conflict(SESSION_WRITER_BUSY.into()))?;
             let run = slot
                 .as_mut()
                 .filter(|run| run.attempt_id == attempt)

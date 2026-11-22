@@ -443,6 +443,67 @@ impl RunWriter for Writer {
 mod tests {
     use super::*;
 
+    /// SPEC-623 review round 1: a resize to a host that stopped reading returns within its
+    /// bound instead of holding the run's writer, and closes the write half, so a later write
+    /// fails and the reader reattaches.
+    #[tokio::test]
+    async fn a_resize_to_a_host_that_stopped_reading_gives_up_and_closes_the_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let run = tempfile::tempdir()?;
+        let socket = tokio::net::UnixListener::bind(run.path().join(wire::SOCKET_FILE))?;
+        let token = [7; wire::TOKEN_BYTES];
+        let serve = async {
+            let (mut stream, _) = socket.accept().await?;
+            let mut hello = vec![
+                0;
+                wire::encode_client(&ClientFrame::Hello {
+                    version: wire::PROTOCOL_VERSION,
+                    token,
+                    want_snapshot: false,
+                })
+                .len()
+            ];
+            stream.read_exact(&mut hello).await?;
+            stream
+                .write_all(&wire::encode_host(&HostFrame::Welcome(wire::Welcome {
+                    attempt_id: "a".into(),
+                    child_pid: 1,
+                    seq: 0,
+                    cols: 80,
+                    rows: 24,
+                })))
+                .await?;
+            Ok::<_, std::io::Error>(stream)
+        };
+        let (served, connected) =
+            tokio::join!(serve, PtyClient::connect(run.path(), &token, false));
+        let mut host = served?;
+        let (_reader, writer) = connected?.0.into_split();
+        let mut writer = Writer(writer);
+        // The host reads nothing more: fill the socket until a write no longer goes through.
+        loop {
+            let frame = ClientFrame::Input(vec![b'x'; wire::MAX_INPUT_CHUNK]);
+            match tokio::time::timeout(Duration::from_millis(100), writer.0.send(frame)).await {
+                Ok(sent) => sent?,
+                Err(_) => break,
+            }
+        }
+        let started = tokio::time::Instant::now();
+        assert!(RunWriter::resize(&mut writer, 100, 30).await.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        // The host drains what it was sent and then sees the client leave.
+        let mut drained = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), host.read_to_end(&mut drained)).await??;
+        assert!(RunWriter::input(&mut writer, b"x").await.is_err());
+        Ok(())
+    }
+
     #[test]
     fn a_loopback_listener_keeps_a_port_reserved() -> Result<(), Box<dyn std::error::Error>> {
         let host = PtySessionHost::new(PathBuf::new());

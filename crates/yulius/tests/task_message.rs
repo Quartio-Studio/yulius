@@ -2286,6 +2286,48 @@ fn the_codex_rate_limit_picker_holds_messages_until_it_is_dismissed() -> TestRes
     })
 }
 
+/// Review round 1: a person's hold (SPEC-480) after a refused Codex write is no delivery
+/// problem. Only a refusal of the write itself counts towards raising PR news.
+#[test]
+fn a_key_that_dismisses_the_codex_picker_raises_no_pr_news_request() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        paint_codex(&app, &id, CODEX_RATE_LIMIT_PICKER);
+        let bounds = WatchBounds::default();
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        assert!(app.deps.store.task_needs_you(&id).await?.is_some());
+        // The owner dismisses the picker with a key, and the composer repaints.
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"\x1b", false).await?;
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        for _ in 0..2 {
+            assert!(app.watch_prs(&bounds).await.is_empty());
+            assert_eq!(app.deps.store.task_needs_you(&id).await?, None);
+        }
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn a_fresh_draft_holds_codex_pr_news_without_a_request() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"x", false).await?;
+        let bounds = WatchBounds::default();
+        for _ in 0..3 {
+            assert!(app.watch_prs(&bounds).await.is_empty());
+            assert_eq!(app.deps.store.task_needs_you(&id).await?, None);
+        }
+        assert!(!screen(&app, &id).contains("ECHO: Yulius, about your pull request"));
+        stop(&app, &id).await
+    })
+}
+
 #[test]
 fn the_codex_rate_limit_picker_between_paste_and_enter_holds_the_submit() -> TestResult {
     use yulius_app::pr_watch::WatchBounds;

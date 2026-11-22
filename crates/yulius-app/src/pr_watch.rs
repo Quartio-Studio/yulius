@@ -958,7 +958,7 @@ impl App {
                             stamp();
                             true
                         };
-                        self.type_into_session_if(
+                        self.type_into_session_written(
                             &task,
                             paste.as_bytes(),
                             Typed::Notice(&attempt.id),
@@ -968,15 +968,24 @@ impl App {
                         .await
                     } else {
                         stamp();
-                        self.type_into_session(
+                        self.type_into_session_written(
                             &task,
                             paste.as_bytes(),
                             Typed::Notice(&attempt.id),
                             Sender::Yulius,
+                            None::<std::future::Ready<bool>>,
                         )
                         .await
                     };
-                    let admitted = before.is_some();
+                    // Only the writer's refusal counts towards raising the notice: a person's
+                    // hold before the write is SPEC-480's to report (review round 1).
+                    let (result, write_refused) = match result {
+                        Ok(written) => {
+                            let refused = written.is_err();
+                            (written, refused)
+                        }
+                        Err(held) => (Err(held), false),
+                    };
                     let put_back = || {
                         if let Some(previous) = before {
                             *runtime
@@ -1007,7 +1016,7 @@ impl App {
                                 tracing::warn!(task = %task.id, error = %err, "could not tell the task about its pull request");
                             }
                             let mut pending = untold(told, &next);
-                            if admitted
+                            if write_refused
                                 && has_new_event
                                 && task.harness == yulius_domain::harness::Harness::Codex
                             {
@@ -1025,8 +1034,12 @@ impl App {
                                     {
                                         tracing::warn!(task = %task.id, error = %record_err, "could not raise undelivered PR news");
                                     }
+                                    // Raised: once the request is cleared, the next refusal
+                                    // counts afresh instead of raising it again at once.
+                                    pending.deferred_keys.clear();
+                                } else {
+                                    pending.deferred_keys.clone_from(&next.keys);
                                 }
-                                pending.deferred_keys.clone_from(&next.keys);
                             }
                             pending
                         }

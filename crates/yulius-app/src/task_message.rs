@@ -155,6 +155,10 @@ pub fn answer_prompt(login: &str, owner: &str, mine: bool, text: &str) -> String
     format!("Answer from {login} to what you asked with needs_you{whose}:\n\n{text}")
 }
 
+/// How the session's writer answered a message that reached it
+/// ([`App::type_into_session_written`]).
+pub(crate) type Written = AppResult<()>;
+
 /// What Yulius types into a session ([`App::type_into_session`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Typed<'a> {
@@ -796,6 +800,24 @@ impl App {
         from: Sender,
         admit: Option<impl std::future::Future<Output = bool>>,
     ) -> AppResult<()> {
+        self.type_into_session_written(task, paste, what, from, admit)
+            .await
+            .and_then(|written| written)
+    }
+
+    /// [`Self::type_into_session_if`] telling apart where a refusal came from: the outer
+    /// error holds the message before anything is written (a person's possible draft or key,
+    /// a starting session, a busy writer, SPEC-480), the inner one is the session's writer
+    /// refusing it or failing (a Codex screen or paste record, a lost connection). Only the
+    /// inner kind is a delivery problem (SPEC-623, review round 1).
+    pub(crate) async fn type_into_session_written(
+        &self,
+        task: &TaskRecord,
+        paste: &[u8],
+        what: Typed<'_>,
+        from: Sender,
+        admit: Option<impl std::future::Future<Output = bool>>,
+    ) -> AppResult<Written> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
         })?;
@@ -1005,9 +1027,14 @@ impl App {
         };
         if let Err(err) = pasted {
             runtime.message_typed_ms.store(before, Ordering::SeqCst);
+            // Another write holds the writer: nothing was refused, the next pass tries again.
+            if matches!(&err, AppError::Conflict(why) if why == crate::supervisor::SESSION_WRITER_BUSY)
+            {
+                return Err(err);
+            }
             self.report_codex_input_hold(task, codex_attempt.as_ref(), from, what, paste, &err)
                 .await?;
-            return Err(err);
+            return Ok(Err(err));
         }
         if matches!(what, Typed::Notice(_)) {
             crate::race::reached(
@@ -1047,12 +1074,12 @@ impl App {
             }
             self.report_codex_input_hold(task, codex_attempt.as_ref(), from, what, paste, &err)
                 .await?;
-            return Err(AppError::Conflict(format!(
+            return Ok(Err(AppError::Conflict(format!(
                 "the message was pasted into task #{}'s session but not submitted ({}): it may \
                  still be in its prompt box, so look before sending it again",
                 task.number,
                 err.public_message()
-            )));
+            ))));
         }
         // The task's owner can send the new instruction through a tool as well as by
         // typing in its terminal. A failed send, a command and a machine wake spend
@@ -1086,7 +1113,7 @@ impl App {
         if released.is_some() {
             self.settle_draft_flag(&task.id).await;
         }
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// Publish the owed machine notice or a text-free description of a private message.
