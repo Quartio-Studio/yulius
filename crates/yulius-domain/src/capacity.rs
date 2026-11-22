@@ -317,6 +317,8 @@ pub struct TokenRun {
     pub cache_read: Option<u64>,
     /// Cache-write tokens, when reported.
     pub cache_write: Option<u64>,
+    /// The parts of its tokens that other models answered (a Codex subagent's, SPEC-619).
+    pub parts: Vec<crate::usage::ModelTokens>,
 }
 
 /// Tokens spent in one period and what they would cost at API list prices.
@@ -404,20 +406,16 @@ pub fn pool_tokens(runs: &[TokenRun], now: Timestamp, days: usize) -> PoolTokens
             out.unknown_usage_runs = out.unknown_usage_runs.saturating_add(1);
             continue;
         }
-        let rates = run.model.as_deref().and_then(crate::pricing::model_prices);
-        let cost = rates.map(|(standard, _)| {
-            crate::pricing::cost_usd(
-                standard,
-                run.input,
-                run.output,
-                run.cache_read,
-                run.cache_write,
-            )
-        });
-        let premium = rates
-            .and_then(|(_, tier)| tier)
-            .zip(cost)
-            .map(|(tier, cost)| cost * (tier.multiplier(now) - 1.0))
+        let totals = crate::usage::TokenUsage {
+            input: run.input,
+            output: run.output,
+            cache_read: run.cache_read,
+            cache_write: run.cache_write,
+        };
+        let priced = crate::pricing::run_cost(run.model.as_deref(), totals, &run.parts, now);
+        let cost = priced.map(|c| c.standard);
+        let premium = priced
+            .map(|c| c.ultrafast_premium)
             .filter(|premium| *premium > 0.0);
         if cost.is_none() {
             out.unpriced_runs = out.unpriced_runs.saturating_add(1);
@@ -679,7 +677,36 @@ mod tests {
             output: Some(tokens),
             cache_read: Some(tokens),
             cache_write: None,
+            parts: Vec::new(),
         }
+    }
+
+    /// SPEC-619 AC-4: a run whose Codex subagent ran another model is priced per part; a part
+    /// of an unpriced model makes it a run without a price.
+    #[test]
+    fn a_runs_subagent_parts_are_priced_at_their_models() {
+        let part = |model: &str, tokens: u64| crate::usage::ModelTokens {
+            model: model.into(),
+            usage: crate::usage::TokenUsage {
+                input: Some(tokens),
+                output: Some(tokens),
+                cache_read: Some(tokens),
+                cache_write: None,
+            },
+        };
+        let mut run = token_run(-2, Some(-1), "gpt-6.2-sol", 2_000_000);
+        run.parts = vec![part("gpt-6.2-astra", 1_000_000)];
+        let pool = pool_tokens(std::slice::from_ref(&run), NOW, 7);
+        // Sol's $2 + $10 + $0.10 and Astra's $8 + $40 + $0.40 per million.
+        assert!(close(pool.per_day[6].cost_usd, 12.1 + 48.4), "{pool:?}");
+        assert!(
+            close(pool.per_day[6].input, 2_000_000.0),
+            "the totals count once"
+        );
+        assert!(pool.ultrafast_premium_usd.is_some_and(|p| p > 0.0));
+        run.parts = vec![part("mystery-model", 1_000_000)];
+        let pool = pool_tokens(&[run], NOW, 7);
+        assert_eq!((pool.unpriced_runs, pool.per_day[6].cost()), (1, None));
     }
 
     /// TUS-003: a run counts in each 24-hour period by the share of its lifetime inside it.

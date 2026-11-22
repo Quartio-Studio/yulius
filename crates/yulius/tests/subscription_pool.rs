@@ -686,6 +686,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
                 cache_write: Some(1_000_000),
                 turns: Some(3),
                 active_ms: Some(HOUR as u64),
+                parts: Vec::new(),
             },
             t0,
         )
