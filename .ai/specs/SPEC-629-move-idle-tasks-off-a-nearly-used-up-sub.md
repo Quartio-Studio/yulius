@@ -93,8 +93,8 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 ## Plan
 
 - [x] Specify proactive rebalancing and record the decision
-- [ ] Place new tasks off subscriptions past a per-harness threshold
-- [ ] Decide idle moves in the domain: move, stay, or nothing has room
+- [x] Place new tasks off subscriptions past a per-harness threshold
+- [x] Decide idle moves in the domain: move, stay, or nothing has room
 - [ ] Pin a task to the subscription a person chose
 - [ ] Move idle tasks off a subscription past the threshold every two minutes
 - [ ] Tell each move and each task that cannot move, once
