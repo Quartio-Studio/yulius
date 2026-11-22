@@ -60,5 +60,50 @@ class BootstrapRustupLock(unittest.TestCase):
             self.assertEqual(record.read_text(), "held\n", run.stderr)
 
 
+class BootstrapToolBuild(unittest.TestCase):
+    def test_a_cold_registry_install_builds_on_disk_and_reclaims_its_target(self):
+        import runpy
+        import shutil
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            tree = Path(root)
+            script = tree / "scripts/bootstrap.py"
+            script.parent.mkdir()
+            shutil.copyfile(BOOTSTRAP, script)
+            (tree / "rust-toolchain.toml").write_text('[toolchain]\nchannel="stable"\nprofile="minimal"\ncomponents=[]\n')
+            (tree / ".config").mkdir()
+            (tree / ".config/tools.toml").write_text('[tools]\nfixture="1.0.0"\n')
+            cache, scratch = tree / "tools-cache", tree / "disk-scratch"
+            scratch.mkdir()
+            for parent in (scratch, cache):
+                targets = []
+
+                def run(args, **unused):
+                    if "install" in args and "cargo" in args:
+                        self.assertIn("--target-dir", args, "Cargo installs registry tools in /tmp by default")
+                        target = Path(args[args.index("--target-dir") + 1])
+                        self.assertEqual(target.parent, parent)
+                        (target / "object").touch()
+                        targets.append(target)
+                        raise subprocess.CalledProcessError(1, args)
+
+                with (
+                    self.subTest(parent=parent),
+                    patch.dict(os.environ, HOME=str(tree), YULIUS_TOOLS_CACHE=str(cache),
+                               YULIUS_BUILD_SCRATCH=str(scratch)),
+                    patch.object(sys, "path", list(sys.path)),
+                    patch("shutil.which", return_value="rustup"),
+                    patch("subprocess.check_output", return_value="/tools/rustc"),
+                    patch("subprocess.run", run),
+                ):
+                    if parent == cache:
+                        del os.environ["YULIUS_BUILD_SCRATCH"]
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        runpy.run_path(str(script))
+                    self.assertEqual(len(targets), 1)
+                    self.assertFalse(targets[0].exists())
+
+
 if __name__ == "__main__":
     unittest.main()
