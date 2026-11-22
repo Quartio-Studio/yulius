@@ -5690,10 +5690,11 @@ async fn a_task_chained_after_a_dropped_armed_merge_waits_for_its_news() -> Test
     Ok(())
 }
 
-/// SPEC-612 GF-006: once GitHub confirms a person's merge, the completed predecessor
-/// releases its successor without waiting for a terminal notification.
+/// SPEC-487 CHN-002 (review round 3, R3-7): a pull request GitHub reports merged before
+/// Yulius's record says so (a person merged it; the next reconciliation records it) is news
+/// like any other merge: the task the watch saw with it open is not Done before it was told.
 #[tokio::test]
-async fn a_merge_github_reports_first_releases_the_finished_tasks_successor() -> TestResult {
+async fn a_merge_github_reports_first_is_news_too() -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
     let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
@@ -5720,8 +5721,8 @@ async fn a_merge_github_reports_first_releases_the_finished_tasks_successor() ->
     app.advance_chains(&first).await;
     assert_eq!(
         status_of_task(&f, &next).await,
-        Some(TaskStatus::Queued),
-        "a finished predecessor has no merge notification to wait for"
+        Some(TaskStatus::Chained),
+        "its agent has not heard of the merge"
     );
     Ok(())
 }

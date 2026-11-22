@@ -370,7 +370,7 @@ export function mountTasksPage(ctx, sandbox) {
     const actions = taskActions(task, sandbox.access, ctx.store.pullsOf(sandbox.id).get(task.id), myLogin(), Boolean(ctx.guest && ctx.guest()));
     const git = ctx.store.gitRowOf(sandbox.id, task.id);
     // The subscription it runs on goes with what it does (SPEC-447 MOV-004).
-    const what = `${detailLine(task, info)}${task.staging_outcome ? ` · ${task.staging_outcome}` : ''}${task.account_label ? ` · on ${task.account_label}` : ''}`;
+    const what = `${detailLine(task, info)}${task.account_label ? ` · on ${task.account_label}` : ''}`;
     const time = taskTime(task, info);
     const kebab = iconButton('more', `Actions for ${task.title || `task #${task.number}`}`, () => openTaskMenu(ctx, kebab, task), { class: 'tl-action', 'aria-haspopup': 'menu' });
     const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id, tone: info.tone } },

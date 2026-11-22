@@ -53,6 +53,8 @@ Running each candidate once in order preserves evidence of mixed failures and ac
 
 ## Evidence
 
+The ownership and staging results below were measured on the combined implementation before the delivery split. The first pull request carries the CI inventory changes.
+
 - Before the change, the integration fixture failed on the first receipt. Its message named only the job `full` even though CI retained the test `delivery::gate`. The closed-owner fixture failed because the project returned no notice.
 - The Chromium notice test failed on the missing test name in the CI page. With the notice in both views, it passed and followed the Status link to the existing rerun action.
 - The staging fixture records a single open failure through three more deliveries, introduces a distinct failure on a fifth, and checks each inherited receipt after a passing descendant deploys.

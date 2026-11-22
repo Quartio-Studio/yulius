@@ -466,9 +466,6 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
         let answered = new_task(&app, &sandbox, &user, "Answered").await?;
         let asked = new_task(&app, &sandbox, &user, "Asked").await?;
         let blocked = new_task(&app, &sandbox, &user, "Blocked").await?;
-        for id in [&cut, &blocked] {
-            crate::pr_watch::leave_verification_step(&app, id).await?;
-        }
         for (id, title) in [
             (&cut, "Cut"),
             (&quiet, "Quiet"),

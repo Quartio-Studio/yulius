@@ -262,7 +262,7 @@ export function statusInfo(task) {
 
 /** A parked task as the idle running task it was, with no live overlay (SPEC-512 PRK-004). */
 function asIdleRun(task) {
-  return { ...task, status: 'running', staging_wait: null, background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
+  return { ...task, status: 'running', background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
 }
 
 // Keep the more specific reason already shown for a person's decision or failing PR.
@@ -405,8 +405,10 @@ export function taskInfo(task, actionRequests, pr) {
   // A parked task is shown where it was, as its idle run would be, marked parked (SPEC-512 PRK-004).
   if (task.status === 'parked') {
     const shown = parkedWorkStatus(task, taskInfo(asIdleRun(task), actionRequests, pr));
-    // A parked task requires a person's action to resume.
-    const waits = shown.group === 'working' ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
+    // Staging wakes a parked agent. Other work that would keep a running agent busy (its checks, a
+    // conflict it is told of, a CI run to run again) is a person's now, never Working (review
+    // round 1 of SPEC-512 part 1; the server's `parked_group`).
+    const waits = shown.group === 'working' && !shown.staging ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
     const merged = { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
     if (merged.group === 'needs' && task.needs_you_notice) {
       merged.notice = task.needs_you_notice;

@@ -1011,7 +1011,6 @@ The merge-first environment changes only through its staging queue (ADR-0411):
   `cd_run_id`, `note`.
 - The request moves through these states:
   - `testing`: the full gate on exactly that commit;
-  - `inherited` waits for a verified descendant and names the original failure in `note`;
   - `ready`;
   - `deploying`;
   - `verified`, or `included` in a verified deploy that contains it;
@@ -1021,9 +1020,7 @@ The merge-first environment changes only through its staging queue (ADR-0411):
   blocked step.
 - A final staging step can stay in progress. While an idle task waits, its summary’s optional
   `staging_wait` describes the full suite, deployment queue, verification or outcome delivery.
-  Yulius delivers actionable outcomes to the running session or resumes a parked one.
-  An inherited request completes silently. CI overview and each visible sandbox in Status
-  include `gate_notices` with the failure’s test, originating revision and run ID.
+  Yulius delivers the outcome to the running session or resumes a parked one.
 - `delivery_status` of a task whose work merged has `staging`: the due request with the
   `cd_deploy` call, or the newest request's state, run ids and next step (MFS-013).
 - `GET …/cd` lists the queue as the environment's `staging` (`verified`: the revision it serves,

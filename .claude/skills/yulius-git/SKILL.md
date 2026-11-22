@@ -28,7 +28,7 @@ the task's existing authorization. Only a pre-existing bug, a flaky test the cha
 did not cause or a cosmetic nit left after 3 rounds is
 filed, saying why it is outside the change.
 
-Merge on green Yulius CI for the exact head. For merge-first staging (Yulius's `[cd.dev]`, ADR-0436), ask once with `cd_deploy` when `delivery_status` says it is due. The task ends after asking. Yulius records the staging outcome and assigns a red integration branch to one working task. Only a person resumes a finished task. Promotion (dev → main, a merge commit, never a squash) is a person's, on the CD
+Merge on green Yulius CI for the exact head. For merge-first staging (Yulius's `[cd.dev]`, ADR-0436), ask once with `cd_deploy` when `delivery_status` says it is due. The task ends after asking. Yulius reports a failed gate, deploy or verification for a fix forward. Promotion (dev → main, a merge commit, never a squash) is a person's, on the CD
 page (ADR-0110): a task that needs it asks with `needs_you`. Keep both permanent branches. Do not
 claim CI proves a deployed app works.
 

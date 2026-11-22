@@ -1794,10 +1794,6 @@ fn a_restored_prompt_goal_waits_at_stop_before_attach() -> TestResult {
             app.goal_is_open(&id) && activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        assert!(
-            !crate::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
-            "the prompt-mode task has an outstanding native goal"
-        );
         host.arm();
         app.send_input(&id, b"reach the limit\r").await?;
         tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;

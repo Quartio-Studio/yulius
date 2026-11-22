@@ -462,7 +462,7 @@ pub struct AttentionFacts {
     /// Yulius has news of its pull request for it (an armed merge, a merge not said yet;
     /// SPEC-487 CHN-001): it goes on by itself when Yulius has news (SPEC-085 STT-002).
     pub yulius_wait: bool,
-    /// A durable staging request whose outcome a running agent with work left will receive.
+    /// A durable staging request whose outcome Yulius will deliver, including to a parked agent.
     pub staging_wait: Option<crate::staging::StagingState>,
     /// Its pull request, when one is known.
     pub pull: Option<PullSignal>,
@@ -623,7 +623,8 @@ impl AttentionFacts {
     /// Local work or an owner decision already determines this parked task's group.
     #[must_use]
     pub fn parked_has_local_work_or_request(&self) -> bool {
-        self.plan_open
+        self.staging_wait.is_some()
+            || self.plan_open
             || self.spec_unfinished
             || self.goal_unfinished
             || self.held_prompt
@@ -631,11 +632,18 @@ impl AttentionFacts {
     }
 
     /// The group of a parked task (SPEC-512 PRK-004): the group of the idle run it was, with no
-    /// live overlay (shells, `yulius wait`, an armed merge, a pause, or staging input).
+    /// live overlay (shells, `yulius wait`, an armed merge, a pause), except for staging, which can wake the agent.
     /// Other work that would keep a running agent busy (its checks running, a
     /// conflict its pull request watch tells it of, a CI run to run again, a first turn) waits
     /// for a person, who resumes it.
     fn parked_group(&self) -> TaskGroup {
+        if self.staging_wait.is_some()
+            && self.activity.is_some_and(Activity::is_idle)
+            && !self.held_prompt
+            && !self.browser_request
+        {
+            return TaskGroup::Working;
+        }
         if self.parked_has_local_work_or_request()
             || self
                 .pull
@@ -649,7 +657,6 @@ impl AttentionFacts {
             status: TaskStatus::Running,
             background_shells: false,
             yulius_wait: false,
-            staging_wait: None,
             merge_armed: false,
             paused: false,
             ..*self

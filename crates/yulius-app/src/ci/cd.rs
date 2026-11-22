@@ -2793,11 +2793,9 @@ impl App {
         {
             let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
             self.publish_staging_task(&request).await;
-            let text = if request.state.is_pending()
-                && request.state != yulius_domain::staging::StagingState::Inherited
-            {
+            let text = if request.state.is_pending() {
                 format!(
-                    "Staging request {} for revision {} of {}: {}. {}. The request is recorded. End this turn. If your final step requires the verdict, leave it in progress. A running task with work left receives the outcome. Finished tasks retain it on their delivery. cd_status shows the run ids.",
+                    "Staging request {} for revision {} of {}: {}. {}. The request is recorded. End this turn. If your final step requires the verdict, leave it in progress. Yulius wakes the task with the outcome. cd_status shows the run ids.",
                     request.id,
                     short_sha(&request.revision),
                     env_label(&env),

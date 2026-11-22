@@ -324,10 +324,6 @@ impl App {
                 .background_shells_since(&task.id)
                 .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms))),
             yulius_wait,
-            staging_outcome: store
-                .latest_task_staging(&task.id)
-                .await?
-                .and_then(|r| r.outcome_label()),
             staging_wait: facts
                 .staging_wait
                 .map(|state| state.task_wait_label().to_owned()),

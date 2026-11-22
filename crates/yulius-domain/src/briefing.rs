@@ -807,7 +807,7 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
                 "Merge-first {}: once your whole delivery merged, `cd_deploy` it once; Yulius \
                  runs the full gate on that revision, then deploys it. End the turn once the \
                  request is recorded. If your final step requires the verdict, keep it in progress; \
-                 a running task with work left receives the outcome",
+                 Yulius wakes the task with the outcome",
                 code(&format!("[cd.{env}]"), 60)
             ),
             None => "Merges deploy nothing: `cd_deploy`/`cd_rollback` dev only if asked".to_owned(),

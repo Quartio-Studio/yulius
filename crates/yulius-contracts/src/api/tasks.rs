@@ -142,9 +142,6 @@ pub struct TaskSummary {
     /// The stage of the durable wait for a merge-first staging outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging_wait: Option<String>,
-    /// Latest settled or inherited staging receipt, independent of task activity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub staging_outcome: Option<String>,
     /// While the agent is idle: its merge is armed, so Yulius merges it and tells the agent; the
     /// task is not Done, an achieved goal neither (SPEC-487 CHN-001, SPEC-483 GRP-003).
     #[serde(default)]
