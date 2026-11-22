@@ -42,7 +42,8 @@ This task carries that slice onto current dev, re-verifies it and delivers it.
 - [x] Run the touched e2e specs and the web unit checks on current dev
 - [x] Review the slice against the current API and fix own findings
 - [x] Record evidence and close SPEC-612's last step
-- [ ] Independent review of the delivery and its fixes
+- [x] Independent review of the delivery and its fixes
+- [ ] Answer every independent review finding on the exact head
 
 ## Acceptance criteria
 
