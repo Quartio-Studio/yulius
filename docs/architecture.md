@@ -2882,6 +2882,35 @@ serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a cop
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets have their own scopes (below).
 
+### Method and path rules
+
+Since SPEC-627 ([decision 0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md))
+a person who manages an agent secret can limit it to requests: `vault_secrets.rules` holds 0–32
+rules, each 1–16 HTTP methods and a path pattern (`*` matching any characters, `/` included;
+schema version 88, `[]` = any request). The domain parses and matches them
+(`yulius-domain` `vault/rules.rs`: the pattern is split on `*` and its pieces found in order, linear
+in the path); the egress policy applies them (`yulius-app` `vault/rules.rs`, called from
+`egress_apply` in `vault/runtime.rs`), so they hold for agent runs, CI jobs and Superagents alike.
+The proxy passes each request's method in `EgressRequest::method`.
+
+```mermaid
+flowchart TD
+  R["request to a bound host<br/>(intercepted HTTP/1.1 or absolute http://)"] --> U{"uses a secret with rules?<br/>placeholder, X-Yulius-Secret,<br/>or its injected header"}
+  U -->|no| F["forwarded as before"]
+  U -->|yes| M{"method and path match a rule,<br/>no .. / backslash / encoded dot or NUL,<br/>no method override?"}
+  M -->|yes| F
+  M -->|"no (another secret's rules allow the header)"| O["that secret's header instead"] --> F
+  M -->|no| X["403 naming request, host, secret and rules;<br/>nothing sent"] --> A["audit vault.agent.refused<br/>once per run, secret, method, path"]
+```
+
+The path is matched as the agent sent it (placeholders not replaced, query left out, no decoding),
+so spellings a server could normalise to another resource are refused instead of decoded. Rules
+are set in the Secrets page's Edit dialog or with `rules` in the create and edit bodies; an edit
+is a compare-and-set on the rules it read (`vault_update`), and a row whose stored rules no longer
+parse fails to load rather than becoming unlimited. `secrets_list` shows them to agents. gRPC
+(HTTP/2) to a bound host is not proxied at all (the interception speaks HTTP/1.1), so rules cover
+every request that can carry a value.
+
 ### Copies of production secrets
 
 Since SPEC-440 ([decision 0284](decisions/0284-agents-ask-for-a-copy-of-a-production-secret-and-a-person-allows-it.md))
