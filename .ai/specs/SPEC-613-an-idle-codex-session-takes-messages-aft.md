@@ -25,7 +25,7 @@ On 22 November 2026, task #596 had an idle prompt after reattachment. Six sends 
 - [x] Recover an idle composer through the attached PTY
 - [x] Raise undeliverable messages on the task and retain PR news
 - [x] Verify restart, retry and picker protection
-- [ ] Restore the PTY size on reconnect and keep private messages actionable
+- [x] Restore the PTY size on reconnect and keep private messages actionable
 - [ ] Approve the fix for merge into dev and a staging request
 
 ## Acceptance criteria
@@ -50,3 +50,4 @@ Use the attached terminal and its current child output as the source of truth. A
 - `scripts/cargo nextest run --no-fail-fast -p yulius -p yulius-app -p yulius-store --lib --bin yulius --test main` passed all 4,087 selected tests across five binaries. The default profile skipped 24 tests. `scripts/dev quick` passed. `scripts/dev security` reported disabled by the project.
 - Independent review of `cb84c4d86` found two recovery defects and a missing assertion. Disconnecting the PTY during the probe left the viewer at 121×40 instead of 120×40. Repairing a screen let PR news discard the outstanding private-message request. Both regressions failed on that reviewed head.
 - Manually removing first-refusal picker escalation made the strengthened picker test fail with “picker refusal did not raise PR news”. The escalation was restored.
+- After the review fixes and task #596’s delivery changes were integrated, the same five-binary command ran 4,097 tests. All passed, including the reconnect geometry check, the private resend check and the first-refusal picker assertion. The default profile skipped 24 tests. The branch also includes both requested CI repairs from PRs #1678 and #1679.
