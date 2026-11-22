@@ -1041,3 +1041,34 @@ async fn after_all_tasks_counts_nothing_for_a_person_without_access() -> TestRes
     assert!(!refused.contains("tasks of this project"), "{refused}");
     Ok(())
 }
+
+/// SPEC-628 FRK-001, FRK-003: `task_fork` forks a task of the project for the agent's creator;
+/// a task without a conversation is refused, said in words, and nothing is created.
+#[tokio::test]
+async fn task_fork_refuses_a_task_without_a_conversation() -> TestResult {
+    let h = world().await?;
+    seed_task(&h, "t-new", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let before = h.store.tasks(&SandboxId::parse("s1")?, true).await?.len();
+    let result = mcp_tool(
+        &h,
+        "tok-agent",
+        "task_fork",
+        json!({"task_id": "t-new", "message": "Try the other way"}),
+    )
+    .await?;
+    assert_eq!(result["isError"], json!(true), "{result}");
+    let text = tool_text(&result);
+    assert!(
+        text.as_str()
+            .is_some_and(|t| t.contains("no conversation to fork yet")),
+        "{text}"
+    );
+    assert_eq!(
+        h.store.tasks(&SandboxId::parse("s1")?, true).await?.len(),
+        before
+    );
+    // An unknown task is refused too.
+    let listed = mcp_tool(&h, "tok-agent", "task_fork", json!({"number": 999})).await?;
+    assert_eq!(listed["isError"], json!(true));
+    Ok(())
+}
