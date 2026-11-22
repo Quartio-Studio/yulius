@@ -58,9 +58,9 @@ either Superagent and from an approved cross-sandbox request. The person's reque
 ## Plan
 
 - [x] Write and validate SPEC-620 and its ADR
-- [ ] CLI, Superagent and cross-sandbox tasks default to Claude Code on Opus 5.5
-- [ ] The composer and Settings start on Opus 5.5
-- [ ] Product, architecture, API and remote-control docs say Claude Code is the default
+- [x] CLI, Superagent and cross-sandbox tasks default to Claude Code on Opus 5.5
+- [x] The composer and Settings start on Opus 5.5
+- [x] Product, architecture, API and remote-control docs say Claude Code is the default
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
