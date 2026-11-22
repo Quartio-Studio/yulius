@@ -6658,7 +6658,7 @@ async fn an_unreadable_verdict_keeps_the_saved_arm_until_it_is_reconciled() -> T
         assert_eq!(std::fs::read(&path)?, saved, "lost: {damage}");
         let refused = fresh.tool_delivery_merge(&ctx, &args).await;
         assert!(
-            matches!(refused, Err(AppError::Conflict(_))),
+            matches!(&refused, Err(AppError::Conflict(why)) if why.contains("still being restored")),
             "{damage}: {refused:?}"
         );
         assert_eq!(std::fs::read(&path)?, saved, "replaced: {damage}");

@@ -17,7 +17,7 @@ and the next pass decided it a second time over the real outcome.
 
 The restore reads the task's latest finished merge wait. When the read or the verdict's detail
 fails, the entry stays saved and the task stays unreconciled (it reads as armed from the file and
-arm changes are refused) until a later restore reads it. Otherwise a saved entry whose `armed_at`
+arm changes are refused; `yulius wait`, which reads only the live slot, does not show it) until a later restore reads it. Otherwise a saved entry whose `armed_at`
 is not later than the wait's start is consumed, whatever queue decided it: the entry is cleared
 and nothing is armed. A later entry is a new activation and is restored with its own `armed_at`.
 This holds because only a final decision records a merge wait, stamped with the activation it
@@ -33,6 +33,9 @@ release, which SPEC-558 keeps recoverable.
 
 ## Consequences
 
-The verdict span is the durable record of a decided activation for both queues. A saved entry
+Once recorded, the verdict span is the durable record of a decided activation for both
+queues. The ordinary queue still records it best-effort after the file clear, and the clear
+after a merge made at once records no span, so a restart after both writes fail restores the
+arm (issue #1691). A saved entry
 from before activation stamps were recorded (`armed_at` 0) is consumed by any recorded merge
 wait of its task; such entries predate SPEC-084.
