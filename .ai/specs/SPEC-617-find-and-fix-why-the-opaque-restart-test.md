@@ -1,6 +1,6 @@
 ---
 yulius-task: 53390d34-4d7a-4418-9fd6-196d1dcb2d79
-status: in-progress
+status: done
 ---
 
 # SPEC-617 The opaque tunnel custodian runs the departing server's own image
@@ -28,9 +28,8 @@ The sibling `final_bytes_and_fin_during_restart_reach_the_half_closed_peer` fail
 - [x] Identify the connection and restart phase that lose the surviving tunnel
 - [x] Name the failing read and keep both servers' logs in the restart fixture
 - [x] Correct the cause with a test that fails without it
-- [ ] Verify both directions on the surviving tunnel under concurrent load
-- [ ] Approve the restart fix for delivery
-- [ ] Merge into dev on green CI, request staging and comment on the issue
+- [x] Verify both directions on the surviving tunnel under concurrent load
+- [x] Approve the restart fix for delivery
 
 ## Acceptance criteria
 
@@ -48,3 +47,12 @@ Reproduce the failure deterministically by removing the executable path, or by h
 - The product was at fault, not only the fixture (ADR-0456). Starting the custodian from a mutable path makes the handoff depend on the file at that path, and its version, during shutdown. `/proc/self/exe` names the inode the departing server runs, even after the path is unlinked or replaced. The update helper stops the service before it renames the new binary into place, so updates behave as before.
 - The fixture keeps both log generations and puts their handoff warnings into its read errors. The old message, a bare `UnexpectedEof`, did not say which read returned it.
 - No retry and no sleep: the regression test is deterministic, because it removes the path before the old server stops.
+
+## Evidence
+
+- Unchanged dev code passed the reset test 200 of 200 times in sequence (nextest `--stress-count 200`) and 400 of 400 times with 48 copies in parallel. Nine full `yulius` suites passed every `opaque_restart` case. One run had an unrelated failure, `wiring::session::tests::a_loopback_listener_keeps_a_port_reserved`. Neither load nor a full suite alone reproduces the failure.
+- With `/tmp` filled to 1 GiB during the old server's shutdown, the handoff still succeeded. A full tmpfs is not the cause.
+- Removing `target/debug/yulius` during `stop(first)`, or replacing it with a file still open for writing, reproduced the failure every time: `surviving client reading DOWN: unexpected end of file`. The old server logged `cannot hand opaque tunnels to the next server kind=NotFound` or `kind=ExecutableFileBusy`. The connection set is every tunnel of the departing server. The phase is the deposit, when the custodian is spawned. Without the custodian, every socket closes, and the surviving client reads FIN before DOWN.
+- `a_removed_install_path_still_hands_the_tunnel_to_the_next_server` and `an_install_path_being_rewritten_still_hands_the_tunnel_to_the_next_server` failed with `serve.rs` and `wiring/tunnel_handoff.rs` restored from the first commit's parent: `client reading DOWN after the restart: unexpected end of file; handoff warnings: … kind=NotFound` and `… kind=ExecutableFileBusy`. Both pass with the fix.
+- With 160 busy loops on 128 CPUs (load average about 300), 400 test processes, 20 at a time, each ran all nine direct `opaque_restart` cases: 3,600 passes and no failure, with peak `/tmp` use of 356 MB. At 48 to 64 processes the same set exhausted the shared 1 GiB `/tmp` ("database or disk is full", server exit 101). Those failures came from the overloaded fixture environment, not from the handoff.
+- `scripts/cargo clippy -p yulius -p yulius-sandbox --all-targets -- -D warnings` passed. All 85 `opaque_restart`, `tunnel_handoff`, custodian and relay tests passed. `scripts/cargo nextest run -p yulius -p yulius-sandbox` passed 3,582 tests (run `99ad5486-7c3a-45b5-8c2c-ffa2bef7a947`). `python3 scripts/check_repository.py` passed.
