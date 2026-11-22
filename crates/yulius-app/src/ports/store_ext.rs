@@ -507,7 +507,8 @@ pub trait CiStore: Send + Sync {
         settled_only: bool,
     ) -> AppResult<Vec<crate::ci::GateVerdict>>;
     /// Whether this running task still accepts machine-generated input.
-    async fn accepts_machine_notice(&self, task: &TaskId) -> AppResult<bool>;
+    async fn accepts_machine_notice(&self, task: &TaskId, unfinished_goal: bool)
+    -> AppResult<bool>;
     /// Running project workers whose persisted work and hold state allow an assignment.
     async fn gate_workers(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
     /// Select or retain the project's repair owner and return workers yet to hear the assignment.
@@ -553,12 +554,13 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         commits: &[String],
     ) -> AppResult<Vec<String>>;
-    /// Bounded scheduler history, most recently admitted first. A new run may
-    /// inherit an older queue position from the head it superseded.
+    /// Recent admissions plus retained runs of the current integration head, newest admission first.
+    /// A new run may inherit an older queue position from the head it superseded.
     async fn ci_planning_runs(
         &self,
         sandbox: &SandboxId,
         limit: u32,
+        integration_head: Option<&str>,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Runs of a sandbox for one commit, newest first.
     async fn ci_runs_for_sha(

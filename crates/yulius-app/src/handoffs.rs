@@ -955,7 +955,7 @@ impl App {
             };
             if source.status.is_resting()
                 || source.status == TaskStatus::Parked
-                || matches!(store.accepts_machine_notice(&source.id).await, Ok(false))
+                || matches!(self.accepts_machine_notice(&source.id).await, Ok(false))
                     && source.status == TaskStatus::Running
             {
                 let _ = store.mark_handoff_told(&h.id).await;

@@ -1157,12 +1157,7 @@ impl App {
         merged_elsewhere: bool,
     ) -> bool {
         if task.status != TaskStatus::Running
-            || !self
-                .deps
-                .store
-                .accepts_machine_notice(&task.id)
-                .await
-                .unwrap_or(false)
+            || !self.accepts_machine_notice(&task.id).await.unwrap_or(false)
         {
             return false;
         }
@@ -1291,14 +1286,7 @@ impl App {
                 told.clear_armed_stall();
             }
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
-            if !merge_untold(told, pr)
-                || !self
-                    .deps
-                    .store
-                    .accepts_machine_notice(&task.id)
-                    .await
-                    .ok()?
-            {
+            if !merge_untold(told, pr) || !self.accepts_machine_notice(&task.id).await.ok()? {
                 return None;
             }
             let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));

@@ -105,7 +105,7 @@ impl StagingStore for SqliteStore {
         let task = task.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                "SELECT state FROM staging_requests WHERE task_id = ?1 AND told = 0 AND EXISTS (SELECT 1 FROM machine_notice_tasks WHERE id = ?1) \
+                "SELECT state FROM staging_requests WHERE task_id = ?1 AND told = 0 AND EXISTS (SELECT 1 FROM machine_notice_tasks WHERE id = ?1 AND NOT needs_goal) \
                          ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 [task],
                 |row| {

@@ -249,12 +249,16 @@ impl CiStore for SqliteStore {
         }).await
     }
 
-    async fn accepts_machine_notice(&self, task: &TaskId) -> AppResult<bool> {
+    async fn accepts_machine_notice(
+        &self,
+        task: &TaskId,
+        unfinished_goal: bool,
+    ) -> AppResult<bool> {
         let task = task.to_string();
         self.call(move |c| {
             c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM machine_notice_tasks WHERE id = ?1)",
-                [task],
+                "SELECT EXISTS(SELECT 1 FROM machine_notice_tasks WHERE id = ?1 AND (NOT needs_goal OR ?2))",
+                params![task, unfinished_goal],
                 |row| row.get(0),
             )
             .map_err(db)
@@ -528,13 +532,16 @@ impl CiStore for SqliteStore {
         &self,
         sandbox: &SandboxId,
         limit: u32,
+        integration_head: Option<&str>,
     ) -> AppResult<Vec<CiRunRecord>> {
         let sandbox = sandbox.as_str().to_owned();
+        let head = integration_head.map(str::to_owned);
         self.call(move |c| {
             select_runs(
                 c,
-                "sandbox_id = ?1 ORDER BY rowid DESC LIMIT ?2",
-                &[&sandbox, &i64::from(limit)],
+                "rowid IN (SELECT rowid FROM (SELECT rowid FROM ci_runs WHERE sandbox_id = ?1 ORDER BY rowid DESC LIMIT ?2)
+                   UNION ALL SELECT rowid FROM ci_runs WHERE sandbox_id = ?1 AND sha = ?3) ORDER BY rowid DESC",
+                &[&sandbox, &i64::from(limit), &head],
             )
         })
         .await
@@ -1297,7 +1304,7 @@ impl CiStore for SqliteStore {
                            PARTITION BY sandbox_id, reference ORDER BY queued_at DESC, rowid DESC) AS v \
                          FROM ci_runs WHERE state IN ('passed', 'failed', 'error')) WHERE v = 1)";
             let ids = {
-                let mut stmt = tx.prepare(&format!("SELECT id FROM ci_runs {prune} AND (reference LIKE 'branch/%' OR reference LIKE 'candidate/%') AND state IN ('passed','failed','error') AND NOT EXISTS (SELECT 1 FROM ci_jobs WHERE run_id = ci_runs.id AND state = 'skipped' AND instr(reason, ?3) = 1)")).map_err(db)?;
+                let mut stmt = tx.prepare(&format!("SELECT id FROM ci_runs {prune} AND sandbox_id IN (SELECT id FROM sandboxes) AND (reference LIKE 'branch/%' OR reference LIKE 'candidate/%') AND state IN ('passed','failed','error') AND NOT EXISTS (SELECT 1 FROM ci_jobs WHERE run_id = ci_runs.id AND state = 'skipped' AND instr(reason, ?3) = 1)")).map_err(db)?;
                 stmt.query_map(params![before.0, i64::from(keep), yulius_domain::ci::AFTER_MERGE_SKIP_REASON], |row| row.get::<_, String>(0)).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)?
             };
             for id in ids {
@@ -1979,7 +1986,7 @@ mod tests {
         for (id, place) in [("old", 20), ("pass", 30), ("refusal", 2)] {
             store.insert_ci_run(&run(id, "head", place)?, &[]).await?;
         }
-        let planning = store.ci_planning_runs(&sandbox, 2).await?;
+        let planning = store.ci_planning_runs(&sandbox, 2, None).await?;
         let ids: Vec<_> = planning.iter().map(|run| run.id.as_str()).collect();
         assert_eq!(ids, ["refusal", "pass"]);
         assert_eq!(store.ci_runs(&sandbox, 1).await?[0].id, "pass");

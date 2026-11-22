@@ -102,11 +102,8 @@ impl GateFailures {
             .map(|job| &job.name)
             .collect();
         self.tests.retain(|test, (_, jobs)| {
-            if reported.contains(test) {
-                return true;
-            }
             jobs.retain(|job| !complete.contains(job));
-            !jobs.is_empty()
+            reported.contains(test) || !jobs.is_empty()
         });
         self.unknown.retain(|job, _| !complete.contains(job));
         let mut observed = false;
@@ -285,13 +282,19 @@ impl App {
             let Some(runtime) = self.existing_runtime(&id) else {
                 continue;
             };
-            if runtime.screen_withheld() || runtime.typing_opening.load(Ordering::SeqCst) {
+            if runtime.screen_withheld()
+                || runtime.typing_opening.load(Ordering::SeqCst)
+                || !tokio::time::timeout(super::staging::TASK_VIEW_BUDGET, runtime.has_live_run())
+                    .await
+                    .unwrap_or(false)
+            {
                 continue;
             }
             let Some(task) = self.deps.store.task(&id).await? else {
                 continue;
             };
-            if self.check_session_input_ready(&task, &runtime).is_ok()
+            if self.accepts_machine_notice(&id).await?
+                && self.check_session_input_ready(&task, &runtime).is_ok()
                 && !self.is_paused(&task).await
                 && (self.box_held(&id).is_none() || self.held_draft_box_cleared(&task))
                 && !(task.harness == Harness::ClaudeCode && runtime.hub.shows_draft())

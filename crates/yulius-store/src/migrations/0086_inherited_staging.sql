@@ -78,15 +78,20 @@ WHERE state = 'gate_failed' AND told = 0 AND EXISTS (
 -- Machine-generated input is restricted to live work. A newer open PR can follow an
 -- earlier landing from the same task. An explicitly open step keeps a merged task working.
 CREATE VIEW machine_notice_tasks AS
-SELECT t.id, t.sandbox_id, t.number FROM tasks t LEFT JOIN delivery d ON d.task_id = t.id
-WHERE t.status = 'running' AND t.archived_at IS NULL AND (
-    EXISTS (SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.status NOT IN ('done', 'skipped'))
-    OR d.stage = 'pr_open'
-    OR (COALESCE(d.stage, 'none') = 'none' AND NOT EXISTS (
-        SELECT 1 FROM task_merges m WHERE m.task_id = t.id)
-        AND (COALESCE(t.activity, 'working') = 'working'
-             OR (t.activity = 'waiting' AND (t.mode = 'goal' OR t.spec_status IN ('draft','approved','in-progress')))))
-);
+WITH work AS (
+    SELECT t.id, t.sandbox_id, t.number, COALESCE(t.activity, 'working') AS activity,
+        COALESCE(t.spec_status, '') IN ('draft', 'approved', 'in-progress') AS open_spec,
+        EXISTS (SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.status NOT IN ('done','skipped'))
+            OR COALESCE(d.stage, 'none') = 'pr_open' AS open_delivery_or_steps,
+        COALESCE(d.stage, 'none') = 'none' AND NOT EXISTS (
+            SELECT 1 FROM task_merges m WHERE m.task_id = t.id) AS unmerged
+    FROM tasks t LEFT JOIN delivery d ON d.task_id = t.id
+    WHERE t.status = 'running' AND t.archived_at IS NULL
+)
+SELECT id, sandbox_id, number,
+       activity = 'waiting' AND NOT open_delivery_or_steps AND NOT open_spec AS needs_goal
+FROM work
+WHERE open_delivery_or_steps OR (unmerged AND activity IN ('working', 'waiting'));
 CREATE VIEW gate_workers AS
 SELECT n.* FROM machine_notice_tasks n JOIN tasks t ON t.id = n.id
 JOIN attempts a ON a.task_id = t.id AND a.state = 'live'

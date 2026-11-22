@@ -1201,7 +1201,7 @@ impl App {
             if task.status.is_resting()
                 || task.status == TaskStatus::Parked
                 || (task.status == TaskStatus::Running
-                    && matches!(store.accepts_machine_notice(task_id).await, Ok(false)))
+                    && matches!(self.accepts_machine_notice(task_id).await, Ok(false)))
             {
                 let _ = store.mark_staging_told(&request).await;
                 continue;

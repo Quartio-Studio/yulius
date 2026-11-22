@@ -735,6 +735,14 @@ impl App {
             .await
     }
 
+    /// A native goal can remain unfinished in a session launched in either mode.
+    pub(crate) async fn accepts_machine_notice(&self, task: &TaskId) -> AppResult<bool> {
+        self.deps
+            .store
+            .accepts_machine_notice(task, self.goal_unfinished(task))
+            .await
+    }
+
     pub(crate) fn check_session_input_ready(
         &self,
         task: &TaskRecord,
@@ -813,7 +821,7 @@ impl App {
         // cleanup with viewer keys and submit hooks (SPEC-537). A key arriving during
         // the lookup above participates in this decision.
         if matches!(from, Sender::Yulius | Sender::YuliusLastTry)
-            && !self.deps.store.accepts_machine_notice(&task.id).await?
+            && !self.accepts_machine_notice(&task.id).await?
         {
             return Err(AppError::Conflict("the task finished its work".into()));
         }

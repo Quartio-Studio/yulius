@@ -1724,10 +1724,14 @@ impl App {
                 ));
             }
         }
+        let integration_head = targets.iter().find_map(|(target, _)| {
+            matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
+                .then_some(target.sha.as_str())
+        });
         let runs = self
             .deps
             .store
-            .ci_planning_runs(&sandbox.id, PLAN_RUNS)
+            .ci_planning_runs(&sandbox.id, PLAN_RUNS, integration_head)
             .await?;
         let facts = ordinary_run_facts(&runs, view.problem.is_none());
         let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();

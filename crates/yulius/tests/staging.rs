@@ -137,6 +137,42 @@ pub(crate) async fn recorded_gate(
     Ok(id)
 }
 
+/// Whether a new red gate asks people for help in a native-goal session fixture.
+pub(crate) async fn red_gate_needs_people(
+    app: &yulius_app::context::App,
+    project: &SandboxId,
+    owner: &yulius_domain::ids::UserId,
+) -> BoxResult<bool> {
+    let repo = app
+        .config
+        .data_dir
+        .join("sandboxes")
+        .join(project.as_str())
+        .join("repo");
+    let sha = crate::cd::git(&repo, &["rev-parse", "HEAD"])?;
+    crate::cd::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
+    recorded_gate(
+        app,
+        project,
+        &sha,
+        RunState::Failed,
+        Some("---- gate::test stdout ----"),
+    )
+    .await?;
+    let ctx = yulius_app::auth::AuthContext {
+        user: app.deps.store.user(owner).await?.ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let status = app.status(&ctx).await?;
+    Ok(status
+        .sandboxes
+        .iter()
+        .flat_map(|s| &s.gate_notices)
+        .any(|n| n.test == "gate::test"))
+}
+
 /// `task`'s agent asks for staging; the request it was given.
 async fn staging_answer(f: &Fixture, task: &str) -> BoxResult<Value> {
     let answer = support::mcp_tool(
@@ -1950,6 +1986,64 @@ async fn a_ready_request_waits_for_another_run_of_the_environment() -> TestResul
     Ok(())
 }
 
+async fn fill_planning_window(f: &Fixture) -> TestResult {
+    f.h.store.execute_for_tests("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i < 201)
+        INSERT INTO ci_runs(id,sandbox_id,reference,sha,source,state,requested_by,queued_at)
+        SELECT 'pr-noise-'||i,'s1','pr/'||i,'unrelated-'||i,'yulius_toml','passed','yulius',(SELECT MAX(queued_at) FROM ci_runs)+i FROM n").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_completed_old_candidate_is_still_the_current_heads_verdict() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let sha = f.push("dev", &[("broken", Some("broken"))])?;
+    let run = named_gate(&f, &sha, &["gate::broken"]).await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET reference='candidate/' || sha WHERE id='{run}'"
+        ))
+        .await?;
+    fill_planning_window(&f).await?;
+    let project = sandbox(&f).await?;
+    f.h.app.ci_sync_sandbox(&project).await?;
+    let at_head = f.h.store.ci_runs_for_sha(&project.id, &sha).await?;
+    assert_eq!(
+        at_head.len(),
+        1,
+        "the failed candidate already judged this commit"
+    );
+    assert_eq!(at_head[0].id, run);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_test_that_moves_cells_keeps_its_origin_until_the_new_cell_passes() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let first = f.push("dev", &[("first", Some("first"))])?;
+    named_gate(&f, &first, &["moved::test"]).await?;
+    let second = f.push("dev", &[("second", Some("second"))])?;
+    let run = named_gate(&f, &second, &["moved::test"]).await?;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='passed',failures=NULL WHERE id='{run}-full';
+        UPDATE ci_jobs SET state='failed',failures='---- moved::test stdout ----' WHERE id='{run}-quick'")).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+    assert_eq!(notices[0]["revision"], first);
+    let third = f.push("dev", &[("third", Some("third"))])?;
+    let run = named_gate(&f, &third, &["new::test"]).await?;
+    // The quick cell passed, a different cell failed, and full did not run.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET name='other' WHERE id='{run}-full'"
+        ))
+        .await?;
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+    assert_eq!(notices.as_array().ok_or("notices")?.len(), 1, "{notices}");
+    assert_eq!(notices[0]["test"], "new::test");
+    Ok(())
+}
+
 /// SPEC-575 MFS-003 (review round 1 of slice 2): the candidate run queued for a revision is not
 /// superseded when the branch moves on, CI runs it to its verdict, the request deploys on that
 /// verdict, and the branch reaching the same commit queues no second full run of it.
@@ -1963,9 +2057,7 @@ async fn a_candidate_run_survives_the_branch_moving_on_and_decides() -> TestResu
     let s = sandbox(&f).await?;
     f.h.app.staging_advance(&s, "staging").await?;
     // More recent PR runs can fill CI's bounded planning history while this suite runs.
-    f.h.store.execute_for_tests("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i < 201)
-        INSERT INTO ci_runs(id,sandbox_id,reference,sha,source,state,requested_by,queued_at)
-        SELECT 'pr-noise-'||i,'s1','pr/'||i,'unrelated-'||i,'yulius_toml','passed','yulius',(SELECT MAX(queued_at) FROM ci_runs)+i FROM n").await?;
+    fill_planning_window(&f).await?;
     // CI's round at the same commit adds no branch run of it, and dev moving on keeps it.
     f.h.app.ci_sync_sandbox(&s).await?;
     let later = f.push("dev", &[("later.txt", Some("later"))])?;
