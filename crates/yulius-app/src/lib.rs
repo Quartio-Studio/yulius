@@ -92,6 +92,7 @@ pub mod projects;
 mod prompt_box;
 pub mod queued_messages;
 pub mod race;
+pub mod rebalance;
 pub mod record_numbers;
 pub mod recovery;
 pub mod reference_repo;

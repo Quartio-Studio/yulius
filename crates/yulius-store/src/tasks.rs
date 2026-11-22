@@ -814,6 +814,36 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn task_pin(&self, task: &TaskId) -> AppResult<Option<AccountId>> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            let pin: Option<Option<String>> = c
+                .query_row(
+                    "SELECT pinned_account_id FROM tasks WHERE id = ?1",
+                    [id.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(pin.flatten().and_then(|text| AccountId::parse(&text).ok()))
+        })
+        .await
+    }
+
+    async fn set_task_pin(&self, task: &TaskId, account: Option<&AccountId>) -> AppResult<()> {
+        let id = task.as_str().to_owned();
+        let account = account.map(|a| a.as_str().to_owned());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE tasks SET pinned_account_id = ?1 WHERE id = ?2",
+                params![account, id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn set_working_since_from(
         &self,
         task: &TaskId,

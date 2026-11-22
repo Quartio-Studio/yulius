@@ -5884,10 +5884,12 @@ impl App {
                 activity,
                 goal_unfinished,
             });
+        // A pinned task resumes on its pin while the pin can take it (SPEC-629 RBL-005).
+        let pinned = self.pinned_start(task).await;
         self.start_run_if(
             &task.id,
             RunStart::Resume { prompt },
-            None,
+            pinned,
             StartCondition::Parked(task.resume_attempt_id.clone()),
             rest,
             None,

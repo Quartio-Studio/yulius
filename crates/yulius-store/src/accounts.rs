@@ -295,8 +295,14 @@ impl AccountStore for SqliteStore {
     async fn delete_account(&self, id: &AccountId) -> AppResult<()> {
         let id = id.as_str().to_owned();
         self.call(move |c| {
-            c.execute("DELETE FROM accounts WHERE id = ?1", [id])
+            c.execute("DELETE FROM accounts WHERE id = ?1", [id.as_str()])
                 .map_err(db)?;
+            // A pin to it ends with it (SPEC-629 RBL-005).
+            c.execute(
+                "UPDATE tasks SET pinned_account_id = NULL WHERE pinned_account_id = ?1",
+                [id.as_str()],
+            )
+            .map_err(db)?;
             Ok(())
         })
         .await

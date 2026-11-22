@@ -3552,3 +3552,47 @@ async fn bootstrap_upgrades_claim_lay_and_link_once_per_revision() -> R {
     );
     Ok(())
 }
+
+/// SPEC-629 RBL-005: a task's pin is its own column: set, read, ended, and ended for every task
+/// when its subscription is removed.
+#[tokio::test]
+async fn a_pin_names_the_chosen_subscription_until_it_is_removed() -> R {
+    use yulius_app::model::{AccountRecord, AccountStatus, Sealed};
+    use yulius_app::ports::store::AccountStore;
+    use yulius_domain::harness::Provider;
+    use yulius_domain::ids::AccountId;
+
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let first = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let second = store.insert_task(&task("t2", &sid, &uid)?).await?;
+    let chosen = AccountId::parse("a-chosen")?;
+    store
+        .insert_account(&AccountRecord {
+            id: chosen.clone(),
+            provider: Provider::Anthropic,
+            label: "Chosen".into(),
+            credential: Some(Sealed(vec![1])),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    assert_eq!(store.task_pin(&first.id).await?, None);
+    store.set_task_pin(&first.id, Some(&chosen)).await?;
+    store.set_task_pin(&second.id, Some(&chosen)).await?;
+    assert_eq!(store.task_pin(&first.id).await?, Some(chosen.clone()));
+    store.set_task_pin(&second.id, None).await?;
+    assert_eq!(store.task_pin(&second.id).await?, None);
+    store.set_task_pin(&second.id, Some(&chosen)).await?;
+    store.delete_account(&chosen).await?;
+    assert_eq!(store.task_pin(&first.id).await?, None);
+    assert_eq!(store.task_pin(&second.id).await?, None);
+    assert_eq!(store.task_pin(&TaskId::parse("missing")?).await?, None);
+    Ok(())
+}

@@ -418,6 +418,10 @@ pub trait TaskStore: Send + Sync {
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
     /// TIM-002). The task's other times stay.
     async fn set_working_since(&self, task: &TaskId, since: Option<Timestamp>) -> AppResult<()>;
+    /// The subscription a person chose for `task` (SPEC-629 RBL-005); `None` without one.
+    async fn task_pin(&self, task: &TaskId) -> AppResult<Option<AccountId>>;
+    /// Pins `task` to `account`, or ends its pin with `None` (SPEC-629 RBL-005).
+    async fn set_task_pin(&self, task: &TaskId, account: Option<&AccountId>) -> AppResult<()>;
     /// Records the start or end of `task`'s working stretch like [`TaskStore::set_working_since`],
     /// only while the running task still reads `from`: that activity (or none) and those times
     /// (SPEC-315 FWS-001); whether it did.
