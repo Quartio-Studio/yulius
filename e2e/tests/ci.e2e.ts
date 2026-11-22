@@ -450,3 +450,151 @@ test('an invalid yulius.toml on dev runs its last valid gate and says so (SPEC-5
   // Each run judged by it says so.
   await expect(screen.getByText(/judged by the integration branch's last valid yulius\.toml/)).toBeVisible();
 });
+
+test('a project gate notice identifies the introducing merge and retries the affected run in Status', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&gate_notice=1'));
+  const failure = /delivery::gate · first seen at 7713224a587f.*task #12/;
+  await expect(screen.getByText(failure)).toBeVisible();
+  await expect(screen.getByText(/queue::serve · first seen at ef02b192abba.*task #15/)).toBeVisible();
+  await expect(screen.getByRole('link', 'Start a task')).toHaveCount(1);
+  await screen.getByRole('link', 'Start a task').click();
+  await expect(browser).toHaveURL(/#\/s\/studio$/);
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+
+  await browser.locator('.btn-status').click();
+  const panel = screen.getByRole('dialog', 'Status');
+  await expect(panel.getByText(failure)).toBeVisible();
+  await expect(panel.getByRole('link', 'Start a task')).toHaveAttribute('href', /#\/s\/studio$/);
+  await panel.getByRole('link', 'Review and run again').click();
+  await expect(panel).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_gate$/);
+  await screen.getByRole('region', 'CI run').getByRole('button', 'Run again: quartio at ef02b19').click();
+  await expect(screen.getByText('quartio queued again.')).toBeVisible();
+});
+
+test('readers can inspect the untracked failure in project CI and Status', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/sandbox-3/ci', '&gate_notice=reader'));
+  const failure = /store::retry · first seen at 77aa01bc3d4e.*untracked merge/;
+  await expect(screen.getByText(failure)).toBeVisible();
+  await expect(screen.getByRole('link', 'Start a task')).toHaveCount(0);
+  await expect(screen.getByRole('link', 'Review the run')).toHaveAttribute('href', /run=ci_t1$/);
+  await browser.locator('.btn-status').click();
+  const panel = screen.getByRole('dialog', 'Status');
+  await expect(panel.getByText(failure)).toBeVisible();
+  await expect(panel.getByRole('link', 'Start a task')).toHaveCount(0);
+  await panel.getByRole('link', 'Review the run').click();
+  const run = screen.getByRole('region', 'CI run');
+  await expect(run).toBeVisible();
+  await expect(run.getByRole('button', /^Run again/)).toHaveCount(0);
+});
+
+test('Status keeps the open integration gate visible as an outstanding problem', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/ci'));
+  const health = await browser.evaluate(async () => {
+    const module = '/assets/layout.js';
+    const { renderStatus } = await import(module);
+    const sandbox = { id: 's1', slug: 'studio', name: 'Studio' };
+    const notice = { run_id: 'ci_gate', revision: '7713224a587f', test: 'delivery::gate', merge_task: 12 };
+    return [[], [notice]].map((gate_notices) => {
+      const panel = document.createElement('div');
+      panel.append(...renderStatus({ sandboxes: [{ ...sandbox, gate_notices }] }).filter(Boolean));
+      return panel.querySelector('.status-health')?.textContent ?? null;
+    });
+  });
+  expect(health).toEqual(['Everything is running normally', null]);
+});
+
+for (const resolved of [false, true]) {
+  test(`Status keeps keyboard repair actions in their project when its notice ${resolved ? 'clears' : 'moves'}`, async ({ app, browser, screen }) => {
+    type Mock = { __yuliusMock: { ci: Record<string, { gate_notices: { test: string; revision: string; run_id: string; merge_task: number }[] }> } };
+    await app.open(mock('/s/studio/ci'));
+    await browser.evaluate(() => {
+      (window as unknown as Mock).__yuliusMock.ci.sb_product.gate_notices =
+        [{ test: 'product::gate', revision: '7713224a587f', run_id: 'ci_p1', merge_task: 12 }];
+    });
+    await browser.locator('.btn-status').click();
+    const panel = screen.getByRole('dialog', 'Status');
+    await panel.getByRole('link', 'Start a task').focus();
+    await browser.evaluate((cleared) => {
+      const ci = (window as unknown as Mock).__yuliusMock.ci;
+      ci.sb_studio.gate_notices = [{ test: 'studio::new', revision: 'ef02b192abba', run_id: 'ci_s2', merge_task: 15 }];
+      if (cleared) ci.sb_product.gate_notices = [];
+    }, resolved);
+    await expect(panel.getByText(/studio::new · first seen at/)).toBeVisible({ timeout: 15000 });
+    await browser.keyboard.press('Enter');
+    if (resolved) {
+      await expect(panel).toBeVisible();
+      await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+    } else {
+      await expect(browser).toHaveURL(/#\/s\/product$/);
+      await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+    }
+  });
+}
+
+test('adding a gate notice leaves the focused Status disclosure on Sandboxes', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  await browser.locator('.btn-status').click();
+  const panel = screen.getByRole('dialog', 'Status');
+  const summary = browser.locator('.status-pop summary:has-text("Sandboxes")');
+  await summary.focus();
+  await browser.evaluate(() => {
+    type Mock = { __yuliusMock: { ci: { sb_product: { gate_notices: unknown[] } } } };
+    (window as unknown as Mock).__yuliusMock.ci.sb_product.gate_notices =
+      [{ test: 'product::gate', revision: '7713224a587f', run_id: 'ci_p1', merge_task: 12 }];
+  });
+  await expect(panel.getByText(/product::gate · first seen at/)).toBeVisible({ timeout: 15000 });
+  await browser.keyboard.press('Enter');
+  await expect(browser.locator('.status-pop details[open] > summary:has-text("Sandboxes")')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+});
+
+test('a cleared CI gate notice releases keyboard focus without opening a run', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&gate_notice=1'));
+  const start = screen.getByRole('link', 'Start a task');
+  await start.focus();
+  await browser.evaluate(() => {
+    type Mock = { __yuliusMock: { ci: { sb_studio: { gate_notices: unknown[] } } } };
+    (window as unknown as Mock).__yuliusMock.ci.sb_studio.gate_notices = [];
+  });
+  await expect(start).toHaveCount(0, { timeout: 15000 });
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('CI overview');
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByRole('heading', 'Runs')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+});
+
+for (const reopen of [false, true]) {
+  test(`an older Status answer cannot restore a cleared repair after ${reopen ? 'reopening' : 'the next poll'}`, async ({ app, browser, screen }) => {
+    type Mock = { __yuliusMock: {
+      holdNextStatus: boolean; releaseStatus?: () => void; statusReadTaken?: boolean;
+      ci: { sb_studio: { gate_notices: unknown[] } };
+    } };
+    await app.open(mock('/s/studio/ci', '&gate_notice=1'));
+    await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.holdNextStatus = true; });
+    const toggle = browser.locator('.btn-status');
+    await toggle.click();
+    await expect.poll(() => browser.evaluate(() => !!(window as unknown as Mock).__yuliusMock.releaseStatus)).toBe(true);
+    await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.ci.sb_studio.gate_notices = []; });
+    if (reopen) { await toggle.click(); await toggle.click(); }
+    const panel = screen.getByRole('dialog', 'Status');
+    await expect(panel.getByRole('heading', 'Machine')).toBeVisible({ timeout: 15000 });
+    await expect(panel.getByRole('link', 'Start a task')).toHaveCount(0);
+    await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.releaseStatus!(); });
+    await expect.poll(() => browser.evaluate(() => !!(window as unknown as Mock).__yuliusMock.statusReadTaken)).toBe(true);
+    await expect(panel.getByRole('link', 'Start a task')).toHaveCount(0);
+    await expect(panel.getByRole('link', 'Review and run again')).toHaveCount(0);
+  });
+}
+
+test('an integration gate cancelled before the jobs ran names the verdict and its origin', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    type Mock = { __yuliusMock: { ci: { sb_studio: { gate_notices: unknown[] } } } };
+    (window as unknown as Mock).__yuliusMock.ci.sb_studio.gate_notices = [
+      { test: 'cancelled', revision: '7713224a587f', run_id: 'ci_s2', merge_task: 12 },
+    ];
+  });
+  await browser.locator('.btn-status').click();
+  await expect(screen.getByRole('dialog', 'Status').getByText(/cancelled · first seen at 7713224a587f.*task #12/)).toBeVisible();
+});

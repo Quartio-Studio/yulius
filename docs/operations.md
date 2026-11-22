@@ -1871,7 +1871,8 @@ merged revision of `dev`.
   there.
 - A red `dev` leaves staging on the verified release. A new failure records `gate_failed`.
   An inherited failure records its original revision and task. One working task owns the repair.
-  If none is working, the project CI and Status APIs name the tests and the run to retry.
+  If none is working, project CI and Status list each test with its introducing revision and task.
+  A writer can rerun the latest affected revision or start a repair task from either view.
   Staging serves the inherited requests when it verifies the fix.
 - **Production is promoted only from what staging verified**, by a person (ADR-0425).
 
