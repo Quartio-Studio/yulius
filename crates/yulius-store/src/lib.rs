@@ -571,7 +571,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 87, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 88, "a new migration is pinned here too");
     }
 
     #[test]

@@ -2423,7 +2423,8 @@ reach the default), a `wf-quick-task` row is listed as a custom instance workflo
   code entered in the browser session within 10 minutes and are audited (SPEC-040, ADR-0042);
   agents never read agent secrets (their managers can, after the code), which are added to
   requests by the egress proxy only for their bound hosts (TLS interception only there; local
-  destinations refused after resolution), typed by `browser_fill_secret` only into pages of those
+  destinations refused after resolution) and, for a secret with method and path rules, only to
+  requests those allow (others refused and audited, SPEC-627, ADR-0458), typed by `browser_fill_secret` only into pages of those
   hosts, and redacted with their encodings from every channel an agent reads, from the terminal
   and from served transcripts. In-sandbox redaction holds fingerprints, never values, and fails
   closed. Remaining threats: ADR-20.
