@@ -28,6 +28,17 @@ use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 use crate::task_edit::{BulkAction, EditTask};
 
+/// The person's tools that need only view access on the project yet change something of the
+/// person's own (dismissing their notice, SPEC-624): a read-only token may not call them, and
+/// their calls are audited like any change (review round 1).
+pub(crate) const PERSONAL_CHANGES: &[&str] = &["notice_dismiss"];
+
+/// Whether a call of `name`, which needs `action` on the project, changes something: it is
+/// audited, and a read-only token may not make it.
+pub(crate) fn changes(name: &str, action: Action) -> bool {
+    action != Action::View || PERSONAL_CHANGES.contains(&name)
+}
+
 /// Every person's project tool and the action it needs on the project.
 pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("task_delivery", Action::View),
@@ -50,6 +61,9 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("instance_update", Action::Work),
     // A jammed sandbox Docker, restarted at the person's ask (SPEC-494 DFJ-009).
     ("docker_restart", Action::Work),
+    // The person's notices: keyed, expiring (SPEC-624).
+    ("notices_list", Action::View),
+    ("notice_dismiss", Action::View),
     ("ci_runs", Action::View),
     ("ci_run", Action::View),
     ("ci_rerun", Action::Work),
@@ -420,6 +434,18 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
             &[],
         ),
         tool(
+            "notices_list",
+            "The person's live notices in this project, and the instance-wide ones they see: id, key, title, detail, link, tone, whether it waits for their decision, and when it expires. A newer notice with the same key replaced the older one; expired and dismissed notices are left out.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "notice_dismiss",
+            "Dismiss one of the person's notices (its `id` from notices_list) for them only: others still see it, and a newer notice with its key shows again.",
+            json!({"id": {"type": "string", "description": "The notice's id"}}),
+            &["id"],
+        ),
+        tool(
             "ci_runs",
             "The project's Yulius CI: the jobs in force and where they come from, and the latest runs (branch, pull request or merge train, commit, state, jobs).",
             json!({}),
@@ -728,6 +754,16 @@ impl App {
                         .decide_task_held_prompt(ctx, task.id.as_str(), action)
                         .await?,
                 )
+            }
+            "notices_list" => {
+                let notices = self.notices_for(&ctx.user, Some(&sandbox.id)).await?;
+                let views: Vec<_> = notices.iter().map(crate::notices::notice_view).collect();
+                Ok(json!({ "notices": views }))
+            }
+            "notice_dismiss" => {
+                let id = str_arg(args, "id")?;
+                self.dismiss_notice(&ctx.user, id).await?;
+                Ok(json!({ "dismissed": id }))
             }
             "ci_runs" => record(&self.ci_overview(ctx, sid).await?),
             "ci_run" => record(

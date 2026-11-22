@@ -25,6 +25,7 @@ mod intake;
 mod mcp;
 mod needs_you;
 mod notes;
+mod notices;
 mod sandboxes;
 mod session_docs;
 mod sessions;
@@ -228,6 +229,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0087_metrics_model_parts.sql"),
     // Schema version 88 (SPEC-626 BRK-001); 0089 is the reserved file number.
     include_str!("migrations/0089_brokered_commands.sql"),
+    // Schema version 89 (SPEC-624); 0091 is the reserved file number.
+    include_str!("migrations/0091_keyed_expiring_notices.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -565,6 +568,10 @@ mod tests {
             (86, include_str!("migrations/0086_inherited_staging.sql")),
             (87, include_str!("migrations/0087_metrics_model_parts.sql")),
             (88, include_str!("migrations/0089_brokered_commands.sql")),
+            (
+                89,
+                include_str!("migrations/0091_keyed_expiring_notices.sql"),
+            ),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -573,7 +580,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 88, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 89, "a new migration is pinned here too");
     }
 
     #[test]
@@ -626,6 +633,59 @@ mod tests {
         assert!(older.merged && older.merge_commit_sha.is_none());
         assert_eq!(older.title, "Pull request #42");
         assert!(older.head.is_empty() && older.head_sha.is_empty());
+        Ok(())
+    }
+
+    /// SPEC-624 AC-12: a store from before keyed notices keeps its digests and Telegram rows,
+    /// and its new notice tables start empty and take a notice.
+    #[test]
+    fn keyed_notices_upgrade_keeps_digests_and_sent_messages()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let at = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("CREATE TABLE notices"))
+            .ok_or("the notices migration is listed")?;
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..at] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", i64::try_from(at)?)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1);
+             INSERT INTO digests (id, user_id, created_at, body) VALUES ('dg_1', 'u', 5, '{}');
+             INSERT INTO telegram_sent (chat_id, message_id, task_id, asked_at, sent_at)
+             VALUES ('42', '7', 't', NULL, 6);",
+        )?;
+        prepare(&mut conn)?;
+        let kept: (i64, i64) = conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM digests), (SELECT COUNT(*) FROM telegram_sent)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(kept, (1, 1));
+        let empty: i64 = conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM notices) + (SELECT COUNT(*) FROM notice_dismissals) \
+             + (SELECT COUNT(*) FROM telegram_keyed)",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(empty, 0);
+        conn.execute_batch(
+            "INSERT INTO notices (id, sandbox_id, notice_key, category, tone, title, created_at)
+             VALUES ('nt_1', 's', 'gate:a', 'failed', 'error', 'Red', 7);",
+        )?;
+        assert!(
+            conn.execute_batch(
+                "INSERT INTO notices (id, sandbox_id, notice_key, category, tone, title, created_at)
+                 VALUES ('nt_2', 's', 'gate:a', 'failed', 'error', 'Red again', 8);",
+            )
+            .is_err(),
+            "one notice per project, recipient and key"
+        );
         Ok(())
     }
 

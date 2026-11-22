@@ -45,6 +45,11 @@ impl EventBus {
         });
     }
 
+    /// Publishes `envelope` as it is (never blocks): a notice's reach (SPEC-624).
+    pub fn publish_envelope(&self, envelope: Envelope) {
+        let _ = self.tx.send(envelope);
+    }
+
     /// Publishes an event of `sandbox` that only its writers' streams receive (never blocks).
     pub fn publish_to_writers(&self, sandbox: SandboxId, event: UiEvent) {
         let _ = self.tx.send(Envelope {

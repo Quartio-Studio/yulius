@@ -142,6 +142,8 @@ impl App {
                         digest.digest_tick().await;
                     });
                 }
+                // Expired notices (SPEC-624 NTC-004): reads already leave them out.
+                app.prune_notices_now().await;
                 // Expired and consumed CLI device grants (#169).
                 if let Err(err) = app.purge_device_grants().await {
                     tracing::warn!(error = %err, "device grants could not be purged");

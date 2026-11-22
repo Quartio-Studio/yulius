@@ -90,6 +90,8 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("attachments_trash", Reach::Project, Action::Work),
     ("sessions_search", Reach::Project, Action::View),
     ("session_read", Reach::Project, Action::View),
+    ("notices_list", Reach::Project, Action::View),
+    ("notice_dismiss", Reach::Project, Action::View),
     ("ci_runs", Reach::Project, Action::View),
     ("ci_run", Reach::Project, Action::View),
     ("ci_rerun", Reach::Project, Action::Work),
@@ -480,7 +482,8 @@ impl App {
         let Some((reach, action)) = remote_tool(name).filter(|_| caller.serves(name)) else {
             return text_result(format!("unknown tool: {name}"), true);
         };
-        if !caller.scope.allows(action) {
+        let changes = crate::person_tools::changes(name, action);
+        if !caller.scope.allows(action) || (changes && !caller.scope.allows(Action::Work)) {
             self.audit_remote(caller, name, None, false).await;
             return text_result(
                 format!(
@@ -492,7 +495,7 @@ impl App {
         match reach {
             Reach::Instance => {
                 let outcome = self.remote_instance_tool(caller, name, &args).await;
-                if action != Action::View {
+                if changes {
                     self.audit_remote(caller, name, None, outcome.is_ok()).await;
                 }
                 match outcome {
@@ -511,7 +514,7 @@ impl App {
                 let found = match self.remote_project(&args).await {
                     Ok(found) => found,
                     Err(err) => {
-                        if action != Action::View {
+                        if changes {
                             self.audit_remote(caller, name, None, false).await;
                         }
                         return text_result(err.public_message(), true);
@@ -522,7 +525,7 @@ impl App {
                     Err(err) => {
                         // A refused change is audited too; a project the person cannot see is
                         // not found, and its entry names the token, not the project.
-                        if action != Action::View {
+                        if changes {
                             let visible = !matches!(err, AppError::NotFound);
                             self.audit_remote(caller, name, visible.then_some(&found.id), false)
                                 .await;
@@ -558,7 +561,7 @@ impl App {
                 };
                 // The spawned change tools audit themselves (they outlive their caller); the
                 // browser's reading tools change nothing.
-                if action != Action::View
+                if changes
                     && !SPAWNED_TOOLS.contains(&name)
                     && !crate::browser::READING_TOOLS.contains(&name)
                 {
