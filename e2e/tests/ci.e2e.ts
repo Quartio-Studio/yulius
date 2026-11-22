@@ -531,3 +531,35 @@ for (const resolved of [false, true]) {
     }
   });
 }
+
+test('adding a gate notice leaves the focused Status disclosure on Sandboxes', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  await browser.locator('.btn-status').click();
+  const panel = screen.getByRole('dialog', 'Status');
+  const summary = browser.locator('.status-pop summary:has-text("Sandboxes")');
+  await summary.focus();
+  await browser.evaluate(() => {
+    type Mock = { __yuliusMock: { ci: { sb_product: { gate_notices: unknown[] } } } };
+    (window as unknown as Mock).__yuliusMock.ci.sb_product.gate_notices =
+      [{ test: 'product::gate', revision: '7713224a587f', run_id: 'ci_p1', merge_task: 12 }];
+  });
+  await expect(panel.getByText(/product::gate failed at/)).toBeVisible({ timeout: 15000 });
+  await browser.keyboard.press('Enter');
+  await expect(browser.locator('.status-pop details[open] > summary:has-text("Sandboxes")')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+});
+
+test('a cleared CI gate notice releases keyboard focus without opening a run', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&gate_notice=1'));
+  const start = screen.getByRole('link', 'Start a task');
+  await start.focus();
+  await browser.evaluate(() => {
+    type Mock = { __yuliusMock: { ci: { sb_studio: { gate_notices: unknown[] } } } };
+    (window as unknown as Mock).__yuliusMock.ci.sb_studio.gate_notices = [];
+  });
+  await expect(start).toHaveCount(0, { timeout: 15000 });
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('CI overview');
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByRole('heading', 'Runs')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+});

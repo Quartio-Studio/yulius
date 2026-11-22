@@ -389,6 +389,7 @@ function limitName(minutes, fallback) {
 
 /** Keeps a <details> open or closed across the panel's refresh (per browser). */
 function rememberOpen(details, key, openByDefault) {
+  details.querySelector('summary').dataset.focusKey = key;
   const saved = readJson(STATUS_OPEN_KEY, {}) || {};
   details.open = key in saved ? Boolean(saved[key]) : openByDefault;
   details.addEventListener('toggle', () => {
