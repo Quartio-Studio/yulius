@@ -610,6 +610,72 @@ async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_ret
 }
 
 #[tokio::test]
+async fn rerunning_an_ancestor_keeps_the_archived_red_heads_notice_and_rerun_target() -> TestResult
+{
+    let f = fixture(&staging_toml()).await?;
+    let earlier = f.push("dev", &[("earlier", Some("earlier"))])?;
+    let passed = gate(&f, &earlier, RunState::Passed).await?;
+    agent(&f, "owner").await?;
+    let head = land(&f, "owner", "broken").await?;
+    let failed = named_gate(&f, &head, &["suite::broken"]).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let replay = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        &format!("/api/sandboxes/s1/ci/runs/{passed}/rerun"),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(replay.body["sha"], earlier);
+    let replay_id = replay.body["id"].as_str().ok_or("ancestor rerun")?;
+    f.h.store
+        .transition_ci_run(
+            replay_id,
+            &[RunState::Queued],
+            RunState::Passed,
+            &Default::default(),
+        )
+        .await?;
+    f.h.store.prune_ci_runs(0, f.h.app.now()).await?;
+    assert!(f.h.store.ci_run(&failed).await?.is_none());
+    let owner =
+        f.h.store
+            .task(&TaskId::parse("owner")?)
+            .await?
+            .ok_or("owner")?
+            .number;
+    for view in [
+        f.get("/api/status").await?,
+        f.get("/api/sandboxes/s1/ci").await?,
+    ] {
+        let notices = view
+            .get("gate_notices")
+            .unwrap_or(&view["sandboxes"][0]["gate_notices"]);
+        assert_eq!(
+            *notices,
+            json!([{"test":"suite::broken","merge_task":owner,"revision":head,"run_id":failed}])
+        );
+    }
+    let path = format!("/api/sandboxes/s1/ci/runs/{failed}");
+    assert_eq!(f.get(&path).await?["sha"], head);
+    let retry = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        &format!("{path}/rerun"),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(retry.status, axum::http::StatusCode::OK, "{}", retry.body);
+    assert_eq!(retry.body["sha"], head);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_passed_retry_closes_its_failure_while_a_sibling_job_fails() -> TestResult {
     let f = fixture(&staging_toml()).await?;
     let origin = f.push("dev", &[("first", Some("first"))])?;

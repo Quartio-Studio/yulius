@@ -56,8 +56,6 @@ pub struct GateVerdict {
     pub state: RunState,
     /// Merge owner's project task number.
     pub owner: Option<u32>,
-    /// Only compact history remains for this run.
-    pub archived: bool,
     /// Compact evidence of jobs that ran.
     pub jobs: Vec<GateJob>,
 }
@@ -77,7 +75,6 @@ pub struct RepairRecipient {
 struct Origin {
     sha: String,
     owner: Option<u32>,
-    run: Option<String>,
 }
 
 #[derive(Default)]
@@ -101,9 +98,7 @@ impl GateFailures {
             return;
         }
         self.run_failure = None;
-        if !verdict.archived {
-            self.latest_run = Some(verdict.run.clone());
-        }
+        self.latest_run = Some(verdict.run);
         if verdict.state == RunState::Passed {
             let skipped: BTreeSet<_> = verdict
                 .jobs
@@ -121,7 +116,6 @@ impl GateFailures {
         let origin = Origin {
             sha: verdict.sha,
             owner: verdict.owner,
-            run: (!verdict.archived).then_some(verdict.run),
         };
         // A named failure can move between matrix cells. Compare all the job verdicts
         // together. Cancelled siblings and truncated failure lists cannot close a failure.
@@ -224,19 +218,19 @@ impl GateFailures {
     }
 
     fn notices(self) -> Vec<GateNotice> {
+        let Some(run_id) = self.latest_run else {
+            return Vec::new();
+        };
         self.tests
             .into_iter()
             .map(|(test, (origin, _))| (test, origin))
             .chain(self.unknown)
             .chain(self.run_failure)
-            .filter_map(|(test, origin)| {
-                let run_id = self.latest_run.clone().or(origin.run)?;
-                Some(GateNotice {
-                    revision: origin.sha,
-                    merge_task: origin.owner,
-                    run_id,
-                    test,
-                })
+            .map(|(test, origin)| GateNotice {
+                revision: origin.sha,
+                merge_task: origin.owner,
+                run_id: run_id.clone(),
+                test,
             })
             .collect()
     }

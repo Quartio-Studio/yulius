@@ -894,7 +894,7 @@ get `{cpus}`; a declared table, even an empty one, replaces them (SPEC-268).
 | --- | --- | --- |
 | `GET /api/sandboxes/{sid}/ci` | read | `CiOverview` |
 | `POST /api/sandboxes/{sid}/ci/sync` | write | looks for new heads now; `CiOverview` |
-| `GET /api/sandboxes/{sid}/ci/runs/{rid}` | read | `CiRun` with each job's `output` |
+| `GET /api/sandboxes/{sid}/ci/runs/{rid}` | read | `CiRun` with each retained job's `output`. After job logs expire, an archived full integration gate still returns its run metadata and can be rerun at its original SHA. |
 | `POST /api/sandboxes/{sid}/ci/runs/{rid}/cancel` | write | `CiRun`; `conflict` when it ended |
 | `POST /api/sandboxes/{sid}/ci/runs/{rid}/rerun` | write | the new queued `CiRun`; `conflict` while a run of that commit is active or without CI |
 | `GET /api/sandboxes/{sid}/hygiene` | read | `HygieneReport` (the last scan; scans when none) |

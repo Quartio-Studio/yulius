@@ -2392,11 +2392,15 @@ impl App {
     }
 
     async fn ci_run_of(&self, sandbox: &SandboxRecord, run_id: &str) -> AppResult<CiRunRecord> {
-        self.deps
-            .store
-            .ci_run(run_id)
+        let store = &self.deps.store;
+        if let Some(run) = store.ci_run(run_id).await? {
+            return (run.sandbox_id == sandbox.id)
+                .then_some(run)
+                .ok_or(AppError::NotFound);
+        }
+        store
+            .archived_gate_run(&sandbox.id, run_id)
             .await?
-            .filter(|run| run.sandbox_id == sandbox.id)
             .ok_or(AppError::NotFound)
     }
 

@@ -233,6 +233,20 @@ pub(crate) fn runs_for_exact_head(
 
 #[async_trait]
 impl CiStore for SqliteStore {
+    async fn archived_gate_run(
+        &self,
+        sandbox: &SandboxId,
+        id: &str,
+    ) -> AppResult<Option<CiRunRecord>> {
+        let (sandbox, id) = (sandbox.to_string(), id.to_owned());
+        self.call(move |c| {
+            c.query_row(
+                &format!("SELECT {RUN_COLS} FROM archived_gate_verdicts WHERE sandbox_id = ?1 AND id = ?2"),
+                params![sandbox, id], run_from_row
+            ).optional().map_err(db)
+        }).await
+    }
+
     async fn integration_verdicts(
         &self,
         sandbox: &SandboxId,
@@ -252,7 +266,7 @@ impl CiStore for SqliteStore {
                       AND (r.state IN ('running','queued','passed','failed','error','skipped')
                            OR (r.state = 'cancelled' AND r.reference = 'candidate/' || h.sha))
                       AND NOT EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id AND j.state = 'skipped' AND instr(j.reason, ?4) = 1)
-                    UNION ALL SELECT h.key, a.run_id, a.sha, a.state, a.queued_at, a.sequence, a.jobs
+                    UNION ALL SELECT h.key, a.id, a.sha, a.state, a.queued_at, a.sequence, a.jobs
                     FROM history h JOIN archived_gate_verdicts a ON a.sandbox_id = ?1 AND a.sha = h.sha
                     WHERE a.reference = 'branch/' || ?2 OR a.reference = 'candidate/' || h.sha
                  ), ranked AS (SELECT *, row_number() OVER (PARTITION BY sha ORDER BY (?5 != 0 AND state IN ('running','queued')), queued_at DESC, seq DESC) AS newest FROM runs)
@@ -288,7 +302,6 @@ impl CiStore for SqliteStore {
                     sha: row.get(1).map_err(db)?,
                     state,
                     jobs,
-                    archived: archive.is_some(),
                     owner: row.get(4).map_err(db)?,
                 });
                 if read != GateRead::Latest && complete_pass { break; }
@@ -1357,8 +1370,8 @@ impl CiStore for SqliteStore {
             };
             for id in ids {
                 let jobs = serde_json::to_string(&gate_jobs(&tx, &id)?).map_err(AppError::internal)?;
-                tx.execute("INSERT INTO archived_gate_verdicts SELECT r.sandbox_id,r.reference,r.sha,r.id,r.state,r.queued_at,r.rowid,?2
-                       FROM ci_runs r WHERE r.id = ?1", params![id, jobs]).map_err(db)?;
+                tx.execute(&format!("INSERT INTO archived_gate_verdicts ({RUN_COLS}, sequence, jobs)
+                       SELECT {RUN_COLS}, rowid, ?2 FROM ci_runs WHERE id = ?1"), params![id, jobs]).map_err(db)?;
             }
             let changed = tx.execute(&format!("DELETE FROM ci_runs {prune}"), params![before.0, i64::from(keep)]).map_err(db)?;
             tx.commit().map_err(db)?;

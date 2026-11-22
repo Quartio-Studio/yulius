@@ -576,6 +576,12 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<()>;
     /// One run.
     async fn ci_run(&self, id: &str) -> AppResult<Option<crate::ci::CiRunRecord>>;
+    /// Retained integration run metadata for reading or retrying its exact revision after log expiry.
+    async fn archived_gate_run(
+        &self,
+        sandbox: &SandboxId,
+        id: &str,
+    ) -> AppResult<Option<crate::ci::CiRunRecord>>;
     /// The jobs of a run in order; outputs only when `with_output`.
     async fn ci_jobs(&self, run: &str, with_output: bool)
     -> AppResult<Vec<crate::ci::CiJobRecord>>;

@@ -42,13 +42,21 @@ CREATE TABLE archived_gate_verdicts (
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     reference TEXT NOT NULL,
     sha TEXT NOT NULL,
-    run_id TEXT NOT NULL,
+    id TEXT NOT NULL PRIMARY KEY,
     state TEXT NOT NULL,
     queued_at INTEGER NOT NULL,
     sequence INTEGER NOT NULL,
     jobs TEXT NOT NULL,
-    PRIMARY KEY (sandbox_id, sha, reference, run_id)
+    source TEXT NOT NULL,
+    reason TEXT,
+    requested_by TEXT NOT NULL,
+    status_for TEXT,
+    status_note TEXT,
+    status_attempts INTEGER NOT NULL,
+    started_at INTEGER,
+    ended_at INTEGER
 );
+CREATE INDEX archived_gate_history ON archived_gate_verdicts(sandbox_id, sha, reference);
 
 -- A task's deletion removes task_merges. Keep its public number with its landing for receipts.
 CREATE TABLE gate_merge_owners (
