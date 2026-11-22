@@ -1059,17 +1059,25 @@ person's `switch` or `continue` with an `account_id`, cleared by one without and
 subscription's removal) is not moved, and a parked task resumes on its pin while it can take it
 (`App::pinned_start`). Before a move, `agent_cli::kept_idle` asks the facts a restart for a newer
 Claude Code asks (a keystroke, a draft, a person's pause, an update, background work, Claude
-Code's queue, an unread prompt); the move then goes through `move_task` with the reason
-`rebalance: <subscription> <how full it is>`, writes one terminal line and sends the task's owner
-`task.rebalanced`, which the notification center keys per move. A task with nowhere to go is told
-once per episode (`TaskRuntime::rebalance_no_room`, in memory).
+Code's queue, an unread prompt, a limit it waits at, a first message still due). Only a session
+that reopens at its prompt (prompt mode, or Codex, with no unfinished workflow or cut-off
+reviewer) is moved: `switch_from` with `RunStart::Resume { prompt: None }` and
+`SwitchCondition::Idle`, which claims the activity, update time and run the pass read, with the
+reason `rebalance: <subscription> <how full it is>`. Another idle session (a goal session, whose
+goal a restart types again) goes to `park_task_now` with `ParkRule::Rebalance`, the grace
+period's rule with a one-minute quiet time. A move that leaves the task running on the target
+writes one terminal line and sends the task's owner `task.rebalanced` (`parked: true` for a
+park), which the notification center keys per move. A task with nowhere to go is told once per
+episode (`TaskRuntime::rebalance_no_room`, in memory). Every launch on another subscription than
+the pin ends the pin.
 
 ```mermaid
 flowchart LR
   P["Person: Run #N on…"] -->|"switch_task (Trigger::Manual, < 100 %)"| M["move_task"]
   D["Person: Remove"] -->|"delete row, close Done sessions"| M
   R["Claude refuses (AccessLost)"] -->|"rotate the interrupted task"| M
-  B["Rebalance pass (every 2 min)"] -->|"idle, unpinned, past the threshold: idle_move"| M
+  B["Rebalance pass (every 2 min)"] -->|"reopens idle: switch_from, SwitchCondition::Idle"| RUN
+  B -->|"goal session: park_task_now"| PK["Parked; resume placed elsewhere"]
   B -->|"nothing below the threshold"| N["Told once: terminal, task.rebalanced"]
   R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}

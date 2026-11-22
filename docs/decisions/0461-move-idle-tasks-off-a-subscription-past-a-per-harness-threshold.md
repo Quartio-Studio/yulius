@@ -26,7 +26,10 @@ still decides pausing and turn-boundary moves.
 A pass every 2 minutes moves each idle, unpinned task whose live run sits on a subscription past
 the threshold to the best subscription below it, through the person's move (`App::move_task`)
 and only when the restart for a newer Claude Code would also lose nothing (`agent_cli::kept_by`).
-With no subscription below the threshold the task stays and says so once per episode.
+The pass moves only a session that reopens at its prompt with nothing typed, claiming the idle
+state and run it read; a goal session of Claude Code or Antigravity, whose goal a restart would
+type again, is parked instead under parking's rules, so its resume is placed elsewhere. With no
+subscription below the threshold the task stays and says so once per episode.
 
 A person's "Run on…" or "Continue on…" pins the task to the chosen subscription
 (`tasks.pinned_account_id`). The pass never moves a task running on its pin, and a parked task

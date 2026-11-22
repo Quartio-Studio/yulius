@@ -53,6 +53,8 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   `YULIUS_REBALANCE_PERCENT_CLAUDE_CODE`, `YULIUS_REBALANCE_PERCENT_CODEX` and
   `YULIUS_REBALANCE_PERCENT_ANTIGRAVITY`, each 50–98, default 95. A subscription is past it
   when a binding window is at or above it or a limit is in effect. Unknown usage is not past it.
+  At 98 (the pool's own threshold) the harness's rebalance is off: placement and moves are as
+  before.
 - **RBL-002** Placement (a new task, Continue, a resume, a queued or paused start, and the
   target of any automatic move) ranks every candidate past the rebalance threshold after every
   candidate below it; within each group the existing ranking (tier, Codex remaining quota,
@@ -67,8 +69,17 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   in the last minute, no draft, no person's pause, no instance update holding runs, no switch
   refused in the cooldown, no background work or one that cannot be told, nothing in Claude
   Code's queue, no prompt whose record may be unread, and no goal of the person's own open in
-  a prompt-mode session). Never a task mid-turn (`working`, or `needs_attention` such as a
-  permission prompt), switching, starting, paused or parked. Moves run one after the other.
+  a prompt-mode session, no usage limit it waits at, no first message still to arrive). Never a
+  task mid-turn (`working`, or `needs_attention` such as a permission prompt), switching,
+  starting, paused or parked. The move claims the idle activity, update time and run it read,
+  for every harness: a prompt that arrives meanwhile wins and the task stays. Moves run one
+  after the other; a subscription a move to failed takes no further move in that pass.
+  Only a session that reopens at its prompt with nothing typed is moved: a prompt-mode session,
+  or a Codex one in either mode, with no unfinished workflow or cut-off reviewer. Any other idle
+  session (a goal session of Claude Code or Antigravity, whose goal a restart types again) is
+  parked instead when parking is on and its rules allow it (SPEC-512 PRK-002, with a quiet time
+  of one minute or the instance's grace period if shorter), so its resume is placed off the
+  subscription (RBL-004); otherwise it stays, with the reason logged.
 - **RBL-004** A parked task holds no subscription. Its resume is a placement (RBL-002), so it
   resumes off a subscription past the threshold unless it is pinned (RBL-005).
 - **RBL-005** A person's choice of a subscription pins the task to it: "Run on…" (`switch` with
@@ -77,14 +88,20 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   parked task resumes on its pin while the pin can take it (the person's-choice rule, below
   100 %), else where the pool places it. A pin ends once the task runs on another subscription
   (the pool moved it at a usage limit or at 98 % at a turn boundary, the pinned subscription was
-  removed or refused, or the person chose another), and when its subscription is removed.
-- **RBL-006** Each move is told once: the task's terminal says it in one line ("↻ Claude
+  removed or refused, the person chose another, or a resume was placed elsewhere): every launch
+  on another subscription ends it, and so do a Continue or "Run on…" without a subscription and
+  the removal of its subscription.
+- **RBL-006** Each move is told once, once the task runs on the target: the task's terminal says it in one line ("↻ Claude
   a-first is at 96% of its 5-hour window: this idle session continues on Claude b-second."),
   the task's info lists the switch with the reason `rebalance: Claude a-first is at 96% of its
   5-hour window`, and the task's person (its owner) gets one notification center entry
   ("#12 Checkout moved to Claude b-second", event `task.rebalanced`, keyed by the run it left).
   The switch's own lines ("↻ Yulius continues this session on another Claude subscription…")
-  stay as for any move.
+  stay as for any move. A session parked instead (RBL-003) says so in one line ("⏸ Claude
+  a-first is at 96% of its 5-hour window: this idle session is parked and continues on a
+  subscription with room when it is written to next.") and one entry (`parked: true`).
+  `task.rebalanced` is a live event: a person with no page open reads the terminal line and the
+  task's info, and gets no entry until server-side notices (SPEC-624).
 - **RBL-007** An idle, unpinned task on a subscription past the threshold with no subscription
   below it says so once per episode: one terminal line ("⏸ Claude a-first is at 97% of its
   week and no other Claude subscription has room: this task stays on it and moves when one
@@ -128,9 +145,13 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 Domain unit tests in `rotation.rs` and the new `rebalance` module for placement past the
 threshold (Claude score and Codex quota orders, all past it, the model's own weekly window),
 the idle decision (move, stay below the threshold or on unknown usage, nothing has room), the
-kept facts and the window names. Integration tests in `crates/yulius/tests/subscription_moves.rs`
-with real PTY hosts and the fake agent, as SPEC-447's: an idle move, no move mid-turn, a pinned
-task stays, nothing has room told once, and a pinned parked task resumes on its pin. The store
+kept facts and the window names. Integration tests in `crates/yulius/tests/rebalance.rs` (and a
+Codex one in `codex.rs`) with real PTY hosts and the fake agent, as SPEC-447's: placement, an
+idle move, no move mid-turn, a pinned task stays, nothing has room told once, a pinned parked
+task resumes on its pin (or where the pool places it when the pin is full), a draft or a
+person's pause keeps a task, a prompt during the switch wins, an idle goal session is parked
+and never restarted, pins end, and an idle Codex goal task moves and stays Done. The fake agent
+runs no hooks, so the tests record a turn's end in the store as the Stop hook would. The store
 test pins the migration. Each new test is shown to fail without its change (Evidence). Run the
 touched binaries in full, `scripts/dev quick`, and the e2e notification spec if the center
 changes.

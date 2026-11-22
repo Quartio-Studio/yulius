@@ -876,10 +876,13 @@ subscription with the most room, and new tasks keep off such a subscription whil
 ([SPEC-629](../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md)). A task mid-turn,
 paused, with background work or a draft waits for a later pass; a task a person put on a
 subscription with "Run on…" or "Continue on…" stays there until the pool must move it at a limit.
+An idle goal session of Claude Code or Antigravity is not restarted (its goal would be typed
+again): with parking on (`YULIUS_PARK_AFTER_MINUTES` above 0) it is parked once quiet for a
+minute and resumes on a subscription with room when written to; with parking off it stays.
 Each move is a subscription switch with the reason `rebalance: …` in the task's info; the journal
 logs each pass that did something (`rebalance pass`) and each task it kept, with why
-(`rebalance: the idle task stays for now`). Set a harness's variable to 98 to turn it off: the
-pool then moves tasks only at 98 % and at a limit, as before.
+(`rebalance: the idle task stays for now`). Set a harness's variable to 98 to turn it off: no
+pass moves or parks its tasks, and the pool moves them only at 98 % and at a limit, as before.
 
 ### Resource limits
 
