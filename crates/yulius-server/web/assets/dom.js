@@ -878,9 +878,10 @@ export function popoverFocus(panel, trigger, close) {
  * control with the same `data-focus-key` when it has one (what it belongs to and which control
  * it is, so a row that was renamed and moved keeps the keyboard, SPEC-463), else the control of
  * the same `aria-label` when that label is unique before and after (a card may gain controls
- * before it, SPEC-197), else the one at the same place.
+ * before it, SPEC-197), else the one at the same place. A caller may supply a focus target
+ * for a keyed control that disappears, so a different action cannot inherit its focus.
  */
-export function keepFocus(container, rebuild) {
+export function keepFocus(container, rebuild, missingKeyTarget = null) {
   const before = [...container.querySelectorAll(FOCUSABLE)];
   const active = document.activeElement;
   const index = before.indexOf(active);
@@ -893,7 +894,9 @@ export function keepFocus(container, rebuild) {
   const after = [...container.querySelectorAll(FOCUSABLE)];
   const keyed = key ? after.filter((el) => el.getAttribute('data-focus-key') === key) : [];
   const same = unique ? labelled(after) : [];
-  const target = (keyed.length === 1 ? keyed[0] : same.length === 1 ? same[0] : after[Math.min(index, after.length - 1)]) || container;
+  const fallback = same.length === 1 ? same[0] : after[Math.min(index, after.length - 1)];
+  const keyedTarget = keyed.length === 1 ? keyed[0] : (key ? missingKeyTarget : null);
+  const target = keyedTarget || fallback || container;
   target.focus({ preventScroll: true });
 }
 
