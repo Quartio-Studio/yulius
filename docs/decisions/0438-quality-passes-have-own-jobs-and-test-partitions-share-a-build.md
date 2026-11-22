@@ -20,4 +20,4 @@ Parallel Cargo commands in one checkout contend for the same target lock. Giving
 
 ## Consequences
 
-PR dashboards show each quality verdict. The test build occupies one existing shard slot. The other shard waits only for publication and can build first when admitted first, including on an instance with one slot. Each shard pays the cost of extracting the archive. Local tests and older branch checkouts still use the ordinary test command.
+PR dashboards show each quality verdict. The test build occupies one existing shard slot. The other shard waits only for publication and can build first when admitted first, including on an instance with one slot. The quarantine listing and partition run extract the archive in the job’s disk-backed build scratch. A runner that supplies only its private job cache uses that directory for extraction. The gate removes the extracted files when it returns. On a cold tools cache, bootstrap also builds each pinned Cargo tool in a temporary target on the job’s disk or under the tools cache. Local tests and older branch checkouts still use the ordinary test command.

@@ -68,7 +68,10 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify the current model and subscription before accepting a named Continue
 - [x] Order parking and replacement merge requests through run settlement
 - [x] Deliver the recorded integration failure once to an already parked owner
-- [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
+- [x] Hold the original owner’s session slot while its open delivery cannot be verified
+- [x] Unpack CI test shards on disk within the one-GiB temporary-filesystem cap
+- [ ] Restore the reviewed session-capacity slice after the CI repair
+- [ ] Verify live owners when constructing and releasing dependent tasks or closing their sessions
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -125,6 +128,16 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- The isolated CI repair precedes delivery of the reviewed session-capacity change preserved at `5f216ef4e`. The user's host report traced the gate failure on both protected branches to the installed 1 GiB run tmpfs at `aabf37091`; the same error ended main run `c51054f9-4e67-440e-abd7-8d0b3ba35e05`.
+- The cold tools-cache test reproduced Cargo’s default temporary target for a registry install. Removing the explicit disk target by hand reproduced it again. The restored bootstrap reclaims the target after an install failure on both the job scratch and the tools-cache fallback.
+
+- PR #1679 run `a4cf8907-9726-44f9-ad63-575d039ded21` failed before executing shard 2. Nextest exhausted `/tmp` while unpacking the 45-binary archive for the quarantine listing. The shard regression failed on the default extraction path before the fix. Both nextest commands now unpack in a private directory on disk. [Test build contract](../../docs/decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
+
+- Hand check of the shard repair. Removing the extraction arguments reproduced the missing disk path in the quarantine listing. Restored code passed all nine xtask CLI tests. In a separate container with a 1,073,741,824-byte tmpfs, the full 45-binary archive reproduced the CI failure unpacking `yulius_contracts`. On job disk it unpacked to 2,286,202,018 bytes, listed the tests and ran all 316 selected shard-2 domain tests in `0cf9f7e2-e045-43dd-9ce9-b3a50740c72f`. The CLI regression checks cleanup after both shard commands.
+- Independent review found that the Unix cache fallback inherited mode 0755 under umask 022. The revised CLI test observed 0755 in the child and failed. After setting mode 0700 at creation, removing only the overwrite argument failed on the target populated by the quarantine listing. Restoring it passed all nine CLI tests and scoped Clippy.
+- Gate audit. Cargo targets, CI archives, tool and browser caches, and the npm installation use disk. PR run `eb097f6c-a01f-45d9-b8ea-a6810cee4fd0` passed lint, macOS, docs, dependencies and file contracts under the new host. Quality failed three compiler-cache fixture assertions assigned to task #596. The same three failed in run `ab6e79a8-a058-4ee2-8a70-bdab455e8b4e` on `353ede197`. After integrating #1678 at `ff4ed8b89`, all three passed with the pinned Rust toolchain, a C linker and a 1 GiB tmpfs. Vidoc was disabled.
+- The capped Chromium probe ran all 100 test files. Its sampled peak was 272,314,368 bytes and it reported no filesystem-space error. It finished with 1,243 passed, 82 failed and one skipped. Browser assertions and timeouts keep that run from counting as a green gate. The CI repair changes no browser assets or browser tests. Independent review approved `1947d7b6e737c8020571bb6877e42afc2bc3590f`.
 
 - Independent review approved `71b6f42ba1cf5293f1cc5f8625775b2ce06e4659`. Run `3c27def5-99f4-4252-bc2d-8dd7faeb942d` passed all 211 parking, PR-watch and Codex tests. The agent echoed the recorded diagnosis in its original provider session and the next watcher pass started no second attempt. Clippy passed for all targets of `yulius-app`, `yulius-store` and `yulius` with all features and warnings denied. The complete hook and delivery modules passed 241 of 258 tests in `2781ac61-a2f5-4545-8c1d-977daab1faf5`; the 17 failures matched the dev control exactly. Vidoc was disabled. The terminal tests used a synthetic agent and a real PTY.
 - Hand check of the final claim. Removing the ordinary-run comparison and splitting the exit from park restoration reproduced both failures in `3377e959-72cb-4d13-9c4b-517f2b6053d1`. The reviewed source was restored.
