@@ -2130,6 +2130,36 @@ fn cancelling_a_codex_message_during_repaint_restores_the_size_without_typing() 
 }
 
 #[test]
+fn a_viewer_resize_reaches_codex_when_its_size_record_cannot_be_saved() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        // A probe saves the intended size, so later viewer resizes keep that record current.
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        assert!(send(&app, &caller, &id).await.is_err());
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let record = Path::new(&attempt.run_dir).join("codex-repaint-size");
+        assert_eq!(
+            std::fs::metadata(&record)?.len(),
+            4,
+            "the probe saved the size"
+        );
+        // The record can no longer be replaced: a non-empty directory takes its name.
+        std::fs::remove_file(&record)?;
+        std::fs::create_dir(&record)?;
+        std::fs::write(record.join("keep"), b"")?;
+        app.resize_run(&id, 100, 30).await?;
+        assert_eq!(app.runtime(&id).hub.size(), (100, 30));
+        app.send_input(&id, b"/size\r").await?;
+        wait_for("child's viewer size", Duration::from_secs(5), || async {
+            screen(&app, &id).contains("SIZE 30 100")
+        })
+        .await?;
+        stop(&app, &id).await
+    })
+}
+
+#[test]
 fn an_unreadable_codex_prompt_asks_its_owner_without_replacing_an_open_question() -> TestResult {
     let (_dir, data) = data_dir()?;
     runtime()?.block_on(async {

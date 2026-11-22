@@ -247,6 +247,22 @@ impl CodexInput {
         Ok(())
     }
 
+    /// A viewer's resize is authoritative (SPEC-623 FIN-002): it keeps a probed run's saved
+    /// size current, and a record it cannot save is dropped rather than refusing the resize,
+    /// so a reattachment keeps the host's (the viewer's) size instead of a stale one.
+    fn follow_viewer(&mut self, size: (u16, u16)) {
+        if self.repaint_size.is_none() || self.remember_size(size).is_ok() {
+            return;
+        }
+        self.repaint_size = None;
+        let path = self.marker.with_file_name("codex-repaint-size");
+        if let Err(err) = std::fs::remove_file(&path)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(error = %err, "could not drop the stale Codex terminal geometry");
+        }
+    }
+
     fn record(&mut self) -> AppResult<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
 
@@ -7102,10 +7118,8 @@ impl App {
         let (cols, rows) = (cols.clamp(10, 1000), rows.clamp(5, 1000));
         let runtime = self.runtime(task_id);
         let mut run = runtime.run.lock().await;
-        if let Some(input) = run.as_mut().and_then(|run| run.codex_input.as_mut())
-            && input.repaint_size.is_some()
-        {
-            input.remember_size((cols, rows))?;
+        if let Some(input) = run.as_mut().and_then(|run| run.codex_input.as_mut()) {
+            input.follow_viewer((cols, rows));
         }
         runtime.hub.resize(cols, rows);
         crate::race::reached(
