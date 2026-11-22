@@ -527,6 +527,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0459 -->
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
+- [0462](0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md): Notices carry a key and an expiry, and the newest per key wins
 <!-- ADR 0462 -->
 <!-- ADR 0463 -->
 <!-- ADR 0464 -->

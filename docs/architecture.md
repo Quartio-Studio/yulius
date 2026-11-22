@@ -3117,6 +3117,48 @@ sequenceDiagram
   T-->>C: notification
 ```
 
+## Notices: a key and an expiry
+
+Notices for people carry a key and an expiry
+([SPEC-624](../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md),
+[decision 0462](decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md)).
+
+- **Posting.** `App::post_notice` (`crates/yulius-app/src/notices.rs`) takes a `NewNotice`: a
+  project or none, an optional recipient, `admin_only`, a `NoticeKey`
+  (`yulius_domain::notice`), a category (the Telegram choice), a tone, texts, a link, `decision`
+  and an optional `Expiry`. It resolves the expiry (`notice_expiry`: a decision never expires
+  and refuses an expiry), cuts and redacts the texts as the project's transcripts are, and stores
+  the notice. `NoticeStore::put_notice` (migration 0091, `notices`) deletes the notice with the
+  same project, recipient and key, and its dismissals, inserts the new one and keeps the scope's
+  newest 200, all in one transaction. The notice is then published as `notice.posted` in an
+  envelope with its project, recipient and `admin_only`.
+- **Reading.** `App::notices_for` reads the live, undismissed notices addressed to the person or
+  to nobody in particular, and keeps those whose envelope reaches them (`envelope_reaches`, the
+  event stream's rule). `GET /api/me/notices`, the person tools `notices_list` and
+  `notice_dismiss`, and the digest use it. The background tick deletes expired notices
+  (`prune_notices_now`). A producer removes a notice by its scope and key (`notice.removed`).
+- **Telegram.** The notifier turns `notice.posted` into a message and gives task-state, control,
+  shared-cause and subscription messages a scope (`<project or ->:<key>`; a task's is
+  `task:<task id>`). After the send queue sends a scoped message, `swap_keyed_message`
+  (`telegram_keyed`) returns the bot's earlier message for that scope in the chat, and the bot
+  deletes it (`NotificationChannel::delete`, Telegram's `deleteMessage`). A refused delete leaves
+  the old message in the chat.
+- **Digest.** Each person's digest lists up to 20 of their live notices (`DigestView.notices`).
+  Its items carry `task:<task id>`, and its Telegram message has the scope `-:digest`, so today's
+  digest replaces yesterday's.
+
+```mermaid
+flowchart LR
+  P["producer or script watch"] -->|"NewNotice: key, expiry"| A["App::post_notice"]
+  A -->|"replace by project, recipient, key"| DB[("notices")]
+  A -->|"notice.posted (envelope)"| BUS["event bus"]
+  BUS --> WEB["open pages: the bell"]
+  BUS --> N["notifier"] -->|"scoped message"| Q["send queue"]
+  Q -->|"send, then delete the earlier one"| TG["Telegram chat"]
+  DB -->|"live, undismissed, visible"| R["GET /api/me/notices · notices_list · digest"]
+  T["tick"] -->|"delete expired"| DB
+```
+
 ## Vidoc: the instance key and the security scan
 
 Vidoc is an optional instance service, like Jev
