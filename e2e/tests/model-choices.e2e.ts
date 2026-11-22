@@ -12,11 +12,12 @@ type Mocked = {
   };
 };
 
-test('an untouched new task inherits the Codex model and effort', async ({ app, browser, screen }) => {
+// SPEC-620 CDM-003: a browser with no saved model starts on Opus 5.5 (Claude Code).
+test('an untouched new task runs Claude Code on Opus 5.5 at the inherited effort', async ({ app, browser, screen }) => {
   await app.open(mock('/settings'));
-  await expect(screen.getByRole('button', /^Model for new tasks:/)).toContainText('Codex default');
-  await app.open(mock('/s/studio', '&codex=1'));
-  await expect(screen.getByRole('button', /^Model:/)).toContainText('Codex default');
+  await expect(screen.getByRole('button', /^Model for new tasks:/)).toContainText('Opus 5.5');
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('button', /^Model:/)).toContainText('Opus 5.5');
   await screen.getByRole('textbox', 'Task prompt').fill('Add a health check');
   await screen.getByRole('button', 'Start task').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
@@ -24,29 +25,32 @@ test('an untouched new task inherits the Codex model and effort', async ({ app, 
     const { lastTaskCreate, tasks } = (window as unknown as Mocked).__yuliusMock;
     return { lastTaskCreate, task: tasks.at(-1) };
   });
-  expect(lastTaskCreate.harness).toBe('codex');
-  expect(Object.hasOwn(lastTaskCreate, 'model')).toBe(false);
+  expect(lastTaskCreate.model).toBe('claude-opus-5-5');
+  expect(Object.hasOwn(lastTaskCreate, 'harness')).toBe(false);
   expect(Object.hasOwn(lastTaskCreate, 'effort')).toBe(false);
-  expect(task).toMatchObject({ harness: 'codex', harness_choice: 'chosen', model: 'gpt-6.2-astra', model_default: true, effort: 'high' });
+  expect(task).toMatchObject({ harness: 'claude', harness_choice: 'chosen', model: 'claude-opus-5-5', effort: 'high' });
 });
 
-test('unrecognized and unreadable saved models recover to Codex', async ({ app, browser, screen }) => {
+test('unrecognized and unreadable saved models recover to Opus 5.5, a saved Codex default stays', async ({ app, browser, screen }) => {
   await app.open(mock('/settings'));
-  for (const raw of ['"removed-model"', '{']) {
+  for (const [raw, shown] of [['"removed-model"', 'Opus 5.5'], ['{', 'Opus 5.5'], ['"codex"', 'Codex default']]) {
     await browser.evaluate((value) => localStorage.setItem('yulius.composer.model', value), raw);
     await app.open(mock('/s/studio'));
-    await expect(screen.getByRole('button', /^Model:/)).toContainText('Codex default');
+    await expect(screen.getByRole('button', /^Model:/)).toContainText(shown);
     await app.open(mock('/settings'));
+    await expect(screen.getByRole('button', /^Model for new tasks:/)).toContainText(shown);
   }
 });
 
-test('the untouched composer offers the Codex connection when no subscription is usable', async ({ app, browser, screen }) => {
+test('the untouched composer offers the Claude connection when no subscription is usable', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&claude=0'));
-  await expect(screen.getByRole('link', 'Connect Codex')).toHaveAttribute('href', /\/admin\/accounts\?add=codex$/);
+  await expect(screen.getByRole('link', 'Connect Claude')).toHaveAttribute('href', /\/admin\/accounts\?add=1$/);
   await screen.getByRole('textbox', 'Task prompt').fill('Add a health check');
   await screen.getByRole('button', 'Start task').click();
-  await browser.locator('.toast-error').getByRole('button', { name: 'Connect Codex' }).click();
-  await expect(screen.getByRole('dialog', 'Add a Codex subscription')).toBeVisible();
+  const toast = browser.locator('.toast-error');
+  await expect(toast).toContainText('Connect a Claude account first');
+  await toast.getByRole('button', { name: 'Connect Claude' }).click();
+  await expect(screen.getByRole('dialog', 'Add a Claude subscription')).toBeVisible();
 });
 
 for (const choice of [

@@ -111,7 +111,7 @@ const storedThumbs = (browser: Browser) => browser.evaluate(() => {
 type Holding = Window & { __yuliusMock: { holdUpload?: Promise<void>; holdCreate?: Promise<void>; tasks: { prompt: string }[] }; __release?: () => void };
 
 test('the draft survives a reload and is cleared once the task starts', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await screen.getByRole('textbox', 'Task prompt').fill('Kept across a reload');
   await dropImage(browser, 'screen.png');
   await drop(browser, [['notes.pdf', 'pdf', 'application/pdf']]);
@@ -191,7 +191,7 @@ test('an upload that ends after leaving and coming back shows in the composer', 
 });
 
 test('a file whose upload ends while the prompt is being read says it was not added', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await browser.evaluate(() => {
     const w = window as unknown as Holding & { __releaseCreate?: () => void };
     w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
@@ -210,7 +210,7 @@ test('a file whose upload ends while the prompt is being read says it was not ad
 });
 
 test('a task still starting is not started again from a returned composer', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   const before = await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.length);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
@@ -236,7 +236,7 @@ const MIXED = [
 ].join('\n');
 
 test('a split into several tasks clears the draft too', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
   await drop(browser, [['spec.pdf', 'pdf', 'application/pdf']]);
@@ -374,7 +374,7 @@ test('three unfinished drafts keep their own prompts, images and choices through
     sessionStorage.setItem('seeded', '1');
     localStorage.setItem('yulius.draft.usr_1.sb_studio', JSON.stringify({ text: 'First request', mode: 'goal' }));
   });
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await expect.poll(() => promptText(browser)).toBe('First request');
   await dropImage(browser, 'design.png');
@@ -441,7 +441,7 @@ test('switching unfinished drafts keeps late uploads with their owner and discar
 });
 
 test('a failed start preserves both unfinished drafts until sign-out', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1&failpost=/api/sandboxes/sb_studio/tasks'));
+  await app.open(mock('/s/studio', '&failpost=/api/sandboxes/sb_studio/tasks'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Other request');
   await screen.getByRole('button', 'New draft').click();
@@ -483,7 +483,7 @@ test('the draft picker follows changes to an inactive draft in another tab', asy
 });
 
 test('a task that finishes starting while another draft is open leaves that editor in place', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
     w.__yuliusMock.holdCreate = new Promise<void>((resolve) => { w.__release = resolve; });
@@ -558,7 +558,7 @@ for (const action of ['Discard saved draft', 'Discard before typing', 'Erase pro
 for (const fail of [false, true]) {
   test(`a reopened starting draft is read-only until creation ${fail ? 'fails' : 'succeeds'}`, async ({ app, browser, screen }) => {
     const path = '/api/sandboxes/sb_studio/tasks';
-    await app.open(mock('/s/studio', `&codex=1&holdpost=${path}${fail ? '&failpost=' + path : ''}`));
+    await app.open(mock('/s/studio', `&holdpost=${path}${fail ? '&failpost=' + path : ''}`));
     const prompt = screen.getByRole('textbox', 'Task prompt');
     await prompt.fill('Already submitted');
     await prompt.press('ControlOrMeta+Enter');

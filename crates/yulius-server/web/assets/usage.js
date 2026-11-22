@@ -5,7 +5,7 @@
 // and how old the reading is. The card, the Status panel and "Run #N on…" all ask here.
 
 import { relLong, resetLabel } from './format.js';
-import { PROVIDERS, fallbackOf } from './models.js';
+import { DEFAULT_MODEL, fallbackOf } from './models.js';
 import { agentOfProvider } from './agents.js';
 
 /** A subscription works while it reads `ok` or `limited`: the server's one rule (`AccountStatus::healthy`). */
@@ -19,9 +19,6 @@ export const needsSignIn = (account) => Boolean(account.status) && !works(accoun
  * every 5 minutes, so an older one means the round is backing off or cannot read.
  */
 export const STALE_AFTER_MS = 10 * 60 * 1000;
-
-/** The model a task runs when it names none: the first one offered, as on the server. */
-const DEFAULT_MODEL = PROVIDERS[0].models[0].id;
 
 /** The windows a card shows, by their key in the API's usage: the name people read. */
 const WINDOWS = [

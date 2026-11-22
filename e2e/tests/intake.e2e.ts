@@ -16,7 +16,7 @@ const MIXED = [
 ].join('\n');
 
 test('a request mixing UI and backend work offers a split; a chain waits for its predecessor', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   // The mock holds its proposal until released, so the waiting card is there to look at however
   // slowly the page is driven.
   await browser.evaluate(() => {
@@ -60,7 +60,7 @@ test('a request mixing UI and backend work offers a split; a chain waits for its
 });
 
 test('"Keep as one task" creates the task as written', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
   await prompt.press('ControlOrMeta+Enter');
@@ -71,7 +71,7 @@ test('"Keep as one task" creates the task as written', async ({ app, browser, sc
 });
 
 test('a short request starts at once and "Run after" chains it', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   // The choices are the sandbox's tasks: wait until the list has loaded.
   await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
@@ -88,7 +88,7 @@ test('a short request starts at once and "Run after" chains it', async ({ app, b
 const BROAD = 'Harden the security of the whole product: headers, secrets and every endpoint.';
 
 test('a broad request started now is stopped and offered as a supertask; "Run as a supertask" creates one (SPEC-188)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&hold=/api/sandboxes/sb_studio/tasks&codex=1'));
+  await app.open(mock('/s/studio', '&hold=/api/sandboxes/sb_studio/tasks'));
   // Simulate a first list response that arrives after the ordinary five-second assertion budget.
   await browser.evaluate(() => {
     const db = (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock;
@@ -117,7 +117,7 @@ test('a broad request started now is stopped and offered as a supertask; "Run as
 });
 
 test('"Start as chosen" keeps the chosen start; the card says a supertask replaces "Run after" (SPEC-188)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
@@ -133,7 +133,7 @@ test('"Start as chosen" keeps the chosen start; the card says a supertask replac
 });
 
 test('"Run as a supertask" replaces a chosen "Run after" (SPEC-188)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
@@ -149,7 +149,7 @@ test('"Run as a supertask" replaces a chosen "Run after" (SPEC-188)', async ({ a
 });
 
 test('changing the start choice closes the supertask proposal, so it never names a stale choice (SPEC-188)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
@@ -200,7 +200,7 @@ test('a broad task prepared "When I decide" is never stopped (SPEC-188)', async 
 });
 
 test('closing the supertask proposal keeps the prompt; a chosen Supertask and focused work are never stopped (SPEC-188)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await firstShown(screen.getByRole('link', /Checkout API/).first());
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(BROAD);
@@ -274,7 +274,7 @@ test('picked conditions become the canonical start rule text (unit, in the page)
 });
 
 test('"Run after" builds a start rule from picked conditions; the task waits for it', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^When a rule is true/).click();
