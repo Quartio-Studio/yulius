@@ -22,6 +22,7 @@ use yulius_domain::vault::{
     Injection, PLACEHOLDER_PREFIX, SecretName, placeholder, substitute_placeholders,
 };
 
+use super::rules::RuleCheck;
 use super::{AgentPayload, SecretUser};
 use crate::context::App;
 use crate::coordination::ProjectCaller;
@@ -1359,9 +1360,22 @@ impl EgressPolicy for App {
                 ),
             };
         }
-        // Secrets that add a header the request lacks, grouped by header.
+        // A secret with rules is used only by a request they allow (SPEC-627 MPR-002): its
+        // placeholder, its name in X-Yulius-Secret or its injected header outside them refuses
+        // the request, unless another secret's rules allow that header (MPR-003).
+        let check = RuleCheck::of(&request);
+        let mut denied: Vec<&VaultSecretRecord> = Vec::new();
+        let named = used.iter().chain(chosen.iter());
+        for (record, _) in bound.iter().filter(|(r, _)| named.clone().any(|n| n == &r.name)) {
+            if !check.fits(record) {
+                denied.push(record);
+            }
+        }
+        // Secrets that add a header the request lacks, grouped by header; those outside their
+        // rules apart.
         let mut wanting: BTreeMap<String, Vec<&(VaultSecretRecord, AgentPayload)>> =
             BTreeMap::new();
+        let mut unfit: BTreeMap<String, Vec<&VaultSecretRecord>> = BTreeMap::new();
         for entry in &bound {
             let (record, _) = entry;
             if chosen.as_ref().is_some_and(|c| c != &record.name) {
@@ -1370,8 +1384,24 @@ impl EgressPolicy for App {
             if let Some(header) = injection_of(record).header_name()
                 && !headers.iter().any(|(n, _)| n == &header)
             {
-                wanting.entry(header).or_default().push(entry);
+                if check.fits(record) {
+                    wanting.entry(header).or_default().push(entry);
+                } else {
+                    unfit.entry(header).or_default().push(record);
+                }
             }
+        }
+        for (header, records) in unfit {
+            if !wanting.contains_key(&header) {
+                denied.extend(records);
+            }
+        }
+        denied.sort_by(|a, b| a.name.cmp(&b.name));
+        denied.dedup_by(|a, b| a.id == b.id);
+        if !denied.is_empty() {
+            self.note_refusals(client, &check, &request.host, &denied)
+                .await;
+            return check.refusal(&request.host, &denied);
         }
         for (header, entries) in wanting {
             if entries.len() > 1 {
