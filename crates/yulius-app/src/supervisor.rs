@@ -5521,22 +5521,23 @@ impl App {
         Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
     )> {
         let store = &self.deps.store;
-        let mut working = Vec::new();
-        let mut idle = Vec::new();
+        let mut rows = Vec::new();
         for attempt in store.live_attempts().await? {
-            if let Some(task) = store.task(&attempt.task_id).await?
-                && let Some(completion) = self.local_completion(task).await
+            let completion = match store.task(&attempt.task_id).await? {
+                Some(task) => self.local_completion(task).await,
+                None => None,
+            };
+            rows.push((attempt, completion));
+        }
+        let mut working = Vec::new();
+        let mut cleared = Vec::new();
+        for (attempt, completion) in rows {
+            if let Some((task, record)) = completion
+                && let Some(guard) = self.hold_live_delivery(&task, record.as_ref()).await
             {
-                idle.push((attempt, completion));
+                cleared.push(guard);
             } else {
                 working.push(attempt);
-            }
-        }
-        let mut cleared = Vec::new();
-        for (attempt, (task, record)) in idle {
-            match self.hold_live_delivery(&task, record.as_ref()).await {
-                Some(guard) => cleared.push(guard),
-                None => working.push(attempt),
             }
         }
         Ok((working, cleared))
