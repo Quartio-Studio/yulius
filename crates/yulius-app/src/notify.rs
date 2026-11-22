@@ -81,9 +81,19 @@ struct Notice {
     scope: Option<String>,
 }
 
-/// A notice's scope in a chat: its project (`-` for none) and key.
-fn chat_scope(sandbox: Option<&yulius_domain::ids::SandboxId>, key: &NoticeKey) -> String {
-    format!("{}:{key}", sandbox.map_or("-", |s| s.as_str()))
+/// A notice's scope in a chat: its project and recipient (`-` for none) and key, so a notice
+/// for one person and a project-wide one with the same key keep their own messages (review
+/// round 1).
+fn chat_scope(
+    sandbox: Option<&yulius_domain::ids::SandboxId>,
+    recipient: Option<&UserId>,
+    key: &NoticeKey,
+) -> String {
+    format!(
+        "{}:{}:{key}",
+        sandbox.map_or("-", |s| s.as_str()),
+        recipient.map_or("-", |u| u.as_str())
+    )
 }
 
 impl NotifierState {
@@ -218,7 +228,7 @@ impl App {
             // it has one.
             UiEvent::NoticePosted { notice } => {
                 notices.push(Ok(self
-                    .posted_notice(notice)
+                    .posted_notice(notice, envelope.user.as_ref())
                     .await
                     .map(|n| (n, envelope.user.clone()))));
             }
@@ -251,6 +261,7 @@ impl App {
     async fn posted_notice(
         &self,
         notice: &yulius_contracts::api::notices::NoticeView,
+        recipient: Option<&UserId>,
     ) -> Option<Notice> {
         let kind = NoticeKind::parse(&notice.category)?;
         let key = NoticeKey::parse(&notice.key).ok()?;
@@ -274,7 +285,7 @@ impl App {
             headline,
             text,
             about: None,
-            scope: Some(chat_scope(sandbox.as_ref().map(|s| &s.id), &key)),
+            scope: Some(chat_scope(sandbox.as_ref().map(|s| &s.id), recipient, &key)),
         })
     }
 
@@ -315,6 +326,7 @@ impl App {
             }),
             scope: Some(chat_scope(
                 Some(&task.sandbox_id),
+                None,
                 &NoticeKey::lossy("control:", task.id.as_str()),
             )),
         }))
@@ -363,6 +375,7 @@ impl App {
                 }),
                 scope: Some(chat_scope(
                     Some(&task.sandbox_id),
+                    None,
                     &NoticeKey::lossy("control:", task.id.as_str()),
                 )),
             },
@@ -600,6 +613,7 @@ impl App {
             // One message per task, or per sandbox-wide problem (the spec's table).
             scope: Some(chat_scope(
                 Some(&task.sandbox_id),
+                None,
                 &shared.map_or_else(
                     || NoticeKey::task(task.id.as_str()),
                     |(cause, _, _)| NoticeKey::lossy("needs-you:", cause),
@@ -637,7 +651,11 @@ impl App {
             headline: redact(headline),
             text: redact(text),
             about: None,
-            scope: Some(chat_scope(None, &NoticeKey::lossy("account:", &account.id))),
+            scope: Some(chat_scope(
+                None,
+                None,
+                &NoticeKey::lossy("account:", &account.id),
+            )),
         })
     }
 

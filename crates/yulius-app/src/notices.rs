@@ -22,7 +22,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::events::{Envelope, Reach};
 use crate::model::UserRecord;
-use crate::ports::store_ext::NoticeRecord;
+use crate::ports::store_ext::{NoticeReach, NoticeRecord};
 
 /// Notices kept per project and recipient (NTC-004); the oldest go first.
 pub const NOTICES_KEPT: usize = 200;
@@ -32,6 +32,13 @@ pub const NOTICES_LISTED: usize = 200;
 pub const TITLE_MAX: usize = 300;
 /// Longest detail, in characters; a longer one is cut.
 pub const DETAIL_MAX: usize = 4000;
+/// Key prefixes of the notices Yulius derives from task state and its digest (the spec's
+/// table): a posted notice may not use them, so it never shares their place in a chat.
+pub const DERIVED_KEYS: [&str; 4] = ["task:", "control:", "needs-you:", "digest"];
+
+/// Posts are stored and published one at a time, so pages and chats hear two posts of one key in
+/// the order the store kept them (review round 1).
+static POSTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A notice to post (SPEC-624): what Yulius's producers and script watches (#614) build.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,18 +149,30 @@ fn cut(text: &str, max: usize) -> String {
 
 impl App {
     /// Posts `new` (SPEC-624): it replaces the notice with its project, recipient and key, and
-    /// reaches the open pages and chats of the people who see it. Texts are cut and redacted as
-    /// the project's transcripts are.
+    /// reaches the open pages and chats of the people who see it. Texts are redacted as the
+    /// project's transcripts are, then cut.
     ///
     /// # Errors
-    /// `Invalid` for an empty title, a link that is not a path in Yulius, an expiry that is not
-    /// in the future, or a decision with an expiry (NTC-005); store failures.
+    /// `Invalid` for an empty title, a key of the derived notices ([`DERIVED_KEYS`]), a link that
+    /// is not a path in Yulius, an expiry that is not in the future, or a decision with an
+    /// expiry (NTC-005); store failures.
     pub async fn post_notice(&self, new: NewNotice) -> AppResult<NoticeRecord> {
         if new.title.trim().is_empty() {
             return Err(AppError::Invalid("a notice needs a title".into()));
         }
+        if DERIVED_KEYS.iter().any(|p| new.key.as_str().starts_with(p)) {
+            return Err(AppError::Invalid(format!(
+                "a notice key may not start with {}: Yulius keeps those for its own notices",
+                DERIVED_KEYS.join(", ")
+            )));
+        }
+        // A path in Yulius: one `/`, and nothing a browser reads as another host (`/\\host`,
+        // control characters).
         if let Some(link) = &new.link
-            && (!link.starts_with('/') || link.starts_with("//"))
+            && (!link.starts_with('/')
+                || link.starts_with("//")
+                || link.contains('\\')
+                || link.chars().any(char::is_control))
         {
             return Err(AppError::Invalid(
                 "a notice's link is a path in Yulius, starting with one /".into(),
@@ -168,13 +187,17 @@ impl App {
         )
         .map_err(AppError::Invalid)?;
         let sandbox = new.sandbox.as_ref();
-        let title = self
-            .redact_posted_notice(sandbox, cut(&new.title, TITLE_MAX))
-            .await;
+        // Redacted whole, then cut: a cut first could leave a secret's prefix that no longer
+        // matches (review round 1).
+        let title = cut(
+            &self.redact_posted_notice(sandbox, new.title.clone()).await,
+            TITLE_MAX,
+        );
         let detail = match new.detail.as_deref().map(str::trim) {
-            Some(d) if !d.is_empty() => {
-                Some(self.redact_posted_notice(sandbox, cut(d, DETAIL_MAX)).await)
-            }
+            Some(d) if !d.is_empty() => Some(cut(
+                &self.redact_posted_notice(sandbox, d.to_owned()).await,
+                DETAIL_MAX,
+            )),
             _ => None,
         };
         let id: String = self
@@ -200,7 +223,11 @@ impl App {
             created_at: now,
             expires_at,
         };
-        self.deps.store.put_notice(&notice, NOTICES_KEPT).await?;
+        let _posting = POSTING.lock().await;
+        let put = self.deps.store.put_notice(&notice, NOTICES_KEPT).await?;
+        for dropped in &put.dropped {
+            self.publish_removed(dropped);
+        }
         self.events.publish_envelope(envelope_of(
             &notice,
             UiEvent::NoticePosted {
@@ -208,6 +235,18 @@ impl App {
             },
         ));
         Ok(notice)
+    }
+
+    /// Tells the pages that see `removed` that it is gone.
+    fn publish_removed(&self, removed: &NoticeRecord) {
+        self.events.publish_envelope(envelope_of(
+            removed,
+            UiEvent::NoticeRemoved {
+                id: removed.id.clone(),
+                sandbox_id: removed.sandbox.as_ref().map(ToString::to_string),
+                key: removed.key.to_string(),
+            },
+        ));
     }
 
     /// `text` redacted as `sandbox`'s transcripts are; instance-wide by credential shapes.
@@ -229,17 +268,11 @@ impl App {
         to: Option<&UserId>,
         key: &NoticeKey,
     ) -> AppResult<bool> {
+        let _posting = POSTING.lock().await;
         let Some(removed) = self.deps.store.remove_notice(sandbox, to, key).await? else {
             return Ok(false);
         };
-        self.events.publish_envelope(envelope_of(
-            &removed,
-            UiEvent::NoticeRemoved {
-                id: removed.id.clone(),
-                sandbox_id: removed.sandbox.as_ref().map(ToString::to_string),
-                key: removed.key.to_string(),
-            },
-        ));
+        self.publish_removed(&removed);
         Ok(true)
     }
 
@@ -255,11 +288,31 @@ impl App {
     ) -> AppResult<Vec<NoticeRecord>> {
         let now = self.now();
         let mut reach = Reach::default();
+        // Where they may come from is decided before the read's limit, so notices of projects
+        // the reader cannot see never crowd theirs out (review round 1); `envelope_reaches`
+        // below stays the exact rule.
+        // Only the projects holding such notices are asked about, so a read costs no
+        // permission lookups for the others.
+        let held = match sandbox {
+            Some(sandbox) => vec![sandbox.clone()],
+            None => self.deps.store.notice_sandboxes(&user.id, now).await?,
+        };
+        let mut sandboxes = Vec::new();
+        for id in held {
+            if self.can_view(user, &id).await {
+                sandboxes.push(id);
+            }
+        }
+        let from = NoticeReach {
+            sandboxes,
+            instance_wide: !self.is_guest(user),
+            admin: user.is_superadmin || user.is_instance_admin,
+        };
         let mut shown = Vec::new();
         for notice in self
             .deps
             .store
-            .live_notices(&user.id, now, NOTICES_LISTED)
+            .live_notices(&user.id, &from, now, NOTICES_LISTED)
             .await?
         {
             if !live(notice.expires_at, now)

@@ -28,6 +28,17 @@ use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 use crate::task_edit::{BulkAction, EditTask};
 
+/// The person's tools that need only view access on the project yet change something of the
+/// person's own (dismissing their notice, SPEC-624): a read-only token may not call them, and
+/// their calls are audited like any change (review round 1).
+pub(crate) const PERSONAL_CHANGES: &[&str] = &["notice_dismiss"];
+
+/// Whether a call of `name`, which needs `action` on the project, changes something: it is
+/// audited, and a read-only token may not make it.
+pub(crate) fn changes(name: &str, action: Action) -> bool {
+    action != Action::View || PERSONAL_CHANGES.contains(&name)
+}
+
 /// Every person's project tool and the action it needs on the project.
 pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("task_delivery", Action::View),

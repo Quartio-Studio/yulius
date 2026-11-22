@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
-use yulius_app::ports::store_ext::{NoticeRecord, NoticeStore};
+use yulius_app::ports::store_ext::{NoticeReach, NoticeRecord, NoticeStore, PutNotice};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::notice::{NoticeKey, NoticeTone};
 use yulius_domain::notify::NoticeKind;
@@ -15,6 +15,9 @@ use crate::{SqliteStore, db};
 
 const COLS: &str = "id, sandbox_id, user_id, admin_only, notice_key, category, tone, title, \
                     detail, link, decision, created_at, expires_at";
+
+/// How long the bot's message stays deletable (Telegram: 48 hours); an older one is forgotten.
+pub(crate) const KEYED_MESSAGE_MS: i64 = 48 * 3_600_000;
 
 /// The scope's condition on `notices` (`?1` sandbox, `?2` user, both `''` for none).
 const SCOPE: &str = "COALESCE(sandbox_id, '') = ?1 AND COALESCE(user_id, '') = ?2";
@@ -62,11 +65,7 @@ fn scope_of(sandbox: Option<&SandboxId>, user: Option<&UserId>) -> (String, Stri
 
 #[async_trait]
 impl NoticeStore for SqliteStore {
-    async fn put_notice(
-        &self,
-        notice: &NoticeRecord,
-        keep: usize,
-    ) -> AppResult<Option<NoticeRecord>> {
+    async fn put_notice(&self, notice: &NoticeRecord, keep: usize) -> AppResult<PutNotice> {
         if notice.decision && notice.expires_at.is_some() {
             return Err(AppError::Invalid(
                 "a notice that waits for a decision never expires".into(),
@@ -112,17 +111,23 @@ impl NoticeStore for SqliteStore {
                 ],
             )
             .map_err(db)?;
-            // The scope keeps its newest `keep` (NTC-004).
-            tx.execute(
-                &format!(
-                    "DELETE FROM notices WHERE id IN (SELECT id FROM notices WHERE {SCOPE} \
-                     ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?3)"
-                ),
-                params![sandbox, user, keep],
-            )
-            .map_err(db)?;
+            // The scope keeps `keep` (NTC-004): its decisions first, then the newest, so a
+            // burst of reports never drops a decision (NTC-005).
+            let dropped = {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "DELETE FROM notices WHERE id IN (SELECT id FROM notices WHERE {SCOPE} \
+                         ORDER BY decision DESC, created_at DESC, id DESC LIMIT -1 OFFSET ?3) \
+                         RETURNING {COLS}"
+                    ))
+                    .map_err(db)?;
+                stmt.query_map(params![sandbox, user, keep], from_row)
+                    .map_err(db)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db)?
+            };
             tx.commit().map_err(db)?;
-            Ok(replaced)
+            Ok(PutNotice { replaced, dropped })
         })
         .await
     }
@@ -172,26 +177,67 @@ impl NoticeStore for SqliteStore {
     async fn live_notices(
         &self,
         user: &UserId,
+        reach: &NoticeReach,
         now: Timestamp,
         limit: usize,
     ) -> AppResult<Vec<NoticeRecord>> {
         let user = user.to_string();
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let sandboxes = serde_json::to_string(
+            &reach
+                .sandboxes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        )
+        .map_err(AppError::internal)?;
+        let (instance_wide, admin) = (reach.instance_wide, reach.admin);
         self.call(move |c| {
+            // The reader's reach is applied before the limit, so notices they cannot see never
+            // crowd theirs out (review round 1).
             let mut stmt = c
                 .prepare(&format!(
                     "SELECT {COLS} FROM notices n \
                      WHERE (n.user_id IS NULL OR n.user_id = ?1) \
+                       AND (n.sandbox_id IN (SELECT value FROM json_each(?4)) \
+                            OR (n.sandbox_id IS NULL AND ?5)) \
+                       AND (n.admin_only = 0 OR ?6) \
                        AND (n.expires_at IS NULL OR n.expires_at > ?2) \
                        AND NOT EXISTS (SELECT 1 FROM notice_dismissals d \
                                        WHERE d.notice_id = n.id AND d.user_id = ?1) \
                      ORDER BY n.created_at DESC, n.id DESC LIMIT ?3"
                 ))
                 .map_err(db)?;
-            stmt.query_map(params![user, now.0, limit], from_row)
+            stmt.query_map(
+                params![user, now.0, limit, sandboxes, instance_wide, admin],
+                from_row,
+            )
+            .map_err(db)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn notice_sandboxes(&self, user: &UserId, now: Timestamp) -> AppResult<Vec<SandboxId>> {
+        let user = user.to_string();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT DISTINCT sandbox_id FROM notices \
+                     WHERE sandbox_id IS NOT NULL AND (user_id IS NULL OR user_id = ?1) \
+                       AND (expires_at IS NULL OR expires_at > ?2)",
+                )
+                .map_err(db)?;
+            let ids = stmt
+                .query_map(params![user, now.0], |r| r.get::<_, String>(0))
                 .map_err(db)?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(db)
+                .map_err(db)?;
+            Ok(ids
+                .iter()
+                .filter_map(|id| SandboxId::parse(id).ok())
+                .collect())
         })
         .await
     }
@@ -247,12 +293,19 @@ impl NoticeStore for SqliteStore {
 
     async fn prune_notices(&self, now: Timestamp) -> AppResult<u64> {
         self.call(move |c| {
+            let pruned = c
+                .execute(
+                    "DELETE FROM notices WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+                    [now.0],
+                )
+                .map_err(db)?;
+            // A message the bot can no longer delete is forgotten (review round 1).
             c.execute(
-                "DELETE FROM notices WHERE expires_at IS NOT NULL AND expires_at <= ?1",
-                [now.0],
+                "DELETE FROM telegram_keyed WHERE sent_at <= ?1",
+                [now.0.saturating_sub(KEYED_MESSAGE_MS)],
             )
-            .map(|n| u64::try_from(n).unwrap_or(u64::MAX))
-            .map_err(db)
+            .map_err(db)?;
+            Ok(u64::try_from(pruned).unwrap_or(u64::MAX))
         })
         .await
     }
@@ -329,6 +382,18 @@ mod tests {
         }
     }
 
+    /// Every project of the fixture, instance-wide and administrators' notices.
+    fn everywhere() -> NoticeReach {
+        NoticeReach {
+            sandboxes: ["s1", "s2"]
+                .iter()
+                .filter_map(|s| SandboxId::parse(s).ok())
+                .collect(),
+            instance_wide: true,
+            admin: true,
+        }
+    }
+
     fn ids(list: &[NoticeRecord]) -> Vec<&str> {
         list.iter().map(|n| n.id.as_str()).collect()
     }
@@ -340,16 +405,23 @@ mod tests {
         let store = store().await?;
         let u1 = UserId::parse("u1")?;
         let first = notice("nt_1", Some("s1"), "gate:quick::a", 10);
-        assert_eq!(store.put_notice(&first, 200).await?, None);
+        assert_eq!(store.put_notice(&first, 200).await?.replaced, None);
         assert!(store.dismiss_notice("nt_1", &u1, Timestamp(11)).await?);
-        assert!(ids(&store.live_notices(&u1, Timestamp(12), 50).await?).is_empty());
+        assert!(
+            ids(&store
+                .live_notices(&u1, &everywhere(), Timestamp(12), 50)
+                .await?)
+            .is_empty()
+        );
         let second = NoticeRecord {
             title: "newer".into(),
             ..notice("nt_2", Some("s1"), "gate:quick::a", 20)
         };
-        let replaced = store.put_notice(&second, 200).await?;
+        let replaced = store.put_notice(&second, 200).await?.replaced;
         assert_eq!(replaced.map(|r| r.id), Some("nt_1".into()));
-        let live = store.live_notices(&u1, Timestamp(21), 50).await?;
+        let live = store
+            .live_notices(&u1, &everywhere(), Timestamp(21), 50)
+            .await?;
         assert_eq!(ids(&live), ["nt_2"]);
         assert_eq!(live[0].title, "newer");
         assert_eq!(store.notice("nt_1").await?, None);
@@ -375,11 +447,15 @@ mod tests {
         };
         store.put_notice(&mine, 200).await?;
         assert_eq!(
-            ids(&store.live_notices(&u1, Timestamp(5), 50).await?),
+            ids(&store
+                .live_notices(&u1, &everywhere(), Timestamp(5), 50)
+                .await?),
             ["d", "c", "b", "a"]
         );
         assert_eq!(
-            ids(&store.live_notices(&u2, Timestamp(5), 50).await?),
+            ids(&store
+                .live_notices(&u2, &everywhere(), Timestamp(5), 50)
+                .await?),
             ["c", "b", "a"],
             "a notice for one person reaches no one else"
         );
@@ -392,7 +468,9 @@ mod tests {
             .await?;
         assert_eq!(removed.map(|n| n.id), Some("a".into()));
         assert_eq!(
-            ids(&store.live_notices(&u1, Timestamp(5), 50).await?),
+            ids(&store
+                .live_notices(&u1, &everywhere(), Timestamp(5), 50)
+                .await?),
             ["d", "c", "b"]
         );
         Ok(())
@@ -413,11 +491,15 @@ mod tests {
             .put_notice(&notice("never", Some("s1"), "watch:b", 11), 200)
             .await?;
         assert_eq!(
-            ids(&store.live_notices(&u1, Timestamp(99), 50).await?),
+            ids(&store
+                .live_notices(&u1, &everywhere(), Timestamp(99), 50)
+                .await?),
             ["never", "soon"]
         );
         assert_eq!(
-            ids(&store.live_notices(&u1, Timestamp(100), 50).await?),
+            ids(&store
+                .live_notices(&u1, &everywhere(), Timestamp(100), 50)
+                .await?),
             ["never"]
         );
         assert_eq!(
@@ -465,10 +547,146 @@ mod tests {
                 .await?;
         }
         assert_eq!(
-            ids(&store.live_notices(&u1, Timestamp(9), 50).await?),
+            ids(&store
+                .live_notices(&u1, &everywhere(), Timestamp(9), 50)
+                .await?),
             ["n3", "n2", "other"]
         );
         assert!(!store.dismiss_notice("n1", &u1, Timestamp(9)).await?);
+        Ok(())
+    }
+
+    /// NTC-004, NTC-005, review round 1: the cap drops the oldest notices that wait for no
+    /// decision first, and says which it dropped.
+    #[tokio::test]
+    async fn the_cap_keeps_decisions_and_names_what_it_dropped() -> TestResult {
+        let store = store().await?;
+        let u1 = UserId::parse("u1")?;
+        let decision = NoticeRecord {
+            decision: true,
+            ..notice("decide", Some("s1"), "watch:decide", 1)
+        };
+        store.put_notice(&decision, 2).await?;
+        store
+            .put_notice(&notice("n2", Some("s1"), "k2", 2), 2)
+            .await?;
+        let put = store
+            .put_notice(&notice("n3", Some("s1"), "k3", 3), 2)
+            .await?;
+        assert_eq!(put.replaced, None);
+        assert_eq!(ids(&put.dropped), ["n2"]);
+        assert_eq!(
+            ids(&store
+                .live_notices(&u1, &everywhere(), Timestamp(9), 50)
+                .await?),
+            ["n3", "decide"]
+        );
+        Ok(())
+    }
+
+    /// Review round 1: the bot's remembered messages go with the chat's link (unlinked, the chat
+    /// changed hands, every link cleared with the bot) and once they are older than Telegram
+    /// lets a bot delete.
+    #[tokio::test]
+    async fn keyed_messages_end_with_their_chat_and_their_age() -> TestResult {
+        use yulius_app::ports::notify::ChatLinkStore as _;
+        let store = store().await?;
+        let u1 = UserId::parse("u1")?;
+        let u2 = UserId::parse("u2")?;
+        let swap = |chat: &'static str, at: i64| {
+            let store = &store;
+            async move {
+                store
+                    .swap_keyed_message(chat, "s1:-:task:t", "1", Timestamp(at))
+                    .await
+            }
+        };
+        let remembered = |chat: &'static str| {
+            let store = &store;
+            async move {
+                store
+                    .swap_keyed_message(chat, "s1:-:task:t", "2", Timestamp(5))
+                    .await
+                    .map(|earlier| earlier.is_some())
+            }
+        };
+        store.link_chat(&u1, "c1", Timestamp(1)).await?;
+        swap("c1", 1).await?;
+        store.unlink_user(&u1).await?;
+        assert!(!remembered("c1").await?, "unlinked");
+
+        store.link_chat(&u1, "c2", Timestamp(1)).await?;
+        swap("c2", 1).await?;
+        store.link_chat(&u2, "c2", Timestamp(2)).await?;
+        assert!(!remembered("c2").await?, "the chat changed hands");
+
+        store.link_chat(&u1, "c3", Timestamp(1)).await?;
+        swap("c3", 1).await?;
+        store.link_chat(&u1, "c4", Timestamp(2)).await?;
+        assert!(!remembered("c3").await?, "the person moved to another chat");
+
+        store.link_chat(&u2, "c5", Timestamp(1)).await?;
+        swap("c5", 1).await?;
+        store.clear_chat_links().await?;
+        assert!(!remembered("c5").await?, "every link cleared");
+
+        swap("c6", 0).await?;
+        store.prune_notices(Timestamp(KEYED_MESSAGE_MS)).await?;
+        assert!(!remembered("c6").await?, "older than a delete can reach");
+        swap("c7", 10).await?;
+        store.prune_notices(Timestamp(KEYED_MESSAGE_MS)).await?;
+        assert!(remembered("c7").await?, "still deletable");
+        Ok(())
+    }
+
+    /// Review round 1: the reach is applied before the limit, so a reader's one notice is not
+    /// crowded out by newer ones of a project they cannot see; admin-only and instance-wide ones
+    /// follow the reach too.
+    #[tokio::test]
+    async fn a_readers_reach_comes_before_the_limit() -> TestResult {
+        let store = store().await?;
+        let u1 = UserId::parse("u1")?;
+        store
+            .put_notice(&notice("mine", Some("s1"), "k", 1), 200)
+            .await?;
+        for n in 0..5 {
+            store
+                .put_notice(
+                    &notice(&format!("hidden{n}"), Some("s2"), &format!("k{n}"), 10 + n),
+                    200,
+                )
+                .await?;
+        }
+        let admins = NoticeRecord {
+            admin_only: true,
+            ..notice("admins", None, "account:a", 20)
+        };
+        store.put_notice(&admins, 200).await?;
+        let s1_only = NoticeReach {
+            sandboxes: vec![SandboxId::parse("s1")?],
+            instance_wide: true,
+            admin: false,
+        };
+        assert_eq!(
+            ids(&store.live_notices(&u1, &s1_only, Timestamp(30), 1).await?),
+            ["mine"]
+        );
+        let admin = NoticeReach {
+            admin: true,
+            ..s1_only.clone()
+        };
+        assert_eq!(
+            ids(&store.live_notices(&u1, &admin, Timestamp(30), 2).await?),
+            ["admins", "mine"]
+        );
+        let guest = NoticeReach {
+            instance_wide: false,
+            ..admin
+        };
+        assert_eq!(
+            ids(&store.live_notices(&u1, &guest, Timestamp(30), 2).await?),
+            ["mine"]
+        );
         Ok(())
     }
 

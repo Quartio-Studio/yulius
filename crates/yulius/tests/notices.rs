@@ -481,3 +481,159 @@ async fn the_digest_lists_live_notices_only() -> TestResult {
     assert_eq!(carol.body, Value::Null, "carol sees no notice and no task");
     Ok(())
 }
+
+/// Review round 1: a reader's notices are found behind many newer ones of a project they cannot
+/// see; the read's limit applies to what they may see.
+#[tokio::test]
+async fn hidden_notices_never_crowd_out_a_readers_own() -> TestResult {
+    let p = people().await?;
+    let other = support::seed_sandbox(&p.w.h, "s2", "other", "u-alice")
+        .await?
+        .id;
+    p.w.h
+        .app
+        .post_notice(gate(&p.shop, "mine", "Bob's project is red")?)
+        .await?;
+    for n in 0..yulius_app::notices::NOTICES_LISTED {
+        p.w.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        p.w.h
+            .app
+            .post_notice(gate(&other, &format!("t{n}"), "Elsewhere")?)
+            .await?;
+    }
+    assert_eq!(
+        listed(&p, &p.bob.1).await?,
+        vec![pair("gate:mine", "Bob's project is red")]
+    );
+    let (_, _, tool) = remote(
+        &p,
+        &p.bob.2,
+        "notices_list",
+        json!({"project": "acme/shop"}),
+    )
+    .await?;
+    assert_eq!(tool["notices"].as_array().map(Vec::len), Some(1), "{tool}");
+    Ok(())
+}
+
+/// Review round 1: dismissing changes the person's own state: a read-only token may not, and an
+/// operate token's call is audited; someone else's personal notice cannot be dismissed.
+#[tokio::test]
+async fn a_dismissal_is_a_change_of_ones_own() -> TestResult {
+    use yulius_app::ports::store_ext::AutomationStore as _;
+    let p = people().await?;
+    let posted =
+        p.w.h
+            .app
+            .post_notice(gate(&p.shop, "quick::a", "Red")?)
+            .await?;
+    let made = call(
+        &p.w.h.router,
+        Method::POST,
+        "/api/me/tokens",
+        Some(json!({"label": "reader", "scope": "read"})),
+        &p.bob.1,
+    )
+    .await?;
+    let read = Creds {
+        bearer: made.body["token"].as_str().map(str::to_owned),
+        ..Creds::default()
+    };
+    let args = json!({"project": "acme/shop", "id": posted.id});
+    let (error, said, _) = remote(&p, &read, "notice_dismiss", args.clone()).await?;
+    assert!(error && said.contains("read-only"), "{said}");
+    assert_eq!(listed(&p, &p.bob.1).await?.len(), 1);
+    let (error, said, _) = remote(&p, &p.bob.2, "notice_dismiss", args).await?;
+    assert!(!error, "{said}");
+    let audited: Vec<String> =
+        p.w.h
+            .store
+            .automation_audit(p.shop.as_str(), 50)
+            .await?
+            .into_iter()
+            .filter(|e| e.action == "remote.tool")
+            .filter_map(|e| e.detail)
+            .filter(|d| d.contains("notice_dismiss"))
+            .collect();
+    assert_eq!(audited.len(), 1, "the operate call: {audited:?}");
+
+    let alices =
+        p.w.h
+            .app
+            .post_notice(NewNotice {
+                to: Some(p.alice.0.id.clone()),
+                ..gate(&p.shop, "yours", "Only for alice")?
+            })
+            .await?;
+    let refused = p.w.h.app.dismiss_notice(&p.bob.0, &alices.id).await;
+    assert!(
+        matches!(refused, Err(yulius_app::error::AppError::NotFound)),
+        "{refused:?}"
+    );
+    assert_eq!(listed(&p, &p.alice.1).await?.len(), 2);
+    Ok(())
+}
+
+/// Review round 1: a secret is redacted before a long text is cut, so no prefix of it is kept;
+/// a link a browser reads as another host and a key Yulius keeps for its own notices are
+/// refused.
+#[tokio::test]
+async fn texts_are_redacted_whole_and_links_and_keys_checked() -> TestResult {
+    const SECRET: &str = "s3cret-notice-value-0a1b2c3d4e5f";
+    let p = people().await?;
+    let created = call(
+        &p.w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "PAYMENT_KEY", "value": SECRET})),
+        &p.alice.1,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let straddling = format!(
+        "{}{SECRET}",
+        "x".repeat(yulius_app::notices::TITLE_MAX - 10)
+    );
+    let posted =
+        p.w.h
+            .app
+            .post_notice(gate(&p.shop, "long", &straddling)?)
+            .await?;
+    assert!(!posted.title.contains(&SECRET[..8]), "{}", posted.title);
+    for link in [
+        "/\\elsewhere.example",
+        "/s/shop\n/ci",
+        "https://elsewhere.example",
+    ] {
+        let refused =
+            p.w.h
+                .app
+                .post_notice(NewNotice {
+                    link: Some(link.into()),
+                    ..gate(&p.shop, "x", "X")?
+                })
+                .await;
+        assert!(
+            matches!(refused, Err(yulius_app::error::AppError::Invalid(_))),
+            "{link:?}"
+        );
+    }
+    for key in ["task:t1", "control:t1", "needs-you:docker", "digest"] {
+        let refused =
+            p.w.h
+                .app
+                .post_notice(NewNotice::new(
+                    Some(p.shop.clone()),
+                    NoticeKey::parse(key)?,
+                    NoticeKind::NeedsYou,
+                    NoticeTone::Info,
+                    "Mine",
+                ))
+                .await;
+        assert!(
+            matches!(refused, Err(yulius_app::error::AppError::Invalid(_))),
+            "{key}"
+        );
+    }
+    Ok(())
+}

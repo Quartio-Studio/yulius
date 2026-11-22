@@ -1368,6 +1368,18 @@ async fn a_posted_notice_replaces_its_message_by_key() -> TestResult {
         2,
         "carol cannot see s1: her link reply and the barrier only"
     );
+    // A notice for alice alone with the same key is another notice: its message stands beside
+    // the project-wide one (review round 1).
+    let alice = w.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    w.h.app
+        .post_notice(NewNotice {
+            to: Some(alice),
+            ..notice("gate:quick::b", "quick::b is yours")?
+        })
+        .await?;
+    w.fake.wait_sent(100, 5).await?;
+    barrier(&w, "c2").await?;
+    assert_eq!(w.fake.deleted().len(), 1, "the project-wide message stays");
     Ok(())
 }
 

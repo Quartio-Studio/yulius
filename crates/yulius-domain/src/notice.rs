@@ -87,13 +87,23 @@ impl NoticeKey {
         Self::lossy("task:", task_id)
     }
 
-    /// `prefix` followed by `rest`, its disallowed characters as `-`, cut to [`KEY_MAX`]: for
-    /// Yulius's own keys built from names it does not control (a test's name).
+    /// `prefix` followed by `rest`, for Yulius's own keys built from names it does not control
+    /// (a test's name). A name that needs no change keeps its plain key; otherwise its
+    /// disallowed characters become `-`, it is cut to fit, and `#` and a hash of the whole name
+    /// follow, so two distinct names never share a key (review round 1).
     #[must_use]
     pub fn lossy(prefix: &str, rest: &str) -> Self {
-        let mut key: String = prefix
+        let plain = format!("{prefix}{rest}");
+        if Self::parse(&plain).is_ok() {
+            return Self(plain);
+        }
+        // FNV-1a over the whole name: stable across builds and processes.
+        let hash = plain.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        let suffix = format!("#{:08x}", hash & 0xffff_ffff);
+        let mut key: String = plain
             .chars()
-            .chain(rest.chars())
             .map(|c| {
                 if c.is_ascii_alphanumeric() || ":._/@#-".contains(c) {
                     c
@@ -101,11 +111,9 @@ impl NoticeKey {
                     '-'
                 }
             })
-            .take(KEY_MAX)
+            .take(KEY_MAX - suffix.len())
             .collect();
-        if key.is_empty() {
-            key.push('-');
-        }
+        key.push_str(&suffix);
         Self(key)
     }
 
@@ -152,11 +160,16 @@ impl Expiry {
                  days), or an RFC 3339 time; `{text}` is none of these"
             )
         };
-        let (digits, unit) = text.split_at(text.len().saturating_sub(1));
+        // The unit is the last character: split on its boundary, never inside one (a text that
+        // ends in a multi-byte character is refused, review round 1).
+        let Some((at, unit)) = text.char_indices().next_back() else {
+            return Err(wrong());
+        };
+        let digits = &text[..at];
         let unit_ms = match unit {
-            "m" => MINUTE_MS,
-            "h" => HOUR_MS,
-            "d" => DAY_MS,
+            'm' => MINUTE_MS,
+            'h' => HOUR_MS,
+            'd' => DAY_MS,
             _ => return Err(wrong()),
         };
         if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -235,15 +248,40 @@ mod tests {
 
     #[test]
     fn a_lossy_key_keeps_its_prefix_and_bound() {
-        assert_eq!(
-            NoticeKey::lossy("gate:", "suite::a test (x)").as_str(),
-            "gate:suite::a-test--x-"
+        assert!(
+            NoticeKey::lossy("gate:", "suite::a test (x)")
+                .as_str()
+                .starts_with("gate:suite::a-test--x-#")
         );
         assert_eq!(
             NoticeKey::lossy("gate:", &"t".repeat(300)).as_str().len(),
             KEY_MAX
         );
         assert!(NoticeKey::parse(NoticeKey::lossy("gate:", "ą b").as_str()).is_ok());
+    }
+
+    /// Review round 1: names that differ only in replaced characters, or past the bound, keep
+    /// distinct keys; a name that needs no change keeps its plain key.
+    #[test]
+    fn a_lossy_key_never_merges_distinct_names() {
+        assert_ne!(
+            NoticeKey::lossy("gate:", "a (x)"),
+            NoticeKey::lossy("gate:", "a [x]")
+        );
+        let long = "t".repeat(200);
+        assert_ne!(
+            NoticeKey::lossy("gate:", &format!("{long}a")),
+            NoticeKey::lossy("gate:", &format!("{long}b"))
+        );
+        assert_eq!(
+            NoticeKey::lossy("gate:", "quick::a").as_str(),
+            "gate:quick::a"
+        );
+        assert_eq!(
+            NoticeKey::lossy("gate:", "a (x)"),
+            NoticeKey::lossy("gate:", "a (x)"),
+            "stable"
+        );
     }
 
     #[test]
@@ -257,7 +295,9 @@ mod tests {
             Expiry::parse("2026-11-23T10:00:00Z"),
             Ok(Expiry::At(_))
         ));
-        for bad in ["0m", "91d", "5w", "m", "-3h", "1.5h", "", "soon"] {
+        for bad in [
+            "0m", "91d", "5w", "m", "-3h", "1.5h", "", "soon", "5д", "é", "3dé", "２h",
+        ] {
             assert!(Expiry::parse(bad).is_err(), "{bad:?}");
         }
     }

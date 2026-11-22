@@ -1118,7 +1118,6 @@ impl App {
         name: &str,
         args: &Value,
     ) -> AppResult<Value> {
-        use yulius_domain::permission::Action;
         let action = crate::person_tools::action(name)
             .ok_or_else(|| AppError::Invalid(format!("unknown tool: {name}")))?;
         let (app, caller, name, args) = (
@@ -1147,7 +1146,7 @@ impl App {
                     .await
             }
             .await;
-            if action != Action::View {
+            if crate::person_tools::changes(&name, action) {
                 let mut about = crate::person_tools::subject(&name, &args);
                 about["tool"] = json!(name);
                 about["ok"] = json!(outcome.is_ok());

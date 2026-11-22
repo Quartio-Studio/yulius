@@ -3134,16 +3134,19 @@ Notices for people carry a key and an expiry
   newest 200, all in one transaction. The notice is then published as `notice.posted` in an
   envelope with its project, recipient and `admin_only`.
 - **Reading.** `App::notices_for` reads the live, undismissed notices addressed to the person or
-  to nobody in particular, and keeps those whose envelope reaches them (`envelope_reaches`, the
-  event stream's rule). `GET /api/me/notices`, the person tools `notices_list` and
+  to nobody in particular. The store applies the reader's reach before its limit: the projects
+  holding such notices that they can see, instance-wide notices unless they are a guest, and
+  `admin_only` ones for administrators. The read then keeps those whose envelope reaches them
+  (`envelope_reaches`, the event stream's rule). `GET /api/me/notices`, the person tools `notices_list` and
   `notice_dismiss`, and the digest use it. The background tick deletes expired notices
   (`prune_notices_now`). A producer removes a notice by its scope and key (`notice.removed`).
 - **Telegram.** The notifier turns `notice.posted` into a message and gives task-state, control,
-  shared-cause and subscription messages a scope (`<project or ->:<key>`; a task's is
-  `task:<task id>`). After the send queue sends a scoped message, `swap_keyed_message`
+  shared-cause and subscription messages a scope (`<project or ->:<recipient or ->:<key>`; a
+  task's key is `task:<task id>`; posted keys may not use the derived prefixes). After the send queue sends a scoped message, `swap_keyed_message`
   (`telegram_keyed`) returns the bot's earlier message for that scope in the chat, and the bot
   deletes it (`NotificationChannel::delete`, Telegram's `deleteMessage`). A refused delete leaves
-  the old message in the chat.
+  the old message in the chat. `telegram_keyed` rows go with their chat's link, like
+  `telegram_sent`, and the tick forgets rows older than 48 hours.
 - **Digest.** Each person's digest lists up to 20 of their live notices (`DigestView.notices`).
   Its items carry `task:<task id>`, and its Telegram message has the scope `-:digest`, so today's
   digest replaces yesterday's.

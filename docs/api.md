@@ -118,7 +118,9 @@ access only). Instance tools: `projects_list`, `repositories_list`, `project_imp
 Every other tool takes `project` (`owner/name`, slug or id) and needs, on that project, the
 person's access for its action: view (`project_get`, `tasks_list`, `task_get`, `task_delivery`,
 `sessions_search`, `session_read`, `merge_queue`, `subscriptions`, `instance`, `ci_runs`, `ci_run`, `cd_status`, `project_files`,
-`project_file_read`, `automations_list`, `workflows_list`, `secrets_list`, `variables_list`), work
+`project_file_read`, `automations_list`, `workflows_list`, `secrets_list`, `variables_list`,
+`notices_list`; `notice_dismiss` too, which changes only the person's own notices, so a `read`
+token may not call it and its calls are audited, SPEC-624), work
 (`onboarding_start`, `task_create`, `task_message`, `task_stop`, `task_restart`, `task_pause`,
 `task_unpause`, `task_start_now`, `task_edit`, `task_close`, `tasks_reorder`, `tasks_bulk`, `task_question_dismiss`, `task_held_prompt`, `task_merge`, `ci_prioritize`, `task_switch`, `task_model`, `task_update`, `task_archive`, `task_delete`, `attachments_trash`, `ci_rerun`, `ci_cancel`,
 `cd_deploy` (dev-stage environments only), `project_change`, `change_merge`), configure (`automation_*`,

@@ -58,12 +58,14 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
   days), or an RFC 3339 time in the future. It resolves against the server's clock at posting
   time to an absolute `expires_at`, or none. Without an expiry a notice gets its kind's default.
 - **NTC-003 Newest wins.** Posting a notice whose (project, recipient, key) matches a stored one
-  replaces it in one statement. The new notice gets a new id, comes back unread for everyone, and
+  replaces it in one transaction. The new notice gets a new id, comes back unread for everyone, and
   is published to the people it reaches. No two stored notices share a scope and a key.
 - **NTC-004 Expired is hidden.** A notice whose `expires_at` has passed is left out of every read:
   `GET /api/me/notices`, the person tools `notices_list`, the digest and the bell. The bell hides
   it at its time without reloading. The background tick deletes expired notices within one tick
-  (30 s), and keeps at most 200 per (project, recipient), dropping the oldest first.
+  (30 s), and keeps at most 200 per (project, recipient). The cap drops the oldest notices that
+  wait for no decision first, and pages hear of each one it drops. A read decides which projects
+  the reader sees before it applies its limit, so notices they cannot see never crowd theirs out.
 - **NTC-005 A decision never expires silently.** A notice posted with `decision: true` (it waits
   for a person to decide or act) has no expiry. Posting it with an expiry is refused, never
   shortened, so a caller learns of the conflict. It leaves only when its producer removes or
@@ -72,12 +74,18 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
   in again. Each one expires never, and its entry ends when the request ends.
 - **NTC-006 Remove and dismiss.** A producer removes a notice by its scope and key; open pages
   drop it. A person dismisses a notice for themselves (`DELETE /api/me/notices/{id}`,
-  `notice_dismiss`), and others still see it. A replacement brings it back.
+  `notice_dismiss`), and others still see it. A replacement brings it back. Dismissing changes
+  the person's own state: a `read` token may not do it, and the call is audited.
 - **NTC-007 Channels.** A posted notice reaches a person's open pages (`notice.posted`,
   `notice.removed`) and their Telegram chat through the notifier's existing rules (reach, the
   person's choices by the notice's category, redaction, the rate bound). In Telegram, a keyed
   message replaces the bot's earlier message with the same scope and key in that chat. The bot
-  deletes the old message, best effort, after the new one is sent.
+  deletes the old message, best effort, after the new one is sent. A chat's place for a notice is
+  its project, recipient and key, so a notice for one person and a project-wide one with the same
+  key keep their own messages. The bot forgets a chat's messages when the chat is unlinked or
+  changes hands, or when the bot is replaced, and forgets any message older than 48 hours.
+  Keys starting with `task:`, `control:`, `needs-you:` or `digest` are Yulius's own derived
+  notices and cannot be posted.
 - **NTC-008 Task-state notices are keyed per task.** A task's Needs you, Done and failed notices
   use the key `task:<task id>` in the bell and in Telegram. A newer state of the same task, or a
   newer red CI run of its pull request, replaces the earlier entry or message.
@@ -122,12 +130,12 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 
 ## Plan
 
-- [ ] Notice keys and expiries parse and resolve in the domain
-- [ ] Notices are stored newest-per-key with dismissals and pruning (migration 0091)
-- [ ] Yulius posts, replaces, removes and lists notices for the people they reach
-- [ ] People read and dismiss their notices over HTTP and the person tools
-- [ ] Telegram replaces a keyed notice's earlier message in the chat
-- [ ] The digest lists live notices under a key and hides expired ones
+- [x] Notice keys and expiries parse and resolve in the domain
+- [x] Notices are stored newest-per-key with dismissals and pruning (migration 0091)
+- [x] Yulius posts, replaces, removes and lists notices for the people they reach
+- [x] People read and dismiss their notices over HTTP and the person tools
+- [x] Telegram replaces a keyed notice's earlier message in the chat
+- [x] The digest lists live notices under a key and hides expired ones
 - [ ] Independent review of the notice core, every finding answered
 - [ ] Subscription problems are keyed notices that end with the problem
 - [ ] Unrepaired integration failures are keyed notices for the project's people
@@ -239,3 +247,43 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
     `a_posted_notice_replaces_its_message_by_key` failed.
 - Security scan: Vidoc is switched off for this project in Yulius, so the scan reports disabled,
   not passed.
+
+### Review round 1 of PR #1705 (head `91a6017bb`): request changes, all answered
+
+All findings were in this PR's own code. Each fix has a test, and each test was seen failing
+without its fix:
+- **Read limit before visibility (major).** Reads now pass the reader's reach (the projects that
+  hold their notices and that they see, instance-wide unless a guest, admin-only for
+  administrators) to the store before the limit. Covered by `a_readers_reach_comes_before_the_limit`
+  and `notices::hidden_notices_never_crowd_out_a_readers_own` (200 newer notices in a hidden
+  project), which fails with the SQL filter undone.
+- **`notice_dismiss` under a read token (major).** `person_tools::PERSONAL_CHANGES` marks it as
+  a change: a `read` token is refused and the call is audited `remote.tool` and
+  `superagent.tool`. `notices_list` is now pre-allowed in the Cockpit. Covered by
+  `notices::a_dismissal_is_a_change_of_ones_own`, which fails with the scope check undone.
+- **`telegram_keyed` lifetime (major).** Its rows are cleared wherever `telegram_sent` is (unlink,
+  a chat changing hands, a person moving chats, every link cleared with the bot), and rows older
+  than 48 hours are pruned by the tick. Covered by `keyed_messages_end_with_their_chat_and_their_age`,
+  which fails ("unlinked") with the clearing undone.
+- **`Expiry::parse` panicked on a multi-byte last character (major).** It now splits at the last
+  character's boundary. `5д`, `é`, `3dé` and `２h` are refused with the message.
+- **Minor findings:**
+  - The cap keeps decisions and publishes `notice.removed` for each notice it drops
+    (`the_cap_keeps_decisions_and_names_what_it_dropped`).
+  - The chat scope includes the recipient (the Telegram test posts a personal notice beside a
+    project-wide one with the same key and sees no delete).
+  - Posts and removals are stored and published one at a time (`POSTING`), so pages and chats
+    hear them in store order. No test drives two posts at once; the lock makes that order hold
+    by construction.
+  - Texts are redacted before they are cut (`texts_are_redacted_whole_and_links_and_keys_checked`,
+    with a secret straddling the title bound).
+  - `NoticeKey::lossy` adds `#` and a hash when it alters or cuts a name
+    (`a_lossy_key_never_merges_distinct_names`).
+  - Dismissing someone else's personal notice is tested to be refused.
+- **Nits:**
+  - Links with `\` or control characters are refused.
+  - Keys of derived notices are refused.
+  - This spec says "one transaction", and its Plan boxes 1 to 6 are ticked.
+- **Direction question.** A never-expiring notice, a decision or a gate failure, appears in each
+  daily digest until it is removed. That is intended: the digest lists what still waits for the
+  person, as it already does for open `needs_you` requests.
