@@ -55,11 +55,11 @@ were not its own, fix the cause, prove it, and say what lifts the quarantine.
 
 ## Plan
 
-- [ ] Reproduce both quarantining failures at their own pull requests' heads
-- [ ] Tell each failing test's block and the changed files it names
-- [ ] Leave a pull request's own-file failures out of the flaky count
-- [ ] Record the rule in an ADR, the architecture and the changes
-- [ ] Run the quarantined test and every touched test binary
+- [x] Reproduce both quarantining failures at their own pull requests' heads
+- [x] Tell each failing test's block and the changed files it names
+- [x] Leave a pull request's own-file failures out of the flaky count
+- [x] Record the rule in an ADR, the architecture and the changes
+- [x] Run the quarantined test and every touched test binary
 - [ ] Independent review approves the head
 
 ## Acceptance criteria
@@ -93,3 +93,25 @@ were not its own, fix the cause, prove it, and say what lifts the quarantine.
   read only for flakiness, and no migration is needed.
 - A coincidental match (a flaky test whose output names a file the pull request changed) only
   keeps that pull request's failure from counting: a quarantine is delayed, never made wrongly.
+
+## Evidence
+
+- Probe `target/probe-1545.sh` (the built `main` test binary run with `--exact
+  fixture_hygiene::test_fixtures_hold_no_provider_shaped_credential` on each commit's
+  `crates/yulius/tests` tree): `55817fe` rc=101 `tests/subscription_moves.rs:404: sk-ant- and 35
+  token characters`; `8d05c25bf` (its merge base) rc=0; `b19ab9b85` rc=101
+  `tests/needs_you_messages.rs:541` and `tests/telegram.rs:2604` (`ghp_`); `5addbfbb8` (its merge
+  base) rc=0; `cb7f9ad8a`, `c8a09ce6d` (the fixes) and this head rc=0. `git show` confirmed each
+  literal at the head and absent at the merge base.
+- `local_ci::a_failure_naming_its_own_changed_file_makes_no_test_flaky` with
+  `crates/yulius-app/src/ci/flaky.rs` from before the change: failed at "each pull request broke
+  it" (an issue was filed for #1, #2); with the change: passed, as did the three other quarantine
+  tests.
+- Quarantined test run explicitly: in the full `cargo nextest run -p yulius --test main` (no
+  quarantine filter) `fixture_hygiene::test_fixtures_hold_no_provider_shaped_credential` PASS;
+  2594 passed, 24 skipped. `--stress-count 30` of it alone: 30 of 30 passed.
+- `yulius-domain` and `yulius-app` libraries: 1307 passed; `yulius-domain` doctests passed;
+  `cargo clippy -p yulius-domain -p yulius-app -p yulius --all-targets -D warnings` and
+  `cargo doc -D warnings` for both libraries clean; `scripts/check_repository.py` passed.
+- The Yulius instance runs `aabf37091` (main); the rule acts on CI once a build with it is
+  deployed there. Vidoc: disabled for this project, nothing scanned.
