@@ -60,7 +60,7 @@ separately. The owner approved this on 22 Nov 2026 after a review of iTermX, who
 - [x] Fork API, task_fork MCP tool and fork origin and forks in task summaries
 - [x] Tests that fail without the fork: fixture conversation carried, branch at the source head, source unchanged
 - [x] Docs for the backend: architecture, api, ADR-0463 and the changes log
-- [ ] Independent review of the backend pull request
+- [x] Independent review of the backend pull request
 - [ ] Fork action in the task menu and on the task page, with its dialog
 - [ ] Fork origin and forks shown on both task pages
 - [ ] End-to-end spec of the Fork dialog and the origin shown on both pages
@@ -185,3 +185,16 @@ code. Answered:
 - After the fixes: `scripts/cargo nextest run -p yulius-store -p yulius-app -p yulius-harness
   -p yulius-contracts -p yulius-server`: 1227 passed. `scripts/cargo nextest run -p yulius -E
   'binary_id(yulius::main)'`: 2636 passed, 24 skipped.
+
+Review round 2 (Fable 5.2, head `665a45f73`): approve, all round-1 findings resolved. The notes
+left after it:
+
+- The cleanup branch had no test. `forks::a_fork_whose_record_fails_leaves_nothing_behind` deletes
+  the source at `ForkInserted`, so the record's link fails, and checks that the fork task, its
+  stored copy and the staging folder are gone. Without the task delete in `start_fork`'s
+  cleanup, it failed.
+- The short `prepared` span at a fork's start is now stated in the architecture note.
+- The long JSON literal in the Codex test is split with `concat!`.
+- Not changed: when `queue_task` finds that someone already started or cancelled the fork in the
+  milliseconds before it is published, the fork is removed. The task is not yet shown to anyone at
+  that point, so no person's action is lost.
