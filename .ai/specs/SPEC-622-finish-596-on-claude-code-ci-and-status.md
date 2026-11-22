@@ -1,6 +1,6 @@
 ---
 yulius-task: a174b0f9-0ebc-473f-9d2f-77cfd2589379
-status: in-progress
+status: done
 ---
 
 # SPEC-622 Finish #596: CI and Status repair actions for unowned gate failures
@@ -43,7 +43,7 @@ This task carries that slice onto current dev, re-verifies it and delivers it.
 - [x] Review the slice against the current API and fix own findings
 - [x] Record evidence and close SPEC-612's last step
 - [x] Independent review of the delivery and its fixes
-- [ ] Answer every independent review finding on the exact head
+- [x] Answer every independent review finding on the exact head
 
 ## Acceptance criteria
 
@@ -75,7 +75,7 @@ focus and overlapping-poll cases, and the cancelled-gate verdict. Run `ci.e2e.ts
 
 - Carried slice: the three-dot diff of `feat/596-a-failed-after-merge-gate-wakes-only-the`
   (`03be88d24`) against dev `2a6e07423` applied cleanly as `cd6bab35f`.
-- With the change, `npx e2e run tests/ci.e2e.ts` passed 31 of 31 (the 11 notice cases included).
+- With the change, `npx e2e run tests/ci.e2e.ts` passed 31 of 31: 10 new notice cases beside the 21 on dev; the eleventh new assertion is the sidebar title in `task-done.e2e.ts`.
 - Without it (`layout.js`, `pages/ci.js`, `dom.js`, `index.html` from dev, `gatenotices.js`
   removed; mock and tests kept), `npx e2e run tests/ci.e2e.ts tests/task-done.e2e.ts` failed 9 of
   59: the writer and reader notices, the Status health line, both two-project focus cases, the
@@ -93,3 +93,25 @@ focus and overlapping-poll cases, and the cancelled-gate verdict. Run `ci.e2e.ts
 - Vidoc is switched off for this project in Yulius: the security scan is disabled, not passed.
 - The backend behind `gate_notices` (SPEC-612 GF-001 to GF-006) merged in PR #1682 with its Rust
   regressions; it is unchanged here.
+- Independent review (Fable 5.2, round 1) approved `f09734cc3` after Yulius CI run
+  `45063bba-f942-49cb-bb0c-d56cba396273` passed on it. It reported four minor findings and four
+  nits, all in this change. The Plan had ticked the review before the report existed, so the
+  answer is its own step.
+  - Fixed test-first. Each new assertion failed on `f09734cc3`:
+    - A cleared notice moved the keyboard to the CI overview, which then drew a 2 px focus frame
+      around every card (`box-shadow ... 0 0 0 2px`). The overview now has the run view's
+      no-frame rule (SPEC-321).
+    - A focused "Review and run again" lost the keyboard to the section when a newer red run
+      replaced the affected one. The link is now keyed by project and action, not by run.
+    - A Status link to the page already shown left focus on `body`. It now returns to the
+      Status button.
+    - Axe now checks the writer and reader notices with Status open (it found no violations
+      before or after).
+    - After the fixes, `ci.e2e.ts` passed 33 of 33.
+  - Docs: the changes entry is first in its day, and the web README lists `gate_notice=1|reader`.
+  - Left as they are:
+    - The `el === panel` half of the Status guard has no test. The reviewer found no visible
+      failure without it, and it stops an answer from an earlier opening being drawn.
+    - The sidebar title shows the staging outcome before the detail. Moving it would change a
+      line of over 200 bytes after the approval.
+
