@@ -5183,7 +5183,7 @@ async fn wait_for_count(f: &Fixture, count: usize) -> TestResult {
 #[tokio::test]
 async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout() -> TestResult {
     use yulius_app::ports::store::TaskStore as _;
-    use yulius_domain::task::TaskStatus;
+    use yulius_domain::task::{Activity, TaskStatus};
     let f = fixture().await?;
     cockpit_id(&f, &f.alice).await?;
     let alice = yulius_domain::ids::UserId::parse("u-alice")?;
@@ -5227,7 +5227,7 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
             id: yulius_domain::ids::AttemptId::parse("a-crash-1")?,
             task_id: task.id.clone(),
             seq: 1,
-            harness: yulius_domain::harness::Harness::ClaudeCode,
+            harness: yulius_domain::harness::Harness::Codex,
             account_id: None,
             provider_session_id: None,
             launch_kind: yulius_app::model::LaunchKind::New,
@@ -5266,6 +5266,38 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
     )
     .await?;
     assert_eq!(one["screen"], "warning: retry with fewer jobs", "{one}");
+    // A pre-SPEC-558 parked attempt has just final-screen. Preserve recoverable
+    // rows and remove only the trailing Codex shutdown instructions.
+    f.h.store
+        .transition_task(
+            &task.id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            yulius_domain::time::Timestamp(f.h.app.now().0 - 2_100_000),
+        )
+        .await?;
+    f.h.store
+        .transition_task(
+            &task.id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    std::fs::write(run_dir.join("final-screen"), b"100 24\nReviewed and merged.\r\nToken usage: total=389,557\r\nTo continue this session, run:\r\n  codex resume synthetic-rollout\r\nOr run codex resume and select the task")?;
+    let (legacy, error) =
+        cockpit_tool(&f, &token, "task_screen", json!({"number": task.number})).await?;
+    assert!(!error);
+    let text = legacy["screen"].as_str().ok_or("parked screen")?;
+    assert!(text.starts_with("Reviewed and merged."), "{text}");
+    assert!(
+        !text.contains("codex resume") && !text.contains("Token usage"),
+        "{text}"
+    );
+    assert_eq!(text.matches("Yulius parked").count(), 1, "{text}");
+    assert!(text.contains("35 min 0 s idle"), "{text}");
     let (refused, is_error) =
         cockpit_tool(&f, &token, "task_screen", json!({"number": 999})).await?;
     assert!(is_error, "{refused}");

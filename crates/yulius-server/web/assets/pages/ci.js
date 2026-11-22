@@ -5,8 +5,9 @@
 // `?run=<id>`, the link of the `yulius/ci` commit status (SPEC-238: a view, not a dialog); Run
 // again lives there, not on every card (SPEC-258).
 
+import { gateNotices } from '../gatenotices.js';
 import { enc } from '../api.js';
-import { h, badge, itemCard, emptyState, setChildren, placeholder, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
+import { h, badge, itemCard, emptyState, setChildren, keepFocus, placeholder, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
 import { relLong, dateTime, duration, plural, shortSha } from '../format.js';
 import { allows } from '../status.js';
 import { href } from '../router.js';
@@ -99,7 +100,9 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     focusIfLost(view.el);
     return () => { destroyed = true; clearTimeout(poll); view.dispose(); leftRun.set(sandbox.id, shownRun); };
   }
-  host.append(runsHost, hygieneHost);
+  const noticesHost = h('div', { hidden: true });
+  const overviewSection = h('section', { class: 'stack ci-overview', role: 'region', 'aria-label': 'CI overview', tabindex: -1 }, noticesHost, runsHost);
+  host.append(overviewSection, hygieneHost);
 
   let last = { runs: [] };
   // SPEC-359 VSB-004: the Security scan card is read with the runs and drawn under the jobs it
@@ -123,6 +126,12 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       vidocReadAt = Date.now();
     }
     schedule(overview);
+    // Refresh repair links independently so they cannot displace a focused run control.
+    const notices = gateNotices(sandbox, overview.gate_notices, overview.can_run);
+    keepFocus(noticesHost, () => {
+      setChildren(noticesHost, notices);
+      noticesHost.hidden = !notices.length;
+    }, overviewSection);
     const drawn = renderOverview(overview);
     // Back from a run's view: the keyboard goes to that run's card, once.
     const left = (overview.runs || []).find((r) => r.id === leftRun.get(sandbox.id));
