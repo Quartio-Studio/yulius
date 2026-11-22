@@ -1,6 +1,6 @@
 ---
 yulius-task: 982d8a14-726a-4a9a-854b-0070710fca55
-status: in-progress
+status: done
 ---
 
 # SPEC-612 A failed integration gate is repaired by a task still at work
@@ -35,7 +35,7 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 - [x] Verify the incident regressions and review the delivery
 - [x] Deliver the isolated quality-job compiler cache repair
 - [x] Deliver the reviewed integration failure ownership backend
-- [ ] Deliver the project CI and Status repair actions on the verified API
+- [x] Deliver the project CI and Status repair actions on the verified API
 
 ## Acceptance criteria
 
@@ -90,3 +90,4 @@ The ownership and staging regressions first ran on the combined implementation. 
 - Independent browser review found that adding a notice above a focused repair action moved the keyboard to another project. Both two-project regressions failed on the reviewed head: Enter opened the studio composer when the product notice moved and also when it cleared. The Status refresh now identifies each action by its destination and returns focus to the panel when that action disappears.
 - On a further independent review, Enter on the focused Sandboxes disclosure opened the product composer when a notice appeared. Enter on a cleared repair link in project CI opened a run card. Both failures reproduced during actual polls. Status ties disclosures to their existing section or account ID. Project CI refreshes notice links separately from run controls and returns focus to the overview if the selected link clears.
 - A delayed red Status snapshot restored cleared repair actions after a newer poll or a close and reopen. Both held-response regressions failed with one actionable link after the newer response showed zero. The panel accepts responses in request order relative to its latest displayed response and rejects responses from prior openings. A third failing case showed “cancelled failed at” for a gate cancelled before any job reported. The notice now identifies the test, job or verdict with the revision where it first appeared.
+- Task #596 was stopped on 22 November to move to Claude Code. Task #606 carried the unmerged project CI and Status slice onto current dev, proved its Chromium cases fail without it and delivered it under [SPEC-622](SPEC-622-finish-596-on-claude-code-ci-and-status.md), which holds that evidence.

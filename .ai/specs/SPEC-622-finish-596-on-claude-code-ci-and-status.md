@@ -38,11 +38,11 @@ This task carries that slice onto current dev, re-verifies it and delivers it.
 ## Plan
 
 - [x] Bring the step-12 CI and Status notice slice onto current dev
-- [ ] Prove the Chromium notice tests fail without the change
-- [ ] Run the touched e2e specs and the web unit checks on current dev
-- [ ] Review the slice against the current API and fix own findings
+- [x] Prove the Chromium notice tests fail without the change
+- [x] Run the touched e2e specs and the web unit checks on current dev
+- [x] Review the slice against the current API and fix own findings
+- [x] Record evidence and close SPEC-612's last step
 - [ ] Independent review of the delivery and its fixes
-- [ ] Record evidence and close SPEC-612's last step
 
 ## Acceptance criteria
 
@@ -72,4 +72,23 @@ focus and overlapping-poll cases, and the cancelled-gate verdict. Run `ci.e2e.ts
 
 ## Evidence
 
-Filled in at the end.
+- Carried slice: the three-dot diff of `feat/596-a-failed-after-merge-gate-wakes-only-the`
+  (`03be88d24`) against dev `2a6e07423` applied cleanly as `cd6bab35f`.
+- With the change, `npx e2e run tests/ci.e2e.ts` passed 31 of 31 (the 11 notice cases included).
+- Without it (`layout.js`, `pages/ci.js`, `dom.js`, `index.html` from dev, `gatenotices.js`
+  removed; mock and tests kept), `npx e2e run tests/ci.e2e.ts tests/task-done.e2e.ts` failed 9 of
+  59: the writer and reader notices, the Status health line, both two-project focus cases, the
+  Sandboxes disclosure, the cleared CI link, the cancelled verdict and the sidebar title
+  (`task-done.e2e.ts`). The two overlapping-poll cases pass vacuously there (no notice is ever
+  drawn), so they were run against the slice with only `load()` reverted to dev's behaviour
+  (accept any answer while a panel is open, draw into the current panel): both failed, then
+  passed with the request-order guard.
+- The full Chromium suite on the slice (`d74dd5846`): 1,335 passed, 1 configured skip, 99 files.
+- `python3 scripts/check_repository.py`: repository contracts passed.
+- Own review against dev's API: all notices of a project carry the same latest red run
+  (`GateFailures::notices`), so one set of actions is complete; Status reads the person's access
+  from the sandbox list; `keepFocus` behaves as before when no `missingKeyTarget` is given. It
+  found `gatenotices.js` and its flows missing from the web and e2e READMEs (added).
+- Vidoc is switched off for this project in Yulius: the security scan is disabled, not passed.
+- The backend behind `gate_notices` (SPEC-612 GF-001 to GF-006) merged in PR #1682 with its Rust
+  regressions; it is unchanged here.
