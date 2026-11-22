@@ -83,10 +83,10 @@ For an explicit restart of stopped Codex work, the supervisor carries a continua
 
 The generated Codex configuration hides the rate-limit model switch reminder. If a live terminal
 shows the picker or its resized alternate grid has yet to repaint, the terminal writer holds
-automated pastes and submits. The PR watch can deliver
+automated pastes and submits. For an indeterminate screen, the supervisor saves the viewer size in the run directory, requests a redraw at a temporary width and restores the saved size under the same writer lock. If the server restarts during that probe, reattachment restores the saved size. Later viewer resizes update it, and drop it when it cannot be saved. The PR watch can deliver
 its pending notice after the picker closes. The run directory records the paste before it is sent.
 A successful Enter clears the record. After an interrupted submission or server reattachment,
-a confirmed empty composer clears it.
+a confirmed empty composer clears it. An inconclusive probe opens Needs you on the observed live attempt. A pending PR notice or automatic prompt (the wake after an outage) releases its own request at its next send once the screen is readable; a person's message keeps its request until they resend it. [Decision 0451](decisions/0451-repaint-an-unreadable-codex-terminal-before-typing.md)
 [Decision 0443](decisions/0443-hold-codex-input-at-the-rate-limit-model-picker.md)
 
 ```mermaid
@@ -4083,7 +4083,7 @@ hands on alone leaves one end later
 flowchart LR
     prompt["prompt / wake-up\n(hook, user line)"] --> working
     stop["clean Stop hook"] -->|"turn may settle"| idle["waiting / done"]
-    stop -->|"goal has actionable plan or spec work, within retry bound"| working
+    stop -->|"goal has actionable plan or spec work, or a Codex goal's own red CI run, within retry bound"| working
     turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
     launch["transcript: monitor started,\nagent launched (until it ends)"] --> bg
     idle --> bg
@@ -4096,6 +4096,7 @@ flowchart LR
 ```
 
 A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
+A Codex goal has no native evaluator, so its own red pull request counts as declared work too: once the PR watcher has pasted the failure (SPEC-578), a Stop with the plan and spec finished continues the goal under the same retry bound when the task's latest Yulius CI run for its open pull request failed at the commit its worktree is on. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
 
 A `needs_attention` flag keeps its reason with the task
 ([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),

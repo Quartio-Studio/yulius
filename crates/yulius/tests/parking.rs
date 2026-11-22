@@ -1866,7 +1866,91 @@ async fn queued_park_screen(
             )
             .await?
     );
-    assert_cold_screen(&cold_data, id, caller, &captured).await
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
+    legacy_queued_park_screen(&cold_data, id, caller, dir, &last).await
+}
+
+/// A run parked before the snapshot existed, its task already queued again: only the
+/// recorded park transition says the final screen was a park (SPEC-621 FIN-001).
+async fn legacy_queued_park_screen(
+    data: &Path,
+    id: &TaskId,
+    caller: &ProjectCaller,
+    dir: &Path,
+    last: &yulius_app::model::AttemptRecord,
+) -> TestResult {
+    std::fs::remove_file(dir.join("parked-screen"))?;
+    let footer = "Token usage: total=389,557\r\nTo continue this session, run:\r\n  codex resume 01a1f59f-f713-7aa2-a183-1466175f06b5\r\nOr run codex resume and select Budget";
+    std::fs::write(
+        dir.join("final-screen"),
+        format!("80 24\nThe budget answer\r\n{footer}"),
+    )?;
+    // Only Codex prints that block when it exits: another harness's screen keeps it.
+    assert_ne!(last.harness, yulius_domain::harness::Harness::Codex);
+    let kept = cold_task_screen(data, id, caller).await?;
+    assert!(kept.starts_with("The budget answer"), "{kept}");
+    assert!(kept.contains("codex resume 01a1f59f"), "{kept}");
+    assert_eq!(
+        kept.matches("Yulius parked this session").count(),
+        1,
+        "{kept}"
+    );
+    rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+        "UPDATE attempts SET harness = 'codex' WHERE id = ?1",
+        [last.id.as_str()],
+    )?;
+    let recovered = cold_task_screen(data, id, caller).await?;
+    assert!(recovered.starts_with("The budget answer"), "{recovered}");
+    assert!(
+        !recovered.contains("codex resume") && !recovered.contains("Token usage"),
+        "{recovered}"
+    );
+    assert_eq!(
+        recovered.matches("Yulius parked this session").count(),
+        1,
+        "{recovered}"
+    );
+    Ok(())
+}
+
+async fn cold_task_screen(
+    data: &Path,
+    id: &TaskId,
+    caller: &ProjectCaller,
+) -> Result<String, Error> {
+    let restart = self::app(data, 8, 1).await?;
+    let ctx = AuthContext {
+        user: restart
+            .deps
+            .store
+            .user(&caller.user)
+            .await?
+            .ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let remote = yulius_app::remote::RemoteCaller {
+        ctx,
+        token_id: "legacy-screen".into(),
+        scope: yulius_domain::permission::TokenScope::Read,
+        login: "admin".into(),
+        superagent: None,
+    };
+    let request = serde_json::from_value(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "task_screen", "arguments": {"project":"acme/pool","task_id":id.as_str()},
+            "_meta": {"yulius/structured":true}}
+    }))?;
+    let result = restart
+        .remote_mcp_handle(&remote, request)
+        .await
+        .and_then(|reply| reply.result)
+        .ok_or("task_screen")?;
+    Ok(crate::support::tool_text(&result)["screen"]
+        .as_str()
+        .ok_or("screen")?
+        .to_owned())
 }
 
 /// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the
