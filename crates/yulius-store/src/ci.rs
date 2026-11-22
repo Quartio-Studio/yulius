@@ -154,6 +154,18 @@ fn select_runs(
     Ok(rows)
 }
 
+pub(crate) fn runs_for_exact_head(
+    conn: &rusqlite::Connection,
+    sandbox: &str,
+    head: &str,
+) -> AppResult<Vec<CiRunRecord>> {
+    select_runs(
+        conn,
+        "sandbox_id = ?1 AND sha = ?2 ORDER BY rowid DESC",
+        &[&sandbox, &head],
+    )
+}
+
 #[async_trait]
 impl CiStore for SqliteStore {
     async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>> {
@@ -367,11 +379,7 @@ impl CiStore for SqliteStore {
         // commits suffice to rule out ambiguity, regardless of the sandbox’s age.
         self.call(move |c| {
             if exact_only || head.len() == 40 {
-                let exact = select_runs(
-                    c,
-                    "sandbox_id = ?1 AND sha = ?2 ORDER BY rowid DESC",
-                    &[&sandbox, &head],
-                )?;
+                let exact = runs_for_exact_head(c, &sandbox, &head)?;
                 if exact_only || !exact.is_empty() {
                     return Ok(exact);
                 }

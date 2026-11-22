@@ -54,6 +54,8 @@ pub enum Point {
     CapacityStaleCleanup,
     /// A start is about to claim its observed task state. Keyed by task ID.
     StartClaimReady,
+    /// The parked PR watcher has prepared its observation for the store's launch claim.
+    ParkedCandidateClaimReady,
     /// The supervisor released the launch lock after the attempted claim. Keyed by task ID.
     StartLockReleased,
     /// An idle running row reads its pending PR news. Keyed by task ID.
