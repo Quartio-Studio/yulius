@@ -81,7 +81,7 @@ definition says. No answer within the stated time is a no. The owner approved th
 
   Each list is bounded (64 entries, 4096 bytes each) and the stored definition to 16 KiB. Flags
   are one or two dashes, then a letter or digit and letters, digits, `_`, `.`, `:` or `-`;
-  subcommands are such a word without dashes. No text of a definition holds a character people
+  subcommands are such a word, not starting with a dash. No text of a definition holds a character people
   cannot see. Env names match `[A-Za-z_][A-Za-z0-9_]*` and may not be `PATH`, `HOME`, `TMPDIR`,
   `LD_*` or `YULIUS_*`. Env values are not secret: the people who view the project read them,
   and the audit keeps them (redacted of agent secrets); a secret goes in only as `{secret}`.
@@ -197,10 +197,10 @@ definition says. No answer within the stated time is a no. The owner approved th
 - [x] Agents and the Superagent list a project's commands with commands_list
 - [x] Independent review of the definitions slice, findings fixed test-first
 - [x] Repair dev: the Superagent's pre-allowed tools test lists commands_list
-- [ ] Refuse paths, refused flags and other subcommands in a run's arguments
-- [ ] Run a command in the production holder with a temporary key file and a fresh home
-- [ ] Bound a run's time and output and blank every stored secret from it
-- [ ] command_run and command_result for task agents, audited, and the yulius run CLI
+- [x] Refuse paths, refused flags and other subcommands in a run's arguments
+- [x] Run a command in the production holder with a temporary key file and a fresh home
+- [x] Bound a run's time and output and blank every stored secret from it
+- [x] command_run and command_result for task agents, audited, and the yulius run CLI
 - [ ] Independent review of the run slice, findings fixed test-first
 - [ ] Ask a person to approve a run in Needs you with the full command line
 - [ ] Approve or reject in the browser or by a Telegram reply; no answer in time is a no

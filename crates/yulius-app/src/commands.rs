@@ -123,9 +123,7 @@ pub fn validated(mut def: CommandDefinition) -> AppResult<CommandDefinition> {
         .chain(def.env.keys())
         .chain(def.env.values());
     for text in texts {
-        let hidden = text
-            .chars()
-            .find(|c| crate::cross_sandbox::unseen(*c) && *c != '\n');
+        let hidden = text.chars().find(|c| crate::cross_sandbox::unseen(*c));
         if let Some(c) = hidden {
             return Err(AppError::Invalid(format!(
                 "the definition holds U+{:04X}, a character people cannot see",
@@ -490,9 +488,10 @@ impl App {
         }
         Ok(json!({
             "commands": commands,
-            "note": "A command runs outside the sandbox with its secret as a file nobody in the \
-                     sandbox sees. Running them from tasks is not served yet; never ask for a \
-                     command's key or copy it into the sandbox.",
+            "note": "A command runs outside your sandbox with its secret as a file you never see. \
+                     Task agents run one with command_run, or `yulius run NAME ARGS...` in a \
+                     shell; no argument may name a path (/ or ~). Never ask for a command's \
+                     key or copy it into the sandbox.",
         }))
     }
 }

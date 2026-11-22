@@ -230,6 +230,178 @@ pub fn expand(value: &str, keyfile: &str, home: &str, secret: Option<&str>) -> S
     }
 }
 
+/// Most arguments an agent passes to one run.
+pub const MAX_ARGS: usize = 64;
+/// The most of each stream a run returns, in bytes (BRK-010).
+pub const OUTPUT_SHOWN: usize = 96 * 1024;
+
+/// Whether `arg` sets `flag` (BRK-006): `--flag`, `--flag=…`, and for a long flag the
+/// abbreviations a GNU or Python parser takes (`--key-f`) and the single-dash form Go's takes
+/// (`-key-file`); for a two-character `-k`, any cluster of short flags that holds `k` (`-k`,
+/// `-kVALUE`, `-vk`).
+#[must_use]
+pub fn sets_flag(arg: &str, flag: &str) -> bool {
+    if !arg.starts_with('-') || arg == "-" || arg == "--" {
+        return false;
+    }
+    if let Some(long) = flag.strip_prefix("--") {
+        let (name, _) = arg.split_once('=').unwrap_or((arg, ""));
+        if let Some(given) = name.strip_prefix("--") {
+            return !given.is_empty() && long.starts_with(given);
+        }
+        let single = name.trim_start_matches('-');
+        return single == long;
+    }
+    let Some(letter) = flag.strip_prefix('-').filter(|l| l.chars().count() == 1) else {
+        // A single-dash long flag (`-key`): exact, or with `=`.
+        return arg == flag || arg.starts_with(&format!("{flag}="));
+    };
+    if arg.starts_with("--") {
+        return false;
+    }
+    arg[1..].contains(letter)
+}
+
+/// Why `arg` names a path (BRK-006), if it does: anything with `/`, and anything that starts
+/// with `~`, holds `=~` or `@~`, holds `..` or names `file:`; with `slashes`, a `/` only inside a
+/// value like `owner/repo` (not at its start, not after `=`, `@` or `:`, not in a short flag).
+fn path_refusal(arg: &str, slashes: bool) -> bool {
+    let tilde = arg.starts_with('~') || arg.contains("=~") || arg.contains("@~");
+    let dots = arg.contains("..");
+    let file = arg.to_ascii_lowercase().contains("file:");
+    if tilde || dots || file {
+        return true;
+    }
+    if !arg.contains('/') {
+        return false;
+    }
+    if !slashes {
+        return true;
+    }
+    if arg.starts_with('-') && !arg.starts_with("--") {
+        return true;
+    }
+    let value = if arg.starts_with("--") {
+        match arg.split_once('=') {
+            Some((_, value)) => value,
+            None => return true,
+        }
+    } else {
+        arg
+    };
+    value.starts_with('/')
+        || value.contains("=/")
+        || value.contains("@/")
+        || value.contains(":/")
+        || value.contains("//")
+        || value.ends_with('/')
+}
+
+/// Why an agent's arguments are refused (BRK-006), if they are: their count and size, control
+/// characters, paths, flags Yulius owns, and a subcommand outside the allowed ones.
+#[must_use]
+pub fn args_refusal(
+    args: &[String],
+    refuse: &[String],
+    subcommands: &[String],
+    slashes: bool,
+) -> Option<String> {
+    if args.len() > MAX_ARGS {
+        return Some(format!("a run takes at most {MAX_ARGS} arguments"));
+    }
+    for arg in args {
+        if arg.len() > MAX_ENTRY {
+            return Some(format!("an argument is at most {MAX_ENTRY} bytes"));
+        }
+        if arg.chars().any(char::is_control) {
+            return Some(format!("{} holds a control character", shown(arg)));
+        }
+        if path_refusal(arg, slashes) {
+            return Some(format!(
+                "{} looks like a file path, which is not allowed: the command cannot be pointed \
+                 at another file",
+                shown(arg)
+            ));
+        }
+        if let Some(flag) = refuse.iter().find(|flag| sets_flag(arg, flag)) {
+            return Some(format!(
+                "{flag} is set by Yulius, not by you ({})",
+                shown(arg)
+            ));
+        }
+    }
+    // The first argument itself, so no flag's value is read as the subcommand (review round 1).
+    if !subcommands.is_empty() {
+        let first = args.first().map_or("", String::as_str);
+        if !subcommands.iter().any(|s| s == first) {
+            return Some(format!(
+                "the first argument must be an allowed subcommand ({}), not {}",
+                subcommands.join(", "),
+                shown(first)
+            ));
+        }
+    }
+    None
+}
+
+/// Whether a run waits for a person (BRK-013).
+#[must_use]
+pub fn needs_approval(
+    approve: Approve,
+    send_flags: &[String],
+    args: &[String],
+    changes: bool,
+) -> bool {
+    match approve {
+        Approve::Always => true,
+        Approve::Never => false,
+        Approve::Send => {
+            changes
+                || args
+                    .iter()
+                    .any(|arg| send_flags.iter().any(|flag| sets_flag(arg, flag)))
+        }
+    }
+}
+
+/// A word as a person reads it in a command line: bare when it is plain, else single-quoted.
+fn quoted(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./=:@,+%{}".contains(&b));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+/// The full command line a person approves (BRK-014): the binary, the fixed arguments with
+/// their placeholders as written, then the agent's.
+#[must_use]
+pub fn command_line(binary: &str, fixed: &[String], args: &[String]) -> String {
+    std::iter::once(binary)
+        .chain(fixed.iter().map(String::as_str))
+        .chain(args.iter().map(String::as_str))
+        .map(quoted)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The first [`OUTPUT_SHOWN`] bytes of a stream, cut at a character, with how much was left out.
+#[must_use]
+pub fn shown_output(text: &str) -> String {
+    if text.len() <= OUTPUT_SHOWN {
+        return text.to_owned();
+    }
+    let mut end = OUTPUT_SHOWN;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[… {} bytes more]", &text[..end], text.len() - end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +521,157 @@ mod tests {
             assert_eq!(Approve::parse(mode).map(Approve::as_str), Some(mode));
         }
         assert_eq!(Approve::parse("ask"), None);
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    #[test]
+    fn flags_are_found_in_every_form_a_parser_reads() {
+        for arg in [
+            "--key-file",
+            "--key-file=x",
+            "--key-f",
+            "--key=x",
+            "-key-file",
+            "--key-file=",
+        ] {
+            assert!(sets_flag(arg, "--key-file"), "{arg}");
+        }
+        for arg in ["--keys", "--other", "-k", "key-file", "--", "-", "-key"] {
+            assert!(!sets_flag(arg, "--key-file"), "{arg}");
+        }
+        for arg in ["-k", "-kVALUE", "-vk", "-vkx"] {
+            assert!(sets_flag(arg, "-k"), "{arg}");
+        }
+        for arg in ["--k", "--kv", "-v", "k", "-"] {
+            assert!(!sets_flag(arg, "-k"), "{arg}");
+        }
+    }
+
+    #[test]
+    fn arguments_naming_a_path_or_an_owned_flag_are_refused() {
+        let refuse = strings(&["--key-file", "-k"]);
+        let subs = strings(&["status", "push"]);
+        for args in [
+            &["status", "/etc/passwd"][..],
+            &["status", "~/.ssh/id_rsa"],
+            &["status", "~"],
+            &["status", "a/b"],
+            &["status", ".."],
+            &["status", "--x=~"],
+            &["status", "file:key"],
+            &["status", "--key-file", "x"],
+            &["status", "--key-f=x"],
+            &["status", "-key-file"],
+            &["status", "-kx"],
+            &["status", "-vk"],
+            &["rm"],
+            &["--format", "status", "rm"],
+            &[],
+            &["status", "a\nb"],
+        ] {
+            let args = strings(args);
+            assert!(
+                args_refusal(&args, &refuse, &subs, false).is_some(),
+                "{args:?}"
+            );
+        }
+        assert_eq!(
+            args_refusal(
+                &strings(&["status", "--json", "app-1"]),
+                &refuse,
+                &subs,
+                false
+            ),
+            None
+        );
+        assert!(args_refusal(&strings(&["x"; 65]), &[], &[], false).is_some());
+    }
+
+    #[test]
+    fn slashes_pass_only_inside_a_value() {
+        for ok in ["owner/repo", "--repo=owner/repo", "a/b/c"] {
+            assert_eq!(args_refusal(&strings(&[ok]), &[], &[], true), None, "{ok}");
+        }
+        for bad in [
+            "/etc/passwd",
+            "~/x",
+            "a/../b",
+            "--key=/etc/x",
+            "--key=~/x",
+            "-f/etc/x",
+            "--repo",
+            "host:/etc/passwd",
+            "file:///etc/passwd",
+            "https://example.com/x",
+            "a//b",
+            "a/",
+            "x@/y",
+        ] {
+            let refused = if bad == "--repo" {
+                args_refusal(&strings(&["--repo/x"]), &[], &[], true)
+            } else {
+                args_refusal(&strings(&[bad]), &[], &[], true)
+            };
+            assert!(refused.is_some(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn approval_follows_the_mode_the_flags_and_the_agents_word() {
+        let send = strings(&["--send", "-y"]);
+        assert!(needs_approval(Approve::Always, &send, &[], false));
+        assert!(!needs_approval(
+            Approve::Never,
+            &send,
+            &strings(&["--send"]),
+            true
+        ));
+        assert!(!needs_approval(
+            Approve::Send,
+            &send,
+            &strings(&["status"]),
+            false
+        ));
+        assert!(needs_approval(
+            Approve::Send,
+            &send,
+            &strings(&["status"]),
+            true
+        ));
+        for flagged in ["--send", "--send=1", "--se", "-y", "-vy"] {
+            assert!(
+                needs_approval(Approve::Send, &send, &strings(&["push", flagged]), false),
+                "{flagged}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_command_line_a_person_reads() {
+        let line = command_line(
+            "/usr/bin/deploy",
+            &strings(&["--key-file", "{keyfile}"]),
+            &strings(&["push", "it's", "a b", ""]),
+        );
+        assert_eq!(
+            line,
+            r"/usr/bin/deploy --key-file {keyfile} push 'it'\''s' 'a b' ''"
+        );
+    }
+
+    #[test]
+    fn output_is_cut_at_a_character_and_says_how_much() {
+        assert_eq!(shown_output("short"), "short");
+        let long = "é".repeat(OUTPUT_SHOWN);
+        let shown = shown_output(&long);
+        assert!(shown.len() < OUTPUT_SHOWN + 40, "{}", shown.len());
+        assert!(
+            shown.ends_with(&format!("[… {} bytes more]", long.len() - OUTPUT_SHOWN)),
+            "{}",
+            &shown[shown.len() - 40..]
+        );
     }
 }

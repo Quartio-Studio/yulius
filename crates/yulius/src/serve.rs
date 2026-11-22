@@ -677,6 +677,15 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         ),
         Err(err) => tracing::error!(error = %err, "environment run reconciliation failed"),
     }
+    // A brokered run a stopped server left: its files, its key's among them, go (SPEC-626).
+    match app.reconcile_command_runs().await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(
+            runs = n,
+            "brokered command runs interrupted by a restart were lost"
+        ),
+        Err(err) => tracing::error!(error = %err, "brokered command run reconciliation failed"),
+    }
     match app.reconcile_cd_runs().await {
         Ok(0) => {}
         Ok(n) => tracing::warn!(

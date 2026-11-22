@@ -74,6 +74,16 @@ enum Command {
         /// Its arguments as one JSON object, e.g. '{"reviewed_head": "<sha>"}'.
         arguments: Option<String>,
     },
+    /// In a task's session: run a brokered command of the project (SPEC-626) outside the sandbox,
+    /// with its key as a file you never see; prints its stdout and stderr and exits with its
+    /// code (125: refused, rejected or not answered in time).
+    Run {
+        /// The command's name (`commands_list`).
+        name: String,
+        /// Its arguments, after the command's fixed ones.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Scan this repository with Vidoc's vidoc-1 (SPEC-195): the branch's changes against the
     /// integration branch, or the whole repository with --all; exit 0 passed, 1 failed, 2 not run.
     /// `yulius security-scan --help` lists the options.
@@ -734,6 +744,17 @@ fn main() -> ExitCode {
                 &mut std::io::stdout(),
                 &name,
                 arguments.as_deref(),
+                yulius::tool_cli::Pace::default(),
+                &|k| std::env::var(k).ok(),
+            );
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Command::Run { name, args } => {
+            let code = yulius::run_cli::run(
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+                &name,
+                &args,
                 yulius::tool_cli::Pace::default(),
                 &|k| std::env::var(k).ok(),
             );

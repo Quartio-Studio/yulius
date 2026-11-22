@@ -2109,7 +2109,7 @@ outside their sandbox ([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-
 | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/commands` | (read) → `{items: [Command], can_edit}`; `Command` is the definition plus `{id, secret_ready, version, created_by, created_at, updated_by, updated_at, can_edit}` (`secret_ready`: its runs get the secret it was saved with: that NAME still resolves to it there and it is no production secret). Env values are not secret and are shown |
 | POST | `/api/sandboxes/{sid}/commands` | (administer) `{name, description?, binary, secret, tasks?: [n], approve?: "always" (default)\|"send"\|"never", send_flags?, approval_minutes?: 1-60 (10), timeout_seconds?: 1-1800 (600), fixed?, subcommands?, refuse?, slashes?, env?: {NAME: value}}` → 201 `Command`. 422 for a name outside 1-40 of `a-z0-9-`, a binary that is no absolute normalised path, a placeholder other than `{keyfile}`, `{home}` and (in `env` only) `{secret}`, an env name Yulius sets (`PATH`, `HOME`, `TMPDIR`, `LD_*`, `YULIUS_*`), `send` without `send_flags`, a binary under `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/var/tmp`, `/home`, `/root` or the data directory or with spaces or non-ASCII, flags or subcommands outside letters, digits, `_`, `.`, `:` and `-`, an invisible character, a definition over 16 KiB, a secret that is missing, personal or a production one, an unknown field; 403 unless the caller manages the secret (a global one: instance administrators); for a secret with `auto_allow` off 403 for an API token and `403 reauth_required` without a fresh two-factor unlock (ADR-0317); 409 for a name taken; audited `command.define` (the definition, redacted, no value). The command keeps the secret's id: another secret of that NAME later reaches none of its runs until it is saved again |
-| PUT | `/api/sandboxes/{sid}/commands/{id}?version=N` | (administer) the same body and checks → `Command`; 409 when it changed since `version` (the `version` the editor read) or meanwhile, or for a name taken; 404 for another project's id; audited `command.update` |
+| PUT | `/api/sandboxes/{sid}/commands/{id}?version=N` | (administer) the same body and checks → `Command`; 409 when it changed since `version` (the `version` the editor read) or meanwhile, or for a name taken; 404 for another project's id; audited `command.update`. Without `version` the last writer wins |
 | DELETE | `/api/sandboxes/{sid}/commands/{id}` | (administer) → 204; audited `command.remove` |
 
 Each change publishes `commands.updated` `{"sandbox_id"}`. Task agents and the Superagent list
@@ -2117,6 +2117,18 @@ them with the MCP tool `commands_list` (pre-allowed for the Superagent): name, d
 binary, `fixed`, `subcommands`, `refuse`, `slashes`, env names (never values), `approve`,
 `send_flags`, `approval_minutes`, `timeout_seconds`, `secret`, `secret_ready`, `tasks` and, for a
 task's agent, `you_may_run`.
+
+Task agents run one with `command_run {name, args?: [string], changes?: bool}` and follow it with
+`command_result {id}` (a run another task started: not found). Each call waits up to 240 s for
+the run's end and answers `{id, command, state, reason?, exit_code?, stdout?, stderr?}`; `state`
+is `running` until it ends `done` (with its exit code), `timed_out`, `output_limit`, `failed` or
+`lost`. stdout and stderr come back redacted of every agent secret of the project and cut to
+96 KiB each (`[… N bytes more]`). A refusal is a tool error `command refused: <reason>`, audited
+`command.refused` (task, command, redacted arguments, reason); every run is audited
+`command.run`. In a task's shell, `yulius run NAME [ARGS…]` does the same and exits with the
+command's code (125 when it was refused or ended without one, 2 for a usage or token error, 3 when
+Yulius could not be reached). Runs that need a person's approval are refused until approvals
+arrive.
 
 ## UI event stream
 
