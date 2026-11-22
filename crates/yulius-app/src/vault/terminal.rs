@@ -4,11 +4,12 @@
 //! snapshots are redacted whole. A value is replaced by its label fitted to the value's width, so
 //! the screen keeps its layout (SPEC-239).
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthChar as _;
-use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
 use yulius_domain::vault::redact::{PlainMatcher, StreamRedactor, fitted_label, redact_all_with};
 
 use crate::context::App;
@@ -204,26 +205,34 @@ impl App {
         }
     }
 
-    /// Redacts one chunk of PTY output and feeds it to the task's hub; schedules the release
-    /// of a held tail.
+    /// Redacts one chunk of PTY output of the task's run `attempt` and feeds it to the task's
+    /// hub; schedules the release of a held tail.
     pub(crate) async fn terminal_output(
         self: &Arc<Self>,
         scrub: &TerminalScrub,
-        task: &TaskId,
+        (task, attempt): (&TaskId, &AttemptId),
         sandbox: &SandboxId,
         seq: u64,
         bytes: &[u8],
     ) {
         let app = Arc::clone(self);
         let task = task.clone();
-        self.scrub_output(scrub, sandbox, seq, bytes, move |seq, out| {
+        let attempt = attempt.clone();
+        self.scrub_output(scrub, sandbox, seq, bytes, move |seq, out, tail| {
+            let key = Path::new(attempt.as_str());
+            if tail {
+                crate::race::reached(crate::race::Point::TerminalTailReady, key);
+            }
             app.runtime(&task).hub.output(seq, out);
+            if tail {
+                crate::race::reached(crate::race::Point::TerminalTailDone, key);
+            }
         })
         .await;
     }
 
     /// Redacts one chunk of PTY output and feeds it to `sink` (a hub); schedules the release of
-    /// a held tail.
+    /// a held tail, which reaches `sink` with `tail` set.
     pub(crate) async fn scrub_output<F>(
         &self,
         scrub: &TerminalScrub,
@@ -232,19 +241,19 @@ impl App {
         bytes: &[u8],
         sink: F,
     ) where
-        F: Fn(u64, &[u8]) + Send + Sync + 'static,
+        F: Fn(u64, &[u8], bool) + Send + Sync + 'static,
     {
         let generation = self.vault_generation();
         if scrub.needs_load(generation, Instant::now()) {
             let fresh = self.terminal_redactor(sandbox).await;
             let show = scrub.loaded(generation, fresh, Instant::now());
             if !show.is_empty() {
-                sink(seq, &show);
+                sink(seq, &show, false);
             }
         }
         let (out, epoch, holding) = scrub.push(bytes);
         if !out.is_empty() {
-            sink(seq, &out);
+            sink(seq, &out, false);
         }
         if holding {
             let scrub = scrub.clone();
@@ -256,7 +265,7 @@ impl App {
                         .flatten()
                 });
                 if let Some(held) = held.filter(|h| !h.is_empty()) {
-                    sink(seq, &held);
+                    sink(seq, &held, true);
                 }
             });
         }

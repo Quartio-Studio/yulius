@@ -4620,7 +4620,7 @@ impl App {
             loop {
                 match reader.next().await {
                     Ok(Some(RunEvent::Output { seq, bytes })) => {
-                        app.terminal_output(&scrub, &tid, &sandbox, seq, &bytes)
+                        app.terminal_output(&scrub, (&tid, &aid), &sandbox, seq, &bytes)
                             .await;
                     }
                     Ok(Some(RunEvent::Snapshot { seq, bytes })) => {
