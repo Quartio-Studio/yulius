@@ -540,47 +540,19 @@ fn a_turn_that_starts_while_the_move_is_prepared_keeps_its_run() -> TestResult {
     Ok(())
 }
 
-/// A goal-mode task on `a-first`, as [`idle_on_a_full_first`], its goal reached: Done.
+/// An idle task on a full `a-first` ([`idle_on_a_full_first`]) recorded in goal mode and Done:
+/// a restart of its session would type its goal again.
 async fn done_goal_on_a_full_first(
     app: &Arc<App>,
     probe: &ScriptedUsage,
     data: &std::path::Path,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
-    let (sandbox, user) = seed(app, data, &["a-first", "b-second"]).await?;
-    probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
-    refresh(app, &user, "b-second").await?;
-    let id = app
-        .create_task_internal(yulius_app::lifecycle::NewTask {
-            sandbox,
-            created_by: user.clone(),
-            prompt: "Goal: answer with an echo".into(),
-            harness: yulius_domain::harness::Harness::ClaudeCode,
-            title: Some("Goal".into()),
-            workflow_id: None,
-            steps: Vec::new(),
-            model: None,
-            effort: None,
-            origin: yulius_app::model::TaskOrigin::Ui,
-            automation_run: None,
-            start: true,
-            mode: yulius_app::model::TaskMode::Goal,
-            supertask: false,
-        })
-        .await?
-        .id;
-    ready(app, &id).await?;
-    // Its goal is typed once the session is ready: that turn begins before it is reached.
-    wait_for("the goal's turn", Duration::from_secs(30), || async {
-        task(app, &id)
-            .await
-            .is_ok_and(|t| t.activity == Some(Activity::Working))
-    })
-    .await?;
-    probe.set("b-second", usage(30.0, 5 * HOUR, 30.0, 100));
-    refresh(app, &user, "b-second").await?;
-    probe.set("a-first", usage(96.0, 4 * HOUR, 30.0, 100));
-    refresh(app, &user, "a-first").await?;
-    idle(app, &id).await?;
+    let (id, _user) = idle_on_a_full_first(app, probe, data).await?;
+    let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+    db.execute(
+        "UPDATE tasks SET mode = 'goal' WHERE id = ?1",
+        [id.as_str()],
+    )?;
     app.deps
         .store
         .set_activity(&id, Some(Activity::Done), app.now())
@@ -588,12 +560,11 @@ async fn done_goal_on_a_full_first(
     Ok(id)
 }
 
-/// RBL-003: a goal session would get its goal typed again by a restart, so it is never moved
-/// idle. With parking off it stays where it is, nothing typed and no switch recorded. (With
-/// parking on the pass hands it to `park_task_now`, whose own rules decide; this fake's goal turn
-/// never ends, so they keep it here too.)
+/// RBL-003, RBL-004: a goal session would get its goal typed again by a restart, so it is never
+/// moved idle: with parking off it stays where it is, nothing typed and no switch recorded; with
+/// parking on it is parked, told once, and its resume is placed off the full subscription.
 #[test]
-fn an_idle_goal_session_is_never_restarted() -> TestResult {
+fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
     for parking in [false, true] {
         let fake =
             locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -611,14 +582,34 @@ fn an_idle_goal_session_is_never_restarted() -> TestResult {
                 |config| config.park_after_ms = u64::from(parking),
             )?;
             let id = done_goal_on_a_full_first(&app, &probe, &data).await?;
+            let mut events = app.events.subscribe();
             let pass = app.rebalance_now().await;
-            assert_eq!(
-                (pass.moved, pass.kept),
-                (0, 1),
-                "parking {parking}: {pass:?}"
-            );
-            assert_eq!(run_accounts(&app, &id).await.len(), 1, "nothing restarted");
+            assert_eq!(pass.moved, 0, "never restarted: {pass:?}");
             assert!(app.deps.store.switches(&id).await?.is_empty(), "no move");
+            if parking {
+                assert_eq!(pass.parked, 1, "{pass:?}");
+                wait_for("the park", Duration::from_secs(30), || async {
+                    task(&app, &id)
+                        .await
+                        .is_ok_and(|t| t.status == TaskStatus::Parked)
+                })
+                .await?;
+                let told = rebalanced(&mut events);
+                assert_eq!(told.len(), 1, "{told:?}");
+                assert!(told[0].4.starts_with(&format!("rebalance:{id}:parked:")));
+                // Its resume is placed off the full subscription.
+                let user = UserId::parse("u-admin")?;
+                app.continue_task(&ctx(&app, &user).await?, id.as_str(), &Default::default())
+                    .await?;
+                live_run(&app, &id, 2).await?;
+                assert_eq!(
+                    run_accounts(&app, &id).await[1].as_deref(),
+                    Some("b-second")
+                );
+            } else {
+                assert_eq!(pass.kept, 1, "{pass:?}");
+                assert_eq!(run_accounts(&app, &id).await.len(), 1, "nothing restarted");
+            }
             stop(&app, &id).await?;
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;
