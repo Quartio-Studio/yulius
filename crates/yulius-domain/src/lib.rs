@@ -34,6 +34,7 @@ pub mod notify;
 pub mod numbering;
 pub mod permission;
 pub mod pricing;
+pub mod rebalance;
 pub mod redact;
 pub mod request;
 pub mod resources;

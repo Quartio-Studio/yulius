@@ -61,6 +61,9 @@ pub struct AppConfig {
     pub person_freeze_pass_ms: u64,
     /// Wait between two resumes of tasks paused for lack of subscription capacity (ROT-010).
     pub resume_stagger_ms: u64,
+    /// The rebalance threshold of each harness (SPEC-629 RBL-001,
+    /// `YULIUS_REBALANCE_PERCENT_<HARNESS>`).
+    pub rebalance: yulius_domain::rebalance::Thresholds,
     /// How long a stopped or closed run gets to exit (interrupt, TERM, kill) before its host is
     /// terminated (SPEC-065 END-008).
     pub stop_escalation_ms: u64,
@@ -163,6 +166,7 @@ impl AppConfig {
             events_heartbeat_ms: 20_000,
             person_freeze_pass_ms: 2_000,
             resume_stagger_ms: crate::capacity::RESUME_STAGGER_MS,
+            rebalance: yulius_domain::rebalance::Thresholds::default(),
             stop_escalation_ms: u64::try_from(
                 yulius_domain::task::STOP_INTERRUPT_GRACE_MS
                     + yulius_domain::task::STOP_TERM_GRACE_MS

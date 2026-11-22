@@ -116,7 +116,8 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - **AC-5** With every other subscription at or above 95 %, an idle task on one at 97 % stays,
   its terminal and its person are told once, and later passes tell nothing more until the
   episode ends.
-- **AC-6** A threshold outside 50–98 is refused at start with the variable's name.
+- **AC-6** A threshold outside 50–98 is refused at start, naming the argument; each reads its
+  own variable and is 95 by default.
 
 ## Test plan
 
