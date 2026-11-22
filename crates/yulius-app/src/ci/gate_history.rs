@@ -84,6 +84,8 @@ struct Origin {
 pub(super) struct GateFailures {
     tests: BTreeMap<String, (Origin, BTreeSet<String>)>,
     unknown: BTreeMap<String, Origin>,
+    /// A run-level verdict without failing job evidence lasts until another suite settles.
+    run_failure: Option<(String, Origin)>,
     latest_run: Option<String>,
     /// An earlier full suite still has to finish before attribution is final.
     pub waiting: bool,
@@ -98,6 +100,7 @@ impl GateFailures {
         if verdict.state == RunState::Skipped {
             return;
         }
+        self.run_failure = None;
         if !verdict.archived {
             self.latest_run = Some(verdict.run.clone());
         }
@@ -160,9 +163,7 @@ impl GateFailures {
             }
         }
         if !observed {
-            self.unknown
-                .entry(verdict.state.as_str().to_owned())
-                .or_insert(origin);
+            self.run_failure = Some((verdict.state.as_str().to_owned(), origin));
         }
     }
 
@@ -193,16 +194,14 @@ impl GateFailures {
         for (test, (origin, _)) in &self.tests {
             classify(test, Some(origin));
         }
-        let mut unidentified: BTreeSet<&str> = verdict
+        let unidentified: BTreeSet<&str> = verdict
             .jobs
             .iter()
             .filter(|job| job.unknown)
             .map(|job| job.name.as_str())
             .collect();
-        if verdict.state != RunState::Passed
-            && !verdict.jobs.iter().any(|job| !job.passed && !job.skipped)
-        {
-            unidentified.insert(verdict.state.as_str());
+        if let Some((state, _)) = &self.run_failure {
+            classify(state, None);
         }
         for (job, origin) in &self.unknown {
             classify(
@@ -229,6 +228,7 @@ impl GateFailures {
             .into_iter()
             .map(|(test, (origin, _))| (test, origin))
             .chain(self.unknown)
+            .chain(self.run_failure)
             .filter_map(|(test, origin)| {
                 let run_id = self.latest_run.clone().or(origin.run)?;
                 Some(GateNotice {

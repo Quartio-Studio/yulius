@@ -802,6 +802,35 @@ async fn pruning_a_manually_cancelled_candidate_preserves_its_verdict_and_rerun(
     )
     .await?;
     assert_eq!(rerun.body["sha"], sha);
+    let rerun_id = rerun.body["id"].as_str().ok_or("rerun id")?;
+    f.h.store.execute_for_tests(&format!(
+        "UPDATE ci_jobs SET state='passed' WHERE run_id='{rerun_id}';
+         UPDATE ci_jobs SET state='failed', failures='---- suite::broken stdout ----' WHERE run_id='{rerun_id}' AND name='full';
+         UPDATE ci_runs SET state='failed' WHERE id='{rerun_id}'"
+    )).await?;
+    for view in [
+        f.get("/api/status").await?,
+        f.get("/api/sandboxes/s1/ci").await?,
+    ] {
+        let notices = view
+            .get("gate_notices")
+            .unwrap_or(&view["sandboxes"][0]["gate_notices"]);
+        assert_eq!(notices.as_array().ok_or("notices")?.len(), 1, "{notices}");
+        assert_eq!(notices[0]["test"], "suite::broken");
+        assert_eq!(notices[0]["run_id"], rerun_id);
+    }
+    agent(&f, "later").await?;
+    let later = land(&f, "later", "later").await?;
+    named_gate(&f, &later, &["suite::broken"]).await?;
+    let asked = ask(&f, "later").await?;
+    settle(&f).await?;
+    let receipt = request(&f, asked["id"].as_str().ok_or("later receipt")?).await?;
+    assert_eq!(receipt.state, StagingState::Inherited);
+    let note = receipt.note.ok_or("inheritance")?;
+    assert!(
+        note.contains("suite::broken") && !note.contains("cancelled"),
+        "{note}"
+    );
     Ok(())
 }
 
