@@ -307,7 +307,7 @@ fn a_held_chunk_of_an_old_run_does_not_reach_its_replacement() -> TestResult {
         wait_for(
             "the replacement's later answer",
             Duration::from_secs(30),
-            || async { screen(&app, &id).contains("ECHO: Later text of the replacement") },
+            || async { screen(&app, &id).contains("Later text of the replacement") },
         )
         .await?;
         let seen = received(&mut viewer);

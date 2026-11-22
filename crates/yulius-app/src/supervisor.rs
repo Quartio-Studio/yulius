@@ -696,6 +696,29 @@ impl TaskRuntime {
         written
     }
 
+    /// Runs `write` on the hub only while it shows the screen of `run`, under the lock an
+    /// attach takes to switch the screen to its run: output, snapshots and reattachments of a
+    /// replaced run never reach its replacement's screen (SPEC-614, #1624).
+    pub(crate) fn on_screen_of(&self, run: &AttemptId, write: impl FnOnce(&Hub)) {
+        let Ok(shown) = self.screen_of.lock() else {
+            return;
+        };
+        if shown.as_ref() == Some(run) {
+            write(&self.hub);
+        }
+    }
+
+    /// Makes the hub show `run`'s screen (SPEC-301 LRS-001): `restore` resets it under the lock
+    /// [`Self::on_screen_of`] checks, so nothing of the previous run is drawn after it.
+    fn show_screen_of(&self, run: &AttemptId, restore: impl FnOnce(&Hub)) {
+        let mut shown = self
+            .screen_of
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        restore(&self.hub);
+        *shown = Some(run.clone());
+    }
+
     fn check_codex_input_screen(&self, attempt: &AttemptId) -> AppResult<()> {
         if self.screen_withheld()
             || !self
@@ -4592,19 +4615,18 @@ impl App {
             .hub
             .controller_size()
             .unwrap_or((welcome.cols, welcome.rows));
-        runtime.hub.restore(
-            welcome.seq,
-            &screen,
-            cols,
-            rows,
-            crate::hub::ScreenUpdate::Host {
-                rendered: welcome.rendered_at((cols, rows)),
-            },
-        );
         // The hub shows this run from now on (SPEC-301 LRS-001).
-        if let Ok(mut shown) = runtime.screen_of.lock() {
-            *shown = Some(attempt.id.clone());
-        }
+        runtime.show_screen_of(&attempt.id, |hub| {
+            hub.restore(
+                welcome.seq,
+                &screen,
+                cols,
+                rows,
+                crate::hub::ScreenUpdate::Host {
+                    rendered: welcome.rendered_at((cols, rows)),
+                },
+            );
+        });
         if (cols, rows) != (welcome.cols, welcome.rows)
             && let Err(err) = self.resize_run(task_id, cols, rows).await
         {
@@ -4626,7 +4648,8 @@ impl App {
                     Ok(Some(RunEvent::Snapshot { seq, bytes })) => {
                         let (cols, rows) = app.runtime(&tid).hub.size();
                         let screen = app.terminal_snapshot(&scrub, &sandbox, &bytes).await;
-                        app.runtime(&tid).hub.reset(seq, &screen, cols, rows);
+                        app.runtime(&tid)
+                            .on_screen_of(&aid, |hub| hub.reset(seq, &screen, cols, rows));
                     }
                     Ok(Some(RunEvent::Exit(exit))) => {
                         crate::race::reached(
@@ -4678,15 +4701,17 @@ impl App {
                                         codex_submit_hold,
                                         writer: again.writer,
                                     });
-                                    rt.hub.restore(
-                                        again.welcome.seq,
-                                        &screen,
-                                        again.welcome.cols,
-                                        again.welcome.rows,
-                                        crate::hub::ScreenUpdate::Host {
-                                            rendered: again.welcome.rendered,
-                                        },
-                                    );
+                                    rt.on_screen_of(&aid, |hub| {
+                                        hub.restore(
+                                            again.welcome.seq,
+                                            &screen,
+                                            again.welcome.cols,
+                                            again.welcome.rows,
+                                            crate::hub::ScreenUpdate::Host {
+                                                rendered: again.welcome.rendered,
+                                            },
+                                        );
+                                    });
                                     reader = again.reader;
                                     continue;
                                 }

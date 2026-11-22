@@ -206,7 +206,7 @@ impl App {
     }
 
     /// Redacts one chunk of PTY output of the task's run `attempt` and feeds it to the task's
-    /// hub; schedules the release of a held tail.
+    /// hub while the hub shows that run's screen; schedules the release of a held tail.
     pub(crate) async fn terminal_output(
         self: &Arc<Self>,
         scrub: &TerminalScrub,
@@ -223,7 +223,11 @@ impl App {
             if tail {
                 crate::race::reached(crate::race::Point::TerminalTailReady, key);
             }
-            app.runtime(&task).hub.output(seq, out);
+            // Only while the hub shows this run's screen (SPEC-614): a chunk or tail that
+            // reaches it after a replacement attached is dropped.
+            if let Some(runtime) = app.existing_runtime(&task) {
+                runtime.on_screen_of(&attempt, |hub| hub.output(seq, out));
+            }
             if tail {
                 crate::race::reached(crate::race::Point::TerminalTailDone, key);
             }
