@@ -195,7 +195,8 @@ definition says. No answer within the stated time is a no. The owner approved th
 - [x] Store command definitions and runs (migration 0089)
 - [x] Administrators define, change and remove a project's commands, audited
 - [x] Agents and the Superagent list a project's commands with commands_list
-- [ ] Independent review of the definitions slice, findings fixed test-first
+- [x] Independent review of the definitions slice, findings fixed test-first
+- [x] Repair dev: the Superagent's pre-allowed tools test lists commands_list
 - [ ] Refuse paths, refused flags and other subcommands in a run's arguments
 - [ ] Run a command in the production holder with a temporary key file and a fresh home
 - [ ] Bound a run's time and output and blank every stored secret from it

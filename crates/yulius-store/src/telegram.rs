@@ -163,6 +163,13 @@ impl ChatLinkStore for SqliteStore {
                 params![user, chat],
             )
             .map_err(db)?;
+            // And its keyed messages (SPEC-624, review round 1).
+            tx.execute(
+                "DELETE FROM telegram_keyed WHERE chat_id IN \
+                 (SELECT chat_id FROM telegram_links WHERE user_id = ?1 AND chat_id <> ?2)",
+                params![user, chat],
+            )
+            .map_err(db)?;
             let earlier: Option<String> = tx
                 .query_row(
                     "DELETE FROM telegram_links WHERE chat_id = ?1 AND user_id <> ?2 RETURNING user_id",
@@ -197,6 +204,8 @@ impl ChatLinkStore for SqliteStore {
             if earlier.is_some() {
                 tx.execute("DELETE FROM telegram_sent WHERE chat_id = ?1", [&chat])
                     .map_err(db)?;
+                tx.execute("DELETE FROM telegram_keyed WHERE chat_id = ?1", [&chat])
+                    .map_err(db)?;
             }
             tx.commit().map_err(db)?;
             earlier
@@ -220,6 +229,8 @@ impl ChatLinkStore for SqliteStore {
                 .map_err(db)?;
             if let Some(chat) = &chat {
                 tx.execute("DELETE FROM telegram_sent WHERE chat_id = ?1", [chat])
+                    .map_err(db)?;
+                tx.execute("DELETE FROM telegram_keyed WHERE chat_id = ?1", [chat])
                     .map_err(db)?;
             }
             tx.commit().map_err(db)?;
@@ -374,6 +385,7 @@ impl ChatLinkStore for SqliteStore {
                 .map_err(db)?;
             let links = tx.execute("DELETE FROM telegram_links", []).map_err(db)?;
             tx.execute("DELETE FROM telegram_sent", []).map_err(db)?;
+            tx.execute("DELETE FROM telegram_keyed", []).map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(u64::try_from(links).unwrap_or(u64::MAX))
         })

@@ -524,11 +524,13 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0456 -->
 - [0457](0457-new-tasks-default-to-claude-code-on-opus-5-5.md): New tasks default to Claude Code on Opus 5.5 when nothing is chosen; supersedes 0422 and 0426.
 <!-- ADR 0457 -->
+- [0458](0458-an-agent-secret-can-be-limited-to-methods-and-paths.md): An agent secret can be limited to HTTP methods and path patterns; a request that would use it outside them is refused with 403 and audited, never forwarded without the value (SPEC-627, #611).
 <!-- ADR 0458 -->
 - [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md): Brokered commands run in the production holder with a temporary key file; amends SPEC-002 ADR-20
 <!-- ADR 0459 -->
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
+- [0462](0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md): Notices carry a key and an expiry, and the newest per key wins
 <!-- ADR 0462 -->
 - [0463](0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md): a fork continues a stored copy of its source's Claude Code session (`--resume --fork-session --session-id`) or Codex's own `fork`, from the source branch's recorded commit; Antigravity is refused (SPEC-628)
 <!-- ADR 0463 -->

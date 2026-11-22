@@ -2914,6 +2914,39 @@ serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a cop
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets have their own scopes (below).
 
+### Method and path rules
+
+Since SPEC-627 ([decision 0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md))
+a person who manages an agent secret can limit it to requests: `vault_secrets.rules` holds 0–32
+rules, each 1–16 HTTP methods and a path pattern (`*` matching any characters, `/` included;
+schema version 90, `[]` = any request). The domain parses and matches them
+(`yulius-domain` `vault/rules.rs`: the pattern is split on `*` and its pieces found in order, linear
+in the path); the egress policy applies them (`yulius-app` `vault/rules.rs`, called from
+`egress_apply` in `vault/runtime.rs`), so they hold for agent runs, CI jobs and Superagents alike.
+The proxy passes each request's method in `EgressRequest::method`.
+
+```mermaid
+flowchart TD
+  R["request to a bound host<br/>(intercepted HTTP/1.1 or absolute http://)"] --> U{"uses a secret with rules?<br/>placeholder, X-Yulius-Secret,<br/>or its injected header"}
+  U -->|no| F["forwarded as before"]
+  U -->|yes| M{"method and path (sent and outgoing) match a rule,<br/>no dot segment, backslash, ; # or encoded dot/NUL/%,<br/>no method or path override?"}
+  M -->|yes| F
+  M -->|"no (another secret's rules allow the header)"| O["that secret's header instead"] --> F
+  M -->|no| X["403 naming request, host, secret and rules;<br/>nothing sent"] --> A["audit vault.agent.refused<br/>once per run, secret, method, path;<br/>20 per run and secret, then one more"]
+```
+
+The path is matched as the agent sent it and as it goes out (another secret's value replaced in,
+which could otherwise add `..`, `?` or `#`), query left out, no decoding, so spellings the proxy's
+own client or a server could normalise to another resource are refused instead of decoded. A
+run's different refusals of a secret are audited up to 20 (`REFUSALS_LISTED`), then once as "not
+listed" (`VaultState::refusals`). Hosts agents ask for a secret with rules wait for a person even
+with `auto_allow` (`vault/requests.rs`): a server of the agent's own would get the value. Rules
+are set in the Secrets page's Edit dialog or with `rules` in the create and edit bodies; an edit
+is a compare-and-set on the rules it read (`vault_update`), and a row whose stored rules no longer
+parse fails to load rather than becoming unlimited. `secrets_list` shows them to agents. gRPC
+(HTTP/2) to a bound host is not proxied at all (the interception speaks HTTP/1.1), so rules cover
+every request that can carry a value.
+
 ### Copies of production secrets
 
 Since SPEC-440 ([decision 0284](decisions/0284-agents-ask-for-a-copy-of-a-production-secret-and-a-person-allows-it.md))
@@ -3169,6 +3202,51 @@ sequenceDiagram
   Y->>Y: envelope_reaches(person) · choices · redact · throttle
   Y->>T: sendMessage(chat, text with /s/{slug}/t/{n})
   T-->>C: notification
+```
+
+## Notices: a key and an expiry
+
+Notices for people carry a key and an expiry
+([SPEC-624](../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md),
+[decision 0462](decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md)).
+
+- **Posting.** `App::post_notice` (`crates/yulius-app/src/notices.rs`) takes a `NewNotice`: a
+  project or none, an optional recipient, `admin_only`, a `NoticeKey`
+  (`yulius_domain::notice`), a category (the Telegram choice), a tone, texts, a link, `decision`
+  and an optional `Expiry`. It resolves the expiry (`notice_expiry`: a decision never expires
+  and refuses an expiry), cuts and redacts the texts as the project's transcripts are, and stores
+  the notice. `NoticeStore::put_notice` (migration 0091, `notices`) deletes the notice with the
+  same project, recipient and key, and its dismissals, inserts the new one and keeps the scope's
+  newest 200, all in one transaction. The notice is then published as `notice.posted` in an
+  envelope with its project, recipient and `admin_only`.
+- **Reading.** `App::notices_for` reads the live, undismissed notices addressed to the person or
+  to nobody in particular. The store applies the reader's reach before its limit: the projects
+  holding such notices that they can see, instance-wide notices unless they are a guest, and
+  `admin_only` ones for administrators. The read then keeps those whose envelope reaches them
+  (`envelope_reaches`, the event stream's rule). `GET /api/me/notices`, the person tools `notices_list` and
+  `notice_dismiss`, and the digest use it. The background tick deletes expired notices
+  (`prune_notices_now`). A producer removes a notice by its scope and key (`notice.removed`).
+- **Telegram.** The notifier turns `notice.posted` into a message and gives task-state, control,
+  shared-cause and subscription messages a scope (`<project or ->:<recipient or ->:<key>`; a
+  task's key is `task:<task id>`; posted keys may not use the derived prefixes). After the send queue sends a scoped message, `swap_keyed_message`
+  (`telegram_keyed`) returns the bot's earlier message for that scope in the chat, and the bot
+  deletes it (`NotificationChannel::delete`, Telegram's `deleteMessage`). A refused delete leaves
+  the old message in the chat. `telegram_keyed` rows go with their chat's link, like
+  `telegram_sent`, and the tick forgets rows older than 48 hours.
+- **Digest.** Each person's digest lists up to 20 of their live notices (`DigestView.notices`).
+  Its items carry `task:<task id>`, and its Telegram message has the scope `-:digest`, so today's
+  digest replaces yesterday's.
+
+```mermaid
+flowchart LR
+  P["producer or script watch"] -->|"NewNotice: key, expiry"| A["App::post_notice"]
+  A -->|"replace by project, recipient, key"| DB[("notices")]
+  A -->|"notice.posted (envelope)"| BUS["event bus"]
+  BUS --> WEB["open pages: the bell"]
+  BUS --> N["notifier"] -->|"scoped message"| Q["send queue"]
+  Q -->|"send, then delete the earlier one"| TG["Telegram chat"]
+  DB -->|"live, undismissed, visible"| R["GET /api/me/notices · notices_list · digest"]
+  T["tick"] -->|"delete expired"| DB
 ```
 
 ## Vidoc: the instance key and the security scan

@@ -728,7 +728,12 @@ watching, steering and unblocking.
   is added with a name, a value and a description: agents find the service's host and bind it
   themselves, and production deploys get the secret, unless the person turns "Let agents set it up"
   off when adding it; then a person allows each host with one click and production separately
-  (SPEC-121, SPEC-216). Team secrets belong to the sandbox they were added in, or are team-wide when
+  (SPEC-121, SPEC-216). In Edit, a manager can limit it to certain requests, such as
+  `GET /repos/*`: the proxy then puts it only into requests that match, and refuses any other
+  request that would use it with a message the agent reads, audited, so a token given for
+  reading cannot write or delete while agents cannot learn it: hosts they ask for it wait for a
+  person, and its `.env` copies stay off (SPEC-627,
+  [ADR-0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)). Team secrets belong to the sandbox they were added in, or are team-wide when
   the person picks that; team secrets from before were copied into each sandbox (SPEC-216). Agent
   secrets ("keys and logins agents use without seeing them") are on three tabs (SPEC-245):
   **Project** (this project's), **Global** (defined once by instance administrators, who switch each

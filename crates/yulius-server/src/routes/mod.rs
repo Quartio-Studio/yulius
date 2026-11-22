@@ -25,6 +25,7 @@ mod mcp;
 mod mcp_servers;
 mod migration;
 mod notes;
+mod notices;
 mod previews;
 mod projects;
 mod sandboxes;
@@ -300,6 +301,12 @@ pub fn public() -> Router<AppState> {
             get(digest::setting).put(digest::set_setting),
         )
         .route("/api/me/digest", get(digest::mine))
+        // A person's notices: keyed, expiring (SPEC-624).
+        .route("/api/me/notices", get(notices::mine))
+        .route(
+            "/api/me/notices/{id}",
+            axum::routing::delete(notices::dismiss),
+        )
         // Tasks hand work to another sandbox (SPEC-512 HOF-001..HOF-005).
         .route(
             "/api/admin/handoffs",

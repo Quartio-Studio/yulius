@@ -39,6 +39,9 @@ pub struct DigestItem {
     pub detail: Option<String>,
     /// The task's page.
     pub link: String,
+    /// Its notice key (`task:<task id>`, SPEC-624); absent in digests stored before.
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 /// `GET /api/me/digest` and the `digest_ready` event (DIG-005): one person's digest.
@@ -56,4 +59,26 @@ pub struct DigestView {
     pub working_count: u32,
     /// Up to ten of them.
     pub working: Vec<DigestItem>,
+    /// The person's live notices, newest first, at most twenty (SPEC-624 NTC-009); expired and
+    /// dismissed ones are left out. Absent in digests stored before.
+    #[serde(default)]
+    pub notices: Vec<crate::api::notices::NoticeView>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-624 AC-8: a digest stored before notices had keys still loads.
+    #[test]
+    fn a_digest_stored_before_keys_still_loads() -> Result<(), serde_json::Error> {
+        let old: DigestView = serde_json::from_str(
+            r#"{"id":"dg_1","created_at":"2026-11-19T18:00:00Z","waiting":[{"project":"app",
+            "number":1,"title":"T","detail":null,"link":"https://y.test/s/app/t/1"}],
+            "parked":[],"working_count":0,"working":[]}"#,
+        )?;
+        assert!(old.notices.is_empty());
+        assert_eq!(old.waiting[0].key, None);
+        Ok(())
+    }
 }
