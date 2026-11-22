@@ -2205,6 +2205,11 @@ the recorded PR and current open PRs on the task branch through the same lookup 
 for parking. A waiting successor requires settled checks.
 An externally opened replacement can hold the successor after the recorded delivery merged.
 Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
+For a live owner with an achieved goal, an unreadable open delivery or a current failed
+single-PR candidate also holds its successor and session slot. The PR watcher and
+successor check can verify that the recorded head or base changed, or that the PR
+closed. Capacity accounting reads that observation locally for up to two watch intervals.
+A restart, a new decision or a failed verification requires another hosted observation.
 An explicit `#N merged` rule follows the recorded merge.
 
 The individual HTTP task detail verifies both recorded and branch PRs.

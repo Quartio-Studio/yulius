@@ -738,6 +738,18 @@ fn read_notices(path: &std::path::Path) -> BTreeMap<String, Told> {
         .unwrap_or_default()
 }
 
+/// A local capacity check can reuse a recent hosted observation of the exact
+/// decision. Starting another read invalidates it, including if that read fails.
+#[derive(Default)]
+pub(crate) struct CandidateObservation {
+    generation: u64,
+    obsolete: Option<(
+        crate::stages::SpanRecord,
+        Option<String>,
+        std::time::Instant,
+    )>,
+}
+
 /// A newer live outcome or a retired queue decision supersedes the saved failure.
 pub(crate) fn candidate_from_wait(
     wait: Option<crate::stages::SpanRecord>,
@@ -1501,10 +1513,13 @@ impl App {
                 if person_must_act {
                     return observed_only();
                 }
-                let Some(pull) = self.hosted_owner_pull(task, &sandbox, pr).await else {
+                let Ok(pull) = self
+                    .observe_candidate_pull(task, &sandbox, &span, &decision)
+                    .await
+                else {
                     return observed_only();
                 };
-                if pull.base_sha.is_empty() {
+                if !self.notice_pull_owned(task, &sandbox, pr, &pull) || pull.base_sha.is_empty() {
                     return observed_only();
                 }
                 receipt = Some((span, decision, pull));
@@ -1933,24 +1948,149 @@ impl App {
         task: &TaskRecord,
         pr: u64,
     ) -> AppResult<Option<crate::merge_train::SingletonDecision>> {
+        Ok(self
+            .candidate_receipt(task, pr)
+            .await?
+            .map(|(_, decision)| decision))
+    }
+
+    async fn candidate_receipt(
+        &self,
+        task: &TaskRecord,
+        pr: u64,
+    ) -> AppResult<
+        Option<(
+            crate::stages::SpanRecord,
+            crate::merge_train::SingletonDecision,
+        )>,
+    > {
         if self.merge_is_armed(&task.id) {
             return Ok(None);
         }
         let (_, mut outcome) = self.armed_view(&task.id);
         let wait = self.deps.store.latest_merge_wait(&task.id).await?;
         Ok(candidate_from_wait(wait, &mut outcome)?
-            .map(|(_, decision)| decision)
-            .filter(|decision| decision.singleton.pr == pr))
+            .filter(|(_, decision)| decision.singleton.pr == pr))
+    }
+
+    /// Capacity reads never contact GitHub. A cold or expired observation holds the owner.
+    pub(crate) async fn delivery_candidate_blocks(
+        &self,
+        task: &TaskRecord,
+        record: Option<&crate::delivery::DeliveryRecord>,
+        verify_host: bool,
+    ) -> AppResult<bool> {
+        let Some(record) = record.filter(|r| r.stage == DeliveryStage::PrOpen) else {
+            return Ok(false);
+        };
+        let Some(pr) = record.pr_number else {
+            return Ok(true);
+        };
+        let Some((span, decision)) = self.candidate_receipt(task, pr).await? else {
+            return Ok(false);
+        };
+        if verify_host {
+            let sandbox = self.dlv_sandbox_of(task).await?;
+            self.observe_candidate_pull(task, &sandbox, &span, &decision)
+                .await?;
+        }
+        let runtime = self.runtime(&task.id);
+        let observation = runtime
+            .candidate_observation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(!observation
+            .obsolete
+            .as_ref()
+            .is_some_and(|(observed, branch, at)| {
+                observed == &span && branch == &task.branch && at.elapsed() < WATCH_EVERY * 2
+            }))
+    }
+
+    async fn observe_candidate_pull(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        span: &crate::stages::SpanRecord,
+        decision: &crate::merge_train::SingletonDecision,
+    ) -> AppResult<crate::ports::github::GhPull> {
+        let runtime = self.runtime(&task.id);
+        let lock = || {
+            runtime
+                .candidate_observation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let generation = {
+            let mut observed = lock();
+            observed.generation = observed.generation.wrapping_add(1);
+            observed.obsolete = None;
+            observed.generation
+        };
+        let pull = self
+            .read_notice_pull(sandbox, decision.singleton.pr)
+            .await?;
+        if self
+            .candidate_pull_signal(task, sandbox, decision, &pull)
+            .is_none()
+        {
+            let mut observed = lock();
+            if observed.generation == generation {
+                observed.obsolete =
+                    Some((span.clone(), task.branch.clone(), std::time::Instant::now()));
+            }
+        }
+        Ok(pull)
+    }
+
+    pub(crate) fn candidate_pull_signal(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        decision: &crate::merge_train::SingletonDecision,
+        pull: &crate::ports::github::GhPull,
+    ) -> Option<yulius_domain::task::PullSignal> {
+        use yulius_domain::task::PullSignal;
+        let pr = decision.singleton.pr;
+        if pull.number != pr || !matches!(pull.state.as_str(), "open" | "closed") {
+            return Some(PullSignal::Errored);
+        }
+        if pull.merged || pull.state == "closed" || pull.from_fork {
+            return None;
+        }
+        if task.branch.as_deref().is_none_or(str::is_empty)
+            || pull.head.is_empty()
+            || pull.base.is_empty()
+            || pull.head_sha.is_empty()
+        {
+            return Some(PullSignal::Errored);
+        }
+        if !self.notice_pull_owned(task, sandbox, pr, pull) || pull.head_sha != decision.head {
+            return None;
+        }
+        if pull.base_sha.is_empty() {
+            return Some(PullSignal::Errored);
+        }
+        (pull.base_sha == decision.singleton.base).then_some(PullSignal::Failing)
     }
 
     /// A second clone can publish a repair without advancing this checkout's tracking ref.
-    /// Only a notice ready to type needs a hosted read. Keep outages bounded per notice.
     async fn hosted_owner_pull(
         &self,
         task: &TaskRecord,
         sandbox: &SandboxRecord,
         pr: u64,
     ) -> Option<crate::ports::github::GhPull> {
+        let pull = self.read_notice_pull(sandbox, pr).await.ok()?;
+        self.notice_pull_owned(task, sandbox, pr, &pull)
+            .then_some(pull)
+    }
+
+    async fn read_notice_pull(
+        &self,
+        sandbox: &SandboxRecord,
+        pr: u64,
+    ) -> AppResult<crate::ports::github::GhPull> {
         let read = async {
             let token = self.dlv_installation_token(sandbox).await?;
             self.deps
@@ -1958,18 +2098,25 @@ impl App {
                 .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
                 .await
         };
-        let pull = tokio::time::timeout(Duration::from_secs(5), read)
+        tokio::time::timeout(Duration::from_secs(5), read)
             .await
-            .ok()?
-            .ok()?;
-        (pull.number == pr
+            .map_err(|_| AppError::Upstream("Timed out verifying the pull request".into()))?
+    }
+
+    fn notice_pull_owned(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        pull: &crate::ports::github::GhPull,
+    ) -> bool {
+        pull.number == pr
             && pull.state == "open"
             && !pull.merged
             && !pull.from_fork
             && pull.base == delivery_profile(sandbox).integration_branch
             && task.branch.as_deref() == Some(pull.head.as_str())
-            && !pull.head_sha.is_empty())
-        .then_some(pull)
+            && !pull.head_sha.is_empty()
     }
 
     async fn notice_inputs_current(

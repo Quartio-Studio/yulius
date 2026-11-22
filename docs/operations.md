@@ -172,6 +172,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
 # A failed integration candidate keeps the author live while its PR head and tested base match.
+# Even after its goal completes, the live author keeps its session slot and tasks waiting for Done
+# stay chained until Yulius can verify that the failure no longer applies.
 # If that decision arrives after parking, its failing job reaches the same task as its next prompt.
 # A pending human decision keeps the task parked. When capacity returns, the watcher checks
 # the PR and integration base again before starting the session.

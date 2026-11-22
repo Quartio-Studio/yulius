@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-22
+
+- A live task with an achieved goal keeps its session slot and chained successor while Yulius verifies a recorded integration failure on its open PR. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+
 ## 2026-11-21
 
 - A parked PR owner receives the failing integration job in its resumed session. A busy subscription or a human decision keeps the notice pending until the watcher can verify it again.

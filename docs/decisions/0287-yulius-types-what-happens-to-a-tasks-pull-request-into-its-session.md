@@ -24,6 +24,8 @@ During restoration, keep the open PR sighting and withhold a check-in until its 
 
 A failed candidate narrowed to one PR belongs to that PR’s merge decision. The source run may have tested the same tree for a larger candidate. The queue persists the accepted decision before clearing its original arm. Restoration reconciles the recorded activation with the arm saved on disk. The watcher reuses the live outcome key after restart so a reported decision stays heard. A new ordinary rerun holds replay for up to the queue’s 15-minute wait from its first watcher observation. The notice record binds that time to the queue decision and ordinary run. Changing queue priority or restarting retains the deadline. A singleton that reuses a larger train’s CI run has its own verification notice. Verify the hosted head and integration base together and include the failing job’s retained, redacted diagnostic in the owner’s merge outcome. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
+The same queue decision holds the live owner’s session slot and any successor waiting for Done. Capacity accounting runs under the launch lock, so it uses a short-lived observation tied to the task branch and the exact saved decision. The PR watcher and successor check verify hosted inputs outside that lock. A later read invalidates the previous observation while it runs. An unavailable read or restart holds the owner until verification succeeds.
+
 - A server-side watch (every 20 s) looks at each running task with an open pull request, from
   Yulius's own records and clone, and types what needs the task into its session as one message
   with the next step: a red run at its head or of a merge candidate holding it (jobs, failing

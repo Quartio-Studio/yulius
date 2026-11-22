@@ -92,6 +92,8 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
+An achieved live owner with a recorded failed singleton keeps its session slot and its chained successor until the hosted pull request verifies that the decision is obsolete. Capacity reads stay local. A later arm or changed delivery invalidates an in-flight completion check.
+
 An automatic continuation for a parked PR owner verifies the recorded integration decision before launching. A human decision or unavailable capacity leaves the original session parked. The next watcher pass checks the PR again before delivering a prompt.
 
 Parking and a replacement merge request share the task’s merge writer at admission. If the writer is busy or a merge is armed, the idle pass leaves the session live. Once the park commits, a new merge request checks the committed run and durable task state before it can arm. Stop, close, or loss can settle that same run and release its park marker. Final admission checks the attached attempt while holding the end-intent lock. An exit reader already settling the run takes precedence over an earlier idle observation.
@@ -125,6 +127,8 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- PR #1670 merged into dev at `20c04fd9f` after head `62c08ec9d` passed Yulius CI run `5494c81f-a93d-4129-adf2-6de7fe6bfe7e`. The integrated hook, delivery and parking run passed 467 of 469 checks. Both remaining failures concern the separately tracked PR lookup timeout. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/20c04fd9f32a75de80c317541b33568fccb5ce6f)
 
 - Independent review approved `71b6f42ba1cf5293f1cc5f8625775b2ce06e4659`. Run `3c27def5-99f4-4252-bc2d-8dd7faeb942d` passed all 211 parking, PR-watch and Codex tests. The agent echoed the recorded diagnosis in its original provider session and the next watcher pass started no second attempt. Clippy passed for all targets of `yulius-app`, `yulius-store` and `yulius` with all features and warnings denied. The complete hook and delivery modules passed 241 of 258 tests in `2781ac61-a2f5-4545-8c1d-977daab1faf5`; the 17 failures matched the dev control exactly. Vidoc was disabled. The terminal tests used a synthetic agent and a real PTY.
 - Hand check of the final claim. Removing the ordinary-run comparison and splitting the exit from park restoration reproduced both failures in `3377e959-72cb-4d13-9c4b-517f2b6053d1`. The reviewed source was restored.

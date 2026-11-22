@@ -316,6 +316,7 @@ pub struct TaskRuntime {
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
+    pub(crate) candidate_observation: Mutex<crate::pr_watch::CandidateObservation>,
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
@@ -901,6 +902,7 @@ impl TaskRuntime {
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
+            candidate_observation: Mutex::default(),
             typed_at_ms: AtomicI64::new(0),
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),

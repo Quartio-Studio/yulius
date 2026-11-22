@@ -448,7 +448,11 @@ impl App {
     /// and delete close such a task's session, as the UI offers them.
     pub(crate) async fn shows_done(&self, task: &TaskRecord) -> bool {
         let requested = self.browser_requests(&task.sandbox_id).await;
+        let Ok(record) = self.deps.store.delivery(&task.id).await else {
+            return false;
+        };
         matches!(self.task_group(task, &requested).await, Ok(TaskGroup::Done))
+            && self.live_delivery_settled(task, record.as_ref()).await
     }
 
     /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs

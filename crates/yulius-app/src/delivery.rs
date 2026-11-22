@@ -4205,17 +4205,10 @@ impl App {
         else {
             return Ok(true);
         };
-        if pull.merged || pull.from_fork {
-            return Ok(true);
-        }
-        if pull.head.is_empty() || pull.head_sha.is_empty() || pull.base.is_empty() {
-            return Ok(false);
-        }
         let sandbox = self.dlv_sandbox_of(task).await?;
-        let same_owner = task.branch.as_deref() == Some(&pull.head)
-            && pull.base == delivery_profile(&sandbox).integration_branch
-            && pull.head_sha == decision.head;
-        Ok(!same_owner || (!pull.base_sha.is_empty() && pull.base_sha != decision.singleton.base))
+        Ok(self
+            .candidate_pull_signal(task, &sandbox, &decision, pull)
+            .is_none())
     }
 
     async fn parking_checkout_matches(
@@ -5062,12 +5055,16 @@ impl App {
         if self.delivery_will_wake_task(&task.id).await {
             return false;
         }
+        crate::race::reached(
+            crate::race::Point::CandidateCapacityRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        let Ok(record) = self.deps.store.delivery(&task.id).await else {
+            return false;
+        };
         if task.activity == Some(Activity::Done) {
-            return true;
+            return self.live_delivery_settled(task, record.as_ref()).await;
         }
-        // One reading of its delivery for the whole decision: a merge recorded between two
-        // readings would be "no news due" by the first and "merged" by the second.
-        let record = self.deps.store.delivery(&task.id).await.ok().flatten();
         if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
@@ -5112,17 +5109,49 @@ impl App {
         if parked {
             return self.parked_predecessor_done(task).await.unwrap_or(false);
         }
-        if running && task.activity == Some(Activity::Done) {
-            return true;
-        }
-        // One reading of its delivery for the whole decision: a merge recorded between two
-        // readings would be "no news due" by the first and "merged" by the second.
         let Ok(record) = self.deps.store.delivery(&task.id).await else {
             return false;
         };
+        if running
+            && self
+                .delivery_candidate_blocks(task, record.as_ref(), true)
+                .await
+                .unwrap_or(true)
+        {
+            return false;
+        }
+        let done = (running && task.activity == Some(Activity::Done))
+            || self.done_by_delivery(task, record.as_ref()).await;
+        done && (!running || self.live_delivery_settled(task, record.as_ref()).await)
+    }
+
+    /// Recheck the delivery after any hosted read, including a new arm or a decision
+    /// written while the ordinary head's checks were being read.
+    pub(crate) async fn live_delivery_settled(
+        &self,
+        task: &TaskRecord,
+        record: Option<&DeliveryRecord>,
+    ) -> bool {
+        let runtime = self.runtime(&task.id);
+        let Ok(_writer) = runtime.arm_writer.try_lock() else {
+            return false;
+        };
+        let store = &self.deps.store;
+        matches!(store.task(&task.id).await, Ok(Some(now)) if
+            now.status == task.status && now.activity == task.activity &&
+            now.archived_at == task.archived_at && now.branch == task.branch && now.worktree_path == task.worktree_path)
+            && matches!(store.delivery(&task.id).await, Ok(current) if current.as_ref() == record)
+            && !self
+                .delivery_candidate_blocks(task, record, false)
+                .await
+                .unwrap_or(true)
+            && !self.delivery_will_wake_task(&task.id).await
+    }
+
+    async fn done_by_delivery(&self, task: &TaskRecord, record: Option<&DeliveryRecord>) -> bool {
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
-        if self.pr_news_due_of(task, record.as_ref(), false).await {
+        if self.pr_news_due_of(task, record, false).await {
             return false;
         }
         // A pull request makes a task Done only when no work it declared is left: its plan is
@@ -5152,7 +5181,7 @@ impl App {
         {
             Ok(observed) => match observed.pr_state() {
                 // Merged on GitHub before the record says so: its news is as due as then.
-                PrState::Merged => !self.pr_news_due_of(task, Some(&record), true).await,
+                PrState::Merged => !self.pr_news_due_of(task, Some(record), true).await,
                 PrState::Open => {
                     let Some(pull) = observed.pr.as_ref() else {
                         return false;
