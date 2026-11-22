@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-22
+
+- The task-list loading test measures offscreen row height through a live list repaint. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+
 ## 2026-11-21
 
 - Task reads reuse terminal pull requests and share open refreshes. Status reports the installation quota and request purposes, including when display yields capacity to delivery. [SPEC-609](../.ai/specs/SPEC-609-reading-tasks-must-not-spend-the-github.md)
