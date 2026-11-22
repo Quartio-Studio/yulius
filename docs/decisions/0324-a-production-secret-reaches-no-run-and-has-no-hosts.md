@@ -5,6 +5,8 @@
 Accepted. Specified in [SPEC-483](../../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md)
 (slice 12, finding V6); task #465. Finishes what SPEC-134 began (a secret allowed for
 production deploys is exclusive) and SPEC-308 and SPEC-405 worked around.
+Applied by [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md):
+a brokered command's run is a run, so it never gets a production secret either.
 
 ## Context
 
