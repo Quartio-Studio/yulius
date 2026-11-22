@@ -2939,6 +2939,7 @@ impl App {
                     session_id: prev.session_id.clone(),
                     prompt: resumes(start.prompt()),
                     continue_interrupted: false,
+                    fork: None,
                 },
                 LaunchKind::Resume,
             ),
@@ -2947,6 +2948,7 @@ impl App {
                     session_id: prev.session_id.clone(),
                     prompt: told.then(|| resumes(None)).flatten(),
                     continue_interrupted: !told,
+                    fork: None,
                 },
                 LaunchKind::Resume,
             ),
@@ -9297,6 +9299,7 @@ mod tests {
             session_id: "s".into(),
             prompt: prompt.map(str::to_owned),
             continue_interrupted: false,
+            fork: None,
         };
         assert!(sets_goal(&new(Some(
             "/goal Everything requested in /t/1.md is done."
