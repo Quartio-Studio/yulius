@@ -24,8 +24,8 @@ On 22 November 2026, task #596 had an idle prompt after reattachment. Six sends 
 - [x] Specify bounded recovery for unreadable Codex input
 - [x] Recover an idle composer through the attached PTY
 - [x] Raise undeliverable messages on the task and retain PR news
-- [ ] Verify restart, retry and picker protection
-- [ ] Deliver the reviewed fix to dev and request staging
+- [x] Verify restart, retry and picker protection
+- [ ] Approve the fix for merge into dev and a staging request
 
 ## Acceptance criteria
 
@@ -46,3 +46,4 @@ Use the attached terminal and its current child output as the source of truth. A
 - On the original writer, the reattached idle host received zero notices. An unreadable grid produced no Needs you and a second failed write of the same PR event also produced no request. All three new regressions failed for these reasons.
 - `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^task_message::.*codex/)'` passed all 13 tests. The idle PTY survived server-runtime replacement and received the CI notice after a SIGWINCH repaint. Cancellation restored the size. The unreadable-screen tests bound the call to three seconds, including the task-store operation, and verify the request and subsequent single delivery. Picker and in-flight-paste tests covered both sides of Enter.
 - The fixtures use a synthetic foreground terminal and a legacy-format screen with unknown redraw provenance. The original screen condition in task #596 remains unknown.
+- `scripts/cargo nextest run --no-fail-fast -p yulius -p yulius-app -p yulius-store --lib --bin yulius --test main` passed all 4,087 selected tests across five binaries. The default profile skipped 24 tests. `scripts/dev quick` passed. `scripts/dev security` reported disabled by the project.
