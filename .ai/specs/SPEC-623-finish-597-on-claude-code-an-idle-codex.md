@@ -24,6 +24,7 @@ At the handover, step 6 had two parts:
 
 - FIN-001. An automatic prompt from Yulius (`Sender::Yulius` or `Sender::YuliusLastTry` with `Typed::Prompt` or `Typed::Command`) refused for an unreadable screen or an open picker raises Needs you with the automatic action. The next send of the same text releases that request once the screen is readable and the Codex paste hold is free, then types it. A private message keeps its owner action and stays open. A PR notice keeps its notice action.
 - FIN-002. A failure to save the intended size does not refuse a viewer's resize. The viewer's size still applies to the PTY and the hub. Only the probe, which needs the record before its temporary width, refuses.
+- FIN-004. Only a refusal by the session's writer counts towards raising undelivered PR news (SPEC-613 CID-003): an unreadable screen or picker, the paste record, an unsent automated paste, a lost connection. A hold before the write does not count: a person's possible draft or recent key (SPEC-480), a starting session, a busy writer. Once raised, the count starts again, so clearing the request gives the notice another retry.
 - FIN-003. Keep SPEC-613 CID-001 to CID-003 and the picker protection: nothing is pasted and no Enter is sent while the picker is known to be open.
 
 ## Plan
@@ -34,6 +35,8 @@ At the handover, step 6 had two parts:
 - [x] Re-run SPEC-613's evidence on current dev
 - [x] Update the spec, ADR, architecture and changes
 - [x] Fresh independent review of the finished change
+- [x] Raise PR news only for a refused write (review round 1)
+- [x] Re-review of the round 1 fixes
 
 ## Acceptance criteria
 
@@ -42,6 +45,7 @@ At the handover, step 6 had two parts:
 3. A server replaced during a repaint probe reattaches the child at the intended size (SPEC-613, step 6).
 4. A viewer resize succeeds and reaches the child when the size record cannot be written.
 5. SPEC-613's tests pass on the merged head, and the five affected binaries pass.
+6. A key that dismisses the picker, and a fresh draft over several watcher passes, raise no PR-news request. The notice waits for SPEC-480's hold to end.
 
 ## Test plan
 
@@ -49,7 +53,7 @@ Integration tests in `crates/yulius/tests/task_message.rs` with the fake Codex a
 
 ## Decisions
 
-Continue SPEC-613's [Decision 0451](../../docs/decisions/0451-repaint-an-unreadable-codex-terminal-before-typing.md). An automatic prompt is matched to its request by its redacted text, so a wake releases only its own request and never a private message's or another sender's. Saving the size is a best effort for a viewer resize: the viewer's choice is authoritative, and a stale record is overwritten at the next probe.
+Continue SPEC-613's [Decision 0451](../../docs/decisions/0451-repaint-an-unreadable-codex-terminal-before-typing.md). An automatic prompt is matched to its request by its redacted text, so a wake releases only its own request and never a private message's or another sender's. Input that bypasses `type_into_session` (the goal typist, intake, context-full compaction) does not probe yet. It refused an unreadable screen before this change too, and it is tracked in [#1702](https://github.com/Quartio-Studio/yulius/issues/1702). Saving the size is a best effort for a viewer resize: the viewer's choice is authoritative, and a stale record is overwritten at the next probe.
 
 ## Evidence
 
@@ -62,3 +66,12 @@ Continue SPEC-613's [Decision 0451](../../docs/decisions/0451-repaint-an-unreada
 - The same Codex and outage filter (19 tests) was run against dev's versions of the eight changed source files. 11 failed: reattached repaint, unreadable screen to Needs you, PR-news escalation, picker refusal raising PR news, wake resume, private request, and size recovery on cancel, reconnect, server replacement and unsaved record. The 8 tests from SPEC-603's picker protection passed there as on the branch.
 - `scripts/dev quick` and `scripts/dev lint` passed. `scripts/dev security` printed "Security scan disabled: Vidoc is turned off in Yulius". Nothing was scanned; this is disabled, not passed.
 - Not tested: the real screen condition of task #596 on 22 November remains unknown (SPEC-613 Evidence). The fixtures use the fake Codex agent's synthetic grids, not a live Codex CLI.
+- Review round 1 (Fable 5.2, head 141d4f66c) requested changes. Major finding: the PR watcher's second-refusal escalation counted SPEC-480 holds. A key that dismissed the picker, or a fresh draft, raised "Inspect the terminal and resolve the reported delivery problem" after two passes, and that request withheld the notice until it was cleared by hand.
+  - `a_key_that_dismisses_the_codex_picker_raises_no_pr_news_request` and `a_fresh_draft_holds_codex_pr_news_without_a_request` failed on 141d4f66c with that request open. Both pass after `type_into_session_written` separated writer refusals from holds (FIN-004). The handover-era `a_repeated_codex_notice_write_failure_raises_the_pending_result` still raises on the second write failure, and its raise is now audited once (`task.needs_you.input_blocked`).
+- Round 1 minor findings:
+  - `a_resize_to_a_host_that_stopped_reading_gives_up_and_closes_the_writer` covers the 250 ms resize timeout. With the timeout removed, it hung until it was killed at 120 s.
+  - `settle_ends_at_its_limit_under_continuous_output` documents the probe's bound. The old `loop` also ended at the limit, because `timeout_at` with a past deadline returns at once, so this mutant survived. The `while` is a clarity guard, not a behavior change.
+  - Unit tests now cover the size record's encoding and malformed bytes, and the viewer's follow or drop.
+  - `CODEX_UNREADABLE` no longer says "after a repaint", since some paths never probe (#1702).
+  - Not changed: a stale record that cannot be removed either is only logged. The next probe or viewer resize overwrites it.
+- After round 1: the same five-binary command ran 4,134 tests, and all passed. The default profile skipped 24.
