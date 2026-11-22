@@ -283,7 +283,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     return {
       status: task.status, archived: task.archived, activity: task.activity, steps: task.steps, spec_unfinished: task.spec_unfinished,
       goal_unfinished: task.goal_unfinished, held_prompt: task.held_prompt,
-      needs_you: task.needs_you, needs_you_notice: task.needs_you_notice, staging_wait: task.staging_wait,
+      needs_you: task.needs_you, needs_you_notice: task.needs_you_notice, staging_wait: task.staging_wait, staging_outcome: task.staging_outcome,
       parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr,
     };
   }
