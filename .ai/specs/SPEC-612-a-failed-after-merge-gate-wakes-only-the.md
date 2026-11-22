@@ -31,7 +31,7 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 - [x] Assign the repair to one working task and inform its peers
 - [x] Show people the rerun and start-task actions when no worker remains
 - [x] Preserve unresolved job evidence across reruns of the same revision
-- [ ] Deliver candidate scheduling independently
+- [x] Deliver candidate scheduling independently
 - [ ] Verify the incident regressions and review the delivery
 
 ## Acceptance criteria
@@ -65,3 +65,4 @@ The ownership and staging results below were measured on the combined implementa
 - All four second-review regressions passed after the fixes. The scheduler retains the current head’s verdict independently of the recent-run window. Gate history releases a passing matrix cell’s earlier test, and worker selection reads the native session’s outstanding goal.
 - On the third reviewed head, a partial rerun at the same SHA lost the first job error. The corrected comparison passed all 50 staging and parked-candidate cases, including a test that prunes both earlier attempts, checks both failures still target the current run, then clears them on a full pass.
 - A retained pull-request verdict that skipped its after-merge job incorrectly covered the integration head after 201 more admissions. The regression observed only the old PR run. The scheduler now checks the integration reference and actual full-suite coverage when extending its inventory, retaining configuration refusals in admission order.
+- Independent review approved inventory head `b47237a65`. All four scheduler regressions passed on the corrected binary, including the skipped PR and later configuration refusal.
