@@ -4796,10 +4796,31 @@ fn flaky_job(files: &[&str]) -> String {
     )
 }
 
+/// A job that fails `app tests::content` as a check of the repository's content does
+/// (fixture_hygiene): for the first `(file, printed)` whose `file` is in its checkout, its block
+/// names `printed` as the file it refuses.
+fn content_job(checks: &[(&str, &str)]) -> String {
+    let checks = checks
+        .iter()
+        .map(|(file, printed)| {
+            format!(
+                "if [ -e {file} ]; then printf \"        FAIL [   0.004s] (1/1) app \
+                 tests::content\\n  stderr ───\\n\\n    credential-shaped literals:\\n    \
+                 {printed}:1: ghp_ and 36 token characters\\n\\n\"; exit 100; fi"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("[[ci.jobs]]\nname = \"quality\"\ncommand = '{checks}'\n")
+}
+
 /// Opens pull request `number` from a new branch `branch` made from `from` with `file` added;
 /// its head.
 fn open_pull(f: &Fixture, number: u64, branch: &str, from: &str, file: &str) -> BoxResult<String> {
     git(&f.work, &["checkout", "-q", "-b", branch, from])?;
+    if let Some(dir) = Path::new(file).parent() {
+        std::fs::create_dir_all(f.work.join(dir))?;
+    }
     std::fs::write(f.work.join(file), "x\n")?;
     git(&f.work, &["add", "-A"])?;
     git(&f.work, &["commit", "-q", "-m", file])?;
@@ -5017,6 +5038,57 @@ async fn no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it()
             .await;
     assert!(!noted.quarantined, "{noted:?}");
     assert!(issue_titles(&f)?.is_empty(), "an unknown head");
+    Ok(())
+}
+
+/// SPEC-618 FOC-001 (#1545): a test that checks the repository's content fails in each pull
+/// request that breaks its rule, naming the file. Two pull requests whose failures name a file
+/// their own change added (one whole, one as its crate prints it) quarantine nothing, and each
+/// job says why; the same failure naming a file the pull request did not change still counts,
+/// and two of those quarantine the test, naming only their pull requests.
+#[tokio::test]
+async fn a_failure_naming_its_own_changed_file_makes_no_test_flaky() -> TestResult {
+    let f = fixture_with(false, |_| {
+        content_job(&[
+            ("feature.txt", "feature.txt"),
+            ("crates/app/tests/two.rs", "tests/two.rs"),
+            ("three.txt", "tests/elsewhere.rs"),
+            ("four.txt", "tests/elsewhere.rs"),
+        ])
+    })
+    .await?;
+    sync_and_settle(&f).await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "crates/app/tests/two.rs")?;
+    sync_and_settle(&f).await?;
+    for (reference, file) in [("pr/1", "feature.txt"), ("pr/2", "crates/app/tests/two.rs")] {
+        let job = job_of(&f, "reference", reference).await?;
+        assert_eq!(job["state"], "failed", "{job}");
+        assert!(job["reason"].is_null(), "{job}");
+        let output = job["output"].as_str().unwrap_or_default();
+        assert!(
+            output.contains(&format!(
+                "`app tests::content` names `{file}`, which this change touched: its failure is \
+                 the change's own and makes no test flaky (SPEC-618)"
+            )),
+            "{output}"
+        );
+    }
+    assert!(issue_titles(&f)?.is_empty(), "each pull request broke it");
+    assert!(f.h.store.quarantined_tests(None).await?.is_empty());
+    // Failures that name a file the change did not touch count as before.
+    open_pull(&f, 3, "feat/three", "origin/dev", "three.txt")?;
+    open_pull(&f, 4, "feat/four", "origin/dev", "four.txt")?;
+    sync_and_settle(&f).await?;
+    assert_eq!(
+        issue_titles(&f)?,
+        ["Flaky test quarantined: app tests::content"]
+    );
+    let issues = f.h.github.issues.lock().map_err(|_| "lock")?.clone();
+    let body = &issues.first().ok_or("issue")?.1.body;
+    assert!(
+        body.contains("It failed in:\n- pull request #3\n- pull request #4\n\n"),
+        "{body}"
+    );
     Ok(())
 }
 
