@@ -8,6 +8,33 @@ use yulius_domain::time::Timestamp;
 use crate::error::AppResult;
 use crate::model::Secret;
 
+pub use yulius_contracts::api::status::{GitHubBudget, GitHubPurpose};
+
+tokio::task_local! {
+    static PURPOSE: GitHubPurpose;
+}
+
+/// Attribute nested GitHub calls to the operation being polled.
+pub fn for_purpose<T>(
+    purpose: GitHubPurpose,
+    future: impl std::future::Future<Output = T>,
+) -> impl std::future::Future<Output = T> {
+    // A merge or staging request can reuse a view as a preflight. Keep that read
+    // fresh and admit it under the caller's operational budget.
+    let purpose = if purpose == GitHubPurpose::Display {
+        PURPOSE.try_with(|outer| *outer).unwrap_or(purpose)
+    } else {
+        purpose
+    };
+    PURPOSE.scope(purpose, Box::pin(future))
+}
+
+/// Purpose of GitHub requests issued by this future.
+#[must_use]
+pub fn current_purpose() -> GitHubPurpose {
+    PURPOSE.try_with(|p| *p).unwrap_or_default()
+}
+
 /// GitHub App credentials (sealed as JSON in the instance row).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitHubAppConfig {
@@ -210,7 +237,7 @@ impl From<ChecksState> for ChecksReport {
 }
 
 /// A pull request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GhPull {
     /// Number.
     pub number: u64,
@@ -295,6 +322,10 @@ pub struct GhIssue {
 /// GitHub operations used by the application.
 #[async_trait]
 pub trait GitHubPort: Send + Sync {
+    /// Local counters and latest installation response headers.
+    fn budget(&self, _installation: Option<u64>) -> GitHubBudget {
+        GitHubBudget::empty()
+    }
     /// Active reset deadline of the instance's GitHub App.
     fn rate_limit_reset(&self) -> Option<Timestamp> {
         None
@@ -481,6 +512,16 @@ pub trait GitHubPort: Send + Sync {
         repo: &str,
         number: u64,
     ) -> AppResult<GhPull>;
+    /// Confirms a contradictory display observation without accepting a previous cached GET.
+    async fn confirm_pull(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> AppResult<GhPull> {
+        self.get_pull(token, owner, repo, number).await
+    }
     /// Sets the title of a pull request (SPEC-069 BPL-008).
     ///
     /// # Errors

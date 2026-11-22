@@ -282,6 +282,10 @@ impl App {
         if let Some(wait) = self.github_wait() {
             listing["github_wait"] = json!(wait);
         }
+        if self.github_budget().await?.display_paused {
+            listing["github_refresh_note"] =
+                json!("Live GitHub display refreshes are paused to reserve requests for delivery.");
+        }
         Ok(listing)
     }
 
