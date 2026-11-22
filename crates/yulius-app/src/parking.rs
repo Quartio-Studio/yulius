@@ -47,6 +47,9 @@ pub enum ParkRule {
     Grace,
     /// The digest's idle threshold, in milliseconds.
     Digest(u64),
+    /// A rebalance off a nearly used-up subscription (SPEC-629 RBL-003): the grace period's
+    /// rule with this threshold, in milliseconds, for a session whose restart would start a turn.
+    Rebalance(u64),
 }
 
 /// What decides whether a running task's session is parked now (SPEC-512 PRK-002).
@@ -160,11 +163,11 @@ impl App {
         let requested = self.park_requests(&task.sandbox_id).await;
         let threshold = match rule {
             ParkRule::Grace => self.config.park_after_ms,
-            ParkRule::Digest(ms) => ms,
+            ParkRule::Digest(ms) | ParkRule::Rebalance(ms) => ms,
         };
         let facts = self.park_facts(task, &requested, threshold).await;
         let park = match rule {
-            ParkRule::Grace => facts.parkable(),
+            ParkRule::Grace | ParkRule::Rebalance(_) => facts.parkable(),
             ParkRule::Digest(_) => facts.digest_parkable(
                 self.deps
                     .store

@@ -10,10 +10,13 @@
 //! never moves a task running on its pin, and a parked task resumes on it while it can take the
 //! task (`App::pinned_start`).
 
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use yulius_domain::agent_cli::{IdleFacts, kept_idle};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::rebalance::{Fullest, IdleMove, idle_move};
 use yulius_domain::rotation::{self, Decision, Trigger};
@@ -21,7 +24,9 @@ use yulius_domain::task::TaskStatus;
 
 use crate::account_gate::account_kind;
 use crate::context::App;
-use crate::model::TaskRecord;
+use crate::model::{TaskMode, TaskRecord};
+use crate::parking::ParkRule;
+use crate::supervisor::{RunStart, SwitchCondition};
 
 /// How often the rebalance pass runs (SPEC-629 RBL-003): as often as the background usage round.
 pub const REBALANCE_EVERY: Duration = Duration::from_secs(2 * 60);
@@ -32,15 +37,21 @@ const _: () = assert!(REBALANCE_FIRST.as_secs() > crate::outage::WAKE_GRACE.as_s
 /// How long a pass waits for a task's transcript to be read before it looks at its queue.
 const LINES_READ_WAIT: Duration = Duration::from_secs(5);
 
+/// How long an idle session whose restart would start a turn waits before the pass parks it;
+/// never longer than the instance's own grace period (`YULIUS_PARK_AFTER_MINUTES`).
+const PARK_QUIET_MS: u64 = 60_000;
+
 /// What one rebalance pass did (SPEC-629 RBL-003, RBL-007).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RebalancePass {
     /// Idle tasks moved to a subscription below the threshold.
     pub moved: u32,
+    /// Idle sessions whose restart would start a turn, parked: they resume off the subscription.
+    pub parked: u32,
     /// Idle tasks that stay because no other subscription is below the threshold.
     pub no_room: u32,
-    /// Idle tasks kept where they are because a restart would lose something, or the move was
-    /// refused.
+    /// Idle tasks kept where they are for now: a restart would lose something or start a turn,
+    /// a turn began while the pass looked, or the move was refused.
     pub kept: u32,
     /// Tasks on a subscription past the threshold that their person pinned there.
     pub pinned: u32,
@@ -50,6 +61,7 @@ pub struct RebalancePass {
 enum Looked {
     Nothing,
     Moved,
+    Parked,
     NoRoom,
     Kept,
     Pinned,
@@ -59,6 +71,12 @@ enum Looked {
 /// task's info lists it. It names no reason a switch acts on (`manual`, `handover`, …).
 fn move_reason(label: &str, said: &str) -> String {
     format!("rebalance: {label} {said}")
+}
+
+/// Logs why the pass keeps an idle task where it is (SPEC-629 RBL-008).
+fn kept(task: &TaskId, why: &str) -> Looked {
+    tracing::info!(task = %task, why, "rebalance: the idle task stays for now");
+    Looked::Kept
 }
 
 impl App {
@@ -73,15 +91,18 @@ impl App {
             loop {
                 every.tick().await;
                 let pass = app.rebalance_now().await;
-                if pass != RebalancePass::default() {
+                if pass.moved + pass.parked > 0 {
                     tracing::info!(?pass, "rebalance pass");
+                } else if pass != RebalancePass::default() {
+                    tracing::debug!(?pass, "rebalance pass");
                 }
             }
         });
     }
 
     /// One rebalance pass over the running tasks, one move after the other (SPEC-629 RBL-003).
-    /// Public for tests, which run it instead of waiting for the clock.
+    /// A subscription a move to failed takes no further move in the same pass. Public for
+    /// tests, which run it instead of waiting for the clock.
     pub async fn rebalance_now(self: &Arc<Self>) -> RebalancePass {
         let mut pass = RebalancePass::default();
         // An instance update holds every run: nothing is restarted under it.
@@ -96,10 +117,12 @@ impl App {
         else {
             return pass;
         };
+        let mut failed = HashSet::new();
         for task in running {
-            match self.rebalance_task(&task).await {
+            match self.rebalance_task(&task, &mut failed).await {
                 Looked::Nothing => {}
                 Looked::Moved => pass.moved += 1,
+                Looked::Parked => pass.parked += 1,
                 Looked::NoRoom => pass.no_room += 1,
                 Looked::Kept => pass.kept += 1,
                 Looked::Pinned => pass.pinned += 1,
@@ -108,7 +131,11 @@ impl App {
         pass
     }
 
-    async fn rebalance_task(self: &Arc<Self>, task: &TaskRecord) -> Looked {
+    async fn rebalance_task(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        failed: &mut HashSet<AccountId>,
+    ) -> Looked {
         // Cheap facts first: most running tasks work. Mid-turn (working, or a permission prompt
         // that needs attention) is never moved.
         if !task.activity.is_some_and(|a| a.is_idle()) {
@@ -124,6 +151,11 @@ impl App {
         let Ok(input) = self.rotation_input(task, Some(current.clone())).await else {
             return Looked::Nothing;
         };
+        // At the pool's own threshold the rebalance is off: the turn boundary and the limit
+        // move tasks, as before (SPEC-629 RBL-001).
+        if input.rebalance >= rotation::THRESHOLD {
+            return Looked::Nothing;
+        }
         // A pin holds while the task runs on it; one that names another subscription ended
         // when the task left it (SPEC-629 RBL-005), whichever way it was placed there.
         let pinned = match store.task_pin(&task.id).await {
@@ -152,44 +184,100 @@ impl App {
             }
             IdleMove::Stay => return Looked::Nothing,
         };
-        if let Some(why) = self.idle_kept_by(task).await {
-            tracing::info!(task = %task.id, why, "rebalance: the idle task stays for now");
-            return Looked::Kept;
+        if failed.contains(&account) {
+            return kept(&task.id, "a move to that subscription failed in this pass");
         }
-        // Still idle on the same run: no prompt arrived while this looked.
-        let still = store.task(&task.id).await.ok().flatten().is_some_and(|t| {
-            t.status == TaskStatus::Running && t.activity.is_some_and(|a| a.is_idle())
-        }) && matches!(store.live_attempt(&task.id).await, Ok(Some(live)) if live.id == run.id);
-        if !still {
-            return Looked::Kept;
+        if let Some(why) = self.idle_kept_by(task).await {
+            return kept(&task.id, why);
+        }
+        // A restart that would start a turn (a goal typed again, a workflow or a reviewer
+        // resumed) is no move: the session is parked instead when parking may take it, and its
+        // resume is placed off this subscription (RBL-004).
+        if let Some(why) = self.restart_starts_a_turn(task).await {
+            if self.config.park_after_ms == 0 {
+                return kept(&task.id, why);
+            }
+            return match self
+                .park_task_now(
+                    &task.id,
+                    ParkRule::Rebalance(PARK_QUIET_MS.min(self.config.park_after_ms)),
+                )
+                .await
+            {
+                Ok(true) => {
+                    self.end_no_room(&task.id);
+                    self.tell_parked(task, &label, &from).await;
+                    Looked::Parked
+                }
+                Ok(false) => kept(&task.id, why),
+                Err(err) => {
+                    tracing::warn!(task = %task.id, error = %err, "rebalance: a park failed");
+                    Looked::Kept
+                }
+            };
+        }
+        // Still idle on the same run: no prompt arrived while this looked. The switch claims
+        // exactly this state, so one that arrives later wins and the move is a conflict.
+        let Ok(Some(now)) = store.task(&task.id).await else {
+            return Looked::Nothing;
+        };
+        let Some(activity) = now
+            .activity
+            .filter(|a| a.is_idle() && now.status == TaskStatus::Running)
+        else {
+            return kept(&task.id, "a turn began while the pass looked");
+        };
+        if !matches!(store.live_attempt(&task.id).await, Ok(Some(live)) if live.id == run.id) {
+            return kept(&task.id, "its run changed while the pass looked");
         }
         let reason = move_reason(&label, &from.said());
-        match self
-            .move_task(&task.id, Some(account.clone()), &reason)
-            .await
-        {
-            Ok(()) => {
-                self.end_no_room(&task.id);
-                let to = self.account_label(&account).await;
-                self.tell_moved(task, (&label, &to), &from, run.id.as_str())
-                    .await;
-                Looked::Moved
-            }
-            Err(err) => {
-                tracing::warn!(task = %task.id, error = %err, "rebalance: the move was refused");
-                Looked::Kept
-            }
+        let condition = SwitchCondition::Idle {
+            from: (activity, now.updated_at),
+            attempt: run.id.clone(),
+        };
+        let start = RunStart::Resume { prompt: None };
+        let moved = self
+            .switch_from(&task.id, Some(account.clone()), &reason, start, condition)
+            .await;
+        if let Err(err) = moved {
+            tracing::warn!(task = %task.id, error = %err, "rebalance: the move was refused");
+            failed.insert(account);
+            return Looked::Kept;
         }
+        // Told once it runs there: a launch that found no capacity paused the task instead.
+        let running = matches!(
+            store.task(&task.id).await,
+            Ok(Some(t)) if t.status == TaskStatus::Running
+        );
+        let on_target = matches!(
+            store.live_attempt(&task.id).await,
+            Ok(Some(live)) if live.account_id.as_ref() == Some(&account)
+        );
+        if !(running && on_target) {
+            failed.insert(account);
+            return kept(&task.id, "the move did not leave it running on the target");
+        }
+        self.end_no_room(&task.id);
+        let to = self.account_label(&account).await;
+        self.tell_moved(task, (&label, &to), &from, run.id.as_str())
+            .await;
+        Looked::Moved
     }
 
-    /// What keeps an idle task's session from a restart now (`agent_cli::kept_idle`), or its
-    /// person's own goal in a prompt-mode session, which a restart could lose; `None` when a
-    /// move loses nothing.
+    /// What keeps an idle task's session from a restart now (`agent_cli::kept_idle`), its
+    /// person's own goal in a prompt-mode session, a usage limit it waits at, or a first message
+    /// that never arrived; `None` when a restart loses nothing.
     async fn idle_kept_by(&self, task: &TaskRecord) -> Option<&'static str> {
         if self.keeps_own_goal(task) {
             return Some("its person's own goal is open in it");
         }
         let id = &task.id;
+        if self.runtime(id).at_limit.load(Ordering::SeqCst) {
+            return Some("it waits at a usage limit, which moves it");
+        }
+        if self.held_opening(id).await {
+            return Some("its first message has not arrived yet");
+        }
         // Its last lines are read first: they say what waits in Claude Code's queue.
         if tokio::time::timeout(LINES_READ_WAIT, self.await_transcript_read(id))
             .await
@@ -208,6 +296,24 @@ impl App {
             prompt_unread: self.prompt_just_went_on(id),
         };
         kept_idle(&facts)
+    }
+
+    /// Why a restart of `task`'s idle session would open with a turn, as `switch_from` decides
+    /// an idle rest: a goal session of Claude Code or Antigravity gets its goal typed again, and
+    /// a session with an unfinished workflow or a cut-off reviewer is told to resume it; `None`
+    /// when it opens at its prompt with nothing typed.
+    async fn restart_starts_a_turn(&self, task: &TaskRecord) -> Option<&'static str> {
+        if task.mode != TaskMode::Prompt && task.harness != Harness::Codex {
+            return Some("a restart would type its goal again");
+        }
+        let runtime = self.runtime(&task.id);
+        if !runtime.with_workflows(|workflows| workflows.runs().is_empty()) {
+            return Some("a restart would resume its workflow with a turn");
+        }
+        if runtime.cut_off_reviewer.lock().await.is_some() {
+            return Some("a restart would resume its cut-off reviewer with a turn");
+        }
+        None
     }
 
     /// Records a person's choice for `task`: pinned to `account`, or to none when they let the
@@ -261,6 +367,7 @@ impl App {
                 Some(to),
                 &said,
                 format!("rebalance:{}:{left}", task.id),
+                false,
             ),
         );
     }
@@ -296,8 +403,22 @@ impl App {
         let key = format!("rebalance:{}:{account}:{}", task.id, began.0);
         self.events.publish_to_user(
             task.owner.clone(),
-            rebalanced(task, label, None, &said, key),
+            rebalanced(task, label, None, &said, key, false),
         );
+    }
+
+    /// Says once that an idle session whose restart would start a turn was parked off a
+    /// subscription past the threshold: it continues on one with room when it is written to next
+    /// (SPEC-629 RBL-004, RBL-006).
+    async fn tell_parked(&self, task: &TaskRecord, label: &str, how: &Fullest) {
+        let said = how.said();
+        self.runtime(&task.id).hub.notice(format!(
+            "⏸ {label} {said}: this idle session is parked and continues on a subscription \
+             with room when it is written to next."
+        ));
+        let key = format!("rebalance:{}:parked:{}", task.id, self.now().0);
+        let event = rebalanced(task, label, None, &said, key, true);
+        self.events.publish_to_user(task.owner.clone(), event);
     }
 
     /// An episode without room ended: the task moved, or its subscription is below the
@@ -311,13 +432,15 @@ impl App {
     }
 }
 
-/// The event that tells `task`'s person of a rebalance move (`to`) or of no room (SPEC-629).
+/// The event that tells `task`'s person of a rebalance move (`to`), a park (`parked`), or no
+/// room (SPEC-629).
 fn rebalanced(
     task: &TaskRecord,
     from: &str,
     to: Option<&str>,
     said: &str,
     key: String,
+    parked: bool,
 ) -> yulius_contracts::events::UiEvent {
     yulius_contracts::events::UiEvent::TaskRebalanced {
         task_id: task.id.as_str().to_owned(),
@@ -326,6 +449,7 @@ fn rebalanced(
         title: task.title.clone(),
         from: from.to_owned(),
         to: to.map(str::to_owned),
+        parked,
         said: said.to_owned(),
         key,
     }

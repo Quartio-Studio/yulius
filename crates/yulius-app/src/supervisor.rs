@@ -1332,7 +1332,10 @@ pub(crate) enum SwitchCondition<'a> {
     Any,
     Status(TaskStatus),
     Paused(&'a PauseRecord),
-    IdleCodex {
+    /// An idle session moved with nothing typed (a Codex move, SPEC-611; a rebalance move,
+    /// SPEC-629): claimed only while its activity, update time and live attempt are still the
+    /// ones read.
+    Idle {
         from: (Activity, Timestamp),
         attempt: AttemptId,
     },
@@ -3439,6 +3442,11 @@ impl App {
         };
         store.insert_attempt(&attempt).await?;
         crate::race::reached(crate::race::Point::RunRecorded, Path::new(task.id.as_str()));
+        // A pin ends once the task runs on another subscription, however it was placed there
+        // (SPEC-629 RBL-005); a person's move pins the new one after this.
+        if matches!(store.task_pin(&task.id).await, Ok(Some(pin)) if pin != account.id) {
+            self.pin_task(&task.id, None).await;
+        }
         // Removed since it was chosen (SPEC-447 MOV-003): the removal looked for runs on it before
         // this one was recorded, so this launch never starts on it and chooses again.
         if store.account(&account.id).await?.is_none() {
@@ -6432,7 +6440,7 @@ impl App {
             SwitchCondition::Any => (None, None),
             SwitchCondition::Status(status) => (Some(*status), None),
             SwitchCondition::Paused(pause) => (Some(TaskStatus::WaitingCapacity), Some(*pause)),
-            SwitchCondition::IdleCodex { .. } => (Some(TaskStatus::Running), None),
+            SwitchCondition::Idle { .. } => (Some(TaskStatus::Running), None),
         };
         if expected.is_some_and(|status| status != task.status) {
             return Err(AppError::Conflict(format!(
@@ -6442,7 +6450,7 @@ impl App {
         }
         let attempt = store.live_attempt(task_id).await?;
         let idle_codex = match &condition {
-            SwitchCondition::IdleCodex { from, attempt } => Some((*from, attempt)),
+            SwitchCondition::Idle { from, attempt } => Some((*from, attempt)),
             _ if task.harness == Harness::Codex
                 && task.status == TaskStatus::Running
                 && matches!(start, RunStart::Resume { prompt: None }) =>
@@ -6549,13 +6557,6 @@ impl App {
                 outcome: "started".into(),
             })
             .await?;
-        // A pin ends once the task runs on another subscription (SPEC-629 RBL-005); a person's
-        // move pins the new one after this.
-        if let Some(target) = &account
-            && matches!(store.task_pin(task_id).await, Ok(Some(pin)) if &pin != target)
-        {
-            self.pin_task(task_id, None).await;
-        }
         let runtime = self.runtime(task_id);
         // The subscription changes under the hood (F 2026-10-10): viewers see that the session
         // continues, not which accounts are involved (Task details lists the switches).

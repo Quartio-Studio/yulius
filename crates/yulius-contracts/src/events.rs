@@ -69,6 +69,10 @@ pub enum UiEvent {
         /// Where it went; absent when no other subscription has room.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<String>,
+        /// Its idle session was parked instead of moved (a restart would have started a turn):
+        /// it continues on a subscription with room when it is written to next.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        parked: bool,
         /// How full `from` is, after its name: "is at 96% of its 5-hour window".
         said: String,
         /// The notification center's key: one entry per move, and one per episode without room.

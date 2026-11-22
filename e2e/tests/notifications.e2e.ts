@@ -135,6 +135,12 @@ test('a task moved off a nearly used-up subscription is told once (SPEC-629)', a
     ['#1 Explore data model stays on Claude b-second', 'Claude b-second is at 97% of its week and no other subscription has room'],
     ['#1 Explore data model moved to Claude b-second', 'Claude a-first is at 96% of its 5-hour window'],
   ]);
+  await send({ ...task, from: 'Claude b-second', parked: true, said: 'is at 96% of its week', key: 'rebalance:t_explore:parked:1' });
+  await expect.poll(() => moves(browser)).toEqual([
+    ['#1 Explore data model parked off Claude b-second', 'Claude b-second is at 96% of its week; it continues on a subscription with room when written to'],
+    ['#1 Explore data model stays on Claude b-second', 'Claude b-second is at 97% of its week and no other subscription has room'],
+    ['#1 Explore data model moved to Claude b-second', 'Claude a-first is at 96% of its 5-hour window'],
+  ]);
   await browser.locator('.notif-btn').click();
   await screen.getByRole('dialog', 'Notifications').getByRole('button', /^Unread: #1 Explore data model moved to Claude b-second/).click();
   await expect.poll(() => browser.evaluate(() => location.hash)).toBe('#/s/sandbox-3/t/1');

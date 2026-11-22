@@ -132,6 +132,17 @@ async fn run_on(
 /// subscription reads 96 %, it resumes on its pin, where the pool would place it elsewhere.
 #[test]
 fn a_pinned_parked_task_resumes_on_its_pin() -> TestResult {
+    pinned_parked_task_resumes(96.0)
+}
+
+/// RBL-005: a parked task whose pin is at 100 % resumes where the pool places it, and that
+/// ends the pin.
+#[test]
+fn a_parked_task_whose_pin_is_full_resumes_where_the_pool_places_it() -> TestResult {
+    pinned_parked_task_resumes(100.0)
+}
+
+fn pinned_parked_task_resumes(pin_used: f64) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -164,8 +175,6 @@ fn a_pinned_parked_task_resumes_on_its_pin() -> TestResult {
                 .map(|a| a.as_str()),
             Some("b-second")
         );
-        probe.set("b-second", usage(96.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, "b-second").await?;
         wait_for("the park", Duration::from_secs(30), || async {
             app.park_idle_sessions_now().await;
             task(&app, &id)
@@ -174,13 +183,25 @@ fn a_pinned_parked_task_resumes_on_its_pin() -> TestResult {
                 && matches!(app.deps.store.live_attempt(&id).await, Ok(None))
         })
         .await?;
+        probe.set("b-second", usage(pin_used, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
         app.continue_task(&ctx(&app, &user).await?, id.as_str(), &Default::default())
             .await?;
         live_run(&app, &id, 3).await?;
+        let (on, pin) = if pin_used < 100.0 {
+            (Some("b-second"), Some("b-second"))
+        } else {
+            (Some("a-first"), None)
+        };
+        assert_eq!(run_accounts(&app, &id).await[2].as_deref(), on);
         assert_eq!(
-            run_accounts(&app, &id).await[2].as_deref(),
-            Some("b-second"),
-            "resumed on its pin"
+            app.deps
+                .store
+                .task_pin(&id)
+                .await?
+                .as_ref()
+                .map(|a| a.as_str()),
+            pin
         );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -420,5 +441,188 @@ fn the_pools_move_ends_a_pin() -> TestResult {
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// RBL-003: an idle task a person left a draft in, or paused, is kept where it is: a restart
+/// would lose the draft or end the pause.
+#[test]
+fn a_draft_or_a_persons_pause_keeps_an_idle_task() -> TestResult {
+    for pause in [false, true] {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let (_dir, data) = temp()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let probe = Arc::new(ScriptedUsage::default());
+            let app = build_with(&data, &fake, probe.clone(), agent())?;
+            let (id, user) = idle_on_a_full_first(&app, &probe, &data).await?;
+            if pause {
+                app.pause_task_for_person(&ctx(&app, &user).await?, id.as_str())
+                    .await?;
+            } else {
+                // A person's keys, as the terminal records them before they reach the session.
+                app.record_terminal_frame(&id, &user, b"half a sentence");
+                app.send_input(&id, b"half a sentence").await?;
+                assert!(app.has_draft(&id));
+            }
+            let pass = app.rebalance_now().await;
+            assert_eq!((pass.moved, pass.kept), (0, 1), "pause {pause}: {pass:?}");
+            assert_eq!(run_accounts(&app, &id).await.len(), 1, "pause {pause}");
+            stop(&app, &id).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+    }
+    Ok(())
+}
+
+/// RBL-005: a pin naming another subscription than the one the task runs on ended when it left
+/// it: the pass clears it, also when the move goes back to that subscription.
+#[test]
+fn the_pass_ends_a_pin_the_task_left() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(&data, &fake, probe.clone(), agent())?;
+        let (id, _user) = idle_on_a_full_first(&app, &probe, &data).await?;
+        let left = yulius_domain::ids::AccountId::parse("b-second")?;
+        app.deps.store.set_task_pin(&id, Some(&left)).await?;
+        assert_eq!(app.rebalance_now().await.moved, 1);
+        live_run(&app, &id, 2).await?;
+        assert_eq!(
+            run_accounts(&app, &id).await[1].as_deref(),
+            Some("b-second")
+        );
+        assert_eq!(app.deps.store.task_pin(&id).await?, None);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// RBL-003: a prompt that arrives while the switch is prepared wins: the move's claim of the
+/// idle state it read is a conflict, the run stays and nothing is cut.
+#[test]
+fn a_turn_that_starts_while_the_move_is_prepared_keeps_its_run() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(&data, &fake, probe.clone(), agent())?;
+        let (id, _user) = idle_on_a_full_first(&app, &probe, &data).await?;
+        let before = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let (reached, release) =
+            crate::support::hold_point(yulius_app::race::Point::SwitchPrepared, id.as_str());
+        let pass = {
+            let app = Arc::clone(&app);
+            tokio::spawn(async move { app.rebalance_now().await })
+        };
+        crate::support::point_reached(reached).await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Working), app.now())
+            .await?;
+        release.send(())?;
+        let pass = pass.await?;
+        assert_eq!((pass.moved, pass.kept), (0, 1), "{pass:?}");
+        let after = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        assert_eq!(after.id, before.id, "the run stays");
+        assert_eq!(task(&app, &id).await?.activity, Some(Activity::Working));
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A goal-mode task on `a-first`, as [`idle_on_a_full_first`], its goal reached: Done.
+async fn done_goal_on_a_full_first(
+    app: &Arc<App>,
+    probe: &ScriptedUsage,
+    data: &std::path::Path,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
+    let (sandbox, user) = seed(app, data, &["a-first", "b-second"]).await?;
+    probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+    refresh(app, &user, "b-second").await?;
+    let id = app
+        .create_task_internal(yulius_app::lifecycle::NewTask {
+            sandbox,
+            created_by: user.clone(),
+            prompt: "Goal: answer with an echo".into(),
+            harness: yulius_domain::harness::Harness::ClaudeCode,
+            title: Some("Goal".into()),
+            workflow_id: None,
+            steps: Vec::new(),
+            model: None,
+            effort: None,
+            origin: yulius_app::model::TaskOrigin::Ui,
+            automation_run: None,
+            start: true,
+            mode: yulius_app::model::TaskMode::Goal,
+            supertask: false,
+        })
+        .await?
+        .id;
+    ready(app, &id).await?;
+    // Its goal is typed once the session is ready: that turn begins before it is reached.
+    wait_for("the goal's turn", Duration::from_secs(30), || async {
+        task(app, &id)
+            .await
+            .is_ok_and(|t| t.activity == Some(Activity::Working))
+    })
+    .await?;
+    probe.set("b-second", usage(30.0, 5 * HOUR, 30.0, 100));
+    refresh(app, &user, "b-second").await?;
+    probe.set("a-first", usage(96.0, 4 * HOUR, 30.0, 100));
+    refresh(app, &user, "a-first").await?;
+    idle(app, &id).await?;
+    app.deps
+        .store
+        .set_activity(&id, Some(Activity::Done), app.now())
+        .await?;
+    Ok(id)
+}
+
+/// RBL-003: a goal session would get its goal typed again by a restart, so it is never moved
+/// idle. With parking off it stays where it is, nothing typed and no switch recorded. (With
+/// parking on the pass hands it to `park_task_now`, whose own rules decide; this fake's goal turn
+/// never ends, so they keep it here too.)
+#[test]
+fn an_idle_goal_session_is_never_restarted() -> TestResult {
+    for parking in [false, true] {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let (_dir, data) = temp()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let probe = Arc::new(ScriptedUsage::default());
+            let app = build_served_tuned(
+                &data,
+                &fake,
+                probe.clone(),
+                agent(),
+                Arc::new(FakeGitHub::default()),
+                "http://127.0.0.1:9",
+                |config| config.park_after_ms = u64::from(parking),
+            )?;
+            let id = done_goal_on_a_full_first(&app, &probe, &data).await?;
+            let pass = app.rebalance_now().await;
+            assert_eq!(
+                (pass.moved, pass.kept),
+                (0, 1),
+                "parking {parking}: {pass:?}"
+            );
+            assert_eq!(run_accounts(&app, &id).await.len(), 1, "nothing restarted");
+            assert!(app.deps.store.switches(&id).await?.is_empty(), "no move");
+            stop(&app, &id).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+    }
     Ok(())
 }

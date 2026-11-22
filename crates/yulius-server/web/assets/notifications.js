@@ -253,10 +253,15 @@ export function createNotificationCenter(ctx) {
     if (!event || typeof event.key !== 'string') return;
     const task = ctx.store.findTask(event.task_id) || { id: event.task_id, sandbox_id: event.sandbox_id, number: event.number };
     const name = `#${event.number} ${event.title || 'Task'}`;
+    const [title, detail] = event.to
+      ? [`${name} moved to ${event.to}`, `${event.from} ${event.said}`]
+      : event.parked
+        ? [`${name} parked off ${event.from}`, `${event.from} ${event.said}; it continues on a subscription with room when written to`]
+        : [`${name} stays on ${event.from}`, `${event.from} ${event.said} and no other subscription has room`];
     add({
-      kind: event.to ? 'info' : 'warn',
-      title: event.to ? `${name} moved to ${event.to}` : `${name} stays on ${event.from}`,
-      detail: event.to ? `${event.from} ${event.said}` : `${event.from} ${event.said} and no other subscription has room`,
+      kind: event.to || event.parked ? 'info' : 'warn',
+      title,
+      detail,
       route: taskRoute(task),
       key: event.key,
       once: true,
