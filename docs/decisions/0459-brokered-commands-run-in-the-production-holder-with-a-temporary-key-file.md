@@ -49,7 +49,12 @@ reaches no run, a brokered one included).
   that holds only before the deadline. No answer in time is a no.
 - **Keys**: a project secret, or a global one switched on for the project. Never a personal
   secret (a definition is the administrators', a personal secret only its owner's), never a
-  production secret.
+  production secret. Saving a definition sends the value somewhere new, so
+  [ADR-0186](0186-agent-secrets-are-project-global-or-personal.md) and
+  [ADR-0317](0317-a-guarded-secret-goes-somewhere-new-only-after-two-factor.md) apply to it: only a
+  person who manages the secret saves it (a global secret's: an instance administrator), and a
+  secret people allow use by use needs a fresh two-factor unlock in a browser session, never an
+  API token. The definition keeps the secret's id; its runs get no other secret of that name.
 
 ## Alternatives
 

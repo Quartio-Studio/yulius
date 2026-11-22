@@ -10,7 +10,7 @@ use yulius_domain::time::Timestamp;
 use crate::{SqliteStore, bad_column, db};
 
 const COLUMNS: &str =
-    "id, sandbox_id, name, definition, created_by, created_at, updated_by, updated_at";
+    "id, sandbox_id, name, definition, secret_id, created_by, created_at, updated_by, updated_at";
 
 fn command_row(row: &Row<'_>) -> rusqlite::Result<CommandRecord> {
     let sandbox: String = row.get(1)?;
@@ -19,21 +19,26 @@ fn command_row(row: &Row<'_>) -> rusqlite::Result<CommandRecord> {
         sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
         name: row.get(2)?,
         definition: row.get(3)?,
-        created_by: row.get(4)?,
-        created_at: Timestamp(row.get(5)?),
-        updated_by: row.get(6)?,
-        updated_at: Timestamp(row.get(7)?),
+        secret_id: row.get(4)?,
+        created_by: row.get(5)?,
+        created_at: Timestamp(row.get(6)?),
+        updated_by: row.get(7)?,
+        updated_at: Timestamp(row.get(8)?),
     })
 }
 
-/// A unique name taken: said as such, not as "conflicting record".
+/// A unique name taken: said as such, not as "conflicting record"; any other failure as `db`
+/// says it.
 fn named(err: rusqlite::Error) -> AppError {
-    match db(err) {
-        AppError::Conflict(_) => {
-            AppError::Conflict("this project already has a command of that name".into())
-        }
-        other => other,
+    let unique = matches!(
+        &err,
+        rusqlite::Error::SqliteFailure(code, _)
+            if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+    );
+    if unique {
+        return AppError::Conflict("this project already has a command of that name".into());
     }
+    db(err)
 }
 
 #[async_trait]
@@ -93,13 +98,14 @@ impl CommandStore for SqliteStore {
         self.call(move |c| {
             c.execute(
                 &format!(
-                    "INSERT INTO commands ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+                    "INSERT INTO commands ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
                 ),
                 params![
                     r.id,
                     r.sandbox_id.as_str(),
                     r.name,
                     r.definition,
+                    r.secret_id,
                     r.created_by,
                     r.created_at.0,
                     r.updated_by,
@@ -118,7 +124,8 @@ impl CommandStore for SqliteStore {
             let changed = c
                 .execute(
                     "UPDATE commands SET name = ?1, definition = ?2, updated_by = ?3, \
-                     updated_at = ?4 WHERE id = ?5 AND sandbox_id = ?6 AND updated_at = ?7",
+                     updated_at = ?4, secret_id = ?8 WHERE id = ?5 AND sandbox_id = ?6 \
+                     AND updated_at = ?7",
                     params![
                         r.name,
                         r.definition,
@@ -127,6 +134,7 @@ impl CommandStore for SqliteStore {
                         r.id,
                         r.sandbox_id.as_str(),
                         read_at.0,
+                        r.secret_id,
                     ],
                 )
                 .map_err(named)?;

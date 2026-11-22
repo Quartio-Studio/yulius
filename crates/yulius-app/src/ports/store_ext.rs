@@ -870,6 +870,8 @@ pub struct CommandRecord {
     pub name: String,
     /// The definition, as JSON.
     pub definition: String,
+    /// The agent secret it was saved with (BRK-003): its runs get no other.
+    pub secret_id: String,
     /// Who created it (user id).
     pub created_by: String,
     /// When.

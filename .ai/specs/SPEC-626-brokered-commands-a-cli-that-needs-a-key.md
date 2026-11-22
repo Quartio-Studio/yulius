@@ -63,11 +63,14 @@ definition says. No answer within the stated time is a no. The owner approved th
   - `name`: 1 to 40 of `a-z`, `0-9` and `-`, starting with a letter or digit, unique in the
     project. There are no global commands.
   - `description`.
-  - `binary`: an absolute, normalised path (no `.`, `..` or empty component), at most 512 bytes.
+  - `binary`: an absolute, normalised path (no `.`, `..` or empty component), at most 512 bytes
+    of printable ASCII without spaces, not under `/proc`, `/sys`, `/dev`, `/run`, `/tmp`,
+    `/var/tmp`, `/home`, `/root` or Yulius's data directory, where sandboxes keep what their
+    agents write.
   - `secret`: the NAME of an agent secret.
   - `tasks`: task numbers that may run it; empty means every task of the project.
   - `approve`: `always`, `send` or `never`.
-  - `send_flags`: the flags that mark a run that changes something.
+  - `send_flags`: the flags that mark a run that changes something; `send` needs at least one.
   - `approval_minutes`: 1 to 60, default 10.
   - `timeout_seconds`: 1 to 1800, default 600.
   - `fixed`: arguments placed before the agent's.
@@ -76,38 +79,56 @@ definition says. No answer within the stated time is a no. The owner approved th
   - `slashes`: whether arguments like `owner/repo` pass.
   - `env`: variable name to value.
 
-  Each list is bounded (64 entries, 4096 bytes each). Env names match `[A-Za-z_][A-Za-z0-9_]*`
-  and may not be `PATH`, `HOME`, `LD_*` or `YULIUS_*`. Placeholders are `{keyfile}` and
-  `{home}` in `fixed` and `env`, and `{secret}` (the value itself) in `env` only, since
-  arguments show in a process list. Any other `{…}` is refused when the definition is saved.
+  Each list is bounded (64 entries, 4096 bytes each) and the stored definition to 16 KiB. Flags
+  are one or two dashes, then a letter or digit and letters, digits, `_`, `.`, `:` or `-`;
+  subcommands are such a word without dashes. No text of a definition holds a character people
+  cannot see. Env names match `[A-Za-z_][A-Za-z0-9_]*` and may not be `PATH`, `HOME`, `TMPDIR`,
+  `LD_*` or `YULIUS_*`. Env values are not secret: the people who view the project read them,
+  and the audit keeps them (redacted of agent secrets); a secret goes in only as `{secret}`.
+  Placeholders are `{keyfile}` and `{home}` in `fixed` and `env`, and `{secret}` (the value
+  itself) in `env` only, since arguments show in a process list. Any other `{…}`, also one
+  nested in other braces, is refused when the definition is saved.
 - **BRK-002** A person who administers the project (`Action::Administer`) creates, changes and
-  removes its commands from a browser session or an API token with the project's scope. Each
+  removes its commands, and for creating and changing also binds its secret (BRK-003). Each
   change is audited `command.define`, `command.update` or `command.remove`, with the definition
-  but no value. An open page reloads on `commands.updated`. People who may view the project
-  read its commands.
+  but no value. An edit sends the `version` it read; one made since is not overwritten (409).
+  An open page reloads on `commands.updated`. People who may view the project read its
+  commands.
 - **BRK-003** A command's secret is resolved like a run that holds nobody: the project's secret
   of that NAME, else a global one switched on for the project. A personal secret is never used,
   since a definition is the administrators' and a personal secret only its owner's. A production
-  secret (`cd_prod`) is refused at definition and at run, so a run never gets one (ADR-0324). A
-  missing secret does not block a definition; the run is refused "not set up".
+  secret (`cd_prod`) is refused at definition and at run, so a run never gets one (ADR-0324).
+  A definition decides which program gets the value, so saving one is where the value goes
+  somewhere new: the secret must exist, the person must manage it (a global one: an instance
+  administrator, ADR-0186), and for a secret people allow use by use (`auto_allow` off) the
+  person must have unlocked the vault with a fresh two-factor code in a browser session; an API
+  token is refused (ADR-0317). The definition keeps that secret's id. Its runs get no other: a
+  secret of the same NAME added later, or that one made a production secret, reaches no run
+  until a person who manages it saves the command again.
 
 **Agents' tools**
 
 - **BRK-004** `commands_list` serves a task's agent and the Superagent. It lists the project's
-  commands: name, description, approval mode and minutes, subcommands, refused flags, slashes,
-  and whether a task may run each, with fixed arguments and env shown as written (placeholders
-  unexpanded). No value is shown.
+  commands: name, description, binary, fixed arguments as written (placeholders unexpanded),
+  env names, approval mode and minutes, subcommands, refused flags, slashes, whether its secret
+  is ready, and for a task's agent whether its task may run each. No value is shown.
 - **BRK-005** `command_run {name, args, changes?}` serves task agents only. Another project's
   command name is "no command NAME in this project", the same as an unknown one. A task outside
   `tasks` is refused. Every refusal is audited `command.refused` with its reason and the
   redacted arguments.
 - **BRK-006** Argument checks, in order, each refusing with its reason:
-  - at most 64 arguments of at most 4096 bytes each, and no control character;
-  - an argument containing `/`, or starting with `~`, is a path. With `slashes`, only these are
-    paths: an argument starting with `/` or `~`, or containing `..`, `=/`, `=~`, `@/` or `@~`;
-  - a refused flag in its `--flag`, `--flag=…`, or (for a two-character `-f`) `-f…` form;
-  - with `subcommands`, the first argument that does not start with `-` must be one of them.
-    A flag's value read as a subcommand is refused, not let through.
+  - at most 64 arguments of at most 4096 bytes each, and no control or invisible character
+    (the `unseen` set of SPEC-335, format characters included);
+  - a path: an argument starting with `~`, holding `=~`, `@~`, `..` or `file:`, and any `/`.
+    With `slashes`, a `/` passes only inside a value like `owner/repo`: not in a short flag
+    (`-f/x`), not after `--flag` without `=`, and not at the value's start, after `=`, `@` or
+    `:`, doubled, or at its end;
+  - a refused flag in every form a parser reads it: `--flag` and `--flag=…`, an abbreviation
+    (`--key-f`, which GNU and Python parsers take), the single-dash long form (`-key-file`,
+    Go's), and for a two-character `-k` any cluster of short flags holding `k` (`-kVALUE`,
+    `-vk`);
+  - with `subcommands`, the agent's first argument must be one of them, so no flag's value is
+    read as the subcommand.
 - **BRK-007** `yulius run NAME [ARGS…]` in the sandbox calls `command_run`, and `command_result`
   while the run waits or runs. It prints stdout to stdout and stderr to stderr, and exits with
   the command's code. It exits 125 for a refusal, a rejection or an expired approval, with the
@@ -138,7 +159,9 @@ definition says. No answer within the stated time is a no. The owner approved th
   and the stored command line are redacted with `redact_for_sandbox`, so every agent secret the
   project can see shows as `[secret:NAME]`, the command's own key and each of its lines too. A
   redaction that cannot load withholds the text. Only the redacted output is stored, in the
-  run's row, and only as long as the 200 newest runs of the project are kept.
+  run's row, and only as long as the 200 newest runs of the project are kept. Redaction finds
+  a value as stored, encoded or line by line; a CLI that prints the key transformed (`openssl
+  rsa -text`, a hex dump) is not caught, which the operations and security docs say.
 - **BRK-012** Every run is audited `command.run`: task, command, the redacted command line,
   outcome and exit code, duration, and who approved it. No value is in any audit entry.
 
@@ -157,8 +180,8 @@ definition says. No answer within the stated time is a no. The owner approved th
 - **BRK-015** People who manage the project's secrets (`Action::Configure`) answer, from a browser
   session (an API token is refused), with Approve or Reject on the Secrets page's Commands
   section, or by replying `approve` or `reject` to the task's Needs you notice in their linked
-  Telegram chat. The Telegram reply acts only when the task has one waiting run and the person
-  may answer it; otherwise it goes to the task as a reply does today. An answer is one
+  Telegram chat. The Telegram reply acts only on the run its notice named, while that run
+  waits and the person may answer it; otherwise it goes to the task as a reply does today. An answer is one
   conditional write from `waiting` that holds only before the deadline. Two answers never both
   act, and an answer after the deadline is refused. Each answer is audited `command.approve` or
   `command.reject`, and the flag ends with the last waiting run.
@@ -168,10 +191,10 @@ definition says. No answer within the stated time is a no. The owner approved th
 
 ## Plan
 
-- [ ] Write and validate the spec and ADR-0459
-- [ ] Store command definitions and runs (migration 0089)
-- [ ] Administrators define, change and remove a project's commands, audited
-- [ ] Agents and the Superagent list a project's commands with commands_list
+- [x] Write and validate the spec and ADR-0459
+- [x] Store command definitions and runs (migration 0089)
+- [x] Administrators define, change and remove a project's commands, audited
+- [x] Agents and the Superagent list a project's commands with commands_list
 - [ ] Independent review of the definitions slice, findings fixed test-first
 - [ ] Refuse paths, refused flags and other subcommands in a run's arguments
 - [ ] Run a command in the production holder with a temporary key file and a fresh home

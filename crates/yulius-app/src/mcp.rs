@@ -784,7 +784,7 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
             name: "commands_list".into(),
-            description: "List this project's brokered commands (SPEC-626): CLIs that need a key file (a deploy tool, a cloud SDK, a signing tool), which run outside your sandbox with their agent secret as a file you never see. Each shows its binary and fixed arguments ({keyfile} and {home} are filled in at run time), allowed subcommands, flags you may not pass, whether owner/repo arguments pass, the approval it needs (always, send: when it changes something, never) and whether your task may run it. Use one instead of asking for a key's value or copying a key into the sandbox.".into(),
+            description: "List this project's brokered commands (SPEC-626): CLIs that need a key file (a deploy tool, a cloud SDK, a signing tool), which run outside your sandbox with their agent secret as a file you never see. Each shows its binary and fixed arguments ({keyfile} and {home} are filled in at run time), allowed subcommands, flags you may not pass, whether owner/repo arguments pass, the approval it needs (always, send: when it changes something, never) and whether your task may run it. Never ask for such a key's value or copy it into the sandbox.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {

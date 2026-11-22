@@ -81,16 +81,36 @@ pub fn name_refusal(name: &str) -> Option<String> {
     })
 }
 
+/// Folders whose files no binary is taken from: what the kernel makes up, and the people's and
+/// services' own (a brokered run's binary is the host's, ADR-0459).
+const NOT_BINARY_DIRS: &[&str] = &[
+    "/proc/",
+    "/sys/",
+    "/dev/",
+    "/run/",
+    "/tmp/",
+    "/var/tmp/",
+    "/home/",
+    "/root/",
+];
+
 /// Why a binary path is refused (BRK-001): absolute and normalised, with no `.`, `..` or empty
-/// component, at most [`MAX_BINARY`] bytes, no control character.
+/// component, at most [`MAX_BINARY`] bytes of printable ASCII without spaces, and not in a folder
+/// of [`NOT_BINARY_DIRS`]. The caller refuses the data directory too.
 #[must_use]
 pub fn binary_refusal(binary: &str) -> Option<String> {
     let Some(rest) = binary.strip_prefix('/') else {
         return Some("the binary is an absolute path, like /usr/local/bin/deploy".into());
     };
-    if binary.len() > MAX_BINARY || binary.chars().any(char::is_control) {
+    if binary.len() > MAX_BINARY || !binary.bytes().all(|b| b.is_ascii_graphic()) {
         return Some(format!(
-            "the binary is a path of at most {MAX_BINARY} bytes"
+            "the binary is a path of at most {MAX_BINARY} bytes of printable ASCII, without \
+             spaces"
+        ));
+    }
+    if let Some(dir) = NOT_BINARY_DIRS.iter().find(|d| binary.starts_with(**d)) {
+        return Some(format!(
+            "the binary is the host's own program, not one in {dir}"
         ));
     }
     if rest.is_empty()
@@ -134,41 +154,49 @@ pub fn placeholder_refusal(value: &str, in_env: bool) -> Option<String> {
     if value.len() > MAX_ENTRY || value.contains('\0') {
         return Some(format!("a value is at most {MAX_ENTRY} bytes, without NUL"));
     }
-    let mut rest = value;
-    while let Some(start) = rest.find('{') {
-        let after = &rest[start..];
-        let Some(end) = after.find('}') else {
+    // Wherever it stands, also inside other braces (review round 1).
+    if !in_env && value.contains(SECRET) {
+        return Some("{secret} goes only in env: arguments show in a process list".into());
+    }
+    // Every `{` starts a candidate, so one nested in another brace is read too.
+    for (start, _) in value.match_indices('{') {
+        let after = &value[start + 1..];
+        let Some(end) = after.find(['}', '{']) else {
             break;
         };
-        let token = &after[..=end];
-        let known = token == KEYFILE || token == HOME || (in_env && token == SECRET);
-        let word = token[1..token.len() - 1]
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b':' || b == b'-');
-        if !known && word && token.len() > 2 {
-            return Some(if token == SECRET {
-                "{secret} goes only in env: arguments show in a process list".into()
-            } else {
-                format!(
-                    "{token} is not a placeholder: use {{keyfile}}, {{home}} or, in env, {{secret}}"
-                )
-            });
+        if after[end..].starts_with('{') {
+            continue;
         }
-        rest = &after[end + 1..];
+        let word = &after[..end];
+        let token = &value[start..start + end + 2];
+        let known = token == KEYFILE || token == HOME || (in_env && token == SECRET);
+        let shaped = !word.is_empty()
+            && word
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b':' || b == b'-');
+        if !known && shaped {
+            return Some(format!(
+                "{token} is not a placeholder: use {{keyfile}}, {{home}} or, in env, {{secret}}"
+            ));
+        }
     }
     None
 }
 
-/// Why a flag of `refuse` or `send_flags` is refused: it starts with `-` and has no space or
-/// `=`.
+/// A flag's or subcommand's own characters: ASCII letters, digits, `_`, `.`, `:` and `-`.
+fn word_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-')
+}
+
+/// Why a flag of `refuse` or `send_flags` is refused: one or two dashes, then a letter or digit
+/// and [`word_char`]s (no space, `=` or invisible character, which would never match).
 #[must_use]
 pub fn flag_refusal(flag: &str) -> Option<String> {
-    let valid = flag.len() >= 2
-        && flag.len() <= 128
-        && flag.starts_with('-')
-        && flag != "--"
-        && !flag.contains(['=', ' '])
-        && !flag.chars().any(char::is_control);
+    let name = flag.strip_prefix("--").or_else(|| flag.strip_prefix('-'));
+    let valid = flag.len() <= 128
+        && name.is_some_and(|n| {
+            n.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric()) && n.bytes().all(word_char)
+        });
     (!valid).then(|| format!("{} is not a flag like -k or --key-file", shown(flag)))
 }
 
@@ -176,11 +204,12 @@ pub fn flag_refusal(flag: &str) -> Option<String> {
 /// `/` and no space.
 #[must_use]
 pub fn subcommand_refusal(word: &str) -> Option<String> {
-    let valid = !word.is_empty()
-        && word.len() <= 128
-        && !word.starts_with('-')
-        && !word.contains(['/', ' ', '~'])
-        && !word.chars().any(char::is_control);
+    let valid = word.len() <= 128
+        && word
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric())
+        && word.bytes().all(word_char);
     (!valid).then(|| format!("{} is not a subcommand", shown(word)))
 }
 
@@ -228,6 +257,11 @@ mod tests {
             "/usr/./bin/x",
             "/usr/bin/",
             "/usr/bin/x\n",
+            "/usr/bin/a b",
+            "/usr/bin/x\u{200b}",
+            "/tmp/deploy",
+            "/proc/self/exe",
+            "/home/alice/bin/deploy",
         ] {
             assert!(binary_refusal(bad).is_some(), "{bad:?}");
         }
@@ -267,6 +301,12 @@ mod tests {
         let secret = placeholder_refusal("--token={secret}", false);
         assert!(secret.is_some_and(|r| r.contains("only in env")));
         assert!(placeholder_refusal("{url:api}", false).is_some());
+        // Nested in other braces (review round 1).
+        assert!(placeholder_refusal("{{secret}", false).is_some());
+        assert!(placeholder_refusal("{\"t\":\"{secret}\"}", false).is_some());
+        assert!(placeholder_refusal("{{url:api}}", true).is_some());
+        assert!(placeholder_refusal("{\"t\":\"{other}\"}", true).is_some());
+        assert_eq!(placeholder_refusal("{\"t\":\"{keyfile}\"}", false), None);
         assert!(placeholder_refusal("{key}", true).is_some());
         assert!(placeholder_refusal("a\0b", false).is_some());
     }
@@ -276,11 +316,20 @@ mod tests {
         for ok in ["-k", "--key-file", "--send"] {
             assert_eq!(flag_refusal(ok), None, "{ok}");
         }
-        for bad in ["k", "-", "--", "--a=b", "--a b"] {
+        for bad in [
+            "k",
+            "-",
+            "--",
+            "--a=b",
+            "--a b",
+            "-k\u{200b}",
+            "---k",
+            "-\u{e9}",
+        ] {
             assert!(flag_refusal(bad).is_some(), "{bad}");
         }
         assert_eq!(subcommand_refusal("push"), None);
-        for bad in ["", "-x", "a/b", "a b", "~"] {
+        for bad in ["", "-x", "a/b", "a b", "~", "push\u{200b}"] {
             assert!(subcommand_refusal(bad).is_some(), "{bad}");
         }
     }

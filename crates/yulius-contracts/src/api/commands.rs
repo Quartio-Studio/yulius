@@ -70,9 +70,11 @@ pub struct CommandView {
     /// The definition.
     #[serde(flatten)]
     pub definition: CommandDefinition,
-    /// Whether the secret it names reaches its runs now (a project or global agent secret
-    /// switched on here, not a production one).
+    /// Whether its runs get the secret it was saved with: that NAME still resolves to it here
+    /// and it is no production secret.
     pub secret_ready: bool,
+    /// Its version: `PUT …?version=` with it changes only what the editor read.
+    pub version: i64,
     /// Who created it (login).
     pub created_by: String,
     /// When (RFC 3339).
