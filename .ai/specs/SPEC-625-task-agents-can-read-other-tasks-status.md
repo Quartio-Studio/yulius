@@ -1,6 +1,6 @@
 ---
 yulius-task: 9a60dad8-697d-4edb-92fe-729524e293ae
-status: in-progress
+status: done
 ---
 
 # SPEC-625 — Task agents read the status of their project's other tasks, read-only
@@ -120,7 +120,7 @@ much chaos"). Task #609.
 - [x] Docs: api, product, architecture, changes
 - [x] Independent review approves the exact head
 - [x] Answer review round 1: last words not screen, held claims, tidy briefs, transcript tests
-- [ ] Review round 2 approves the fixes on the exact head
+- [x] Review round 2 approves the fixes on the exact head
 
 ## Acceptance criteria
 
@@ -239,6 +239,17 @@ Final head before review: the branch after merging `origin/dev` at 10d6ae619.
   - without the briefing's withholding (AC-4).
 - After merging `origin/dev` at a94510e71, `scripts/cargo nextest run -p yulius -p yulius-app`:
   4045 passed. `scripts/dev quick`, clippy `-D warnings` and `cargo doc -D warnings` passed.
+- Review round 2 approved head 2addfe8bb. Its minors and nits were fixed within the allowance
+  (one product line), in the commit after it:
+  - claims show while the task is not resting, so a chained task's claims are shown, as
+    `task_create`'s planned overlaps count them; the test covers both a closed and a chained task;
+  - a test now holds that a person's caller still gets `screen`;
+  - a test now holds the `task_update` brief's withholding;
+  - the ADR index line and ADR-0460's access wording are fixed.
+  Both new tests fail when their line is undone (by hand, one at a time).
+- Left as round 2 says, with reasons: `last_words` parses the transcript's tail like
+  `session_read` with `tail` (bounded to one task); a store failure inside
+  `settled_access_level` is answered with the same "cannot confirm" sentence.
 - Not tested: a real Claude Code session reading a neighbour, and a personal MCP server held by a
   live run. The holder rule comes from `reaches_owners_personal`, which SPEC-245 and SPEC-332
   already test for personal MCP servers.
