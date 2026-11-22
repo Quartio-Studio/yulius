@@ -24,6 +24,10 @@ const LATEST_MERGE_WAIT: &str = "subject_kind = 'task' AND subject_id = ?1
     AND kind = 'wait' AND name = 'merge_armed' AND ended_at IS NOT NULL
     ORDER BY started_at DESC, id DESC LIMIT 1";
 
+pub(crate) fn latest_merge_wait(conn: &Connection, task: &str) -> AppResult<Option<SpanRecord>> {
+    Ok(select(conn, LATEST_MERGE_WAIT, &[Value::Text(task.to_owned())])?.pop())
+}
+
 fn span_row(row: &Row<'_>) -> rusqlite::Result<SpanRecord> {
     let sandbox: String = row.get("sandbox_id")?;
     let kind: String = row.get("subject_kind")?;
@@ -177,9 +181,8 @@ impl SpanStore for SqliteStore {
         &self,
         task: &yulius_domain::ids::TaskId,
     ) -> AppResult<Option<SpanRecord>> {
-        let args = vec![Value::Text(task.as_str().to_owned())];
-        self.call(move |c| Ok(select(c, LATEST_MERGE_WAIT, &args)?.pop()))
-            .await
+        let task = task.to_string();
+        self.call(move |c| latest_merge_wait(c, &task)).await
     }
 
     async fn subject_spans(

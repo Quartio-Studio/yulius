@@ -257,7 +257,8 @@ fn survives_config_refusal(state: RunState) -> bool {
 
 /// Select the ordinary verdict from one commit’s runs, newest admission first.
 /// A configuration refusal invalidates earlier completed verdicts at this commit.
-pub(crate) fn run_for_pull_head(runs: &[CiRunRecord], pr: u64) -> Option<&CiRunRecord> {
+#[must_use]
+pub fn run_for_pull_head(runs: &[CiRunRecord], pr: u64) -> Option<&CiRunRecord> {
     let shared = |r: &&CiRunRecord| {
         ordinary_scheduler_ref(&r.reference) && yulius_domain::ci::covers_shared_commit(r.state)
     };

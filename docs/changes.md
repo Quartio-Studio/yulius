@@ -4,9 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
-## 2026-11-21
+## 2026-11-22
 
 - A red integration branch gets one repair owner among the working tasks. Finished tasks retain their outcomes and only people resume parked tasks. Inherited staging requests complete with the verified fix. Project CI and Status offer a rerun or a new task when no worker is available. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
+
+## 2026-11-21
+
+- A parked PR owner receives the failing integration job in its resumed session. A busy subscription or a human decision keeps the notice pending until the watcher can verify it again.
 
 - Claude Code and Codex task delivery show the just-landed pull request's review rounds
   and whether each round reported. Parking integration tests exercise an attached idle session.

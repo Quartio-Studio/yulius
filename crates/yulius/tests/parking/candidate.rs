@@ -863,6 +863,80 @@ async fn expect_park_deferred(
     Ok(())
 }
 
+/// Restore a real owner after restart. Parked cases make the completed queue
+/// decision visible after the original process has already parked.
+fn with_parked_candidate_owner(
+    check: impl AsyncFnOnce(
+        &Path,
+        &Arc<yulius_app::context::App>,
+        &Arc<crate::support::FakeGitHub>,
+        &yulius_app::model::TaskRecord,
+    ) -> TestResult,
+) -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let case = ColdCandidate::Backdated;
+    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(&data, &case)))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    let rt = runtime()?;
+    let (app, remote) =
+        rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
+    let verify = async {
+        {
+            let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+            db.execute("UPDATE spans SET outcome='pending' WHERE key='wait@15'", [])?;
+            super::parked(&app, &id).await?;
+            db.execute("UPDATE spans SET outcome='dropped' WHERE key='wait@15'", [])?;
+        }
+        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let result = check(&data, &app, &remote, &task).await;
+        app.stop_task_now(&id).await?;
+        result
+    };
+    rt.block_on(Box::pin(verify))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_parked_candidate_owner_stays_parked_until_a_person_messages_it() -> TestResult {
+    with_parked_candidate_owner(async |_, app, _, task| {
+        let id = &task.id;
+        let before = app.deps.store.attempts(id).await?;
+        let session = before
+            .last()
+            .and_then(|a| a.provider_session_id.as_deref())
+            .ok_or("parked owner session")?;
+        for _ in 0..2 {
+            assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+            assert_eq!(
+                super::status_of(app, id).await.0,
+                Some(yulius_domain::task::TaskStatus::Parked)
+            );
+        }
+        assert_eq!(app.deps.store.attempts(id).await?.len(), before.len());
+        let caller = super::superagent(&task.sandbox_id, &task.owner, "admin");
+        app.tool_task_message(
+            &caller,
+            &json!({"task_id": id.as_str(), "text": "Please continue the investigation"}),
+        )
+        .await?;
+        super::wait_for(
+            "the person's message in the original session",
+            Duration::from_secs(60),
+            || async { super::screen(app, id).contains("Please continue the investigation") },
+        )
+        .await?;
+        let after = app.deps.store.attempts(id).await?;
+        assert_eq!(after.len(), before.len() + 1);
+        assert_eq!(
+            after.last().and_then(|a| a.provider_session_id.as_deref()),
+            Some(session)
+        );
+        Ok(())
+    })
+}
+
 #[test]
 fn an_ordinary_drop_after_rearm_cannot_revive_a_historical_bisection() -> TestResult {
     cold_candidate_case(ColdCandidate::OrdinaryDropAfterRearm)

@@ -50,6 +50,8 @@ Continue on a closed, stopped or failed task carries the same attempt identity a
 
 The final park check and a new merge request use the existing per-task merge writer. The idle pass defers when it cannot acquire the writer. A committed park remains identifiable by attempt until its task state settles, including while an exit reader has taken the park intent. This preserves an admitted merge and prevents a late request from arming on a parked owner.
 
+ADR-0450 supersedes the parked PR watcher’s automatic resume. A person can still resume the original session if an earlier attempt lost its subscription before spawn.
+
 ## Alternatives
 
 - **Count only working sessions, keep the processes.** Frees slots, not memory: the small host of

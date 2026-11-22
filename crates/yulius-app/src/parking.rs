@@ -309,6 +309,12 @@ pub(crate) struct EndedScreen {
     pub(crate) parked: bool,
 }
 
+/// A resume whose account vanished before any process received its prompt.
+pub(crate) fn removed_before_spawn(run: &AttemptRecord) -> bool {
+    run.launch_kind == crate::model::LaunchKind::Resume
+        && run.exit_reason.as_deref() == Some("account_removed")
+}
+
 impl App {
     /// A recorded resume may still be spawning. Until its first host snapshot, only
     /// a committed park from the preceding attempt may be displayed in its place.
@@ -318,15 +324,12 @@ impl App {
         attempts: &[AttemptRecord],
     ) -> Option<EndedScreen> {
         let (latest, prior) = attempts.split_last()?;
-        // Losing the selected account records an ended attempt before any host
-        // spawns. Its replacement still belongs to the original resume.
-        let removed_before_spawn = |run: &AttemptRecord| {
-            run.launch_kind == crate::model::LaunchKind::Resume
-                && run.exit_reason.as_deref() == Some("account_removed")
-        };
         let retrying = matches!(
             task.status,
-            TaskStatus::Starting | TaskStatus::WaitingCapacity | TaskStatus::Queued
+            TaskStatus::Starting
+                | TaskStatus::WaitingCapacity
+                | TaskStatus::Queued
+                | TaskStatus::Parked
         ) && removed_before_spawn(latest);
         if latest.state.is_terminal() && !retrying {
             return self.ended_screen(latest, task).await;
@@ -409,16 +412,20 @@ impl App {
             return self.goal_unfinished(&task.id);
         }
         match self.deps.store.attempts(&task.id).await {
-            Ok(runs) => runs.last().is_some_and(|run| {
-                let dir = std::path::Path::new(&run.run_dir);
-                match std::fs::symlink_metadata(dir.join(GOAL_UNFINISHED_MARK)) {
-                    Ok(_) => true,
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                        !std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir())
+            Ok(runs) => runs
+                .iter()
+                .rev()
+                .find(|run| !removed_before_spawn(run))
+                .is_some_and(|run| {
+                    let dir = std::path::Path::new(&run.run_dir);
+                    match std::fs::symlink_metadata(dir.join(GOAL_UNFINISHED_MARK)) {
+                        Ok(_) => true,
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                            !std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir())
+                        }
+                        Err(_) => true,
                     }
-                    Err(_) => true,
-                }
-            }),
+                }),
             Err(_) => true,
         }
     }

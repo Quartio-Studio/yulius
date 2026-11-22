@@ -5715,7 +5715,19 @@ impl App {
         };
         let run = if task.status == TaskStatus::Parked {
             let id = task.resume_attempt_id.as_ref().ok_or_else(missing)?;
-            store.attempt(id).await?
+            let run = store.attempt(id).await?;
+            if run
+                .as_ref()
+                .is_some_and(crate::parking::removed_before_spawn)
+            {
+                let runs = store.attempts(&task.id).await?;
+                runs.into_iter()
+                    .rev()
+                    .skip_while(|run| run.id != *id)
+                    .find(|run| !crate::parking::removed_before_spawn(run))
+            } else {
+                run
+            }
         } else {
             store.attempts(&task.id).await?.pop()
         };
