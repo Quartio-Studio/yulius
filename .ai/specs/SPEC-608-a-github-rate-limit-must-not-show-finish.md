@@ -1,6 +1,6 @@
 ---
 yulius-task: a7e07e4a-e6e5-4986-bcd4-becfa2aa104b
-status: in-progress
+status: done
 ---
 
 # SPEC-608. Preserve task state during a GitHub outage
@@ -29,8 +29,8 @@ Task #592 reports two GitHub App quota resets on 21 November. During the second 
 - [x] Verify the other failures from the merged revision against their owning fixes
 - [x] Deliver the reviewed fix forward and request staging for the new revision
 - [x] Reproduce the offscreen task-row measurement during a list repaint
-- [ ] Verify the row height against its skeleton across repaints
-- [ ] Deliver the reviewed browser gate fix and request staging
+- [x] Verify the row height against its skeleton across repaints
+- [x] Deliver the reviewed browser gate fix and request staging
 
 ## Acceptance criteria
 
@@ -62,3 +62,4 @@ Use the existing delivery and pull observation paths for display and keep the qu
 - A manual one-line check in that temporary checkout restored the old `PullSignal::Errored` timeout mapping. Both revised tests failed. The browser timeout created a false Needs-you notice, and the concurrent reads replaced the known failing-check episode with a CI-error episode. Restoring the real timeout handling passed both tests again.
 - PR #1669 landed the shared fixes on dev at `2c386072c`. The clean integration at `d9eee5acf` passed all 17 previously failing tests again. Task #592’s delivery evidence records the fix-forward merge and its staging request.
 - Staging gate `c924ceae-d140-493b-97f4-00cb1ce67916` passed both Rust shards. Its one e2e failure measured an offscreen row at 0 px against the 52 px loading row. Selecting the active filter after attaching the probe to the live list reproduced the same 0 px result. The test now holds a fresh row in a separate offscreen list with the live list’s width, triggers a real repaint, and measures the row. The loading-shape and quota-notice suites passed all 14 tests. Temporarily restoring the incorrect 72 px CSS intrinsic height made the regression fail at 72 versus 52. The production stylesheet was restored.
+- Independent review approved `efc7c397c`. On that head the full Chromium suite passed 1,324 tests, with one optional provider-backed test skipped. The project’s Vidoc scan was disabled. The delivery record identifies the new CI run, landing and staging request.
