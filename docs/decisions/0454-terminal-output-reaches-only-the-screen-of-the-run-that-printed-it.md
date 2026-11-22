@@ -10,7 +10,7 @@ A task's terminal hub outlives its runs. Each run's PTY reader passed its chunks
 
 ## Decision
 
-Bind every write a run's reader makes to the hub (output, released tails, host snapshots and reattachment restores) to that run's attempt. `TaskRuntime::on_screen_of(run, write)` writes only while `screen_of`, the supervisor's existing record of whose screen the hub shows, names that run. An attach resets the hub and records its run in one step under the same lock (`show_screen_of`), so no chunk passes the check for the old run and is drawn after the new run's reset. Writes that fail the check are dropped.
+Bind every write a run's reader makes to the hub (output, released tails, host snapshots and reattachment restores) to that run's attempt. `TaskRuntime::on_screen_of(run, write)` writes only while `screen_of`, the supervisor's existing record of whose screen the hub shows, names that run. An attach resets the hub and records its run in one step under the same lock (`show_screen_of`), so no chunk passes the check for the old run and is drawn after the new run's reset. Writes that fail the check are dropped. Two writes of a reader stay outside this check: the publication of a parked grid and the exit frame. Both happen before any replacement can attach, because a resume waits for the old reader's terminal cleanup, and both belong to the parking code SPEC-558 changes.
 
 ## Alternatives
 

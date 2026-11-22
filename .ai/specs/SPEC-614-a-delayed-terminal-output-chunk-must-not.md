@@ -1,6 +1,6 @@
 ---
 yulius-task: c3476fc8-3918-478a-8717-50a49519ab50
-status: in-progress
+status: done
 ---
 
 # SPEC-614 — A delayed terminal output chunk must not reach a replacement run
@@ -31,13 +31,14 @@ The supervisor already records the run whose screen the hub shows: `TaskRuntime:
 - [x] Reproduce a delayed tail release drawing on the replacement
 - [x] Bind output, snapshots and tail releases to the run that produced them
 - [x] Record the decision and update the architecture and changes documents
-- [ ] Verify the touched suites and obtain independent approval
+- [x] Verify the touched suites and obtain independent approval
 
 ## Acceptance criteria
 
-- **AC-1 (TRO-001, TRO-003, TRO-004)** Hold a synthetic output chunk of the first run between its host and the hub, end that run and attach a replacement for the same task, then release the chunk. The replacement's screen and the frames its viewers receive hold only the replacement's output, and the replacement's later output still reaches both.
+- **AC-1 (TRO-001, TRO-004)** Hold a synthetic output chunk of the first run between its host and the hub, end that run and attach a replacement for the same task, then release the chunk. The replacement's screen and the frames its viewers receive hold only the replacement's output, and the replacement's later output still reaches both.
 - **AC-2 (TRO-001, TRO-004)** Make the first run print synthetic text that ends in the beginning of an agent secret, so its redactor holds a tail. Hold the tail's release, park the run, resume it in a replacement, then release the tail. The replacement's screen and frames do not show it. The parked screen shows until the replacement attaches.
-- **AC-3 (TRO-002)** Snapshot and reattachment resets of a run that no longer owns the screen leave the hub as it is (by construction, the same check as TRO-001).
+- **AC-3 (TRO-002)** Hold a synthetic host snapshot of the first run the same way and release it after the replacement attached. The replacement's screen and its viewers' frames keep the replacement's output and never show the snapshot.
+- **AC-4 (TRO-001, TRO-003)** On a task runtime, a run writes to the hub only while the hub shows its screen, never before any run is shown and never after another run's attach; the attach's reset runs while it holds the lock the writes check.
 
 ## Test plan
 
@@ -47,7 +48,7 @@ Both reproductions run in `crates/yulius/tests/parking/replaced_output.rs` with 
 
 - Bind output to the producing attempt with the existing `screen_of` record rather than a new run token in the hub. `screen_of` is already the supervisor's record of whose screen the hub shows, used to save a run's final screen and to check the Codex input screen, so one record answers all three. The hub stays agnostic of runs. [ADR-0454](../../docs/decisions/0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md)
 - Hold `screen_of` while writing the hub (lock order `screen_of` → hub screen). `Hub` methods never call out while holding their lock, so no path takes the two in the other order.
-- The reattach path still replaces the task's active writer with the old run's if the old run's host answers a reattach after a replacement attached. That is input, not output, and is outside this change; it is reported separately if reproduced.
+- The reattach path still replaces the task's active writer with the old run's if the old run's host answers a reattach after a replacement attached. That is input, not output, and is outside this change: #1692.
 
 ## Evidence
 
@@ -56,4 +57,6 @@ Both reproductions run in `crates/yulius/tests/parking/replaced_output.rs` with 
 - `scripts/cargo test -p yulius-app --lib --features test-support`: 700 passed.
 - `scripts/cargo test -p yulius --test main -- parking:: supervision:: secrets_redaction:: first_message:: shells task_message:: live_ui_terminal::`: 318 passed, 4 ignored.
 - `scripts/cargo clippy -p yulius-app -p yulius --all-targets --all-features -- -D warnings` and `scripts/dev quick` passed.
+- Review round 1 (Fable 5.2) approved `73de27470` with own-code minors: no test for TRO-002 or TRO-003, an ADR sentence that overstated, and a lock that gave up when poisoned. Answered on `HEAD`: `a_held_snapshot_of_an_old_run_does_not_reach_its_replacement` failed with the snapshot site put back to a direct `hub.reset` and passed with the binding; the unit test `the_hub_takes_writes_only_of_the_run_it_shows` covers AC-4; the ADR names the two reader writes outside the check (the parked grid's publication and the exit frame, both before any replacement attaches); `on_screen_of` recovers a poisoned lock like `show_screen_of`. The `app.runtime` lookups at the snapshot and reattach sites stay, since a runtime created there shows no run and drops the write. The reviewer's pre-existing note on the reattach path taking the active writer is #1692.
+- After the answers: `scripts/cargo test -p yulius-app --lib --features test-support` 701 passed; `scripts/cargo test -p yulius --test main -- parking:: supervision:: secrets_redaction::` 230 passed, 1 ignored; clippy with warnings denied and `scripts/dev quick` passed.
 - Security scan: Vidoc is turned off for this project in Yulius (disabled, not passed).
