@@ -1894,6 +1894,63 @@ fn unreadable_codex_raises_the_undelivered_ci_notice_on_the_task() -> TestResult
 }
 
 #[test]
+fn a_reconnecting_host_restores_the_width_of_an_interrupted_codex_repaint() -> TestResult {
+    use yulius_app::hub::HubFrame;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        let rt = app.runtime(&id);
+        let (cols, rows) = rt.hub.size();
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let token: [u8; 32] = app
+            .deps
+            .crypto
+            .open(&attempt.host_token)?
+            .try_into()
+            .map_err(|_| "invalid fixture token")?;
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        let mut frames = rt.hub.watch();
+        let (writing, target) = (Arc::clone(&app), id.clone());
+        let sending = tokio::spawn(async move { send(&writing, &caller, &target).await });
+        wait_for("temporary width", Duration::from_secs(3), || async {
+            rt.hub.size().0 != cols
+        })
+        .await?;
+        // A second authenticated attachment disconnects the supervisor. Its reconnect
+        // receives a snapshot taken at the temporary width before it regains the writer.
+        let displaced = app
+            .deps
+            .session_host
+            .attach(Path::new(&attempt.run_dir), &token)
+            .await?;
+        assert_ne!(displaced.welcome.cols, cols);
+        assert!(sending.await?.is_err());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(frames.recv().await?, HubFrame::Snapshot { .. }) {
+                    break Ok::<_, Error>(());
+                }
+            }
+        })
+        .await??;
+        assert_eq!(
+            rt.hub.size(),
+            (cols, rows),
+            "viewer geometry after reconnect"
+        );
+        app.send_input(&id, b"/size\r").await?;
+        let expected = format!("SIZE {rows} {cols}");
+        wait_for(
+            "child's restored PTY size",
+            Duration::from_secs(5),
+            || async { screen(&app, &id).contains(&expected) },
+        )
+        .await?;
+        stop(&app, &id).await
+    })
+}
+
+#[test]
 fn cancelling_a_codex_message_during_repaint_restores_the_size_without_typing() -> TestResult {
     let (_dir, data) = data_dir()?;
     runtime()?.block_on(async {
@@ -1952,6 +2009,29 @@ fn an_unreadable_codex_prompt_asks_its_owner_without_replacing_an_open_question(
 }
 
 #[test]
+fn a_readable_terminal_keeps_the_private_message_request_until_its_owner_resends() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        assert!(send(&app, &caller, &id).await.is_err());
+        let request = app
+            .deps
+            .store
+            .task_needs_you(&id)
+            .await?
+            .ok_or("missing private message request")?;
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        assert_eq!(app.deps.store.task_needs_you(&id).await?, Some(request));
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
 fn a_repeated_codex_notice_write_failure_raises_the_pending_result() -> TestResult {
     use yulius_app::pr_watch::WatchBounds;
     let (_dir, data) = data_dir()?;
@@ -2001,6 +2081,9 @@ fn the_codex_rate_limit_picker_holds_messages_until_it_is_dismissed() -> TestRes
             "{reply:?}"
         );
         assert!(app.watch_prs(&bounds).await.is_empty());
+        let held = app.deps.store.task_needs_you(&id).await?.ok_or("picker refusal did not raise PR news")?;
+        assert!(held.problem.as_deref().is_some_and(|s| s.contains("rate-limit model picker")));
+        assert!(held.happened.as_deref().is_some_and(|s| s.contains("#7") && s.contains("fail")));
         assert!(audited(&data, &id)?.is_empty());
         assert!(!screen(&app, &id).contains("ECHO: "));
 

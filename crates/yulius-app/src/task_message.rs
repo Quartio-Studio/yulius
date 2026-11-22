@@ -49,7 +49,8 @@ use crate::vault::reach::Holder;
 pub const MAX_MESSAGE_BYTES: usize = MAX_PROMPT_BYTES;
 
 /// The owner action specific to a held Codex screen.
-const CODEX_SCREEN_ACTION: &str = "Inspect the Codex terminal. Dismiss any model picker, check the composer for unsent text, and retry the message. If the prompt stays unreadable, stop and continue the session.";
+const CODEX_NOTICE_ACTION: &str = "Inspect the Codex terminal. Dismiss any model picker and check for unsent text. If the prompt stays unreadable, stop and continue the session. Yulius will retry the pending notice.";
+const CODEX_MESSAGE_ACTION: &str = "Inspect the Codex terminal. Dismiss any model picker, check the composer for unsent text, and retry the message. If the prompt stays unreadable, stop and continue the session.";
 
 /// Time between the paste and its separate Enter.
 const SUBMIT_DELAY: Duration = Duration::from_millis(300);
@@ -1081,7 +1082,12 @@ impl App {
             }
             _ => "A message could not be submitted to Codex.".into(),
         };
-        self.ask_for_blocked_input(task, attempt, &happened, problem, CODEX_SCREEN_ACTION)
+        let action = if matches!(what, Typed::Notice(_)) {
+            CODEX_NOTICE_ACTION
+        } else {
+            CODEX_MESSAGE_ACTION
+        };
+        self.ask_for_blocked_input(task, attempt, &happened, problem, action)
             .await
     }
 
@@ -1122,14 +1128,14 @@ impl App {
     pub(crate) async fn settle_codex_input_hold(&self, task: &TaskRecord, attempt: &AttemptId) {
         if task.harness == Harness::Codex
             && let Ok(Some(request)) = self.deps.store.task_needs_you(&task.id).await
-            && request.action == CODEX_SCREEN_ACTION
+            && request.action == CODEX_NOTICE_ACTION
             && self
                 .existing_runtime(&task.id)
                 .is_some_and(|rt| rt.codex_ready_for_retry(attempt))
             && self
                 .deps
                 .store
-                .end_task_needs_you_asking(&task.id, CODEX_SCREEN_ACTION, self.now())
+                .end_task_needs_you_asking(&task.id, CODEX_NOTICE_ACTION, self.now())
                 .await
                 == Ok(true)
         {

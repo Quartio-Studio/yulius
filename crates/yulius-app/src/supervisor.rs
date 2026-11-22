@@ -4789,7 +4789,7 @@ impl App {
                                 .attempt(&aid)
                                 .await
                                 .map(|a| a.map(|a| a.run_dir))
-                                && let Ok(again) = app
+                                && let Ok(mut again) = app
                                     .deps
                                     .session_host
                                     .attach(Path::new(&run_dir), &token)
@@ -4805,6 +4805,17 @@ impl App {
                                         .await;
                                     let rt = app.runtime(&tid);
                                     let mut run = rt.run.lock().await;
+                                    // The host may have disconnected at the temporary
+                                    // repaint width. The writer lock covers the whole probe,
+                                    // so the hub now holds its restored (or latest viewer) size.
+                                    let host_size = (again.welcome.cols, again.welcome.rows);
+                                    let size = if codex { rt.hub.size() } else { host_size };
+                                    if size != host_size
+                                        && let Err(err) = again.writer.resize(size.0, size.1).await
+                                    {
+                                        tracing::warn!(attempt = %aid, error = %err, "could not restore PTY size on reconnect");
+                                        continue;
+                                    }
                                     let codex_submit_hold = run
                                         .as_mut()
                                         .filter(|run| run.attempt_id == aid)
@@ -4818,10 +4829,10 @@ impl App {
                                     rt.hub.restore(
                                         again.welcome.seq,
                                         &screen,
-                                        again.welcome.cols,
-                                        again.welcome.rows,
+                                        size.0,
+                                        size.1,
                                         crate::hub::ScreenUpdate::Host {
-                                            rendered: again.welcome.rendered,
+                                            rendered: again.welcome.rendered_at(size),
                                         },
                                     );
                                     reader = again.reader;

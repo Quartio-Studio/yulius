@@ -16,7 +16,7 @@ On 22 November 2026, task #596 had an idle prompt after reattachment. Six sends 
 ## Requirements
 
 - CID-001. On an indeterminate attached Codex grid, request a child redraw without sending input. Check the current attempt and the screen again before each paste and Enter. Preserve viewer geometry, draft protection and the durable paste hold.
-- CID-002. Bound a redraw probe to two seconds of waiting for terminal output. If the screen is still unreadable, record an actionable Needs you in the same send attempt. Preserve any question already open.
+- CID-002. Bound a redraw probe to two seconds of waiting for terminal output. If the screen is still unreadable, record an actionable Needs you in the same send attempt. Preserve any question already open. A private message needs the owner to resend it or resolve its request. A repaired screen releases a retryable machine notice.
 - CID-003. An owed PR event stays untold until it is submitted. Retry a refused current event on the next watcher pass (normally 20 seconds). A second refusal of the same event keys raises the result and reason to the owner. An unreadable screen or visible picker raises a held machine notice on its first refused send. Check the current event and attempt on retry. A known picker holds both paste and Enter.
 
 ## Plan
@@ -25,6 +25,7 @@ On 22 November 2026, task #596 had an idle prompt after reattachment. Six sends 
 - [x] Recover an idle composer through the attached PTY
 - [x] Raise undeliverable messages on the task and retain PR news
 - [x] Verify restart, retry and picker protection
+- [ ] Restore the PTY size on reconnect and keep private messages actionable
 - [ ] Approve the fix for merge into dev and a staging request
 
 ## Acceptance criteria
@@ -47,3 +48,5 @@ Use the attached terminal and its current child output as the source of truth. A
 - `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^task_message::.*codex/)'` passed all 13 tests. The idle PTY survived server-runtime replacement and received the CI notice after a SIGWINCH repaint. Cancellation restored the size. The unreadable-screen tests bound the call to three seconds, including the task-store operation, and verify the request and subsequent single delivery. Picker and in-flight-paste tests covered both sides of Enter.
 - The fixtures use a synthetic foreground terminal and a legacy-format screen with unknown redraw provenance. The original screen condition in task #596 remains unknown.
 - `scripts/cargo nextest run --no-fail-fast -p yulius -p yulius-app -p yulius-store --lib --bin yulius --test main` passed all 4,087 selected tests across five binaries. The default profile skipped 24 tests. `scripts/dev quick` passed. `scripts/dev security` reported disabled by the project.
+- Independent review of `cb84c4d86` found two recovery defects and a missing assertion. Disconnecting the PTY during the probe left the viewer at 121×40 instead of 120×40. Repairing a screen let PR news discard the outstanding private-message request. Both regressions failed on that reviewed head.
+- Manually removing first-refusal picker escalation made the strengthened picker test fail with “picker refusal did not raise PR news”. The escalation was restored.
