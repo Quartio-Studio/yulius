@@ -30,8 +30,8 @@ Open on dev: steps 50 to 53 of SPEC-558. #540 left prepared patches in its hando
 - [x] Write the takeover spec and confirm steps 48 and 49 on dev
 - [x] Recover screens from tasks parked before the upgrade
 - [ ] Review and deliver the pre-upgrade screen recovery
-- [ ] Port bounded Codex goal continuation onto current dev
-- [ ] Prove the #325 shape and the retry bound for Codex goals
+- [x] Port bounded Codex goal continuation onto current dev
+- [x] Prove the #325 shape and the retry bound for Codex goals
 - [ ] Review and deliver bounded Codex goal continuation
 - [ ] Reproduce a dependent task released by an unverified live owner
 - [ ] Hold the live owner's delivery through chain release, start rules and close
@@ -56,9 +56,12 @@ Each slice starts with a regression that fails on dev: the cockpit `task_screen`
 
 - Keep SPEC-558 as the product spec and tick its Plan as each slice merges; this spec only records the takeover, so the two plans name the same work.
 - Deliver step 53 first: its patch applies cleanly and is independent of the capacity work. Then step 52, step 50 and step 51, each its own pull request with a fresh review, merging dev before each review because tasks #596 and #597 change `supervisor.rs` and `pr_watch.rs` in parallel.
+- Step 52 is not ported from `step41-ported-current-goal.patch`: dev's Stop gate (PR #1616, ADR-0428) already continues goal plans and specs for every harness, carries the retry count across moves and keeps it across capacity holds. Only the red-PR condition was missing. It is read in the gate's existing 750 ms probe stage through `parked_status`, the verifier the task list uses, so the Stop decision and the sidebar agree on what is failing. A read that cannot finish asks the agent to verify its checks (SPEC-558's decision), and only for Codex: Claude Code's native goal evaluator owns its goal's end.
 - Old parks are recovered from the run's final screen instead of being rewritten on disk: the read path is the only place that knows whether the run was parked (the recorded transition), and leaving the files alone keeps the change reversible.
 
 ## Evidence
 
 - `git apply --check -R` of `34f395357` (crates only) succeeds on `2a6e07423`; `git merge-base --is-ancestor 8855f295b origin/main` fails.
 - Step 53: on dev the extended cockpit fixture `the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout` failed at its first new assertion, showing `Token usage: total=389,557`, `To continue this session, run:` and `codex resume synthetic-rollout` under the answer. With the port it passes; `parking::tests` (9) and the `cockpit::`, `parking::`, `codex::` scope (287 tests) passed, Clippy on `yulius-app` and `yulius` passed, `scripts/dev quick` passed. The red run on dev is the mutation check for the whole recovery path.
+- Review round 1 follow-up: `a_wrapped_codex_exit_block_under_an_answer_is_removed` (80 columns), and the cold queued-park fixture now also removes the snapshot and reads the final screen through the recorded transition: a Claude Code run keeps a Codex-looking footer, the same run marked Codex loses it. Hand mutations, each restored: removing the wrapped-row join failed the unit test; replacing the harness gate with `true` and dropping the transition recovery each failed `parking::a_switch_overtaken_by_a_park_parks_with_its_activity`.
+- Step 52: `agent_hooks::codex_goal_stop_continues_the_325_shape_and_a_red_pr_alone` failed on dev (decision `null` once steps 6 and 7 were done with the PR red) and passes; `codex_goal_stop_ends_on_green_and_verifies_a_slow_check_read` holds a green PR's end and a held checks read inside the hook deadline. Hand mutations: mapping the failing or the unverified arm of `stop_pull` to `Settled` failed the respective test. Whole `yulius::main` binary 2,607 passed, `yulius-app` lib 706 passed, Clippy on both crates and `scripts/dev quick` passed.
