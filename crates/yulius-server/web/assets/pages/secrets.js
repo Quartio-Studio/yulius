@@ -649,7 +649,7 @@ const ALLOW_SETTLE_MS = 1000;
 function agentHosts(ctx, secret, act, changed) {
   const parts = [];
   if (secret.hosts.length) parts.push(h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))));
-  else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, secret.auto_allow ? 'Not sent anywhere yet: agents bind its hosts when they need them.' : 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
+  else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, secret.auto_allow && !(secret.rules || []).length ? 'Not sent anywhere yet: agents bind its hosts when they need them.' : 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
   // Its rules (SPEC-627), beside the hosts they apply to.
   if ((secret.rules || []).length) parts.push(h('div', { class: 'chips', role: 'group', 'aria-label': 'Rules' }, secret.rules.map((r) => iconBadge('shield', `${r.methods.join(', ')} ${r.path}`, '', 'Only requests matching a rule get it'))));
   if (secret.requested_hosts.length) {

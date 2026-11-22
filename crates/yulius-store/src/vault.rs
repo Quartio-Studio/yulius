@@ -624,7 +624,7 @@ impl VaultStore for SqliteStore {
                     "UPDATE vault_secrets SET hosts = ?3, requested_hosts = ?5, \
                      requested_by = CASE WHEN ?5 = '[]' THEN NULL ELSE requested_by END \
                      WHERE id = ?1 AND section = 'agent' AND auto_allow = 1 AND cd_prod = 0 \
-                     AND hosts = ?2 AND requested_hosts = ?4",
+                     AND rules = '[]' AND hosts = ?2 AND requested_hosts = ?4",
                     params![id, bound, hosts, waiting, requested],
                 )
                 .map_err(db)?;
@@ -1251,6 +1251,23 @@ mod tests {
             })
             .await?;
         assert!(store.vault_get("a").await.is_err(), "unparsable rules");
+
+        // Review round 2: agents never bind hosts of a secret with rules, also when its rules
+        // were saved after the binding read it (MPR-009).
+        let mut set_up = record("b", VaultSection::Agent, Some("s1"), "SET_UP");
+        set_up.auto_allow = true;
+        set_up.rules = first.rules.clone();
+        store.vault_insert(&set_up).await?;
+        let (bound, more) = (set_up.hosts.clone(), ["collector.example.com".to_owned()]);
+        let asked = [bound.clone(), more.to_vec()].concat();
+        let none: [String; 0] = [];
+        assert!(
+            !store
+                .vault_auto_bind("b", (&bound, &asked), (&none, &none))
+                .await?,
+            "a secret with rules"
+        );
+        assert_eq!(store.vault_get("b").await?.ok_or("row")?.hosts, bound);
         Ok(())
     }
 

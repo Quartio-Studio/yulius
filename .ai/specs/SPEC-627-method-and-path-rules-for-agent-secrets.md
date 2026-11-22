@@ -90,8 +90,10 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
   (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`, `X-Original-URL`,
   `X-Rewrite-URL`); and when its query sets `_method`. Encoded slashes (`%2f`) are allowed: APIs
   such as GitLab's use them in paths, and `*` already matches across `/`; `//` is allowed too
-  (merging slashes cannot leave a pattern's literal prefix). A `_method` in a request body is not
-  seen: a `POST` rule on a framework that honours it allows what that framework maps it to.
+  (merging slashes cannot leave a pattern's literal prefix). Override headers are matched with `_`
+  read as `-` (CGI-style servers do). A `_method` in a request body, or spelled encoded in the
+  query (`%5Fmethod`), is not seen: a `POST` rule on a framework that honours it allows what that
+  framework maps it to.
 - **MPR-005 Audit.** Each refusal is audited as `vault.agent.refused` by the client's actor
   (`task:<n>`, `ci:<run>`, `cockpit:<login>`) on the secret, with the secret's name, the method,
   the path (without the query, at most 200 characters) and the host; never a value. The same
@@ -239,6 +241,16 @@ the `security` job ends skipped, unrun, not passed.
   callers; Evidence; UI nits). All fixed in `9ff7c61bf` test-first except: `//` is allowed
   (merging slashes cannot leave a pattern's literal prefix, stated in MPR-004), and a `_method`
   in a request body is not seen (stated in MPR-004 and ADR-0458).
+- **Review round 2** on `4be03ba9f`: approved; CI run `9462f59f` passed. Its own-code minors fixed
+  test-first after the approval: the store's auto-bind write re-checks `rules = '[]'` (a rule saved
+  between an agent's read and its bind no longer lets the host through; the store test failed
+  first), override headers are matched with `_` as `-` (`x_http_method_override` was forwarded
+  first); nits: the card and `secrets_list` no longer say hosts bind at once for a secret with
+  rules, a refusal caused only by another secret's value says so without showing it, MPR-004 and
+  ADR-0458 name the encoded `_method` and CD runs. The reviewer's "small value oracle" note needs no
+  action (weaker than the redaction oracle of R-15). After the fixes: secrets_rules, secrets,
+  secrets_scopes and the Superagent test 64 passed; yulius-store, yulius-app, yulius-domain 1494
+  passed; secrets.e2e.ts 33 passed; `scripts/dev quick` passed.
 - **Not tested here.** A real third-party API through the proxy (the upstream is the test's TLS
   echo server); gRPC to a bound host (not proxied: the interception speaks HTTP/1.1, by code and
   ALPN); the e2e and full test suite on the merged `dev` revision run after the merge

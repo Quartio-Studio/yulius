@@ -382,6 +382,9 @@ async fn paths_and_overrides_that_could_escape_the_rules_are_refused() -> TestRe
         // Path overrides some rewrite set-ups honour (review round 1).
         "x-original-url",
         "x-rewrite-url",
+        // Underscores: CGI-style servers read them as the dashed name (review round 2).
+        "x_http_method_override",
+        "x-http_method",
     ] {
         let decision =
             w.h.app
@@ -531,6 +534,13 @@ async fn a_placeholder_value_cannot_move_the_path_outside_the_rules() -> TestRes
         let decision = w.h.app.egress_apply(&s1, request("POST", &path, &[])).await;
         let message = refusal(&decision).map_err(|e| format!("{name}: {e}"))?;
         assert!(message.contains(&path), "the path as sent: {message}");
+        assert!(
+            !message.contains("a-value") && !message.contains("user/keys"),
+            "never the value: {message}"
+        );
+        if name == "QUERY" {
+            assert!(message.contains("another secret's value"), "{message}");
+        }
     }
     // An ordinary value there still goes, with the commenter's header.
     add(

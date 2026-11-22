@@ -79,7 +79,8 @@ gRPC-Web over HTTP/1.1 is an ordinary `POST /package.Service/Method`.
   that agent cannot learn the value: its hosts are a person's, and no `.env` copy is allowed
   (code reading `.env` holds the value itself and can send it anywhere). A brokered command bound
   to the secret ([0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md))
-  gives its CLI the value as a file: rules do not limit what that CLI does. Rules cannot see request
+  gives its CLI the value as a file, and a CD run allowed it gets it in its environment: rules do
+  not limit what that CLI or deploy does. Rules cannot see request
   bodies: a GraphQL mutation and a query are both `POST /graphql`, and a `_method` field in a
   `POST` body is not seen; a read-only token is still the answer there.
 - A secret's rules apply to agent runs, CI jobs and Superagents alike (one policy), and to every

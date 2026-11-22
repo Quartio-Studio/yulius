@@ -37,7 +37,7 @@ impl<'a> RuleCheck<'a> {
                 request
                     .headers
                     .iter()
-                    .find(|(name, _)| OVERRIDE_HEADERS.contains(&name.as_str()))
+                    .find(|(name, _)| OVERRIDE_HEADERS.contains(&name.replace('_', "-").as_str()))
                     .map(|(name, _)| {
                         format!("it carries {name}, which a server could take over its request")
                     })
@@ -80,10 +80,14 @@ impl<'a> RuleCheck<'a> {
                 format!("{} ({})", r.name, rules.join("; "))
             })
             .collect();
-        let why = self
-            .escape
-            .as_ref()
-            .map_or_else(String::new, |why| format!(" ({why})"));
+        let why = match &self.escape {
+            Some(why) => format!(" ({why})"),
+            // Never the outgoing path: it holds another secret's value.
+            None if self.path != self.sent => {
+                " (another secret's value replaced in its path takes it outside them)".into()
+            }
+            None => String::new(),
+        };
         EgressDecision::Refuse {
             status: 403,
             message: format!(
