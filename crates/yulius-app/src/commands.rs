@@ -3,8 +3,8 @@
 //! them, and task agents run them by name outside their sandbox.
 //!
 //! - BRK-001: [`validated`]; BRK-002: [`App::create_command`], [`App::update_command`],
-//!   [`App::delete_command`], [`App::commands`]; BRK-003: [`App::command_secret`];
-//! - BRK-004: [`App::tool_commands_list`].
+//!   [`App::delete_command`], [`App::commands`]; BRK-003: `App::command_secret`;
+//! - BRK-004: `App::tool_commands_list`.
 
 use serde_json::{Value, json};
 use yulius_contracts::api::commands::{CommandDefinition, CommandList, CommandView};
