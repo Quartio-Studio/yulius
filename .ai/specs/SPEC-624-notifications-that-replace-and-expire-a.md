@@ -137,12 +137,12 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - [x] Telegram replaces a keyed notice's earlier message in the chat
 - [x] The digest lists live notices under a key and hides expired ones
 - [x] Independent review of the notice core, every finding answered
-- [ ] The notice core's round-2 review notes are fixed
-- [ ] Subscription problems are keyed notices that end with the problem
-- [ ] Unrepaired integration failures are keyed notices for the project's people
-- [ ] The bell shows server notices and keys and expires every entry
-- [ ] Old browser notification history migrates with expiries
-- [ ] Product, API and architecture docs describe keyed, expiring notices
+- [x] The notice core's round-2 review notes are fixed
+- [x] Subscription problems are keyed notices that end with the problem
+- [x] Unrepaired integration failures are keyed notices for the project's people
+- [x] The bell shows server notices and keys and expires every entry
+- [x] Old browser notification history migrates with expiries
+- [x] Product, API and architecture docs describe keyed, expiring notices
 - [ ] Independent review of the producers and the bell, every finding answered
 
 ## Acceptance criteria
@@ -288,3 +288,58 @@ without its fix:
 - **Direction question.** A never-expiring notice, a decision or a gate failure, appears in each
   daily digest until it is removed. That is intended: the digest lists what still waits for the
   person, as it already does for open `needs_you` requests.
+
+### PR #1705 merged
+
+PR #1705 landed in `dev` at `6dda721e6` from head `8fbd51cb1`. Its own Yulius CI run
+`742ea20e-d77f-4e04-a5b9-ad9fa6d0ff8d` passed. Review round 2 (Fable 5.2) approved `e7c04d9b3`.
+Round 3 (Opus 5.5) approved the dev-merge delta at `8fbd51cb1`.
+
+### Second pull request: producers and the bell (steps 8 to 13)
+
+Round 2's notes, all own code and each with a test that failed without its fix:
+- A `read` token is no longer served `notice_dismiss` (`scope_may_call`, the read-token test in
+  `remote.rs`).
+- A guest's own instance-wide notice is read
+  (`a_readers_reach_comes_before_the_limit`), and a guest reaches `/api/me/notices` and its
+  DELETE (`a_guest_reaches_only_their_playgrounds_work`, mock `guestMayReach`).
+- `notice.removed` is published for a notice the cap drops and for a replacement that narrows
+  `admin_only`, and titles are one line (`the_cap_and_a_narrowed_replacement_are_heard`).
+- A report that the cap would drop at once is refused (`a_scope_full_of_decisions_refuses_a_report`).
+- `notice_dismiss` keeps to its project (`a_dismissal_names_its_own_project`).
+- The Cockpit audits a dismissal (`cockpit::the_superagents_notice_dismissal_is_audited`, which
+  fails with the audit tied back to `Action::View`).
+- `notice_dismiss` is listed among the changing tools in `manage_tools.rs`.
+- The wording in `notify.rs`, the architecture document and AC-12 is fixed.
+
+Producers:
+- `notices::a_subscription_problem_is_one_keyed_notice` (AC-9) covers a limit that expires at
+  its reset, no repost of the same state, a later reset that replaces it, removal once usable,
+  and sign-in as a decision. It and `telegram::a_state_entered_before_the_start_is_not_told`
+  fail with the repeat check (`says_the_same`) undone.
+- `staging::an_unrepaired_failure_is_one_keyed_notice_until_it_passes` (AC-10) covers one
+  `gate:flaky::result` notice that never expires, nothing new on the next tick, and removal
+  after the fix passes. `GateNotice.key` is in `/api/status`.
+
+The bell (`e2e/tests/notices.e2e.ts`, AC-7, AC-11). Each of its 4 tests fails against dev's
+`notifications.js`:
+- a newer server notice replaces the older one, and the server's removal drops it;
+- an entry goes away at its expiry by the page's clock, and Clear dismisses the server's notice;
+- a newer red run replaces the task's entry;
+- old history gets its kind's default, and entries past it are dropped.
+
+`shared-needs-you.e2e.ts` now expects the key `needs-you:<project>:<cause>`. Its first test
+checks that an answered shared problem's entry expires a day later.
+
+Runs at the second PR's head before review:
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main)'`: 2,645 passed, 24 skipped.
+- `scripts/cargo nextest run` on the 6 library crates: 1,858 passed.
+- `npx e2e run` (Chromium): 1,341 passed, 1 configured skip.
+- `scripts/cargo clippy -D warnings` on the touched crates: clean.
+- `scripts/dev quick`: passed.
+- The Vidoc scan is switched off for this project: disabled, not passed.
+
+Not tested here: a real Telegram chat (the fake Bot API stands in, and Telegram's 48-hour
+delete limit is not exercised), and a desktop operating system's notification tag (Chromium's
+`Notification` is a stand-in).
+

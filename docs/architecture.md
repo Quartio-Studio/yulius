@@ -3173,12 +3173,29 @@ Notices for people carry a key and an expiry
   deletes it (`NotificationChannel::delete`, Telegram's `deleteMessage`). A refused delete leaves
   the old message in the chat. `telegram_keyed` rows go with their chat's link, like
   `telegram_sent`, and the tick forgets rows older than 48 hours.
+- **Yulius's own notices** (`crates/yulius-app/src/notice_producers.rs`). `start_notice_producers`
+  (from `serve`) reconciles every subscription, then follows `account.updated`: a problem is
+  posted as `account:<id>` for administrators, and removed once the subscription is usable.
+  Signing in again is a decision. A usage limit expires at its reset (`limit_reset`). A repeat
+  that says the same is not posted again. The staging tick's `tell_gate_repairs` passes the
+  failures that no worker owns to `sync_gate_notices`, which posts `gate:<test>` (never
+  expiring) and removes the ones no longer failing or now owned. The notifier no longer derives
+  subscription messages: they reach Telegram as posted notices.
+- **The bell** (`web/assets/notifications.js`). Every entry has a key and an `expires` time:
+  its kind's default (`EXPIRES_MS`), or none while it waits for a decision. An answered entry
+  goes a day later. Expired entries are pruned at load, at their time and when the panel opens.
+  History stored before this change gets its kind's default from its own time. Server notices
+  join it from `GET /api/me/notices` and `notice.posted` under
+  `notice:<project>:<me or ->:<key>`. `notice.removed` drops them, and Clear dismisses them on
+  the server. A task has one entry, `task:<task id>`.
 - **Digest.** Each person's digest lists up to 20 of their live notices (`DigestView.notices`).
   Its items carry `task:<task id>`, and its Telegram message has the scope `-:digest`, so today's
   digest replaces yesterday's.
 
 ```mermaid
 flowchart LR
+  S["account.updated · staging tick"] --> PR["notice producers"]
+  PR -->|"account:&lt;id&gt; · gate:&lt;test&gt;"| A
   P["producer or script watch"] -->|"NewNotice: key, expiry"| A["App::post_notice"]
   A -->|"replace by project, recipient, key"| DB[("notices")]
   A -->|"notice.posted (envelope)"| BUS["event bus"]

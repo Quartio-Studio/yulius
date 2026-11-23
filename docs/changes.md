@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-23
+
+- Yulius's own repeated notices are keyed. A subscription problem is one notice per subscription for administrators: a usage limit expires at its reset, and signing in again waits for a person. An integration failure nobody repairs is one notice per test for the project's people, removed once repaired. The bell gives every entry a key and an expiry, joins the server's notices and keeps one entry per task. A browser's earlier history gets expiries too. [ADR-0462](decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md), [SPEC-624](../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md)
+
 ## 2026-11-22
 
 - Notices carry a key and an expiry. A newer notice with the same key replaces the older one for its project and person, in Telegram too: the bot deletes its earlier message about the same task or key. An expired notice is left out of `GET /api/me/notices`, the person tools `notices_list` and the digest, then pruned. A notice that waits for a decision never expires. The digest lists live notices and replaces yesterday's in the chat. [ADR-0462](decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md), [SPEC-624](../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md)
