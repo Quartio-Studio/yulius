@@ -554,6 +554,9 @@ function summary(task) {
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
     after: task.afterLink ? { ...task.afterLink } : null,
     next: (task.nextLinks || []).map((link) => ({ ...link })),
+    // Forks (SPEC-628 FRK-008): where this one came from, and its forks.
+    ...(task.forkedFrom ? { forked_from: { ...task.forkedFrom } } : {}),
+    ...(task.forkLinks && task.forkLinks.length ? { forks: task.forkLinks.map((link) => ({ ...link })) } : {}),
     held_prompt: task.heldPrompt ? { ...task.heldPrompt } : null,
     ...(task.mode ? { mode: task.mode } : {}),
     // How Auto chose the mode and workflow (TSK-015).
@@ -1919,6 +1922,46 @@ const continueHandler = ({ db, p, body }) => {
   return summary(task);
 };
 route('POST', `/api/tasks/${ID}/continue`, continueHandler);
+// Fork (SPEC-628 FRK-001): a new task of the same harness continues a copy of this one's
+// conversation from its branch's head; refused as the server refuses.
+route('POST', `/api/tasks/${ID}/fork`, ({ db, p, body }) => {
+  const source = taskOf(db, p[0]);
+  need(sandboxOf(db, source.sandbox_id), 'write');
+  if (source.harness === 'antigravity') fail(422, 'invalid', 'Antigravity cannot fork a conversation at launch: its /fork works only inside a running session');
+  if (['queued', 'chained', 'prepared'].includes(source.status) || (source.status === 'closed' && source.neverRan)) fail(422, 'invalid', `#${source.number} has no conversation to fork yet: start it first`);
+  const message = body && typeof body.message === 'string' ? body.message.trim() : '';
+  if (new TextEncoder().encode(message).length > 65536) fail(422, 'invalid', 'the message must be at most 64 KiB');
+  if (body && body.model) {
+    const owner = harnessForModelPrefix(body.model);
+    if (owner && owner !== source.harness) fail(422, 'invalid', `Choose ${agentOfHarness(owner).cli} for this model. This task uses ${agentOfHarness(source.harness).cli}.`);
+  }
+  const account = db.accounts.find((a) => body && a.id === body.account_id);
+  if (body && body.account_id && !account) fail(429, 'capacity', 'That subscription no longer exists.');
+  if (account && (account.provider || 'anthropic') !== providerOfTask(source)) fail(429, 'capacity', `${account.label} is not ${aName(agentOfProvider(providerOfTask(source)))} subscription, so it cannot take the fork.`);
+  // A test makes the server refuse for a reason the page cannot know (`refuseFork`).
+  if (db.refuseFork) fail(422, 'invalid', db.refuseFork);
+  db.lastFork = { task: source.id, ...body };
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === source.sandbox_id).map((t) => t.number)) + 1;
+  const id = `tsk_${source.sandbox_id.slice(3)}_${number}`;
+  const title = (body && body.title) || `Fork of #${source.number}: ${source.title}`.slice(0, 120);
+  const commit = source.headSha || '9f3c2a1b7d4e5f60718293a4b5c6d7e8f9012345';
+  const task = {
+    id, sandbox_id: source.sandbox_id, number, title, harness: source.harness, harness_choice: 'chosen', status: 'queued', activity: null,
+    branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
+    origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    archived: false, account_label: null, prompt: source.prompt, mode: source.mode || 'goal', delivery: null,
+    stepsList: (source.stepsList || []).map((step, i) => ({ ...step, id: `${id}-s${i + 1}` })),
+    ...taskModelSettings(source.harness, { model: body && body.model, effort: body && body.effort }),
+    forkedFrom: { task_id: source.id, number: source.number, title: source.title, branch: source.branch, commit, session_id: `${source.id}-session`, forked_at: new Date().toISOString() },
+  };
+  source.forkLinks = [...(source.forkLinks || []), { task_id: id, number, title, status: 'queued', commit }];
+  db.tasks.push(task);
+  recount(db);
+  emit(db, { type: 'task.updated', task: summary(source) });
+  later(() => touch(db, task, { status: 'starting' }), 700);
+  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: account ? account.label : `${kindOf(providerOfTask(task))} #1` }), 1800);
+  return json(200, summary(task));
+});
 route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -1948,6 +1991,15 @@ route('DELETE', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.tasks = db.tasks.filter((t) => t.id !== task.id);
   recount(db);
   emit(db, { type: 'task.removed', task_id: task.id });
+  // Its source and forks no longer link to it, as the server publishes them (SPEC-628 FRK-008).
+  for (const other of db.tasks) {
+    const forkedFrom = other.forkedFrom && other.forkedFrom.task_id === task.id;
+    const forked = (other.forkLinks || []).some((link) => link.task_id === task.id);
+    if (!forkedFrom && !forked) continue;
+    if (forkedFrom) other.forkedFrom = { ...other.forkedFrom, task_id: null };
+    if (forked) other.forkLinks = other.forkLinks.filter((link) => link.task_id !== task.id);
+    emit(db, { type: 'task.updated', task: summary(other) });
+  }
   return json(204);
 });
 route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {

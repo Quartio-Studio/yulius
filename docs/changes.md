@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-23
+
+- Fork… in a task's menu and on its details page opens a dialog for what the fork should do differently, its model and its subscription, then opens the new task; each task's page links the other ("Fork of #N", "Forked: #M"). [SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md)
+
 ## 2026-11-22
 
 - Task agents run a project's brokered commands with `command_run` and `command_result`, or `yulius run NAME ARGS` in a shell: the CLI runs in the project's production holder with its key as a temporary file and a fresh home, bounded in time and output, and its output comes back with every agent secret blanked out. Paths, flags Yulius owns, other subcommands, other projects and other tasks are refused and audited. Runs that need a person's approval wait for the next slice. [SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md)
