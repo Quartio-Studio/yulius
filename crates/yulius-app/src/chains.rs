@@ -237,6 +237,7 @@ impl App {
                 if before.status == TaskStatus::Running {
                     let Ok(record) = &record else { return };
                     let Some(hold) = self.hold_live_delivery(&before, record.as_ref()).await else {
+                        tracing::debug!(task = %before.id, "its delivery is not verified settled: successors wait for a later pass");
                         return;
                     };
                     holds.push(hold);

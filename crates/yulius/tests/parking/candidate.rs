@@ -85,8 +85,82 @@ fn archive_keeps_the_owner_when_a_replacement_arm_arrives_at_close() -> TestResu
     })
 }
 
+/// Delete closes a Done session first: an arm arriving at that close keeps the owner, its
+/// session and its records (SPEC-621 FIN-003).
 #[test]
-fn a_replacement_merge_waits_for_the_reader_settling_a_close() -> TestResult {
+fn delete_keeps_the_owner_when_a_replacement_arm_arrives_at_close() -> TestResult {
+    with_idle_candidate(async |data, app, remote, id, _| {
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.deps
+            .store
+            .set_activity(&id, Some(yulius_domain::task::Activity::Done), app.now())
+            .await?;
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "advanced-base".into();
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&owner.owner).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let told = app.watch_prs(&WatchBounds::default()).await;
+        let file = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        let arm = replacement_request(&owner)?;
+        let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = Arc::clone(&reached);
+        yulius_app::race::on(
+            super::Point::CloseDecided,
+            Path::new(id.as_str()),
+            move || {
+                assert!(std::fs::write(&file, &arm).is_ok());
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        let deleted = app.delete_task(&ctx, id.as_str()).await;
+        assert!(
+            reached.load(std::sync::atomic::Ordering::SeqCst),
+            "the delete decided to close: {deleted:?} {told:?}"
+        );
+        assert!(deleted.is_err(), "{deleted:?}");
+        assert!(app.deps.store.task(&id).await?.is_some());
+        assert!(app.deps.store.live_attempt(&id).await?.is_some());
+        Ok(())
+    })
+}
+
+/// Removing the subscription of a live owner whose integration failure still applies moves
+/// the session instead of closing it as Done (SPEC-621 FIN-003).
+#[test]
+fn removing_the_subscription_moves_an_unverified_owner_instead_of_closing_it() -> TestResult {
+    use yulius_domain::task::{Activity, TaskStatus};
+    with_idle_candidate(async |_, app, _, id, _| {
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        let account = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .and_then(|run| run.account_id)
+            .ok_or("the owner's subscription")?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&owner.owner).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.delete_account(&ctx, account.as_str()).await?;
+        let status = super::status_of(app, &id).await.0;
+        assert_ne!(status, Some(TaskStatus::Closed), "{status:?}");
+        Ok(())
+    })
+}
+
+#[test]
+fn a_replacement_merge_is_refused_while_the_reader_settles_a_close() -> TestResult {
     with_idle_candidate(async |_, app, remote, id, head| {
         let ctx = pending_owner_merge(app, remote, &id, &head).await?;
         let (taken, release) = super::pause_watch_or_queue(super::Point::RunEndTaken, &id);
@@ -304,6 +378,7 @@ fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> Te
                 if remote.pull_reads.load(Ordering::SeqCst) > during {
                     return retry;
                 }
+                assert!(retry.is_empty(), "a deferred pass typed {retry:?}");
                 tokio::task::yield_now().await;
             }
         })

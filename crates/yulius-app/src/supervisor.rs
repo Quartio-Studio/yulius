@@ -5781,7 +5781,7 @@ impl App {
             .task(task_id)
             .await?
             .ok_or(AppError::NotFound)?;
-        if task.status == TaskStatus::Parked && achieved.is_none() {
+        if task.status == TaskStatus::Parked {
             return self.close_parked(&task).await;
         }
         if task.status != TaskStatus::Running {
@@ -5802,7 +5802,9 @@ impl App {
                     .await
                     .ok_or_else(|| {
                         AppError::Conflict(
-                            "The task’s delivery changed before it could close.".into(),
+                            "The task’s delivery is still being verified or has just changed; \
+                             try again shortly, or stop the task first."
+                                .into(),
                         )
                     })?,
             ),
@@ -9083,6 +9085,23 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-621 FIN-003: from its Close intent until its run's end has settled, a session
+    /// refuses a new merge arm.
+    #[test]
+    fn a_close_intent_or_a_settling_run_counts_as_closing() {
+        let runtime = super::TaskRuntime::new();
+        assert!(!runtime.closing_or_settling());
+        if let Ok(mut intent) = runtime.intent.lock() {
+            *intent = Some(super::EndIntent::Close);
+        }
+        assert!(runtime.closing_or_settling());
+        if let Ok(mut intent) = runtime.intent.lock() {
+            *intent = None;
+        }
+        runtime.terminal_cleanup.send_replace(1);
+        assert!(runtime.closing_or_settling());
+    }
+
     /// SPEC-613 CID-001: the saved Codex size is two big-endian u16s, columns then rows,
     /// within the host's dimensions; anything else is no record.
     #[test]
