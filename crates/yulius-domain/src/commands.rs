@@ -246,7 +246,7 @@ pub fn sets_flag(arg: &str, flag: &str) -> bool {
     }
     let short = flag.len() == 2 && !flag.starts_with("--");
     if short {
-        let letter = &flag[1..];
+        let letter = flag.strip_prefix('-').unwrap_or(flag);
         return !arg.starts_with("--") && arg[1..].contains(letter);
     }
     let long = flag.trim_start_matches('-');

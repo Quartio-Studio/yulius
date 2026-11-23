@@ -800,10 +800,10 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "command_result".into(),
-            description: "Wait up to 4 minutes for a brokered run your task started (command_run's id) and answer its state; once it ended, its exit_code, stdout and stderr.".into(),
+            description: "Wait up to 4 minutes for a brokered run your task started (command_run's id) and answer its state, command line and time; once it ended, its exit_code, stdout and stderr. Without an id it reads your task's newest run: for a command_run call cut before it answered.".into(),
             input_schema: schema(json!({
-                "id": {"type": "string", "description": "The run's id from command_run"}
-            }), &["id"]),
+                "id": {"type": "string", "description": "The run's id from command_run; none: your task's newest run"}
+            }), &[]),
         },
         ToolDescriptor {
             name: "secrets_list".into(),

@@ -46,13 +46,18 @@ pub fn run(
                 return NOT_RUN;
             }
             Answer::Failed(code, why) => {
-                // The run may go on without this call (review round 1 of slice 2).
+                let _ = writeln!(err, "yulius run: {why}");
+                return code;
+            }
+            Answer::Cut(why) => {
+                // Sent, so a run may have started and goes on without this call (review rounds 1
+                // and 2 of slice 2).
                 let _ = writeln!(
                     err,
                     "yulius run: {why}\nyulius run: a run that started goes on: read it with \
                      `yulius tool command_result '{{}}'` before running it again"
                 );
-                return code;
+                return 3;
             }
             Answer::Text(text) => {
                 let _ = writeln!(
@@ -63,7 +68,15 @@ pub fn run(
                 return 3;
             }
         };
-        let state = view["state"].as_str().unwrap_or_default();
+        // A record Yulius withheld as too large (`{"withheld": …}`) is no run (review round 2).
+        let Some(state) = view["state"].as_str() else {
+            let _ = writeln!(
+                err,
+                "yulius run: Yulius answered no run record (its output may be too large to send \
+                 whole): {view}; read it with `yulius tool command_result '{{}}'`"
+            );
+            return 3;
+        };
         if matches!(state, "waiting" | "approved" | "running") {
             let Some(id) = view["id"].as_str() else {
                 let _ = writeln!(err, "yulius run: a run without an id");
@@ -243,13 +256,21 @@ mod tests {
         let port = listener.local_addr()?.port();
         let server = serve(
             listener,
-            vec![json!({"content": [{"type": "text", "text": "id: run-3\nstate: done"}]})],
+            vec![json!({
+                "content": [{"type": "text", "text": "the answer is too large"}],
+                "structuredContent": {"withheld": "the answer is 300000 bytes, over 262144"},
+            })],
         );
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = run(&mut out, &mut err, "deploy", &[], pace(), &env(port));
         assert_eq!(code, 3);
         assert!(String::from_utf8(err)?.contains("no run record"));
         server.join().map_err(|_| "server")??;
+        // Outside a session nothing is sent: no hint about a run that goes on.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run(&mut out, &mut err, "deploy", &[], pace(), &|_| None);
+        assert_eq!(code, 2);
+        assert!(!String::from_utf8(err)?.contains("goes on"));
         Ok(())
     }
 }

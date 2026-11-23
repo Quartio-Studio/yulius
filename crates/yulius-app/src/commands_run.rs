@@ -52,9 +52,12 @@ fn ended(state: &str) -> bool {
 
 /// What an agent is told of a run.
 fn run_view(run: &CommandRunRecord) -> Value {
+    // Which run it is, also for a call cut before it told the id (review round 2 of slice 2).
     let mut view = json!({
         "id": run.id,
         "command": run.command,
+        "line": run.line,
+        "asked_at": crate::auth::rfc3339(run.created_at),
         "state": run.state,
     });
     if let Some(reason) = &run.reason {
@@ -108,10 +111,9 @@ impl App {
             .command_named(&sandbox.id, &call.name)
             .await?
         else {
-            let shown: String = call.name.chars().take(40).collect();
-            return refuse(format!(
-                "no command {shown:?} in this project (commands_list lists them)"
-            ))
+            return refuse(
+                "no command of that name in this project (commands_list lists them)".into(),
+            )
             .await;
         };
         let def: CommandDefinition =
@@ -191,6 +193,7 @@ impl App {
             let go = matches!(inserted, Ok(true));
             let _ = stored_tx.send(inserted);
             if go {
+                crate::race::reached(crate::race::Point::CommandRunStored, &app.config.data_dir);
                 app.run_command_to_its_end(place, run).await;
             }
         });
@@ -267,7 +270,6 @@ impl App {
         format!("run-{hex}")
     }
 
-    /// Runs `run` on its own task, so a cut call never leaves it half done (BRK-009..BRK-012).
     /// Runs a stored `running` run to its end, then wakes the calls waiting on it and the open
     /// pages (BRK-009..BRK-012).
     pub(crate) async fn run_command_to_its_end(
@@ -425,7 +427,8 @@ impl App {
         let shown = self.redact_for_sandbox(&sandbox.id, &args.join(" ")).await;
         let detail = json!({
             "task": format!("#{task_number}"),
-            "command": cut(name.to_owned(), 40),
+            // Redacted, then cut, as the arguments (review round 2 of slice 2).
+            "command": cut(self.redact_for_sandbox(&sandbox.id, name).await, 40),
             "args": cut(shown, 2000),
             "reason": reason,
         });

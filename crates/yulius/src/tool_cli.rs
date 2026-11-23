@@ -89,6 +89,10 @@ pub fn run(
             let _ = writeln!(out, "yulius tool: {why}");
             code
         }
+        Answer::Cut(why) => {
+            let _ = writeln!(out, "yulius tool: {why}");
+            3
+        }
     }
 }
 
@@ -101,6 +105,8 @@ pub enum Answer {
     ToolError(String),
     /// The tool's record, when the call asked for it and the answer carried it.
     Record(Value),
+    /// The call was sent and may have taken effect, but its answer was cut (exit 3).
+    Cut(String),
     /// No answer: the exit code (2 a usage, environment or token error, 1 an MCP error, 3 an
     /// outage or a cut call) and why.
     Failed(i32, String),
@@ -149,13 +155,10 @@ pub fn call(
                 );
             }
             Err(err) => {
-                return Answer::Failed(
-                    3,
-                    format!(
-                        "the connection to Yulius broke while {name} ran ({err}): it may have \
-                         taken effect. Read its state before calling it again."
-                    ),
-                );
+                return Answer::Cut(format!(
+                    "the connection to Yulius broke while {name} ran ({err}): it may have taken \
+                     effect. Read its state before calling it again."
+                ));
             }
         }
     };

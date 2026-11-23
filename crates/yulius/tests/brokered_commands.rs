@@ -1100,7 +1100,6 @@ async fn at_most_four_runs_of_a_project_at_once() -> TestResult {
         )
     };
     let fifth = async {
-        let tid = yulius_domain::ids::TaskId::parse("t1")?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             use yulius_app::ports::store_ext::CommandStore as _;
@@ -1113,7 +1112,6 @@ async fn at_most_four_runs_of_a_project_at_once() -> TestResult {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        let _ = tid;
         let refused = agent_tool(
             &r.w.h,
             TOKEN_S1,
@@ -1219,5 +1217,82 @@ async fn a_contained_run_joins_the_production_holder_without_docker() -> TestRes
     assert_eq!(join.docker_dir, None);
     assert!(join.extra_binds.is_empty());
     assert_eq!(join.hostname, "s1-prod");
+    Ok(())
+}
+
+/// BRK-003 (review round 2 of slice 2): a run reads its command again before it runs, and runs
+/// nothing when the command was changed or removed since it was asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_changed_or_removed_before_its_run_runs_nothing() -> TestResult {
+    let r = runs_world(json!({})).await?;
+    let sid = yulius_domain::ids::SandboxId::parse("s1")?;
+    let path = format!(
+        "/api/sandboxes/s1/commands/{}",
+        r.w.h
+            .store
+            .command_named(&sid, "deploy")
+            .await?
+            .ok_or("deploy")?
+            .id
+    );
+    for (change, says) in [("change", "changed since"), ("remove", "was removed")] {
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel::<()>();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::CommandRunStored,
+            &r.w.h.app.config.data_dir,
+            move || {
+                let _ = reached_tx.send(());
+                let _ = go_rx.recv_timeout(std::time::Duration::from_secs(60));
+            },
+        );
+        let run = agent_tool(
+            &r.w.h,
+            TOKEN_S1,
+            "command_run",
+            json!({"name": "deploy", "args": ["status"]}),
+        );
+        let meanwhile = async {
+            tokio::task::spawn_blocking(move || {
+                reached_rx.recv_timeout(std::time::Duration::from_secs(60))
+            })
+            .await??;
+            // The run is stored and has not read its command yet.
+            let current = listed_command(&r.w, "deploy").await?;
+            let r2 = if change == "change" {
+                let mut body = current.clone();
+                for key in [
+                    "id",
+                    "secret_ready",
+                    "version",
+                    "created_by",
+                    "created_at",
+                    "updated_by",
+                    "updated_at",
+                    "can_edit",
+                ] {
+                    if let Some(obj) = body.as_object_mut() {
+                        obj.remove(key);
+                    }
+                }
+                body["binary"] = json!("/usr/bin/true");
+                call(&r.w.h.router, Method::PUT, &path, Some(body), &r.w.alice).await?
+            } else {
+                call(&r.w.h.router, Method::DELETE, &path, None, &r.w.alice).await?
+            };
+            assert!(r2.status.is_success(), "{}", r2.body);
+            let _ = go_tx.send(());
+            Ok::<_, Error>(())
+        };
+        let (ran, changed) = tokio::join!(run, meanwhile);
+        changed?;
+        let ran = ran?.map_err(|e| format!("refused: {e}"))?;
+        assert_eq!(ran["state"], "failed", "{ran}");
+        assert!(
+            ran["reason"].as_str().is_some_and(|r| r.contains(says)),
+            "{ran}"
+        );
+        assert!(!r.marks.join("ran").exists(), "the run ran");
+    }
     Ok(())
 }
