@@ -244,8 +244,18 @@ fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> Te
             "candidate verification overtook the slot reservation"
         );
         assert!(pass?.is_empty());
-        let retry = app.watch_prs(&WatchBounds::default()).await;
-        assert!(remote.pull_reads.load(Ordering::SeqCst) > during);
+        // Stopping the peer wakes the queue, whose capacity check briefly holds the owner's
+        // delivery guard; a pass meeting it defers the hosted read to the next pass.
+        let retry = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let retry = app.watch_prs(&WatchBounds::default()).await;
+                if remote.pull_reads.load(Ordering::SeqCst) > during {
+                    return retry;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
         assert_eq!(retry.len(), 1, "{retry:?}");
         assert_eq!(retry[0].0, id);
         assert!(
