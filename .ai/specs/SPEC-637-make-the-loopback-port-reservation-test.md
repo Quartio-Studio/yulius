@@ -73,9 +73,9 @@ it is.
 
 - [x] Spec the loopback probe flake with its root cause
 - [x] Reproduce the failure beside a competing loopback port holder
-- [ ] Probe decision takes an injected binder, unit-tested per address family
-- [ ] Real-socket test checks only the held direction, proven under stress
-- [ ] ADR, changes entry and spec Evidence
+- [x] Probe decision takes an injected binder, unit-tested per address family
+- [x] Real-socket test checks only the held direction, proven under stress
+- [x] ADR, changes entry and spec Evidence
 - [ ] Independent review approves the exact head
 
 ## Acceptance criteria
@@ -103,4 +103,38 @@ it is.
   and would test the kernel, not our rule. Retries or a sleep before the second check would only lower the rate.
 - Keep the real-socket test for the held direction: it proves the real binder reaches the real
   sockets, which a fake cannot, and no other process can free a port the test holds.
-- Recorded as an ADR: a test of a host-wide resource asserts only what the test itself holds.
+- Recorded as [ADR-0469](../../docs/decisions/0469-a-test-of-a-host-wide-resource-asserts-only-what-it-holds.md): a test of a host-wide resource asserts only what the test itself holds.
+
+## Evidence
+
+Host: this sandbox, `ip_local_port_range` 32768-60999, 128 CPUs. Logs in the worktree's ignored
+`target/issue-1620/`.
+
+- Reproduction on dev b1b50218f (before the fix): `target/issue-1620/repro.sh old
+  'test(a_loopback_listener_keeps_a_port_reserved)' 200` (nextest `--stress-count 200
+  --no-fail-fast`). Failed iterations, all at `session.rs:530`: alone 1/200, beside the `[::1]`
+  holder 139/200, beside the `127.0.0.1` churn 25/200, alone again afterwards 1/200. An earlier
+  run right after killing a 20,000-port holder failed 200/200 while that process was still
+  closing its sockets, a further sign of the same cause (not counted).
+- After the fix: `target/issue-1620/repro.sh new
+  'test(/wiring::session::tests::(a_loopback|a_range|a_busy|a_host_without|another_ipv6|any_ipv4)/)' 200`
+  (the 7 probe tests per iteration): alone 200/200 passed, beside the `[::1]` holder 200/200,
+  beside the `127.0.0.1` churn 200/200, afterwards 200/200.
+- `scripts/cargo nextest run -p yulius --lib`: 702 tests run, 702 passed.
+- Mutations by hand in `loopback_ports_idle_with` (each restored with `git checkout` and
+  `touch`), failing tests per mutation:
+  - any IPv6 error counts as free: `another_ipv6_failure_keeps_the_range_reserved`,
+    `a_busy_ipv6_port_keeps_the_range_reserved`, `a_loopback_listener_keeps_a_port_reserved`;
+  - a missing IPv6 loopback counts as busy: `a_host_without_ipv6_loopback_decides_on_ipv4`;
+  - IPv4 ignored: `a_busy_ipv4_port_keeps_the_range_reserved`,
+    `any_ipv4_failure_keeps_the_range_reserved`, `a_host_without_ipv6_loopback_decides_on_ipv4`,
+    `a_loopback_listener_keeps_a_port_reserved`;
+  - IPv6 ignored: `a_busy_ipv6_port_keeps_the_range_reserved`,
+    `a_range_free_on_both_loopback_addresses_is_idle`,
+    `another_ipv6_failure_keeps_the_range_reserved`, `a_loopback_listener_keeps_a_port_reserved`;
+  - only the range's first port checked: `a_busy_ipv4_port_keeps_the_range_reserved`,
+    `a_busy_ipv6_port_keeps_the_range_reserved`, `a_host_without_ipv6_loopback_decides_on_ipv4`,
+    `a_range_free_on_both_loopback_addresses_is_idle`.
+- Not tested: the real binder's release (that it drops its listener) on real sockets, for the
+  reason in ADR-0469; a host without IPv6 loopback on real sockets (this host has `[::1]`; the
+  fake host covers both error kinds).
