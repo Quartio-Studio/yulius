@@ -88,11 +88,11 @@ either: the merge needs the approval of the reviewed head first, which is the st
 ## Plan
 
 - [x] Spec with the failing paths of #377's round 2 named
-- [ ] Regression tests replay the three failing hook sequences
-- [ ] A reviewer's stop ends the round its start never linked
-- [ ] A reviewer's completed notification ends its round when its stop was lost
-- [ ] A round its pull request merged without a report reads unreported
-- [ ] Decision, architecture and changes entry
+- [x] Regression tests replay the three failing hook sequences
+- [x] A reviewer's stop ends the round its start never linked
+- [x] A reviewer's completed notification ends its round when its stop was lost
+- [x] A round its pull request merged without a report reads unreported
+- [x] Decision, architecture and changes entry
 - [ ] Independent review approved
 
 ## Acceptance criteria
@@ -127,3 +127,29 @@ either: the merge needs the approval of the reviewed head first, which is the st
   end would count it as reported in the review numbers, which already count it as a round
   without a report.
 - ADR-0467 records the first two.
+
+## Evidence
+
+At the branch head after `c1622cf84` (from dev `b1b50218f`):
+
+- Regression tests failed before the fix (`5ccf2453e`, the fix stubbed out):
+  - `review_rounds::a_stop_ends_the_round_its_start_came_before`: `subagent_id` was `None`.
+  - `review_rounds::a_reviewers_notification_ends_the_round_its_lost_stop_left_open`: `ended_at`
+    was `None`.
+  - `review_rounds::a_round_its_merge_left_open_carries_the_merge`: `merged_at` was `Null`.
+  - `mcp_text::tests::delivery_status_reads_a_round_its_merge_left_open_as_unreported`: no
+    "unreported" line.
+- After the fix:
+  - `scripts/cargo nextest run -p yulius --no-fail-fast`: 3456 passed, 24 skipped. This includes
+    the whole `yulius::main` binary and its 39 `review_rounds` tests.
+  - `-p yulius-harness -p yulius-store -p yulius-contracts`: 503 passed.
+  - `-p yulius-app --lib`: 724 passed.
+  - `cargo fmt --all --check` and `scripts/cargo clippy` with `-D warnings` on the touched crates
+    are clean. `python3 scripts/repository_tests.py` passes.
+- Real records: a throwaway ignored test replayed task #615's real Claude Code transcript through
+  `claude::observe_line` and was removed afterwards. It gave exactly two `SubagentReported` for
+  the reviewer `ab61345c6b2894101`: request changes at 12:16:08 and approve at 12:39:36. These are
+  #615's round 1 and its resumed round 2, as its delivery recorded them.
+- Not read: quartio-v2 #377's own hook records and transcript (not reachable from this project).
+  Path 1 (lost stop) is the likeliest for it but unconfirmed; both paths are fixed and tested.
+
