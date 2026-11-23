@@ -572,6 +572,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       case 'digest.ready': emit('digest', event.digest); break;
       case 'handoffs.updated': emit('handoffs', event.task_id); break;
       case 'commands.updated': emit('commands', event); break;
+      case 'watches.updated': emit('watches', event); break;
       case 'connections.updated': emit('connections', event); break;
       case 'note.updated': emit('note', event); break;
       case 'note.presence': emit('note-presence', event); break;

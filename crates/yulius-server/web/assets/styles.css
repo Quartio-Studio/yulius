@@ -3197,3 +3197,8 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ti-wait-item.resolved { opacity: 0.82; }
 .ti-wait-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ti-wait-link { margin-left: auto; }
+
+/* Watches page (SPEC-630): a watch's last output and error tail, folded. */
+.watch-output { margin-top: 4px; }
+.watch-output > summary { cursor: pointer; color: var(--muted); font-size: var(--fs-sm); }
+.watch-output > pre { max-height: 14em; overflow: auto; margin-top: 4px; padding: 6px 8px; border-radius: var(--radius); background: var(--surface); color: var(--text); }

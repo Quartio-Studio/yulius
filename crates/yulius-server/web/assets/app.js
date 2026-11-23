@@ -31,6 +31,7 @@ import { mountAutomationEditor } from './pages/automationedit.js';
 import { mountWorkflowsPage } from './pages/workflows.js';
 import { mountSkillsPage } from './pages/skills.js';
 import { mountAutomationsPage } from './pages/automations.js';
+import { mountWatchesPage } from './pages/watches.js';
 import { mountSessionsPage, mountSessionView } from './pages/sessions.js';
 import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
@@ -63,6 +64,7 @@ const SANDBOX_PAGES = {
   workflows: (ctx, sandbox) => mountWorkflowsPage(ctx, sandbox),
   skills: (ctx, sandbox, route) => mountSkillsPage(ctx, sandbox, route),
   automations: (ctx, sandbox) => mountAutomationsPage(ctx, sandbox),
+  watches: (ctx, sandbox) => mountWatchesPage(ctx, sandbox),
   mcp: (ctx, sandbox, route) => mountMcpPage(ctx, sandbox, route),
   secrets: (ctx, sandbox, route) => mountSecretsPage(ctx, sandbox, route),
   ci: (ctx, sandbox, route) => mountCiCdPage(ctx, sandbox, route),
