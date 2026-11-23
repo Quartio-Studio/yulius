@@ -1,6 +1,6 @@
 ---
 yulius-task: fdcbd029-1d40-4d9d-9248-e5e26d3a7109
-status: in-progress
+status: done
 ---
 
 # SPEC-621 Finish SPEC-558 on Claude Code: parked Codex tasks
@@ -39,8 +39,8 @@ Open on dev: steps 50 to 53 of SPEC-558. #540 left prepared patches in its hando
 - [x] Review and deliver live-owner verification for dependents and closes
 - [x] Reproduce a live owner shown Done while its integration candidate is pending
 - [x] Render verified live integration status in the terminal, sidebar and Task Info
-- [ ] Review and deliver the live integration status
-- [ ] Close SPEC-558 with evidence and report the main CI rerun
+- [x] Review and deliver the live integration status
+- [x] Close SPEC-558 with evidence and report the main CI rerun
 
 ## Acceptance criteria
 
@@ -81,3 +81,6 @@ Each slice starts with a regression that fails on dev: the cockpit `task_screen`
 - Step 51 review round 1: the views no longer reuse capacity's predicate (it reads pending during each re-read and after a failed one); `local_candidate_shown` reads the watch's last answered observation per failed decision, the watch publishes whenever it changes, `task_get` names the re-check in `waits_for`, and the web settles the failure before failing checks and never on a parked row. The Rust case now also reads the summary with the re-read held at `CandidateObservationRead` and after a failed re-read, and checks a parked owner omits the field; the counting case adds a red PR and a parked row. Hand mutations, each restored: the views on capacity's predicate, the `live` guard, the publish on a changed answer, `asIdleRun` keeping the field and failing checks first each failed a test. A new failed decision over an older cleared one is covered by comparing the decision's span.
 - After that round: whole `yulius::main` 2,735 passed, libs 1,428, workspace Clippy, `scripts/dev quick` and the full e2e suite (1,346 passed, 1 skipped) passed.
 - Step 51 review round 2: the Rust case also checks that an unchanged answer publishes nothing and that a second decision (its span rewritten as `a_singleton_decided_on_a_new_base_during_the_host_probe_keeps_the_owner_live` does) reads pending at once and is published by the next pass. Hand mutations, each restored: comparing only the branch in `local_candidate_shown` and publishing on every pass each failed it. The web's two unreachable `candidate_pending` conditions after the early return were dropped.
+- Step 51 review round 3 (Opus 5.5) approved `4dfd44ecb` with no findings above a nit.
+- Close-out on 23 November: `git merge-base --is-ancestor 8855f295b origin/main` fails (main at `aabf37091`); `ci_status` of `21d8a791-8380-4290-899a-b4243928c5fa` shows test (2/2) failing with `No space left on device` while `cargo nextest list` extracted `tests.tar.zst` into `/tmp/nextest-archive-*`. A rerun of that commit would fail the same way, so it was not rerun; it needs the next promotion. SPEC-558 is done.
+- Not tested here: a live Codex session (the goal continuation was proven with the fake Codex agent and real hooks, no paid run), and quartio-v2's historical tasks themselves (#325, #331, #517 were reproduced as fixtures).
