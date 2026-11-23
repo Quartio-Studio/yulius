@@ -153,7 +153,7 @@ impl App {
             return Ok("That task is gone.".into());
         };
         let text = message.text.trim();
-        if text.is_empty() {
+        if text.is_empty() && sent.command_run.is_none() {
             return Ok(IntakeAnswer {
                 text: format!(
                     "A reply to #{} reaches it as text: write what to tell it.",

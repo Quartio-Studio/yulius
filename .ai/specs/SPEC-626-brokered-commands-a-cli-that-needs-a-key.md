@@ -1,6 +1,6 @@
 ---
 yulius-task: c6b374d3-f5b1-4772-885e-a6a0365b1fb4
-status: in-progress
+status: done
 ---
 
 # SPEC-626. Brokered commands: a CLI that needs a key runs outside the sandbox
@@ -79,7 +79,9 @@ definition says. No answer within the stated time is a no. The owner approved th
   - `slashes`: whether arguments like `owner/repo` pass.
   - `env`: variable name to value.
 
-  Each list is bounded (64 entries, 4096 bytes each) and the stored definition to 16 KiB. Flags
+  Each list is bounded (64 entries, 4096 bytes each) and the stored definition to 16 KiB. A
+  `fixed` entry or env value is not empty, has no space around it and no line break or tab, so it
+  reads and edits as what it is. Flags
   are one or two dashes, then a letter or digit and letters, digits, `_`, `.`, `:` or `-`;
   subcommands are such a word, not starting with a dash. No text of a definition holds a character people
   cannot see. Env names match `[A-Za-z_][A-Za-z0-9_]*` and may not be `PATH`, `HOME`, `TMPDIR`,
@@ -181,8 +183,11 @@ definition says. No answer within the stated time is a no. The owner approved th
   `approval_minutes`). The task is flagged Needs you with the full command line (binary, fixed
   arguments with placeholders unexpanded, then the agent's arguments), the minutes, and how to
   answer. The flag reaches the sidebar's Needs you group and the person's Telegram notices as
-  every flag does. The request replaces an open request of the agent's, and one run of a task
-  waits for approval at a time. `command_run` waits up to 240 s for the answer and the run, then answers
+  every flag does. A notice that cannot show the line exactly (over 380 characters, or with a
+  backtick, which Telegram notices drop) says it is approved on the Secrets page, where it is
+  exact. The request replaces an open request of the agent's, and one run of a task waits for
+  approval at a time. A message typed into the task ends its request as it ends any request; the
+  run still waits on the Secrets page until it is answered or expires. `command_run` waits up to 240 s for the answer and the run, then answers
   `waiting` or `running` with the run's id. `command_result {id}` waits again, up to 240 s. Only
   the task that started a run reads it.
 - **BRK-015** People who manage the project's secrets (`Action::Configure`) answer, from a browser
@@ -192,8 +197,9 @@ definition says. No answer within the stated time is a no. The owner approved th
   agent's `needs_you` cannot write) and the notice keeps the run's id, so a reply answers that run
   and no other, whatever was asked at the same moment. Any other text replied to it, a reply
   from a person who may not answer, and one to a run that no longer waits answer nothing and
-  reach no task; each says why. A run whose command line the notice could not show whole (over
-  380 characters) is approved only on the Secrets page; a reply may reject it. An answer is one
+  reach no task; each says why. A run whose command line the notice could not show exactly (over
+  380 characters, or with a backtick) is approved only on the Secrets page; a reply may reject
+  it. An answer is one
   conditional write from `waiting` that holds only before the deadline (an approval also only
   while fewer than 4 runs of the project run). Two answers never both act, and an answer after
   the deadline is refused. Each answer is audited `command.approve` or `command.reject`, and it
@@ -215,13 +221,13 @@ definition says. No answer within the stated time is a no. The owner approved th
 - [x] Run a command in the production holder with a temporary key file and a fresh home
 - [x] Bound a run's time and output and blank every stored secret from it
 - [x] command_run and command_result for task agents, audited, and the yulius run CLI
-- [ ] Independent review of the run slice, findings fixed test-first
+- [x] Independent review of the run slice, findings fixed test-first
 - [x] Ask a person to approve a run in Needs you with the full command line
 - [x] Approve or reject in the browser or by a Telegram reply; no answer in time is a no
-- [ ] Independent review of the approval slice, findings fixed test-first
-- [ ] Commands section on the Secrets page with approvals, end-to-end tested
-- [ ] Product, architecture, API, operations and security docs and the changes log
-- [ ] Independent security-minded review of the page and docs slice, findings fixed
+- [x] Independent review of the approval slice, findings fixed test-first
+- [x] Commands section on the Secrets page with approvals, end-to-end tested
+- [x] Product, architecture, API, operations and security docs and the changes log
+- [x] Independent security-minded review of the page and docs slice, findings fixed
 
 ## Acceptance criteria
 
@@ -290,3 +296,57 @@ definition says. No answer within the stated time is a no. The owner approved th
   key goes, the definition does.
 - **Four pull requests**, each leaving the project working: definitions, running, approval, and
   then the page and docs.
+
+## Evidence
+
+Delivered in four pull requests, each reviewed in a fresh session (`yulius-reviewer`) until it
+approved the exact head, and merged on green Yulius CI: #1701 (definitions, rounds 1-2), #1708
+(the harness test #1701 broke on dev), #1715 (running, rounds 1-3), #1721 (approvals, rounds
+1-2), and this one (the page and docs).
+
+- **Tests** (all pass at each head):
+  - `crates/yulius/tests/brokered_commands.rs`: 29 integration tests with the real detached
+    process host. They cover definitions, permissions, secret binding with the manager and
+    two-factor, the key never in the output, row, audit or sandbox and its files gone, refusals,
+    other projects and tasks, the time, file and output bounds, the cap of 4, link and FIFO swaps,
+    `yulius run` against the real `/mcp`, the contained plan in the production holder without
+    Docker, a restart with a live run, a command changed or removed before its run, approval,
+    rejection, expiry, a late answer, `send`, one waiting run per task, who may answer and where,
+    the agent's wait and its own request.
+  - `crates/yulius/tests/telegram.rs`: `a_reply_to_a_runs_notice_answers_that_run` and
+    `a_runs_notice_takes_only_an_answer_its_reader_may_give`, through a fake bot.
+  - `cockpit::the_superagent_lists_its_projects_brokered_commands`; unit tests in
+    `yulius_domain::commands` (15), `ci::brokered`, `run_cli`, `tool_cli` and `commands`.
+  - `e2e/tests/commands.e2e.ts`: 6 tests against the mock (a click or Enter meant for one run
+    never answers another, a reader sees no answer, a stale edit is refused); `secrets.e2e.ts`
+    still passes (33).
+  - Before each delivery: `scripts/cargo nextest run` of every touched crate. Slice 3's last
+    full run was `-p yulius`, 3425 passed; `forks::` needed `cargo build -p fake-agent` first,
+    as a stale binary times out.
+- **Hand mutations**, each undone after its test failed:
+  - Slice 1: the production-secret refusal, `fresh_to_widen`, `require_manage_agent`, the
+    secret-id filter, the version check.
+  - Slice 2: stdout redaction, the path refusal, removing the run's files, an extra env var,
+    reading output by path, the cap, `CdStage::Dev`, keeping Docker, a text answer to
+    `yulius run`, the definition-version check before a run.
+  - Slice 3: the deadline in the approve write, the task-waits check in the transaction, the run
+    id in the notice, the cut-line refusal, ending any request, Configure → View.
+  - Slice 4: the backtick refusal; the page's settle guard on Approve and Reject; the focus
+    target when a run's control leaves the list.
+- **Checks**: `scripts/dev quick`, clippy `-D warnings` on the touched crates and the workspace
+  doc build pass. Vidoc is switched off for this project: `security` ends skipped, which is not
+  passed.
+- **Real check**: through the real session wrapper, the built `yulius` answers `yulius run`
+  itself. Without a session it exits 2; with an unreachable server it exits 3; `--help` reaches
+  the command (task #612's #1718 added `run` to the wrapper first).
+- **Not tested here**:
+  - A run in a real production holder on a host with sandbox isolation. The tests record the
+    containment plan with fake holders, and run the process uncontained.
+  - A real Telegram bot; the tests use a fake one.
+  - The background tick's call of `expire_due_command_runs`: the harness starts no loop, and the
+    function is tested through the run's timer and the start.
+- **Left as it is, and why**:
+  - A look-alike non-ASCII letter in an argument passes BRK-006. People are told to read the
+    line on the Secrets page (operations, security notes).
+  - A message typed into a task ends a run's request while the run waits (BRK-014).
+

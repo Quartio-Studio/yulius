@@ -29,6 +29,7 @@ disable`); CI sets it.
 | File | Flow |
 | --- | --- |
 | `attention.e2e.ts` | Task flags explain what needs attention, where to respond and who can use the terminal. |
+| `commands.e2e.ts` | The Secrets page's Commands tab: administrators add, edit and remove brokered commands; a waiting run is approved or rejected, and one asked meanwhile shows at once; a member only reads. |
 | `content-security-policy.e2e.ts` | The page receives its policy. The harness detects blocked scripts, images and evaluation, and exercises permitted form submission and recording playback. |
 | `digest.e2e.ts` | Administrator digest settings, notification delivery across tabs, offline arrival, dismissal and navigation to the digest. |
 | `initial-load.e2e.ts` | Consecutive document and script network interruptions share one recovery deadline. Ordinary failures, persistent interruption and later navigation surface their errors. |
