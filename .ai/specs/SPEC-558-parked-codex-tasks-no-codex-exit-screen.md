@@ -1,6 +1,6 @@
 ---
 yulius-task: 09d643c4-9df9-4abe-9c9c-d0cfe7fdf205
-status: in-progress
+status: done
 ---
 
 # SPEC-558 Parked terminals and unfinished Codex goals
@@ -72,7 +72,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Unpack CI test shards on disk within the one-GiB temporary-filesystem cap
 - [x] Restore the reviewed session-capacity slice after the CI repair
 - [x] Verify live owners when constructing and releasing dependent tasks or closing their sessions
-- [ ] Render verified live integration status in the terminal, sidebar and Task Info
+- [x] Render verified live integration status in the terminal, sidebar and Task Info
 - [x] Deliver bounded Codex goal continuation to dev
 - [x] Recover screens from tasks parked before the upgrade
 
@@ -626,6 +626,8 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 - Repeating the five missed blocker mutations with the strengthened branch-change fixture reported `5 mutants tested in 4m: 5 caught`. The final nextest scope passed all 106 parking, PR-watch and eligibility tests. Repository contracts and Rust formatting passed. Vidoc was disabled. The historical Quartio page and board require a platform release to check live. This delivery used synthetic PRs and real local Git repositories.
 
 ## Delivery slices
+
+All 53 steps are on dev (22 to 23 November 2026, task #605 / SPEC-621): pre-upgrade screens #1697, bounded Codex goal continuation on its own red Yulius CI #1700 and #1709 (ADR-0464), live-owner verification for dependents and closes #1720, live integration status in the views #1723. The CI tmpfs repair #1679 is on dev; main (`aabf37091`) predates it, so main's failed run `21d8a791-8380-4290-899a-b4243928c5fa` (`No space left on device` extracting `tests.tar.zst` into `/tmp`) needs the next promotion, not a rerun.
 
 Task #605 (SPEC-621) took over steps 50 to 53 on 22 November. It delivered the pre-upgrade screen recovery from #540's prepared patch: the cockpit `task_screen` fixture reproduced the #517 exit block on dev and passes with it.
 PR #1616 had meanwhile delivered bounded goal continuation for open steps and unfinished specs to every harness, so #540's goal patch was not ported. The #325 fixture showed what was left: with steps 6 and 7 finished, a Codex goal whose pull request was red ended its turn. The Stop gate now continues it when its own latest Yulius CI run failed at the worktree's head ([ADR-0464](../../docs/decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)). That supersedes this spec's earlier decision to continue when the Stop lookup cannot finish: an action may not rest on a display read (ADR-0447).

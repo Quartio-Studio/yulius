@@ -190,6 +190,127 @@ fn a_replacement_merge_is_refused_while_the_reader_settles_a_close() -> TestResu
     })
 }
 
+/// The list, Home and the task's own views show a live owner whose achieved goal still has a
+/// recorded integration failure as waiting on Yulius, not Done, until the watch clears it
+/// (SPEC-621 FIN-004).
+#[test]
+fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResult {
+    use yulius_domain::task::{Activity, TaskStatus};
+    with_idle_candidate(async |data, app, remote, id, _| {
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let summary = app.task_summary(&owner).await?;
+        assert!(summary.candidate_pending, "{summary:?}");
+        let value = serde_json::to_value(&summary)?;
+        assert_eq!(value["candidate_pending"], true, "{value}");
+        let caller = super::superagent(&owner.sandbox_id, &owner.owner, "admin");
+        let brief = app
+            .tool_task_get(&caller, &json!({"task_id": id.as_str()}))
+            .await?;
+        assert_eq!(brief["shows"], "working", "{brief}");
+        assert!(
+            brief["waits_for"]
+                .to_string()
+                .contains("failed integration candidate"),
+            "{brief}"
+        );
+        // A parked owner has no session to settle it in: the field is the live run's only.
+        let now = app.now();
+        app.deps
+            .store
+            .transition_task(&id, None, TaskStatus::Parked, Some(Activity::Done), now)
+            .await?;
+        let parked = app.deps.store.task(&id).await?.ok_or("owner")?;
+        assert!(!app.task_summary(&parked).await?.candidate_pending);
+        app.deps
+            .store
+            .transition_task(&id, None, TaskStatus::Running, Some(Activity::Done), now)
+            .await?;
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "advanced-base".into();
+        let mut events = app.events.subscribe();
+        let told = app.watch_prs(&WatchBounds::default()).await;
+        // The sidebar and an open terminal hear the cleared failure from the watch itself.
+        let mut published = None;
+        while let Ok(envelope) = events.try_recv() {
+            if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event
+                && task.id == id.as_str()
+            {
+                published = Some(task.candidate_pending);
+            }
+        }
+        assert_eq!(published, Some(false), "{told:?}");
+        let summary = app.task_summary(&owner).await?;
+        assert!(!summary.candidate_pending, "{summary:?} {told:?}");
+        let value = serde_json::to_value(&summary)?;
+        assert!(value.get("candidate_pending").is_none(), "{value}");
+        let brief = app
+            .tool_task_get(&caller, &json!({"task_id": id.as_str()}))
+            .await?;
+        assert_eq!(brief["shows"], "done", "{brief}");
+        // The next pass re-reads the pull request; until it answers, the views keep its last
+        // answer, and a read that fails keeps it too.
+        let (reading, release) =
+            super::pause_watch_or_queue(super::Point::CandidateObservationRead, &id);
+        let pass = {
+            let app = app.clone();
+            tokio::spawn(async move { app.watch_prs(&WatchBounds::default()).await })
+        };
+        tokio::time::timeout(Duration::from_secs(10), reading.notified()).await?;
+        assert!(!app.task_summary(&owner).await?.candidate_pending);
+        release.notify_one();
+        pass.await?;
+        let pulls = std::mem::take(&mut *remote.pulls.lock().map_err(|_| "PR")?);
+        let failed = app.watch_prs(&WatchBounds::default()).await;
+        assert!(
+            !app.task_summary(&owner).await?.candidate_pending,
+            "{failed:?}"
+        );
+        *remote.pulls.lock().map_err(|_| "PR")? = pulls;
+        // The same answer again is no news.
+        let task_updates = |events: &mut tokio::sync::broadcast::Receiver<_>| {
+            let mut seen = Vec::new();
+            while let Ok(envelope) = events.try_recv() {
+                let envelope: yulius_app::events::Envelope = envelope;
+                if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event
+                    && task.id == id.as_str()
+                {
+                    seen.push(task.candidate_pending);
+                }
+            }
+            seen
+        };
+        let mut events = app.events.subscribe();
+        let again = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(task_updates(&mut events), Vec::<bool>::new(), "{again:?}");
+        // A second decision, tested on the moved base, fails too: the cleared answer was the
+        // first decision's, so the owner waits again at once and the watch says so.
+        let span = app
+            .deps
+            .store
+            .latest_merge_wait(&id)
+            .await?
+            .ok_or("candidate")?;
+        let mut decision: serde_json::Value =
+            serde_json::from_str(span.detail.as_deref().ok_or("receipt")?)?;
+        decision["singleton"]["base"] = json!("advanced-base");
+        let saved = decision.to_string();
+        let changed = rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+            "UPDATE spans SET detail=?1 WHERE key=?2",
+            [saved.as_str(), span.key.as_str()],
+        )?;
+        assert_eq!(changed, 1);
+        assert!(app.task_summary(&owner).await?.candidate_pending);
+        let mut events = app.events.subscribe();
+        let second = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(task_updates(&mut events), vec![true], "{second:?}");
+        Ok(())
+    })
+}
+
 /// A task chained after a live owner whose achieved goal has a recorded integration failure
 /// starts only once the watch has observed that failure no longer applies (SPEC-621 FIN-003).
 #[test]

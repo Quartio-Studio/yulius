@@ -1196,7 +1196,8 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
       current = { ...current, ...next, account_id: next.account_id, needs_you_notice: next.needs_you_notice, staging_wait: next.staging_wait, staging_outcome: next.staging_outcome,
-        parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr, forked_from: next.forked_from, forks: next.forks };
+        parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr, forked_from: next.forked_from, forks: next.forks,
+        candidate_pending: next.candidate_pending };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
       // else queued changes the request: read it again too.
@@ -1239,7 +1240,7 @@ function pickSummary(detail) {
   // The server omits the subscription ID when a task is no longer attached.
   // Fork links too, absent when empty, so a deleted fork or source leaves no stale chip (SPEC-628).
   const out = { account_id: detail.account_id, staging_wait: detail.staging_wait, staging_outcome: detail.staging_outcome,
-    forked_from: detail.forked_from, forks: detail.forks };
+    forked_from: detail.forked_from, forks: detail.forks, candidate_pending: detail.candidate_pending };
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
 }

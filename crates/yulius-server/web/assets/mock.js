@@ -581,6 +581,8 @@ function summary(task) {
     // The idle agent waits in `yulius wait` (SPEC-085 STT-002).
     yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
     merge_armed: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.merge_armed === true,
+    // An achieved goal's integration failure not cleared yet (SPEC-621 FIN-004): absent when false, as the server sends it.
+    ...(task.status === 'running' && task.activity === 'done' && task.candidate_pending === true ? { candidate_pending: true } : {}),
     // Claude Code last recorded the goal as set, not met or failed (SPEC-429).
     goal_unfinished: idleRun && task.goal_unfinished === true,
     // Its spec says its work is not finished (SPEC-491 DON-004).

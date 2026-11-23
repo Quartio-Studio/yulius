@@ -249,6 +249,7 @@ impl App {
                 && !facts.goal_unfinished
                 && self.pr_ci_progressing(task).await);
         Ok(TaskSummary {
+            candidate_pending: facts.candidate_pending,
             github_display_paused: false,
             parked_pr: None,
             parked_needs_you: None,

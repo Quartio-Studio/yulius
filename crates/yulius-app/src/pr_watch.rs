@@ -721,6 +721,9 @@ pub(crate) struct CandidateObservation {
         Option<String>,
         std::time::Instant,
     )>,
+    /// What the views show (SPEC-621 FIN-004): the watch's last answered observation that the
+    /// decision no longer applies, kept while a re-read is in flight or fails, without expiry.
+    shown: Option<(crate::stages::SpanRecord, Option<String>)>,
 }
 
 /// A newer live outcome or a retired queue decision supersedes the saved failure.
@@ -1918,6 +1921,33 @@ impl App {
             }))
     }
 
+    /// Whether the views show the owner's recorded failure as pending: as capacity, but from
+    /// the last answered observation, so a re-read in flight or a failed one changes nothing.
+    pub(crate) async fn local_candidate_shown(
+        &self,
+        task: &TaskRecord,
+        record: Option<&crate::delivery::DeliveryRecord>,
+    ) -> AppResult<bool> {
+        let Some(record) = record.filter(|r| r.stage == DeliveryStage::PrOpen) else {
+            return Ok(false);
+        };
+        let Some(pr) = record.pr_number else {
+            return Ok(true);
+        };
+        let Some((span, _)) = self.candidate_receipt(task, pr).await? else {
+            return Ok(false);
+        };
+        let runtime = self.runtime(&task.id);
+        let observation = runtime
+            .candidate_observation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(!observation
+            .shown
+            .as_ref()
+            .is_some_and(|(observed, branch)| observed == &span && branch == &task.branch))
+    }
+
     async fn observe_candidate_pull(
         &self,
         task: &TaskRecord,
@@ -1945,19 +1975,37 @@ impl App {
             observed.obsolete = None;
             observed.generation
         };
+        crate::race::reached(
+            crate::race::Point::CandidateObservationRead,
+            std::path::Path::new(task.id.as_str()),
+        );
         let pull = self
             .read_notice_pull(sandbox, decision.singleton.pr)
             .await?;
-        if self
+        let obsolete = self
             .candidate_pull_signal(task, sandbox, decision, &pull)
-            .is_none()
-        {
+            .is_none();
+        let shown_changed = {
             let _writer = change_observation()?;
             let mut observed = lock();
-            if observed.generation == generation {
-                observed.obsolete =
-                    Some((span.clone(), task.branch.clone(), std::time::Instant::now()));
+            if observed.generation != generation {
+                // A newer observation started meanwhile: it answers for both.
+                false
+            } else {
+                if obsolete {
+                    observed.obsolete =
+                        Some((span.clone(), task.branch.clone(), std::time::Instant::now()));
+                }
+                let shown = obsolete.then(|| (span.clone(), task.branch.clone()));
+                let changed = observed.shown != shown;
+                observed.shown = shown;
+                changed
             }
+        };
+        // What the task shows follows the answered observation (SPEC-621 FIN-004), including a
+        // new failed decision replacing an older cleared one: say so when it changes.
+        if shown_changed {
+            self.publish_task(&task.id).await;
         }
         Ok(pull)
     }

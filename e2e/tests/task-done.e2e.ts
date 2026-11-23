@@ -24,6 +24,54 @@ test('a task whose goal is achieved is Done with a green check', async ({ app, b
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// SPEC-621 FIN-004 (quartio-v2 #331 read Done while its failed integration candidate still
+// applied): a live owner whose failure the PR watch has not cleared waits on Yulius, in the
+// terminal, Task Info and the sidebar alike, and is Done again once the server omits it.
+for (const [page, route, selector] of [['terminal', 't', '.strip-status'], ['Task Info', 'tasks', '.gt-state']] as const) {
+  test(`${page} and the sidebar wait on Yulius while a live owner's integration failure is pending`, async ({ app, browser, screen }) => {
+    await app.open(mock(`/s/studio/${route}/13`, '&ambient=0'));
+    const label = browser.locator(selector);
+    await expect(label).toHaveText(/Done/);
+    await touchTask(browser, 'sb_studio', 13, { candidate_pending: true });
+    await expect(label).toHaveText(/Waiting for checks or merge/);
+    await expect(screen.getByRole('region', 'Working').getByRole('link', /Improve the code/)).toBeVisible();
+    await touchTask(browser, 'sb_studio', 13, { candidate_pending: false });
+    await expect(label).toHaveText(/Done/);
+    await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  });
+}
+
+test('the terminal takes a cleared integration failure from its detail read', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  const label = browser.locator('.strip-status');
+  await touchTask(browser, 'sb_studio', 13, { candidate_pending: true });
+  await expect(label).toHaveText(/Waiting for checks or merge/);
+  // Cleared with no event yet: reopening reads the detail, which omits it.
+  await browser.evaluate(() => {
+    type Fixture = { __yuliusMock: { tasks: { id: string; candidate_pending?: boolean }[] } };
+    (window as unknown as Fixture).__yuliusMock.tasks.find(t => t.id === 'tsk_studio_13')!.candidate_pending = false;
+    location.hash = '/s/studio/t/12';
+  });
+  await expect(browser.locator('.strip-status')).not.toHaveText(/Improve the code/);
+  await browser.evaluate(() => { location.hash = '/s/studio/t/13'; });
+  await expect(label).toHaveText(/^Done/);
+});
+
+test('a resume found by the terminal brings a pending integration failure to the sidebar row', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done' });
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  // The resume and its pending failure are known only from the detail.
+  await browser.evaluate(() => {
+    type Fixture = { __yuliusMock: { tasks: { id: string; status: string; candidate_pending?: boolean }[] } };
+    Object.assign((window as unknown as Fixture).__yuliusMock.tasks.find(t => t.id === 'tsk_studio_13')!,
+      { status: 'running', candidate_pending: true });
+    location.hash = '/s/studio/t/13';
+  });
+  await expect(browser.locator('.strip-status')).toHaveText(/Waiting for checks or merge/);
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /Improve the code/)).toBeVisible();
+});
+
 test('a finished goal with a background shell still running stays Working and says why', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/14'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#14 Start the preview server');
@@ -470,6 +518,10 @@ test('a paused task, a waiting onboarding task and an armed merge are counted as
       onboarding: of({ status: 'closed', not_started: true, awaits_start_onboarding: true }),
       armedGoal: of({ status: 'running', activity: 'done', yulius_wait: true, merge_armed: true }),
       armedGoalPr: of({ status: 'running', activity: 'done', yulius_wait: true, merge_armed: true }, pr),
+      failedTrain: of({ status: 'running', activity: 'done', candidate_pending: true }, pr),
+      failedTrainBeforeGit: of({ status: 'running', activity: 'done', candidate_pending: true }),
+      failedTrainRedPr: of({ status: 'running', activity: 'done', candidate_pending: true }, { ...pr, checks: 'failure' }),
+      failedTrainParked: of({ status: 'parked', activity: 'done', candidate_pending: true }, pr),
       achieved: of({ status: 'running', activity: 'done' }, pr),
     };
   });
@@ -479,6 +531,10 @@ test('a paused task, a waiting onboarding task and an armed merge are counted as
     onboarding: ['Waits for Start onboarding', 'working', 'queued'],
     armedGoal: ['Waiting for checks or merge', 'working', 'working'],
     armedGoalPr: ['Waiting for checks or merge', 'working', 'working'],
+    failedTrain: ['Waiting for checks or merge', 'working', 'working'],
+    failedTrainBeforeGit: ['Waiting for checks or merge', 'working', 'working'],
+    failedTrainRedPr: ['Waiting for checks or merge', 'working', 'working'],
+    failedTrainParked: ['Done · PR #7 · parked', 'done', null],
     achieved: ['Done · PR #7', 'done', null],
   });
 });
