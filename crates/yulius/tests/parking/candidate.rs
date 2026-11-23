@@ -102,6 +102,49 @@ fn a_replacement_merge_waits_for_the_reader_settling_a_close() -> TestResult {
     })
 }
 
+/// A task chained after a live owner whose achieved goal has a recorded integration failure
+/// starts only once the watch has observed that failure no longer applies (SPEC-621 FIN-003).
+#[test]
+fn a_chained_successor_waits_until_the_live_owners_failure_is_cleared() -> TestResult {
+    use yulius_domain::task::{Activity, TaskStatus};
+    with_idle_candidate(async |_, app, remote, id, _| {
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        let peer = candidate_peer(app, &owner, TaskStatus::Chained).await?;
+        app.deps
+            .store
+            .insert_chain(&yulius_app::intake::ChainRecord {
+                task_id: peer.clone(),
+                after_task_id: Some(id.clone()),
+                after_number: owner.number,
+                blocked_reason: None,
+                created_at: app.now(),
+                rule: None,
+            })
+            .await?;
+        app.advance_chains(&id).await;
+        assert_eq!(
+            super::status_of(app, &peer).await.0,
+            Some(TaskStatus::Chained),
+            "the failure still applies"
+        );
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "advanced-base".into();
+        let told = app.watch_prs(&WatchBounds::default()).await;
+        app.advance_chains(&id).await;
+        assert_ne!(
+            super::status_of(app, &peer).await.0,
+            Some(TaskStatus::Chained),
+            "{told:?}"
+        );
+        app.stop_task_now(&peer).await?;
+        Ok(())
+    })
+}
+
 #[test]
 fn a_compound_done_rule_rechecks_its_first_owner_after_reading_the_second() -> TestResult {
     use yulius_domain::task::{Activity, TaskStatus};
