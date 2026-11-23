@@ -133,6 +133,8 @@ pub struct AppConfig {
     pub upload_max_bytes: u64,
     /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21).
     pub ci: crate::ci::CiSettings,
+    /// Script watches (SPEC-630 WCH-003, WCH-009).
+    pub watches: crate::watches::WatchSettings,
     /// The TLS reverse proxy's shared secret (`YULIUS_PROXY_SECRET_FILE`, SPEC-001 ACC-013): a
     /// request carrying it is keyed on the client address the proxy passes; `None` keys every
     /// request on its TCP peer. Formatting never shows it.
@@ -214,6 +216,7 @@ impl AppConfig {
             stray_reap_after_ms: crate::finish::STRAY_REAP_AFTER_MS,
             upload_max_bytes: crate::uploads::DEFAULT_UPLOAD_MAX_BYTES,
             ci: crate::ci::CiSettings::default(),
+            watches: crate::watches::WatchSettings::default(),
             proxy_secret: None,
             github_webhook_secret: None,
         }
@@ -363,6 +366,8 @@ pub struct App {
     pub(crate) cross_requests: crate::cross_sandbox::CrossRequests,
     /// The Superagents' scheduled checks (SPEC-487 CHK-001).
     pub(crate) superagent_checks: crate::superagent_checks::SuperagentChecks,
+    /// Script watches' scheduler state (SPEC-630).
+    pub(crate) watches: crate::watches::WatchRuntime,
     /// Missing abilities reported in the last hour (SPEC-487 ABL-004).
     pub(crate) ability_reports: crate::ability_reports::AbilityReports,
     /// What each queued task a supertask holds waits for, as last published (SPEC-071).
@@ -414,6 +419,7 @@ impl App {
         let events = EventBus::new(1024);
         let connection_health = crate::connection_health::connection_health(events.clone());
         let limits = crate::limits::LimitState::new(&config);
+        let watch_runs = config.watches.max_runs;
         Arc::new_cyclic(|app| Self {
             instance_tag,
             limits,
@@ -467,6 +473,7 @@ impl App {
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             cross_requests: crate::cross_sandbox::CrossRequests::default(),
             superagent_checks: crate::superagent_checks::SuperagentChecks::default(),
+            watches: crate::watches::WatchRuntime::new(watch_runs),
             ability_reports: crate::ability_reports::AbilityReports::default(),
             supertask_holds: crate::supertask::Holds::default(),
             docker_smoke: crate::sandbox_docker::SmokeState::default(),

@@ -1103,6 +1103,8 @@ impl App {
         if let Some(isolation) = self.isolation.get() {
             isolation.retire(&id);
         }
+        // Its script watches' runs (SPEC-630); the scheduler no longer sees them.
+        self.watch_cancel_project(&id);
         let app = Arc::clone(self);
         tokio::spawn(async move {
             let runs = app.deps.store.active_ci_runs().await.unwrap_or_default();

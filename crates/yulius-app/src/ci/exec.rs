@@ -136,6 +136,8 @@ pub(super) enum Sink<'a> {
     CdRun(&'a str, &'a yulius_domain::ids::SandboxId),
     /// A delivery environment run (SPEC-219).
     EnvironmentRun(&'a str),
+    /// A script watch's run (SPEC-630): its output is read once it ended, nothing is flushed.
+    Watch,
     /// A brokered command's run (SPEC-626): its output goes to files read once it ended.
     Command,
 }
@@ -288,9 +290,9 @@ fn granted_elsewhere(gate: Option<&Gate>, key: &str, command: &str) -> bool {
 
 /// A CI job's proxy credential (SPEC-142 CSE-004): closed when dropped, so it ends on every
 /// path out of the job, a cancelled or panicking one included.
-struct CiProxy<'a> {
-    app: &'a App,
-    token: String,
+pub(super) struct CiProxy<'a> {
+    pub(super) app: &'a App,
+    pub(super) token: String,
 }
 
 impl Drop for CiProxy<'_> {
@@ -301,7 +303,7 @@ impl Drop for CiProxy<'_> {
 
 /// Binds the files a plan writes outside the sandbox (the CA bundle in the run directory)
 /// read-only into its containment, at the same path, as agent runs do.
-fn bind_run_files(plan: &mut LaunchPlan) {
+pub(super) fn bind_run_files(plan: &mut LaunchPlan) {
     if let Containment::Bubblewrap {
         readonly,
         sandbox_root,
@@ -1583,6 +1585,7 @@ impl App {
                                     .update_environment_run(id, &ring.text(), None)
                                     .await;
                             }
+                            Sink::Watch => {}
                             Sink::Command => {}
                         }
                     }
