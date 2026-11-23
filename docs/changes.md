@@ -7,6 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-23
 
 - Yulius's own repeated notices are keyed. A subscription problem is one notice per subscription for administrators: a usage limit expires at its reset, and signing in again waits for a person. An integration failure nobody repairs is one notice per test for the project's people, removed once repaired. The bell gives every entry a key and an expiry, joins the server's notices and keeps one entry per task. A browser's earlier history gets expiries too. [ADR-0462](decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md), [SPEC-624](../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md)
+- `yulius run` (brokered commands) works in a task's session: the agent's `yulius` command passes it on, as the CLI test of session commands requires; the dev gate failed on it since #1715.
 - Fork… in a task's menu and on its details page opens a dialog for what the fork should do differently, its model and its subscription, then opens the new task; each task's page links the other ("Fork of #N", "Forked: #M"). [SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md)
 
 ## 2026-11-22
