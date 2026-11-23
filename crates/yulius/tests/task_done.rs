@@ -8420,14 +8420,15 @@ fn an_exited_process_not_yet_reaped_is_gone() -> TestResult {
 /// background shell that waits for the staging verdict. Yulius recorded the verdict silently (a
 /// finished task gets no machine prompt) while the shell kept the task Working, so it never read
 /// Done until its owner closed it. Now each outcome of its requests (gate_failed, deploy_failed,
-/// verified) is typed into the session while that wait runs; once the agent stopped its wait and
-/// its turn ended, the task is Done with nobody acting. A later outcome with no background work
-/// left is recorded silently and the task stays Done.
+/// verified) is typed into the session while that wait runs, also one that waited out a hold or
+/// a turn; once the agent stopped its wait the task is Done with nobody acting, and an outcome
+/// whose wait ended before its admission is recorded silently.
 #[test]
 fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> TestResult {
     use yulius_app::auth::AuthContext;
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::ports::store_ext::{StagingChange, StagingRequestRecord};
+    use yulius_app::race::Point;
     use yulius_domain::delivery::DeliveryStage;
     use yulius_domain::staging::StagingState::{
         DeployFailed, Deploying, GateFailed, Ready, Testing, Verified,
@@ -8603,54 +8604,99 @@ fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> T
             );
         }
         assert!(
-            screen_contains(&app, &id, "stop the background command").await,
+            screen_contains(&app, &id, "waits for this outcome, stop it").await,
             "the outcome tells the agent to stop its wait"
         );
 
-        // The agent stops its wait, as it was told: Done, with nobody stepping in.
-        std::fs::write(&heard, b"")?;
-        wait_for("Done after the wait", Duration::from_secs(30), || async {
-            app.probe_idle_shells(&id).await;
-            done().await
+        // A later request ends while a hold or a turn keeps the task from idle (review round 1:
+        // a hold its own outcome raised): the outcome waits for the next tick, then is typed.
+        let (app_ref, id_ref) = (&app, &id);
+        let failed = |request: &'static str, revision: &'static str| {
+            let record = StagingRequestRecord {
+                id: request.into(),
+                sandbox_id: sandbox.clone(),
+                environment: "dev".into(),
+                task_id: Some(id.clone()),
+                revision: revision.into(),
+                state: Testing,
+                ci_run_id: None,
+                cd_run_id: None,
+                attempts: 0,
+                note: None,
+                requested_by: "task:1".into(),
+                told: false,
+                created_at: app.now(),
+                updated_at: app.now(),
+            };
+            async move {
+                assert!(store.insert_staging_request(&record).await?);
+                let change = StagingChange::default();
+                let at = app_ref.now();
+                assert!(
+                    store
+                        .move_staging_request(request, Testing, GateFailed, &change, at)
+                        .await?
+                );
+                Ok::<_, BoxError>(())
+            }
+        };
+        let set_activity = |to: Activity| async move {
+            TaskStore::transition_task(
+                store.as_ref(),
+                id_ref,
+                None,
+                TaskStatus::Running,
+                Some(to),
+                app_ref.now(),
+            )
+            .await
+        };
+        failed("sr-held", "1111111111111111111111111111111111111111").await?;
+        for busy in [Activity::NeedsAttention, Activity::Working] {
+            set_activity(busy).await?;
+            for _ in 0..2 {
+                assert_eq!(app.tell_staging_outcomes().await, 0, "{busy:?}");
+            }
+            assert_eq!(
+                store.untold_staging_requests().await?.len(),
+                1,
+                "a {busy:?} task's outcome waits"
+            );
+        }
+        assert!(!screen_contains(&app, &id, "sr-held").await);
+        set_activity(Activity::Waiting).await?;
+        assert_eq!(app.tell_staging_outcomes().await, 1, "typed once idle");
+        wait_for("the held outcome's turn", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: Yulius: staging request sr-held")
         })
         .await?;
+        wait_for("its end", Duration::from_secs(30), idle).await?;
 
-        // A later outcome with no background work left is recorded, not typed.
-        let later = StagingRequestRecord {
-            id: "sr-later".into(),
-            sandbox_id: sandbox.clone(),
-            environment: "dev".into(),
-            task_id: Some(id.clone()),
-            revision: "fedcba9876543210fedcba9876543210fedcba98".into(),
-            state: Testing,
-            ci_run_id: None,
-            cd_run_id: None,
-            attempts: 0,
-            note: None,
-            requested_by: "task:1".into(),
-            told: false,
-            created_at: app.now(),
-            updated_at: app.now(),
-        };
-        assert!(store.insert_staging_request(&later).await?);
-        assert!(
-            store
-                .move_staging_request(
-                    "sr-later",
-                    Testing,
-                    GateFailed,
-                    &StagingChange::default(),
-                    app.now()
-                )
-                .await?
-        );
+        // The wait ends between the decision and the admission: nothing is typed, and the next
+        // tick records the outcome silently. The agent stopped its wait: Done, nobody acting.
+        failed("sr-race", "2222222222222222222222222222222222222222").await?;
+        let (decided, go_on) = support::hold_point(Point::AwaitedOutcomeDecided, id.as_str());
+        let tick = tokio::spawn({
+            let app = Arc::clone(&app);
+            async move { app.tell_staging_outcomes().await }
+        });
+        support::point_reached(decided).await?;
+        std::fs::write(&heard, b"")?;
+        wait_for("the wait's end", Duration::from_secs(30), || async {
+            app.probe_idle_shells(&id).await;
+            shown(&app, &id).await.ok().and_then(|(_, shells)| shells) == Some(0)
+        })
+        .await?;
+        let _ = go_on.send(());
+        assert_eq!(tick.await?, 0, "its work ended before the admission");
+        assert_eq!(store.untold_staging_requests().await?.len(), 1);
         assert_eq!(app.tell_staging_outcomes().await, 0);
         assert!(
             store.untold_staging_requests().await?.is_empty(),
             "recorded"
         );
-        assert!(!screen_contains(&app, &id, "sr-later").await, "not typed");
-        assert!(done().await, "still Done");
+        assert!(!screen_contains(&app, &id, "sr-race").await, "not typed");
+        wait_for("Done after the wait", Duration::from_secs(30), done).await?;
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

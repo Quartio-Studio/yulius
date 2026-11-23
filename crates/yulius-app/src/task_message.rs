@@ -193,7 +193,8 @@ pub(crate) enum Sender {
     YuliusLastTry,
     /// Yulius itself, with the news a finished task's own background work waits for (its
     /// staging outcome, SPEC-631 SWK-001): typed although the task finished its work, as
-    /// [`Self::Yulius`] otherwise. Its caller's admission check confirms that work still runs.
+    /// [`Self::Yulius`] otherwise. Its caller passes the admission check that confirms the task
+    /// is still finished and that work still runs (`tell_staging_outcomes`, its only sender).
     YuliusAwaited,
 }
 
@@ -885,11 +886,6 @@ impl App {
         if matches!(from, Sender::Yulius | Sender::YuliusLastTry)
             && !self.accepts_machine_notice(&task.id).await?
         {
-            return Err(AppError::Conflict("the task finished its work".into()));
-        }
-        // What a finished task's own background work waits for goes in only on its caller's
-        // check that this work still runs (SPEC-631 SWK-001).
-        if from == Sender::YuliusAwaited && admit.is_none() {
             return Err(AppError::Conflict("the task finished its work".into()));
         }
         let guarded = admit.is_some();

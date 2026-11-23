@@ -343,6 +343,9 @@ pub enum Point {
     /// A fork's task exists; its record, transcript copy and plan are not written yet (SPEC-628
     /// FRK-001). The path is the sandbox directory.
     ForkInserted,
+    /// A finished task's staging outcome is to be typed because its background work runs; its
+    /// admission has not looked again yet (SPEC-631 SWK-001). Keyed by the task id.
+    AwaitedOutcomeDecided,
 }
 
 #[cfg(feature = "test-support")]

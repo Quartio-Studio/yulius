@@ -54,8 +54,9 @@ pub(super) const TASK_VIEW_BUDGET: Duration = Duration::from_millis(750);
 
 /// What a finished task whose background work waits for its staging outcome is told after it
 /// (SPEC-631 SWK-001): that work keeps it from Done.
-const AWAITED_OUTCOME: &str = "This task's work is finished: stop the background command that \
-     waits for this outcome, then answer in one line and end your turn.";
+const AWAITED_OUTCOME: &str = "This task's work is finished: if a background command of yours \
+     waits for this outcome, stop it, and leave anything else running; then answer in one line \
+     and end your turn.";
 
 /// How a staging deploy's run note starts: the queue knows its own runs by it.
 const DEPLOY_NOTE: &str = "merge-first staging: request";
@@ -705,10 +706,13 @@ impl App {
             return Ok(());
         }
         request.state = StagingState::Deploying;
-        let person = self.staging_person(&request).await?;
         // The run is the task's (SPEC-631 SWK-004); its owner's access deploys it.
         let task = match &request.task_id {
             Some(task) => self.deps.store.task(task).await?,
+            None => None,
+        };
+        let person = match &task {
+            Some(task) => self.staging_owner(task).await?,
             None => None,
         };
         let started = match &person {
@@ -1250,16 +1254,28 @@ impl App {
                 }
                 Err(_) => continue,
             };
-            let finished = task.status == TaskStatus::Running
-                && matches!(self.accepts_machine_notice(task_id).await, Ok(false));
-            // Its own background work waits for this outcome and keeps it from Done.
-            let awaited = finished && self.agent_goes_on_by_itself(&task).await;
-            if task.status.is_resting()
-                || task.status == TaskStatus::Parked
-                || (finished && !awaited)
-            {
+            if task.status.is_resting() || task.status == TaskStatus::Parked {
                 let _ = store.mark_staging_told(&request).await;
                 continue;
+            }
+            let finished = task.status == TaskStatus::Running
+                && matches!(self.accepts_machine_notice(task_id).await, Ok(false));
+            // A finished task is decided once its turn is over and nothing holds it (a hold
+            // its own outcome raised included): a turn or a hold can still end in a wait.
+            if finished && !task.activity.is_some_and(Activity::is_idle) {
+                continue;
+            }
+            // Its own background work waits for this outcome and keeps it from Done.
+            let awaited = finished && self.agent_goes_on_by_itself(&task).await;
+            if finished && !awaited {
+                let _ = store.mark_staging_told(&request).await;
+                continue;
+            }
+            if awaited {
+                crate::race::reached(
+                    crate::race::Point::AwaitedOutcomeDecided,
+                    std::path::Path::new(task_id.as_str()),
+                );
             }
             let mut text = staging_outcome_text(&request);
             if awaited {
@@ -1278,7 +1294,9 @@ impl App {
                 };
                 current.status == task.status
                     && current.activity != Some(Activity::NeedsAttention)
-                    && (!awaited || self.agent_goes_on_by_itself(&current).await)
+                    && (!awaited
+                        || (matches!(self.accepts_machine_notice(task_id).await, Ok(false))
+                            && self.agent_goes_on_by_itself(&current).await))
                     && !self.update_holds_starts()
                     && !self.is_paused(&current).await
                     && matches!(store.pending_hold(task_id).await, Ok(None))
