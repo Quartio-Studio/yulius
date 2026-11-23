@@ -2843,6 +2843,32 @@ read, not measured anew: `task_screen` takes a task's live hub screen, or render
 `analytics_tasks` and `analytics_summary`; `checkout` the git port's `ahead_behind` of the sandbox
 repository's `HEAD` against `origin/<integration branch>`, without a fetch.
 
+A task's agent reads its neighbours the same way, read-only
+([decision 0460](decisions/0460-a-task-reads-its-neighbours-status-and-never-steers-them.md),
+SPEC-625, `peer_status.rs`): `task_get` adds to the brief the owner's login, the delivery record's
+stage and PR with `merge_is_armed`, the task's `active_claims`, `waits_for` (fixed sentences built
+from the brief and `task_attention_facts`) and `last_words` (`last_agent_words`, the digest's
+read of the transcript's last assistant message); a person's own callers also get the last 20
+lines of the screen `task_screen_of` reads for `task_screen`, a task's agent never (a held prompt
+and a person's draft show there). `require_reader` checks that the owner is enabled and that
+`settled_access_level` allows `Action::View` before a task's `tasks_list` or `task_get`, and
+refuses when the access cannot be settled. `withholds_from` compares `Holder::of_task` of the reader and
+the peer and asks `reaches_owners_personal`: a peer holding its owner's personal secrets or MCP
+servers loses its free text (`withhold`) in `task_get` and `tasks_list` rows, and
+`session_read`/`sessions_search` refuse or skip its transcripts for that reader; the scope tools,
+the tidy tools' briefs and the briefing's recent changes (`withholds_text`) leave out its notes,
+step and request.
+
+```mermaid
+flowchart LR
+  reader["task agent (task token)"] -->|task_get / tasks_list| view["require_reader: owner may view"]
+  view --> brief["brief + add_peer_status: owner, delivery, claims, waits_for, last_words"]
+  brief -.->|person callers only| screen["screen: task_screen_of"]
+  brief --> hold{"withholds_from: peer holds another person's personal secrets?"}
+  hold -->|no| full["full answer"]
+  hold -->|yes| shape["withhold: shape only, withheld says why"]
+```
+
 A Superagent's standing jobs are scheduled checks held by Yulius
 ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
 `superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`

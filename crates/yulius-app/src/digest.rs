@@ -583,7 +583,7 @@ impl App {
 
     /// The end of the agent's last message in its transcript (DIG-004), redacted as the
     /// transcript is; `None` when there is none to read.
-    async fn last_agent_words(&self, task: &TaskRecord) -> Option<String> {
+    pub(crate) async fn last_agent_words(&self, task: &TaskRecord) -> Option<String> {
         let entry = self
             .deps
             .store

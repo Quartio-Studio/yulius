@@ -88,6 +88,7 @@ mod notices;
 #[cfg(target_os = "linux")]
 mod opaque_restart;
 mod parking;
+mod peer_status;
 mod playground;
 mod playground_guests;
 mod playground_move;

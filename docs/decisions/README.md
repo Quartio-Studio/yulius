@@ -528,6 +528,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0458 -->
 - [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md): Brokered commands run in the production holder with a temporary key file; amends SPEC-002 ADR-20
 <!-- ADR 0459 -->
+- [0460](0460-a-task-reads-its-neighbours-status-and-never-steers-them.md): A task reads its neighbours' status (owner, PR and stage, claims, waits, last words) read-only and never steers them; a personal task shows other people's tasks only its shape.
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
 - [0462](0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md): Notices carry a key and an expiry, and the newest per key wins

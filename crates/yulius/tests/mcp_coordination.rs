@@ -8,11 +8,9 @@ use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{Creds, TestResult, call, harness};
-use yulius_app::model::{
-    AttemptRecord, LaunchKind, SandboxRecord, Sealed, TaskOrigin, TaskRecord, UserRecord,
-};
+use yulius_app::model::{AttemptRecord, LaunchKind, SandboxRecord, Sealed, TaskOrigin, TaskRecord};
 use yulius_app::ports::store::{
-    AttemptUpdate, CoordinationStore, SandboxStore, TaskFieldUpdate, TaskStore, UserStore,
+    AttemptUpdate, CoordinationStore, SandboxStore, TaskFieldUpdate, TaskStore,
 };
 use yulius_domain::cron::CivilDate;
 use yulius_domain::harness::Harness;
@@ -90,20 +88,10 @@ async fn seed_run(
 /// `tok-other`, and the internal router their agents call.
 async fn project() -> Result<(support::Harness, axum::Router), Box<dyn std::error::Error>> {
     let h = harness()?;
-    h.store
-        .insert_user(&UserRecord {
-            id: UserId::parse("u1")?,
-            github_login: Some("alice".into()),
-            github_id: None,
-            display_name: "Alice".into(),
-            avatar_url: None,
-            is_superadmin: false,
-            is_instance_admin: false,
-            password_hash: None,
-            created_at: Timestamp(1),
-            disabled_at: None,
-        })
-        .await?;
+    // The tasks' owner may view the project, as a task's reads need (SPEC-625 PSV-003).
+    support::seed_github_user(&h, "u1", "alice").await?;
+    h.github
+        .set_perm("alice", "Quartio-Studio/studio", support::perms("write"));
     h.store
         .insert_sandbox(&SandboxRecord {
             id: SandboxId::parse("s1")?,
