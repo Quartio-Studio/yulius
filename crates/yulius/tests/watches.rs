@@ -463,17 +463,27 @@ async fn run_bounds_are_enforced() -> TestResult {
     );
 
     // The bound holds for every file a run writes, not only its output (the disk).
-    let disk = w
-        .h
-        .app
-        .watch_create(new_watch(
-            "disk",
-            "head -c 1000000 /dev/zero > \"$YULIUS_WATCH_STATE/big\"; echo written",
-        )?)
-        .await?;
+    let disk =
+        w.h.app
+            .watch_create(new_watch(
+                "disk",
+                "head -c 1000000 /dev/zero > \"$YULIUS_WATCH_STATE/big\"; echo written",
+            )?)
+            .await?;
     let ended = w.run(&disk.id).await?;
-    assert!(ended.state.last_errors.is_some_and(|e| e.contains("File too large")));
-    let big = w.h.app.config.data_dir.join("watches/s1/state").join(&disk.id).join("big");
+    assert!(
+        ended
+            .state
+            .last_errors
+            .is_some_and(|e| e.contains("File too large"))
+    );
+    let big =
+        w.h.app
+            .config
+            .data_dir
+            .join("watches/s1/state")
+            .join(&disk.id)
+            .join("big");
     assert_eq!(std::fs::metadata(&big)?.len(), 64 * 1024);
 
     let mut slow = new_watch("slow", "sleep 30")?;
@@ -495,7 +505,10 @@ async fn run_bounds_are_enforced() -> TestResult {
     let ended = w.run(&sly.id).await?;
     assert!(ended.state.last_failure.is_some(), "{:?}", ended.state);
     let posted = w.notices().await?;
-    assert!(!posted.iter().any(|(key, _, _)| key == "watch:sly"), "{posted:?}");
+    assert!(
+        !posted.iter().any(|(key, _, _)| key == "watch:sly"),
+        "{posted:?}"
+    );
     Ok(())
 }
 

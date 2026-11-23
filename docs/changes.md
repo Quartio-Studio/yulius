@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-23
+
+- Script watches, part 1: a project's bash script on a schedule (an interval or cron), run by Yulius in the sandbox without an agent or subscription, under a timeout and CPU, memory and file bounds, with named agent secrets only through the egress proxy. Exit 0 with output posts a notice keyed `watch:<name>` for its owner, which replaces the previous one; no output posts nothing; exit 3 posts and ends the watch; the third failure in a row posts one warning. Posts that could not be stored are retried, and watches survive restarts. Managing them over HTTP, MCP and a Watches page follows. [ADR-0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md), [SPEC-630](../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md)
+
 ## 2026-11-22
 
 - Notices carry a key and an expiry. A newer notice with the same key replaces the older one for its project and person, in Telegram too: the bot deletes its earlier message about the same task or key. An expired notice is left out of `GET /api/me/notices`, the person tools `notices_list` and the digest, then pruned. A notice that waits for a decision never expires. The digest lists live notices and replaces yesterday's in the chat. [ADR-0462](decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md), [SPEC-624](../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md)

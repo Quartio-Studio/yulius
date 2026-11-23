@@ -83,12 +83,13 @@ posting to people other than the owner.
   - **CPU**: `ulimit -t`, 120 s of CPU time by default;
   - **memory**: `ulimit -d`, a 1 GiB data segment by default (writable private memory since
     Linux 4.7);
-  - **output**: `ulimit -f`, 1 MiB per output file by default, and only the first 4,000
-    characters are posted.
+  - **files**: `ulimit -f`, 1 MiB per file the run writes by default. An output file that reaches
+    it fails the run, whether the write was refused or killed the writer. Only the first 4,000
+    characters of the output are posted.
 
   The limits are set as both soft and hard limits before the script starts, so the script cannot
-  raise them. A run past a bound is a failure whose reason names the bound. The defaults are
-  instance configuration (`[watches]`). At most 4 runs go at once on an instance, and 1 per
+  raise them. A run past a bound is a failure whose reason names the bound. The values are
+  the instance's (`AppConfig.watches`, not yet a server flag). At most 4 runs go at once on an instance, and 1 per
   watch. A watch that is due while its previous run still goes waits for the next tick.
 - **WCH-004 Secrets only through the egress proxy.** A watch can name agent secrets of its
   project that reach runs of no person (`Holder::Nobody`: the project's and the global secrets
@@ -133,7 +134,8 @@ posting to people other than the owner.
   - The scheduler ticks every 15 s.
 - **WCH-010 Survives restarts and updates.** Watches, their state and pending posts are rows in
   the store (migration 0093). A run that a restart interrupted is recorded as lost (a failure),
-  its process host is ended, and the watch is due again at once.
+  its process host is ended, and its schedule counts again from the start: an interval watch runs
+  at the next tick, a cron watch at its next slot.
 - **WCH-011 People manage watches** (second pull request):
   - Anyone who can read the project lists its watches: name, schedule, state, next run, last
     run (time, exit, reason), last output, failure count and pending posts.
@@ -246,3 +248,41 @@ posting to people other than the owner.
   `watch_create` instead: one scheduled-script mechanism, not two.
 - **Two pull requests.** The core (domain, store, runner, scheduler, notices) comes first, and the
   API, MCP tools, page and docs second. Each then stays one concern of reviewable size.
+
+## Evidence
+
+### First pull request: the watch core (steps 1 to 6)
+
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^watches::/)'`: 9
+  passed. The tests cover the schedule (AC-1), the exit codes with keyed replacement (AC-2),
+  three failures making one warning (AC-3), the warning's text, a retry after an outage (AC-4,
+  a SQLite trigger refusing `notices` inserts), survival across a restart (AC-5, a new `App` on
+  the same store), the run bounds (AC-6), a contained plan with secret placeholders (AC-7) and
+  refused definitions.
+- The whole `yulius::main` binary: 2,648 passed, 24 skipped (log in the worktree's ignored
+  `target/watch-evidence/main-run.log`).
+- `scripts/cargo nextest run -p yulius-domain -p yulius-store -p yulius-app`: 1,519 passed. This
+  includes the domain tests (`watch::tests`, 9) and the store tests (`watches::tests`, 3) with the
+  pinned migration list.
+- `scripts/cargo clippy -p yulius-app -p yulius-domain -p yulius-store -p yulius --all-targets
+  -- -D warnings`: clean. `scripts/dev quick` and `python3 scripts/repository_tests.py` (34
+  affected file-contract tests) passed.
+- Mutation by hand. Each line below was undone or changed, the tests were run, and the line was
+  restored:
+  - Without the wrapper's `ulimit` line, `run_bounds_are_enforced` failed: the busy loop ran to
+    its 20 s timeout.
+  - Without `ulimit -d`, it failed: the 100 MB string was built and posted.
+  - Without `ulimit -f`, it failed: the state file grew past 64 KiB.
+  - With soft-only limits (`ulimit -St`), it failed: the script raised its own CPU limit.
+  - With a report key that changes per run, five tests failed: the exit codes, the warning, the
+    outage, the restart and the schedule.
+  - With a warning on every failure past three, `three_failures_make_one_warning` and the domain
+    test `three_failures_warn_once_and_a_success_clears` failed.
+  - Without the tick's retry of pending posts, `a_post_is_retried_after_an_outage` failed.
+  - With the start's recovery of lost runs skipped, `watches_survive_a_restart` failed.
+- Security scan: Vidoc is switched off for this project in Yulius, so the scan reports disabled,
+  not passed.
+- Not tested here: a real bubblewrap run joined to a real holder. The contained plan is checked
+  through a recording process host with a fake holder, as the CD tests check theirs, and the
+  bounds are proven on the host. Also not tested: the bell showing a watch's notice, which waits
+  for SPEC-624's second pull request.

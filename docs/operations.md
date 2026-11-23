@@ -1733,6 +1733,27 @@ branches with no merged pull request, such as a release branch, which stay for a
 the rest on its CI/CD page (CI tab, Repository hygiene card), with what the last cleanup removed and kept (SPEC-269, ADR-0199). People clean
 up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.cleanup`.
 
+### Script watches on this machine
+
+Script watches ([SPEC-630](../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
+[decision 0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md))
+run on the same machine as the server, through the process host, in each sandbox's containment
+and CI's resource group. Nothing needs setting up.
+
+- **Where they live.** Definitions and state are in the database (`watches`, `watch_pending`), so
+  they come along with a backup or a move. Each project's watch files are under
+  `<data>/watches/<sandbox>/`: `home` (the scripts' `HOME`), `state/<watch>` (kept between runs)
+  and `runs/<run>` (one run's output, removed when it ends). A run's process host directory is
+  `<data>/runs/watch-<run>`.
+- **Bounds.** Each run gets 120 s of CPU time, a 1 GiB data segment, 1 MiB per file it writes, and
+  its watch's timeout (5 minutes by default, 1 hour at most). At most 4 runs go at once on the
+  instance, and a project has at most 20 watches.
+- **Restarts and updates.** A run cut off by a restart is recorded as a lost failure when the
+  server starts, its process host is ended, and the watch runs again. Posts that could not be
+  stored are retried every 15 s.
+- **Secrets.** A watch gets only the agent secrets it names, as placeholders that the egress proxy
+  replaces. The proxy's audit actor for its runs is `ci:watch:<name>`.
+
 ### CD on this machine
 
 CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]`, `[cd.prod]`
