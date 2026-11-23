@@ -169,7 +169,14 @@ impl App {
                 &dom::command_line(&def.binary, &def.fixed, &call.args),
             )
             .await;
-        let now = self.now();
+        let mut now = self.now();
+        if ask {
+            // A run's request is known by its time (a Telegram reply answers the run asked at
+            // its notice's time): a task's runs never share one.
+            if let Some(last) = self.deps.store.latest_command_run_of_task(&task.id).await? {
+                now = now.max(last.created_at.plus_millis(1));
+            }
+        }
         let minutes = i64::from(def.approval_minutes);
         let minute = i64::try_from(self.config.command_minute_ms).unwrap_or(60_000);
         let run = CommandRunRecord {

@@ -2935,14 +2935,69 @@ async fn a_reply_to_a_runs_notice_answers_that_run() -> TestResult {
         );
         let answer = next_reply(&w, 100, before).await?;
         assert_eq!(answer, "Not answered: this run is rejected already");
+        Ok::<_, Box<dyn std::error::Error>>(notice)
+    };
+    let (ran, replied) = tokio::join!(asked, reply);
+    let first_notice = replied?;
+    let ran = support::tool_text(&ran?);
+    assert!(ran.to_string().contains("rejected"), "{ran}");
+
+    // A newer run of the task, asked while the harness's clock stands still: a reply to the first
+    // run's notice never answers it, as a task's runs never share a request time.
+    let asked = support::mcp_tool(
+        &w.h,
+        "tok-t1-telegram-0123456789",
+        "command_run",
+        json!({"name": "deploy", "args": ["status"]}),
+    );
+    let reply = async {
+        let tid = TaskId::parse("t1")?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while w.h.store.task_needs_you(&tid).await?.is_none() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the second run never waited"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let before = w.fake.sent_to(100).len();
+        w.fake.raw(
+            100,
+            json!({"text": "approve", "reply_to_message": {"message_id": first_notice}}),
+        );
+        let answer = next_reply(&w, 100, before).await?;
+        assert_eq!(answer, "Not answered: this run is rejected already");
+        assert!(
+            w.h.store.task_needs_you(&tid).await?.is_some(),
+            "the newer run still waits"
+        );
+        // Its own notice answers it.
+        let notice = loop {
+            if let Some(id) = w
+                .fake
+                .sent_id(100, "Needs you")
+                .filter(|id| *id != first_notice)
+            {
+                break id;
+            }
+            w.fake.wait_sent(100, w.fake.sent_to(100).len() + 1).await?;
+        };
+        let before = w.fake.sent_to(100).len();
+        w.fake.raw(
+            100,
+            json!({"text": "reject", "reply_to_message": {"message_id": notice}}),
+        );
+        assert_eq!(
+            next_reply(&w, 100, before).await?,
+            "Rejected: task #1's run of deploy runs nothing."
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     };
     let (ran, replied) = tokio::join!(asked, reply);
     replied?;
-    let ran = support::tool_text(&ran?);
-    assert!(ran.to_string().contains("rejected"), "{ran}");
+    assert!(support::tool_text(&ran?).to_string().contains("rejected"));
     let details = w.h.store.audit_details("s1", "command.reject", 5).await?;
-    assert_eq!(details.len(), 1, "{details:?}");
+    assert_eq!(details.len(), 2, "{details:?}");
     assert!(details[0].contains("telegram"), "{details:?}");
     Ok(())
 }
