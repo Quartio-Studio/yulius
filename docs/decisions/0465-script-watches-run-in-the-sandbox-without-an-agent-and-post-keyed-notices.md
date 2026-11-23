@@ -33,8 +33,10 @@ design was read as a reference, and none of its code is used. Builds on
   `HOME` is the project's watch home, and each watch has a state directory. Both are kept between
   runs under `<data>/watches/<sandbox>/`, and they and the run's own directory are the only
   writable paths outside the sandbox root.
-- **Bounds.** A fixed bash wrapper sets `ulimit -t` (CPU time), `-d` (data segment) and `-f`
-  (file size) as soft and hard limits, and the process host enforces the timeout. The values
+- **Bounds.** A fixed bash wrapper sets `ulimit -t` (CPU time: a soft limit and a hard one 2 s
+  later), `-d` (data segment) and `-f` (file size) as hard limits, and the process host enforces
+  the timeout. The project's watch files are outside the sandbox's quota, so a run that grows them
+  past 1 GiB is stopped. The values
   travel as arguments and the script as its own `bash -c` argument, so nothing is spliced into
   shell text. At most 4 runs go at once on an instance, and 1 per watch.
 - **Secrets as a CI job gets them.** A watch names agent secrets of its project that reach runs of
@@ -50,6 +52,9 @@ design was read as a reference, and none of its code is used. Builds on
 - **An outbox.** A run's posts are written as pending in the same transaction as its state, then
   posted. A post leaves the outbox only once its notice is stored, newest per key. Each scheduler
   tick (15 s) retries pending posts first.
+- **A name is a key.** A watch's name never changes, so its notices keep their key; a rename
+  is a new watch. A removed project's watches are neither scheduled nor claimed, and its going
+  runs are cancelled.
 - **Restarts.** Watches and their state are rows. A run that a restart interrupted is recorded as
   lost (a failure), its process host is ended, and the watch is due again.
 

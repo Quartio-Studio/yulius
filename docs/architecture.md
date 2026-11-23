@@ -3318,15 +3318,18 @@ becomes a notice for its owner
 - **Scheduler.** `App::watch_tick` (`crates/yulius-app/src/watches.rs`) runs every 15 s from
   `start_watch_scheduler`. It delivers pending posts, then starts each due watch, at most 4 runs
   at once on the instance. `watch_run_started` claims a run in the store (one per watch), and
-  `watch_run_ended` records its end only for that run. At a start, `watch_startup` records a run
+  `watch_run_ended` records its end only for that run. The claim also refuses a removed
+  project's watch, and a paused or ended one unless it is Run now. Due watches start longest
+  overdue first, and a project's removal cancels its going runs (`watch_cancel_project`). At a start, `watch_startup` records a run
   the previous process left going as lost, ends its process host and makes the watch due again.
 - **Run.** `App::watch_execute` (`crates/yulius-app/src/ci/watch_run.rs`) builds a `LaunchPlan`
   like a CI job's and follows it with `ci_watch`. Its containment is bubblewrap on the sandbox
   root, joined to the sandbox's holder in CI's group (`ci_join`). Its writable paths are
   `<data>/watches/<sandbox>/home` (`HOME`), `state/<watch>` (`YULIUS_WATCH_STATE`) and
   `runs/<run>`, whose output files are read through handles opened before the start. A fixed
-  wrapper sets `ulimit -t`, `-d` and `-f` as hard limits and runs the script as its own `bash -c`
-  argument. The process host enforces the timeout. Named agent secrets get placeholders and an
+  wrapper sets `ulimit -t` (soft, then hard 2 s later), `-d` and `-f` as hard limits and runs the
+  script as its own `bash -c --` argument. A disk bound stops a run that grows the project's
+  watch files past 1 GiB. The process host enforces the timeout. Named agent secrets get placeholders and an
   egress credential (`ci_egress_open`, run `watch:<name>`).
 - **Posts.** `yulius_domain::watch::outcome` decides a run's end:
   - exit 0 with output posts, and exit 3 posts and ends the watch;

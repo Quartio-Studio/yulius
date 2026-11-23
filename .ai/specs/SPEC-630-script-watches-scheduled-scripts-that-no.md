@@ -64,7 +64,8 @@ posting to people other than the owner.
   - a run **timeout** (1 s to 1 h, default 5 minutes);
   - optional **agent secrets**, by name (WCH-004).
 
-  A project has at most 20 watches. A watch is paused, active or ended. An ended watch keeps its
+  A project has at most 20 watches. A watch names at most 20 agent secrets. Its name is the key of
+  its notices, so it never changes: a rename is a new watch. A watch is paused, active or ended. An ended watch keeps its
   history and can be resumed, which starts it again.
 - **WCH-002 Where it runs.** Yulius runs the script with `bash` through the process host, in the
   sandbox's containment: the same bubblewrap boundary on the sandbox root, joined to the
@@ -80,15 +81,17 @@ posting to people other than the owner.
 - **WCH-003 Run bounds.** Each run is bounded:
   - **time**: the watch's timeout, from the process's start, enforced by the process host's
     group kill;
-  - **CPU**: `ulimit -t`, 120 s of CPU time by default;
+  - **CPU**: `ulimit -t`, 120 s of CPU time by default as the soft limit (SIGXCPU), with a
+    hard limit 2 s later (SIGKILL);
   - **memory**: `ulimit -d`, a 1 GiB data segment by default (writable private memory since
     Linux 4.7);
   - **files**: `ulimit -f`, 1 MiB per file the run writes by default. An output file that reaches
     it fails the run, whether the write was refused or killed the writer. Only the first 4,000
     characters of the output are posted.
 
-  The limits are set as both soft and hard limits before the script starts, so the script cannot
-  raise them. A run past a bound is a failure whose reason names the bound. The values are
+  The limits are set as hard limits before the script starts, so the script cannot raise them
+  (past the CPU limit's 2-second grace). The project's watch files (its `home`, state directories
+  and runs) are outside the sandbox's disk quota, so a run that grows them past 1 GiB is stopped. A run past a bound is a failure whose reason names the bound. The values are
   the instance's (`AppConfig.watches`, not yet a server flag). At most 4 runs go at once on an instance, and 1 per
   watch. A watch that is due while its previous run still goes waits for the next tick.
 - **WCH-004 Secrets only through the egress proxy.** A watch can name agent secrets of its
@@ -108,7 +111,9 @@ posting to people other than the owner.
   project:
   - key `watch:<name>`, category `done`, tone `info`;
   - title `<name>: <first line of the output>`, detail the whole output (cut to 4,000
-    characters);
+    characters) whenever the title does not hold all of it;
+  - the output and error tail are redacted of the project's agent secrets before they are kept
+    or posted;
   - link to the project's Watches page;
   - expiry the watch's own, else 1 day.
 
@@ -131,11 +136,17 @@ posting to people other than the owner.
     resumed.
   - Missed slots are never replayed: after downtime, a watch that is overdue runs once and then
     keeps its schedule.
-  - The scheduler ticks every 15 s.
+  - The scheduler ticks every 15 s and starts the longest overdue watches first.
+  - The store's claim decides whether a run starts: none of the watch goes, its project is not
+    removed and, unless it is Run now, the watch is neither paused nor ended. The run uses the
+    record as it is after the claim.
 - **WCH-010 Survives restarts and updates.** Watches, their state and pending posts are rows in
   the store (migration 0093). A run that a restart interrupted is recorded as lost (a failure),
   its process host is ended, and its schedule counts again from the start: an interval watch runs
   at the next tick, a cron watch at its next slot.
+- **WCH-014 A removed project's watches stop.** The scheduler does not see them and a run of
+  them is never claimed, not even by Run now. Its going runs are cancelled with the removal, its
+  pending posts are dropped, and its watch files are a removed project's leftovers.
 - **WCH-011 People manage watches** (second pull request):
   - Anyone who can read the project lists its watches: name, schedule, state, next run, last
     run (time, exit, reason), last output, failure count and pending posts.
@@ -286,3 +297,47 @@ posting to people other than the owner.
   through a recording process host with a fake holder, as the CD tests check theirs, and the
   bounds are proven on the host. Also not tested: the bell showing a watch's notice, which waits
   for SPEC-624's second pull request.
+
+### Review round 1 of PR #1713 (head `cc8825af8`): request changes, all answered
+
+All findings were in this pull request's own code. Each fix has a test, and each test was seen
+failing with its fix undone (by hand, one at a time):
+- **A removed project's watches kept running (major).**
+  - `all_watches` and the run claim leave out removed projects, so even Run now is refused.
+  - The removal cancels going runs (`watch_cancel_project` in `end_removed_sandbox`).
+  - Pending posts of a removed project are dropped, and `<data>/watches/<sandbox>` is a removed
+    project's leftover.
+  - Test: `a_removed_projects_watches_stop`. It fails without the cancel (the run hangs) and
+    without the claim's filter (Run now runs).
+- **Four clauses no test could fail on (major).**
+  - `a_runs_secrets_reach_it_only_through_its_proxy_credential`: with egress on, the credential
+    is `ci:watch:keyed`, intercepts only the named secret's host and ends with the run. It fails
+    without `egress_env`.
+  - `a_run_end_the_store_refused_is_written_by_the_next_tick`: a trigger refuses the end's
+    update. It fails without the in-memory buffer.
+  - `runs_at_once_are_bounded_and_the_longest_overdue_goes_first`: `max_runs = 1`. It fails
+    without the sort by due time.
+  - `watches_survive_a_restart` now drops a real run's future and checks that its `sleep`
+    process ends at the next start. It fails without `watch_end_lost`.
+- **Minor findings:**
+  - The detail is the whole output whenever the title cannot hold it (fails with the old
+    newline-only rule).
+  - Due watches start longest overdue first.
+  - The run claim checks `paused` and `ended_reason` unless Run now (`forced`), and the run
+    re-reads the record after the claim (store test `claims_skip_removed_projects_and_paused_watches`).
+  - The watch files have a 1 GiB disk bound (`a_run_that_fills_the_watch_files_is_stopped`, fails
+    with the bound lifted) and are removed-project leftovers.
+  - The CPU soft limit is below the hard one, so SIGXCPU fires and the reason reads "it used its
+    CPU time" (fails with soft equal to hard).
+  - `last_output`, `last_errors` and the pending posts are redacted before they are kept (fails
+    without the redaction).
+- **Nits:**
+  - The error file's length comes from a handle opened before the start.
+  - The script runs as `bash -c -- "$7"` (a script `--version` now fails with 127 instead of
+    printing bash's version, which the test checks).
+  - At most 20 secret names, without duplicates.
+  - The link uses the slug only when it is URL-safe.
+  - Recovery uses `watch_due_again`, which never un-pauses.
+  - Names never change (`update_watch` keeps the name, store test), so notices keep their key.
+- `scripts/cargo nextest run -p yulius -p yulius-store -E '(binary_id(yulius::main) &
+  test(/^watches::/)) | (package(yulius-store) & test(/watches::/))'`: 19 passed.
