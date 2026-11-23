@@ -802,6 +802,10 @@ fn delivery_status(value: &Value) -> Option<String> {
                 _ if round["cut_off"].as_bool() == Some(true) => {
                     "cut off by a usage limit".to_owned()
                 }
+                // Its pull request merged: nothing waits for its report any more (SPEC-633).
+                _ if text(round, "merged_at").is_some() => {
+                    "unreported (the pull request merged without its report)".to_owned()
+                }
                 _ => "no report yet".to_owned(),
             };
             push_line(

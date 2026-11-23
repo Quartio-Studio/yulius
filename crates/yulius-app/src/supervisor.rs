@@ -8287,6 +8287,21 @@ impl App {
                 )
                 .await;
             }
+            // A reviewer's report in the transcript ends its round when its `SubagentStop`
+            // never reached Yulius (SPEC-633 RRE-002).
+            Observation::SubagentReported {
+                agent_id,
+                report,
+                at,
+            } => {
+                self.review_agent_reported(
+                    task_id,
+                    &agent_id,
+                    &report,
+                    source.review_time(at, self.now()),
+                )
+                .await;
+            }
             Observation::SubagentCutOff { agent_id, at, .. } => {
                 self.review_subagent_noted(
                     task_id,

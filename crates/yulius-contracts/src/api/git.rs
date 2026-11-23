@@ -256,6 +256,10 @@ pub struct ReviewRoundView {
     /// The pull request these rounds belong to, when known.
     #[serde(default)]
     pub pr_number: Option<u64>,
+    /// When that pull request merged (RFC 3339): a round with no report by then is unreported,
+    /// not running (SPEC-633 RRE-003).
+    #[serde(default)]
+    pub merged_at: Option<String>,
 }
 
 /// A delivery action that applies at the current stage but is refused now.

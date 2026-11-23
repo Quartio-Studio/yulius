@@ -862,6 +862,18 @@ pub trait CoordinationStore: Send + Sync {
         verdict: Option<&str>,
         model_answered: Option<&str>,
     ) -> AppResult<bool>;
+    /// Ends, with `subagent`'s report, the newest open round of the reviewer `agent` that no
+    /// subagent was linked to and that started at or before `at`, and links it to `subagent`
+    /// (SPEC-633 RRE-001: its `SubagentStart` came before the round). Only while no round of
+    /// the task carries `subagent`; `false` when none was ended.
+    async fn end_unlinked_review_round(
+        &self,
+        task: &TaskId,
+        agent: &str,
+        subagent: &str,
+        at: Timestamp,
+        verdict: Option<&str>,
+    ) -> AppResult<bool>;
     /// Inserts a scope claim.
     async fn insert_claim(&self, claim: &ScopeClaimRecord) -> AppResult<()>;
     /// Active claims of a sandbox.
