@@ -136,6 +136,8 @@ pub(super) enum Sink<'a> {
     CdRun(&'a str, &'a yulius_domain::ids::SandboxId),
     /// A delivery environment run (SPEC-219).
     EnvironmentRun(&'a str),
+    /// A brokered command's run (SPEC-626): its output goes to files read once it ended.
+    Command,
 }
 
 /// What a watched process used, when its host measured it (SPEC-154). Unknown for a job Yulius
@@ -1581,6 +1583,7 @@ impl App {
                                     .update_environment_run(id, &ring.text(), None)
                                     .await;
                             }
+                            Sink::Command => {}
                         }
                     }
                 }

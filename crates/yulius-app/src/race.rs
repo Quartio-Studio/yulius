@@ -204,6 +204,9 @@ pub enum Point {
     /// The leftovers view (SPEC-329's CI, #923): the kept sandboxes' store rows were read; the
     /// scan's state is not read yet. The path is the data directory.
     LeftoversView,
+    /// A brokered run's row is stored (SPEC-626), before its command is read again and run. The
+    /// path is the data directory.
+    CommandRunStored,
     /// `files_roots` (SPEC-340): the sandbox repository was found; its `.git/HEAD` is not opened
     /// yet. The path is the repository's.
     RootsHead,
