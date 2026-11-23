@@ -202,7 +202,23 @@ posting to people other than the owner.
 - **AC-7** (WCH-002, WCH-004) A contained run's plan uses the sandbox root, the holder join in
   CI's group and the watch home as its writable path. A run granted `API_KEY` gets its placeholder
   and the proxy variables, never the value.
-- **AC-8** (WCH-011, WCH-012, WCH-013) is listed with the second pull request's tests.
+- **AC-8** (WCH-011) Over HTTP:
+  - a reader lists but creates nothing;
+  - a writer creates and owns a watch, and a taken name is a 409;
+  - only the owner edits (a new name is a 422), runs now and resumes;
+  - a project administrator pauses and removes;
+  - a removal removes the watch's notices;
+  - each change is audited.
+- **AC-9** (WCH-012) Through the person tools (remote MCP): `watch_create`, `watches_list`,
+  `watch_update`, `watch_run`, `watch_pause` (and resume) and `watch_remove` work for an operate
+  token; a read token lists but creates nothing. The Superagent is served the six tools, with
+  `watches_list` pre-allowed.
+- **AC-10** (WCH-013) The Watches page (Chromium e2e, mock):
+  - it shows each watch's state, schedule, failure streak and allowed buttons;
+  - Run now shows the new result;
+  - Resume, New watch, Edit (with the name fixed and the server's refusal said in the dialog) and
+    Remove after a confirmation all work;
+  - no axe violations.
 
 ## Test plan
 
@@ -222,6 +238,22 @@ posting to people other than the owner.
   - the contained plan through a recording process host, and the secret placeholders (AC-7).
 - Mutation by hand: undo the replacement key, the failure threshold, the pending retry, the
   `ulimit` lines and the lost-run recovery, and record which tests fail.
+
+## Moving "#479 merge-queue targets" onto a watch
+
+The owner's check lives in their Superagent's `superagent-checks.json` on the production
+instance, which no repository change reaches. Once this is deployed, their Superagent does it
+with two calls in the project of #479 (described in the pull request too):
+
+```text
+watch_create {"name": "merge-queue-targets", "every": "1d", "expiry": "never",
+  "script": "[ \"$(date -u +%F)\" \\< 2026-11-24 ] && exit 0\necho \"#479: the merge-queue targets are due today; check them\"\nexit 3"}
+superagent_check_delete {"name": "#479 merge-queue targets"}
+```
+
+Until 2026-11-24 the script prints nothing and costs nothing. On that day it posts the reminder
+once and ends the watch (exit 3). `the_person_tools_manage_watches` runs the same shape of
+script through the tools.
 
 ## Decisions
 
@@ -374,3 +406,18 @@ round 3, each with its test seen failing first or with its fix undone:
 Round 3 approved `1367256ac` with no blocker, major or minor findings. Its one nit was
 documentation: `ulimit -c 0` stops core files, but a piped core handler on the host is still
 called. The operations doc, this Evidence and the test's name now say so.
+
+### Second pull request: managing watches (steps 10 to 13)
+
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^watches::/)'`: all
+  watch tests pass, including `people_manage_watches_over_http` (AC-8) and
+  `the_person_tools_manage_watches` (AC-9).
+- The Cockpit's served tools (`cockpit::a_cockpit_manages_the_project_for_its_owner`), the
+  person tools' order test, the harness's pre-allowed list
+  (`a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`) and the UI
+  contract (`ui_contract::*`: every UI call and mock route is a server route) pass with the new
+  tools and routes.
+- e2e (Chromium, mock): `npx e2e run tests/watches.e2e.ts` passes (AC-10, with axe), as do
+  `tests/navigation.e2e.ts` (the Watches link under More) and `tests/automations.e2e.ts`.
+- Not tested here: the page against a real server in a browser (the e2e suite runs on the mock,
+  whose routes the UI contract test checks against the server's).

@@ -1778,6 +1778,10 @@ and CI's resource group. Nothing needs setting up.
   stored are retried every 15 s.
 - **Secrets.** A watch gets only the agent secrets it names, as placeholders that the egress proxy
   replaces. The proxy's audit actor for its runs is `ci:watch:<name>`.
+- **Managing.** The project's Watches page (under More) lists them, with Run now, Pause/Resume,
+  Edit and Remove; changes are audited as `watch.create`, `watch.update`, `watch.run`,
+  `watch.pause`, `watch.resume` and `watch.remove`. A failing watch shows "Failing" there, and
+  its owner gets one notice `watch:<name>:failing`.
 
 ### CD on this machine
 

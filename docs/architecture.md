@@ -2898,6 +2898,7 @@ flowchart LR
   hold -->|yes| shape["withhold: shape only, withheld says why"]
 ```
 
+A check that a script can decide is a script watch instead ([Script watches](#script-watches)).
 A Superagent's standing jobs are scheduled checks held by Yulius
 ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
 `superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`
@@ -3368,6 +3369,14 @@ becomes a notice for its owner
   script as its own `bash -c --` argument, with no core files. While the project's watch files
   are over 1 GiB, a run is stopped. The process host enforces the timeout. Named agent secrets get placeholders and an
   egress credential (`ci_egress_open`, run `watch:<name>`).
+- **Managing.** `crates/yulius-app/src/watch_api.rs` serves the Watches page
+  (`web/assets/pages/watches.js`), the HTTP routes (`routes/watches.rs`) and the person tools
+  `watches_list`, `watch_create`, `watch_update`, `watch_run`, `watch_pause` and `watch_remove`
+  (`person_tools.rs`: the Superagent and, over the remote MCP, a person's own agent). Readers of
+  the project list; a writer creates and owns; the owner edits, runs now and resumes; the owner or
+  a project administrator pauses and removes, which cancels a going run and removes the watch's
+  notices. Each change and each run's start and end publish `watches.updated`.
+  `superagent_check_set`'s description sends checks a script can decide to `watch_create`.
 - **Posts.** `yulius_domain::watch::outcome` decides a run's end:
   - exit 0 with output posts, and exit 3 posts and ends the watch;
   - other ends are failures, and the third in a row warns once;
@@ -3379,6 +3388,7 @@ becomes a notice for its owner
 
 ```mermaid
 flowchart LR
+  P["Watches page · HTTP · person tools"] -->|"watch_api"| DB
   S["watch_tick (15 s)"] -->|"due, claimed"| R["watch_execute"]
   R -->|"LaunchPlan: ulimits, bash -c script"| H["process host"]
   H -->|"bubblewrap + holder join (CI group)"| SB["sandbox"]
