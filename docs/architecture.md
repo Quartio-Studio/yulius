@@ -1489,9 +1489,21 @@ links the round to Claude Code's subagent. Resuming an unfinished reviewer conti
 Resuming it after its report opens the next round on the current head and keeps its model
 ([ADR-0400](decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md)).
 The first `SubagentStop` ends the round with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
-subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a
-pull request's rounds in the same transaction that records its merge
-(`transition_delivery`), so the task's next pull request starts at round 1.
+subagent off sends no `SubagentStop`, so such a round stays without a report. When the hooks missed
+a round, its report still ends it
+([ADR-0467](decisions/0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md)):
+- **Start came first.** A `PreToolUse` that outlasted the hook client inserts its round after
+  `SubagentStart`, which then linked nothing. A stop whose id no round carries links and ends the
+  newest unlinked open round of its reviewer agent (`end_unlinked_review_round`).
+- **Lost stop.** Reviewers run in the background, and a stop sent while Yulius restarts is lost.
+  The completed `<task-notification>` in the session's transcript
+  (`Observation::SubagentReported`) ends the round linked to that agent id. Rounds that started
+  after that time are left open.
+
+The store closes a pull request's rounds in the same transaction that records its merge
+(`transition_delivery`), so the task's next pull request starts at round 1. A round with no
+report by then keeps no end. The delivery view gives its `merged_at`, and `delivery_status` reads
+it as unreported.
 
 The Codex briefing assigns fresh review children a `yulius_review_<n>` task name.
 `SubagentStart` supplies the child ID and active model. Yulius checks that the sandbox's
@@ -1537,7 +1549,10 @@ sequenceDiagram
     A->>H: SubagentStart (agent_id, agent_type)
     H->>Y: link the round to the subagent
     A->>H: SubagentStop (last_assistant_message)
-    H->>Y: end the unfinished round with its verdict
+    H->>Y: end the unfinished round with its verdict (or the unlinked one of its agent)
+    opt The stop never reached Yulius (a restart)
+        Y->>Y: transcript task-notification (completed, result) ends the round linked to the agent id
+    end
     opt Author continues the same reviewer after its report
         A->>H: SubagentStart (same agent_id)
         H->>Y: open the next round on the current head
