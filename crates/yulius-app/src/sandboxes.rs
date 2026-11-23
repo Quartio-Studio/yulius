@@ -805,8 +805,16 @@ impl App {
         let live = task.status == TaskStatus::Running && idle;
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
-        let (pull, plan_open, spec_unfinished) = if finished {
+        let (pull, plan_open, spec_unfinished, candidate_pending) = if finished {
             let record = store.delivery(&task.id).await?;
+            // An achieved goal whose recorded integration failure the watch has not cleared is
+            // Yulius's to settle, as capacity holds it (SPEC-621 FIN-004).
+            let candidate_pending = live
+                && task.activity == Some(yulius_domain::task::Activity::Done)
+                && self
+                    .local_candidate_blocks(task, record.as_ref())
+                    .await
+                    .unwrap_or(true);
             let observed = self.known_parked_pull(task, record.as_ref());
             let mut pull = self.last_pull_signal(task, &observed);
             if let Some(pr) = observed.pr.filter(|pr| pr.open)
@@ -821,9 +829,14 @@ impl App {
                 pull = Some(PullSignal::InReview);
             }
             let plan_open = plan_open(&store.steps(&task.id).await?);
-            (pull, plan_open, self.spec_unfinished(&task.id).await)
+            (
+                pull,
+                plan_open,
+                self.spec_unfinished(&task.id).await,
+                candidate_pending,
+            )
         } else {
-            (None, false, false)
+            (None, false, false, false)
         };
         Ok(AttentionFacts {
             status: task.status,
@@ -849,6 +862,7 @@ impl App {
             paused: self.is_paused(task).await,
             awaits_start_onboarding: false,
             merge_armed: live && self.merge_is_armed(&task.id),
+            candidate_pending,
         })
     }
 

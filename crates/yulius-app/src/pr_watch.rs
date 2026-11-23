@@ -1938,16 +1938,17 @@ impl App {
                 .try_write()
                 .map_err(|_| AppError::Conflict("The session’s delivery is being checked.".into()))
         };
-        let generation = {
+        let (generation, was_obsolete) = {
             let _writer = change_observation()?;
             let mut observed = lock();
             observed.generation = observed.generation.wrapping_add(1);
-            observed.obsolete = None;
-            observed.generation
+            let was = observed.obsolete.take().is_some();
+            (observed.generation, was)
         };
         let pull = self
             .read_notice_pull(sandbox, decision.singleton.pr)
             .await?;
+        let mut obsolete = false;
         if self
             .candidate_pull_signal(task, sandbox, decision, &pull)
             .is_none()
@@ -1957,7 +1958,12 @@ impl App {
             if observed.generation == generation {
                 observed.obsolete =
                     Some((span.clone(), task.branch.clone(), std::time::Instant::now()));
+                obsolete = true;
             }
+        }
+        // What the task shows follows this observation (SPEC-621 FIN-004): say when it flips.
+        if obsolete != was_obsolete {
+            self.publish_task(&task.id).await;
         }
         Ok(pull)
     }

@@ -474,6 +474,9 @@ pub struct AttentionFacts {
     pub awaits_start_onboarding: bool,
     /// The idle agent's merge is armed: Yulius merges it and tells the agent (SPEC-487 CHN-001).
     pub merge_armed: bool,
+    /// The idle agent's achieved goal still has a recorded integration failure the PR watch has
+    /// not cleared: Yulius re-checks it and tells the agent (SPEC-621 FIN-004).
+    pub candidate_pending: bool,
 }
 
 /// A task's group in the web UI's sidebar (SPEC-001 UI-050). Home's cards and the sandbox tabs
@@ -514,6 +517,7 @@ impl AttentionFacts {
             paused: false,
             awaits_start_onboarding: false,
             merge_armed: false,
+            candidate_pending: false,
         }
     }
 
@@ -559,7 +563,7 @@ impl AttentionFacts {
         let finished =
             self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
         // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
-        if finished && (self.merge_armed || self.staging_wait.is_some()) {
+        if finished && (self.merge_armed || self.candidate_pending || self.staging_wait.is_some()) {
             return G::Working;
         }
         // The idle agent goes on by itself: its background work wakes it, or Yulius does.
@@ -651,6 +655,7 @@ impl AttentionFacts {
             yulius_wait: false,
             staging_wait: None,
             merge_armed: false,
+            candidate_pending: false,
             paused: false,
             ..*self
         }
@@ -1486,6 +1491,21 @@ mod tests {
                 assert_eq!(armed.group(), G::Working, "{activity:?} {pull:?}");
             }
         }
+        // SPEC-621 FIN-004: an achieved goal whose integration failure is not cleared yet is
+        // Yulius's to settle, not Done; a parked task has no session to settle it in.
+        for pull in [None, Some(P::Tested), Some(P::Merged)] {
+            let pending = AttentionFacts {
+                candidate_pending: true,
+                pull,
+                ..running(Some(A::Done))
+            };
+            assert_eq!(pending.group(), G::Working, "{pull:?}");
+        }
+        let parked = AttentionFacts {
+            candidate_pending: true,
+            ..AttentionFacts::new(TaskStatus::Parked, Some(A::Done))
+        };
+        assert_eq!(parked.group(), G::Done);
 
         // After a finished turn the pull request speaks (#35, #139).
         let with = |activity, pull, plan_open| AttentionFacts {

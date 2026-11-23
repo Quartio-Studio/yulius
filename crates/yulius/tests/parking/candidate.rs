@@ -190,6 +190,53 @@ fn a_replacement_merge_is_refused_while_the_reader_settles_a_close() -> TestResu
     })
 }
 
+/// The list, Home and the task's own views show a live owner whose achieved goal still has a
+/// recorded integration failure as waiting on Yulius, not Done, until the watch clears it
+/// (SPEC-621 FIN-004).
+#[test]
+fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResult {
+    use yulius_domain::task::Activity;
+    with_idle_candidate(async |_, app, remote, id, _| {
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let summary = app.task_summary(&owner).await?;
+        assert!(summary.candidate_pending, "{summary:?}");
+        let value = serde_json::to_value(&summary)?;
+        assert_eq!(value["candidate_pending"], true, "{value}");
+        let caller = super::superagent(&owner.sandbox_id, &owner.owner, "admin");
+        let brief = app
+            .tool_task_get(&caller, &json!({"task_id": id.as_str()}))
+            .await?;
+        assert_eq!(brief["shows"], "working", "{brief}");
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "advanced-base".into();
+        let mut events = app.events.subscribe();
+        let told = app.watch_prs(&WatchBounds::default()).await;
+        // The sidebar and an open terminal hear the cleared failure from the watch itself.
+        let mut published = None;
+        while let Ok(envelope) = events.try_recv() {
+            if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event
+                && task.id == id.as_str()
+            {
+                published = Some(task.candidate_pending);
+            }
+        }
+        assert_eq!(published, Some(false), "{told:?}");
+        let summary = app.task_summary(&owner).await?;
+        assert!(!summary.candidate_pending, "{summary:?} {told:?}");
+        let value = serde_json::to_value(&summary)?;
+        assert!(value.get("candidate_pending").is_none(), "{value}");
+        let brief = app
+            .tool_task_get(&caller, &json!({"task_id": id.as_str()}))
+            .await?;
+        assert_eq!(brief["shows"], "done", "{brief}");
+        Ok(())
+    })
+}
+
 /// A task chained after a live owner whose achieved goal has a recorded integration failure
 /// starts only once the watch has observed that failure no longer applies (SPEC-621 FIN-003).
 #[test]
