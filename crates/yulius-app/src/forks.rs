@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use yulius_contracts::api::tasks::{ForkLink, ForkOrigin, ForkTask, TaskSummary};
 use yulius_domain::harness::Harness;
-use yulius_domain::ids::{AccountId, StepId};
+use yulius_domain::ids::{AccountId, StepId, TaskId};
 use yulius_domain::permission::Action;
 use yulius_domain::task::TaskStatus;
 
@@ -193,6 +193,10 @@ impl App {
             supertask: false,
         };
         let created = self.create_task_forked(req, pending).await;
+        if created.is_ok() {
+            // The source's page lists its forks (FRK-008).
+            self.publish_task(&source.id).await;
+        }
         if created.is_err()
             && let Some(dir) = staged
         {
@@ -434,6 +438,29 @@ impl App {
         SessionFork {
             session_id: (harness == Harness::ClaudeCode).then(|| self.deps.crypto.new_id()),
         }
+    }
+
+    /// The tasks whose fork links name `task`: its source and its forks, to publish again once
+    /// it is deleted (FRK-008).
+    pub(crate) async fn fork_neighbours(&self, task: &TaskId) -> Vec<TaskId> {
+        let store = &self.deps.store;
+        let mut ids: Vec<TaskId> = store
+            .fork_of(task)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|f| f.source_task_id)
+            .into_iter()
+            .collect();
+        ids.extend(
+            store
+                .forks_from(task)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|f| f.task_id),
+        );
+        ids
     }
 
     /// The fork links of a task's summary (FRK-008).

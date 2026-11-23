@@ -175,8 +175,10 @@ impl App {
         };
         let decision = idle_move(&input);
         if decision == IdleMove::Stay {
-            // Below the threshold again: an episode without room ended.
-            self.end_no_room(&task.id);
+            // Below the threshold again: an episode without room ended, and its notice with it.
+            if self.end_no_room(&task.id) {
+                self.untell_no_room(task).await;
+            }
             return Looked::Nothing;
         }
         if pinned {
@@ -434,7 +436,7 @@ impl App {
         title: String,
         detail: String,
     ) {
-        let Ok(key) = NoticeKey::parse(&format!("{NOTICE_KEY}{}", task.id)) else {
+        let Some(key) = notice_key(task) else {
             return;
         };
         let link = match self.deps.store.sandbox(&task.sandbox_id).await {
@@ -457,12 +459,33 @@ impl App {
     }
 
     /// An episode without room ended: the task moved, or its subscription is below the
-    /// threshold again.
-    fn end_no_room(&self, task: &TaskId) {
-        if let Some(runtime) = self.existing_runtime(task)
-            && let Ok(mut told) = runtime.rebalance_no_room.lock()
-        {
-            *told = None;
+    /// threshold again. Whether one was open.
+    fn end_no_room(&self, task: &TaskId) -> bool {
+        self.existing_runtime(task)
+            .and_then(|runtime| runtime.rebalance_no_room.lock().ok()?.take())
+            .is_some()
+    }
+
+    /// Removes the task's "stays on" notice once its subscription has room again: no longer
+    /// true, it would stand for a day (SPEC-629 RBL-007).
+    async fn untell_no_room(&self, task: &TaskRecord) {
+        let Some(key) = notice_key(task) else {
+            return;
+        };
+        let removed = self
+            .remove_notice(Some(&task.sandbox_id), Some(&task.owner), &key)
+            .await;
+        if let Err(err) = removed {
+            tracing::warn!(task = %task.id, error = %err, "rebalance: the notice was not removed");
         }
     }
+}
+
+/// The key of `task`'s rebalance notice; `None` (logged) for a task id the key grammar refuses.
+fn notice_key(task: &TaskRecord) -> Option<NoticeKey> {
+    NoticeKey::parse(&format!("{NOTICE_KEY}{}", task.id))
+        .inspect_err(
+            |err| tracing::warn!(task = %task.id, error = %err, "rebalance: no notice key"),
+        )
+        .ok()
 }

@@ -1132,8 +1132,13 @@ impl App {
         // Tasks waiting for this one need a person now (TSK-012).
         self.block_successors_deleted(&task).await;
         let deleted_in = task.sandbox_id.clone();
+        let fork_neighbours = self.fork_neighbours(&task.id).await;
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
+        }
+        // Its source and its forks no longer link to it (SPEC-628 FRK-008).
+        for neighbour in &fork_neighbours {
+            self.publish_task(neighbour).await;
         }
         // A start rule naming the deleted task now sees it as ended (SPEC-017), and a deleted
         // supertask no longer holds its project (SPEC-071).
