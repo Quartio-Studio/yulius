@@ -12,7 +12,7 @@ use tokio::sync::broadcast::error::RecvError;
 use yulius_contracts::api::admin::{AccountUsageView, AccountView};
 use yulius_contracts::api::ci::GateNotice;
 use yulius_contracts::events::UiEvent;
-use yulius_domain::notice::{EXPIRY_MAX_MS, Expiry, NoticeKey, NoticeTone, REPORT_MS};
+use yulius_domain::notice::{EXPIRY_MAX_MS, Expiry, NoticeKey, NoticeTone};
 use yulius_domain::notify::{NoticeKind, account_problem};
 use yulius_domain::time::{Timestamp, parse_rfc3339};
 
@@ -21,6 +21,10 @@ use crate::error::AppResult;
 use crate::model::SandboxRecord;
 use crate::notices::NewNotice;
 use crate::ports::store_ext::NoticeRecord;
+
+/// One subscription reconcile at a time: the tick's and the event loop's (review round 2 of
+/// #1711).
+static ACCOUNT_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Where a subscription notice leads.
 const ACCOUNTS_LINK: &str = "/admin/accounts";
@@ -31,8 +35,17 @@ pub fn account_key(id: &str) -> NoticeKey {
     NoticeKey::lossy("account:", id)
 }
 
+/// Staging ticks in a row a project's workers may all be unable to take the repair before its
+/// people are told of the failure anyway (review round 2 of #1711): ten minutes at a 60 s tick.
+pub const GATE_GRACE_TICKS: u32 = 10;
+
 /// Failures a project's people get one notice each for; the rest share one (review of #1711).
 pub const GATE_NOTICES_MAX: usize = 20;
+
+/// The key of the notice that counts the failures past [`GATE_NOTICES_MAX`].
+fn gates_more_key() -> NoticeKey {
+    NoticeKey::lossy("gates:", "more")
+}
 
 /// The key of an integration failure's notice.
 #[must_use]
@@ -66,19 +79,23 @@ pub fn limit_reset(usage: &AccountUsageView) -> Option<Timestamp> {
 }
 
 /// What a subscription's state calls for (the spec's table): its notice, or none when it is
-/// usable. One that must sign in again waits for a person: a decision, never expiring.
+/// usable. One that must sign in again waits for a person: a decision, never expiring. A limit
+/// with a known reset ends there, and once that reset has passed it calls for none, though the
+/// status still reads limited until the next usage reading. A problem without an end (an
+/// error, a limit whose reset Claude did not give) holds until the subscription is usable: one
+/// notice, not one a day (review round 2 of #1711).
 #[must_use]
 pub fn account_notice(account: &AccountView, now: Timestamp) -> Option<NewNotice> {
     let problem = account_problem(&account.status)?;
     let decision = account.status == "relogin";
     let expiry = match account.status.as_str() {
         "relogin" => None,
-        "limited" => Some(
-            limit_reset(&account.usage)
-                .filter(|at| *at > now && at.millis_since(now) <= EXPIRY_MAX_MS)
-                .map_or(Expiry::After(REPORT_MS), Expiry::At),
-        ),
-        _ => Some(Expiry::After(REPORT_MS)),
+        "limited" => match limit_reset(&account.usage) {
+            Some(at) if at <= now => return None,
+            Some(at) if at.millis_since(now) <= EXPIRY_MAX_MS => Some(Expiry::At(at)),
+            _ => Some(Expiry::Never),
+        },
+        _ => Some(Expiry::Never),
     };
     Some(NewNotice {
         admin_only: true,
@@ -137,7 +154,7 @@ impl App {
                 match rx.recv().await {
                     Ok(envelope) => {
                         if let UiEvent::AccountUpdated { account } = &envelope.event {
-                            app.sync_account_notice(account).await;
+                            app.sync_account_event(account).await;
                         }
                     }
                     Err(RecvError::Lagged(_)) => app.sync_all_account_notices().await,
@@ -152,6 +169,7 @@ impl App {
     /// without an `account.updated` (a usage reading, a refused sign-in, a removal) is caught
     /// within a tick (review of #1711).
     pub async fn sync_all_account_notices(&self) {
+        let _one = ACCOUNT_SYNC.lock().await;
         let store = &self.deps.store;
         let (Ok(accounts), Ok(live)) = (store.accounts().await, self.working_attempts().await)
         else {
@@ -178,6 +196,24 @@ impl App {
                 }
             }
             Err(err) => tracing::warn!(error = %err, "subscription notices could not be read"),
+        }
+    }
+
+    /// An `account.updated` event: reconciled from the stored subscription, read under the
+    /// same lock as the tick's, so the two never post a state the other has moved past (review
+    /// round 2 of #1711); one the store does not hold is taken as the event says.
+    async fn sync_account_event(&self, event: &AccountView) {
+        let _one = ACCOUNT_SYNC.lock().await;
+        let stored = match yulius_domain::ids::AccountId::parse(&event.id) {
+            Ok(id) => self.deps.store.account(&id).await.ok().flatten(),
+            Err(_) => None,
+        };
+        match (stored, self.working_attempts().await) {
+            (Some(account), Ok(live)) => {
+                self.sync_account_notice(&crate::accounts::account_view(&account, &live))
+                    .await;
+            }
+            _ => self.sync_account_notice(event).await,
         }
     }
 
@@ -264,7 +300,8 @@ impl App {
                 expiry: Some(Expiry::Never),
                 ..NewNotice::new(
                     Some(sandbox.id.clone()),
-                    gate_key("more"),
+                    // Its own prefix: no test's key can equal it (review round 2 of #1711).
+                    gates_more_key(),
                     NoticeKind::Failed,
                     NoticeTone::Error,
                     format!("Integration gate: {more} more failing tests"),
@@ -274,9 +311,10 @@ impl App {
         let stored = self
             .deps
             .store
-            .notices_by_prefix(Some(&sandbox.id), "gate:", self.now())
+            .notices_by_prefix(Some(&sandbox.id), "gate", self.now())
             .await?;
-        for old in stored.iter().filter(|n| n.user.is_none()) {
+        let ours = |key: &NoticeKey| key.as_str().starts_with("gate:") || *key == gates_more_key();
+        for old in stored.iter().filter(|n| n.user.is_none() && ours(&n.key)) {
             if !wanted.iter().any(|w| w.key == old.key) {
                 self.remove_notice(Some(&sandbox.id), None, &old.key)
                     .await?;
@@ -346,10 +384,20 @@ mod tests {
             ))
         );
         let unknown = account_notice(&view("limited", AccountUsageView::default()), now);
-        assert_eq!(
-            unknown.and_then(|n| n.expiry),
-            Some(Expiry::After(REPORT_MS))
+        assert_eq!(unknown.and_then(|n| n.expiry), Some(Expiry::Never));
+        let passed = view(
+            "limited",
+            AccountUsageView {
+                primary: window(100.0, "2026-11-22T09:00:00Z"),
+                ..AccountUsageView::default()
+            },
         );
+        assert!(
+            account_notice(&passed, now).is_none(),
+            "its reset has passed"
+        );
+        let error = account_notice(&view("error", AccountUsageView::default()), now);
+        assert_eq!(error.and_then(|n| n.expiry), Some(Expiry::Never));
         let relogin = account_notice(&view("relogin", AccountUsageView::default()), now);
         assert_eq!(relogin.map(|n| (n.decision, n.expiry)), Some((true, None)));
         assert!(account_notice(&view("ok", AccountUsageView::default()), now).is_none());

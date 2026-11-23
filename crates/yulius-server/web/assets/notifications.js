@@ -67,6 +67,7 @@ export function createNotificationCenter(ctx) {
   let seq = 0;
   let expiryTimer = null;
   let destroyed = false;
+  let readsDone = 0;
   const taskTones = new Map(); // task id → last tone seen this session
   const taskEpisodes = new Map(); // task id → last Needs You episode seen this session
 
@@ -91,12 +92,15 @@ export function createNotificationCenter(ctx) {
   function prune() {
     const now = Date.now();
     const kept = items.filter((n) => !expired(n, now));
-    if (kept.length !== items.length) { items = kept; save(); }
+    const dropped = kept.length !== items.length;
+    if (dropped) { items = kept; save(); }
     clearTimeout(expiryTimer);
     expiryTimer = null;
-    if (destroyed) return;
+    if (destroyed) return dropped;
     const ends = items.filter((n) => typeof n.expires === 'string').map((n) => Date.parse(n.expires) - now);
-    if (ends.length) expiryTimer = setTimeout(() => render(), Math.min(Math.max(1000, Math.min(...ends)), 10000));
+    // The panel is drawn again only when something went (review round 2 of #1711).
+    if (ends.length) expiryTimer = setTimeout(() => { if (prune()) render(); }, Math.min(Math.max(1000, Math.min(...ends)), 10000));
+    return dropped;
   }
 
   function render() {
@@ -425,6 +429,11 @@ export function createNotificationCenter(ctx) {
   // repairs, script watches. One entry per project and key; the server's own expiry; removed
   // when the server removes it. Each is told once, also across a reload.
   const noticeKey = (n) => `notice:${n.sandbox_id || '-'}:${n.personal ? 'me' : '-'}:${n.key}`;
+  // What the event stream said while a read of the server's list was under way: newer than that
+  // read's answer, so the answer neither drops nor overwrites it (review round 2 of #1711).
+  const heardDuringRead = new Map(); // notice id → 'posted' | 'removed'
+  const keysDuringRead = new Set();
+  let readSeq = 0;
   function heardNotice(notice) {
     if (!notice || typeof notice.id !== 'string' || typeof notice.title !== 'string') return;
     const key = noticeKey(notice);
@@ -441,8 +450,12 @@ export function createNotificationCenter(ctx) {
       notice: notice.id,
     });
   }
-  watch('notice', heardNotice);
+  watch('notice', (notice) => {
+    if (notice && typeof notice.id === 'string') { heardDuringRead.set(notice.id, 'posted'); keysDuringRead.add(noticeKey(notice)); }
+    heardNotice(notice);
+  });
   watch('notice-removed', (event) => {
+    heardDuringRead.set(event.id, 'removed');
     const kept = items.filter((n) => n.notice !== event.id);
     if (kept.length !== items.length) { items = kept; save(); render(); }
   });
@@ -450,13 +463,24 @@ export function createNotificationCenter(ctx) {
   // while no page was open, or while the event stream was down) goes (review of #1711).
   function readNotices() {
     if (!ctx.api) return;
+    readSeq += 1;
+    const seq = readSeq;
+    heardDuringRead.clear();
+    keysDuringRead.clear();
     ctx.api.get('/api/me/notices').then((list) => {
-      if (destroyed || !Array.isArray(list)) return;
+      // A newer read supersedes this one's answer.
+      if (destroyed || seq !== readSeq || !Array.isArray(list)) return;
       const held = new Set(list.map((n) => n && n.id));
+      for (const [id, what] of heardDuringRead) if (what === 'posted') held.add(id); else held.delete(id);
       const kept = items.filter((n) => !n.notice || held.has(n.notice));
       if (kept.length !== items.length) { items = kept; save(); }
-      list.slice().reverse().forEach(heardNotice);
+      list
+        .filter((n) => n && heardDuringRead.get(n.id) !== 'removed' && !keysDuringRead.has(noticeKey(n)))
+        .reverse()
+        .forEach(heardNotice);
       render();
+      readsDone += 1;
+      button.dataset.noticesRead = String(readsDone);
     }, () => {});
   }
   readNotices();

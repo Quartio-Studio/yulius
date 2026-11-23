@@ -406,12 +406,32 @@ impl App {
         // no task works in the project. A worker only momentarily unable to take a notice (a
         // draft, typing, no session yet) still owns it, so the notice does not flap (review of
         // #1711).
-        let unowned: &[GateNotice] =
-            if failures.is_empty() || !store.gate_workers(&sandbox.id).await?.is_empty() {
-                &[]
+        // A worker that stays unable for the grace period no longer hides it (review round 2
+        // of #1711).
+        let unavailable_for = {
+            let red_and_stuck = !failures.is_empty() && available.is_empty();
+            let mut ticks = self
+                .gate_unavailable_ticks
+                .lock()
+                .map_err(|_| AppError::internal("gate tick counts poisoned"))?;
+            if red_and_stuck {
+                let count = ticks.entry(sandbox.id.clone()).or_default();
+                *count = count.saturating_add(1);
+                *count
             } else {
-                &failures
-            };
+                ticks.remove(&sandbox.id);
+                0
+            }
+        };
+        let unowned: &[GateNotice] = if failures.is_empty() || !available.is_empty() {
+            &[]
+        } else if unavailable_for >= crate::notice_producers::GATE_GRACE_TICKS
+            || store.gate_workers(&sandbox.id).await?.is_empty()
+        {
+            &failures
+        } else {
+            &[]
+        };
         if let Err(err) = self.sync_gate_notices(sandbox, unowned).await {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "gate notices could not be reconciled");
         }

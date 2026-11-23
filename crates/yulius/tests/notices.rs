@@ -972,3 +972,106 @@ async fn subscription_notices_follow_the_stored_state() -> TestResult {
     assert!(ours(p.w.h.app.notices_for(&p.dave.0, None).await?).is_empty());
     Ok(())
 }
+
+/// Review round 2 of #1711 (the reviewer's probe): a limit's notice ends at its reset and is not
+/// posted again by the tick while the stored status still reads limited (no usage reading yet);
+/// the next state of it is told as it comes.
+#[tokio::test]
+async fn a_limit_past_its_reset_is_not_posted_again() -> TestResult {
+    use yulius_app::model::{AccountRecord, AccountStatus};
+    use yulius_app::ports::store::AccountStore as _;
+    use yulius_domain::ids::AccountId;
+    let p = people().await?;
+    let start = yulius_domain::time::parse_rfc3339("2026-01-01T01:00:00Z").ok_or("time")?;
+    let reset = yulius_domain::time::parse_rfc3339("2026-01-01T05:00:00Z").ok_or("time")?;
+    p.w.h.clock.0.store(start.0, Ordering::SeqCst);
+    let id = AccountId::parse("acc3")?;
+    let usage = format!(
+        "{{\"primary\":{{\"used_percent\":100.0,\"window_minutes\":300,\"resets_at\":{}}},\"limit_reached\":false,\"observed_at\":{}}}",
+        reset.0, start.0
+    );
+    p.w.h
+        .store
+        .insert_account(&AccountRecord {
+            id: id.clone(),
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Team Three".into(),
+            credential: None,
+            status: AccountStatus::Limited,
+            usage_json: Some(usage),
+            last_error: None,
+            created_at: p.w.h.app.now(),
+            updated_at: p.w.h.app.now(),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    let ours = |list: Vec<yulius_app::ports::store_ext::NoticeRecord>| {
+        list.into_iter()
+            .filter(|n| n.key.as_str() == "account:acc3")
+            .map(|n| (n.id, n.title, n.expires_at.map(|t| t.0)))
+            .collect::<Vec<_>>()
+    };
+    p.w.h.app.sync_all_account_notices().await;
+    let first = ours(p.w.h.app.notices_for(&p.dave.0, None).await?);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].2, Some(reset.0));
+    // Thirty seconds past the reset, no usage reading yet: the next tick.
+    p.w.h.clock.0.store(reset.0 + 30_000, Ordering::SeqCst);
+    p.w.h.app.sync_all_account_notices().await;
+    let after = ours(p.w.h.app.notices_for(&p.dave.0, None).await?);
+    assert!(
+        after.is_empty(),
+        "a limit notice was posted after its reset: {after:?}"
+    );
+    Ok(())
+}
+
+/// Review round 2 of #1711: an error, or a limit whose reset is unknown, holds until the
+/// subscription is usable: one notice, not one a day.
+#[tokio::test]
+async fn a_lasting_subscription_problem_is_told_once() -> TestResult {
+    use yulius_app::model::{AccountRecord, AccountStatus};
+    use yulius_app::ports::store::AccountStore as _;
+    use yulius_domain::ids::AccountId;
+    let p = people().await?;
+    let id = AccountId::parse("acc4")?;
+    p.w.h
+        .store
+        .insert_account(&AccountRecord {
+            id: id.clone(),
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Team Four".into(),
+            credential: None,
+            status: AccountStatus::Error,
+            usage_json: None,
+            last_error: Some("refused".into()),
+            created_at: p.w.h.app.now(),
+            updated_at: p.w.h.app.now(),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    let ids = || async {
+        Ok::<_, Error>(
+            p.w.h
+                .app
+                .notices_for(&p.dave.0, None)
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str() == "account:acc4")
+                .map(|n| n.id)
+                .collect::<Vec<_>>(),
+        )
+    };
+    p.w.h.app.sync_all_account_notices().await;
+    let first = ids().await?;
+    assert_eq!(first.len(), 1);
+    p.w.h.clock.0.fetch_add(2 * DAY_MS, Ordering::SeqCst);
+    p.w.h.app.prune_notices_now().await;
+    p.w.h.app.sync_all_account_notices().await;
+    assert_eq!(ids().await?, first, "still the one notice two days on");
+    Ok(())
+}

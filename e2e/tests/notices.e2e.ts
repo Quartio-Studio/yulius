@@ -139,3 +139,46 @@ test('an entry goes at its expiry while the panel stays closed', async ({ app, b
   await expect.poll(() => entries(browser), { timeout: 15_000 }).toEqual([]);
   await expect(browser.locator('.notif-badge')).toBeHidden();
 });
+
+/** How many of the server's notice lists the bell has handled (its button says). */
+const readsHandled = (browser: Browser) => browser.evaluate(() => Number((document.querySelector('.notif-btn') as HTMLElement | null)?.dataset.noticesRead || 0));
+
+test('a resync drops a notice the server no longer holds', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await firstShown(browser.locator('.notif-btn'));
+  await eventsConnected(browser);
+  await post(browser, { id: 'nt_missed', key: 'gate:quick::a', sandbox_id: 'sb_studio', tone: 'error', title: 'Integration gate: quick::a fails' });
+  await expect.poll(() => entries(browser).then((list) => list.length)).toBe(1);
+  // Removed while the event stream was down: no `notice.removed` came, then a resync.
+  await browser.evaluate(() => {
+    const m = (window as unknown as Mocked & { __yuliusMock: { resync(): void; notices: { list: unknown[] } } }).__yuliusMock;
+    m.notices.list = [];
+    m.resync();
+  });
+  await expect.poll(() => entries(browser)).toEqual([]);
+});
+
+test('a notice posted while the server list is read stays', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await firstShown(browser.locator('.notif-btn'));
+  await eventsConnected(browser);
+  await expect.poll(() => readsHandled(browser)).toBeGreaterThan(0);
+  const handled = await readsHandled(browser);
+  const reads = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.notices.reads);
+  // The reread is answered from the list as it was (empty); the notice is posted, and its event
+  // heard, before that answer lands (the reviewer's probe, round 2 of #1711).
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked & { __held: unknown[]; __yuliusMock: { resync(): void; notices: { list: unknown[] } } };
+    w.__yuliusMock.resync();
+    w.__yuliusMock.postNotice({ id: 'nt_race', key: 'gate:quick::a', sandbox_id: 'sb_studio', tone: 'error', title: 'Integration gate: quick::a fails' });
+    w.__held = w.__yuliusMock.notices.list;
+    w.__yuliusMock.notices.list = [];
+  });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.notices.reads)).toBeGreaterThan(reads);
+  await browser.evaluate(() => {
+    const w = window as unknown as { __held: unknown[]; __yuliusMock: { notices: { list: unknown[] } } };
+    w.__yuliusMock.notices.list = w.__held;
+  });
+  await expect.poll(() => readsHandled(browser)).toBeGreaterThan(handled);
+  expect((await entries(browser)).map((e) => e[1])).toEqual(['Integration gate: quick::a fails']);
+});

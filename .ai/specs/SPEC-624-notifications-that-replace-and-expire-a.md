@@ -63,7 +63,7 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - **NTC-004 Expired is hidden.** A notice whose `expires_at` has passed is left out of every read:
   `GET /api/me/notices`, the person tools `notices_list`, the digest and the bell. The bell hides
   it at its time without reloading. The background tick deletes expired notices within one tick
-  (30 s), and keeps at most 200 per (project, recipient). The cap drops the oldest notices that
+  (60 s), and keeps at most 200 per (project, recipient). The cap drops the oldest notices that
   wait for no decision first, and pages hear of each one it drops. A read decides which projects
   the reader sees before it applies its limit, so notices they cannot see never crowd theirs out.
 - **NTC-005 A decision never expires silently.** A notice posted with `decision: true` (it waits
@@ -96,15 +96,17 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - **NTC-010 Yulius's own repeated notices use keys** (table below):
   - A subscription problem is posted as `account:<id>` and removed once the subscription is
     usable again. A usage limit expires at its reset when the reset is known.
-  - An integration failure while no task works in the project is posted to the project's
-    people as `gate:<test>`: the failing test, its first failing revision and the merge that
-    showed it, and a link to the CI page. At most 20 failures get a notice each, and the rest
-    share `gate:more`. It is removed once the failure is repaired or a task works in the project.
-    A worker that is only momentarily unable to take a notice still owns it. `GateNotice`
-    carries its `key`.
+  - An integration failure is posted to the project's people as `gate:<test>` while no task
+    works in the project, or while every task that does has been unable to take the repair for
+    10 staging ticks in a row (`GATE_GRACE_TICKS`, about ten minutes). The notice holds the
+    failing test, its first failing revision and the merge that showed it, and a link to the CI
+    page. At most 20 failures get a notice each, and the rest share `gates:more`. A notice is
+    removed once the failure is repaired or a worker can take the repair again. A worker that is
+    only momentarily unable to take a notice still owns it, so the notice does not flap.
+    `GateNotice` carries its `key`.
   - A subscription's notice follows its stored state. `account.updated` updates it at once,
     and the background tick also catches a status written without one, and removes the notice
-    of a subscription that no longer exists. A repeat is compared with the texts as posting
+    of a subscription that no longer exists. Both read the stored subscription under one lock. A repeat is compared with the texts as posting
     stores them, so a redacted or cut text is no news.
   - The prefixes `gate:` and `account:` belong to these producers, and `watch:` to #614.
     `App::post_notice` is internal: no person or agent posts through it.
@@ -128,9 +130,9 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 | Browser action request | bell | `browser:<tab>` (project) | never while asked (decision); 1 day once cleared |
 | Automation run failed / started a task | bell | `automation:<id>` (project) | 3 days |
 | Subscription needs to sign in again | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | never (decision); removed when usable |
-| Subscription at its usage limit | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | its reset when known, else 1 day; removed when usable |
-| Subscription reports an error | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | 1 day; removed when usable |
-| Integration failure with no repair worker | bell, Telegram, Status, CI page, `notices_list` | `gate:<test>` (project) | never while unrepaired; removed when repaired or owned |
+| Subscription at its usage limit | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | its reset when known (none is posted once it has passed); else until usable; removed when usable |
+| Subscription reports an error | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | until usable, then removed (told once, not each day) |
+| Integration failure with no repair worker | bell, Telegram, Status, CI page, `notices_list` | `gate:<test>` (project), past 20 failures `gates:more` | never while unrepaired; removed when repaired or owned |
 | End-of-day digest | bell, Telegram | `digest` (person) | 3 days |
 | Update available / update failed | bell (superadmins) | `update` / `update-run:<id>` | 7 days |
 | Connection trouble | bell | `connections:<trouble id>` | 1 day |
@@ -401,4 +403,41 @@ without its fix:
     passed.
   - Library crates: 1,874 passed.
   - Chromium: 1,344 passed, 1 configured skip.
+  - Clippy `-D warnings` clean, and `scripts/dev quick` passed.
+
+### Review round 2 of PR #1711 (head `bfdf9c659`): request changes, all answered
+
+All findings except the last nit were in this PR's own code:
+- **A limit's notice came back after its reset (major).** Once a known reset has passed,
+  `account_notice` calls for no notice. An error, or a limit with no known reset, holds until
+  the subscription is usable (`Expiry::Never`), so it is told once rather than each day; the
+  spec table says so. Covered by the reviewer's probe, adopted as
+  `notices::a_limit_past_its_reset_is_not_posted_again`, and by
+  `a_lasting_subscription_problem_is_told_once`. Both failed before the fix.
+- **The bell's reread could drop a live notice (minor).** A read keeps what the event stream
+  said while it ran, and a newer read supersedes an older one's answer.
+  `notices.e2e.ts` "a notice posted while the server list is read stays" (the reviewer's probe)
+  failed with `[]` before the fix. The button's `data-notices-read` counts the reads handled.
+- **The resync half had no test (minor).** Now covered by "a resync drops a notice the server no
+  longer holds". The background call itself stays untested; the tests call
+  `sync_all_account_notices` directly.
+- **The tick and the event loop raced (minor).** Both reconcile under one lock
+  (`ACCOUNT_SYNC`) from the stored subscription. An event for a subscription the store does not
+  hold is taken as it says. The Telegram seed test now stores `limited` before publishing it,
+  as Yulius does.
+- **Direction: a long-unavailable worker hid a red gate (minor).** After 10 staging ticks in a
+  row with no worker able to take the repair (`GATE_GRACE_TICKS`), the people are told.
+  `staging::a_worker_unavailable_past_the_grace_period_raises_the_gate_notice` fails with the
+  grace rule disabled.
+- **Nits:**
+  - The summary key is `gates:more`, so it can no longer equal a test named `more`.
+  - The bell's timer redraws only when an entry went.
+  - The README row names the new tests.
+  - NTC-004 says 60 s (pre-existing).
+  - `gate_workers` is still read twice per project and tick when the branch is red: one
+    indexed query, kept for clarity.
+- Runs after the round-2 fixes:
+  - `yulius::main`: 2,712 passed.
+  - Library crates: 1,889 passed.
+  - Chromium: 1,350 passed, 1 configured skip.
   - Clippy `-D warnings` clean, and `scripts/dev quick` passed.

@@ -320,6 +320,10 @@ pub struct App {
     pub(crate) channel: OnceLock<crate::telegram::ChannelServices>,
     /// Set once Yulius's own notice producers run (SPEC-624 NTC-010).
     pub(crate) notice_producers: OnceLock<()>,
+    /// Per project: staging ticks in a row with a red branch and no worker able to take its
+    /// repair (SPEC-624, `GATE_GRACE_TICKS`).
+    pub(crate) gate_unavailable_ticks:
+        std::sync::Mutex<std::collections::HashMap<yulius_domain::ids::SandboxId, u32>>,
     /// Serializes writes of sandbox profiles, so the Vidoc switch and a profile update never undo
     /// each other (SPEC-338 VOF-001).
     pub(crate) profile_writes: tokio::sync::Mutex<()>,
@@ -451,6 +455,7 @@ impl App {
             vidoc: OnceLock::new(),
             channel: OnceLock::new(),
             notice_producers: OnceLock::new(),
+            gate_unavailable_ticks: std::sync::Mutex::default(),
             profile_writes: tokio::sync::Mutex::new(()),
             updates: crate::updates::UpdateState::default(),
             move_helper: OnceLock::new(),

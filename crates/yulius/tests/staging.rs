@@ -479,6 +479,43 @@ async fn a_momentarily_busy_worker_raises_no_gate_notice() -> TestResult {
     Ok(())
 }
 
+/// Review round 2 of #1711: a worker that stays unable to take the repair for the grace period
+/// (here: no session at all) no longer hides the failure from the project's people.
+#[tokio::test]
+async fn a_worker_unavailable_past_the_grace_period_raises_the_gate_notice() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    named_gate(&f, &revision, &["flaky::result"]).await?;
+    agent(&f, "worker").await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox = sandbox(&f).await?;
+    let gate = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            f.h.app
+                .notices_for(&alice, Some(&sandbox.id))
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str().starts_with("gate:"))
+                .count(),
+        )
+    };
+    for _ in 1..yulius_app::notice_producers::GATE_GRACE_TICKS {
+        f.h.app.tell_gate_repairs(&sandbox).await?;
+        assert_eq!(gate().await?, 0, "within the grace period");
+    }
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(gate().await?, 1, "past it, the people hear of it");
+    Ok(())
+}
+
 /// Review of #1711: a red branch with many failing tests gives at most twenty notices and one
 /// that counts the rest, stable across ticks.
 #[tokio::test]
@@ -504,7 +541,7 @@ async fn many_unrepaired_failures_are_bounded_notices() -> TestResult {
                 .notices_for(&alice, Some(&sandbox.id))
                 .await?
                 .into_iter()
-                .filter(|n| n.key.as_str().starts_with("gate:"))
+                .filter(|n| n.key.as_str().starts_with("gate"))
                 .map(|n| (n.id, n.key.to_string()))
                 .collect();
         list.sort();
@@ -513,7 +550,10 @@ async fn many_unrepaired_failures_are_bounded_notices() -> TestResult {
     f.h.app.tell_gate_repairs(&sandbox).await?;
     let first = gate().await?;
     assert_eq!(first.len(), 21, "{first:?}");
-    assert!(first.iter().any(|(_, key)| key == "gate:more"), "{first:?}");
+    assert!(
+        first.iter().any(|(_, key)| key == "gates:more"),
+        "{first:?}"
+    );
     f.h.app.tell_gate_repairs(&sandbox).await?;
     assert_eq!(gate().await?, first, "stable across ticks");
     Ok(())

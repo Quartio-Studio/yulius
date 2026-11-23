@@ -924,6 +924,16 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
         sent[1].starts_with(&format!("Needs you · app\n#{} task t2\n", first.number + 1)),
         "{sent:?}"
     );
+    // Stored first, as the accounts code does before it publishes the view.
+    w.h.store
+        .set_account_state(
+            &AccountId::parse("acc1")?,
+            AccountStatus::Limited,
+            None,
+            None,
+            w.h.app.now(),
+        )
+        .await?;
     account_event(&w, "limited");
     let sent = w.fake.wait_sent(100, 3).await?;
     assert!(
