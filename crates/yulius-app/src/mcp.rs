@@ -804,6 +804,22 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
+            name: "command_run".into(),
+            description: "Run a brokered command of this project (commands_list) by name with your arguments (SPEC-626). Yulius runs it outside your sandbox, in a fresh empty home with its key as a temporary file, bounded in time and output, and answers its state, exit_code, stdout and stderr with every agent secret blanked out. Refused, with the reason: an argument naming a path (/ or ~, or with slashes only owner/repo-like values), a flag Yulius sets itself (refuse), a first argument that is not an allowed subcommand, a task not allowed to run it. Set changes: true when the run changes something (a deploy, an upload): a command that asks for approval then waits for a person, as it also does with one of its send_flags. A call waits up to 4 minutes; a run that is still waiting or running answers its id: call command_result with it. In a shell, `yulius run NAME ARGS...` does all of this and exits with the command's code.".into(),
+            input_schema: schema(json!({
+                "name": {"type": "string", "description": "The command's name from commands_list"},
+                "args": {"type": "array", "items": {"type": "string"}, "description": "Your arguments, after the command's fixed ones (the subcommand first when it has subcommands)"},
+                "changes": {"type": "boolean", "description": "true when this run changes something"}
+            }), &["name"]),
+        },
+        ToolDescriptor {
+            name: "command_result".into(),
+            description: "Wait up to 4 minutes for a brokered run your task started (command_run's id) and answer its state, command line and time; once it ended, its exit_code, stdout and stderr. Without an id it reads your task's newest run: for a command_run call cut before it answered.".into(),
+            input_schema: schema(json!({
+                "id": {"type": "string", "description": "The run's id from command_run; none: your task's newest run"}
+            }), &[]),
+        },
+        ToolDescriptor {
             name: "secrets_list".into(),
             description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to (and requested_hosts waiting for a person to allow, see secret_request_hosts), the method and path rules that limit some to certain requests, and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
             input_schema: schema(json!({}), &[]),
@@ -1253,6 +1269,8 @@ impl App {
             "cd_rollback" => self.tool_cd_rollback(ctx, &args).await,
             "needs_you" => self.tool_needs_you(ctx, &args).await,
             "sandbox_handoff" => self.tool_sandbox_handoff(ctx, &args).await,
+            "command_run" => self.tool_command_run(ctx, &args).await,
+            "command_result" => self.tool_command_result(ctx, &args).await,
             "production_protect" => self.tool_production_protect(ctx).await,
             "reference_repo" => self.tool_reference_repo(ctx, &args).await,
             "issue_create" => self.tool_issue_create(ctx, &args).await,

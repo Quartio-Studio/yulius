@@ -408,6 +408,15 @@ fn nothing_has_room_is_told_once() -> TestResult {
                 .is_some_and(|d| d.contains("no other Claude subscription has room")),
             "{told:?}"
         );
+        // Its subscription below the threshold again: the episode ends and its notice goes.
+        probe.set("a-first", usage(10.0, 4 * HOUR, 90.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        assert_eq!(app.rebalance_now().await, Default::default());
+        let key = format!("rebalance:{id}");
+        let stored = app.my_notices(&ctx(&app, &user).await?).await?;
+        assert!(!stored.iter().any(|n| n.key == key), "{stored:?}");
+        probe.set("a-first", usage(10.0, 4 * HOUR, 97.0, 100));
+        refresh(&app, &user, "a-first").await?;
         // Room again: the task moves, and that ends the episode.
         probe.set("b-second", usage(20.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;

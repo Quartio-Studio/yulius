@@ -1,6 +1,6 @@
 ---
 yulius-task: 96eea568-73fb-4b39-8179-d2211f150f51
-status: in-progress
+status: done
 ---
 
 # SPEC-628. Fork a task: a new task continues from the same conversation, separately
@@ -61,10 +61,11 @@ separately. The owner approved this on 22 Nov 2026 after a review of iTermX, who
 - [x] Tests that fail without the fork: fixture conversation carried, branch at the source head, source unchanged
 - [x] Docs for the backend: architecture, api, ADR-0463 and the changes log
 - [x] Independent review of the backend pull request
-- [ ] Fork action in the task menu and on the task page, with its dialog
-- [ ] Fork origin and forks shown on both task pages
-- [ ] End-to-end spec of the Fork dialog and the origin shown on both pages
-- [ ] Product docs and the changes log for the UI; independent review of the UI pull request
+- [x] Fork action in the task menu and on the task page, with its dialog
+- [x] Fork origin and forks shown on both task pages
+- [x] End-to-end spec of the Fork dialog and the origin shown on both pages
+- [x] Product docs and the changes log for the UI; independent review of the UI pull request
+- [x] Agent shim passes yulius run, which the dev gate's session-command test needs (staging fix forward)
 
 ## Acceptance criteria
 
@@ -205,3 +206,76 @@ it. `tool_task_fork` now asks `require_reader` and `require_transcript_reader` b
 staged. Test: `peer_status::a_personal_tasks_conversation_is_not_forked_by_a_task_without_its_secrets`
 (bob's agent and an automation's are refused with that sentence and nothing is created; alice's
 other task passes the check). It failed before the change ("no conversation to fork yet").
+
+The backend was merged into dev as #1706 (`6611b4d54`), from PR head `f7504a134`, on green Yulius CI.
+
+UI pull request (Plan items 9 to 12):
+
+- `actions.js`: Fork… sits in the task menu, both on the page and on a sidebar row. It is off,
+  with the reason in its name, without write access, for an Antigravity task, and for a task that
+  has not started. Its dialog asks what to do differently, a model of the task's harness and a
+  subscription of its provider. It says the source goes on untouched, uncommitted changes stay
+  behind, and the new task and its copy of the conversation are the forker's. It then opens the
+  fork.
+- `taskview.js`: the strip shows a "Fork of #N" chip linking to the source, with the commit in
+  its title, and a "Forked: #M" chip for each fork. `pages/taskinfo.js`: a Fork… button beside
+  Review changes, and "Forked from" and "Forks" rows. The mock serves
+  `POST /api/tasks/{tid}/fork`, `forked_from` and `forks`.
+- `cd e2e && npx e2e run tests/fork.e2e.ts`: 3 passed. These cover the menu's dialog (no WCAG
+  violations), the message sent, the fork opened with its chip, the source's chip back, the
+  details page's button and Forks row, and the refusal reasons for an Antigravity task and a
+  queued one. The neighbouring specs (menus, ownership, consistency, git, handoffs, archive):
+  80 passed.
+- `ui_contract` (route literals against the router): 12 passed.
+- Round-5 nits: the same person's task's pass in
+  `peer_status::a_personal_tasks_conversation_is_not_forked_by_a_task_without_its_secrets` now
+  asserts "no conversation to fork". `task_fork` joins the disabled-owner case of
+  `peer_status::a_task_reads_only_what_its_owner_may_view`. With `require_reader` removed, that
+  case still passes, because `manage_authority` refuses a disabled person first. That check stays
+  as the reviewer called it: defence in depth.
+
+UI review round 1 (Fable 5.2, head `3bcd4bcf5`): request changes, 1 major, 4 minor and 3 nits in
+own code, and 1 pre-existing. Answered:
+
+- Major: the source's page learned of its fork only through an event the mock sent and the server
+  did not. The server now publishes the source after a fork, and a deleted task's source and forks
+  (`fork_neighbours`, in `delete_task_as`). The client takes `forked_from` and `forks` from every
+  summary and detail, with no stale value kept when they are absent (`pickSummary`,
+  `lifecycleSummary`, the task view's `update`). Test:
+  `forks::a_fork_and_its_deletion_publish_the_other_task` (the source is published with its fork,
+  then without a deleted fork, and the fork is published with its deleted source's id gone). It
+  failed before the change ("the source is published with its fork: []").
+- Minor:
+  - `forkWhy` refuses a `not_started` task.
+  - A refusal shows inside the dialog, through `openModal`'s error line.
+  - The message is counted in bytes (64 KiB) in the dialog and in the mock.
+  - The details page's Fork… uses `aria-disabled`, with the reason in words beside it
+    (`aria-describedby`).
+  - The mock's delete clears its source's and forks' links.
+- e2e (`tests/fork.e2e.ts`, now 4 tests): a `not_started` task's Fork… is off with its reason; the
+  details page's off state shows its reason, opens no dialog from the keyboard and has no WCAG
+  violations; a refusal is said in the dialog; deleting the source leaves the fork a plain "Fork of
+  #4" chip whose title says "(deleted since)".
+- Nits: the mock answers 200, and its other-provider refusal says "cannot take the fork".
+- Pre-existing: `openModal` leaves focus on the body after a failed action. Filed as
+  [#1714](https://github.com/Quartio-Studio/yulius/issues/1714); it is outside this change, since
+  `openModal` is unchanged on dev.
+- After the fixes: `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main)'` 2671 passed,
+  24 skipped; `-p yulius-app -p yulius-server` 749 passed; the fork e2e spec 4 passed; menus,
+  ownership, consistency, git and archive 75 passed.
+
+UI review round 2 (Fable 5.2, head `628f488a0`): approve; the round-1 findings are resolved with
+tests. One test-only nit is left: the dialog's 64 KiB byte check has no e2e case. The reviewer
+observed it by probe: "40,000 two-byte characters give the field error "Keep it to 64 KiB.",
+focus stays in the field and nothing is sent."
+
+Not tested here: a Codex fork against the real Codex service (the reviewer's run used a local stub
+API); Antigravity, refused by design; the UI against a real server (the e2e runs against the
+page's mock, whose fork route mirrors the server's refusals).
+
+Staging (request `e4654709`, revision `46b67ad`): gate_failed, run `ab04d403`, test (1/2):
+`yulius::bin/yulius tests::the_agent_wrapper_passes_every_session_command` ("run not in [wait,
+tool, security-scan, remove]"). #1715 (brokered commands) added `yulius run` "In a task's session"
+without adding it to the agent's `yulius` shim (`identity::agent_yulius_shim`). The same failure is
+on dev at `7dc264180` (run `72091baf`). Fixed forward here: the shim passes `run` and names it in
+its usage. The test passes, and `identity::tests` (11) passes with a `run` case.

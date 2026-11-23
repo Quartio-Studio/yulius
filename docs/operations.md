@@ -879,9 +879,10 @@ subscription with "Run on…" or "Continue on…" stays there until the pool mus
 An idle goal session of Claude Code or Antigravity is not restarted (its goal would be typed
 again): with parking on (`YULIUS_PARK_AFTER_MINUTES` above 0) it is parked once quiet for a
 minute and resumes on a subscription with room when written to; with parking off it stays.
-Each move is a subscription switch with the reason `rebalance: …` in the task's info; the journal
-logs each pass that did something (`rebalance pass`) and each task it kept, with why
-(`rebalance: the idle task stays for now`). Set a harness's variable to 98 to turn it off: no
+Each move is a subscription switch with the reason `rebalance: …` in the task's info and a notice
+for the task's owner (`rebalance:<task id>`; in Telegram under "Subscription problems"); the journal
+logs each pass that moved or parked a task (`rebalance pass`, at info) and, at debug, each task it
+kept with why (`rebalance: the idle task stays for now`). Set a harness's variable to 98 to turn it off: no
 pass moves or parks its tasks, and the pool moves them only at 98 % and at a limit, as before.
 
 ### Resource limits

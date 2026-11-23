@@ -2376,7 +2376,8 @@ of its own, `launch_attempt` places the stored copy in the fork worktree's proje
 `--resume <source> --fork-session --session-id <new>`; for Codex, `codex fork <source>`. The
 Antigravity CLI cannot fork at launch, so its tasks are refused. The opening message names the
 fork, its branch and spec and the source's commit, then the person's message. Later launches
-resume the fork's own session.
+resume the fork's own session. A fork publishes its source's summary, and deleting a task
+publishes its source and its forks, so each page's links stay current.
 
 ```mermaid
 flowchart LR
@@ -3132,20 +3133,56 @@ A CLI that needs a key file (a deploy tool, a cloud SDK with a service-account J
 tool) runs outside the agent's sandbox
 ([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
 [decision 0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md),
-`crates/yulius-app/src/commands.rs`, rules in `yulius_domain::commands`). A project's
-administrators define a command next to its secrets (`commands`, migration 0089, one JSON
-definition per row, names unique in the project): its binary on the host's system, the agent
-secret its runs get as a file (the project's, else a global one switched on there, never a
-personal or production one: `App::command_secret`), the tasks that may run it, its approval,
-fixed arguments and env with `{keyfile}`, `{home}` and, in env only, `{secret}`, allowed
-subcommands, flags Yulius owns and a time limit. Agents and the Superagent list them with
-`commands_list`.
+`crates/yulius-app/src/commands.rs`, `commands_run.rs`, `ci/brokered.rs`, rules in
+`yulius_domain::commands`).
+
+**Definitions.** A project's administrators define a command next to its secrets (`commands`,
+migration 0089, one JSON definition per row, names unique in the project): its binary on the
+host's system (never in `/tmp`, `/home`, `/proc` and the like or Yulius's data directory), the
+agent secret its runs get as a file, the tasks that may run it, its approval, fixed arguments and
+env with `{keyfile}`, `{home}` and, in env only, `{secret}`, allowed subcommands, flags Yulius
+owns and a time limit. Saving one decides which program gets the secret's value, so the person
+must manage that secret (a global one: an instance administrator) and, for a secret allowed use by
+use, have unlocked the vault with a fresh two-factor code in a browser session
+(`App::bind_command_secret`, ADR-0317). The row keeps the secret's id (`secret_id`):
+`App::command_secret` gives a run that secret only while its NAME still resolves to it (project
+before global, never personal) and it is no production secret. Agents and the Superagent list
+commands with `commands_list`.
+
+**Runs.** A task's agent calls `command_run {name, args, changes}` or `yulius run NAME ARGS` in a
+shell (`crates/yulius/src/run_cli.rs`, through the task token as `yulius tool`). Refusals are
+audited `command.refused`: another project's or an unknown name, a task outside `tasks`, an
+invisible character, a path (`/` or `~`, `..`, `file:`), an owned flag in any form a parser
+reads (abbreviated, single-dash long, inside a short cluster), a first argument outside the
+subcommands, a secret not set up, and (until approvals) a run that needs one. A run is a row of
+`command_runs` (`running`, then `done`, `timed_out`, `output_limit`, `failed` or `lost`) and
+runs on its own tokio task, so a cut call leaves nothing half done: the call waits up to 240 s
+(`command_wait_ms`) on `App::command_runs_changed` and answers its state, and `command_result`
+waits again. At its start the command is read again and runs only as it was asked. The process
+host runs it through `ci_watch` in the project's production holder (`cd_containment` for the
+production stage, without its Docker directory): the host's read-only system, its own folder
+`<data>/cd/<sid>/runs/cmd-<run>/work` with a fresh `home` (the working directory), `tmp` and the
+key at `key/<random>/key` (0600, rebuilt as a key file from a stored key block), an environment of
+`HOME`, `PATH`, `LANG`, `TERM`, `TMPDIR` and the definition's env (`{secret}` only through the
+process environment), stdin empty and stdout and stderr in two files. It is stopped at its time
+limit or once its files pass 16 MiB. Yulius makes `out` and `err` (`O_NOFOLLOW`) before the run
+and reads them back through those handles, so a link or FIFO the run puts at their paths is never
+followed. Each stream is redacted with `redact_for_sandbox` and then cut to 96 KiB of JSON
+before it is stored or returned. At most 4 runs of a project's commands run at once
+(`MAX_RUNNING`, counted and stored in one transaction by the run's own task). Its files go when it ends, and a starting server
+records a run it did not see end as `lost` and removes its files (`App::reconcile_command_runs`).
+Every run is audited `command.run` with the redacted command line, outcome, exit code and time.
 
 ```mermaid
 flowchart LR
-  ADM["Administrator (Secrets page, API)"] -->|"define, change, remove (audited command.*)"| DEF[("commands: one JSON definition per project and name")]
+  ADM["Administrator who manages the secret (two-factor for a guarded one)"] -->|"define, change, remove (audited command.*)"| DEF[("commands: definition + secret_id")]
   DEF --> L["commands_list: task agents, the Superagent"]
-  DEF -.->|"secret NAME → project or global agent secret, never personal or production"| V[("vault")]
+  AG["Task agent: command_run / yulius run"] -->|"checks: project, task, arguments, secret"| RUN[("command_runs")]
+  RUN -->|"tokio task: ci_watch"| PH["Production holder sid.prod: host's read-only system, fresh home, key file 0600, no Docker"]
+  V[("vault: secret_id")] -.->|"key file, {secret} env"| PH
+  PH -->|"stdout, stderr, exit code"| RED["redact_for_sandbox, cut 96 KiB"]
+  RED --> RUN
+  RUN -->|"command_result (waits up to 240 s)"| AG
 ```
 
 ## Agent secrets in CI jobs

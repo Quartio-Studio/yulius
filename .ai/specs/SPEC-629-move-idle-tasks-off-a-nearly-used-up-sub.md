@@ -85,7 +85,8 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - **RBL-004** A parked task holds no subscription. Its resume is a placement (RBL-002), so it
   resumes off a subscription past the threshold unless it is pinned (RBL-005).
 - **RBL-005** A person's choice of a subscription pins the task to it: "Run on…" (`switch` with
-  `account_id`) and "Continue on…" (`continue` with `account_id`) store the chosen subscription
+  `account_id`), "Continue on…" (`continue` with `account_id`) and a fork started on a named
+  subscription (`fork` with `account_id`, SPEC-628) store the chosen subscription
   as the task's pin. The rebalance never moves a task whose live run is on its pin, and a
   parked task resumes on its pin while the pin can take it (the person's-choice rule, below
   100 %), else where the pool places it. A pin ends once the task runs on another subscription
@@ -113,8 +114,8 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   below it says so once per episode: one terminal line ("⏸ Claude a-first is at 97% of its
   week and no other Claude subscription has room: this task stays on it and moves when one
   has.") and one notice ("#12 Checkout stays on Claude a-first", tone warn, the same key). The
-  episode ends when the task moves or its subscription is below the threshold again; a Yulius
-  restart may tell it once more.
+  episode ends when the task moves or its subscription is below the threshold again, and then
+  its notice is removed (a move or a park replaces it); a Yulius restart may tell it once more.
 - **RBL-008** Every rebalance move is a recorded switch decision with its inputs (ROT-011), and
   each pass logs what it kept and why.
 
@@ -129,6 +130,10 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - [x] Document the rebalance in product, operations, architecture and changes
 - [x] Answer the first review: goal sessions parked, the idle claim, untested guards
 - [x] Pass the independent review of the exact head
+- [x] Remove a stale "no room" notice and pin a fork to its chosen subscription
+- [x] Pass the independent review of the follow-up
+- [x] Repair the red staging gate: the agent shim passes `yulius run`
+- [x] Pass the independent review of the staging repair
 
 ## Acceptance criteria
 
@@ -183,8 +188,9 @@ changes.
   field of `TaskRecord`; a pin that no longer names the run's subscription is cleared.
 - Told in the terminal, the task's info and one notice per task (SPEC-624), key
   `rebalance:<task id>` so the latest of its moves, parks or waits stands, in category
-  `account`: it reaches Telegram only for a person who chose subscription news there (off by
-  default), since a move needs nobody to act.
+  `account`: it reaches Telegram only for a person who chose "Subscription problems" there (off
+  by default, offered to instance administrators; its description says that moves come too),
+  since a move needs nobody to act.
 - [Decision 0461](../../docs/decisions/0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md)
 
 ## Evidence
@@ -237,7 +243,18 @@ answered in `84fcae6e5`, `9df7cc5b5` and the tests after it. Round 2 at `ac6020e
 in the park path (2 major, 4 minor, 3 nit), answered in the commits after it. Round 3 approved
 `52162c900` (3 minor, 1 nit left). After it, dev brought SPEC-624's keyed notices: the live
 `task.rebalanced` event became one stored notice per task (`rebalance:<task id>`), and a switch
-whose old run did not end in time marks its target failed.
+whose old run did not end in time marks its target failed. A follow-up after the merge (#1707) answered round 4's minors: a "stays on" notice is
+removed once its subscription has room again (`rebalance::nothing_has_room_is_told_once` fails
+without it), a fork started on a named subscription is pinned there
+(`forks::a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session` fails without
+it), and the Telegram choice says that moves come under it. Round 5 approved `5a4893dea` (one nit
+left: after a Yulius restart a "stays on" notice can stand until its one-day expiry). Staging request 8c86a433 for the merged revision 7dc2641 failed its full gate (run 72091baf):
+`tests::the_agent_wrapper_passes_every_session_command` (crates/yulius/src/main.rs) found the
+session command `yulius run`, which #1715 (SPEC-626 BRK-007) added, missing from the agent's
+`yulius` shim. Yulius asked this task to fix it forward: `agent_yulius_shim` passes `run`, and the
+test that failed on dev passes. Round 6 approved `1cf706eb9`. Before it merged, #1718 brought the same
+shim fix to dev (its test runs `yulius run deploy-cli status --json` through the shim), so this
+task kept dev's version and delivered only these spec lines (round 7 approved that).
 
 Not tested here: real Claude Code, Codex or Antigravity subscriptions and their usage readings
 (synthetic usage and the fake agent stand in); the fake agent runs no hooks, so the tests record a

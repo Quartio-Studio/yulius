@@ -387,6 +387,10 @@ impl App {
             None => None,
         }
         .flatten();
+        // A fork's named subscription is a person's choice: it pins the fork (SPEC-629 RBL-005).
+        if account.is_some() {
+            self.pin_task(&task.id, account.as_ref()).await;
+        }
         if let Some(before) = &after {
             self.link_chain(&task, before, rule).await?;
         }

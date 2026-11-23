@@ -138,6 +138,8 @@ pub(super) enum Sink<'a> {
     EnvironmentRun(&'a str),
     /// A script watch's run (SPEC-630): its output is read once it ended, nothing is flushed.
     Watch,
+    /// A brokered command's run (SPEC-626): its output goes to files read once it ended.
+    Command,
 }
 
 /// What a watched process used, when its host measured it (SPEC-154). Unknown for a job Yulius
@@ -1584,6 +1586,7 @@ impl App {
                                     .await;
                             }
                             Sink::Watch => {}
+                            Sink::Command => {}
                         }
                     }
                 }

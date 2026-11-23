@@ -72,11 +72,64 @@ pub fn run(
         );
         return 2;
     }
+    match call(name, &arguments, false, pace, env) {
+        Answer::Text(text) => {
+            let _ = writeln!(out, "{text}");
+            0
+        }
+        Answer::ToolError(text) => {
+            let _ = writeln!(out, "{text}");
+            1
+        }
+        Answer::Record(record) => {
+            let _ = writeln!(out, "{record}");
+            0
+        }
+        Answer::Failed(code, why) => {
+            let _ = writeln!(out, "yulius tool: {why}");
+            code
+        }
+        Answer::Cut(why) => {
+            let _ = writeln!(out, "yulius tool: {why}");
+            3
+        }
+    }
+}
+
+/// What a call of one tool answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    /// The tool's text.
+    Text(String),
+    /// The tool's error text.
+    ToolError(String),
+    /// The tool's record, when the call asked for it and the answer carried it.
+    Record(Value),
+    /// The call was sent and may have taken effect, but its answer was cut (exit 3).
+    Cut(String),
+    /// No answer: the exit code (2 a usage, environment or token error, 1 an MCP error, 3 an
+    /// outage or a cut call) and why.
+    Failed(i32, String),
+}
+
+/// Calls the tool `name` with `arguments` through the session's `POST /mcp`, as [`run`] does;
+/// `structured` asks for the tool's record (`yulius/structured`) instead of its text.
+pub fn call(
+    name: &str,
+    arguments: &Value,
+    structured: bool,
+    pace: Pace,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Answer {
     let body = json!({
         "jsonrpc": "2.0",
         "id": yulius_app::mcp_watch::SHELL_CALL_ID,
         "method": "tools/call",
-        "params": {"name": name, "arguments": arguments},
+        "params": if structured {
+            json!({"name": name, "arguments": arguments, "_meta": {"yulius/structured": true}})
+        } else {
+            json!({"name": name, "arguments": arguments})
+        },
     })
     .to_string();
     let started = Instant::now();
@@ -85,29 +138,27 @@ pub fn run(
         match agent_call(PATH, body.as_bytes(), env, pace.limits) {
             Ok(answer) => break answer,
             Err(CallError::Environment(why)) => {
-                let _ = writeln!(out, "yulius tool: {why} (run it in a task's session)");
-                return 2;
+                return Answer::Failed(2, format!("{why} (run it in a task's session)"));
             }
             Err(CallError::Unsent(_)) if started.elapsed() + pause <= pace.outage_wait => {
                 std::thread::sleep(pause);
                 pause = (pause * 2).min(pace.backoff_cap);
             }
             Err(CallError::Unsent(why)) => {
-                let _ = writeln!(
-                    out,
-                    "yulius tool: Yulius could not be reached for {} s ({why}): the call was not \
-                     made. Try again later.",
-                    pace.outage_wait.as_secs()
+                return Answer::Failed(
+                    3,
+                    format!(
+                        "Yulius could not be reached for {} s ({why}): the call was not made. \
+                         Try again later.",
+                        pace.outage_wait.as_secs()
+                    ),
                 );
-                return 3;
             }
             Err(err) => {
-                let _ = writeln!(
-                    out,
-                    "yulius tool: the connection to Yulius broke while {name} ran ({err}): it may \
-                     have taken effect. Read its state before calling it again."
-                );
-                return 3;
+                return Answer::Cut(format!(
+                    "the connection to Yulius broke while {name} ran ({err}): it may have taken \
+                     effect. Read its state before calling it again."
+                ));
             }
         }
     };
@@ -116,24 +167,19 @@ pub fn run(
     };
     let parsed = serde_json::from_slice::<Value>(&answer.body).ok();
     if matches!(answer.status, 401 | 403) || parsed.as_ref().is_some_and(refused) {
-        let _ = writeln!(
-            out,
-            "yulius tool: Yulius refused this session's token: the task's run ended or its token \
-             changed"
+        return Answer::Failed(
+            2,
+            "Yulius refused this session's token: the task's run ended or its token changed".into(),
         );
-        return 2;
     }
     let Some(answer) = parsed else {
-        let _ = writeln!(
-            out,
-            "yulius tool: Yulius answered HTTP {} with no JSON",
-            answer.status
+        return Answer::Failed(
+            3,
+            format!("Yulius answered HTTP {} with no JSON", answer.status),
         );
-        return 3;
     };
     if let Some(message) = answer.pointer("/error/message").and_then(Value::as_str) {
-        let _ = writeln!(out, "yulius tool: {message}");
-        return 1;
+        return Answer::Failed(1, message.to_owned());
     }
     let text = answer
         .pointer("/result/content")
@@ -146,15 +192,19 @@ pub fn run(
                 .join("\n")
         })
         .unwrap_or_default();
-    let _ = writeln!(out, "{text}");
     if answer
         .pointer("/result/isError")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        1
+        Answer::ToolError(text)
+    } else if let Some(record) = answer
+        .pointer("/result/structuredContent")
+        .filter(|_| structured)
+    {
+        Answer::Record(record.clone())
     } else {
-        0
+        Answer::Text(text)
     }
 }
 
