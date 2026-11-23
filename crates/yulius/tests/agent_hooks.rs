@@ -2987,8 +2987,9 @@ async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResu
     Ok(())
 }
 
-/// A failure the watch has not pasted in is not the gate's to charge, even when the watch's
-/// newest run of the pull request is a passing one on another commit (SPEC-578).
+/// A failure the watch has not pasted in is not the gate's to charge (SPEC-578). Here the
+/// watch cannot see the run (a busy sandbox pushed it out of its window), so Stop does not
+/// hand over to it, and only the told check keeps the turn from being charged.
 #[tokio::test]
 async fn codex_goal_stop_leaves_an_untold_failure_uncharged() -> TestResult {
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
@@ -3000,20 +3001,29 @@ async fn codex_goal_stop_leaves_an_untold_failure_uncharged() -> TestResult {
     let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
     told_red_run(&f, "an-older-run")?;
     red_ordinary_run(&f, "untold-red-at-head", head.trim(), 10).await?;
-    super::delivery::insert_ci_attempt(
-        &f.h.store,
-        "newer-green-elsewhere",
-        "0123456789abcdef0123456789abcdef01234567",
-        yulius_domain::ci::CiRef::PullRequest(1461),
-        yulius_domain::ci::RunState::Passed,
-        11,
-        &[],
-    )
-    .await?;
+    busy_sandbox(&f).await?;
     let stop = stop_of(&f, Agent::Codex).await?;
     assert!(stop["decision"].is_null(), "{stop}");
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
     assert_eq!(task.gate_blocks, 0);
+    Ok(())
+}
+
+/// A hundred newer runs of other pull requests: the sandbox's recent-run window holds none of
+/// the task's own.
+async fn busy_sandbox(f: &Fixture) -> TestResult {
+    for n in 0..100_i64 {
+        super::delivery::insert_ci_attempt(
+            &f.h.store,
+            &format!("other-pr-{n}"),
+            "0123456789abcdef0123456789abcdef01234567",
+            yulius_domain::ci::CiRef::PullRequest(5000 + u64::try_from(n)?),
+            yulius_domain::ci::RunState::Passed,
+            11 + n,
+            &[],
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -3029,18 +3039,7 @@ async fn codex_goal_stop_finds_its_red_run_in_a_busy_sandbox() -> TestResult {
     let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
     told_red_run(&f, "red-at-head")?;
     red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
-    for n in 0..100_i64 {
-        super::delivery::insert_ci_attempt(
-            &f.h.store,
-            &format!("other-pr-{n}"),
-            "0123456789abcdef0123456789abcdef01234567",
-            yulius_domain::ci::CiRef::PullRequest(5000 + u64::try_from(n)?),
-            yulius_domain::ci::RunState::Passed,
-            11 + n,
-            &[],
-        )
-        .await?;
-    }
+    busy_sandbox(&f).await?;
     let stop = stop_of(&f, Agent::Codex).await?;
     assert_eq!(stop["decision"], "block", "{stop}");
     assert!(

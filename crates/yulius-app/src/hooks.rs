@@ -1261,17 +1261,29 @@ impl App {
         };
         // Untold, the failure is the watch's to paste in first (SPEC-578). A newer run of the
         // pull request, or a pushed head past this commit, supersedes it as the watch says.
-        if run.state == yulius_domain::ci::RunState::Failed
-            && self.run_failure_told(&task.id, pr, &run.id)
-            && self
-                .latest_pr_ci_run(&task.sandbox_id, pr)
-                .await
-                .is_none_or(|newest| newest.id == run.id)
-            && !self.run_superseded_by_pushed_head(task, &run.sha).await
+        if run.state != yulius_domain::ci::RunState::Failed
+            || !self.run_failure_told(&task.id, pr, &run.id)
         {
-            StopPull::Failing(pr)
-        } else {
+            return StopPull::Settled;
+        }
+        // The watch's window of recent runs: a newer run of the pull request in it supersedes
+        // this one; an unreadable window continues nothing.
+        let Ok(recent) = self
+            .deps
+            .store
+            .ci_runs(&task.sandbox_id, crate::pr_watch::RUNS_READ)
+            .await
+        else {
+            return StopPull::Settled;
+        };
+        let newer = recent
+            .iter()
+            .find(|newest| newest.reference == reference)
+            .is_some_and(|newest| newest.id != run.id);
+        if newer || self.run_superseded_by_pushed_head(task, &run.sha).await {
             StopPull::Settled
+        } else {
+            StopPull::Failing(pr)
         }
     }
 

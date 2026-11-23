@@ -2287,6 +2287,8 @@ impl App {
     /// Whether a failed CI run at `failed_sha` has already been superseded by a newer commit
     /// pushed to `task`'s feature branch (SPEC-553 REP-002). Keeps stale failed-run notices
     /// suppressed across repeated `watch_prs` passes (and restarts) when no new CI run exists yet.
+    /// The Stop gate asks it too before continuing a Codex goal on that failure (ADR-0464).
+    /// A Git error counts as not superseded, for both.
     pub(crate) async fn run_superseded_by_pushed_head(
         &self,
         task: &TaskRecord,
