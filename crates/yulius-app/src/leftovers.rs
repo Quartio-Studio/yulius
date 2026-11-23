@@ -666,6 +666,8 @@ impl App {
             (Kind::RemovedCi, dir.join("ci")),
             (Kind::RemovedBrowser, dir.join("browser")),
             (Kind::RemovedCd, self.data_path(&["cd", id])),
+            // Its script watches' files (SPEC-630).
+            (Kind::RemovedCi, self.data_path(&["watches", id])),
             // Snapshot imports' checkouts a failed import left (ADR-0213).
             (
                 Kind::RemovedWorktrees,

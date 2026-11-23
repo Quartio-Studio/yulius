@@ -43,6 +43,9 @@ pub struct WatchSettings {
     pub max_runs: usize,
     /// The scheduler's period.
     pub tick: Duration,
+    /// Bytes a project's watch files (`home`, state and runs) may use; a run that grows them
+    /// past it is stopped (review round 1: they are outside the sandbox's quota).
+    pub disk_max: u64,
 }
 
 impl Default for WatchSettings {
@@ -51,6 +54,7 @@ impl Default for WatchSettings {
             bounds: RunBounds::default(),
             max_runs: 4,
             tick: Duration::from_secs(15),
+            disk_max: 1 << 30,
         }
     }
 }
@@ -58,12 +62,17 @@ impl Default for WatchSettings {
 /// Ends of runs the store refused, kept for the next tick (WCH-008); a bound, so a long outage
 /// cannot grow memory: past it the oldest go (their watches are recovered as lost at a start).
 const UNRECORDED_MAX: usize = 200;
+/// Most agent secrets a watch names.
+pub const MAX_WATCH_SECRETS: usize = 20;
+
+/// A going run's project and its cancellation.
+type Cancel = (SandboxId, watch::Sender<Option<String>>);
 
 /// What the scheduler holds between ticks.
 pub struct WatchRuntime {
     permits: Arc<Semaphore>,
-    /// The going run of each watch, to cancel it (a removal).
-    cancels: Mutex<HashMap<String, watch::Sender<Option<String>>>>,
+    /// The going run of each watch, with its project, to cancel it (a removal).
+    cancels: Mutex<HashMap<String, Cancel>>,
     /// Ends of runs the store refused, oldest first.
     unrecorded: Mutex<Vec<(String, String, WatchRunEnd)>>,
     /// One delivery pass at a time, so a post is never sent twice.
@@ -82,7 +91,7 @@ impl WatchRuntime {
         }
     }
 
-    fn cancels(&self) -> std::sync::MutexGuard<'_, HashMap<String, watch::Sender<Option<String>>>> {
+    fn cancels(&self) -> std::sync::MutexGuard<'_, HashMap<String, Cancel>> {
         self.cancels
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -204,9 +213,19 @@ impl App {
         }
         let timeout = new.timeout_seconds.unwrap_or(dom::TIMEOUT_DEFAULT_SECONDS);
         dom::check_timeout(timeout).map_err(AppError::Invalid)?;
+        let mut secrets: Vec<String> = Vec::new();
         for secret in &new.secrets {
+            let secret = secret.trim();
             yulius_domain::vault::SecretName::parse(secret)
                 .map_err(|e| AppError::Invalid(format!("{secret}: {e}")))?;
+            if !secrets.iter().any(|s| s == secret) {
+                secrets.push(secret.to_owned());
+            }
+        }
+        if secrets.len() > MAX_WATCH_SECRETS {
+            return Err(AppError::Invalid(format!(
+                "a watch names at most {MAX_WATCH_SECRETS} agent secrets"
+            )));
         }
         let now = self.now();
         let (every_seconds, cron, offset) = match schedule {
@@ -223,7 +242,7 @@ impl App {
             utc_offset_minutes: offset,
             expiry: new.expiry.map(|e| e.trim().to_owned()),
             timeout_seconds: timeout,
-            secrets: new.secrets,
+            secrets,
             owner: new.owner,
             created_via: new.created_via.to_owned(),
             created_at: now,
@@ -253,49 +272,67 @@ impl App {
             }
         };
         let now = self.now();
+        // The longest overdue first, so a few slow watches cannot keep the others waiting
+        // (review round 1).
+        let mut due: Vec<(Timestamp, String)> = watches
+            .into_iter()
+            .filter(|watch| watch.state.running.is_none())
+            .filter_map(|watch| {
+                next_due(&watch)
+                    .filter(|due| *due <= now)
+                    .map(|due| (due, watch.id))
+            })
+            .collect();
+        due.sort();
         let mut started = Vec::new();
-        for watch in watches {
-            if watch.state.running.is_some() || next_due(&watch).is_none_or(|due| due > now) {
-                continue;
-            }
+        for (_, id) in due {
             let Ok(permit) = Arc::clone(&self.watches.permits).try_acquire_owned() else {
                 break;
             };
             let app = Arc::clone(self);
             started.push(tokio::spawn(async move {
                 let _permit = permit;
-                app.watch_run(watch).await;
+                app.watch_run(&id, false).await;
             }));
         }
         started
     }
 
-    /// Runs `watch` once now and records its end (one run per watch: `false` when one goes).
-    pub async fn watch_run(&self, watch: WatchRecord) -> bool {
+    /// Runs watch `id` once now and records its end. `false` when it did not run: a run of it
+    /// goes, its project was removed, or, unless `forced` (Run now), it is paused or ended. The
+    /// claim decides that in the store, and the run uses the record as it is after the claim.
+    pub async fn watch_run(&self, id: &str, forced: bool) -> bool {
         let run_id = random_id(self, "wr_");
         let started = self.now();
-        match self
-            .deps
-            .store
-            .watch_run_started(&watch.id, &run_id, started)
-            .await
-        {
+        let store = &self.deps.store;
+        match store.watch_run_started(id, &run_id, started, forced).await {
             Ok(true) => {}
             Ok(false) => return false,
             Err(error) => {
-                tracing::warn!(watch = %watch.id, error = %error, "a watch's run could not be claimed");
+                tracing::warn!(watch = %id, error = %error, "a watch's run could not be claimed");
                 return false;
             }
         }
+        let watch = match store.watch(id).await {
+            Ok(Some(watch)) => watch,
+            Ok(None) => return false,
+            Err(error) => {
+                // Claimed, so recorded as lost at the next start if this end is not written.
+                tracing::warn!(watch = %id, error = %error, "a claimed watch could not be read");
+                return false;
+            }
+        };
         let (cancel, mut cancelled) = watch::channel(None);
-        self.watches.cancels().insert(watch.id.clone(), cancel);
+        self.watches
+            .cancels()
+            .insert(watch.id.clone(), (watch.sandbox_id.clone(), cancel));
         let bounds = self.config.watches.bounds;
         let result = match self.deps.store.sandbox(&watch.sandbox_id).await {
-            Ok(Some(sandbox)) => {
+            Ok(Some(sandbox)) if sandbox.removed_at.is_none() => {
                 self.watch_execute(&sandbox, &watch, (&run_id, bounds), &mut cancelled)
                     .await
             }
-            Ok(None) => crate::ci::WatchRunOutput {
+            Ok(_) => crate::ci::WatchRunOutput {
                 end: RunEnd::Failed("its project is gone".into()),
                 output: String::new(),
                 errors: String::new(),
@@ -329,16 +366,24 @@ impl App {
             failures: watch.state.failures,
             warned: watch.state.warned,
         };
+        // Redacted of the project's agent secrets before anything is kept or posted: the
+        // Watches page shows the last output to the project's readers (review round 1).
+        let output = self
+            .redact_for_sandbox(&watch.sandbox_id, &result.output)
+            .await;
+        let errors = self
+            .redact_for_sandbox(&watch.sandbox_id, &result.errors)
+            .await;
         let decided = outcome(
             &name,
             &result.end,
-            (&result.output, &result.errors),
+            (&output, &errors),
             before,
             (self.config.watches.bounds, watch.timeout_seconds),
         );
         let now = self.now();
-        let output = result.output.trim();
-        let errors = result.errors.trim();
+        let output = output.trim();
+        let errors = errors.trim();
         let state = WatchState {
             running: None,
             last_started_at: Some(started),
@@ -366,8 +411,11 @@ impl App {
                 Some(PostBody {
                     category: NoticeKind::Done.as_str().into(),
                     tone: NoticeTone::Info.as_str().into(),
+                    // The whole output whenever the title cannot hold it (WCH-006).
+                    detail: (text.contains('\n')
+                        || title.chars().count() > crate::notices::TITLE_MAX)
+                        .then(|| text.clone()),
                     title,
-                    detail: text.contains('\n').then(|| text.clone()),
                     expiry: Some(watch.expiry.clone().unwrap_or_else(|| "1d".into())),
                 }),
             ));
@@ -468,12 +516,22 @@ impl App {
         let Ok(body) = serde_json::from_str::<PostBody>(body) else {
             return Ok(());
         };
-        let slug = self
+        // A removed project's posts are dropped with it (review round 1).
+        let Some(sandbox) = self
             .deps
             .store
             .sandbox(&watch.sandbox_id)
             .await?
-            .map(|s| s.slug);
+            .filter(|s| s.removed_at.is_none())
+        else {
+            return Ok(());
+        };
+        // A slug is a path segment as it is; any other one gets no link.
+        let link = sandbox
+            .slug
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            .then(|| format!("/s/{}/watches", sandbox.slug));
         let expiry = match body.expiry.as_deref().map(watch_expiry) {
             Some(Ok(expiry)) => Some(expiry),
             Some(Err(_)) => Some(Expiry::After(REPORT_MS)),
@@ -483,7 +541,7 @@ impl App {
         let notice = NewNotice {
             to: Some(watch.owner.clone()),
             detail: body.detail,
-            link: slug.map(|slug| format!("/s/{}/watches", urlencoding_path(&slug))),
+            link,
             expiry,
             ..NewNotice::new(
                 Some(watch.sandbox_id.clone()),
@@ -529,15 +587,22 @@ impl App {
                 errors: String::new(),
             };
             self.watch_record_end(&watch, &run_id, started, &lost).await;
-            if !watch.paused && watch.ended_reason.is_none() {
-                let _ = self
-                    .deps
-                    .store
-                    .set_watch_paused(&watch.id, false, self.now())
-                    .await;
+            // Only a watch still neither paused nor ended, as the store has it now.
+            if let Err(error) = self.deps.store.watch_due_again(&watch.id, self.now()).await {
+                tracing::warn!(watch = %watch.id, error = %error, "a recovered watch keeps its schedule");
             }
         }
         self.watch_deliver().await;
+    }
+
+    /// Cancels the going runs of `sandbox`'s watches: the project was removed, and the store
+    /// claims no new run of them (review round 1).
+    pub(crate) fn watch_cancel_project(&self, sandbox: &SandboxId) {
+        for (project, cancel) in self.watches.cancels().values() {
+            if project == sandbox {
+                cancel.send_replace(Some("its project was removed".into()));
+            }
+        }
     }
 
     /// Starts the watch scheduler (WCH-009): the start's recovery, then a tick every period.
@@ -553,17 +618,4 @@ impl App {
             }
         });
     }
-}
-
-/// A slug as a path segment (slugs are already URL-safe; this keeps a stray `/` out).
-fn urlencoding_path(slug: &str) -> String {
-    slug.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c.to_string()
-            } else {
-                format!("%{:02X}", u32::from(c) & 0xff)
-            }
-        })
-        .collect()
 }

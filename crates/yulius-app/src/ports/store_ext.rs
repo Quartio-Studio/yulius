@@ -987,7 +987,8 @@ pub struct WatchRunEnd {
 /// Script watches (SPEC-630, migration 0093).
 #[async_trait]
 pub trait WatchStore: Send + Sync {
-    /// Every watch of every project (the scheduler's view; a project has at most 20).
+    /// Every watch of every project not removed (the scheduler's view; a project has at most
+    /// 20).
     async fn all_watches(&self) -> AppResult<Vec<WatchRecord>>;
     /// A project's watches, by name.
     async fn watches_in(&self, sandbox: &SandboxId) -> AppResult<Vec<WatchRecord>>;
@@ -998,21 +999,28 @@ pub trait WatchStore: Send + Sync {
     /// # Errors
     /// `Conflict` when the project has a watch of that name, or `max` watches.
     async fn insert_watch(&self, watch: &WatchRecord, max: usize) -> AppResult<()>;
-    /// Replaces a watch's definition (name, script, schedule, expiry, timeout, secrets,
-    /// `updated_at`, `since`) only while it was last changed at `read_at`; `false` when it changed
-    /// meanwhile or is gone.
-    ///
-    /// # Errors
-    /// `Conflict` when the new name is another watch's.
+    /// Replaces a watch's definition (script, schedule, expiry, timeout, secrets, `updated_at`,
+    /// `since`; its name is its notices' key and never changes) only while it was last changed at
+    /// `read_at`; `false` when it changed meanwhile or is gone.
     async fn update_watch(&self, watch: &WatchRecord, read_at: Timestamp) -> AppResult<bool>;
     /// Pauses or resumes a watch; a resume also ends its end and counts its schedule from `at`.
     /// `false` when it is gone.
     async fn set_watch_paused(&self, id: &str, paused: bool, at: Timestamp) -> AppResult<bool>;
     /// Removes a watch and its pending posts; `false` when it was gone.
     async fn delete_watch(&self, id: &str) -> AppResult<bool>;
-    /// Records that run `run_id` of a watch started at `at`, only when none is going; `false`
-    /// when one is, or the watch is gone.
-    async fn watch_run_started(&self, id: &str, run_id: &str, at: Timestamp) -> AppResult<bool>;
+    /// Records that run `run_id` of a watch started at `at`, only when none is going, its project
+    /// is not removed and, unless `forced` (Run now), it is neither paused nor ended; `false`
+    /// otherwise, or when the watch is gone.
+    async fn watch_run_started(
+        &self,
+        id: &str,
+        run_id: &str,
+        at: Timestamp,
+        forced: bool,
+    ) -> AppResult<bool>;
+    /// Makes a watch due again from `at` (its last start forgotten), only while it is neither
+    /// paused, ended nor running; `false` otherwise.
+    async fn watch_due_again(&self, id: &str, at: Timestamp) -> AppResult<bool>;
     /// Records the end of run `run_id`: its state, its end of the watch and its pending posts, in
     /// one transaction; `false` (nothing written) when that run is not the watch's going run.
     async fn watch_run_ended(&self, id: &str, run_id: &str, end: &WatchRunEnd) -> AppResult<bool>;

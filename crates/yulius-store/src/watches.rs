@@ -96,7 +96,8 @@ impl WatchStore for SqliteStore {
         self.call(move |c| {
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT {COLUMNS} FROM watches ORDER BY sandbox_id, name"
+                    "SELECT {COLUMNS} FROM watches WHERE sandbox_id IN \
+                     (SELECT id FROM sandboxes WHERE removed_at IS NULL) ORDER BY sandbox_id, name"
                 ))
                 .map_err(db)?;
             let rows = stmt
@@ -195,12 +196,11 @@ impl WatchStore for SqliteStore {
         self.call(move |c| {
             let changed = c
                 .execute(
-                    "UPDATE watches SET name = ?1, script = ?2, every_seconds = ?3, cron = ?4,
-                         utc_offset_minutes = ?5, expiry = ?6, timeout_seconds = ?7,
-                         secrets = ?8, updated_at = ?9, since = ?10
-                     WHERE id = ?11 AND updated_at = ?12",
+                    "UPDATE watches SET script = ?1, every_seconds = ?2, cron = ?3,
+                         utc_offset_minutes = ?4, expiry = ?5, timeout_seconds = ?6,
+                         secrets = ?7, updated_at = ?8, since = ?9
+                     WHERE id = ?10 AND updated_at = ?11",
                     params![
-                        r.name,
                         r.script,
                         r.every_seconds,
                         r.cron,
@@ -238,6 +238,21 @@ impl WatchStore for SqliteStore {
         .await
     }
 
+    async fn watch_due_again(&self, id: &str, at: Timestamp) -> AppResult<bool> {
+        let id = id.to_owned();
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE watches SET since = ?2, last_started_at = NULL
+                     WHERE id = ?1 AND paused = 0 AND ended_reason IS NULL AND run_id IS NULL",
+                    params![id, at.0],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
     async fn delete_watch(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
@@ -253,14 +268,22 @@ impl WatchStore for SqliteStore {
         .await
     }
 
-    async fn watch_run_started(&self, id: &str, run_id: &str, at: Timestamp) -> AppResult<bool> {
+    async fn watch_run_started(
+        &self,
+        id: &str,
+        run_id: &str,
+        at: Timestamp,
+        forced: bool,
+    ) -> AppResult<bool> {
         let (id, run_id) = (id.to_owned(), run_id.to_owned());
         self.call(move |c| {
             let changed = c
                 .execute(
                     "UPDATE watches SET run_id = ?2, running_since = ?3, last_started_at = ?3
-                     WHERE id = ?1 AND run_id IS NULL",
-                    params![id, run_id, at.0],
+                     WHERE id = ?1 AND run_id IS NULL
+                         AND (?4 OR (paused = 0 AND ended_reason IS NULL))
+                         AND sandbox_id IN (SELECT id FROM sandboxes WHERE removed_at IS NULL)",
+                    params![id, run_id, at.0, forced],
                 )
                 .map_err(db)?;
             Ok(changed == 1)
@@ -445,9 +468,67 @@ mod tests {
 
         let mut edited = first.clone();
         edited.script = "echo changed".into();
+        edited.name = "renamed".into();
         edited.updated_at = Timestamp(20);
         assert!(store.update_watch(&edited, Timestamp(10)).await?);
         assert!(!store.update_watch(&edited, Timestamp(10)).await?, "stale");
+        let kept = store.watch("wt_1").await?.ok_or("gone")?;
+        assert_eq!(
+            (kept.name.as_str(), kept.script.as_str()),
+            ("disk", "echo changed")
+        );
+        Ok(())
+    }
+
+    /// Review round 1: a removed project's watches are not scheduled and cannot be claimed; a
+    /// paused or ended watch is claimed only by Run now (`forced`).
+    #[tokio::test]
+    async fn claims_skip_removed_projects_and_paused_watches() -> TestResult {
+        let store = store().await?;
+        store
+            .insert_watch(&watch("wt_1", "s1", "disk")?, 20)
+            .await?;
+        store
+            .insert_watch(&watch("wt_2", "s2", "disk")?, 20)
+            .await?;
+        store
+            .call(|c| {
+                c.execute("UPDATE sandboxes SET removed_at = 5 WHERE id = 's2'", [])
+                    .map_err(db)
+            })
+            .await?;
+        let listed: Vec<_> = store
+            .all_watches()
+            .await?
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(listed, ["wt_1"]);
+        assert!(
+            !store
+                .watch_run_started("wt_2", "r0", Timestamp(90), true)
+                .await?
+        );
+
+        assert!(store.set_watch_paused("wt_1", true, Timestamp(95)).await?);
+        assert!(
+            !store
+                .watch_run_started("wt_1", "r1", Timestamp(100), false)
+                .await?
+        );
+        assert!(
+            !store.watch_due_again("wt_1", Timestamp(100)).await?,
+            "paused stays paused"
+        );
+        assert!(
+            store
+                .watch_run_started("wt_1", "r2", Timestamp(101), true)
+                .await?
+        );
+        assert!(
+            !store.watch_due_again("wt_1", Timestamp(102)).await?,
+            "running"
+        );
         Ok(())
     }
 
@@ -461,12 +542,12 @@ mod tests {
             .await?;
         assert!(
             store
-                .watch_run_started("wt_1", "r1", Timestamp(100))
+                .watch_run_started("wt_1", "r1", Timestamp(100), false)
                 .await?
         );
         assert!(
             !store
-                .watch_run_started("wt_1", "r2", Timestamp(101))
+                .watch_run_started("wt_1", "r2", Timestamp(101), false)
                 .await?
         );
         let going = store.watch("wt_1").await?.ok_or("gone")?;

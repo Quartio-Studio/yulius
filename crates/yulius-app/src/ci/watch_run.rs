@@ -20,17 +20,21 @@ use tokio::sync::watch;
 use yulius_domain::vault::{SecretName, placeholder};
 use yulius_domain::watch::{ERROR_TAIL_CHARS, RunBounds, RunEnd, cut_tail};
 
-use super::exec::{CiProxy, Ended, RunLog, Sink, bind_run_files, ci_join};
+use super::exec::{CiProxy, DiskBound, Ended, RunLog, Sink, bind_run_files, ci_join};
 use crate::context::App;
 use crate::delivery::runner::OutputRing;
 use crate::model::SandboxRecord;
 use crate::ports::session::{Containment, LaunchPlan};
 use crate::ports::store_ext::WatchRecord;
 
-/// `$1` stdout, `$2` stderr, `$3` CPU seconds, `$4` data KiB, `$5` file KiB, `$6` the script.
-const WRAPPER: &str = r#"ulimit -t "$3" && ulimit -d "$4" && ulimit -f "$5" || exit 125
+/// `$1` stdout, `$2` stderr, `$3` CPU seconds (soft: SIGXCPU), `$4` CPU seconds (hard: SIGKILL),
+/// `$5` data KiB, `$6` file KiB, `$7` the script, after `--` so a script starting with `-` is
+/// never read as bash's options (review round 1).
+const WRAPPER: &str = r#"ulimit -St "$3" && ulimit -Ht "$4" && ulimit -d "$5" && ulimit -f "$6" || exit 125
 exec >>"$1" 2>>"$2" </dev/null
-exec /bin/bash -c "$6""#;
+exec /bin/bash -c -- "$7""#;
+/// CPU seconds a run gets past its soft limit (SIGXCPU) before the hard one kills it.
+const CPU_GRACE_SECONDS: u32 = 2;
 
 /// What a run printed and how it ended.
 pub(crate) struct WatchRunOutput {
@@ -83,16 +87,18 @@ impl App {
         );
         let (out, err) = (files.join("out"), files.join("err"));
         let run_dir = self.watch_run_dir(run_id);
-        let made = (|| -> std::io::Result<std::fs::File> {
+        let made = (|| -> std::io::Result<(std::fs::File, std::fs::File)> {
             for dir in [&home, &state, &files] {
                 std::fs::create_dir_all(dir)?;
             }
             std::fs::File::create(&err)?;
             std::fs::File::create(&out)?;
-            std::fs::File::open(&out)
+            // Both read through handles opened before the start: a link the script puts at
+            // either path is never followed.
+            Ok((std::fs::File::open(&out)?, std::fs::File::open(&err)?))
         })();
-        let stdout = match made {
-            Ok(file) => file,
+        let (stdout, stderr) = match made {
+            Ok(files) => files,
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&files);
                 return WatchRunOutput::failed(format!(
@@ -120,7 +126,7 @@ impl App {
                 // (SIGXFSZ), whichever the run's signal dispositions made it; either way the
                 // output is cut, so the run failed on its output bound (WCH-003).
                 let full = |len: u64| limit > 0 && len >= limit;
-                let err_len = std::fs::metadata(&err).map_or(0, |m| m.len());
+                let err_len = stderr.metadata().map_or(0, |m| m.len());
                 let at_bound =
                     full(u64::try_from(bytes.len()).unwrap_or(u64::MAX)) || full(err_len);
                 let end = match end {
@@ -205,6 +211,10 @@ impl App {
                 out.to_string_lossy().into_owned(),
                 err.to_string_lossy().into_owned(),
                 bounds.cpu_seconds.to_string(),
+                bounds
+                    .cpu_seconds
+                    .saturating_add(CPU_GRACE_SECONDS)
+                    .to_string(),
                 bounds.memory_kib.to_string(),
                 bounds.output_kib.to_string(),
                 watch.script.clone(),
@@ -236,7 +246,12 @@ impl App {
                 (&mut ring, None, None),
                 (
                     cancel,
-                    None,
+                    // The project's watch files are outside the sandbox's quota: a run that
+                    // grows them past their bound is stopped (review round 1).
+                    Some(DiskBound {
+                        dirs: vec![("watch files", self.watch_base_dir(&sandbox.id))],
+                        max: self.config.watches.disk_max,
+                    }),
                     Duration::from_secs(u64::from(watch.timeout_seconds)),
                 ),
             )

@@ -31,13 +31,15 @@ const EIGHT_AM: i64 = 1_795_334_400_000;
 struct World {
     h: Harness,
     alice: Creds,
+    /// The superadmin.
+    admin: Creds,
 }
 
-/// Project s1 (`app`), which alice writes; the real process host; small run bounds where a test
-/// asks for them.
+/// Project s1 (`app`), which alice writes; the real process host; `configure` adjusts the
+/// configuration (small run bounds, one run at a time) where a test asks for it.
 async fn world_with(
     host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
-    bounds: Option<RunBounds>,
+    configure: impl FnOnce(&mut yulius_app::context::AppConfig) + 'static,
     contained: bool,
 ) -> Result<World, Error> {
     // A short base: run sockets live at <data>/runs/watch-<id>/pty.sock (Unix path limit).
@@ -52,23 +54,37 @@ async fn world_with(
         store: Some(store),
         configure: Some(Box::new(move |config| {
             config.contained = contained;
-            if let Some(bounds) = bounds {
-                config.watches.bounds = bounds;
-            }
+            configure(config);
         })),
         ..HarnessOptions::default()
     })?;
     h.clock.0.store(EIGHT_AM, Ordering::SeqCst);
-    support::setup_superadmin_creds(&h).await?;
+    let admin = support::setup_superadmin_creds(&h).await?;
     support::configure_github_app(&h).await?;
     let alice = seed_github_user(&h, "u-alice", "alice").await?;
     h.github.set_perm("alice", "acme/app", perms("write"));
     seed_sandbox(&h, "s1", "app", "u-alice").await?;
-    Ok(World { h, alice })
+    Ok(World { h, alice, admin })
 }
 
 async fn world() -> Result<World, Error> {
-    world_with(None, None, false).await
+    world_with(None, |_| {}, false).await
+}
+
+/// Waits until `check` holds, for at most 30 s.
+async fn until<F, Fut>(what: &str, mut check: F) -> TestResult
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<bool, Error>>,
+{
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !check().await? {
+        if Instant::now() > deadline {
+            return Err(format!("never: {what}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Ok(())
 }
 
 fn new_watch(name: &str, script: &str) -> Result<NewWatch, Error> {
@@ -102,8 +118,7 @@ impl World {
 
     /// Runs the watch once now, to its end.
     async fn run(&self, id: &str) -> Result<WatchRecord, Error> {
-        let watch = self.watch(id).await?;
-        assert!(self.h.app.watch_run(watch).await, "a run started");
+        assert!(self.h.app.watch_run(id, true).await, "a run started");
         self.watch(id).await
     }
 
@@ -373,22 +388,60 @@ async fn a_post_is_retried_after_an_outage() -> TestResult {
 #[tokio::test]
 async fn watches_survive_a_restart() -> TestResult {
     let w = world().await?;
-    let script = counting("*) echo \"run $n\" ;;");
+    let script = counting(
+        "2) echo $$ > \"$YULIUS_WATCH_STATE/pid\"; exec sleep 60 ;;\n*) echo \"run $n\" ;;",
+    );
     let watch =
         w.h.app
             .watch_create(new_watch("survivor", &script)?)
             .await?;
     w.run(&watch.id).await?;
     w.advance(MINUTE);
-    // The old process claimed a run and died before it ended.
-    assert!(
-        w.h.store
-            .watch_run_started(&watch.id, "wr_lost", w.h.app.now())
-            .await?
-    );
+    // The old process starts a run and dies while it goes: its future is dropped, its detached
+    // process host and script keep running.
+    let old = Arc::clone(&w.h.app);
+    let id = watch.id.clone();
+    let going = tokio::spawn(async move { old.watch_run(&id, true).await });
+    let pid_file =
+        w.h.app
+            .config
+            .data_dir
+            .join("watches/s1/state")
+            .join(&watch.id)
+            .join("pid");
+    until("the second run started", || {
+        let pid_file = pid_file.clone();
+        async move { Ok(pid_file.exists()) }
+    })
+    .await?;
+    going.abort();
+    let pid: u32 = std::fs::read_to_string(&pid_file)?.trim().parse()?;
+    let alive = move || {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            !stat
+                .rsplit(')')
+                .next()
+                .is_some_and(|rest| rest.trim_start().starts_with('Z'))
+        })
+    };
+    assert!(alive(), "the script outlives the old process");
+    let (run_id, _) = w.watch(&watch.id).await?.state.running.ok_or("running")?;
 
     let after = Arc::new(App::new(w.h.app.config.clone(), w.h.app.deps.clone()));
     after.watch_startup().await;
+    until(
+        "the lost run's process ended",
+        || async move { Ok(!alive()) },
+    )
+    .await?;
+    assert!(
+        !after
+            .config
+            .data_dir
+            .join("runs")
+            .join(format!("watch-{run_id}"))
+            .exists()
+    );
     let recovered = w.watch(&watch.id).await?;
     assert_eq!(recovered.state.running, None);
     assert_eq!(recovered.state.runs, 2);
@@ -407,7 +460,7 @@ async fn watches_survive_a_restart() -> TestResult {
     assert_eq!((rerun.state.runs, rerun.state.failures), (3, 0));
     assert_eq!(
         keys(&w.notices().await?),
-        [("watch:survivor", "survivor: run 2")]
+        [("watch:survivor", "survivor: run 3")]
     );
     Ok(())
 }
@@ -421,7 +474,7 @@ async fn run_bounds_are_enforced() -> TestResult {
         memory_kib: 32 * 1024,
         output_kib: 64,
     };
-    let w = world_with(None, Some(bounds), false).await?;
+    let w = world_with(None, move |c| c.watches.bounds = bounds, false).await?;
     let failure = |watch: &WatchRecord| watch.state.last_failure.clone().unwrap_or_default();
 
     let busy =
@@ -430,11 +483,7 @@ async fn run_bounds_are_enforced() -> TestResult {
             .await?;
     let started = Instant::now();
     let ended = w.run(&busy.id).await?;
-    assert!(
-        failure(&ended).contains("CPU time of 1 s"),
-        "{}",
-        failure(&ended)
-    );
+    assert_eq!(failure(&ended), "stopped: it used its CPU time of 1 s");
     assert!(
         started.elapsed() < Duration::from_secs(15),
         "before its 20 s timeout"
@@ -523,7 +572,7 @@ async fn a_contained_run_uses_the_sandbox_and_secret_placeholders() -> TestResul
         inner: PtySessionHost::new(exe),
         seen: std::sync::Mutex::new(Vec::new()),
     });
-    let w = world_with(Some(recording.clone()), None, true).await?;
+    let w = world_with(Some(recording.clone()), |_| {}, true).await?;
     assert!(
         w.h.app
             .set_isolation(Arc::new(crate::cd::Holders::default()))
@@ -608,6 +657,302 @@ async fn a_bad_watch_is_refused() -> TestResult {
         refused(new_watch("taken", "echo")?)
             .await
             .is_some_and(|e| e.contains("name"))
+    );
+    Ok(())
+}
+
+/// Review round 1: a removed project's watches neither run nor post, and its going run ends.
+#[tokio::test]
+async fn a_removed_projects_watches_stop() -> TestResult {
+    let w = world().await?;
+    let hanging =
+        w.h.app
+            .watch_create(new_watch(
+                "hanging",
+                "echo $$ > \"$YULIUS_WATCH_STATE/pid\"; sleep 60",
+            )?)
+            .await?;
+    let reporting =
+        w.h.app
+            .watch_create(new_watch("reporting", "echo hi")?)
+            .await?;
+    let app = Arc::clone(&w.h.app);
+    let id = hanging.id.clone();
+    let going = tokio::spawn(async move { app.watch_run(&id, true).await });
+    let pid =
+        w.h.app
+            .config
+            .data_dir
+            .join("watches/s1/state")
+            .join(&hanging.id)
+            .join("pid");
+    until("the run started", || {
+        let pid = pid.clone();
+        async move { Ok(pid.exists()) }
+    })
+    .await?;
+
+    let removed = call(
+        &w.h.router,
+        Method::DELETE,
+        "/api/sandboxes/s1",
+        None,
+        &w.admin,
+    )
+    .await?;
+    assert!(
+        removed.status.is_success(),
+        "{} {}",
+        removed.status,
+        removed.body
+    );
+    let ran = tokio::time::timeout(Duration::from_secs(20), going).await??;
+    assert!(ran, "the going run was cancelled, not left running");
+    let ended = w.watch(&hanging.id).await?;
+    assert!(
+        ended
+            .state
+            .last_failure
+            .as_deref()
+            .is_some_and(|f| f.contains("removed")),
+        "{:?}",
+        ended.state
+    );
+
+    w.advance(2 * 60 * MINUTE);
+    assert_eq!(w.tick().await?, 0, "not scheduled");
+    assert!(
+        !w.h.app.watch_run(&reporting.id, true).await,
+        "not even by Run now"
+    );
+    assert_eq!(w.watch(&reporting.id).await?.state.runs, 0);
+    assert!(w.h.store.watch_pending().await?.is_empty());
+    Ok(())
+}
+
+/// WCH-004 (review round 1): a run's named secret reaches it only through its own egress
+/// credential, which intercepts that secret's host alone and ends with the run.
+#[tokio::test]
+async fn a_runs_secrets_reach_it_only_through_its_proxy_credential() -> TestResult {
+    let w = world().await?;
+    for name in ["API_KEY", "OTHER_KEY"] {
+        let created = call(
+            &w.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(serde_json::json!({
+                "name": name,
+                "hosts": [format!("{}.test", name.to_ascii_lowercase().replace('_', "-"))],
+                "injection": "bearer",
+                "value": format!("{name}-value-0123456789"),
+                "auto_allow": false,
+            })),
+            &w.alice,
+        )
+        .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    }
+    w.h.app.enable_egress(Some(
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".into(),
+    ));
+    let mut new = new_watch(
+        "keyed",
+        "printf %s \"$HTTPS_PROXY\" > \"$YULIUS_WATCH_STATE/proxy\"; \
+         echo \"key=$API_KEY other=${OTHER_KEY:-none}\"; \
+         while [ ! -e \"$YULIUS_WATCH_STATE/go\" ]; do sleep 0.05; done",
+    )?;
+    new.secrets = vec!["API_KEY".into()];
+    let watch = w.h.app.watch_create(new).await?;
+    let app = Arc::clone(&w.h.app);
+    let id = watch.id.clone();
+    let going = tokio::spawn(async move { app.watch_run(&id, true).await });
+    let state =
+        w.h.app
+            .config
+            .data_dir
+            .join("watches/s1/state")
+            .join(&watch.id);
+    let proxy = state.join("proxy");
+    until("the run wrote its proxy", || {
+        let proxy = proxy.clone();
+        async move { Ok(std::fs::read_to_string(&proxy).is_ok_and(|p| !p.is_empty())) }
+    })
+    .await?;
+    let url = std::fs::read_to_string(&proxy)?;
+    let token = url
+        .strip_prefix("http://yulius-watch:")
+        .and_then(|rest| rest.split_once('@'))
+        .map(|(token, _)| token.to_owned())
+        .ok_or_else(|| format!("unexpected proxy {url}"))?;
+    let policy: Arc<dyn yulius_app::ports::egress::EgressPolicy> = w.h.app.clone();
+    let client = policy
+        .egress_client(&token)
+        .await
+        .ok_or("the run's credential names no client")?;
+    assert_eq!(client.actor(), "ci:watch:keyed");
+    assert!(policy.egress_intercepts(&client, "api-key.test", 443).await);
+    assert!(
+        !policy
+            .egress_intercepts(&client, "other-key.test", 443)
+            .await
+    );
+    std::fs::write(state.join("go"), "")?;
+    assert!(going.await?);
+    assert!(
+        policy.egress_client(&token).await.is_none(),
+        "the credential ends with the run"
+    );
+    let output = w
+        .watch(&watch.id)
+        .await?
+        .state
+        .last_output
+        .unwrap_or_default();
+    assert!(output.contains("other=none"), "{output}");
+    assert!(!output.contains("API_KEY-value-0123456789"), "{output}");
+    Ok(())
+}
+
+/// WCH-008 (review round 1): a run's end the store refused is kept in memory and written, with
+/// its post, by the next tick.
+#[tokio::test]
+async fn a_run_end_the_store_refused_is_written_by_the_next_tick() -> TestResult {
+    let w = world().await?;
+    let watch =
+        w.h.app
+            .watch_create(new_watch("kept", "echo 'kept for later'")?)
+            .await?;
+    let db = w.h.app.config.data_dir.join("yulius.db");
+    rusqlite::Connection::open(&db)?.execute_batch(
+        "CREATE TRIGGER end_outage BEFORE UPDATE OF last_ended_at ON watches \
+         BEGIN SELECT RAISE(FAIL, 'injected outage'); END",
+    )?;
+    assert!(w.h.app.watch_run(&watch.id, true).await);
+    let unrecorded = w.watch(&watch.id).await?;
+    assert!(
+        unrecorded.state.running.is_some(),
+        "its end is not written yet"
+    );
+    assert!(w.notices().await?.is_empty());
+    w.tick().await?;
+    assert!(
+        w.watch(&watch.id).await?.state.running.is_some(),
+        "kept while refused"
+    );
+
+    rusqlite::Connection::open(&db)?.execute_batch("DROP TRIGGER end_outage")?;
+    w.advance(MINUTE);
+    assert_eq!(w.tick().await?, 0, "not due: only the kept end");
+    let recorded = w.watch(&watch.id).await?;
+    assert_eq!((recorded.state.running, recorded.state.runs), (None, 1));
+    assert_eq!(
+        keys(&w.notices().await?),
+        [("watch:kept", "kept: kept for later")]
+    );
+    w.tick().await?;
+    assert_eq!(w.notices().await?.len(), 1, "posted once");
+    Ok(())
+}
+
+/// WCH-003 (review round 1): the instance runs at most its bound of runs at once, the longest
+/// overdue watch first.
+#[tokio::test]
+async fn runs_at_once_are_bounded_and_the_longest_overdue_goes_first() -> TestResult {
+    let w = world_with(None, |c| c.watches.max_runs = 1, false).await?;
+    let mut late = new_watch("z-late", "echo late")?;
+    late.every = Some("5m".into());
+    let late = w.h.app.watch_create(late).await?;
+    w.advance(MINUTE);
+    let early =
+        w.h.app
+            .watch_create(new_watch("a-early", "echo early")?)
+            .await?;
+    assert_eq!(w.tick().await?, 1, "one run at a time");
+    assert_eq!(
+        w.watch(&late.id).await?.state.runs,
+        1,
+        "the longest overdue first"
+    );
+    assert_eq!(w.watch(&early.id).await?.state.runs, 0);
+    assert_eq!(w.tick().await?, 1);
+    assert_eq!(w.watch(&early.id).await?.state.runs, 1);
+    Ok(())
+}
+
+/// WCH-006 (review round 1): a report the title cannot hold keeps its whole text as detail; the
+/// project's agent secrets are redacted from what is kept and posted; a script starting with
+/// `-` is a script, not bash's options.
+#[tokio::test]
+async fn reports_keep_their_text_redacted_and_scripts_are_never_options() -> TestResult {
+    let w = world().await?;
+    let value = "watch-secret-value-0123456789";
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(serde_json::json!({"name": "API_KEY", "description": "an API", "value": value})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let long =
+        w.h.app
+            .watch_create(new_watch(
+                "long",
+                &format!("printf 'x%.0s' $(seq 1 400); echo ' {value}'"),
+            )?)
+            .await?;
+    let ran = w.run(&long.id).await?;
+    let kept = ran.state.last_output.unwrap_or_default();
+    assert!(
+        kept.starts_with(&"x".repeat(400)) && !kept.contains(value),
+        "{kept}"
+    );
+    let listed = call(&w.h.router, Method::GET, "/api/me/notices", None, &w.alice).await?;
+    let report = listed
+        .body
+        .as_array()
+        .and_then(|items| items.iter().find(|n| n["key"] == "watch:long"))
+        .cloned()
+        .ok_or("the report")?;
+    let detail = report["detail"].as_str().unwrap_or_default();
+    assert!(detail.starts_with(&"x".repeat(400)), "{detail}");
+    assert!(
+        !detail.contains(value) && !report["title"].as_str().unwrap_or_default().contains(value)
+    );
+
+    let dashed =
+        w.h.app
+            .watch_create(new_watch("dashed", "--version")?)
+            .await?;
+    let ran = w.run(&dashed.id).await?;
+    assert_eq!(ran.state.last_exit, Some(127), "{:?}", ran.state);
+    assert_eq!(ran.state.posts, 0);
+    Ok(())
+}
+
+/// Review round 1: a project's watch files, outside the sandbox's quota, are bounded: a run that
+/// grows them past the bound is stopped.
+#[tokio::test]
+async fn a_run_that_fills_the_watch_files_is_stopped() -> TestResult {
+    let w = world_with(None, |c| c.watches.disk_max = 256 * 1024, false).await?;
+    let mut new = new_watch(
+        "filler",
+        "for i in 1 2 3 4 5 6 7 8; do head -c 60000 /dev/zero > \"$YULIUS_WATCH_STATE/f$i\"; done; \
+         sleep 25",
+    )?;
+    new.timeout_seconds = Some(30);
+    let watch = w.h.app.watch_create(new).await?;
+    let started = Instant::now();
+    let ended = w.run(&watch.id).await?;
+    let failure = ended.state.last_failure.unwrap_or_default();
+    assert!(
+        failure.contains("watch files") && failure.contains("disk bound"),
+        "{failure}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "stopped before its timeout"
     );
     Ok(())
 }
