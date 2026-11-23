@@ -248,7 +248,7 @@ impl App {
                 (
                     cancel,
                     // The project's watch files are outside the sandbox's quota: a run that
-                    // grows them past their bound is stopped (review round 1).
+                    // finds them past their bound is stopped (review round 1).
                     Some(DiskBound {
                         dirs: vec![("watch files", self.watch_base_dir(&sandbox.id))],
                         max: self.config.watches.disk_max,

@@ -3365,8 +3365,8 @@ becomes a notice for its owner
   `<data>/watches/<sandbox>/home` (`HOME`), `state/<watch>` (`YULIUS_WATCH_STATE`) and
   `runs/<run>`, whose output files are read through handles opened before the start. A fixed
   wrapper sets `ulimit -t` (soft, then hard 2 s later), `-d` and `-f` as hard limits and runs the
-  script as its own `bash -c --` argument. A disk bound stops a run that grows the project's
-  watch files past 1 GiB. The process host enforces the timeout. Named agent secrets get placeholders and an
+  script as its own `bash -c --` argument, with no core files. While the project's watch files
+  are over 1 GiB, a run is stopped. The process host enforces the timeout. Named agent secrets get placeholders and an
   egress credential (`ci_egress_open`, run `watch:<name>`).
 - **Posts.** `yulius_domain::watch::outcome` decides a run's end:
   - exit 0 with output posts, and exit 3 posts and ends the watch;

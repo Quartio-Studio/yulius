@@ -91,7 +91,7 @@ posting to people other than the owner.
 
   The limits are set as hard limits before the script starts, so the script cannot raise them
   (past the CPU limit's 2-second grace). The project's watch files (its `home`, state directories
-  and runs) are outside the sandbox's disk quota, so a run that grows them past 1 GiB is stopped. A run past a bound is a failure whose reason names the bound. The values are
+  and runs) are outside the sandbox's disk quota, so while they are over 1 GiB every run of the project's watches is stopped within about 5 s (the script that grew them included). A run past a bound is a failure whose reason names the bound. The values are
   the instance's (`AppConfig.watches`, not yet a server flag). At most 4 runs go at once on an instance, and 1 per
   watch. A watch that is due while its previous run still goes waits for the next tick.
 - **WCH-004 Secrets only through the egress proxy.** A watch can name agent secrets of its
@@ -342,3 +342,28 @@ failing with its fix undone (by hand, one at a time):
   - Names never change (`update_watch` keeps the name, store test), so notices keep their key.
 - `scripts/cargo nextest run -p yulius -p yulius-store -E '(binary_id(yulius::main) &
   test(/^watches::/)) | (package(yulius-store) & test(/watches::/))'`: 19 passed.
+
+### Review round 2 (head `a54eec599`): approved; its notes fixed before the merge
+
+Round 2 approved `a54eec599` with 2 minors and 5 nits. The merge of `dev` that followed resolved a
+conflict (`Sink::Command` from #1715 beside `Sink::Watch`, and its store types beside the
+watches'), so the approval no longer covered the head. The notes were therefore fixed before
+round 3, each with its test seen failing first or with its fix undone:
+- **Removed project's watch files (minor).** `watches` is a mapped root for removal (files a
+  sandbox's uid 0 may have chowned) and in the data directory's link check. The leftovers test
+  `a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_keeps` now writes them and
+  asserts their mapped removal; it failed before the mapping.
+- **A removed project's lost run (minor).** `watch_startup` reads `watches_running`, without the
+  project filter. `a_removed_projects_lost_run_is_recovered_and_runs_dump_no_core` fails with
+  `all_watches` there.
+- **Nits:**
+  - The claim answers the record as claimed, in one transaction (store test), so no claim
+    outlives a failed read.
+  - Empty output is never redacted into "withheld" text (`watch_redacted`). Not covered by a
+    test: making the vault's matcher fail needs a broken vault.
+  - Runs dump no core (`ulimit -c 0`; the same test checks `ulimit -c` and `-Hc` print 0, and it
+    fails without the line).
+  - The disk bound's wording now says that runs are stopped while the files are over it.
+  - The watch files stay under the leftover kind `removed-ci`: a watch run is a CI-like job of
+    the sandbox, and a new kind would change the Leftovers page's list for nothing a person does
+    differently.
