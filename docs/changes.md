@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-23
+
+- A task chained after, or ruled to start after, a live task whose goal is achieved no longer starts while that task's integration failure still applies or a new merge request arrives; archive and delete keep such a session too, and its merge cannot be armed while it closes. A test of the session-capacity watch that failed about one run in ten now waits for the watch's next read. [SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md)
+
 ## 2026-11-22
 
 - A task's agent reads where its project's other tasks stand with `task_get`: owner, pull request and delivery stage, claimed paths, what Yulius says each waits for and its agent's last words, read-only, so it looks before overlapping work instead of asking a person to relay a status. It reads only while its owner may view the project, and a task holding its owner's personal secrets or MCP servers shows other people's and automations' tasks only its shape (no request, plan text, questions, screen or transcript). The skills say to look first; only a person, through the Superagent, writes to a task. [ADR-0460](decisions/0460-a-task-reads-its-neighbours-status-and-never-steers-them.md), [SPEC-625](../.ai/specs/SPEC-625-task-agents-can-read-other-tasks-status.md)
