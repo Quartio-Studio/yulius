@@ -113,6 +113,7 @@ async fn sent(w: &World, client: &EgressClient, host: &str) -> Option<String> {
 /// Every header the proxy forwards for that request (`None` when it refuses it).
 async fn forwarded(w: &World, client: &EgressClient, host: &str) -> Option<Vec<(String, String)>> {
     let request = EgressRequest {
+        method: "GET".into(),
         host: host.into(),
         port: 443,
         path_and_query: "/v1/items?key=yulius-secret-MY_TOKEN".into(),

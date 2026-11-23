@@ -63,6 +63,20 @@ impl App {
             })
             .clamp(1, MAX_SCREEN_LINES);
         let task = self.agent_task_ref(project, args).await?;
+        self.task_screen_of(sandbox, &task, lines).await
+    }
+
+    /// The screen of `task` as [`App::task_screen_for_person`] answers it, its last `lines`
+    /// lines (also `task_get`'s, SPEC-625 PSV-001).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn task_screen_of(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &crate::model::TaskRecord,
+        lines: usize,
+    ) -> AppResult<Value> {
         let attempts = self.deps.store.attempts(&task.id).await?;
         let last = attempts.last();
         let runtime = self.runtime(&task.id);
@@ -77,7 +91,7 @@ impl App {
         } else if !starting && live.is_some() && runtime.hub.has_output() {
             (runtime.hub.screen_text(), "live")
         } else if (live.is_none() || !runtime.hub.initialized())
-            && let Some(saved) = self.visible_ended_screen(&task, &attempts).await
+            && let Some(saved) = self.visible_ended_screen(task, &attempts).await
         {
             let (cols, rows, bytes) = saved.grid;
             // Redacted again: the saved screen is read outside the terminal's own redactor.

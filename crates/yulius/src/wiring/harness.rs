@@ -249,10 +249,14 @@ impl HarnessPort for HarnessAdapter {
                 session_id,
                 prompt,
                 continue_interrupted,
+                fork,
             } => LaunchMode::Resume {
                 session_id: session_id.clone(),
                 prompt: prompt.clone(),
                 continue_interrupted: *continue_interrupted,
+                fork: fork.as_ref().map(|f| launch::ForkSession {
+                    session_id: f.session_id.clone(),
+                }),
             },
         };
         let request = LaunchRequest {

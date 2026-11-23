@@ -2329,6 +2329,37 @@ flowchart LR
     X[queued, running, ended] -->|PUT start| N[409: keeps its start]
 ```
 
+### Forked tasks
+
+Fork (`yulius-app/src/forks.rs`, `POST /api/tasks/{tid}/fork`, `task_fork`,
+[SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md),
+[decision 0463](decisions/0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md)) creates a
+task of the same project and harness that continues a copy of another task's conversation. The
+source is only read. Its id, number, title, branch, the branch's commit and its latest session
+become a `task_forks` row (migration 0092). For Claude Code, the transcript's complete lines and
+side files are copied to `<data>/transcripts/<fork id>/`. The fork's steps are a copy of the
+source's. The fork is inserted `prepared`, which the queue never starts; once the row, the copy
+and the steps are written, one store step moves it to `queued` with its start and the
+subscription the person named (`queued_start`), so a queue wait keeps that choice. Its stage
+timeline therefore starts with a `prepared` span of a few milliseconds.
+`ensure_worktree` starts the fork's branch at the recorded commit. While the fork has no session
+of its own, `launch_attempt` places the stored copy in the fork worktree's project folder, with
+`cwd` rewritten, and launches `SessionMode::Resume { fork }`. For Claude Code that is
+`--resume <source> --fork-session --session-id <new>`; for Codex, `codex fork <source>`. The
+Antigravity CLI cannot fork at launch, so its tasks are refused. The opening message names the
+fork, its branch and spec and the source's commit, then the person's message. Later launches
+resume the fork's own session.
+
+```mermaid
+flowchart LR
+    S[source task: branch head, latest session, transcript] -->|read only| F[fork_task: task_forks row, stored copy, copied steps]
+    F --> T[new task queued]
+    T --> W[ensure_worktree: new branch at the recorded commit]
+    W --> P[place the copy in the fork worktree's project folder, cwd rewritten]
+    P --> L[Resume with fork: claude --resume src --fork-session --session-id new / codex fork src]
+    L --> O[the fork's own session in its lineage]
+```
+
 ## Remote control
 
 A person drives the instance from their own computer ([guide](remote-control.md), SPEC-247,
@@ -2812,6 +2843,32 @@ read, not measured anew: `task_screen` takes a task's live hub screen, or render
 `analytics_tasks` and `analytics_summary`; `checkout` the git port's `ahead_behind` of the sandbox
 repository's `HEAD` against `origin/<integration branch>`, without a fetch.
 
+A task's agent reads its neighbours the same way, read-only
+([decision 0460](decisions/0460-a-task-reads-its-neighbours-status-and-never-steers-them.md),
+SPEC-625, `peer_status.rs`): `task_get` adds to the brief the owner's login, the delivery record's
+stage and PR with `merge_is_armed`, the task's `active_claims`, `waits_for` (fixed sentences built
+from the brief and `task_attention_facts`) and `last_words` (`last_agent_words`, the digest's
+read of the transcript's last assistant message); a person's own callers also get the last 20
+lines of the screen `task_screen_of` reads for `task_screen`, a task's agent never (a held prompt
+and a person's draft show there). `require_reader` checks that the owner is enabled and that
+`settled_access_level` allows `Action::View` before a task's `tasks_list` or `task_get`, and
+refuses when the access cannot be settled. `withholds_from` compares `Holder::of_task` of the reader and
+the peer and asks `reaches_owners_personal`: a peer holding its owner's personal secrets or MCP
+servers loses its free text (`withhold`) in `task_get` and `tasks_list` rows, and
+`session_read`/`sessions_search` refuse or skip its transcripts for that reader; the scope tools,
+the tidy tools' briefs and the briefing's recent changes (`withholds_text`) leave out its notes,
+step and request.
+
+```mermaid
+flowchart LR
+  reader["task agent (task token)"] -->|task_get / tasks_list| view["require_reader: owner may view"]
+  view --> brief["brief + add_peer_status: owner, delivery, claims, waits_for, last_words"]
+  brief -.->|person callers only| screen["screen: task_screen_of"]
+  brief --> hold{"withholds_from: peer holds another person's personal secrets?"}
+  hold -->|no| full["full answer"]
+  hold -->|yes| shape["withhold: shape only, withheld says why"]
+```
+
 A Superagent's standing jobs are scheduled checks held by Yulius
 ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
 `superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`
@@ -2882,6 +2939,39 @@ the team secrets (none had a sandbox) in `vault_scope_pending`; at the next star
 serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets have their own scopes (below).
+
+### Method and path rules
+
+Since SPEC-627 ([decision 0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md))
+a person who manages an agent secret can limit it to requests: `vault_secrets.rules` holds 0–32
+rules, each 1–16 HTTP methods and a path pattern (`*` matching any characters, `/` included;
+schema version 90, `[]` = any request). The domain parses and matches them
+(`yulius-domain` `vault/rules.rs`: the pattern is split on `*` and its pieces found in order, linear
+in the path); the egress policy applies them (`yulius-app` `vault/rules.rs`, called from
+`egress_apply` in `vault/runtime.rs`), so they hold for agent runs, CI jobs and Superagents alike.
+The proxy passes each request's method in `EgressRequest::method`.
+
+```mermaid
+flowchart TD
+  R["request to a bound host<br/>(intercepted HTTP/1.1 or absolute http://)"] --> U{"uses a secret with rules?<br/>placeholder, X-Yulius-Secret,<br/>or its injected header"}
+  U -->|no| F["forwarded as before"]
+  U -->|yes| M{"method and path (sent and outgoing) match a rule,<br/>no dot segment, backslash, ; # or encoded dot/NUL/%,<br/>no method or path override?"}
+  M -->|yes| F
+  M -->|"no (another secret's rules allow the header)"| O["that secret's header instead"] --> F
+  M -->|no| X["403 naming request, host, secret and rules;<br/>nothing sent"] --> A["audit vault.agent.refused<br/>once per run, secret, method, path;<br/>20 per run and secret, then one more"]
+```
+
+The path is matched as the agent sent it and as it goes out (another secret's value replaced in,
+which could otherwise add `..`, `?` or `#`), query left out, no decoding, so spellings the proxy's
+own client or a server could normalise to another resource are refused instead of decoded. A
+run's different refusals of a secret are audited up to 20 (`REFUSALS_LISTED`), then once as "not
+listed" (`VaultState::refusals`). Hosts agents ask for a secret with rules wait for a person even
+with `auto_allow` (`vault/requests.rs`): a server of the agent's own would get the value. Rules
+are set in the Secrets page's Edit dialog or with `rules` in the create and edit bodies; an edit
+is a compare-and-set on the rules it read (`vault_update`), and a row whose stored rules no longer
+parse fails to load rather than becoming unlimited. `secrets_list` shows them to agents. gRPC
+(HTTP/2) to a bound host is not proxied at all (the interception speaks HTTP/1.1), so rules cover
+every request that can carry a value.
 
 ### Copies of production secrets
 
@@ -4162,7 +4252,7 @@ flowchart LR
 ```
 
 A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
-A Codex goal has no native evaluator, so its own red pull request counts as declared work too: once the PR watcher has pasted the failure (SPEC-578), a Stop with the plan and spec finished continues the goal under the same retry bound when the task's latest Yulius CI run for its open pull request failed at the commit its worktree is on. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
+A Codex goal has no native evaluator, so its own red pull request counts as declared work too: a Stop with the plan and spec finished continues the goal under the same retry bound when the newest Yulius CI run of its open pull request at the commit its worktree is on failed, the PR watcher has already pasted that failure (SPEC-578), and neither a newer run of the pull request nor a pushed head past that commit superseded it. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
 
 A `needs_attention` flag keeps its reason with the task
 ([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),

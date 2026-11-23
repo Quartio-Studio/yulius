@@ -303,6 +303,7 @@ impl App {
                     name,
                     hosts: Vec::new(),
                     injection: Injection::None,
+                    rules: Vec::new(),
                 },
                 description,
                 payload: &payload,

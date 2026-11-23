@@ -129,6 +129,7 @@ mod tests {
             name: name.into(),
             description: String::new(),
             hosts: Vec::new(),
+            rules: Vec::new(),
             injection: "none".into(),
             header_name: None,
             fields: vec!["value".into()],

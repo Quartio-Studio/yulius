@@ -3552,3 +3552,62 @@ async fn bootstrap_upgrades_claim_lay_and_link_once_per_revision() -> R {
     );
     Ok(())
 }
+
+/// SPEC-628 FRK-004, FRK-008: a fork's origin persists, a source lists its forks, deleting the
+/// source keeps the fork's link with its number and title but no id, and deleting the fork
+/// removes its record.
+#[tokio::test]
+async fn fork_links_persist_and_outlive_a_deleted_source() -> R {
+    use yulius_app::intake::ForkRecord;
+    use yulius_app::ports::store_ext::IntakeStore;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("y.db");
+    let fork = |id: &str, at: i64| -> Result<ForkRecord, Box<dyn std::error::Error>> {
+        Ok(ForkRecord {
+            task_id: TaskId::parse(id)?,
+            source_task_id: Some(TaskId::parse("t1")?),
+            source_number: 1,
+            source_title: "Source task".into(),
+            source_branch: "feat/1-source-task".into(),
+            source_commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            source_session_id: "11111111-2222-4333-8444-555555555555".into(),
+            message: (id == "t2").then(|| "try the other parser".into()),
+            transcript_ref: Some(format!("/data/transcripts/{id}/s.jsonl")),
+            created_at: Timestamp(at),
+        })
+    };
+    {
+        let store = SqliteStore::open(&path)?;
+        let (sid, uid) = seed(&store).await?;
+        for id in ["t1", "t2", "t3"] {
+            store.insert_task(&task(id, &sid, &uid)?).await?;
+        }
+        store.insert_fork(&fork("t2", 5)?).await?;
+        store.insert_fork(&fork("t3", 6)?).await?;
+    }
+    let store = SqliteStore::open(&path)?;
+    let (t1, t2, t3) = (
+        TaskId::parse("t1")?,
+        TaskId::parse("t2")?,
+        TaskId::parse("t3")?,
+    );
+    assert_eq!(store.fork_of(&t2).await?, Some(fork("t2", 5)?));
+    assert_eq!(store.fork_of(&t1).await?, None, "the source is no fork");
+    let forks: Vec<TaskId> = store
+        .forks_from(&t1)
+        .await?
+        .into_iter()
+        .map(|f| f.task_id)
+        .collect();
+    assert_eq!(forks, vec![t2.clone(), t3.clone()], "oldest first");
+    assert!(store.delete_task(&t1).await?);
+    let kept = store.fork_of(&t2).await?.ok_or("fork kept")?;
+    assert_eq!(kept.source_task_id, None);
+    assert_eq!(
+        (kept.source_number, kept.source_title.as_str()),
+        (1, "Source task")
+    );
+    assert!(store.delete_task(&t3).await?);
+    assert_eq!(store.fork_of(&t3).await?, None);
+    Ok(())
+}

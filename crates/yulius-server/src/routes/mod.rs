@@ -137,6 +137,7 @@ pub fn public() -> Router<AppState> {
             post(tasks::intake_proposal),
         )
         .route("/api/tasks/{tid}/continue", post(tasks::resume))
+        .route("/api/tasks/{tid}/fork", post(tasks::fork))
         .route("/api/tasks/{tid}/switch", post(tasks::switch))
         .route("/api/archived-tasks", get(tasks::archived))
         .route("/api/tasks/{tid}", get(tasks::detail).delete(tasks::delete))
