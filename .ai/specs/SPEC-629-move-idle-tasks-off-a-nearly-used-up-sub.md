@@ -221,7 +221,7 @@ Runs at the final code: `scripts/cargo nextest run -p yulius-domain -p yulius-st
 --workspace --all-targets --all-features -- -D warnings` and `cargo doc --workspace -D warnings`
 are clean; `npx e2e run tests/notifications.e2e.ts` passed 3; `scripts/dev quick` passed. Yulius CI
 run af8eaa6a failed `docs` at `ba45e49` (private intra-doc links), fixed in `84fcae6e5`, whose run
-passed. `scripts/dev security` reports Vidoc disabled for this project (not a pass).
+passed. `yulius security-scan` printed "Security scan disabled" (Vidoc is off for this project; nothing was scanned, not a pass).
 
 Reviews: round 1 (Fable 5.2) at `ba45e49` asked for changes (1 blocker, 3 major, 7 minor, 2 nit),
 answered in `84fcae6e5`, `9df7cc5b5` and the tests after it. Round 2 at `ac6020ef1` asked for changes
