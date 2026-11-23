@@ -398,11 +398,12 @@ watching, steering and unblocking.
   counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
   review round, and their named review subagents populate the same delivery history and Review
   card. Antigravity tasks request Gemini 4 Neon (High).
-  Forking a task (the API's fork and the `task_fork` tool) starts a new task from another task's
-  conversation and committed work: on the same agent, on a branch and worktree of its own with a
-  copy of its plan, and with an optional message saying what to do differently. The task forked
-  goes on untouched, and each task names the other. Claude Code and Codex tasks can be forked;
-  Antigravity tasks cannot (SPEC-628).
+  Fork… (in a task's menu and on its details page, and the `task_fork` tool) starts a new task
+  from another task's conversation and committed work: on the same agent, on a branch and
+  worktree of its own with a copy of its plan, and with an optional message saying what to do
+  differently, a model and a subscription. The task forked goes on untouched, and each task's page
+  links the other ("Fork of #N", "Forked: #M"). Claude Code and Codex tasks can be forked;
+  Antigravity tasks cannot, and Fork… says why (SPEC-628).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another

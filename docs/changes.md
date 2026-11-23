@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-23
+
+- Fork… in a task's menu and on its details page opens a dialog for what the fork should do differently, its model and its subscription, then opens the new task; each task's page links the other ("Fork of #N", "Forked: #M"). [SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md)
+
 ## 2026-11-22
 
 - Fork a task: a new task on the same agent continues a copy of a task's conversation from its branch's last commit, on a branch, worktree and spec of its own with a copy of its plan, and the task forked goes on untouched (`POST /api/tasks/{tid}/fork`, the `task_fork` tool). Claude Code forks with `--fork-session` and Codex with `codex fork`; Antigravity tasks cannot be forked. [ADR-0463](decisions/0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md), [SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md)

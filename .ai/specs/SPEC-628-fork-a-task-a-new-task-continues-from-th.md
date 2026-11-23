@@ -61,9 +61,9 @@ separately. The owner approved this on 22 Nov 2026 after a review of iTermX, who
 - [x] Tests that fail without the fork: fixture conversation carried, branch at the source head, source unchanged
 - [x] Docs for the backend: architecture, api, ADR-0463 and the changes log
 - [x] Independent review of the backend pull request
-- [ ] Fork action in the task menu and on the task page, with its dialog
-- [ ] Fork origin and forks shown on both task pages
-- [ ] End-to-end spec of the Fork dialog and the origin shown on both pages
+- [x] Fork action in the task menu and on the task page, with its dialog
+- [x] Fork origin and forks shown on both task pages
+- [x] End-to-end spec of the Fork dialog and the origin shown on both pages
 - [ ] Product docs and the changes log for the UI; independent review of the UI pull request
 
 ## Acceptance criteria
@@ -205,3 +205,30 @@ it. `tool_task_fork` now asks `require_reader` and `require_transcript_reader` b
 staged. Test: `peer_status::a_personal_tasks_conversation_is_not_forked_by_a_task_without_its_secrets`
 (bob's agent and an automation's are refused with that sentence and nothing is created; alice's
 other task passes the check). It failed before the change ("no conversation to fork yet").
+
+The backend was merged into dev as #1706 (`6611b4d54`), from PR head `f7504a134`, on green Yulius CI.
+
+UI pull request (Plan items 9 to 12):
+
+- `actions.js`: Fork… sits in the task menu, both on the page and on a sidebar row. It is off,
+  with the reason in its name, without write access, for an Antigravity task, and for a task that
+  has not started. Its dialog asks what to do differently, a model of the task's harness and a
+  subscription of its provider. It says the source goes on untouched, uncommitted changes stay
+  behind, and the new task and its copy of the conversation are the forker's. It then opens the
+  fork.
+- `taskview.js`: the strip shows a "Fork of #N" chip linking to the source, with the commit in
+  its title, and a "Forked: #M" chip for each fork. `pages/taskinfo.js`: a Fork… button beside
+  Review changes, and "Forked from" and "Forks" rows. The mock serves
+  `POST /api/tasks/{tid}/fork`, `forked_from` and `forks`.
+- `cd e2e && npx e2e run tests/fork.e2e.ts`: 3 passed. These cover the menu's dialog (no WCAG
+  violations), the message sent, the fork opened with its chip, the source's chip back, the
+  details page's button and Forks row, and the refusal reasons for an Antigravity task and a
+  queued one. The neighbouring specs (menus, ownership, consistency, git, handoffs, archive):
+  80 passed.
+- `ui_contract` (route literals against the router): 12 passed.
+- Round-5 nits: the same person's task's pass in
+  `peer_status::a_personal_tasks_conversation_is_not_forked_by_a_task_without_its_secrets` now
+  asserts "no conversation to fork". `task_fork` joins the disabled-owner case of
+  `peer_status::a_task_reads_only_what_its_owner_may_view`. With `require_reader` removed, that
+  case still passes, because `manage_authority` refuses a disabled person first. That check stays
+  as the reviewer called it: defence in depth.

@@ -6,10 +6,10 @@
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, statusMark, prChip, loadError, bar } from '../dom.js';
 import { href } from '../router.js';
-import { relLong, dateTime, duration, compact, int, plural, accountRef } from '../format.js';
+import { relLong, dateTime, duration, compact, int, plural, accountRef, shortSha } from '../format.js';
 import { taskTime } from '../tasktime.js';
-import { taskInfo, activityLine, isLive, limitCause, planGrowth, cliOf } from '../status.js';
-import { openDeliveryDialog, stageLabel } from '../actions.js';
+import { taskInfo, activityLine, isLive, limitCause, planGrowth, cliOf, allows } from '../status.js';
+import { openDeliveryDialog, stageLabel, openForkDialog, forkWhy } from '../actions.js';
 import { initials } from '../layout.js';
 import { modelLabel, findEffort } from '../models.js';
 import { loadWaterfall } from '../stages.js';
@@ -72,9 +72,16 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   // row and stays away without one, as the Changes tile's link does.
   const reviewButton = h('a', { class: 'btn', href: href(reviewPath), dataset: { route: reviewPath }, hidden: true }, icon('branch', { size: 14 }), 'Review changes');
   const reviewable = (git) => Boolean(git && !worktreeMissing(git));
+  // Fork (SPEC-628 FRK-009): a new task continues a copy of this conversation.
+  const forkButton = h('button', { type: 'button', class: 'btn fork-button', onClick: () => openForkDialog(ctx, current) }, icon('branch', { size: 14 }), 'Fork…');
+  const paintFork = () => {
+    const why = forkWhy(current, allows((ctx.store.sandboxById(current.sandbox_id) || sandbox).access || 'read', 'write'));
+    forkButton.disabled = Boolean(why);
+    forkButton.title = why || 'A new task continues a copy of this conversation from its last commit; this one goes on';
+  };
   const head = h('header', { class: 'gt-head' },
     h('a', { class: 'gt-back', href: href(`${base}/tasks`), dataset: { route: `${base}/tasks`, restore: 'page' } }, icon('back', { size: 14 }), 'Tasks'),
-    h('div', { class: 'gt-title-row' }, titleEl, reviewButton,
+    h('div', { class: 'gt-title-row' }, titleEl, reviewButton, forkButton,
       h('a', { class: 'btn btn-primary gt-go', href: href(taskPath), dataset: { route: taskPath } }, 'Go to task', icon('forward', { size: 14 }))),
     meta);
 
@@ -83,6 +90,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     const info = statusInfo();
     setChildren(titleEl, h('span', { class: 'muted' }, `#${current.number} `), current.title || `Task #${current.number}`);
     reviewButton.hidden = !reviewable(ctx.store.gitRowOf(sandbox.id, current.id));
+    paintFork();
     const pr = ctx.store.pullsOf(sandbox.id).get(current.id);
     // The activity line starts with the state's label: show only what it adds.
     const line = activityLine(current, info) || '';
@@ -154,6 +162,11 @@ export function mountTaskInfoView(ctx, sandbox, task) {
           : files ? h('a', { href: href(reviewPath), dataset: { route: reviewPath } }, `${files} · review`) : 'No branch changes yet'),
       tile('Tokens', tokens === null ? 'unknown' : compact(tokens), tokens === null ? null : `in ${compact(m.input_tokens)} · out ${compact(m.output_tokens)} · cache ${compact((m.cache_read_tokens || 0) + (m.cache_write_tokens || 0))}`));
 
+    // A linked task by number, or its number alone once it was deleted.
+    const taskRef = (link, suffix) => {
+      const path = `${base}/t/${link.number}`;
+      return h('span', null, link.task_id ? h('a', { href: href(path), dataset: { route: path } }, `#${link.number} ${link.title || ''}`.trim()) : `#${link.number} (deleted)`, suffix);
+    };
     const rows = [
       ['Author', login ? h('span', { class: 'ti-person' }, h('span', { class: 'avatar ti-avatar', 'aria-hidden': 'true' }, initials(login)), login) : '—'],
       // Who the task acts on GitHub as, and the only person who changes it (SPEC-070).
@@ -181,6 +194,9 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       ['Turns', m.turns === null || m.turns === undefined ? '—' : int(m.turns)],
       ['Subscription switches', String(m.switches ?? (detail.switches || []).length ?? 0)],
       ['Branch', current.branch ? h('code', null, current.branch) : 'not created yet'],
+      // Where a fork came from and its forks (SPEC-628 FRK-008).
+      current.forked_from ? ['Forked from', taskRef(current.forked_from, ` at ${shortSha(current.forked_from.commit)}`)] : null,
+      current.forks && current.forks.length ? ['Forks', h('span', null, ...current.forks.flatMap((fork, i) => [i ? ', ' : null, taskRef(fork, '')]))] : null,
       // The delivery record knows the pull request before the Git overview lists it.
       ['Pull request', pr || (delivery && delivery.pr) ? prChip(pr || delivery.pr) : 'none yet'],
       ['Delivery', delivery ? h('span', null, stageLabel(delivery.stage), ' ', h('button', { type: 'button', class: 'link-btn small', onClick: () => openDeliveryDialog(ctx, current) }, 'Details…')) : '—'],
@@ -218,7 +234,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       h('div', { class: 'ti-columns' },
         h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-plan' }, h('h2', { class: 'card-title', id: 'ti-plan' }, icon('tasks', { size: 14 }), 'Plan'), steps()),
         h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-details' }, h('h2', { class: 'card-title', id: 'ti-details' }, icon('target', { size: 14 }), 'Details'),
-          h('dl', { class: 'kv ti-kv' }, rows.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])))),
+          h('dl', { class: 'kv ti-kv' }, rows.filter(Boolean).flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])))),
       stagesCard,
       h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-sessions' }, h('h2', { class: 'card-title', id: 'ti-sessions' }, icon('terminal', { size: 14 }), 'Sessions'), sessions()),
       switches.length ? h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-switches' }, h('h2', { class: 'card-title', id: 'ti-switches' }, icon('refresh', { size: 14 }), 'Subscription switches'),
