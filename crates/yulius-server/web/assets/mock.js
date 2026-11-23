@@ -3533,6 +3533,111 @@ function validateAgent(body, creating, currentName) {
   if (body.value !== undefined && flattenedKey(body.value)) fail(422, 'invalid', "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n");
 }
 
+// ---- Brokered commands (SPEC-626): a project's commands and their runs, as the server answers.
+function commandsOf(db) {
+  if (!db.commands) {
+    db.commands = [{
+      id: 'cmd_deploy', sandbox: 'sb_studio', name: 'deploy', description: 'Deploys the studio with its service account', binary: '/usr/local/bin/deploy', secret: 'STRIPE_KEY',
+      tasks: [], approve: 'send', send_flags: ['--send'], approval_minutes: 10, timeout_seconds: 600, fixed: ['--key-file', '{keyfile}'], subcommands: ['status', 'push'],
+      refuse: ['--key-file', '-k'], slashes: false, env: {}, created_by: 'mkarp', created_at: iso(DAY), updated_by: 'mkarp', updated_at: iso(DAY), version: 1,
+    }];
+    db.commandRuns = [
+      { id: 'run_waiting', sandbox: 'sb_studio', command: 'deploy', task_number: 111, line: '/usr/local/bin/deploy --key-file {keyfile} push --send', changes: false, state: 'waiting', reason: null, deadline: new Date(Date.now() + 9 * 60 * 1000).toISOString(), answered_by: null, exit_code: null, created_at: iso(60 * 1000), ended_at: null },
+      { id: 'run_done', sandbox: 'sb_studio', command: 'deploy', task_number: 107, line: '/usr/local/bin/deploy --key-file {keyfile} status', changes: false, state: 'done', reason: null, deadline: null, answered_by: null, exit_code: 0, created_at: iso(HOUR), ended_at: iso(HOUR) },
+    ];
+  }
+  return db.commands;
+}
+
+const COMMAND_FIELDS = ['name', 'description', 'binary', 'secret', 'tasks', 'approve', 'send_flags', 'approval_minutes', 'timeout_seconds', 'fixed', 'subcommands', 'refuse', 'slashes', 'env'];
+
+function commandView(db, command, sandbox) {
+  const secret = vaultOf(db).agent.find((s) => s.name === command.secret && (s.sandbox === sandbox.id || (s.scope === 'instance' && (s.on || []).includes(sandbox.id))) && !s.cd_prod);
+  const out = { id: command.id, secret_ready: Boolean(secret), can_edit: sandbox.access === 'admin' };
+  for (const key of COMMAND_FIELDS) out[key] = command[key];
+  return { ...out, created_by: command.created_by, created_at: command.created_at, updated_by: command.updated_by, updated_at: command.updated_at, version: command.version };
+}
+
+function validateCommand(body) {
+  for (const key of Object.keys(body)) if (!COMMAND_FIELDS.includes(key)) fail(422, 'invalid', `unknown field \`${key}\``);
+  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(body.name || '')) fail(422, 'invalid', "a command's name is 1 to 40 lowercase letters, digits and dashes, not starting with a dash");
+  if (!/^\/[\x21-\x7e]+$/.test(body.binary || '') || /(^|\/)\.\.?(\/|$)/.test(body.binary)) fail(422, 'invalid', 'the binary is an absolute path, like /usr/local/bin/deploy');
+  if (/^\/(tmp|home|root|proc|sys|dev|run)\//.test(body.binary)) fail(422, 'invalid', "the binary is the host's own program");
+  if (!['always', 'send', 'never'].includes(body.approve || 'always')) fail(422, 'invalid', 'approve is always, send or never');
+  if ((body.approve === 'send') && !(body.send_flags || []).length) fail(422, 'invalid', 'approve send needs the flags that make the command change something (send_flags)');
+}
+
+function saveCommand(db, sandbox, body, existing) {
+  validateCommand(body);
+  const command = existing || { id: `cmd_${Math.random().toString(16).slice(2, 8)}`, sandbox: sandbox.id, created_by: 'mkarp', created_at: new Date().toISOString(), version: 0 };
+  const defaults = { description: '', tasks: [], approve: 'always', send_flags: [], approval_minutes: 10, timeout_seconds: 600, fixed: [], subcommands: [], refuse: [], slashes: false, env: {} };
+  for (const key of COMMAND_FIELDS) command[key] = body[key] ?? defaults[key];
+  command.updated_by = 'mkarp';
+  command.updated_at = new Date().toISOString();
+  command.version += 1;
+  if (!existing) commandsOf(db).push(command);
+  audit(db, existing ? 'command.update' : 'command.define', command.id, command.name);
+  emit(db, { type: 'commands.updated', sandbox_id: sandbox.id });
+  return commandView(db, command, sandbox);
+}
+
+function commandOf(db, sandbox, id) {
+  const command = commandsOf(db).find((c) => c.id === id && c.sandbox === sandbox.id);
+  if (!command) fail(404, 'not_found', 'not found');
+  return command;
+}
+
+function requireAdmin(sandbox) {
+  if (sandbox.access !== 'admin') fail(403, 'forbidden', 'this action needs admin access on GitHub');
+}
+
+route('GET', `/api/sandboxes/${ID}/commands`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  return { items: commandsOf(db).filter((c) => c.sandbox === sandbox.id).sort((a, b) => a.name.localeCompare(b.name)).map((c) => commandView(db, c, sandbox)), can_edit: sandbox.access === 'admin' };
+});
+route('POST', `/api/sandboxes/${ID}/commands`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  requireAdmin(sandbox);
+  if (commandsOf(db).some((c) => c.sandbox === sandbox.id && c.name === body.name)) fail(409, 'conflict', 'this project already has a command of that name');
+  return saveCommand(db, sandbox, body, null);
+});
+route('PUT', `/api/sandboxes/${ID}/commands/${ID}`, ({ db, p, body, query }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  requireAdmin(sandbox);
+  const command = commandOf(db, sandbox, p[1]);
+  const version = query && query.get ? query.get('version') : null;
+  if (version && Number(version) !== command.version) fail(409, 'conflict', 'the command changed since you opened it: reload and edit again');
+  return saveCommand(db, sandbox, body, command);
+});
+route('DELETE', `/api/sandboxes/${ID}/commands/${ID}`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  requireAdmin(sandbox);
+  const command = commandOf(db, sandbox, p[1]);
+  db.commands = commandsOf(db).filter((c) => c !== command);
+  audit(db, 'command.remove', command.id, command.name);
+  emit(db, { type: 'commands.updated', sandbox_id: sandbox.id });
+  return null;
+});
+route('GET', `/api/sandboxes/${ID}/command-runs`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  commandsOf(db);
+  const answers = sandbox.access === 'admin' || sandbox.access === 'write';
+  return { items: db.commandRuns.filter((r) => r.sandbox === sandbox.id).map((r) => ({ ...r, can_answer: answers && r.state === 'waiting' })) };
+});
+route('POST', `/api/sandboxes/${ID}/command-runs/${ID}`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  commandsOf(db);
+  const run = db.commandRuns.find((r) => r.id === p[1] && r.sandbox === sandbox.id);
+  if (!run) fail(404, 'not_found', 'not found');
+  if (run.state !== 'waiting') fail(409, 'conflict', `this run is ${run.state} already`);
+  run.state = body.approve ? 'running' : 'rejected';
+  run.answered_by = 'mkarp';
+  if (!body.approve) run.ended_at = new Date().toISOString();
+  audit(db, body.approve ? 'command.approve' : 'command.reject', run.id, run.line);
+  emit(db, { type: 'commands.updated', sandbox_id: sandbox.id });
+  return { ...run, can_answer: false };
+});
+
 route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.filter((s) => !s.sandbox).map(teamView));
 route('POST', '/api/team-secrets', ({ db, body }) => createTeam(db, body, null));
 route('GET', `/api/sandboxes/${ID}/team-secrets`, ({ db, p }) => {
@@ -7659,6 +7764,19 @@ export function createMockTransport(params) {
     db.announceSecrets(secret.sandbox);
   };
   db.announceSecrets = (sandboxId) => emit(db, { type: 'secrets.updated', sandbox_id: sandboxId });
+  // SPEC-626: run `id` waits no more (its time ran out), as the server says.
+  db.expireRun = (id) => {
+    const run = db.commandRuns.find((r) => r.id === id);
+    run.state = 'expired';
+    run.ended_at = new Date().toISOString();
+    emit(db, { type: 'commands.updated', sandbox_id: 'sb_studio' });
+  };
+  // SPEC-626: an agent of task `task` asks to run `deploy` with `line`, which waits for approval.
+  db.askRun = (line, task) => {
+    commandsOf(db);
+    db.commandRuns.unshift({ id: `run_${db.commandRuns.length}`, sandbox: 'sb_studio', command: 'deploy', task_number: task, line, changes: true, state: 'waiting', reason: null, deadline: new Date(Date.now() + 600000).toISOString(), answered_by: null, exit_code: null, created_at: new Date().toISOString(), ended_at: null });
+    emit(db, { type: 'commands.updated', sandbox_id: 'sb_studio' });
+  };
   db.updateHolds = [];
   db.updateReads = () => db.updateHolds.length;
   db.updateReadsTaken = 0;

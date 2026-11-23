@@ -98,7 +98,16 @@ pub fn validated(mut def: CommandDefinition) -> AppResult<CommandDefinition> {
     }
     def.tasks.sort_unstable();
     def.tasks.dedup();
-    each(&def.fixed, "fixed", |v| dom::placeholder_refusal(v, false))?;
+    // An entry is exactly what it reads as: not empty, not padded, on one line (review of slice
+    // 4: the page's form keeps them as they are, and a person reads them in a run's line).
+    let plain = |v: &str| {
+        (v.is_empty() || v.trim() != v || v.chars().any(char::is_control)).then(|| {
+            "an entry is not empty, has no space around it and no line break or tab".to_owned()
+        })
+    };
+    each(&def.fixed, "fixed", |v| {
+        plain(v).or_else(|| dom::placeholder_refusal(v, false))
+    })?;
     each(&def.subcommands, "subcommands", dom::subcommand_refusal)?;
     each(&def.refuse, "refuse", dom::flag_refusal)?;
     each(&def.send_flags, "send_flags", dom::flag_refusal)?;
@@ -110,7 +119,7 @@ pub fn validated(mut def: CommandDefinition) -> AppResult<CommandDefinition> {
     }
     for (name, value) in &def.env {
         refuse(dom::env_name_refusal(name))?;
-        if let Some(reason) = dom::placeholder_refusal(value, true) {
+        if let Some(reason) = plain(value).or_else(|| dom::placeholder_refusal(value, true)) {
             return Err(AppError::Invalid(format!("env {name}: {reason}")));
         }
     }
@@ -536,6 +545,14 @@ mod tests {
             (json!({"refuse": ["key-file"]}), "not a flag"),
             (json!({"subcommands": ["a/b"]}), "not a subcommand"),
             (json!({"tasks": [0]}), "task numbers"),
+            // Review of slice 4: entries the page's form would change.
+            (
+                json!({"fixed": ["--format", "", "--key-file", "{keyfile}"]}),
+                "not empty",
+            ),
+            (json!({"fixed": [" --key-file"]}), "no space around"),
+            (json!({"fixed": ["two\nlines"]}), "no line break"),
+            (json!({"env": {"NOTE": "hello "}}), "no space around"),
         ];
         for (patch, says) in cases {
             let mut value = serde_json::to_value(def()).unwrap_or_default();

@@ -3180,6 +3180,8 @@ before it is stored or returned. At most 4 runs of a project's commands run at o
 records a run it did not see end as `lost` and removes its files (`App::reconcile_command_runs`).
 Every run is audited `command.run` with the redacted command line, outcome, exit code and time.
 
+The Secrets page's Commands tab (`mountCommands` in `web/assets/pages/secrets.js`) lists a project's commands and runs, edits them for administrators and answers waiting runs, reloading on `commands.updated`.
+
 **Approvals** (`crates/yulius-app/src/commands_approval.rs`). A run that needs a person (`always`,
 or `send` with `changes: true` or a send flag) is stored `waiting` with its deadline
 (`approval_minutes`, a minute being `command_minute_ms`), and its task gets a Needs you request
@@ -3190,8 +3192,8 @@ project's secrets (`Action::Configure`) answers from a browser session
 Telegram notice (`telegram_reply` → `App::telegram_command_answer`). The request names its run in
 its `cause` (`command-run:<id>`, which an agent's `needs_you` cannot write), the notifier keeps that
 id with the notice (`telegram_sent.command_run`, migration 0094), and a reply answers that run
-alone; any other reply to it reaches no task, and a line the notice had to cut is approved on the
-page only. The answer is one
+alone; any other reply to it reaches no task, and a line the notice cannot show exactly (cut, or with a
+backtick) is approved on the page only. The answer is one
 conditional write from `waiting` before the deadline (`answer_command_run`, an approval also only
 while fewer than four runs of the project run); an approved run runs on its own task, and the
 request ends with the answer (`end_needs_you_asked_at`). No answer is a no: a timer per run that

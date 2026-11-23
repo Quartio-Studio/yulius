@@ -35,14 +35,16 @@ pub fn run_of_cause(cause: &str) -> Option<&str> {
     cause.strip_prefix(RUN_CAUSE).filter(|id| !id.is_empty())
 }
 
-/// Whether a request shows `line` whole.
+/// Whether a request's notice shows `line` as it is: not over [`SHOWN_LINE`] characters, and no
+/// backtick, which a Telegram notice drops (review round 2 of slice 3). Another is approved on the
+/// Secrets page only.
 fn shown_whole(line: &str) -> bool {
-    line.chars().count() <= SHOWN_LINE
+    line.chars().count() <= SHOWN_LINE && !line.contains('`')
 }
 
 /// The command line as a request shows it: cut at a character, saying so.
 fn shown_line(line: &str) -> String {
-    if shown_whole(line) {
+    if line.chars().count() <= SHOWN_LINE {
         return line.to_owned();
     }
     let cut: String = line.chars().take(SHOWN_LINE).collect();
@@ -60,10 +62,9 @@ impl App {
     }
 
     /// BRK-014: a stored `waiting` run asks its task's people. Its task is in Needs you with the
-    /// full command line, the minutes it waits and how to answer, as a request asked at the
-    /// run's own time, so a Telegram reply to its notice answers this run and no other. The
-    /// request takes the place of one the agent opened; the run ends it once it is answered or
-    /// expired.
+    /// full command line, the minutes it waits and how to answer, the request naming the run in
+    /// its `cause`, so a Telegram reply to its notice answers this run and no other. The request
+    /// takes the place of one the agent opened; the run ends it once it is answered or expired.
     pub(crate) async fn ask_command_approval(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
@@ -94,7 +95,7 @@ impl App {
             } else {
                 format!(
                     "{} — it waits {} min; no answer is a no. Approve it on the Secrets page, \
-                     where the whole line is; reply reject to this notice to refuse it.",
+                     where the line is whole and exact; reply reject to this notice to refuse it.",
                     shown_line(&run.line),
                     def.approval_minutes
                 )

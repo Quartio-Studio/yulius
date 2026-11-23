@@ -2603,6 +2603,15 @@ run ended (its `scrub.json` is then not read), so continue the task (or open the
 to start a fresh run; **Yulius could not be reached** while the server is up, with no usable
 `scrub.json`, usually means the sandbox's connections to it are used up (next section).
 
+
+Brokered commands (SPEC-626) are managed on each project's Secrets page, Commands tab, and through
+`GET/POST /api/sandboxes/{sid}/commands` (docs/api.md). A run's files live under
+`<data>/cd/<sid>/runs/cmd-<run>` only while it runs; the 200 newest ended runs of a project are kept
+in the database with their redacted output. A run that waits for approval survives a restart and
+expires at its deadline; one that ran when the server stopped is recorded `lost` at the next start.
+Audit actions: `command.define`, `command.update`, `command.remove`, `command.refused`,
+`command.ask`, `command.approve`, `command.reject`, `command.expired`, `command.run`.
+
 ### Leftover agent processes
 
 A process an agent's command leaves behind once its parent exits (a detached test job, a
@@ -3405,6 +3414,30 @@ up. Queued tasks start when capacity allows.
   Hosts agents ask for such a secret then wait for you; do not allow it into `.env` files, which
   give code the value itself. Rules cannot tell request bodies apart (a GraphQL mutation is a
   `POST /graphql` like a query).
+- Brokered commands (SPEC-626, ADR-0459) give a CLI an agent secret as a key file outside the
+  agents' sandbox. What to know when you define one:
+  - It runs in the project's production holder on the host's read-only `/usr`, `/etc` and `/opt`
+    (no Docker; without sandbox isolation, in the containment production CD runs get there): install
+    the binary on the host, not in a sandbox. It shares that holder's network with production CD
+    runs.
+  - The command decides what the key can do. Keep `subcommands` to what agents need, put every flag
+    that names a key, a config file or a server in `refuse`, and use `approve: always` (or `send`
+    with the CLI's own flag for changing things) for anything that deploys or signs.
+  - Output is redacted of every agent secret the project can see, as stored, encoded and line by
+    line. A CLI that prints the key transformed (`openssl rsa -text`, a hex dump) is not caught:
+    do not define such subcommands.
+  - Arguments may hold any printable character, so a look-alike letter can make an argument read
+    like another. An argument with a character outside plain ASCII shows single-quoted in the
+    line: that is the cue to read it closely on the Secrets page, where it is exact, before
+    approving a run that changes something. A line Telegram cannot show exactly (over 380
+    characters, or with a backtick) is approved on the page only.
+  - An approval by a Telegram reply needs only the person's linked chat, no two-factor code per
+    run: unlink a chat you no longer hold (`/stop`). For a command whose runs need a closer look
+    than a phone gives, answer on the Secrets page and treat a Telegram notice as the prompt to
+    go and look.
+  - Env values are not secret (people who view the project read them); the key goes into env only
+    as `{secret}`. At most 4 runs of a project's commands run at once; each run's files, its key
+    with them, are removed when it ends and at the next start after a crash.
 - Agents receive per-run task tokens (MCP, hooks) and, through the credential helper and `gh`,
   their task creator's GitHub token (8 h, capped by that person's access within the App's
   installation; an agent could read it and act as them there until it expires), or without one a
