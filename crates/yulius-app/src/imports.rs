@@ -1971,7 +1971,7 @@ fn read_line_bounded(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
 /// overwritten). The agent owns its home: every folder is opened from the sandbox directory
 /// without following links and every file is written through its folder's handle, so a link it
 /// planted never steers the copy (#657, ADR-0174).
-fn place_claude_transcript(
+pub(crate) fn place_claude_transcript(
     sandbox_dir: &Path,
     dest: &Path,
     stored: &Path,

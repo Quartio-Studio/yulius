@@ -233,6 +233,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0091_keyed_expiring_notices.sql"),
     // Schema version 90 (SPEC-627 MPR-001); 0088 is the reserved file number.
     include_str!("migrations/0088_agent_secret_rules.sql"),
+    // Schema version 91 (SPEC-628); 0092 is the reserved file number.
+    include_str!("migrations/0092_task_forks.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -575,6 +577,7 @@ mod tests {
                 include_str!("migrations/0091_keyed_expiring_notices.sql"),
             ),
             (90, include_str!("migrations/0088_agent_secret_rules.sql")),
+            (91, include_str!("migrations/0092_task_forks.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -583,7 +586,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 90, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 91, "a new migration is pinned here too");
     }
 
     #[test]

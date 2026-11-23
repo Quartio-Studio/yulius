@@ -764,6 +764,8 @@ impl TaskStore for SqliteStore {
                 "DELETE FROM task_chains WHERE task_id = ?1",
                 "DELETE FROM task_schedules WHERE task_id = ?1",
                 "UPDATE task_chains SET after_task_id = NULL WHERE after_task_id = ?1",
+                "DELETE FROM task_forks WHERE task_id = ?1",
+                "UPDATE task_forks SET source_task_id = NULL WHERE source_task_id = ?1",
                 "DELETE FROM prompt_holds WHERE task_id = ?1",
                 "UPDATE prompt_holds SET new_task_id = NULL WHERE new_task_id = ?1",
                 "DELETE FROM task_auto_choices WHERE task_id = ?1",

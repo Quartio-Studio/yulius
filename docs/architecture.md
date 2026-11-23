@@ -2329,6 +2329,37 @@ flowchart LR
     X[queued, running, ended] -->|PUT start| N[409: keeps its start]
 ```
 
+### Forked tasks
+
+Fork (`yulius-app/src/forks.rs`, `POST /api/tasks/{tid}/fork`, `task_fork`,
+[SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md),
+[decision 0463](decisions/0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md)) creates a
+task of the same project and harness that continues a copy of another task's conversation. The
+source is only read. Its id, number, title, branch, the branch's commit and its latest session
+become a `task_forks` row (migration 0092). For Claude Code, the transcript's complete lines and
+side files are copied to `<data>/transcripts/<fork id>/`. The fork's steps are a copy of the
+source's. The fork is inserted `prepared`, which the queue never starts; once the row, the copy
+and the steps are written, one store step moves it to `queued` with its start and the
+subscription the person named (`queued_start`), so a queue wait keeps that choice. Its stage
+timeline therefore starts with a `prepared` span of a few milliseconds.
+`ensure_worktree` starts the fork's branch at the recorded commit. While the fork has no session
+of its own, `launch_attempt` places the stored copy in the fork worktree's project folder, with
+`cwd` rewritten, and launches `SessionMode::Resume { fork }`. For Claude Code that is
+`--resume <source> --fork-session --session-id <new>`; for Codex, `codex fork <source>`. The
+Antigravity CLI cannot fork at launch, so its tasks are refused. The opening message names the
+fork, its branch and spec and the source's commit, then the person's message. Later launches
+resume the fork's own session.
+
+```mermaid
+flowchart LR
+    S[source task: branch head, latest session, transcript] -->|read only| F[fork_task: task_forks row, stored copy, copied steps]
+    F --> T[new task queued]
+    T --> W[ensure_worktree: new branch at the recorded commit]
+    W --> P[place the copy in the fork worktree's project folder, cwd rewritten]
+    P --> L[Resume with fork: claude --resume src --fork-session --session-id new / codex fork src]
+    L --> O[the fork's own session in its lineage]
+```
+
 ## Remote control
 
 A person drives the instance from their own computer ([guide](remote-control.md), SPEC-247,

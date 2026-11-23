@@ -88,6 +88,31 @@ pub struct ChainRecord {
     pub rule: Option<String>,
 }
 
+/// Where a fork came from (SPEC-628 FRK-004): the source task as it was when it was forked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkRecord {
+    /// The fork.
+    pub task_id: TaskId,
+    /// The source task; `None` once it was deleted.
+    pub source_task_id: Option<TaskId>,
+    /// The source's number (kept after deletion).
+    pub source_number: u32,
+    /// The source's title (kept after deletion).
+    pub source_title: String,
+    /// The source's branch.
+    pub source_branch: String,
+    /// The source branch's commit the fork starts from.
+    pub source_commit: String,
+    /// The source's session the fork continues a copy of.
+    pub source_session_id: String,
+    /// What the person asked the fork to do differently.
+    pub message: Option<String>,
+    /// The stored copy of the source transcript (Claude Code), placed for the fork's first launch.
+    pub transcript_ref: Option<String>,
+    /// When the task was forked.
+    pub created_at: Timestamp,
+}
+
 /// A waiting task's new start (SPEC-126): it replaces the status, chain and start time together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartChange {
