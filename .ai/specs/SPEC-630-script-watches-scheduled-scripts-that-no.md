@@ -172,7 +172,8 @@ posting to people other than the owner.
 - [x] Posts that could not be stored are kept and retried
 - [x] The scheduler runs due watches and picks them up again after a restart
 - [x] Review round 1 of the watch core: every finding fixed test-first
-- [ ] Independent review round 2 of the watch core, every finding answered
+- [x] Independent review round 2 of the watch core, every finding answered
+- [ ] Independent review round 3 of the watch core: the dev merge and round 2's notes
 - [ ] People create, edit, run, pause and remove watches over HTTP
 - [ ] The Superagent manages watches through MCP tools, and checks point to watches
 - [ ] The project's Watches page offers Run now, Pause/Resume, Edit and Remove
