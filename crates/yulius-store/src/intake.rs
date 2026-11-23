@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::auto_choice::AutoChoiceRecord;
 use yulius_app::error::AppResult;
-use yulius_app::intake::{ChainRecord, HoldRecord, StartChange, hold_state};
+use yulius_app::intake::{ChainRecord, ForkRecord, HoldRecord, StartChange, hold_state};
 use yulius_app::ports::store_ext::IntakeStore;
 use yulius_domain::auto_choice::ChosenBy;
 use yulius_domain::ids::{TaskId, UserId};
@@ -16,6 +16,8 @@ use yulius_domain::time::Timestamp;
 use crate::{SqliteStore, bad_column, db, to_u32};
 
 const CHAIN_COLS: &str = "task_id, after_task_id, after_number, blocked_reason, created_at, rule";
+const FORK_COLS: &str = "task_id, source_task_id, source_number, source_title, source_branch, \
+    source_commit, source_session_id, message, transcript_ref, created_at";
 const AUTO_COLS: &str = "task_id, mode_by, workflow_by, workflow_name, created_at";
 const HOLD_COLS: &str = "id, task_id, class, prompt, prompt_sha256, percent, typed_by, state, \
     created_at, resolved_by, resolved_at, new_task_id";
@@ -37,6 +39,26 @@ fn chain_from_row(row: &Row<'_>) -> rusqlite::Result<ChainRecord> {
         blocked_reason: row.get("blocked_reason")?,
         created_at: Timestamp(row.get("created_at")?),
         rule: row.get("rule")?,
+    })
+}
+
+fn fork_from_row(row: &Row<'_>) -> rusqlite::Result<ForkRecord> {
+    let task: String = row.get("task_id")?;
+    let source: Option<String> = row.get("source_task_id")?;
+    Ok(ForkRecord {
+        task_id: task_id("task id", &task)?,
+        source_task_id: source
+            .as_deref()
+            .map(|s| task_id("source task id", s))
+            .transpose()?,
+        source_number: to_u32(row.get("source_number")?),
+        source_title: row.get("source_title")?,
+        source_branch: row.get("source_branch")?,
+        source_commit: row.get("source_commit")?,
+        source_session_id: row.get("source_session_id")?,
+        message: row.get("message")?,
+        transcript_ref: row.get("transcript_ref")?,
+        created_at: Timestamp(row.get("created_at")?),
     })
 }
 
@@ -128,6 +150,62 @@ impl IntakeStore for SqliteStore {
                 ))
                 .map_err(db)?;
             let rows = stmt.query_map([task], chain_from_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn insert_fork(&self, fork: &ForkRecord) -> AppResult<()> {
+        let f = fork.clone();
+        self.call(move |conn| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO task_forks ({FORK_COLS}) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+                ),
+                params![
+                    f.task_id.as_str(),
+                    f.source_task_id.as_ref().map(TaskId::as_str),
+                    i64::from(f.source_number),
+                    f.source_title,
+                    f.source_branch,
+                    f.source_commit,
+                    f.source_session_id,
+                    f.message,
+                    f.transcript_ref,
+                    f.created_at.0,
+                ],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn fork_of(&self, task: &TaskId) -> AppResult<Option<ForkRecord>> {
+        let task = task.as_str().to_owned();
+        self.call(move |conn| {
+            conn.query_row(
+                &format!("SELECT {FORK_COLS} FROM task_forks WHERE task_id = ?1"),
+                [task],
+                fork_from_row,
+            )
+            .optional()
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn forks_from(&self, task: &TaskId) -> AppResult<Vec<ForkRecord>> {
+        let task = task.as_str().to_owned();
+        self.call(move |conn| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {FORK_COLS} FROM task_forks WHERE source_task_id = ?1 \
+                     ORDER BY created_at, task_id"
+                ))
+                .map_err(db)?;
+            let rows = stmt.query_map([task], fork_from_row).map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await

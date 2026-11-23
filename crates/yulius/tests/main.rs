@@ -47,6 +47,7 @@ mod docker_trouble_notices;
 mod files;
 mod first_message;
 mod fixture_hygiene;
+mod forks;
 mod git_adapter;
 #[cfg(target_os = "linux")]
 mod git_confined;

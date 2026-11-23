@@ -35,10 +35,11 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
 /// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
-pub const COCKPIT_TOOLS: [&str; 87] = [
+pub const COCKPIT_TOOLS: [&str; 88] = [
     "tasks_list",
     "task_get",
     "task_create",
+    "task_fork",
     "task_update",
     "task_message",
     "task_stop",
@@ -155,6 +156,7 @@ pub(crate) const PROJECT_TOOLS: &[&str] = &[
     "tasks_list",
     "task_get",
     "task_create",
+    "task_fork",
     "task_stop",
     "task_archive",
     "task_delete",
@@ -487,6 +489,18 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "model": model_property(),
                 "effort": effort_property()
             }), &["prompt"]),
+        },
+        ToolDescriptor {
+            name: "task_fork".into(),
+            description: "Fork a task of this project (by task_id or number), as Fork in the UI: a new task on the same agent continues a copy of its conversation from its branch's last commit, on a branch and worktree of its own, with a copy of its plan; the task forked goes on untouched. Use it to try another approach from where a task stands, without a long brief. message says what the fork should do differently (its first message). Refused for an Antigravity task (its CLI cannot fork at launch) and for a task that has no conversation yet. Counts towards the tasks tools create; audited.".into(),
+            input_schema: schema(json!({
+                "task_id": {"type": "string", "description": "Task id"},
+                "number": {"type": "integer", "description": "Task number within this sandbox"},
+                "message": {"type": "string", "description": "What the fork should do differently (at most 64 KiB)"},
+                "title": {"type": "string", "description": "Title (\"Fork of #N: <title>\" when absent)"},
+                "model": model_property(),
+                "effort": effort_property()
+            }), &[]),
         },
         ToolDescriptor {
             name: "task_stop".into(),
@@ -959,6 +973,7 @@ impl App {
             "tasks_list" => self.tool_tasks_list(project, args).await,
             "task_get" => self.tool_task_get(project, args).await,
             "task_create" => self.tool_task_create(project, args).await,
+            "task_fork" => self.tool_task_fork(project, args).await,
             "task_stop" => self.tool_task_change(project, args, TaskChange::Stop).await,
             "task_archive" => {
                 let archived = match args.get("archived") {

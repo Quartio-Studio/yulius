@@ -534,6 +534,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0461 -->
 - [0462](0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md): Notices carry a key and an expiry, and the newest per key wins
 <!-- ADR 0462 -->
+- [0463](0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md): a fork continues a stored copy of its source's Claude Code session (`--resume --fork-session --session-id`) or Codex's own `fork`, from the source branch's recorded commit; Antigravity is refused (SPEC-628)
 <!-- ADR 0463 -->
 - [0464](0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md): A Codex goal whose plan is finished continues on its own red Yulius CI run at its current head; extends 0428.
 <!-- ADR 0464 -->

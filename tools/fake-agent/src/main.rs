@@ -19,7 +19,7 @@
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--cli-version-file PATH] [--exit-at-start-file PATH] [--stuck-at-start-file PATH]
-//!            [--turn-hold-file PATH] [--resume-record]
+//!            [--turn-hold-file PATH] [--resume-record] [--fork-from PATH]
 //!            [--queue-prompts [--queue-record-file PATH] [--queue-handover-file PATH]
 //!            [--queue-turn-file PATH] [--stop-tool]]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
@@ -232,6 +232,10 @@
 //! `enqueue` came when its hook returned, and its turn right after). Tool calls, and with
 //! them a waiting line taken into the running turn, are not played either.
 //!
+//! `--fork-from PATH`: before anything else, the agent copies the Claude transcript at PATH into
+//! its own, every record under its own session id, as `claude --resume <id> --fork-session`
+//! does (Claude Code 2.1.330, SPEC-628).
+//!
 //! `--resume-record`: at its start the agent writes a record a real Claude Code writes before
 //! any prompt when it resumes a session whose turn was interrupted: a meta user record with
 //! its version (the transcript then names the version before any prompt, SPEC-461).
@@ -414,6 +418,7 @@ struct Options {
     resume: bool,
     forget_goal: bool,
     resume_record: bool,
+    fork_from: Option<PathBuf>,
     context_full_after: Option<u64>,
     compact_fails: bool,
     compact_hangs: bool,
@@ -495,6 +500,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         resume: false,
         forget_goal: false,
         resume_record: false,
+        fork_from: None,
         context_full_after: None,
         compact_fails: false,
         compact_hangs: false,
@@ -682,6 +688,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--resume" => options.resume = true,
             "--forget-goal" => options.forget_goal = true,
             "--resume-record" => options.resume_record = true,
+            "--fork-from" => {
+                options.fork_from = Some(args.next().ok_or("--fork-from needs a path")?.into());
+            }
             "--context-full-after" => {
                 options.context_full_after = Some(parse_number(&flag, args.next())?);
             }
@@ -910,6 +919,35 @@ struct Transcript {
     steps: u64,
     /// Antigravity: the turn's prompt step is written already (before its prompt hook).
     prompt_written: bool,
+}
+
+/// Copies the Claude transcript `source` into `dest`, every record's `sessionId` set to `session`
+/// (`--fork-from`).
+fn fork_transcript(source: &Path, dest: &Path, session: &str) -> io::Result<()> {
+    use std::io::Write as _;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dest)?;
+    for line in std::fs::read_to_string(source)?.lines() {
+        let mut record: serde_json::Value = match serde_json::from_str(line) {
+            Ok(record) => record,
+            Err(_) => continue,
+        };
+        if let Some(object) = record.as_object_mut()
+            && object.contains_key("sessionId")
+        {
+            object.insert(
+                "sessionId".into(),
+                serde_json::Value::String(session.to_owned()),
+            );
+        }
+        writeln!(out, "{record}")?;
+    }
+    Ok(())
 }
 
 impl Transcript {
@@ -3634,6 +3672,14 @@ fn run(options: &Options) -> io::Result<i32> {
     }
     if options.tui {
         start_tui(&session_id)?;
+    }
+    // The forked conversation is in place before the agent says it is ready, as Claude Code
+    // reads it before it draws anything (`--fork-from`).
+    if let (Some(source), Some(path)) = (&options.fork_from, &options.transcript)
+        && !options.codex
+        && !options.antigravity
+    {
+        fork_transcript(source, path, &session_id)?;
     }
     say(&format!("FAKE-AGENT READY session={session_id}"))?;
     report_env(&options.report_env)?;

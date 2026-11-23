@@ -31,7 +31,18 @@ pub enum SessionMode {
         /// The run continues the turn a usage limit cut (SPEC-034): the transcript steps back
         /// over the limit and the agent redoes the lost turn by itself; no prompt is sent.
         continue_interrupted: bool,
+        /// Continue a copy of the session under a new id instead: a forked task's first launch
+        /// (SPEC-628 FRK-006). The original session is never written.
+        fork: Option<SessionFork>,
     },
+}
+
+/// A forked resume (SPEC-628 FRK-006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFork {
+    /// The new session's id where the harness lets Yulius name it (Claude Code); `None`: the CLI
+    /// names it (Codex) and Yulius learns it from the hook or rollout.
+    pub session_id: Option<String>,
 }
 
 /// An MCP server to attach.
