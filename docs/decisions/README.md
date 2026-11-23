@@ -524,9 +524,11 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0456 -->
 - [0457](0457-new-tasks-default-to-claude-code-on-opus-5-5.md): New tasks default to Claude Code on Opus 5.5 when nothing is chosen; supersedes 0422 and 0426.
 <!-- ADR 0457 -->
+- [0458](0458-an-agent-secret-can-be-limited-to-methods-and-paths.md): An agent secret can be limited to HTTP methods and path patterns; a request that would use it outside them is refused with 403 and audited, never forwarded without the value (SPEC-627, #611).
 <!-- ADR 0458 -->
 - [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md): Brokered commands run in the production holder with a temporary key file; amends SPEC-002 ADR-20
 <!-- ADR 0459 -->
+- [0460](0460-a-task-reads-its-neighbours-status-and-never-steers-them.md): A task reads its neighbours' status (owner, PR and stage, claims, waits, last words) read-only and never steers them; a personal task shows other people's tasks only its shape.
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
 - [0462](0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md): Notices carry a key and an expiry, and the newest per key wins

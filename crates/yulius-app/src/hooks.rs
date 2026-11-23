@@ -916,22 +916,26 @@ impl App {
             .filter(|t| t.status == TaskStatus::Closed && t.id != task.id && t.closed_at.is_some())
             .collect();
         recent.sort_by_key(|t| std::cmp::Reverse(t.closed_at));
-        let recent_changes = recent
-            .into_iter()
-            .take(MAX_RECENT_CHANGES)
-            .map(|t| RecentChange {
-                title: t.title.clone(),
-                summary: t
-                    .prompt
+        let mut recent_changes = Vec::new();
+        for t in recent.into_iter().take(MAX_RECENT_CHANGES) {
+            // A personal task's request stays with tasks holding the same secrets (SPEC-625).
+            let summary = if self.withholds_text(task, t).await? {
+                String::new()
+            } else {
+                t.prompt
                     .lines()
                     .next()
                     .unwrap_or_default()
                     .chars()
                     .take(300)
-                    .collect(),
+                    .collect()
+            };
+            recent_changes.push(RecentChange {
+                title: t.title.clone(),
+                summary,
                 at: t.closed_at.unwrap_or(t.updated_at),
-            })
-            .collect();
+            });
+        }
         let parallel_tasks = all
             .iter()
             // A parked task's work goes on when it resumes (SPEC-512 PRK-001).

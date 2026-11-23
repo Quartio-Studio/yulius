@@ -727,6 +727,7 @@ async fn sent_by(w: &World, token: &str, host: &str) -> Option<String> {
 async fn sent_naming(w: &World, token: &str, host: &str, name: &str) -> Option<String> {
     let client = w.h.app.egress_client(token).await?;
     let request = EgressRequest {
+        method: "GET".into(),
         host: host.into(),
         port: 443,
         path_and_query: "/v1".into(),

@@ -60,11 +60,18 @@ fn requested_patterns(args: &Value) -> AppResult<Vec<Pattern>> {
 struct LiveClaims {
     tasks: Vec<TaskRecord>,
     claims: Vec<ScopeClaim>,
+    /// The tasks whose notes and step are withheld from the caller (SPEC-625 PSV-004).
+    withheld: Vec<yulius_domain::ids::TaskId>,
 }
 
 impl LiveClaims {
     fn task(&self, claim: &ScopeClaim) -> Option<&TaskRecord> {
         self.tasks.iter().find(|task| task.id == claim.task)
+    }
+
+    /// The claim's note, unless its task's free text is withheld from the caller.
+    fn note<'a>(&self, claim: &'a ScopeClaim) -> Option<&'a str> {
+        (!self.withheld.contains(&claim.task)).then_some(claim.note.as_str())
     }
 
     fn describe(&self, claim: &ScopeClaim, mine: bool) -> Value {
@@ -73,7 +80,7 @@ impl LiveClaims {
             "task_number": task.map(|t| t.number),
             "task_title": task.map(|t| t.title.as_str()),
             "pattern": claim.pattern.as_str(),
-            "note": claim.note,
+            "note": self.note(claim),
             "mine": mine,
         })
     }
@@ -86,7 +93,7 @@ impl LiveClaims {
             "task_number": task.map(|t| t.number),
             "task_title": task.map(|t| t.title.as_str()),
             "their_pattern": theirs.pattern.as_str(),
-            "their_note": theirs.note,
+            "their_note": self.note(theirs),
         })
     }
 }
@@ -157,17 +164,19 @@ const TELL_TRIES: u32 = 12;
 const TELL_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl App {
-    /// The claims of live or waiting tasks of `sandbox` (not closed, stopped or failed) that
-    /// `paths` overlap (`mine` when the caller's own task, `own`, holds it), as `task_create` answers them (SPEC-493 SCO-004).
+    /// The claims of live or waiting tasks of the caller's project (not closed, stopped or
+    /// failed) that `paths` overlap (`mine` when the caller's own task holds it), as
+    /// `task_create` answers them (SPEC-493 SCO-004); a personal task's note is withheld from a
+    /// task that does not hold the same secrets (SPEC-625 PSV-004).
     ///
     /// # Errors
     /// Store failures.
     pub(crate) async fn planned_overlaps(
         &self,
-        sandbox: &yulius_domain::ids::SandboxId,
+        caller: &crate::coordination::ProjectCaller,
         paths: &[Pattern],
-        own: Option<&yulius_domain::ids::TaskId>,
     ) -> AppResult<Vec<Value>> {
+        let (sandbox, own) = (&caller.sandbox, caller.task.as_ref().map(|t| &t.id));
         let store = &self.deps.store;
         let tasks: Vec<TaskRecord> = store
             .tasks(sandbox, false)
@@ -189,13 +198,18 @@ impl App {
                 .iter()
                 .filter(|p| yulius_domain::scope::patterns_overlap(p, &theirs))
             {
+                let note = if self.withholds_from(caller, task).await? {
+                    None
+                } else {
+                    record.note.clone()
+                };
                 out.push(json!({
                     "pattern": pattern.as_str(),
                     "task_number": task.number,
                     "task_title": task.title,
                     "task_status": task.status.as_str(),
                     "their_pattern": theirs.as_str(),
-                    "their_note": record.note,
+                    "their_note": note,
                     "mine": own == Some(&task.id),
                 }));
             }
@@ -406,7 +420,18 @@ impl App {
                 .ok()
             })
             .collect();
-        Ok(LiveClaims { tasks, claims })
+        let caller = ctx.caller();
+        let mut withheld = Vec::new();
+        for task in &tasks {
+            if self.withholds_from(&caller, task).await? {
+                withheld.push(task.id.clone());
+            }
+        }
+        Ok(LiveClaims {
+            tasks,
+            claims,
+            withheld,
+        })
     }
 
     /// `scope_claim`: claims repository paths for this task. Overlaps with other live tasks'
@@ -475,6 +500,8 @@ impl App {
                     }
                 };
                 let (step, pull_request) = state;
+                // Its plan's words stay with tasks holding the same secrets (SPEC-625 PSV-004).
+                let step = step.filter(|_| !live.withheld.contains(&holder.id));
                 map.insert("their_step".to_owned(), json!(step));
                 map.insert("their_pull_request".to_owned(), pull_request);
             }

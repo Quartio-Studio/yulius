@@ -2812,6 +2812,32 @@ read, not measured anew: `task_screen` takes a task's live hub screen, or render
 `analytics_tasks` and `analytics_summary`; `checkout` the git port's `ahead_behind` of the sandbox
 repository's `HEAD` against `origin/<integration branch>`, without a fetch.
 
+A task's agent reads its neighbours the same way, read-only
+([decision 0460](decisions/0460-a-task-reads-its-neighbours-status-and-never-steers-them.md),
+SPEC-625, `peer_status.rs`): `task_get` adds to the brief the owner's login, the delivery record's
+stage and PR with `merge_is_armed`, the task's `active_claims`, `waits_for` (fixed sentences built
+from the brief and `task_attention_facts`) and `last_words` (`last_agent_words`, the digest's
+read of the transcript's last assistant message); a person's own callers also get the last 20
+lines of the screen `task_screen_of` reads for `task_screen`, a task's agent never (a held prompt
+and a person's draft show there). `require_reader` checks that the owner is enabled and that
+`settled_access_level` allows `Action::View` before a task's `tasks_list` or `task_get`, and
+refuses when the access cannot be settled. `withholds_from` compares `Holder::of_task` of the reader and
+the peer and asks `reaches_owners_personal`: a peer holding its owner's personal secrets or MCP
+servers loses its free text (`withhold`) in `task_get` and `tasks_list` rows, and
+`session_read`/`sessions_search` refuse or skip its transcripts for that reader; the scope tools,
+the tidy tools' briefs and the briefing's recent changes (`withholds_text`) leave out its notes,
+step and request.
+
+```mermaid
+flowchart LR
+  reader["task agent (task token)"] -->|task_get / tasks_list| view["require_reader: owner may view"]
+  view --> brief["brief + add_peer_status: owner, delivery, claims, waits_for, last_words"]
+  brief -.->|person callers only| screen["screen: task_screen_of"]
+  brief --> hold{"withholds_from: peer holds another person's personal secrets?"}
+  hold -->|no| full["full answer"]
+  hold -->|yes| shape["withhold: shape only, withheld says why"]
+```
+
 A Superagent's standing jobs are scheduled checks held by Yulius
 ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
 `superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`
@@ -2882,6 +2908,39 @@ the team secrets (none had a sandbox) in `vault_scope_pending`; at the next star
 serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets have their own scopes (below).
+
+### Method and path rules
+
+Since SPEC-627 ([decision 0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md))
+a person who manages an agent secret can limit it to requests: `vault_secrets.rules` holds 0–32
+rules, each 1–16 HTTP methods and a path pattern (`*` matching any characters, `/` included;
+schema version 90, `[]` = any request). The domain parses and matches them
+(`yulius-domain` `vault/rules.rs`: the pattern is split on `*` and its pieces found in order, linear
+in the path); the egress policy applies them (`yulius-app` `vault/rules.rs`, called from
+`egress_apply` in `vault/runtime.rs`), so they hold for agent runs, CI jobs and Superagents alike.
+The proxy passes each request's method in `EgressRequest::method`.
+
+```mermaid
+flowchart TD
+  R["request to a bound host<br/>(intercepted HTTP/1.1 or absolute http://)"] --> U{"uses a secret with rules?<br/>placeholder, X-Yulius-Secret,<br/>or its injected header"}
+  U -->|no| F["forwarded as before"]
+  U -->|yes| M{"method and path (sent and outgoing) match a rule,<br/>no dot segment, backslash, ; # or encoded dot/NUL/%,<br/>no method or path override?"}
+  M -->|yes| F
+  M -->|"no (another secret's rules allow the header)"| O["that secret's header instead"] --> F
+  M -->|no| X["403 naming request, host, secret and rules;<br/>nothing sent"] --> A["audit vault.agent.refused<br/>once per run, secret, method, path;<br/>20 per run and secret, then one more"]
+```
+
+The path is matched as the agent sent it and as it goes out (another secret's value replaced in,
+which could otherwise add `..`, `?` or `#`), query left out, no decoding, so spellings the proxy's
+own client or a server could normalise to another resource are refused instead of decoded. A
+run's different refusals of a secret are audited up to 20 (`REFUSALS_LISTED`), then once as "not
+listed" (`VaultState::refusals`). Hosts agents ask for a secret with rules wait for a person even
+with `auto_allow` (`vault/requests.rs`): a server of the agent's own would get the value. Rules
+are set in the Secrets page's Edit dialog or with `rules` in the create and edit bodies; an edit
+is a compare-and-set on the rules it read (`vault_update`), and a row whose stored rules no longer
+parse fails to load rather than becoming unlimited. `secrets_list` shows them to agents. gRPC
+(HTTP/2) to a bound host is not proxied at all (the interception speaks HTTP/1.1), so rules cover
+every request that can carry a value.
 
 ### Copies of production secrets
 

@@ -3637,6 +3637,14 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "yulius-secret-APIFY_KEY"
     );
     assert!(listed["secrets"][0]["adds"].is_string(), "{listed}");
+    // Its method and path rules (SPEC-627 MPR-007): none here, and how they work.
+    assert_eq!(listed["secrets"][0]["rules"], json!([]), "{listed}");
+    assert!(
+        listed["how_to_use"]
+            .to_string()
+            .contains("outside its rules"),
+        "{listed}"
+    );
     let raw = listed.to_string();
     for hidden in [SECRET_VALUE, "OTHER_KEY", "other_synthetic_value_4471"] {
         assert!(!raw.contains(hidden), "{hidden} in {raw}");
@@ -4249,6 +4257,7 @@ fn egress_request(
     headers: &[(&str, &str)],
 ) -> yulius_app::ports::egress::EgressRequest {
     yulius_app::ports::egress::EgressRequest {
+        method: "GET".into(),
         host: host.into(),
         port: 443,
         path_and_query: "/v1/deploys".into(),
