@@ -486,8 +486,9 @@ watching, steering and unblocking.
   most room, in the same session with nothing typed (an idle goal session, whose goal a restart
   would type again, is parked instead and resumes elsewhere); a task mid-turn waits for its
   turn's end, and one its person put on that subscription with "Run on…" or "Continue on…" stays
-  (SPEC-629). Each move is told once in the task's terminal, its info and, while a page is open,
-  its person's notifications, as is a task that stays because nothing has room.
+  (SPEC-629). Each move is told once in the task's terminal, its info and one notice for its
+  person (the task's latest move, park or wait replaces its earlier one), as is a task that
+  stays because nothing has room.
   If a person has already signed it in again, the new sign-in stays available. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
   under Needs you. A subscription out of a model's usage credits (Fable runs on a weekly

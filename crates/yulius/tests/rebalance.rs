@@ -84,23 +84,18 @@ async fn idle(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// One rebalance event as sent: (the person it went to, from, to, said, key).
-type Told = (Option<String>, String, Option<String>, String, String);
+/// One rebalance notice as posted (SPEC-624): (the person it went to, key, title, detail).
+type Told = (Option<String>, String, String, Option<String>);
 
-/// The rebalance events sent so far.
+/// The rebalance notices posted so far.
 fn rebalanced(events: &mut broadcast::Receiver<Envelope>) -> Vec<Told> {
     let mut seen = Vec::new();
     while let Ok(envelope) = events.try_recv() {
-        if let UiEvent::TaskRebalanced {
-            from,
-            to,
-            said,
-            key,
-            ..
-        } = envelope.event
+        if let UiEvent::NoticePosted { notice } = envelope.event
+            && notice.key.starts_with("rebalance:")
         {
             let person = envelope.user.map(|u| u.as_str().to_owned());
-            seen.push((person, from, to, said, key));
+            seen.push((person, notice.key, notice.title, notice.detail));
         }
     }
     seen
@@ -244,7 +239,6 @@ fn an_idle_task_leaves_a_subscription_past_the_threshold() -> TestResult {
         let (id, user) = idle_on_a_full_first(&app, &probe, &data).await?;
         let mut watch = app.runtime(&id).hub.watch();
         let mut events = app.events.subscribe();
-        let left = app.deps.store.live_attempt(&id).await?.ok_or("run")?.id;
         let pass = app.rebalance_now().await;
         assert_eq!(pass.moved, 1, "{pass:?}");
         live_run(&app, &id, 2).await?;
@@ -265,11 +259,18 @@ fn an_idle_task_leaves_a_subscription_past_the_threshold() -> TestResult {
             rebalanced(&mut events),
             [(
                 Some(user.as_str().to_owned()),
-                "Claude a-first".to_owned(),
-                Some("Claude b-second".to_owned()),
-                "is at 96% of its 5-hour window".to_owned(),
-                format!("rebalance:{id}:{left}"),
+                format!("rebalance:{id}"),
+                "#1 Idle moved to Claude b-second".to_owned(),
+                Some("Claude a-first is at 96% of its 5-hour window.".to_owned()),
             )]
+        );
+        // Stored for the person, also for a page opened later.
+        let stored = app.my_notices(&ctx(&app, &user).await?).await?;
+        assert!(
+            stored
+                .iter()
+                .any(|n| n.key == format!("rebalance:{id}") && n.link.is_some()),
+            "{stored:?}"
         );
         let attempts = app.deps.store.attempts(&id).await?;
         assert_eq!(
@@ -398,9 +399,13 @@ fn nothing_has_room_is_told_once() -> TestResult {
         let told = rebalanced(&mut events);
         assert_eq!(told.len(), 1, "{told:?}");
         assert_eq!(told[0].0.as_deref(), Some(user.as_str()));
-        assert_eq!(told[0].2, None);
+        assert_eq!(told[0].1, format!("rebalance:{id}"));
+        assert_eq!(told[0].2, "#1 Idle stays on Claude a-first");
         assert!(
-            told[0].4.starts_with(&format!("rebalance:{id}:a-first:")),
+            told[0]
+                .3
+                .as_deref()
+                .is_some_and(|d| d.contains("no other Claude subscription has room")),
             "{told:?}"
         );
         // Room again: the task moves, and that ends the episode.
@@ -596,7 +601,7 @@ fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
                 .await?;
                 let told = rebalanced(&mut events);
                 assert_eq!(told.len(), 1, "{told:?}");
-                assert!(told[0].4.starts_with(&format!("rebalance:{id}:parked:")));
+                assert_eq!(told[0].2, "#1 Idle parked off Claude a-first");
                 // The parked screen says why, for whoever opens the task later (RBL-006).
                 wait_for("the parked screen", Duration::from_secs(30), || async {
                     screen(&app, &id)

@@ -1066,8 +1066,8 @@ reviewer) is moved: `switch_from` with `RunStart::Resume { prompt: None }` and
 reason `rebalance: <subscription> <how full it is>`. Another idle session (a goal session, whose
 goal a restart types again) goes to `park_task_now` with `ParkRule::Rebalance`, the grace
 period's rule with a one-minute quiet time. A move that leaves the task running on the target
-writes one terminal line and sends the task's owner `task.rebalanced` (`parked: true` for a
-park), which the notification center keys per move. A task with nowhere to go is told once per
+writes one terminal line and posts the task's owner a notice keyed `rebalance:<task id>`
+(SPEC-624; also for a park or a wait without room), which replaces the task's earlier one. A task with nowhere to go is told once per
 episode (`TaskRuntime::rebalance_no_room`, in memory). Every launch on another subscription than
 the pin ends the pin.
 
@@ -1078,7 +1078,7 @@ flowchart LR
   R["Claude refuses (AccessLost)"] -->|"rotate the interrupted task"| M
   B["Rebalance pass (every 2 min)"] -->|"reopens idle: switch_from, SwitchCondition::Idle"| RUN
   B -->|"goal session: park_task_now"| PK["Parked; resume placed elsewhere"]
-  B -->|"nothing below the threshold"| N["Told once: terminal, task.rebalanced"]
+  B -->|"nothing below the threshold"| N["Told once: terminal, notice rebalance:task"]
   R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]

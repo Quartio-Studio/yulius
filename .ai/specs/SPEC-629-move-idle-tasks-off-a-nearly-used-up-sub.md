@@ -41,9 +41,10 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   a person's pause, an instance update holding runs, a refused switch moments ago, background
   work, Claude Code's queue, a prompt whose record may be unread.
 - The task's info lists its subscription switches with a reason; a terminal notice names
-  accounts only for refused or removed subscriptions (MOV-006). The notification center
-  (`notifications.js`) keeps keyed entries per browser. Server-side notice keys and expiry are
-  task #608 (SPEC-624), not merged yet: this change keys its own entries in the center.
+  accounts only for refused or removed subscriptions (MOV-006). Notices for people have keys
+  and expiries since SPEC-624 (task #608, merged into dev while this was reviewed): a newer
+  notice with the same project, recipient and key replaces the older one, and they are stored,
+  so a page opened later and the person's Telegram (by their choices) get them too.
 - Parked tasks (SPEC-512 PRK) hold no session and no subscription; their resume is a placement.
 
 ## Requirements
@@ -95,21 +96,23 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - **RBL-006** Each move is told once, once the task runs on the target: the task's terminal says it in one line ("↻ Claude
   a-first is at 96% of its 5-hour window: this idle session continues on Claude b-second."),
   the task's info lists the switch with the reason `rebalance: Claude a-first is at 96% of its
-  5-hour window`, and the task's person (its owner) gets one notification center entry
-  ("#12 Checkout moved to Claude b-second", event `task.rebalanced`, keyed by the run it left).
+  5-hour window`, and the task's person (its owner) gets one notice (SPEC-624): "#12 Checkout
+  moved to Claude b-second", "Claude a-first is at 96% of its 5-hour window.", keyed
+  `rebalance:<task id>` in the task's project, category `account`, tone info, linked to the
+  task, expiring after a day; its next move, park or wait replaces it.
   The switch's own lines ("↻ Yulius continues this session on another Claude subscription…")
   stay as for any move. A session parked instead (RBL-003) says so in one line ("⏸ Claude
   a-first is at 96% of its 5-hour window: this idle session is parked and continues on a
-  subscription with room when it is written to next.") and one entry (`parked: true`), and its
+  subscription with room when it is written to next.") and one notice ("#12 Checkout parked
+  off Claude a-first"), and its
   parked screen says why ("Yulius parked this session because Claude a-first is at 96% of its
-  5-hour window: it continues on a subscription with room."). Terminal lines and
-  `task.rebalanced` reach only the pages open at the time: what lasts is a move's switch in the
-  task's info and a park's parked screen. A person with no page open gets no notification
-  center entry until server-side notices (SPEC-624).
+  5-hour window: it continues on a subscription with room."). Terminal lines reach only the
+  pages open at the time; the notice, a move's switch in the task's info and a park's parked
+  screen last.
 - **RBL-007** An idle, unpinned task on a subscription past the threshold with no subscription
   below it says so once per episode: one terminal line ("⏸ Claude a-first is at 97% of its
   week and no other Claude subscription has room: this task stays on it and moves when one
-  has.") and one notification center entry keyed per task, subscription and episode. The
+  has.") and one notice ("#12 Checkout stays on Claude a-first", tone warn, the same key). The
   episode ends when the task moves or its subscription is below the threshold again; a Yulius
   restart may tell it once more.
 - **RBL-008** Every rebalance move is a recorded switch decision with its inputs (ROT-011), and
@@ -134,7 +137,7 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   every candidate past 95 % and below 98 %, a new task still starts on the best of them.
 - **AC-2** A task idle on a subscription that reads 96 % moves at the next pass to the one at
   30 %, in the same session, with nothing typed; its terminal says the move once, its info
-  lists the switch with the reason, its person's event stream carries one `task.rebalanced`.
+  lists the switch with the reason, and its person gets one notice keyed `rebalance:<task id>`.
 - **AC-3** A task mid-turn (activity `working`) on a subscription at 96 % stays through a pass;
   its turn's end at 96 % is not a move by itself, the next pass after it moves it.
 - **AC-4** A task a person moved with "Run on…" to a subscription that then reads 96 % stays
@@ -172,14 +175,16 @@ changes.
 - A periodic pass, not a reaction to usage readings: an idle Claude subscription gets no
   readings (its sessions report its usage), so only a clock finds its idle tasks. Two minutes
   matches the background usage round; iTermX's 10 minutes is slower than Yulius's readings.
-- Reuse `App::move_task` for the move (SPEC-447, SPEC-611's idle preservation and conflict
-  guard) and the facts of `agent_cli::kept_by` for "nothing would be lost", so a rebalance is as
-  safe as a person's move and as a restart for a newer Claude Code.
+- Move through `App::switch_from` with nothing typed and SPEC-611's idle claim
+  (`SwitchCondition::Idle`, now for every harness), and ask the facts of `agent_cli::kept_by`
+  (`kept_idle`) for "nothing would be lost", so a rebalance is as safe as a person's move and
+  as a restart for a newer Claude Code; a session whose restart would start a turn is parked.
 - The pin is a column of its own (`tasks.pinned_account_id`) behind two store calls, not a
   field of `TaskRecord`; a pin that no longer names the run's subscription is cleared.
-- Told in the terminal, the task's info and the notification center; not by Telegram, whose
-  messages are for what needs a person (SPEC-498). Keys are the center's until SPEC-624 gives
-  server notices keys.
+- Told in the terminal, the task's info and one notice per task (SPEC-624), key
+  `rebalance:<task id>` so the latest of its moves, parks or waits stands, in category
+  `account`: it reaches Telegram only for a person who chose subscription news there (off by
+  default), since a move needs nobody to act.
 - [Decision 0461](../../docs/decisions/0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md)
 
 ## Evidence

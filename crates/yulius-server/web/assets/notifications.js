@@ -1,7 +1,7 @@
 // Notification center (SPEC-001 UI-020): what happened while the user looked elsewhere, in one
 // list behind the bell in the tab row — tasks waiting for input, done (TSK-014), needing attention or failing,
-// browser action requests, automation runs, account problems, subscription moves (SPEC-629) and
-// instance notices. Built from the event stream the UI already receives; toasts still show. Kept per
+// browser action requests, automation runs, account problems and instance
+// notices. Built from the event stream the UI already receives; toasts still show. Kept per
 // user in this browser and bounded, so a reload keeps the history. With desktop notifications
 // on (Settings), entries also reach the operating system while the tab is in the background.
 
@@ -245,27 +245,6 @@ export function createNotificationCenter(ctx) {
     const route = taskRoute(task);
     add({ kind: 'info', title, detail: 'It acts on GitHub as them now; you can take it back', route });
     toast(title, { kind: 'info', action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
-  });
-
-  // An idle task moved off a nearly used-up subscription, or stays on it because no other has
-  // room (SPEC-629 RBL-006, RBL-007): told once, keyed per move and per episode without room.
-  watch('rebalanced', (event) => {
-    if (!event || typeof event.key !== 'string') return;
-    const task = ctx.store.findTask(event.task_id) || { id: event.task_id, sandbox_id: event.sandbox_id, number: event.number };
-    const name = `#${event.number} ${event.title || 'Task'}`;
-    const [title, detail] = event.to
-      ? [`${name} moved to ${event.to}`, `${event.from} ${event.said}`]
-      : event.parked
-        ? [`${name} parked off ${event.from}`, `${event.from} ${event.said}; it continues on a subscription with room when written to`]
-        : [`${name} stays on ${event.from}`, `${event.from} ${event.said} and no other subscription has room`];
-    add({
-      kind: event.to || event.parked ? 'info' : 'warn',
-      title,
-      detail,
-      route: taskRoute(task),
-      key: event.key,
-      once: true,
-    });
   });
 
   // The sandbox-level problems a Needs you may name (SPEC-494): their tasks share one entry.

@@ -19,6 +19,8 @@ use std::time::Duration;
 use yulius_domain::agent_cli::{IdleFacts, kept_idle};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, TaskId};
+use yulius_domain::notice::{NoticeKey, NoticeTone};
+use yulius_domain::notify::NoticeKind;
 use yulius_domain::rebalance::{Fullest, IdleMove, idle_move};
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::task::TaskStatus;
@@ -27,6 +29,7 @@ use crate::account_gate::account_kind;
 use crate::context::App;
 use crate::error::AppError;
 use crate::model::{TaskMode, TaskRecord};
+use crate::notices::NewNotice;
 use crate::parking::ParkRule;
 use crate::supervisor::{RunStart, SwitchCondition};
 
@@ -36,6 +39,8 @@ pub const REBALANCE_EVERY: Duration = Duration::from_secs(2 * 60);
 /// (SPEC-358 MSB-007), as for parking.
 pub const REBALANCE_FIRST: Duration = Duration::from_secs(3 * 60);
 const _: () = assert!(REBALANCE_FIRST.as_secs() > crate::outage::WAKE_GRACE.as_secs());
+/// The key prefix of a task's rebalance notice (SPEC-624): `rebalance:<task id>`.
+pub const NOTICE_KEY: &str = "rebalance:";
 /// How long a pass waits for a task's transcript to be read before it looks at its queue.
 const LINES_READ_WAIT: Duration = Duration::from_secs(5);
 
@@ -246,8 +251,12 @@ impl App {
             .await;
         match moved {
             Ok(()) => {}
-            // A turn began first: this task stays, the subscription stays a target.
-            Err(AppError::Conflict(why)) => return kept(&task.id, &why),
+            // A turn began first: this task stays, the subscription stays a target. A switch
+            // whose old run did not end in time is a conflict too, and stops the task.
+            Err(AppError::Conflict(why)) if matches!(store.task(&task.id).await, Ok(Some(t)) if t.status == TaskStatus::Running) =>
+            {
+                return kept(&task.id, &why);
+            }
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "rebalance: the move was refused");
                 failed.insert(account);
@@ -269,8 +278,7 @@ impl App {
         }
         self.end_no_room(&task.id);
         let to = self.account_label(&account).await;
-        self.tell_moved(task, (&label, &to), &from, run.id.as_str())
-            .await;
+        self.tell_moved(task, (&label, &to), &from).await;
         Looked::Moved
     }
 
@@ -357,29 +365,15 @@ impl App {
     }
 
     /// Says a rebalance move once (SPEC-629 RBL-006): one line in the task's terminal and one
-    /// notification center entry for its person, keyed by the run it left.
-    async fn tell_moved(
-        &self,
-        task: &TaskRecord,
-        (from, to): (&str, &str),
-        how: &Fullest,
-        left: &str,
-    ) {
+    /// notice for its person.
+    async fn tell_moved(&self, task: &TaskRecord, (from, to): (&str, &str), how: &Fullest) {
         let said = how.said();
         self.runtime(&task.id).hub.notice(format!(
             "↻ {from} {said}: this idle session continues on {to}."
         ));
-        self.events.publish_to_user(
-            task.owner.clone(),
-            rebalanced(
-                task,
-                from,
-                Some(to),
-                &said,
-                format!("rebalance:{}:{left}", task.id),
-                false,
-            ),
-        );
+        let title = format!("#{} {} moved to {to}", task.number, task.title);
+        self.tell_person(task, NoticeTone::Info, title, format!("{from} {said}."))
+            .await;
     }
 
     /// Says once per episode that an idle task stays on a subscription past the threshold
@@ -392,8 +386,7 @@ impl App {
         label: &str,
         how: &Fullest,
     ) {
-        let now = self.now();
-        let began = {
+        {
             let runtime = self.runtime(&task.id);
             let Ok(mut told) = runtime.rebalance_no_room.lock() else {
                 return;
@@ -401,20 +394,18 @@ impl App {
             if told.as_ref().is_some_and(|(on, _)| on == account) {
                 return;
             }
-            *told = Some((account.clone(), now));
-            now
-        };
+            *told = Some((account.clone(), self.now()));
+        }
         let said = how.said();
         let kind = account_kind(task.harness.provider());
         self.runtime(&task.id).hub.notice(format!(
             "⏸ {label} {said} and no other {kind} subscription has room: this task stays on it \
              and moves when one has."
         ));
-        let key = format!("rebalance:{}:{account}:{}", task.id, began.0);
-        self.events.publish_to_user(
-            task.owner.clone(),
-            rebalanced(task, label, None, &said, key, false),
-        );
+        let title = format!("#{} {} stays on {label}", task.number, task.title);
+        let detail = format!("{label} {said} and no other {kind} subscription has room.");
+        self.tell_person(task, NoticeTone::Warn, title, detail)
+            .await;
     }
 
     /// Says once that an idle session whose restart would start a turn was parked off a
@@ -426,9 +417,43 @@ impl App {
             "⏸ {label} {said}: this idle session is parked and continues on a subscription \
              with room when it is written to next."
         ));
-        let key = format!("rebalance:{}:parked:{}", task.id, self.now().0);
-        let event = rebalanced(task, label, None, &said, key, true);
-        self.events.publish_to_user(task.owner.clone(), event);
+        let title = format!("#{} {} parked off {label}", task.number, task.title);
+        let detail = format!(
+            "{label} {said}: it continues on a subscription with room when it is written to next."
+        );
+        self.tell_person(task, NoticeTone::Info, title, detail)
+            .await;
+    }
+
+    /// Posts the task's rebalance notice to its person (SPEC-624): keyed `rebalance:<task id>`,
+    /// so its next move, park or wait replaces it, with the default expiry of a report (1 day).
+    async fn tell_person(
+        &self,
+        task: &TaskRecord,
+        tone: NoticeTone,
+        title: String,
+        detail: String,
+    ) {
+        let Ok(key) = NoticeKey::parse(&format!("{NOTICE_KEY}{}", task.id)) else {
+            return;
+        };
+        let link = match self.deps.store.sandbox(&task.sandbox_id).await {
+            Ok(Some(sandbox)) => Some(format!("/s/{}/t/{}", sandbox.slug, task.number)),
+            _ => None,
+        };
+        let mut notice = NewNotice::new(
+            Some(task.sandbox_id.clone()),
+            key,
+            NoticeKind::Account,
+            tone,
+            title,
+        );
+        notice.to = Some(task.owner.clone());
+        notice.detail = Some(detail);
+        notice.link = link;
+        if let Err(err) = self.post_notice(notice).await {
+            tracing::warn!(task = %task.id, error = %err, "rebalance: the notice was not posted");
+        }
     }
 
     /// An episode without room ended: the task moved, or its subscription is below the
@@ -439,28 +464,5 @@ impl App {
         {
             *told = None;
         }
-    }
-}
-
-/// The event that tells `task`'s person of a rebalance move (`to`), a park (`parked`), or no
-/// room (SPEC-629).
-fn rebalanced(
-    task: &TaskRecord,
-    from: &str,
-    to: Option<&str>,
-    said: &str,
-    key: String,
-    parked: bool,
-) -> yulius_contracts::events::UiEvent {
-    yulius_contracts::events::UiEvent::TaskRebalanced {
-        task_id: task.id.as_str().to_owned(),
-        sandbox_id: task.sandbox_id.as_str().to_owned(),
-        number: task.number,
-        title: task.title.clone(),
-        from: from.to_owned(),
-        to: to.map(str::to_owned),
-        parked,
-        said: said.to_owned(),
-        key,
     }
 }

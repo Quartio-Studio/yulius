@@ -26,8 +26,9 @@ after every candidate below it, keeping the existing order inside each group; th
 still decides pausing and turn-boundary moves.
 
 A pass every 2 minutes moves each idle, unpinned task whose live run sits on a subscription past
-the threshold to the best subscription below it, through the person's move (`App::move_task`)
-and only when the restart for a newer Claude Code would also lose nothing (`agent_cli::kept_by`).
+the threshold to the best subscription below it, with nothing typed and a claim of the idle
+state it read (`App::switch_from`, `SwitchCondition::Idle`), and only when the restart for a
+newer Claude Code would also lose nothing (`agent_cli::kept_idle`).
 The pass moves only a session that reopens at its prompt with nothing typed, claiming the idle
 state and run it read; a goal session of Claude Code or Antigravity, whose goal a restart would
 type again, is parked instead under parking's rules with a quiet time of one minute (or the
@@ -39,7 +40,8 @@ A person's "Run on…" or "Continue on…" pins the task to the chosen subscript
 resumes on its pin while the pin can take it. The pin ends once the task runs elsewhere.
 
 Each move is told once: one terminal line, the switch with its reason in the task's info, and a
-keyed notification center entry for the task's person (`task.rebalanced`).
+notice for the task's person (SPEC-624) keyed `rebalance:<task id>`, so the task's latest move,
+park or wait stands in the bell, the digest and (by the person's choice) Telegram.
 
 ## Alternatives
 
@@ -50,7 +52,8 @@ keyed notification center entry for the task's person (`task.rebalanced`).
 - A threshold per subscription on the Subscriptions page: more to manage, against ROT-009.
 - Pin every automatic placement as well, or add a pin toggle: a person's explicit choice is the
   only signal there is; an extra control would need a UI nobody asked for.
-- Telegram messages for every move: those messages are for what needs a person.
+- A notice per move, each with its own key: a busy pool would fill the bell with moves of one
+  task; the latest is the one that matters.
 
 ## Consequences
 
@@ -58,5 +61,4 @@ Subscriptions are spent more evenly and idle tasks are rarely caught at a limit.
 restarts the idle session once (as a person's move does), which is visible as a short
 "Continuing". A pinned task can still run into its limit and is then moved by the pool as
 before, which ends the pin. The "nothing has room" memory is in the process: a restart of Yulius
-may tell an episode once more. Notices are keyed in the browser's notification center until
-server-side notice keys (SPEC-624) exist.
+may tell an episode once more.
