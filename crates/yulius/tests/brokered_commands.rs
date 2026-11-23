@@ -634,13 +634,14 @@ struct Runs {
 /// [`world`] with the real process host, uncontained, the stand-in CLI and the command `deploy`
 /// of s1 running it without approval, with `patch` applied to its definition.
 async fn runs_world(patch: Value) -> Result<Runs, Error> {
-    runs_world_on(patch, None).await
+    runs_world_on(patch, None, 20_000).await
 }
 
 /// [`runs_world`]; with `host`, runs are contained (`config.contained`) and go to that host.
 async fn runs_world_on(
     patch: Value,
     host: Option<std::sync::Arc<dyn yulius_app::ports::session::SessionHost>>,
+    wait_ms: u64,
 ) -> Result<Runs, Error> {
     let contained = host.is_some();
     // A short data directory: run sockets live at <data>/runs/cmd-<id>/pty.sock.
@@ -658,7 +659,7 @@ async fn runs_world_on(
         dir: Some(data),
         configure: Some(Box::new(move |config| {
             config.contained = contained;
-            config.command_wait_ms = 20_000;
+            config.command_wait_ms = wait_ms;
             // An approval minute is 300 ms here: the default 10 minutes are 3 s.
             config.command_minute_ms = 300;
         })),
@@ -1164,7 +1165,7 @@ async fn a_contained_run_joins_the_production_holder_without_docker() -> TestRes
         inner: yulius::wiring::session::PtySessionHost::new(exe),
         seen: std::sync::Mutex::default(),
     });
-    let r = runs_world_on(json!({}), Some(recording.clone())).await?;
+    let r = runs_world_on(json!({}), Some(recording.clone()), 20_000).await?;
     let holders = std::sync::Arc::new(crate::cd::Holders::default());
     assert!(r.w.h.app.set_isolation(holders.clone()));
     let ran = run_deploy(&r, json!(["status"])).await?;
@@ -1488,7 +1489,10 @@ async fn an_approval_past_the_deadline_is_refused_by_its_write() -> TestResult {
         started_at: None,
         ended_at: None,
     };
-    assert!(r.w.h.store.insert_command_run(&run, 4).await?);
+    assert_eq!(
+        r.w.h.store.insert_command_run(&run, 4).await?,
+        yulius_app::ports::store_ext::RunInsert::Stored
+    );
     assert!(
         !r.w.h
             .store
@@ -1548,5 +1552,277 @@ async fn send_asks_only_for_a_run_that_changes_something() -> TestResult {
         answered?;
         assert_eq!(ran??["state"], "rejected");
     }
+    Ok(())
+}
+
+/// A run of t1 as the store holds it, for tests that set a state the server reaches only over
+/// time (a deadline passed, runs that run).
+async fn stored_run(
+    r: &Runs,
+    id: &str,
+    state: &str,
+    deadline_ms: Option<i64>,
+) -> Result<yulius_app::ports::store_ext::CommandRunRecord, Error> {
+    let sid = yulius_domain::ids::SandboxId::parse("s1")?;
+    let command =
+        r.w.h
+            .store
+            .command_named(&sid, "deploy")
+            .await?
+            .ok_or("deploy")?;
+    let task =
+        r.w.h
+            .store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("t1")?;
+    let now = r.w.h.app.now();
+    Ok(yulius_app::ports::store_ext::CommandRunRecord {
+        id: id.into(),
+        sandbox_id: sid,
+        command_id: command.id.clone(),
+        command: "deploy".into(),
+        command_updated_at: command.updated_at,
+        task_id: task.id.clone(),
+        task_number: task.number,
+        args: vec!["status".into()],
+        line: "deploy status".into(),
+        changes: false,
+        state: state.into(),
+        reason: None,
+        deadline: deadline_ms.map(|ms| now.plus_millis(ms)),
+        answered_by: None,
+        exit_code: None,
+        stdout: String::new(),
+        stderr: String::new(),
+        created_at: now,
+        started_at: (state == "running").then_some(now),
+        ended_at: None,
+    })
+}
+
+/// BRK-014 (review round 1 of slice 3): one run of a task waits at a time, held by the store's
+/// own transaction, also for calls made together.
+#[tokio::test]
+async fn one_run_of_a_task_waits_at_a_time_in_the_store() -> TestResult {
+    use yulius_app::ports::store_ext::RunInsert;
+    let r = runs_world(json!({"approve": "always"})).await?;
+    let first = stored_run(&r, "run-a", "waiting", Some(60_000)).await?;
+    let second = stored_run(&r, "run-b", "waiting", Some(60_000)).await?;
+    assert_eq!(
+        r.w.h.store.insert_command_run(&first, 4).await?,
+        RunInsert::Stored
+    );
+    assert_eq!(
+        r.w.h.store.insert_command_run(&second, 4).await?,
+        RunInsert::TaskWaits
+    );
+    assert!(r.w.h.store.command_run("run-b").await?.is_none());
+    Ok(())
+}
+
+/// BRK-015 (review round 1 of slice 3): an answer needs write access to the project (it manages
+/// its secrets) from a browser; another project's run id is not found there; the list says who
+/// may answer; a non-member sees nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn who_answers_a_run_and_where() -> TestResult {
+    let r = runs_world(json!({"approve": "always"})).await?;
+    let browser = alice_in_a_browser(&r).await?;
+    seed_github_user(&r.w.h, "u-carol", "carol").await?;
+    r.w.h.github.set_perm("carol", "acme/app", perms("read"));
+    let carol_browser = crate::secrets::browser_session(&r.w.h, "u-carol").await?;
+    let dave = seed_github_user(&r.w.h, "u-dave", "dave").await?;
+    let asked = run_deploy(&r, json!(["status"]));
+    let people = async {
+        let run = waiting_run(&r, &browser).await?;
+        let id = run["id"].as_str().ok_or("id")?.to_owned();
+        let read = waiting_run(&r, &carol_browser).await?;
+        assert_eq!(read["can_answer"], false, "a reader: {read}");
+        let token = waiting_run(&r, &r.w.alice).await?;
+        assert_eq!(token["can_answer"], false, "an API token: {token}");
+        let none = call(
+            &r.w.h.router,
+            Method::GET,
+            "/api/sandboxes/s1/command-runs",
+            None,
+            &dave,
+        )
+        .await?;
+        assert!(none.status.is_client_error(), "a non-member: {}", none.body);
+        let refused = answer(&r, &id, true, &carol_browser).await?;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+        let elsewhere = call(
+            &r.w.h.router,
+            Method::POST,
+            &format!("/api/sandboxes/s2/command-runs/{id}"),
+            Some(json!({"approve": true})),
+            &browser,
+        )
+        .await?;
+        assert_eq!(
+            elsewhere.status,
+            StatusCode::NOT_FOUND,
+            "{}",
+            elsewhere.body
+        );
+        assert_eq!(
+            waiting_run(&r, &browser).await?["id"],
+            id.as_str(),
+            "it still waits"
+        );
+        let rejected = answer(&r, &id, false, &browser).await?;
+        assert_eq!(rejected.status, StatusCode::OK, "{}", rejected.body);
+        Ok::<_, Error>(())
+    };
+    let (ran, answered) = tokio::join!(asked, people);
+    answered?;
+    assert_eq!(ran?["state"], "rejected");
+    assert!(!r.marks.join("ran").exists());
+    Ok(())
+}
+
+/// BRK-014 (review round 1 of slice 3): the run's request replaces the agent's open one; the
+/// agent's request opened after it stays when the run is answered; the agent's call answers
+/// `waiting` with the deadline after its wait, and `command_result` reads the end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_agent_waits_and_its_own_request_survives_the_runs_answer() -> TestResult {
+    let r = runs_world_on(json!({"approve": "always"}), None, 300).await?;
+    let browser = alice_in_a_browser(&r).await?;
+    let tid = yulius_domain::ids::TaskId::parse("t1")?;
+    let asked = agent_tool(
+        &r.w.h,
+        TOKEN_S1,
+        "needs_you",
+        json!({"action": "Pick a colour"}),
+    )
+    .await?;
+    assert!(asked.is_ok(), "{asked:?}");
+    let waiting = run_deploy(&r, json!(["status"])).await?;
+    assert_eq!(waiting["state"], "waiting", "{waiting}");
+    assert!(waiting["approval_until"].as_str().is_some(), "{waiting}");
+    let id = waiting["id"].as_str().ok_or("id")?.to_owned();
+    let request = r.w.h.store.task_needs_you(&tid).await?.ok_or("request")?;
+    assert!(
+        request.action.contains("Approve or reject"),
+        "replaced: {}",
+        request.action
+    );
+    // The agent asks a person something again while its run waits.
+    let again = agent_tool(
+        &r.w.h,
+        TOKEN_S1,
+        "needs_you",
+        json!({"action": "Pick a font"}),
+    )
+    .await?;
+    assert!(again.is_ok(), "{again:?}");
+    let approved = answer(&r, &id, true, &browser).await?;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let kept =
+        r.w.h
+            .store
+            .task_needs_you(&tid)
+            .await?
+            .ok_or("the agent's request was ended")?;
+    assert_eq!(kept.action, "Pick a font");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let ended = loop {
+        let read = agent_tool(&r.w.h, TOKEN_S1, "command_result", json!({"id": id})).await??;
+        if read["state"] != "running" && read["state"] != "waiting" {
+            break read;
+        }
+        assert!(std::time::Instant::now() < deadline, "{read}");
+    };
+    assert_eq!(ended["state"], "done", "{ended}");
+    let audits = r.w.h.store.audit_details("s1", "command.run", 5).await?;
+    assert!(audits[0].contains("alice"), "approved_by: {audits:?}");
+    Ok(())
+}
+
+/// BRK-015 (review round 1 of slice 3): an approval while four runs of the project run is
+/// refused and the run still waits; once one ended it is approved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approval_waits_for_a_free_run() -> TestResult {
+    use yulius_app::ports::store_ext::{CommandRunEnd, RunInsert};
+    let r = runs_world(json!({"approve": "always"})).await?;
+    let browser = alice_in_a_browser(&r).await?;
+    for n in 0..4 {
+        let busy = stored_run(&r, &format!("run-busy-{n}"), "running", None).await?;
+        assert_eq!(
+            r.w.h.store.insert_command_run(&busy, 4).await?,
+            RunInsert::Stored
+        );
+    }
+    let asked = run_deploy(&r, json!(["status"]));
+    let person = async {
+        let run = waiting_run(&r, &browser).await?;
+        let id = run["id"].as_str().ok_or("id")?.to_owned();
+        let refused = answer(&r, &id, true, &browser).await?;
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+        assert!(
+            refused.body.to_string().contains("4 runs"),
+            "{}",
+            refused.body
+        );
+        assert_eq!(waiting_run(&r, &browser).await?["id"], id.as_str());
+        let end = CommandRunEnd {
+            state: "done".into(),
+            reason: None,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            at: r.w.h.app.now(),
+        };
+        assert!(
+            r.w.h
+                .store
+                .end_command_run("run-busy-0", "running", &end)
+                .await?
+        );
+        let approved = answer(&r, &id, true, &browser).await?;
+        assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+        Ok::<_, Error>(())
+    };
+    let (ran, answered) = tokio::join!(asked, person);
+    answered?;
+    assert_eq!(ran?["state"], "done");
+    Ok(())
+}
+
+/// BRK-016 (review round 1 of slice 3): a run that waited past its deadline while Yulius was
+/// down is expired at the start, and its request ends.
+#[tokio::test]
+async fn a_start_expires_a_run_past_its_deadline() -> TestResult {
+    let r = runs_world(json!({"approve": "always"})).await?;
+    let run = stored_run(&r, "run-left-waiting", "waiting", Some(-1)).await?;
+    assert_eq!(
+        r.w.h.store.insert_command_run(&run, 4).await?,
+        yulius_app::ports::store_ext::RunInsert::Stored
+    );
+    let request = yulius_app::needs_you::NeedsYouRecord {
+        action: "Approve or reject task #1's run of the command deploy".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: run.created_at.0,
+        cause: Some("command-run:run-left-waiting".into()),
+        named: yulius_app::needs_you::Named::default(),
+    };
+    r.w.h
+        .store
+        .set_task_needs_you(&run.task_id, Some(&request), run.created_at)
+        .await?;
+    r.w.h.app.reconcile_command_runs().await?;
+    assert_eq!(
+        r.w.h
+            .store
+            .command_run("run-left-waiting")
+            .await?
+            .ok_or("run")?
+            .state,
+        "expired"
+    );
+    assert!(r.w.h.store.task_needs_you(&run.task_id).await?.is_none());
     Ok(())
 }

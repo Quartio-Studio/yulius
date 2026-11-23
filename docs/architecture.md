@@ -3180,8 +3180,11 @@ asked at the run's own time (`App::ask_command_approval`) with the full command 
 an open request of the agent's, and one run of a task waits at a time. A person who manages the
 project's secrets (`Action::Configure`) answers from a browser session
 (`POST /api/sandboxes/{sid}/command-runs/{id}`) or by replying `approve` or `reject` to the run's
-Telegram notice (`telegram_reply` → `App::telegram_command_answer`, which finds the run by the
-notice's request time, so a reply to an older notice never answers a newer run). The answer is one
+Telegram notice (`telegram_reply` → `App::telegram_command_answer`). The request names its run in
+its `cause` (`command-run:<id>`, which an agent's `needs_you` cannot write), the notifier keeps that
+id with the notice (`telegram_sent.command_run`, migration 0094), and a reply answers that run
+alone; any other reply to it reaches no task, and a line the notice had to cut is approved on the
+page only. The answer is one
 conditional write from `waiting` before the deadline (`answer_command_run`, an approval also only
 while fewer than four runs of the project run); an approved run runs on its own task, and the
 request ends with the answer (`end_needs_you_asked_at`). No answer is a no: a timer per run that

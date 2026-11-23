@@ -1107,6 +1107,17 @@ pub struct CommandRunEnd {
     pub at: Timestamp,
 }
 
+/// What storing a new run did (SPEC-626).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunInsert {
+    /// It is stored.
+    Stored,
+    /// Nothing: the project runs `max_running` runs already (a `running` run).
+    Busy,
+    /// Nothing: a run of the task waits for a person already (a `waiting` run).
+    TaskWaits,
+}
+
 /// Brokered commands (SPEC-626, migration 0089).
 #[async_trait]
 pub trait CommandStore: Send + Sync {
@@ -1133,11 +1144,14 @@ pub trait CommandStore: Send + Sync {
     async fn update_command(&self, command: &CommandRecord, read_at: Timestamp) -> AppResult<bool>;
     /// Removes a command; `false` when it was gone.
     async fn delete_command(&self, sandbox: &SandboxId, id: &str) -> AppResult<bool>;
-    /// Stores a new run while fewer than `max_running` runs of its project are `running`
-    /// (`false`, nothing stored, otherwise), and keeps only the newest 200 ended runs of its
-    /// project.
-    async fn insert_command_run(&self, run: &CommandRunRecord, max_running: u32)
-    -> AppResult<bool>;
+    /// Stores a new run, in one transaction with its checks: a `running` one while fewer than
+    /// `max_running` runs of its project run, a `waiting` one while no run of its task waits.
+    /// Keeps only the newest 200 ended runs of its project.
+    async fn insert_command_run(
+        &self,
+        run: &CommandRunRecord,
+        max_running: u32,
+    ) -> AppResult<RunInsert>;
     /// The newest run `task` started.
     async fn latest_command_run_of_task(
         &self,

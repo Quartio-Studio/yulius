@@ -2389,6 +2389,7 @@ async fn a_telegram_reply_keeps_the_selected_park() -> TestResult {
             &SentAbout {
                 task: target.id.clone(),
                 asked_at: None,
+                command_run: None,
             },
             w.h.app.now(),
         )
@@ -2449,6 +2450,7 @@ async fn a_reply_is_delivered_and_a_reply_never_starts_a_task() -> TestResult {
             &SentAbout {
                 task: task.id.clone(),
                 asked_at: None,
+                command_run: None,
             },
             w.h.app.now(),
         )
@@ -3000,4 +3002,159 @@ async fn a_reply_to_a_runs_notice_answers_that_run() -> TestResult {
     assert_eq!(details.len(), 2, "{details:?}");
     assert!(details[0].contains("telegram"), "{details:?}");
     Ok(())
+}
+
+/// SPEC-626 BRK-015 (review round 1 of slice 3): a reply to a run's notice is an answer or
+/// nothing; a reader may not answer; a line the notice could not show whole is approved on the
+/// Secrets page only (a reply rejects it); an approval by reply runs the command.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_runs_notice_takes_only_an_answer_its_reader_may_give() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    w.h.github.set_perm("alice", "acme/app", perms("admin"));
+    // Bob reads this project and writes another, where his Telegram intake is on.
+    w.h.github.set_perm("bob", "acme/app", perms("read"));
+    w.h.github.set_perm("bob", "acme/other", perms("write"));
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.bob, 200).await?;
+    let on = intake_on(&w, &w.alice, "s1").await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    let on = intake_on(&w, &w.bob, "s2").await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    let made = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "DEPLOY_KEY", "value": "deploy-key-synthetic-0042"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let made = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/commands",
+        Some(json!({"name": "deploy", "binary": "/usr/bin/true", "secret": "DEPLOY_KEY"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&w.h, "t1", "tok-t1-telegram-0123456789").await?;
+    // A line longer than a notice shows.
+    let long = "x".repeat(400);
+    let asked = support::mcp_tool(
+        &w.h,
+        "tok-t1-telegram-0123456789",
+        "command_run",
+        json!({"name": "deploy", "args": [long]}),
+    );
+    let replies = async {
+        let to_alice = notice_to(&w, 100).await?;
+        let to_bob = notice_to(&w, 200).await?;
+        assert!(
+            w.fake
+                .sent_to(100)
+                .iter()
+                .any(|t| t.contains("Approve it on the Secrets page")),
+            "{:?}",
+            w.fake.sent_to(100)
+        );
+        assert_eq!(
+            reply_to(&w, 200, to_bob, "approve").await?,
+            "Not answered: only people who manage this project's secrets answer its command runs"
+        );
+        assert_eq!(
+            reply_to(&w, 100, to_alice, "approve").await?,
+            "Not answered: this notice could not show the whole command line: approve it on the \
+             Secrets page, where it is whole"
+        );
+        assert!(
+            reply_to(&w, 100, to_alice, "ok")
+                .await?
+                .contains("reply approve or reject")
+        );
+        assert_eq!(
+            reply_to(&w, 100, to_alice, "reject").await?,
+            "Rejected: task #1's run of deploy runs nothing."
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (ran, replied) = tokio::join!(asked, replies);
+    replied?;
+    assert!(support::tool_text(&ran?).to_string().contains("rejected"));
+    assert!(
+        audits(&w, "t1", "task.messaged").await?.is_empty(),
+        "no reply reached the task"
+    );
+
+    // A short line, approved by reply: it runs (this harness has no process host, so it fails).
+    let asked = support::mcp_tool(
+        &w.h,
+        "tok-t1-telegram-0123456789",
+        "command_run",
+        json!({"name": "deploy", "args": ["status"]}),
+    );
+    let replies = async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let tid = TaskId::parse("t1")?;
+        while w.h.store.task_needs_you(&tid).await?.is_none() {
+            assert!(tokio::time::Instant::now() < deadline, "it never waited");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let notice = loop {
+            let id = notice_to(&w, 100).await?;
+            if w.fake
+                .sent_to(100)
+                .iter()
+                .rev()
+                .find(|t| t.starts_with("Needs you"))
+                .is_some_and(|t| t.contains("status"))
+            {
+                break id;
+            }
+            w.fake.wait_sent(100, w.fake.sent_to(100).len() + 1).await?;
+        };
+        assert_eq!(
+            reply_to(&w, 100, notice, "Approve").await?,
+            "Approved: task #1's run of deploy starts now."
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (ran, replied) = tokio::join!(asked, replies);
+    replied?;
+    let ran = support::tool_text(&ran?).to_string();
+    assert!(ran.contains("failed") || ran.contains("done"), "{ran}");
+    let approvals = w.h.store.audit_details("s1", "command.approve", 5).await?;
+    assert_eq!(approvals.len(), 1, "{approvals:?}");
+    assert!(approvals[0].contains("telegram"), "{approvals:?}");
+    Ok(())
+}
+
+/// The newest Needs you notice chat `chat` got (waiting for one).
+async fn notice_to(w: &World, chat: i64) -> Result<usize, Box<dyn std::error::Error>> {
+    loop {
+        if let Some(id) = w.fake.sent_id(chat, "Needs you") {
+            return Ok(id);
+        }
+        w.fake
+            .wait_sent(chat, w.fake.sent_to(chat).len() + 1)
+            .await?;
+    }
+}
+
+/// Replies `text` to message `notice` of chat `chat`; the bot's answer.
+async fn reply_to(
+    w: &World,
+    chat: i64,
+    notice: usize,
+    text: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let before = w.fake.sent_to(chat).len();
+    w.fake.raw(
+        chat,
+        json!({"text": text, "reply_to_message": {"message_id": notice}}),
+    );
+    next_reply(w, chat, before).await
 }

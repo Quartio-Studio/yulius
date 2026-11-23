@@ -188,11 +188,17 @@ definition says. No answer within the stated time is a no. The owner approved th
 - **BRK-015** People who manage the project's secrets (`Action::Configure`) answer, from a browser
   session (an API token is refused), with Approve or Reject on the Secrets page's Commands
   section, or by replying `approve` or `reject` to the task's Needs you notice in their linked
-  Telegram chat. The Telegram reply acts only on the run its notice named, while that run
-  waits and the person may answer it; otherwise it goes to the task as a reply does today. An answer is one
-  conditional write from `waiting` that holds only before the deadline. Two answers never both
-  act, and an answer after the deadline is refused. Each answer is audited `command.approve` or
-  `command.reject`, and the flag ends with the last waiting run.
+  Telegram chat. The run's request names its run in its `cause` (`command-run:<id>`, which an
+  agent's `needs_you` cannot write) and the notice keeps the run's id, so a reply answers that run
+  and no other, whatever was asked at the same moment. Any other text replied to it, a reply
+  from a person who may not answer, and one to a run that no longer waits answer nothing and
+  reach no task; each says why. A run whose command line the notice could not show whole (over
+  380 characters) is approved only on the Secrets page; a reply may reject it. An answer is one
+  conditional write from `waiting` that holds only before the deadline (an approval also only
+  while fewer than 4 runs of the project run). Two answers never both act, and an answer after
+  the deadline is refused. Each answer is audited `command.approve` or `command.reject`, and it
+  ends the run's request while that request is still the run's: one the agent opened since
+  stays. One run of a task waits at a time, held in the transaction that stores it.
 - **BRK-016** No answer by the deadline is a no. The run is `expired` and never runs, also across
   a restart: the condition is in the write, and the background tick records expired runs and
   ends their flag.

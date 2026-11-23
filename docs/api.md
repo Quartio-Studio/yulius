@@ -2150,9 +2150,10 @@ which replaces one its agent had open; one run of a task waits at a time.
 | GET | `/api/sandboxes/{sid}/command-runs` | (read) → `{items: [{id, command, task_number, line, changes, state, reason, deadline, answered_by, exit_code, created_at, ended_at, can_answer}]}`: the runs that wait or run, then the 50 newest others (no output) |
 | POST | `/api/sandboxes/{sid}/command-runs/{id}` | `{approve}` → the run: a person with write access (who manages the project's secrets) in a browser session (403 for an API token); approved, it runs at once; 409 when it no longer waits, its time ran out (it ends `expired`) or 4 runs of the project run now; audited `command.approve` / `command.reject` |
 
-A reply `approve` or `reject` to the run's Telegram notice answers that run (the one asked at the
-notice's time) as the person who replied, under the same rules; audited with `"via":
-"telegram"`. No answer by the deadline is a no: the run ends `expired` (audited
+A reply `approve` or `reject` to the run's Telegram notice answers that run (the notice keeps its
+id) as the person who replied, under the same rules; audited with `"via": "telegram"`. Any other
+reply to it answers nothing and reaches no task; a person without write access is told so; a run
+whose command line the notice cut (over 380 characters) is approved on the Secrets page only. No answer by the deadline is a no: the run ends `expired` (audited
 `command.expired`), at its deadline or, after a restart, within a minute. Each change publishes
 `commands.updated`.
 

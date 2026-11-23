@@ -16,7 +16,7 @@ use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
-use crate::ports::store_ext::{CommandRecord, CommandRunEnd, CommandRunRecord};
+use crate::ports::store_ext::{CommandRecord, CommandRunEnd, CommandRunRecord, RunInsert};
 
 /// How long a call waits for a run's end before it answers its state (ADR-0227's bound for MCP
 /// clients).
@@ -169,14 +169,7 @@ impl App {
                 &dom::command_line(&def.binary, &def.fixed, &call.args),
             )
             .await;
-        let mut now = self.now();
-        if ask {
-            // A run's request is known by its time (a Telegram reply answers the run asked at
-            // its notice's time): a task's runs never share one.
-            if let Some(last) = self.deps.store.latest_command_run_of_task(&task.id).await? {
-                now = now.max(last.created_at.plus_millis(1));
-            }
-        }
+        let now = self.now();
         let minutes = i64::from(def.approval_minutes);
         let minute = i64::try_from(self.config.command_minute_ms).unwrap_or(60_000);
         let run = CommandRunRecord {
@@ -207,7 +200,7 @@ impl App {
         let (app, id, place) = (Arc::clone(self), run.id.clone(), sandbox.clone());
         tokio::spawn(async move {
             let inserted = app.deps.store.insert_command_run(&run, MAX_RUNNING).await;
-            let go = matches!(inserted, Ok(true));
+            let go = matches!(inserted, Ok(RunInsert::Stored));
             let _ = stored_tx.send(inserted);
             if go {
                 crate::race::reached(crate::race::Point::CommandRunStored, &app.config.data_dir);
@@ -219,12 +212,20 @@ impl App {
             }
         });
         match stored.await.map_err(AppError::internal)? {
-            Ok(true) => self.wait_command_run(&id).await,
-            Ok(false) => {
+            Ok(RunInsert::Stored) => self.wait_command_run(&id).await,
+            Ok(RunInsert::Busy) => {
                 refuse(format!(
                     "{MAX_RUNNING} runs of this project's commands run already: wait for one to \
                      end (command_result) and run it again"
                 ))
+                .await
+            }
+            Ok(RunInsert::TaskWaits) => {
+                refuse(
+                    "a run of this task waits for a person's approval already: wait for its \
+                     answer (command_result)"
+                        .into(),
+                )
                 .await
             }
             Err(err) => Err(err),

@@ -3,7 +3,9 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
-use yulius_app::ports::store_ext::{CommandRecord, CommandRunEnd, CommandRunRecord, CommandStore};
+use yulius_app::ports::store_ext::{
+    CommandRecord, CommandRunEnd, CommandRunRecord, CommandStore, RunInsert,
+};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::time::Timestamp;
 
@@ -44,6 +46,12 @@ fn named(err: rusqlite::Error) -> AppError {
 const RUN_COLUMNS: &str = "id, sandbox_id, command_id, command, command_updated_at, task_id, \
     task_number, args, line, changes, state, reason, deadline, answered_by, exit_code, stdout, \
     stderr, created_at, started_at, ended_at";
+
+/// A run's columns without its output, for lists (review round 1 of slice 3): its stdout and
+/// stderr read as empty.
+const LISTED_COLUMNS: &str = "id, sandbox_id, command_id, command, command_updated_at, task_id, \
+    task_number, args, line, changes, state, reason, deadline, answered_by, exit_code, '', '', \
+    created_at, started_at, ended_at";
 
 /// The ended runs a project keeps (SPEC-626 BRK-011).
 const KEEP_RUNS: i64 = 200;
@@ -196,7 +204,7 @@ impl CommandStore for SqliteStore {
         &self,
         run: &CommandRunRecord,
         max_running: u32,
-    ) -> AppResult<bool> {
+    ) -> AppResult<RunInsert> {
         let r = run.clone();
         self.call(move |c| {
             let args = serde_json::to_string(&r.args).map_err(AppError::internal)?;
@@ -209,7 +217,19 @@ impl CommandStore for SqliteStore {
                 )
                 .map_err(db)?;
             if r.state == "running" && running >= max_running {
-                return Ok(false);
+                return Ok(RunInsert::Busy);
+            }
+            // One run of a task waits for a person at a time, also for calls made together
+            // (review round 1 of slice 3).
+            let waiting: u32 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM command_runs WHERE task_id = ?1 AND state = 'waiting'",
+                    [r.task_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(db)?;
+            if r.state == "waiting" && waiting > 0 {
+                return Ok(RunInsert::TaskWaits);
             }
             tx.execute(
                 &format!(
@@ -249,7 +269,7 @@ impl CommandStore for SqliteStore {
             )
             .map_err(db)?;
             tx.commit().map_err(db)?;
-            Ok(true)
+            Ok(RunInsert::Stored)
         })
         .await
     }
@@ -418,7 +438,7 @@ impl CommandStore for SqliteStore {
         self.call(move |c| {
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT {RUN_COLUMNS} FROM command_runs WHERE sandbox_id = ?1 \
+                    "SELECT {LISTED_COLUMNS} FROM command_runs WHERE sandbox_id = ?1 \
                      AND (ended_at IS NULL OR id IN (SELECT id FROM command_runs \
                      WHERE sandbox_id = ?1 AND ended_at IS NOT NULL \
                      ORDER BY created_at DESC, id DESC LIMIT ?2)) \

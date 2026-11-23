@@ -59,6 +59,7 @@ fn about(task: &TaskId) -> Option<SentAbout> {
     Some(SentAbout {
         task: task.clone(),
         asked_at: None,
+        command_run: None,
     })
 }
 
@@ -161,13 +162,12 @@ impl App {
                 about: about(&record.id),
             });
         }
-        // `approve` or `reject` to a brokered run's notice answers that run (SPEC-626 BRK-015).
-        let word = text.to_lowercase();
-        if matches!(word.as_str(), "approve" | "reject")
-            && let Some(answer) = self
-                .telegram_command_answer(person, &record, sent.asked_at, word == "approve")
-                .await
-        {
+        // A reply to a brokered run's notice answers that run, and nothing else (SPEC-626
+        // BRK-015).
+        if let Some(run) = &sent.command_run {
+            let answer = self
+                .telegram_command_answer(person, &record, run, text)
+                .await;
             return Ok(IntakeAnswer {
                 text: self.redact_for_sandbox(&record.sandbox_id, &answer).await,
                 about: about(&record.id),

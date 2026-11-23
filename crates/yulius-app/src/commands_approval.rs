@@ -25,13 +25,28 @@ const LISTED: u32 = 50;
 /// The longest command line a Needs you request carries; the whole line is on the Secrets page.
 const SHOWN_LINE: usize = 380;
 
+/// The `cause` of a run's Needs you request: `command-run:<id>`. An agent's `needs_you` names
+/// only a cause of `needs_you::CAUSES`, so it never writes one (SPEC-626 BRK-015).
+const RUN_CAUSE: &str = "command-run:";
+
+/// The run a request's `cause` names, if it is a run's.
+#[must_use]
+pub fn run_of_cause(cause: &str) -> Option<&str> {
+    cause.strip_prefix(RUN_CAUSE).filter(|id| !id.is_empty())
+}
+
+/// Whether a request shows `line` whole.
+fn shown_whole(line: &str) -> bool {
+    line.chars().count() <= SHOWN_LINE
+}
+
 /// The command line as a request shows it: cut at a character, saying so.
 fn shown_line(line: &str) -> String {
-    if line.chars().count() <= SHOWN_LINE {
+    if shown_whole(line) {
         return line.to_owned();
     }
     let cut: String = line.chars().take(SHOWN_LINE).collect();
-    format!("{cut} … (the whole line is on the Secrets page)")
+    format!("{cut} … (cut here: the whole line is on the Secrets page)")
 }
 
 impl App {
@@ -69,16 +84,25 @@ impl App {
                 "Task #{} asked to run the brokered command {}{says}.",
                 run.task_number, run.command
             )),
-            problem: Some(format!(
-                "{} — it waits {} min; no answer is a no. Reply approve or reject to this \
-                 notice, or answer on the Secrets page.",
-                shown_line(&run.line),
-                def.approval_minutes
-            )),
+            // A line this notice cannot show whole is approved where it is read whole.
+            problem: Some(if shown_whole(&run.line) {
+                format!(
+                    "{} — it waits {} min; no answer is a no. Reply approve or reject to this \
+                     notice, or answer on the Secrets page.",
+                    run.line, def.approval_minutes
+                )
+            } else {
+                format!(
+                    "{} — it waits {} min; no answer is a no. Approve it on the Secrets page, \
+                     where the whole line is; reply reject to this notice to refuse it.",
+                    shown_line(&run.line),
+                    def.approval_minutes
+                )
+            }),
             decision: true,
             link: Some(self.command_runs_link(sandbox, &run.id)),
             at: run.created_at.0,
-            cause: None,
+            cause: Some(format!("{RUN_CAUSE}{}", run.id)),
             named: Named::default(),
         };
         match self
@@ -136,8 +160,7 @@ impl App {
             }
         };
         for run in &due {
-            self.end_needs_you_asked_at(&run.task_id, run.created_at.0, None)
-                .await;
+            self.end_run_request(run).await;
             if let Ok(Some(sandbox)) = self.deps.store.sandbox(&run.sandbox_id).await {
                 let detail = json!({
                     "task": format!("#{}", run.task_number),
@@ -254,8 +277,7 @@ impl App {
                 state => format!("this run is {state} already"),
             }));
         }
-        self.end_needs_you_asked_at(&run.task_id, run.created_at.0, None)
-            .await;
+        self.end_run_request(&run).await;
         let detail = json!({
             "task": format!("#{}", run.task_number),
             "command": run.command,
@@ -270,7 +292,15 @@ impl App {
         };
         self.audit_command_run(sandbox, &login, action, &detail)
             .await;
-        let answered = store.command_run(id).await?.ok_or(AppError::NotFound)?;
+        // As the write left it, without reading it again (review round 1 of slice 3).
+        let answered = CommandRunRecord {
+            state: if approve { "running" } else { "rejected" }.into(),
+            answered_by: Some(login.clone()),
+            started_at: approve.then_some(now),
+            ended_at: (!approve).then_some(now),
+            reason: (!approve).then(|| "a person rejected it".to_owned()),
+            ..run
+        };
         if approve {
             let (app, place, running) = (Arc::clone(self), sandbox.clone(), answered.clone());
             tokio::spawn(async move {
@@ -283,51 +313,76 @@ impl App {
         Ok(answered)
     }
 
-    /// BRK-015: a Telegram reply `approve` or `reject` to the notice of a run's request answers
-    /// that run, the one asked at the notice's time, as `person`, who must manage the project's
-    /// secrets. `None` when the notice is no run's: the reply goes to the task as before.
+    /// Ends `run`'s Needs you request while it is still that run's own (its `cause` names the
+    /// run): a request the agent opened since stays (review round 1 of slice 3).
+    async fn end_run_request(&self, run: &CommandRunRecord) {
+        let own = format!("{RUN_CAUSE}{}", run.id);
+        if let Ok(Some(request)) = self.deps.store.task_needs_you(&run.task_id).await
+            && request.cause.as_deref() == Some(own.as_str())
+        {
+            self.end_needs_you_asked_at(&run.task_id, request.at, None)
+                .await;
+        }
+    }
+
+    /// BRK-015: a Telegram reply to the notice of run `run_id`'s request answers that run, as
+    /// `person`, who must manage the project's secrets: `approve` or `reject`; anything else is
+    /// no answer and goes nowhere. A run whose line the notice could not show whole is approved
+    /// on the Secrets page only.
     pub(crate) async fn telegram_command_answer(
         self: &Arc<Self>,
         person: &UserRecord,
         task: &TaskRecord,
-        asked_at: Option<i64>,
-        approve: bool,
-    ) -> Option<String> {
-        let asked_at = asked_at?;
-        let runs = self
-            .deps
-            .store
-            .command_runs_in(&task.sandbox_id, 200)
-            .await
-            .ok()?;
-        let run = runs
-            .into_iter()
-            .find(|r| r.task_id == task.id && r.created_at.0 == asked_at)?;
-        let refused = |why: String| Some(format!("Not answered: {why}"));
+        run_id: &str,
+        text: &str,
+    ) -> String {
+        let word = text.trim().to_lowercase();
+        let approve = match word.as_str() {
+            "approve" => true,
+            "reject" => false,
+            _ => {
+                return "This notice asks to approve a command run: reply approve or reject, or \
+                        answer on the Secrets page."
+                    .into();
+            }
+        };
+        let refused = |why: &str| format!("Not answered: {why}");
+        let run = match self.deps.store.command_run(run_id).await {
+            Ok(Some(run)) if run.task_id == task.id => run,
+            Ok(_) => return refused("that run is gone"),
+            Err(err) => return refused(&err.public_message()),
+        };
         let sandbox = match self
             .require(person, &task.sandbox_id, Action::Configure)
             .await
         {
             Ok((sandbox, _)) => sandbox,
-            Err(_) => {
+            Err(AppError::Forbidden(_) | AppError::NotFound) => {
                 return refused(
-                    "only people who manage this project's secrets answer its command runs".into(),
+                    "only people who manage this project's secrets answer its command runs",
                 );
             }
+            Err(err) => return refused(&err.public_message()),
         };
+        if approve && run.state == "waiting" && !shown_whole(&run.line) {
+            return refused(
+                "this notice could not show the whole command line: approve it on the Secrets \
+                 page, where it is whole",
+            );
+        }
         match self
             .answer_command_run_as(&sandbox, person, &run.id, approve, "telegram")
             .await
         {
-            Ok(_) if approve => Some(format!(
+            Ok(_) if approve => format!(
                 "Approved: task #{}'s run of {} starts now.",
                 run.task_number, run.command
-            )),
-            Ok(_) => Some(format!(
+            ),
+            Ok(_) => format!(
                 "Rejected: task #{}'s run of {} runs nothing.",
                 run.task_number, run.command
-            )),
-            Err(err) => refused(err.public_message()),
+            ),
+            Err(err) => refused(&err.public_message()),
         }
     }
 }
