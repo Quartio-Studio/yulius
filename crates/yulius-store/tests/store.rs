@@ -3609,6 +3609,8 @@ async fn fork_links_persist_and_outlive_a_deleted_source() -> R {
     );
     assert!(store.delete_task(&t3).await?);
     assert_eq!(store.fork_of(&t3).await?, None);
+    Ok(())
+}
 
 /// SPEC-629 RBL-005: a task's pin is its own column: set, read, ended, and ended for every task
 /// when its subscription is removed.
