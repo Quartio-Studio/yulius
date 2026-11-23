@@ -19,10 +19,12 @@ the task read "running (waiting)" until its owner closed it by hand.
 When a task's staging request ends, Yulius still records the outcome silently on a finished
 task, except while that task is idle and its agent runs background work (a background shell,
 agent or Monitor, or a `yulius wait`): then it types the outcome into the session once, adding that the
-task's work is finished, so the agent stops the command that waits for it and answers in one
-line. A fresh look at the agent's processes decides, falling back to the last probe. The usual
-holds apply (a person's possible draft, a needs-you request, a pause, an update), and the
-admission check right before the paste confirms the work still runs. The same holds for Claude
+task's work is finished, so the agent stops a command that waits for it, leaves anything else
+running and answers in one line. A finished task that is not idle (mid-turn, or flagged by a
+hold) is decided once it is idle again. A fresh look at the agent's processes decides, falling
+back to the last probe. The usual holds apply (a person's possible draft, a needs-you request, a
+pause, an update) and defer the outcome to a later tick, and the admission check right before
+the paste confirms the task is still finished and the work still runs. The same holds for Claude
 Code and Codex.
 
 A staging request's deploy is recorded as its task's CD run (`task:<n>`), deployed only while the

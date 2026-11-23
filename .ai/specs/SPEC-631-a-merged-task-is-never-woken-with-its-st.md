@@ -55,8 +55,9 @@ same pattern in this project's tasks #608 and #613.
   the box later. The outcome was never offered to the session at all (rule 1), so no hold was
   involved. A held message would still defer the new delivery to a later tick (`still_due`).
 - **Background shell.** The blocker of Done (rule 2).
-- **Idle task.** Only an idle run's background work is probed and counted; a task mid-turn is told
-  nothing new by this change (its turn ends on its own).
+- **Idle task.** Only an idle run's background work is probed and counted. A finished task mid-turn
+  or flagged needs-attention is decided once it is idle again (review round 1: deciding it
+  silently at such a tick lost the outcome a hold had deferred).
 - **Claude Code versus Codex.** `machine_notice_tasks`, the background probe (Claude Bash
   wrappers and Codex PTY commands alike, `yulius_ptyhost::shells`) and `type_into_session_if`
   (Codex observed-attempt paste) are harness-agnostic, so the stand-off and the fix apply to both.
@@ -78,11 +79,14 @@ same pattern in this project's tasks #608 and #613.
   superseded) and the task is running, idle, accepts no machine notice (finished), and its agent
   still runs background work (a background shell, agent or Monitor, or a `yulius wait`), Yulius
   types the outcome into its session once, saying the task's work is finished and that it stops
-  the background command waiting for this outcome and answers in one line. The usual holds apply
-  (a person's possible draft, a needs-you request, a pause, an update), and a held outcome is
-  retried on a later tick.
-- SWK-002 A finished task with no background work, a task mid-turn, a parked or ended task keeps
-  receiving its outcome silently on its delivery (SPEC-612 GF-006).
+  a background command of its that waits for this outcome (and leaves anything else running)
+  and answers in one line. The usual holds apply (a person's possible draft, a needs-you request,
+  a pause, an update), and a held outcome is retried on a later tick. A finished task that is
+  not idle (mid-turn, or flagged by such a hold) is decided at a later tick once it is idle,
+  since that turn or hold can still end in a wait. Right before the paste Yulius checks again
+  that the task is still finished and its background work still runs.
+- SWK-002 A finished idle task with no background work, a parked or ended task keeps receiving
+  its outcome silently on its delivery (SPEC-612 GF-006).
 - SWK-003 Once that agent's turn ends with no background work left, the merged task with no
   declared work left shows Done (existing rule, TSK-014, SPEC-491 DON-004).
 - SWK-004 A CD run started for a task's staging request records that task (`task_id`) and is
