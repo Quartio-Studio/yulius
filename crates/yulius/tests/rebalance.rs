@@ -647,6 +647,20 @@ fn a_goal_session_parking_keeps_costs_no_github_reads() -> TestResult {
             |config| config.park_after_ms = 30 * 60_000,
         )?;
         let id = done_goal_on_a_full_first(&app, &probe, &data).await?;
+        // A GitHub App: a park verifies the task's pull requests there.
+        let store = &app.deps.store;
+        let _ = store.init_instance("https://yulius.test", "x").await;
+        let app_config = serde_json::json!({"app_id": 1, "slug": "test", "client_id": "test",
+            "client_secret": "synthetic", "private_key_pem": "synthetic"});
+        store
+            .set_github_app(
+                &app.deps.crypto.seal(&serde_json::to_vec(&app_config)?)?,
+                "acme",
+                "org",
+            )
+            .await?;
+        store.set_installation(Some(7)).await?;
+        assert!(app.github_configured().await?);
         let reads = || {
             github.pull_list_count.load(SeqCst)
                 + github.pull_get_count.load(SeqCst)
@@ -665,7 +679,8 @@ fn a_goal_session_parking_keeps_costs_no_github_reads() -> TestResult {
     Ok(())
 }
 
-/// RBL-001: at 98 a harness's rebalance is off: an idle task on a subscription at 96 % stays.
+/// RBL-001: at 98 a harness's rebalance is off: an idle task on a subscription at 98.5 % stays
+/// for the turn boundary and the limit to move, as before.
 #[test]
 fn at_98_the_rebalance_is_off() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -682,7 +697,10 @@ fn at_98_the_rebalance_is_off() -> TestResult {
             "http://127.0.0.1:9",
             |config| config.rebalance.claude_code = 98.0,
         )?;
-        let (id, _user) = idle_on_a_full_first(&app, &probe, &data).await?;
+        let (id, user) = idle_on_a_full_first(&app, &probe, &data).await?;
+        // Past 98 too: only the turn boundary and the limit move it, as before.
+        probe.set("a-first", usage(98.5, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
         assert_eq!(app.rebalance_now().await, Default::default());
         assert_eq!(run_accounts(&app, &id).await.len(), 1);
         stop(&app, &id).await?;
