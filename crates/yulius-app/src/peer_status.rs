@@ -116,10 +116,8 @@ impl App {
             .map(|claim| json!({"pattern": claim.pattern, "note": claim.note}))
             .collect();
         let requests = self.browser_requests(&task.sandbox_id).await;
-        let yulius_wait = self
-            .task_attention_facts(task, &requests)
-            .await?
-            .yulius_wait;
+        let facts = self.task_attention_facts(task, &requests).await?;
+        let yulius_wait = facts.yulius_wait;
         brief["owner"] = json!(self.login_of(&task.owner).await);
         brief["delivery"] = json!({
             "stage": delivery.map_or_else(|| "none".to_owned(), |d| d.stage.encode()),
@@ -127,7 +125,15 @@ impl App {
             "merge_armed": merge_armed,
         });
         brief["claims"] = json!(claims);
-        brief["waits_for"] = json!(waits_for(task.status, brief, merge_armed, yulius_wait));
+        let mut waits = waits_for(task.status, brief, merge_armed, yulius_wait);
+        if facts.candidate_pending {
+            // SPEC-621 FIN-004: why an achieved goal is not Done yet.
+            waits.push(
+                "Yulius's re-check of its failed integration candidate, which it tells the agent"
+                    .to_owned(),
+            );
+        }
+        brief["waits_for"] = json!(waits);
         if withheld {
             return Ok(());
         }

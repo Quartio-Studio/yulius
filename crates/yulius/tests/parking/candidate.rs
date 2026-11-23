@@ -195,7 +195,7 @@ fn a_replacement_merge_is_refused_while_the_reader_settles_a_close() -> TestResu
 /// (SPEC-621 FIN-004).
 #[test]
 fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResult {
-    use yulius_domain::task::Activity;
+    use yulius_domain::task::{Activity, TaskStatus};
     with_idle_candidate(async |_, app, remote, id, _| {
         app.deps
             .store
@@ -211,6 +211,24 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             .tool_task_get(&caller, &json!({"task_id": id.as_str()}))
             .await?;
         assert_eq!(brief["shows"], "working", "{brief}");
+        assert!(
+            brief["waits_for"]
+                .to_string()
+                .contains("failed integration candidate"),
+            "{brief}"
+        );
+        // A parked owner has no session to settle it in: the field is the live run's only.
+        let now = app.now();
+        app.deps
+            .store
+            .transition_task(&id, None, TaskStatus::Parked, Some(Activity::Done), now)
+            .await?;
+        let parked = app.deps.store.task(&id).await?.ok_or("owner")?;
+        assert!(!app.task_summary(&parked).await?.candidate_pending);
+        app.deps
+            .store
+            .transition_task(&id, None, TaskStatus::Running, Some(Activity::Done), now)
+            .await?;
         remote.remote.lock().map_err(|_| "origin")?.take();
         remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "advanced-base".into();
         let mut events = app.events.subscribe();
@@ -233,6 +251,25 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             .tool_task_get(&caller, &json!({"task_id": id.as_str()}))
             .await?;
         assert_eq!(brief["shows"], "done", "{brief}");
+        // The next pass re-reads the pull request; until it answers, the views keep its last
+        // answer, and a read that fails keeps it too.
+        let (reading, release) =
+            super::pause_watch_or_queue(super::Point::CandidateObservationRead, &id);
+        let pass = {
+            let app = app.clone();
+            tokio::spawn(async move { app.watch_prs(&WatchBounds::default()).await })
+        };
+        tokio::time::timeout(Duration::from_secs(10), reading.notified()).await?;
+        assert!(!app.task_summary(&owner).await?.candidate_pending);
+        release.notify_one();
+        pass.await?;
+        let pulls = std::mem::take(&mut *remote.pulls.lock().map_err(|_| "PR")?);
+        let failed = app.watch_prs(&WatchBounds::default()).await;
+        assert!(
+            !app.task_summary(&owner).await?.candidate_pending,
+            "{failed:?}"
+        );
+        *remote.pulls.lock().map_err(|_| "PR")? = pulls;
         Ok(())
     })
 }

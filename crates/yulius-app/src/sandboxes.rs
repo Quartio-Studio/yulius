@@ -812,9 +812,12 @@ impl App {
             let candidate_pending = live
                 && task.activity == Some(yulius_domain::task::Activity::Done)
                 && self
-                    .local_candidate_blocks(task, record.as_ref())
+                    .local_candidate_shown(task, record.as_ref())
                     .await
-                    .unwrap_or(true);
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(task = %task.id, error = %err, "the recorded integration failure could not be read; it is shown as pending");
+                        true
+                    });
             let observed = self.known_parked_pull(task, record.as_ref());
             let mut pull = self.last_pull_signal(task, &observed);
             if let Some(pr) = observed.pr.filter(|pr| pr.open)

@@ -1493,7 +1493,7 @@ mod tests {
         }
         // SPEC-621 FIN-004: an achieved goal whose integration failure is not cleared yet is
         // Yulius's to settle, not Done; a parked task has no session to settle it in.
-        for pull in [None, Some(P::Tested), Some(P::Merged)] {
+        for pull in [None, Some(P::Tested), Some(P::Merged), Some(P::Failing)] {
             let pending = AttentionFacts {
                 candidate_pending: true,
                 pull,

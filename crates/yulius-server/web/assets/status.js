@@ -262,7 +262,7 @@ export function statusInfo(task) {
 
 /** A parked task as the idle running task it was, with no live overlay (SPEC-512 PRK-004). */
 function asIdleRun(task) {
-  return { ...task, status: 'running', staging_wait: null, background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
+  return { ...task, status: 'running', staging_wait: null, background_shells: 0, yulius_wait: false, merge_armed: false, candidate_pending: false, pause: null };
 }
 
 // Keep the more specific reason already shown for a person's decision or failing PR.
@@ -462,6 +462,9 @@ function taskInfoOf(task, actionRequests, pr) {
   // yulius-domain).
   const finished = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
   if (finished && info.staging) return { ...info, pr };
+  // Yulius settles an achieved goal's integration failure first, whatever its checks say, as
+  // `AttentionFacts::group` does (SPEC-621 FIN-004).
+  if (finished && task.activity === 'done' && task.candidate_pending === true) return { ...info, pr };
   if (pr && finished && (pr.state === 'open' || pr.state === 'merged')) {
     if (pr.state === 'open' && pr.checks === 'failure') {
       // Failing checks are the person's only once the agent stopped. While its background work
