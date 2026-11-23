@@ -235,6 +235,59 @@ fn a_codex_restart_checks_the_harness_and_history_of_legacy_records() -> TestRes
     })
 }
 
+/// SPEC-629 RBL-003: an idle Codex goal task on a subscription past the rebalance threshold
+/// moves at the next pass to one with room, in the same conversation with nothing typed, and
+/// keeps its Done.
+#[test]
+fn a_rebalance_moves_a_finished_codex_goal_task_and_keeps_it_done() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, session) = restart_fixture_in(&data, TaskMode::Goal).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        app.close_task_and_wait(&id).await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        let store = &app.deps.store;
+        store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        let original = AccountId::parse("a-codex")?;
+        let alternate =
+            add_codex_account(&app, "alternate", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let full = yulius_domain::usage::AccountUsage {
+            primary: Some(yulius_domain::usage::UsageWindow {
+                used_percent: Some(96.0),
+                window_minutes: Some(300),
+                resets_at: Some(app.now().plus_millis(3_600_000)),
+            }),
+            ..Default::default()
+        };
+        store
+            .set_account_state(
+                &original,
+                AccountStatus::Ok,
+                Some(&yulius_app::usage_json::to_json(&full)),
+                None,
+                app.now(),
+            )
+            .await?;
+        let pass = app.rebalance_now().await;
+        assert_eq!(pass.moved, 1, "{pass:?}");
+        let run = store.live_attempt(&id).await?.ok_or("moved run")?;
+        assert_eq!(run.account_id.as_ref(), Some(&alternate));
+        assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
+        let launch = std::fs::read_to_string(Path::new(&run.run_dir).join("fake-launch.txt"))?;
+        assert!(launch.contains("prompt: None"), "{launch}");
+        let moved = task(&app, &id).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        assert_eq!(
+            (moved.status, moved.activity),
+            (TaskStatus::Running, Some(Activity::Done))
+        );
+        Ok(())
+    })
+}
+
 #[test]
 fn moving_a_finished_codex_goal_task_preserves_its_idle_activity() -> TestResult {
     let (_dir, data) = temp()?;

@@ -33,6 +33,7 @@
 //! Restart: runs recorded as running lose their executor; their hosts are terminated and they
 //! go back to the queue (a run is repeatable).
 
+pub(crate) mod brokered;
 pub mod cd;
 mod disk_wait;
 mod environment;

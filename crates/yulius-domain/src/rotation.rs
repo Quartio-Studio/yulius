@@ -31,6 +31,10 @@ use crate::usage::{
 /// F 2026-10-10).
 pub const THRESHOLD: f64 = 98.0;
 
+/// Default rebalance threshold in percent of any binding window (SPEC-629 RBL-001): a
+/// subscription past it gets no new run while another has room, and idle runs leave it.
+pub const REBALANCE: f64 = 95.0;
+
 /// Headroom (percentage points below [`THRESHOLD`]) a Claude or Antigravity account needs
 /// in every binding window to be preferred for placement.
 pub const MIN_ROOM: f64 = 5.0;
@@ -81,6 +85,9 @@ pub struct RotationInput {
     pub now: Timestamp,
     /// Threshold in percent; [`THRESHOLD`] in production.
     pub threshold: f64,
+    /// Rebalance threshold in percent, the task's harness's (SPEC-629 RBL-001): candidates
+    /// past it rank after every candidate below it. At or above `threshold` it changes nothing.
+    pub rebalance: f64,
 }
 
 /// Why a decision is requested.
@@ -299,18 +306,21 @@ fn ranked_for<'a>(
     family: ModelFamily,
     exclude: Option<&AccountId>,
 ) -> Vec<(&'a AccountView, Assessment)> {
-    let mut candidates: Vec<(&AccountView, Assessment)> = input
+    let mut candidates: Vec<(&AccountView, Assessment, bool)> = input
         .accounts
         .iter()
         .filter(|a| a.provider == input.task_provider && Some(&a.id) != exclude)
         .filter_map(|a| {
-            assess(a, input.now, input.threshold, family).map(|assessment| (a, assessment))
+            assess(a, input.now, input.threshold, family)
+                .map(|assessment| (a, assessment, past_rebalance(input, a, family)))
         })
         .collect();
-    candidates.sort_by(|(a, x), (b, y)| {
+    candidates.sort_by(|(a, x, a_past), (b, y, b_past)| {
         let never = Timestamp(i64::MAX);
-        x.tier
-            .cmp(&y.tier)
+        // Past the rebalance threshold comes after every candidate below it (SPEC-629).
+        a_past
+            .cmp(b_past)
+            .then_with(|| x.tier.cmp(&y.tier))
             .then_with(|| {
                 if input.task_provider == Provider::OpenAi
                     && let (Some(x), Some(y)) = (x.room, y.room)
@@ -335,6 +345,19 @@ fn ranked_for<'a>(
             .then_with(|| a.id.cmp(&b.id))
     });
     candidates
+        .into_iter()
+        .map(|(account, assessment, _)| (account, assessment))
+        .collect()
+}
+
+/// Whether `account` is past the input's rebalance threshold for a run of `family` (SPEC-629
+/// RBL-001): a window binding that model at or above it, or a limit in effect. Unknown usage is
+/// not.
+#[must_use]
+pub fn past_rebalance(input: &RotationInput, account: &AccountView, family: ModelFamily) -> bool {
+    account
+        .usage
+        .exhausted_for(input.now, input.rebalance, family)
 }
 
 /// Where a session moves before a review round whose reviewer runs `also` would start on a
@@ -605,6 +628,7 @@ mod tests {
             accounts,
             now: NOW,
             threshold: THRESHOLD,
+            rebalance: REBALANCE,
         })
     }
 
@@ -618,6 +642,67 @@ mod tests {
     fn start(accounts: Vec<AccountView>) -> Result<Option<String>, IdError> {
         let rotation = input(None, accounts)?;
         Ok(switched_to(&decide(&rotation, Trigger::Start).0).map(str::to_owned))
+    }
+
+    /// SPEC-629 RBL-002: a candidate past the rebalance threshold ranks after every candidate
+    /// below it, whatever its score; the model's own weekly window counts; with every candidate
+    /// past it, the best of them still takes the run.
+    #[test]
+    fn placement_keeps_off_a_subscription_past_the_rebalance_threshold() -> Result<(), IdError> {
+        let chosen =
+            |pool: &RotationInput| switched_to(&decide(pool, Trigger::Start).0).map(str::to_owned);
+        // The week at 96 % resets in an hour: its score beats 94 % resetting in 100 hours.
+        let mut pool = input(
+            None,
+            vec![
+                account("early", usage(10.0, 96.0, Some(1)))?,
+                account("roomier", usage(10.0, 94.0, Some(100)))?,
+            ],
+        )?;
+        assert_eq!(chosen(&pool).as_deref(), Some("roomier"));
+        pool.rebalance = THRESHOLD;
+        assert_eq!(
+            chosen(&pool).as_deref(),
+            Some("early"),
+            "the score without it"
+        );
+        pool.rebalance = REBALANCE;
+        // The 5-hour window past it counts as well.
+        pool.accounts[0].usage = usage(95.0, 10.0, Some(1));
+        assert_eq!(chosen(&pool).as_deref(), Some("roomier"));
+        // Every candidate past it: the best of them, below the 98 % threshold.
+        pool.accounts[1].usage = usage(10.0, 97.0, Some(100));
+        assert_eq!(chosen(&pool).as_deref(), Some("early"));
+        // A Fable task: Fable's own week at 96 % (resetting in an hour) is past it.
+        let mut fable = input(
+            None,
+            vec![
+                account("fable-week", usage(10.0, 10.0, Some(100)))?,
+                account("plain", usage(10.0, 94.0, Some(100)))?,
+            ],
+        )?;
+        fable.family = ModelFamily::Fable;
+        fable.accounts[0].usage.weekly_fable = Some(window(96.0, Some(1)));
+        assert_eq!(chosen(&fable).as_deref(), Some("plain"));
+        fable.rebalance = THRESHOLD;
+        assert_eq!(chosen(&fable).as_deref(), Some("fable-week"));
+        // Codex keeps its own order inside each group.
+        let mut codex = input(
+            None,
+            vec![
+                account("past", usage(96.0, 2.0, Some(168)))?,
+                account("below", usage(10.0, 94.0, Some(1)))?,
+                account("most", usage(10.0, 60.0, Some(1)))?,
+            ],
+        )?;
+        codex.task_provider = Provider::OpenAi;
+        for account in &mut codex.accounts {
+            account.provider = Provider::OpenAi;
+        }
+        assert_eq!(chosen(&codex).as_deref(), Some("most"));
+        codex.accounts.pop();
+        assert_eq!(chosen(&codex).as_deref(), Some("below"));
+        Ok(())
     }
 
     #[test]

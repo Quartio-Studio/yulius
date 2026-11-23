@@ -387,6 +387,10 @@ impl App {
             None => None,
         }
         .flatten();
+        // A fork's named subscription is a person's choice: it pins the fork (SPEC-629 RBL-005).
+        if account.is_some() {
+            self.pin_task(&task.id, account.as_ref()).await;
+        }
         if let Some(before) = &after {
             self.link_chain(&task, before, rule).await?;
         }
@@ -790,7 +794,10 @@ impl App {
             crate::race::Point::OwnerContinueRequested,
             std::path::Path::new(task.id.as_str()),
         );
-        self.start_ended_run(&task, account).await?;
+        self.start_ended_run(&task, account.clone()).await?;
+        // "Continue on…" pins the task there; a plain Continue lets the pool choose (SPEC-629
+        // RBL-005).
+        self.pin_task(&task.id, account.as_ref()).await;
         // Its waiting successors wait for it again (TSK-012).
         self.unblock_successors(&task.id).await;
         let task = self
@@ -821,7 +828,9 @@ impl App {
         }
         // Where the task stands decides how it goes on (SPEC-447 MOV-001): past a limit, its first
         // message again, a held prompt, or the cut turn told to go on.
-        self.move_task(&task.id, account, "manual").await?;
+        self.move_task(&task.id, account.clone(), "manual").await?;
+        // "Run on…" pins the task there; the pool's choice pins nothing (SPEC-629 RBL-005).
+        self.pin_task(&task.id, account.as_ref()).await;
         let task = self
             .deps
             .store
