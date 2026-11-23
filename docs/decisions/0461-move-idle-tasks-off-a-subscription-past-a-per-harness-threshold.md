@@ -4,7 +4,9 @@
 
 Accepted for [SPEC-629](../../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md).
 Amends SPEC-001 ROT-003, ROT-004 and ROT-007, [ADR-0288](0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)
-and [ADR-0449](0449-use-codex-quota-headroom-and-preserve-idle-moves.md).
+[ADR-0449](0449-use-codex-quota-headroom-and-preserve-idle-moves.md) and
+[ADR-0367](0367-an-idle-session-is-parked-and-resumed-by-a-message.md) (a rebalance parks a goal session
+after one minute of quiet instead of the grace period).
 
 ## Context
 
@@ -28,7 +30,8 @@ the threshold to the best subscription below it, through the person's move (`App
 and only when the restart for a newer Claude Code would also lose nothing (`agent_cli::kept_by`).
 The pass moves only a session that reopens at its prompt with nothing typed, claiming the idle
 state and run it read; a goal session of Claude Code or Antigravity, whose goal a restart would
-type again, is parked instead under parking's rules, so its resume is placed elsewhere. With no
+type again, is parked instead under parking's rules with a quiet time of one minute (or the
+grace period if shorter), so its resume is placed elsewhere; its parked screen says why. With no
 subscription below the threshold the task stays and says so once per episode.
 
 A person's "Run on…" or "Continue on…" pins the task to the chosen subscription

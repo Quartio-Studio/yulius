@@ -1,6 +1,6 @@
 ---
 yulius-task: 493cd2d9-3bf8-4aa6-85d1-a41a5771227e
-status: in-progress
+status: done
 ---
 
 # SPEC-629. Move idle tasks off a nearly used-up subscription before it runs out
@@ -78,7 +78,8 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   or a Codex one in either mode, with no unfinished workflow or cut-off reviewer. Any other idle
   session (a goal session of Claude Code or Antigravity, whose goal a restart types again) is
   parked instead when parking is on and its rules allow it (SPEC-512 PRK-002, with a quiet time
-  of one minute or the instance's grace period if shorter), so its resume is placed off the
+  of one minute or the instance's grace period if shorter, asked from the local facts before a
+  park verifies the task's pull requests on GitHub), so its resume is placed off the
   subscription (RBL-004); otherwise it stays, with the reason logged.
 - **RBL-004** A parked task holds no subscription. Its resume is a placement (RBL-002), so it
   resumes off a subscription past the threshold unless it is pinned (RBL-005).
@@ -99,9 +100,12 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   The switch's own lines ("↻ Yulius continues this session on another Claude subscription…")
   stay as for any move. A session parked instead (RBL-003) says so in one line ("⏸ Claude
   a-first is at 96% of its 5-hour window: this idle session is parked and continues on a
-  subscription with room when it is written to next.") and one entry (`parked: true`).
-  `task.rebalanced` is a live event: a person with no page open reads the terminal line and the
-  task's info, and gets no entry until server-side notices (SPEC-624).
+  subscription with room when it is written to next.") and one entry (`parked: true`), and its
+  parked screen says why ("Yulius parked this session because Claude a-first is at 96% of its
+  5-hour window: it continues on a subscription with room."). Terminal lines and
+  `task.rebalanced` reach only the pages open at the time: what lasts is a move's switch in the
+  task's info and a park's parked screen. A person with no page open gets no notification
+  center entry until server-side notices (SPEC-624).
 - **RBL-007** An idle, unpinned task on a subscription past the threshold with no subscription
   below it says so once per episode: one terminal line ("⏸ Claude a-first is at 97% of its
   week and no other Claude subscription has room: this task stays on it and moves when one
@@ -121,7 +125,7 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - [x] Tell each move and each task that cannot move, once
 - [x] Document the rebalance in product, operations, architecture and changes
 - [x] Answer the first review: goal sessions parked, the idle claim, untested guards
-- [ ] Pass the independent review of the exact head
+- [x] Pass the independent review of the exact head
 
 ## Acceptance criteria
 
@@ -177,3 +181,57 @@ changes.
   messages are for what needs a person (SPEC-498). Keys are the center's until SPEC-624 gives
   server notices keys.
 - [Decision 0461](../../docs/decisions/0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md)
+
+## Evidence
+
+Each test below was shown to fail with the line it guards undone, then restored:
+
+- Placement (RBL-002): `rotation::tests::placement_keeps_off_a_subscription_past_the_rebalance_threshold`
+  failed before the ranking (left `early`, right `roomier`). `rebalance::a_new_task_keeps_off_a_subscription_past_the_threshold`
+  fails with the past-threshold sort key removed (left `[a-first]`, right `[b-second]`).
+- Idle move, mid-turn, pin (RBL-003, RBL-005): with the idle-activity guard widened to any activity,
+  `rebalance::a_task_mid_turn_stays_until_its_turn_ends` fails (Working: moved 1). With the pin check
+  disabled, `rebalance::a_pinned_task_stays_on_its_subscription` fails (moved 1, pinned 0). With
+  `pinned_start` replaced by `None`, `rebalance::a_pinned_parked_task_resumes_on_its_pin` fails
+  (left `a-first`). With the launch's pin clear disabled, `rebalance::the_pools_move_ends_a_pin` and
+  `rebalance::a_parked_task_whose_pin_is_full_resumes_where_the_pool_places_it` fail. With the
+  pass's pin clear disabled, `rebalance::the_pass_ends_a_pin_the_task_left` fails.
+- Nothing lost (RBL-003): with `kept_idle` ignored, `rebalance::a_draft_or_a_persons_pause_keeps_an_idle_task`
+  fails. With `SwitchCondition::Idle` replaced by `Any`,
+  `rebalance::a_turn_that_starts_while_the_move_is_prepared_keeps_its_run` fails (it holds
+  `race::Point::SwitchPrepared` and starts a turn).
+- Goal sessions (RBL-003, RBL-004): with `restart_starts_a_turn` ignored,
+  `rebalance::an_idle_goal_session_is_parked_not_restarted` fails (moved 1). With the park reason
+  dropped, it fails on the parked screen. With the local `parkable_now` check before the park
+  removed, `rebalance::a_goal_session_parking_keeps_costs_no_github_reads` fails (a GitHub App is
+  configured; the park lists pull requests).
+- Off switch (RBL-001): with the pass's 98 check moved to 99, `rebalance::at_98_the_rebalance_is_off`
+  fails. `serve::tests::each_harness_has_a_rebalance_threshold_of_50_to_98` checks the variables,
+  the default and the 50–98 range.
+- Told once (RBL-006, RBL-007): with the episode check removed, `rebalance::nothing_has_room_is_told_once`
+  fails (three lines). With `key` and `once` dropped in `notifications.js`, the e2e test
+  "a task moved off a nearly used-up subscription is told once (SPEC-629)" fails.
+- Codex: `codex::a_rebalance_moves_a_finished_codex_goal_task_and_keeps_it_done` moves an idle Codex
+  goal task in the same conversation with `prompt: None` and keeps Done.
+- Store: `a_pin_names_the_chosen_subscription_until_it_is_removed`; the migration list pins schema
+  89 to `0090_task_account_pin.sql` after dev's 0089.
+
+Runs at the final code: `scripts/cargo nextest run -p yulius-domain -p yulius-store -p yulius-app
+-p yulius-contracts -p yulius` passed 4890 tests (24 skipped); `scripts/cargo clippy --locked
+--workspace --all-targets --all-features -- -D warnings` and `cargo doc --workspace -D warnings`
+are clean; `npx e2e run tests/notifications.e2e.ts` passed 3; `scripts/dev quick` passed. Yulius CI
+run af8eaa6a failed `docs` at `ba45e49` (private intra-doc links), fixed in `84fcae6e5`, whose run
+passed. `scripts/dev security` reports Vidoc disabled for this project (not a pass).
+
+Reviews: round 1 (Fable 5.2) at `ba45e49` asked for changes (1 blocker, 3 major, 7 minor, 2 nit),
+answered in `84fcae6e5`, `9df7cc5b5` and the tests after it. Round 2 at `ac6020ef1` asked for changes
+in the park path (2 major, 4 minor, 3 nit), answered in the commits after it.
+
+Not tested here: real Claude Code, Codex or Antigravity subscriptions and their usage readings
+(synthetic usage and the fake agent stand in); the fake agent runs no hooks, so the tests record a
+turn's end in the store as the Stop hook would, and the goal-session test records goal mode on a
+settled prompt-mode session; an Antigravity session, and the workflow and cut-off-reviewer
+branches of `restart_starts_a_turn`, have no test of their own (they reuse the `rest` rule of
+`switch_from`); the one-minute quiet time is tested only for "not before" (the tests run on the
+system clock).
+
