@@ -318,6 +318,16 @@ async fn inherited_gate_receipts_preserve_the_origin_and_leave_finished_tasks_qu
             }
         }
     }
+    // Their turns ended: a finished task mid-turn is decided once it is idle (SPEC-631 SWK-001).
+    for task in ["breaker", "later1", "later2", "later3", "mixed"] {
+        f.h.store
+            .set_activity(
+                &TaskId::parse(task)?,
+                Some(yulius_domain::task::Activity::Waiting),
+                f.h.app.now(),
+            )
+            .await?;
+    }
     assert_eq!(f.h.app.tell_staging_outcomes().await, 0);
     assert!(
         f.h.store.untold_staging_requests().await?.is_empty(),
