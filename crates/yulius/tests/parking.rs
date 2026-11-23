@@ -1363,10 +1363,11 @@ fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> Test
     Ok(())
 }
 
-/// PRK-003 (#1605): a second idle-park pass that comes after the parking run's end took the
-/// park's intent, while the task still reads Running, parks nothing. A message in that interval
-/// is not typed into the ending session, and the next one, once the task is Parked, resumes it
-/// in the same conversation, once.
+/// PRK-003 (#1605): a second idle-park pass whose process probe saw the session alive, and that
+/// gets the launch lock only after the first park's run end took the park's intent (the task
+/// still reads Running), parks nothing. A message in that interval is refused as parking, never
+/// typed into the ending session; the next one, once the task is Parked, resumes it in the same
+/// conversation, once.
 #[test]
 fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message() -> TestResult {
     let (_dir, data) = data_dir()?;
@@ -1374,20 +1375,46 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
     rt.block_on(async {
         let app = app(&data, 8, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
-        let (taken, release) = pause_watch_or_queue(Point::RunEndTaken, &id);
         past_the_grace(&app, &id).await?;
-        assert_eq!(app.park_idle_sessions_now().await, 1);
+        // The first pass decides to park and holds the launch lock; its session still runs.
+        let (decided, shut_down) = pause_watch_or_queue(Point::ParkDecided, &id);
+        let first = tokio::spawn({
+            let app = app.clone();
+            async move { app.park_idle_sessions_now().await }
+        });
+        tokio::time::timeout(Duration::from_secs(30), decided.notified()).await?;
+        // The second pass probes the live session, then waits for the launch lock.
+        let probed = Arc::new(tokio::sync::Notify::new());
+        {
+            let probed = probed.clone();
+            yulius_app::race::on(Point::ParkProbed, Path::new(id.as_str()), move || {
+                probed.notify_one();
+            });
+        }
+        let (prepared, claim) = pause_watch_or_queue(Point::ParkPrepared, &id);
+        let (taken, record) = pause_watch_or_queue(Point::RunEndTaken, &id);
+        let second = tokio::spawn({
+            let app = app.clone();
+            async move { app.park_idle_sessions_now().await }
+        });
+        tokio::time::timeout(Duration::from_secs(30), probed.notified()).await?;
+        // The first park ends the session; its run's end takes the park's intent while the
+        // second pass reaches its claim.
+        shut_down.notify_one();
+        assert_eq!(first.await?, 1);
         tokio::time::timeout(Duration::from_secs(30), taken.notified()).await?;
+        tokio::time::timeout(Duration::from_secs(30), prepared.notified()).await?;
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
-        let second = app.park_idle_sessions_now().await;
+        claim.notify_one();
+        let again = tokio::time::timeout(Duration::from_secs(30), second).await??;
         let early = app
             .tool_task_message(
                 &caller,
                 &json!({"number": 1, "text": "Early: answer with an echo"}),
             )
             .await;
-        release.notify_one();
-        assert_eq!(second, 0, "a second pass parked the ending run again");
+        record.notify_one();
+        assert_eq!(again, 0, "a second pass parked the ending run again");
         assert!(
             matches!(&early, Err(yulius_app::error::AppError::Conflict(why))
                 if why.contains("is parking its idle session")),
@@ -1397,13 +1424,13 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
             status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
         })
         .await?;
-        let again = app
+        let resumed = app
             .tool_task_message(
                 &caller,
                 &json!({"number": 1, "text": "Late: answer with an echo"}),
             )
             .await?;
-        assert_eq!(again["delivered"], "resumed");
+        assert_eq!(resumed["delivered"], "resumed");
         wait_for("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Late: answer with an echo")
         })

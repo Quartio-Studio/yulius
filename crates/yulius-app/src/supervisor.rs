@@ -5890,6 +5890,7 @@ impl App {
         if self.background_or_wait_now(task_id).await != Some(false) {
             return Ok(false);
         }
+        crate::race::reached(crate::race::Point::ParkProbed, Path::new(task_id.as_str()));
         let _guard = self.supervisor.launch.lock().await;
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
