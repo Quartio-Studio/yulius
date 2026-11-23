@@ -190,15 +190,21 @@ impl WatchStore for SqliteStore {
         .await
     }
 
-    async fn update_watch(&self, watch: &WatchRecord, read_at: Timestamp) -> AppResult<bool> {
+    async fn update_watch(
+        &self,
+        watch: &WatchRecord,
+        since: Option<Timestamp>,
+        read_at: Timestamp,
+    ) -> AppResult<bool> {
         let r = watch.clone();
+        let since = since.map(|t| t.0);
         let secrets = secrets_json(&r.secrets)?;
         self.call(move |c| {
             let changed = c
                 .execute(
                     "UPDATE watches SET script = ?1, every_seconds = ?2, cron = ?3,
                          utc_offset_minutes = ?4, expiry = ?5, timeout_seconds = ?6,
-                         secrets = ?7, updated_at = ?8, since = ?9
+                         secrets = ?7, updated_at = ?8, since = COALESCE(?9, since)
                      WHERE id = ?10 AND updated_at = ?11",
                     params![
                         r.script,
@@ -209,7 +215,7 @@ impl WatchStore for SqliteStore {
                         r.timeout_seconds,
                         secrets,
                         r.updated_at.0,
-                        r.since.0,
+                        since,
                         r.id,
                         read_at.0,
                     ],
@@ -501,8 +507,11 @@ mod tests {
         edited.script = "echo changed".into();
         edited.name = "renamed".into();
         edited.updated_at = Timestamp(20);
-        assert!(store.update_watch(&edited, Timestamp(10)).await?);
-        assert!(!store.update_watch(&edited, Timestamp(10)).await?, "stale");
+        assert!(store.update_watch(&edited, None, Timestamp(10)).await?);
+        assert!(
+            !store.update_watch(&edited, None, Timestamp(10)).await?,
+            "stale"
+        );
         let kept = store.watch("wt_1").await?.ok_or("gone")?;
         assert_eq!(
             (kept.name.as_str(), kept.script.as_str()),

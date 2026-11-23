@@ -48,6 +48,14 @@ export function mountWatchesPage(ctx, sandbox) {
   });
   const host = h('div');
   frame.body.append(host);
+  // Folds opened by the reader stay open across the reloads a run's events cause (review round 1).
+  const openFolds = new Set();
+  const fold = (w, kind, label, text) => {
+    const key = `${w.id}:${kind}`;
+    const el = h('details', { class: 'watch-output', open: openFolds.has(key) }, h('summary', null, label), h('pre', { class: 'mono' }, text));
+    el.addEventListener('toggle', () => { if (el.open) openFolds.add(key); else openFolds.delete(key); });
+    return el;
+  };
 
   const reload = loader(host, 'the watches', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/watches`), (list) => {
     const items = Array.isArray(list) ? list : [];
@@ -73,8 +81,8 @@ export function mountWatchesPage(ctx, sandbox) {
     const extra = [meta];
     if (w.ended_reason) extra.push(h('div', { class: 'item-meta' }, `Ended: ${w.ended_reason}`));
     if (w.last_failure) extra.push(h('div', { class: 'field-error' }, `Last run failed: ${w.last_failure}${w.failures > 1 ? ` (${w.failures} in a row)` : ''}`));
-    if (w.last_output) extra.push(h('details', { class: 'watch-output' }, h('summary', null, 'Last output'), h('pre', { class: 'mono' }, w.last_output)));
-    if (w.last_errors) extra.push(h('details', { class: 'watch-output' }, h('summary', null, 'Error output'), h('pre', { class: 'mono' }, w.last_errors)));
+    if (w.last_output) extra.push(fold(w, 'output', 'Last output', w.last_output));
+    if (w.last_errors) extra.push(fold(w, 'errors', 'Error output', w.last_errors));
     const pausable = w.state === 'active' || w.state === 'running';
     const canToggle = pausable ? (w.can_edit || w.can_remove) : w.can_edit;
     return itemCard({
@@ -164,7 +172,7 @@ export function mountWatchesPage(ctx, sandbox) {
   }
 
   const off = ctx.store.on('watches', (event) => {
-    if (!event || !event.sandbox_id || event.sandbox_id === sandbox.id) reload();
+    if (!event || !event.sandbox_id || event.sandbox_id === sandbox.id) reload({ quiet: true });
   });
   return { el: frame.el, key: `watches:${sandbox.id}`, destroy: off };
 }

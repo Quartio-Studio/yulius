@@ -347,6 +347,12 @@ impl App {
         self.watches
             .cancels()
             .insert(watch.id.clone(), (watch.sandbox_id.clone(), cancel));
+        // Removed between the claim and the line above: its cancel found no run, so it does not
+        // run (review round 1).
+        if matches!(self.deps.store.watch(&watch.id).await, Ok(None)) {
+            self.watches.cancels().remove(&watch.id);
+            return false;
+        }
         self.publish_watches(&watch.sandbox_id);
         let bounds = self.config.watches.bounds;
         let result = match self.deps.store.sandbox(&watch.sandbox_id).await {
@@ -384,6 +390,18 @@ impl App {
                 sandbox_id: sandbox.as_str().to_owned(),
             },
         );
+    }
+
+    /// Removes a watch's own files at `path` (its state): through the isolation, which removes
+    /// files the sandbox's mapped ids wrote, when there is one; a missing path is fine.
+    pub(crate) async fn remove_watch_files(&self, path: &std::path::Path) -> Result<(), String> {
+        if std::fs::symlink_metadata(path).is_err() {
+            return Ok(());
+        }
+        if let Some(isolation) = self.isolation.get() {
+            return isolation.remove_owned_tree(path).await;
+        }
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())
     }
 
     /// Cancels the going run of watch `id`, if any (it was removed).
@@ -588,8 +606,16 @@ impl App {
                 body.title,
             )
         };
+        let key = notice.key.clone();
         match self.post_notice(notice).await {
             Ok(_) => {
+                // Removed while this post was on its way: its notice goes too.
+                if matches!(self.deps.store.watch(&watch.id).await, Ok(None)) {
+                    let _ = self
+                        .remove_notice(Some(&watch.sandbox_id), Some(&watch.owner), &key)
+                        .await;
+                    return Ok(());
+                }
                 if report {
                     let _ = self.deps.store.watch_posted(&watch.id, self.now()).await;
                 }

@@ -708,8 +708,8 @@ watching, steering and unblocking.
   secrets it names, through the egress proxy. Posts that could not be stored are retried, and
   watches survive restarts and updates. The project's Watches page lists them with their state,
   next and last run and last output, with Run now, Pause/Resume, Edit and Remove; the Superagent
-  and a person's own agent manage them with `watch_create`, `watches_list`, `watch_run`,
-  `watch_pause` and `watch_remove`. Only a watch's owner edits, runs or resumes it; a project
+  and a person's own agent manage them with `watch_create`, `watches_list`, `watch_update`,
+  `watch_run`, `watch_pause` and `watch_remove`. Only a watch's owner edits, runs or resumes it; a project
   administrator may also pause or remove it.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A

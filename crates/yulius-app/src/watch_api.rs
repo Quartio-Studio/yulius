@@ -61,13 +61,8 @@ impl App {
         sid: &SandboxId,
         action: Action,
     ) -> AppResult<(SandboxRecord, AccessLevel)> {
-        let (sandbox, level) = self.require_for(ctx, sid, action).await?;
-        if ctx.scope().is_some_and(|scope| !scope.allows(action)) {
-            return Err(AppError::Forbidden(
-                "this token may only read the project".into(),
-            ));
-        }
-        Ok((sandbox, level))
+        // `require_for` refuses a removed project and a token's scope too.
+        self.require_for(ctx, sid, action).await
     }
 
     /// Watch `id` with its project, when the caller may see it (`NotFound` otherwise).
@@ -80,9 +75,6 @@ impl App {
         let (sandbox, level) = self
             .watch_project(ctx, &watch.sandbox_id, Action::View)
             .await?;
-        if sandbox.removed_at.is_some() {
-            return Err(AppError::NotFound);
-        }
         Ok((watch, sandbox, level))
     }
 
@@ -271,7 +263,7 @@ impl App {
         if !self
             .deps
             .store
-            .update_watch(&edited, watch.updated_at)
+            .update_watch(&edited, schedule_changed.then_some(now), watch.updated_at)
             .await?
         {
             return Err(AppError::Conflict(
@@ -304,15 +296,18 @@ impl App {
         if watch.state.running.is_some() {
             return Err(AppError::Conflict("a run of this watch is going".into()));
         }
+        // Within the instance's bound, never queued: a press that finds every run taken is
+        // refused, so presses cannot pile up runs behind it (review round 1).
+        let Ok(permit) = Arc::clone(&self.watches.permits).try_acquire_owned() else {
+            return Err(AppError::Conflict(
+                "the instance runs as many watches as it may at once; try again in a moment".into(),
+            ));
+        };
         self.audit_watch(ctx, &watch, "watch.run").await;
         let app = Arc::clone(self);
         let run = watch.id.clone();
-        let permits = Arc::clone(&self.watches.permits);
         tokio::spawn(async move {
-            // Within the instance's bound, after the runs already going.
-            let Ok(_permit) = permits.acquire_owned().await else {
-                return;
-            };
+            let _permit = permit;
             app.watch_run(&run, true).await;
         });
         let pending = self.watch_pending_counts().await?;
@@ -339,6 +334,11 @@ impl App {
             } else {
                 "only its owner resumes a watch".into()
             }));
+        }
+        // Resuming a watch that is neither paused nor ended changes nothing: its schedule keeps
+        // its anchor (review round 1).
+        if !paused && !watch.paused && watch.ended_reason.is_none() {
+            return self.watch_for(ctx, id).await;
         }
         if !self
             .deps
@@ -378,6 +378,15 @@ impl App {
             return Err(AppError::NotFound);
         }
         self.watch_cancel(&watch.id, "the watch was removed");
+        // Its own files go with it: they count against the project's watch files (review
+        // round 1).
+        let state = self
+            .watch_base_dir(&watch.sandbox_id)
+            .join("state")
+            .join(&watch.id);
+        if let Err(error) = self.remove_watch_files(&state).await {
+            tracing::warn!(watch = %watch.id, error = %error, "a removed watch's state stays");
+        }
         if let Ok(name) = WatchName::parse(&watch.name) {
             for key in [name.report_key(), name.warning_key()] {
                 if let Ok(key) = NoticeKey::parse(&key) {

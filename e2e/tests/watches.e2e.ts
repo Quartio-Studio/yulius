@@ -40,9 +40,25 @@ test('the Watches page lists watches with their state and output, and manages th
   await screen.getByRole('button', 'Run now').first().click();
   await expect(screen.getByText('ran now (72)')).toBeAttached();
 
+  // An open fold stays open while the page hears of runs.
+  await browser.evaluate(() => {
+    const card = [...document.querySelectorAll('.item-card')].find((c) => c.querySelector('.item-name')?.textContent === 'release-check');
+    (card!.querySelector('details.watch-output') as HTMLDetailsElement).open = true;
+  });
+  await screen.getByRole('button', 'Run now').first().click();
+  await expect(screen.getByText('ran now (73)')).toBeVisible();
+
   // Pause and resume.
   await screen.getByRole('button', 'Resume').click();
   await expect.poll(async () => (await cardOf(browser, 'merge-queue-targets'))!.badges).toEqual(['Active']);
+  const pause = (await cardOf(browser, 'release-check'))!.buttons.find((b) => b.label === 'Pause');
+  expect(pause!.disabled).toBe(false);
+  await browser.evaluate(() => {
+    const card = [...document.querySelectorAll('.item-card')].find((c) => c.querySelector('.item-name')?.textContent === 'release-check');
+    ([...card!.querySelectorAll('.item-controls button')].find((b) => b.textContent === 'Pause') as HTMLButtonElement).click();
+  });
+  await expect.poll(async () => (await cardOf(browser, 'release-check'))!.badges).toEqual(['Paused']);
+  expect((await cardOf(browser, 'release-check'))!.buttons.map((b) => b.label)).toContain('Resume');
 
   // New watch.
   await screen.getByRole('button', 'New watch').click();

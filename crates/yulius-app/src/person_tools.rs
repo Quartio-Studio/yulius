@@ -592,9 +592,9 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "watch_update",
-            "Change one of the person's watches: its script, schedule, expiry, timeout or secrets (its name never changes). Give the whole definition.",
+            "Change one of the person's watches: its script, schedule (every or cron), expiry, timeout or secrets (its name never changes). Fields you leave out keep their values.",
             update_fields,
-            &["watch", "script"],
+            &["watch"],
         ),
         tool(
             "watch_run",
@@ -621,11 +621,30 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
 /// is the `name` argument.
 fn watch_input(
     args: &Value,
-    skip: &[&str],
+    stored: Option<&crate::ports::store_ext::WatchRecord>,
 ) -> AppResult<yulius_contracts::api::watches::WatchInput> {
     let mut fields = args.as_object().cloned().unwrap_or_default();
-    for key in skip.iter().filter(|k| **k != "name") {
-        fields.remove(*key);
+    fields.remove("watch");
+    // An update keeps what it is not given (review round 1): the script, the schedule (unless
+    // `every` or `cron` is given), the offset, the expiry, the timeout and the secrets.
+    if let Some(watch) = stored {
+        let mut keep = |key: &str, value: Value| {
+            if !fields.contains_key(key) {
+                fields.insert(key.to_owned(), value);
+            }
+        };
+        keep("script", json!(watch.script));
+        keep("utc_offset_minutes", json!(watch.utc_offset_minutes));
+        keep("expiry", json!(watch.expiry));
+        keep("timeout_seconds", json!(watch.timeout_seconds));
+        keep("secrets", json!(watch.secrets));
+        if !fields.contains_key("every") && !fields.contains_key("cron") {
+            fields.insert("cron".into(), json!(watch.cron));
+            fields.insert(
+                "every".into(),
+                json!(watch.every_seconds.map(yulius_domain::watch::short)),
+            );
+        }
     }
     serde_json::from_value(Value::Object(fields))
         .map_err(|err| AppError::Invalid(format!("invalid arguments: {err}")))
@@ -853,12 +872,18 @@ impl App {
             }
             "watches_list" => Ok(json!({ "watches": self.watches_for(ctx, sid).await? })),
             "watch_create" => {
-                let input = watch_input(args, &["name"])?;
+                let input = watch_input(args, None)?;
                 record(&self.watch_create_for(ctx, sid, input, "agent").await?)
             }
             "watch_update" => {
                 let id = self.watch_named(sandbox, args).await?;
-                let input = watch_input(args, &["watch"])?;
+                let stored = self
+                    .deps
+                    .store
+                    .watch(&id)
+                    .await?
+                    .ok_or(AppError::NotFound)?;
+                let input = watch_input(args, Some(&stored))?;
                 record(&self.watch_update_for(ctx, &id, input).await?)
             }
             "watch_run" => {
@@ -867,7 +892,15 @@ impl App {
             }
             "watch_pause" => {
                 let id = self.watch_named(sandbox, args).await?;
-                let paused = args.get("paused").and_then(Value::as_bool).unwrap_or(true);
+                let paused = match args.get("paused") {
+                    None | Some(Value::Null) => true,
+                    Some(Value::Bool(paused)) => *paused,
+                    Some(_) => {
+                        return Err(AppError::Invalid(
+                            "`paused` is true (pause) or false (resume)".into(),
+                        ));
+                    }
+                };
                 record(&self.watch_set_paused_for(ctx, &id, paused).await?)
             }
             "watch_remove" => {

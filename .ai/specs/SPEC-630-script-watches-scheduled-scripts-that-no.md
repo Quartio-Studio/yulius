@@ -156,7 +156,8 @@ posting to people other than the owner.
   - Run now runs it once at once, also when it is paused or ended, and posts as usual.
   - Each change is audited.
 - **WCH-012 The Superagent manages watches** (second pull request): MCP tools `watch_create`,
-  `watches_list`, `watch_run`, `watch_pause` (and resume) and `watch_remove`, for a person's
+  `watches_list`, `watch_update` (fields left out keep their values), `watch_run`, `watch_pause`
+  (and resume) and `watch_remove`, for a person's
   Superagent, acting as that person.
   - `superagent_check_set`'s description says to use a watch when a script can decide the check.
   - The docs show how to move "#479 merge-queue targets" onto a watch.
