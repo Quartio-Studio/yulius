@@ -343,6 +343,9 @@ pub struct TaskRuntime {
     pub last_input_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
     pub proactive_switch: AtomicBool,
+    /// The subscription past its rebalance threshold this idle task stays on because no other
+    /// has room, and when that episode was told (SPEC-629 RBL-007): told once per episode.
+    pub(crate) rebalance_no_room: Mutex<Option<(AccountId, Timestamp)>>,
     /// A review round's reviewer a usage limit cut off, not yet resumed: a relaunch tells the
     /// session to resume it (SPEC-493 RLM-002).
     pub(crate) cut_off_reviewer: tokio::sync::Mutex<Option<crate::review::CutOffReviewer>>,
@@ -1045,6 +1048,7 @@ impl TaskRuntime {
             watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
+            rebalance_no_room: Mutex::new(None),
             cut_off_reviewer: tokio::sync::Mutex::new(None),
             reviewer_move: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
@@ -1286,7 +1290,7 @@ impl RunStart {
 
     /// This start for `account`, as the queue keeps it for a task whose start has to wait
     /// (SPEC-483 QST-001).
-    fn kept(&self, account: Option<&AccountId>) -> QueuedStart {
+    pub(crate) fn kept(&self, account: Option<&AccountId>) -> QueuedStart {
         let kind = match self {
             Self::Fresh { .. } => QueuedStartKind::Fresh,
             Self::Resume { .. } => QueuedStartKind::Resume,
@@ -1334,7 +1338,10 @@ pub(crate) enum SwitchCondition<'a> {
     Any,
     Status(TaskStatus),
     Paused(&'a PauseRecord),
-    IdleCodex {
+    /// An idle session moved with nothing typed (a Codex move, SPEC-611; a rebalance move,
+    /// SPEC-629): claimed only while its activity, update time and live attempt are still the
+    /// ones read.
+    Idle {
         from: (Activity, Timestamp),
         attempt: AttemptId,
     },
@@ -2395,6 +2402,9 @@ impl App {
         // A chained task starts where its predecessor ended, until that is merged (TSK-012).
         let base = if let Some(branch) = self.chain_base(task).await {
             branch
+        } else if let Some(commit) = self.fork_base(task).await? {
+            // A fork starts at the source's commit it recorded (SPEC-628 FRK-005).
+            commit
         } else if self
             .deps
             .git
@@ -2908,6 +2918,8 @@ impl App {
         let mut task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
+        // A fork's first launch continues a copy of its source's session (SPEC-628 FRK-006).
+        let fork = self.fork_to_launch(&task, &worktree).await?;
         let harness = task.harness;
         let placement = if let Some(crate::capacity::ContinuationAdmission::Named {
             account,
@@ -3064,77 +3076,92 @@ impl App {
             }
         };
         let told = !unfinished.is_empty() || reviewer.is_some();
-        let (mode, launch_kind) = match (&start, &previous) {
-            (RunStart::Resume { .. } | RunStart::GoalResume { .. }, Some(prev)) => (
+        let (mode, launch_kind) = match (&start, &previous, &fork) {
+            // Its opening message is the first turn; a goal is set after it, as on a resume, and
+            // the transcript is read from the run's start, past the source's copied history.
+            (_, None, Some(fork)) => (
                 SessionMode::Resume {
-                    session_id: prev.session_id.clone(),
-                    prompt: resumes(start.prompt()),
+                    session_id: fork.source_session_id.clone(),
+                    prompt: Some(crate::forks::fork_opening(&task, fork)),
                     continue_interrupted: false,
+                    fork: Some(self.fork_session(harness)),
                 },
                 LaunchKind::Resume,
             ),
-            (RunStart::AfterLimit, Some(prev)) => (
-                SessionMode::Resume {
-                    session_id: prev.session_id.clone(),
-                    prompt: told.then(|| resumes(None)).flatten(),
-                    continue_interrupted: !told,
-                },
-                LaunchKind::Resume,
-            ),
-            // Without a recorded session there is nothing to resume: the task starts afresh.
-            (
-                RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
-                None,
-            )
-            | (RunStart::Fresh { .. } | RunStart::GoalFresh { .. }, _) => {
-                let prompt = start.prompt().map(str::to_owned);
-                // In goal mode the task starts with its `/goal` as the launch prompt: the whole
-                // request, each attached file at its place, and the definition of done in one
-                // first message, with nothing typed (SPEC-011, SPEC-117, SPEC-212). Otherwise the
-                // request is the first message: images are pasted into it and other files
-                // mentioned, so Claude Code attaches them natively (SPEC-025, SPEC-030).
-                use yulius_domain::request::{Opening, Request};
-                let prompt = match prompt {
-                    Some(prompt) => Some(prompt),
-                    None if first_message_only && task.mode == TaskMode::Goal => {
-                        match self.write_task_request(&sandbox, &task, &home).await {
-                            Ok(goal) => Some(goal.launch),
-                            Err(err) => {
-                                tracing::error!(task = %task.id, error = %err, "could not write the task request");
-                                Some(Request::parse(&task.prompt).first_message())
+            (start, previous, _) => match (start, previous) {
+                (RunStart::Resume { .. } | RunStart::GoalResume { .. }, Some(prev)) => (
+                    SessionMode::Resume {
+                        session_id: prev.session_id.clone(),
+                        prompt: resumes(start.prompt()),
+                        continue_interrupted: false,
+                        fork: None,
+                    },
+                    LaunchKind::Resume,
+                ),
+                (RunStart::AfterLimit, Some(prev)) => (
+                    SessionMode::Resume {
+                        session_id: prev.session_id.clone(),
+                        prompt: told.then(|| resumes(None)).flatten(),
+                        continue_interrupted: !told,
+                        fork: None,
+                    },
+                    LaunchKind::Resume,
+                ),
+                // Without a recorded session there is nothing to resume: the task starts afresh.
+                (
+                    RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
+                    None,
+                )
+                | (RunStart::Fresh { .. } | RunStart::GoalFresh { .. }, _) => {
+                    let prompt = start.prompt().map(str::to_owned);
+                    // In goal mode the task starts with its `/goal` as the launch prompt: the whole
+                    // request, each attached file at its place, and the definition of done in one
+                    // first message, with nothing typed (SPEC-011, SPEC-117, SPEC-212). Otherwise the
+                    // request is the first message: images are pasted into it and other files
+                    // mentioned, so Claude Code attaches them natively (SPEC-025, SPEC-030).
+                    use yulius_domain::request::{Opening, Request};
+                    let prompt = match prompt {
+                        Some(prompt) => Some(prompt),
+                        None if first_message_only && task.mode == TaskMode::Goal => {
+                            match self.write_task_request(&sandbox, &task, &home).await {
+                                Ok(goal) => Some(goal.launch),
+                                Err(err) => {
+                                    tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                                    Some(Request::parse(&task.prompt).first_message())
+                                }
                             }
                         }
-                    }
-                    // Codex attaches no pasted image: each file is mentioned where it sits.
-                    None if first_message_only => {
-                        Some(Request::parse(&task.prompt).first_message())
-                    }
-                    None if goal_mode => {
-                        match self.write_task_request(&sandbox, &task, &home).await {
-                            Ok(goal) => Some(format!("{GOAL_COMMAND}{}", goal.launch)),
-                            Err(err) => {
-                                tracing::error!(task = %task.id, error = %err, "could not write the task request");
-                                request_unwritten = true;
+                        // Codex attaches no pasted image: each file is mentioned where it sits.
+                        None if first_message_only => {
+                            Some(Request::parse(&task.prompt).first_message())
+                        }
+                        None if goal_mode => {
+                            match self.write_task_request(&sandbox, &task, &home).await {
+                                Ok(goal) => Some(format!("{GOAL_COMMAND}{}", goal.launch)),
+                                Err(err) => {
+                                    tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                                    request_unwritten = true;
+                                    None
+                                }
+                            }
+                        }
+                        None => match Request::parse(&task.prompt).opening() {
+                            Opening::Prompt(prompt) => Some(prompt),
+                            Opening::Typed { pastes } => {
+                                typed_opening = Some(pastes);
                                 None
                             }
-                        }
-                    }
-                    None => match Request::parse(&task.prompt).opening() {
-                        Opening::Prompt(prompt) => Some(prompt),
-                        Opening::Typed { pastes } => {
-                            typed_opening = Some(pastes);
-                            None
-                        }
-                    },
-                };
-                (
-                    SessionMode::New {
-                        session_id: Some(self.deps.crypto.new_id()),
-                        prompt,
-                    },
-                    LaunchKind::New,
-                )
-            }
+                        },
+                    };
+                    (
+                        SessionMode::New {
+                            session_id: Some(self.deps.crypto.new_id()),
+                            prompt,
+                        },
+                        LaunchKind::New,
+                    )
+                }
+            },
         };
         if task.mode == TaskMode::Goal {
             *self
@@ -3184,11 +3211,14 @@ impl App {
         // also when the run opens with the prompt that resumes its workflows (SPEC-486); a Codex
         // rollout has no step-back (SPEC-503).
         let stepped_back = match (&start, &mode) {
-            (RunStart::AfterLimit, SessionMode::Resume { session_id, .. })
-                if !first_message_only =>
-            {
-                Some(session_id.clone())
-            }
+            (
+                RunStart::AfterLimit,
+                SessionMode::Resume {
+                    session_id,
+                    fork: None,
+                    ..
+                },
+            ) if !first_message_only => Some(session_id.clone()),
             _ => None,
         };
         let attempt_id =
@@ -3441,6 +3471,11 @@ impl App {
         };
         store.insert_attempt(&attempt).await?;
         crate::race::reached(crate::race::Point::RunRecorded, Path::new(task.id.as_str()));
+        // A pin ends once the task runs on another subscription, however it was placed there
+        // (SPEC-629 RBL-005); a person's move pins the new one after this.
+        if matches!(store.task_pin(&task.id).await, Ok(Some(pin)) if pin != account.id) {
+            self.pin_task(&task.id, None).await;
+        }
         // Removed since it was chosen (SPEC-447 MOV-003): the removal looked for runs on it before
         // this one was recorded, so this launch never starts on it and chooses again.
         if store.account(&account.id).await?.is_none() {
@@ -5819,6 +5854,20 @@ impl App {
         task_id: &TaskId,
         rule: crate::parking::ParkRule,
     ) -> AppResult<bool> {
+        self.park_task_because(task_id, rule, None).await
+    }
+
+    /// [`Self::park_task_now`]; the parked screen's notice says `because` instead of how long
+    /// the session was idle (a rebalance off a nearly used-up subscription, SPEC-629 RBL-006).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn park_task_because(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        rule: crate::parking::ParkRule,
+        because: Option<&str>,
+    ) -> AppResult<bool> {
         let Some(candidate) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
@@ -5903,8 +5952,13 @@ impl App {
             {
                 return Ok(false);
             }
-            crate::parking::save_parked_screen(&runtime.hub, Path::new(&run.run_dir), quiet_ms)
-                .map_err(AppError::internal)?;
+            crate::parking::save_parked_screen(
+                &runtime.hub,
+                Path::new(&run.run_dir),
+                quiet_ms,
+                because,
+            )
+            .map_err(AppError::internal)?;
             *intent = Some(EndIntent::Park);
             // Under the intent's lock: the run's end that takes the intent finds it.
             if let Ok(mut kept) = runtime.parked_activity.lock() {
@@ -6051,10 +6105,12 @@ impl App {
                 activity,
                 goal_unfinished,
             });
+        // A pinned task resumes on its pin while the pin can take it (SPEC-629 RBL-005).
+        let pinned = self.pinned_start(task).await;
         self.start_run_if(
             &task.id,
             RunStart::Resume { prompt },
-            None,
+            pinned,
             StartCondition::Parked(task.resume_attempt_id.clone()),
             rest,
             None,
@@ -6461,7 +6517,7 @@ impl App {
             SwitchCondition::Any => (None, None),
             SwitchCondition::Status(status) => (Some(*status), None),
             SwitchCondition::Paused(pause) => (Some(TaskStatus::WaitingCapacity), Some(*pause)),
-            SwitchCondition::IdleCodex { .. } => (Some(TaskStatus::Running), None),
+            SwitchCondition::Idle { .. } => (Some(TaskStatus::Running), None),
         };
         if expected.is_some_and(|status| status != task.status) {
             return Err(AppError::Conflict(format!(
@@ -6470,8 +6526,8 @@ impl App {
             )));
         }
         let attempt = store.live_attempt(task_id).await?;
-        let idle_codex = match &condition {
-            SwitchCondition::IdleCodex { from, attempt } => Some((*from, attempt)),
+        let idle_claim = match &condition {
+            SwitchCondition::Idle { from, attempt } => Some((*from, attempt)),
             _ if task.harness == Harness::Codex
                 && task.status == TaskStatus::Running
                 && matches!(start, RunStart::Resume { prompt: None }) =>
@@ -6533,7 +6589,7 @@ impl App {
         // A saved start has no live run to switch out. Keep its pause until the launch lock
         // claims that exact pause, even if Stop and Continue created a new one during preflight.
         if pause.is_none() {
-            let claimed = if let Some((from, attempt)) = idle_codex {
+            let claimed = if let Some((from, attempt)) = idle_claim {
                 let runtime = self.runtime(task_id);
                 let _order = runtime.turn_order.lock().await;
                 store
@@ -9523,6 +9579,7 @@ mod tests {
             session_id: "s".into(),
             prompt: prompt.map(str::to_owned),
             continue_interrupted: false,
+            fork: None,
         };
         assert!(sets_goal(&new(Some(
             "/goal Everything requested in /t/1.md is done."

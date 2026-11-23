@@ -1034,7 +1034,7 @@ sequenceDiagram
 
 ## Moving a task off its subscription
 
-A task leaves its subscription for three reasons besides the pool's own rotation
+A task leaves its subscription for four reasons besides the pool's own rotation
 ([SPEC-447](../.ai/specs/SPEC-447-subscriptions-switch-by-hand-delete-one.md),
 [decision 0288](decisions/0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)):
 a person chooses another from the task (`POST /api/tasks/{tid}/switch`), a person removes the
@@ -1046,11 +1046,39 @@ the launch pauses the task. A removal deletes the row first, so `choose_account`
 stored accounts, can never pick it again, then ends every run on it. `App::tell_left` writes the
 one-line notice and, with nothing usable left, the task's Needs you, which `end_pause` ends.
 
+The fourth is the rebalance pass ([SPEC-629](../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md),
+[decision 0461](decisions/0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md),
+`rebalance.rs`): every 2 minutes (`start_rebalance_loop`, the first pass 3 minutes after start)
+`App::rebalance_now` looks at the running tasks whose activity is idle (`waiting`, `done`) and
+whose live run is on a subscription past its harness's rebalance threshold
+(`AppConfig::rebalance`, `YULIUS_REBALANCE_PERCENT_<HARNESS>`, carried as
+`RotationInput::rebalance`). `rebalance::idle_move` names the best candidate below the threshold
+(placement ranks every candidate past it after every one below it, `rotation::past_rebalance`)
+or says nothing has room. A task running on its pin (`tasks.pinned_account_id`, written by a
+person's `switch` or `continue` with an `account_id`, cleared by one without and by the
+subscription's removal) is not moved, and a parked task resumes on its pin while it can take it
+(`App::pinned_start`). Before a move, `agent_cli::kept_idle` asks the facts a restart for a newer
+Claude Code asks (a keystroke, a draft, a person's pause, an update, background work, Claude
+Code's queue, an unread prompt, a limit it waits at, a first message still due). Only a session
+that reopens at its prompt (prompt mode, or Codex, with no unfinished workflow or cut-off
+reviewer) is moved: `switch_from` with `RunStart::Resume { prompt: None }` and
+`SwitchCondition::Idle`, which claims the activity, update time and run the pass read, with the
+reason `rebalance: <subscription> <how full it is>`. Another idle session (a goal session, whose
+goal a restart types again) goes to `park_task_now` with `ParkRule::Rebalance`, the grace
+period's rule with a one-minute quiet time. A move that leaves the task running on the target
+writes one terminal line and posts the task's owner a notice keyed `rebalance:<task id>`
+(SPEC-624; also for a park or a wait without room), which replaces the task's earlier one. A task with nowhere to go is told once per
+episode (`TaskRuntime::rebalance_no_room`, in memory). Every launch on another subscription than
+the pin ends the pin.
+
 ```mermaid
 flowchart LR
   P["Person: Run #N on…"] -->|"switch_task (Trigger::Manual, < 100 %)"| M["move_task"]
   D["Person: Remove"] -->|"delete row, close Done sessions"| M
   R["Claude refuses (AccessLost)"] -->|"rotate the interrupted task"| M
+  B["Rebalance pass (every 2 min)"] -->|"reopens idle: switch_from, SwitchCondition::Idle"| RUN
+  B -->|"goal session: park_task_now"| PK["Parked; resume placed elsewhere"]
+  B -->|"nothing below the threshold"| N["Told once: terminal, notice rebalance:task"]
   R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]
@@ -2335,6 +2363,38 @@ flowchart LR
     X[queued, running, ended] -->|PUT start| N[409: keeps its start]
 ```
 
+### Forked tasks
+
+Fork (`yulius-app/src/forks.rs`, `POST /api/tasks/{tid}/fork`, `task_fork`,
+[SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md),
+[decision 0463](decisions/0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md)) creates a
+task of the same project and harness that continues a copy of another task's conversation. The
+source is only read. Its id, number, title, branch, the branch's commit and its latest session
+become a `task_forks` row (migration 0092). For Claude Code, the transcript's complete lines and
+side files are copied to `<data>/transcripts/<fork id>/`. The fork's steps are a copy of the
+source's. The fork is inserted `prepared`, which the queue never starts; once the row, the copy
+and the steps are written, one store step moves it to `queued` with its start and the
+subscription the person named (`queued_start`), so a queue wait keeps that choice. Its stage
+timeline therefore starts with a `prepared` span of a few milliseconds.
+`ensure_worktree` starts the fork's branch at the recorded commit. While the fork has no session
+of its own, `launch_attempt` places the stored copy in the fork worktree's project folder, with
+`cwd` rewritten, and launches `SessionMode::Resume { fork }`. For Claude Code that is
+`--resume <source> --fork-session --session-id <new>`; for Codex, `codex fork <source>`. The
+Antigravity CLI cannot fork at launch, so its tasks are refused. The opening message names the
+fork, its branch and spec and the source's commit, then the person's message. Later launches
+resume the fork's own session. A fork publishes its source's summary, and deleting a task
+publishes its source and its forks, so each page's links stay current.
+
+```mermaid
+flowchart LR
+    S[source task: branch head, latest session, transcript] -->|read only| F[fork_task: task_forks row, stored copy, copied steps]
+    F --> T[new task queued]
+    T --> W[ensure_worktree: new branch at the recorded commit]
+    W --> P[place the copy in the fork worktree's project folder, cwd rewritten]
+    P --> L[Resume with fork: claude --resume src --fork-session --session-id new / codex fork src]
+    L --> O[the fork's own session in its lineage]
+```
+
 ## Remote control
 
 A person drives the instance from their own computer ([guide](remote-control.md), SPEC-247,
@@ -3079,20 +3139,56 @@ A CLI that needs a key file (a deploy tool, a cloud SDK with a service-account J
 tool) runs outside the agent's sandbox
 ([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
 [decision 0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md),
-`crates/yulius-app/src/commands.rs`, rules in `yulius_domain::commands`). A project's
-administrators define a command next to its secrets (`commands`, migration 0089, one JSON
-definition per row, names unique in the project): its binary on the host's system, the agent
-secret its runs get as a file (the project's, else a global one switched on there, never a
-personal or production one: `App::command_secret`), the tasks that may run it, its approval,
-fixed arguments and env with `{keyfile}`, `{home}` and, in env only, `{secret}`, allowed
-subcommands, flags Yulius owns and a time limit. Agents and the Superagent list them with
-`commands_list`.
+`crates/yulius-app/src/commands.rs`, `commands_run.rs`, `ci/brokered.rs`, rules in
+`yulius_domain::commands`).
+
+**Definitions.** A project's administrators define a command next to its secrets (`commands`,
+migration 0089, one JSON definition per row, names unique in the project): its binary on the
+host's system (never in `/tmp`, `/home`, `/proc` and the like or Yulius's data directory), the
+agent secret its runs get as a file, the tasks that may run it, its approval, fixed arguments and
+env with `{keyfile}`, `{home}` and, in env only, `{secret}`, allowed subcommands, flags Yulius
+owns and a time limit. Saving one decides which program gets the secret's value, so the person
+must manage that secret (a global one: an instance administrator) and, for a secret allowed use by
+use, have unlocked the vault with a fresh two-factor code in a browser session
+(`App::bind_command_secret`, ADR-0317). The row keeps the secret's id (`secret_id`):
+`App::command_secret` gives a run that secret only while its NAME still resolves to it (project
+before global, never personal) and it is no production secret. Agents and the Superagent list
+commands with `commands_list`.
+
+**Runs.** A task's agent calls `command_run {name, args, changes}` or `yulius run NAME ARGS` in a
+shell (`crates/yulius/src/run_cli.rs`, through the task token as `yulius tool`). Refusals are
+audited `command.refused`: another project's or an unknown name, a task outside `tasks`, an
+invisible character, a path (`/` or `~`, `..`, `file:`), an owned flag in any form a parser
+reads (abbreviated, single-dash long, inside a short cluster), a first argument outside the
+subcommands, a secret not set up, and (until approvals) a run that needs one. A run is a row of
+`command_runs` (`running`, then `done`, `timed_out`, `output_limit`, `failed` or `lost`) and
+runs on its own tokio task, so a cut call leaves nothing half done: the call waits up to 240 s
+(`command_wait_ms`) on `App::command_runs_changed` and answers its state, and `command_result`
+waits again. At its start the command is read again and runs only as it was asked. The process
+host runs it through `ci_watch` in the project's production holder (`cd_containment` for the
+production stage, without its Docker directory): the host's read-only system, its own folder
+`<data>/cd/<sid>/runs/cmd-<run>/work` with a fresh `home` (the working directory), `tmp` and the
+key at `key/<random>/key` (0600, rebuilt as a key file from a stored key block), an environment of
+`HOME`, `PATH`, `LANG`, `TERM`, `TMPDIR` and the definition's env (`{secret}` only through the
+process environment), stdin empty and stdout and stderr in two files. It is stopped at its time
+limit or once its files pass 16 MiB. Yulius makes `out` and `err` (`O_NOFOLLOW`) before the run
+and reads them back through those handles, so a link or FIFO the run puts at their paths is never
+followed. Each stream is redacted with `redact_for_sandbox` and then cut to 96 KiB of JSON
+before it is stored or returned. At most 4 runs of a project's commands run at once
+(`MAX_RUNNING`, counted and stored in one transaction by the run's own task). Its files go when it ends, and a starting server
+records a run it did not see end as `lost` and removes its files (`App::reconcile_command_runs`).
+Every run is audited `command.run` with the redacted command line, outcome, exit code and time.
 
 ```mermaid
 flowchart LR
-  ADM["Administrator (Secrets page, API)"] -->|"define, change, remove (audited command.*)"| DEF[("commands: one JSON definition per project and name")]
+  ADM["Administrator who manages the secret (two-factor for a guarded one)"] -->|"define, change, remove (audited command.*)"| DEF[("commands: definition + secret_id")]
   DEF --> L["commands_list: task agents, the Superagent"]
-  DEF -.->|"secret NAME → project or global agent secret, never personal or production"| V[("vault")]
+  AG["Task agent: command_run / yulius run"] -->|"checks: project, task, arguments, secret"| RUN[("command_runs")]
+  RUN -->|"tokio task: ci_watch"| PH["Production holder sid.prod: host's read-only system, fresh home, key file 0600, no Docker"]
+  V[("vault: secret_id")] -.->|"key file, {secret} env"| PH
+  PH -->|"stdout, stderr, exit code"| RED["redact_for_sandbox, cut 96 KiB"]
+  RED --> RUN
+  RUN -->|"command_result (waits up to 240 s)"| AG
 ```
 
 ## Agent secrets in CI jobs

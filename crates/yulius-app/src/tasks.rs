@@ -206,6 +206,7 @@ impl App {
             None => (None, None),
         };
         let (after, next) = self.chain_links(task).await;
+        let (forked_from, forks) = self.fork_links(task).await;
         let times = store.task_times(&task.id).await?;
         let not_started =
             task.status == TaskStatus::Closed && !store.has_attempts(&task.id).await?;
@@ -303,6 +304,8 @@ impl App {
                     .is_ok_and(|a| a != crate::account_gate::AgentAccounts::Usable),
             after,
             next,
+            forked_from,
+            forks,
             held_prompt: self.held_prompt_view(&task.id).await,
             // An ended task waits for nobody (ADR-0111).
             needs_you: if task.status.is_resting() {
@@ -1140,8 +1143,13 @@ impl App {
         // Tasks waiting for this one need a person now (TSK-012).
         self.block_successors_deleted(&task).await;
         let deleted_in = task.sandbox_id.clone();
+        let fork_neighbours = self.fork_neighbours(&task.id).await;
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
+        }
+        // Its source and its forks no longer link to it (SPEC-628 FRK-008).
+        for neighbour in &fork_neighbours {
+            self.publish_task(neighbour).await;
         }
         // A start rule naming the deleted task now sees it as ended (SPEC-017), and a deleted
         // supertask no longer holds its project (SPEC-071).

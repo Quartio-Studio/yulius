@@ -1787,6 +1787,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_delete",
             "task_delivery",
             "task_edit",
+            "task_fork",
             "task_get",
             "task_held_prompt",
             "task_merge",

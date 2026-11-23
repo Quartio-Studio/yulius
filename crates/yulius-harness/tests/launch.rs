@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use yulius_domain::harness::Harness;
 use yulius_harness::launch::{
-    CockpitRequest, CockpitYulius, Credential, LaunchError, LaunchMode, LaunchPlan, LaunchRequest,
-    McpServerSpec, McpTransport, PRIVATE_FILE_MODE, PlannedFile, plan_cockpit, plan_launch,
+    CockpitRequest, CockpitYulius, Credential, ForkSession, LaunchError, LaunchMode, LaunchPlan,
+    LaunchRequest, McpServerSpec, McpTransport, PRIVATE_FILE_MODE, PlannedFile, plan_cockpit,
+    plan_launch,
 };
 use yulius_harness::secret::Secret;
 
@@ -264,6 +265,7 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
             session_id: SESSION.into(),
             prompt: Some("--continue after the limit".into()),
             continue_interrupted: false,
+            fork: None,
         },
         false,
     );
@@ -326,6 +328,7 @@ fn claude_resume_continuing_the_interrupted_turn_sends_no_prompt() -> TestResult
             session_id: SESSION.into(),
             prompt: Some("Continue.".into()),
             continue_interrupted: true,
+            fork: None,
         },
         false,
     ))?;
@@ -344,6 +347,7 @@ fn claude_resume_continuing_the_interrupted_turn_sends_no_prompt() -> TestResult
             session_id: SESSION.into(),
             prompt: None,
             continue_interrupted: false,
+            fork: None,
         },
         false,
     ))?;
@@ -401,6 +405,7 @@ fn invalid_requests_are_rejected_without_echoing_values() {
             session_id: "--help".into(),
             prompt: None,
             continue_interrupted: false,
+            fork: None,
         },
         false,
     );
@@ -1454,6 +1459,7 @@ fn codex_resume_argv() -> TestResult {
             session_id: CODEX_SESSION.into(),
             prompt: Some("And the tests".into()),
             continue_interrupted: false,
+            fork: None,
         },
         false,
     );
@@ -1492,6 +1498,7 @@ fn codex_resume_argv() -> TestResult {
         session_id: CODEX_SESSION.into(),
         prompt: Some("ignored".into()),
         continue_interrupted: true,
+        fork: None,
     };
     let plan = plan_launch(&request)?;
     assert_eq!(
@@ -1551,6 +1558,7 @@ fn codex_ultrafast_follows_the_assigned_subscription() -> TestResult {
             session_id: CODEX_SESSION.into(),
             prompt: None,
             continue_interrupted: true,
+            fork: None,
         },
     ] {
         let mut request = codex_request(mode, true);
@@ -1601,6 +1609,7 @@ fn codex_resolves_effort_for_new_and_resumed_tasks() -> TestResult {
             session_id: CODEX_SESSION.into(),
             prompt: None,
             continue_interrupted: false,
+            fork: None,
         },
     ];
     for mode in modes {
@@ -1667,6 +1676,7 @@ fn a_codex_prompt_that_is_a_subcommand_word_stays_a_prompt() -> TestResult {
             session_id: CODEX_SESSION.into(),
             prompt: Some("review".into()),
             continue_interrupted: false,
+            fork: None,
         },
         true,
     ))?;
@@ -1892,6 +1902,7 @@ fn antigravity_resume_on_a_google_sign_in() -> TestResult {
             session_id: "0bb76935-ee61-4895-9082-1aea3f3976ee".into(),
             prompt: Some("ignored".into()),
             continue_interrupted: true,
+            fork: None,
         },
         false,
         agy_sign_in()?,
@@ -1936,6 +1947,7 @@ fn antigravity_resume_on_a_google_sign_in() -> TestResult {
         session_id: "0bb76935-ee61-4895-9082-1aea3f3976ee".into(),
         prompt: None,
         continue_interrupted: false,
+        fork: None,
     };
     let plan = plan_launch(&plain)?;
     assert_eq!(
@@ -1979,5 +1991,97 @@ fn antigravity_plans_refuse_what_they_cannot_run() -> TestResult {
     let mut request = agy_request(mode, true, agy_api_key()?);
     request.antigravity_program = Some(PathBuf::from("bin/agy"));
     assert!(plan_launch(&request).is_err());
+    Ok(())
+}
+
+const FORK_SESSION: &str = "7d1e2f3a-bbbb-4ccc-8ddd-0123456789ef";
+
+fn fork_of(session: &str, new: Option<&str>) -> LaunchMode {
+    LaunchMode::Resume {
+        session_id: session.into(),
+        prompt: Some("You are task #7, a fork of #3.".into()),
+        continue_interrupted: false,
+        fork: Some(ForkSession {
+            session_id: new.map(str::to_owned),
+        }),
+    }
+}
+
+/// SPEC-628 FRK-006: a Claude Code fork resumes a copy of the source's session under the id Yulius
+/// names (`--resume <source> --fork-session --session-id <new>`), sends its opening message, and
+/// the run's session is the new id, never the source's.
+#[test]
+fn claude_fork_resumes_a_copy_under_a_new_session_id() -> TestResult {
+    let plan = plan_launch(&claude_request(fork_of(SESSION, Some(FORK_SESSION)), false))?;
+    let head: Vec<&str> = plan.argv.iter().take(6).map(String::as_str).collect();
+    assert_eq!(
+        head,
+        [
+            "claude",
+            "--resume",
+            SESSION,
+            "--fork-session",
+            "--session-id",
+            FORK_SESSION
+        ]
+    );
+    assert_eq!(
+        plan.argv.last().map(String::as_str),
+        Some("You are task #7, a fork of #3.")
+    );
+    assert_eq!(plan.session_id.as_deref(), Some(FORK_SESSION));
+    // A forked session never continues an interrupted turn of the source.
+    assert!(
+        !plan
+            .env
+            .iter()
+            .any(|(name, _)| name == "CLAUDE_CODE_RESUME_INTERRUPTED_TURN")
+    );
+    // A new id that could be read as an option is refused.
+    let refused = plan_launch(&claude_request(fork_of(SESSION, Some("--print")), false));
+    assert_eq!(refused.err(), Some(LaunchError::Invalid("session_id")));
+    Ok(())
+}
+
+/// SPEC-628 FRK-006: a Codex fork is `codex … fork <source> -- <opening>`; Codex names the new
+/// session, so the plan names none and Yulius adopts it from the hook or rollout.
+#[test]
+fn codex_fork_argv() -> TestResult {
+    let mut request = codex_request(fork_of(CODEX_SESSION, None), false);
+    request.mcp_servers.clear();
+    let plan = plan_launch(&request)?;
+    let at = plan
+        .argv
+        .iter()
+        .position(|a| a == "fork")
+        .ok_or("fork subcommand")?;
+    let tail: Vec<&str> = plan.argv.iter().skip(at).map(String::as_str).collect();
+    assert_eq!(
+        tail,
+        [
+            "fork",
+            CODEX_SESSION,
+            "--",
+            "You are task #7, a fork of #3."
+        ]
+    );
+    assert!(!plan.argv.iter().any(|a| a == "resume"));
+    assert_eq!(plan.session_id, None);
+    Ok(())
+}
+
+/// SPEC-628 FRK-003: the Antigravity CLI forks only inside a running session, so a fork launch
+/// is refused rather than resuming the source's own conversation.
+#[test]
+fn antigravity_fork_is_refused() -> TestResult {
+    let request = agy_request(
+        fork_of("0bb76935-ee61-4895-9082-1aea3f3976ee", None),
+        false,
+        agy_sign_in()?,
+    );
+    assert_eq!(
+        plan_launch(&request).err(),
+        Some(LaunchError::ForkUnsupported(Harness::Antigravity))
+    );
     Ok(())
 }

@@ -764,6 +764,8 @@ impl TaskStore for SqliteStore {
                 "DELETE FROM task_chains WHERE task_id = ?1",
                 "DELETE FROM task_schedules WHERE task_id = ?1",
                 "UPDATE task_chains SET after_task_id = NULL WHERE after_task_id = ?1",
+                "DELETE FROM task_forks WHERE task_id = ?1",
+                "UPDATE task_forks SET source_task_id = NULL WHERE source_task_id = ?1",
                 "DELETE FROM prompt_holds WHERE task_id = ?1",
                 "UPDATE prompt_holds SET new_task_id = NULL WHERE new_task_id = ?1",
                 "DELETE FROM task_auto_choices WHERE task_id = ?1",
@@ -807,6 +809,36 @@ impl TaskStore for SqliteStore {
             c.execute(
                 "UPDATE tasks SET working_since = ?1 WHERE id = ?2",
                 params![since.map(|t| t.0), id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn task_pin(&self, task: &TaskId) -> AppResult<Option<AccountId>> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            let pin: Option<Option<String>> = c
+                .query_row(
+                    "SELECT pinned_account_id FROM tasks WHERE id = ?1",
+                    [id.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(pin.flatten().and_then(|text| AccountId::parse(&text).ok()))
+        })
+        .await
+    }
+
+    async fn set_task_pin(&self, task: &TaskId, account: Option<&AccountId>) -> AppResult<()> {
+        let id = task.as_str().to_owned();
+        let account = account.map(|a| a.as_str().to_owned());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE tasks SET pinned_account_id = ?1 WHERE id = ?2",
+                params![account, id],
             )
             .map_err(db)?;
             Ok(())

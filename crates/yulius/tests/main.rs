@@ -47,6 +47,7 @@ mod docker_trouble_notices;
 mod files;
 mod first_message;
 mod fixture_hygiene;
+mod forks;
 mod git_adapter;
 #[cfg(target_os = "linux")]
 mod git_confined;
@@ -99,6 +100,7 @@ mod production_branch;
 mod production_protection;
 mod projects;
 mod queued_messages;
+mod rebalance;
 mod recovery;
 mod reference_repo;
 mod remote_mcp;

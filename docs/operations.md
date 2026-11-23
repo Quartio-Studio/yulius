@@ -249,6 +249,12 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you
 # for the ordered page of tasks that currently need attention.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
+# Percent of a window binding a task's model past which a subscription of that harness gets no
+# new task while another has room, and its idle tasks move to the one with the most room every 2
+# minutes (SPEC-629): 50 to 98, default 95; 98 turns it off (the pool's own pause threshold).
+#Environment=YULIUS_REBALANCE_PERCENT_CLAUDE_CODE=95
+#Environment=YULIUS_REBALANCE_PERCENT_CODEX=95
+#Environment=YULIUS_REBALANCE_PERCENT_ANTIGRAVITY=95
 # A server older than parking cannot read the status `parked`: before rolling back past it,
 # resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task
 # parks meanwhile.
@@ -861,6 +867,23 @@ stay private to the sandbox. Two sandboxes can both use 3000 inside.
 
 **Without the prerequisites** (`yulius doctor` lists what is missing), contained runs keep the
 previous containment: read-only host system, the host's network, no limits.
+
+### Subscription rebalance
+
+Every 2 minutes Yulius moves idle tasks off a subscription past its harness's rebalance threshold
+(`YULIUS_REBALANCE_PERCENT_CLAUDE_CODE`, `_CODEX`, `_ANTIGRAVITY`; 95 by default, 50 to 98) to the
+subscription with the most room, and new tasks keep off such a subscription while another has room
+([SPEC-629](../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md)). A task mid-turn,
+paused, with background work or a draft waits for a later pass; a task a person put on a
+subscription with "Run on…" or "Continue on…" stays there until the pool must move it at a limit.
+An idle goal session of Claude Code or Antigravity is not restarted (its goal would be typed
+again): with parking on (`YULIUS_PARK_AFTER_MINUTES` above 0) it is parked once quiet for a
+minute and resumes on a subscription with room when written to; with parking off it stays.
+Each move is a subscription switch with the reason `rebalance: …` in the task's info and a notice
+for the task's owner (`rebalance:<task id>`; in Telegram under "Subscription problems"); the journal
+logs each pass that moved or parked a task (`rebalance pass`, at info) and, at debug, each task it
+kept with why (`rebalance: the idle task stays for now`). Set a harness's variable to 98 to turn it off: no
+pass moves or parks its tasks, and the pool moves them only at 98 % and at a limit, as before.
 
 ### Resource limits
 

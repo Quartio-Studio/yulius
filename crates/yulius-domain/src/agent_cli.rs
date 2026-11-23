@@ -390,6 +390,46 @@ pub fn kept_by(facts: &MoveFacts) -> Option<&'static str> {
     if !is_due(facts) {
         return None;
     }
+    kept_idle(&IdleFacts {
+        typed_ms_ago: facts.typed_ms_ago,
+        draft: facts.draft,
+        switch_refused: facts.switch_refused,
+        paused: facts.paused,
+        update_holds: facts.update_holds,
+        background: facts.background,
+        queued: facts.queued,
+        prompt_unread: facts.prompt_unread,
+    })
+}
+
+/// What a restart of an idle session would lose, as [`MoveFacts`] says it for a newer Claude
+/// Code and the rebalance pass asks it before a move (SPEC-629 RBL-003).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdleFacts {
+    /// How long ago a person typed into the session, when one did.
+    pub typed_ms_ago: Option<i64>,
+    /// A person typed into the session since its prompt box was last empty ([`is_draft`]).
+    pub draft: bool,
+    /// A switch of this task, or a restart of it, was refused moments ago.
+    pub switch_refused: bool,
+    /// A person paused the task.
+    pub paused: bool,
+    /// An update of the instance holds the runs.
+    pub update_holds: bool,
+    /// Whether background shells, agents or monitors of the session run now; `None` when that
+    /// could not be told.
+    pub background: Option<bool>,
+    /// Something waits in Claude Code's queue, or was handed on to a turn not seen yet.
+    pub queued: bool,
+    /// A prompt went on so recently, or while the session was looked at, that its record may be
+    /// unread.
+    pub prompt_unread: bool,
+}
+
+/// The first of the facts that keeps an idle session from a restart, in words for the log;
+/// `None` when a restart loses nothing.
+#[must_use]
+pub fn kept_idle(facts: &IdleFacts) -> Option<&'static str> {
     let typed = facts
         .typed_ms_ago
         .is_some_and(|ago| ago < TYPED_RECENTLY_MS);

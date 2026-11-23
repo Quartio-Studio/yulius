@@ -344,6 +344,8 @@ async fn a_task_reads_only_what_its_owner_may_view() -> TestResult {
     for (name, args) in [
         ("tasks_list", json!({})),
         ("task_get", json!({"number": alice_task})),
+        // A fork reads the task too (SPEC-628).
+        ("task_fork", json!({"number": alice_task})),
     ] {
         let (refused, error) = tool(&w, BOB, name, args).await?;
         assert!(error, "{name} for a disabled owner: {refused}");
@@ -708,6 +710,59 @@ async fn reading_a_neighbour_changes_nothing_and_no_steering_tool_is_served() ->
         w.h.store.task_messages(&id, 50).await?.len(),
         messages_before,
         "no refused call wrote to the task"
+    );
+    Ok(())
+}
+
+/// SPEC-628 with SPEC-625 PSV-004: `task_fork` copies a task's conversation, so a task agent that
+/// may not read a personal peer's transcript may not fork it either: refused with the same
+/// sentence, nothing created. A task holding the same person's secrets passes that check (and
+/// is refused here only because the peer has no conversation to fork).
+#[tokio::test]
+async fn a_personal_tasks_conversation_is_not_forked_by_a_task_without_its_secrets() -> TestResult {
+    let w = world().await?;
+    let added = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"scope": "personal", "name": "MY_TOKEN", "value": "alice-personal-5150a1ce",
+            "hosts": ["api.mine.test"], "injection": "bearer"}),
+        ),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    let number = w.number("t1");
+    let all = |h: &support::Harness| {
+        let store = h.store.clone();
+        async move {
+            let sandbox = yulius_domain::ids::SandboxId::parse("s1")?;
+            Ok::<_, Box<dyn std::error::Error>>(
+                store.tasks(&sandbox, false).await?.len()
+                    + store.tasks(&sandbox, true).await?.len(),
+            )
+        }
+    };
+    let before = all(&w.h).await?;
+    for reader in [BOB, AUTOMATION] {
+        let (refused, error) = tool(&w, reader, "task_fork", json!({"number": number})).await?;
+        assert!(error, "{reader}: {refused}");
+        assert!(
+            refused
+                .as_str()
+                .is_some_and(|t| t.contains("personal secrets") && t.contains("transcript")),
+            "{reader}: {refused}"
+        );
+    }
+    assert_eq!(all(&w.h).await?, before, "nothing was created");
+    let (theirs, error) = tool(&w, ALICE_TWO, "task_fork", json!({"number": number})).await?;
+    assert!(error, "{theirs}");
+    assert!(
+        theirs
+            .as_str()
+            .is_some_and(|t| t.contains("no conversation to fork")),
+        "{theirs}"
     );
     Ok(())
 }
