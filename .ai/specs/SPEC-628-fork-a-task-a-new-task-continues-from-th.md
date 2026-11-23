@@ -65,6 +65,7 @@ separately. The owner approved this on 22 Nov 2026 after a review of iTermX, who
 - [x] Fork origin and forks shown on both task pages
 - [x] End-to-end spec of the Fork dialog and the origin shown on both pages
 - [x] Product docs and the changes log for the UI; independent review of the UI pull request
+- [x] Agent shim passes yulius run, which the dev gate's session-command test needs (staging fix forward)
 
 ## Acceptance criteria
 
