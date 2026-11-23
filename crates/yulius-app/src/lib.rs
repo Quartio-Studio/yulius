@@ -76,6 +76,7 @@ pub mod model;
 mod moves;
 pub mod needs_you;
 pub mod notes;
+pub mod notice_producers;
 pub mod notices;
 pub mod notify;
 pub mod onboarding;

@@ -332,6 +332,8 @@ struct World {
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
     let w = world_unstarted().await?;
     w.h.app.start_channel().await;
+    // Subscription problems are posted notices (SPEC-624 NTC-010), as the server starts them.
+    w.h.app.start_notice_producers();
     Ok(w)
 }
 
@@ -877,6 +879,19 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
         })
         .await?;
     subscription(&w, AccountStatus::Relogin).await?;
+    // As the accounts code publishes the change: its notice is posted before any bot is active.
+    let mut events = w.h.app.events.subscribe();
+    account_event(&w, "relogin");
+    loop {
+        if let yulius_contracts::events::UiEvent::NoticePosted { notice } =
+            tokio::time::timeout(Duration::from_secs(10), events.recv())
+                .await??
+                .event
+            && notice.key == "account:acc1"
+        {
+            break;
+        }
+    }
     w.h.clock.0.fetch_add(MINUTE_MS, Ordering::SeqCst);
 
     set_bot(&w, TOKEN_A).await?;

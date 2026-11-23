@@ -759,3 +759,146 @@ async fn a_dismissal_names_its_own_project() -> TestResult {
     assert!(!error, "{said}");
     Ok(())
 }
+
+/// Waits (10 s at most) for an event on `events` that `wanted` picks, skipping the others.
+async fn next_event<T>(
+    events: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+    wanted: impl Fn(&UiEvent) -> Option<T>,
+) -> Result<T, Error> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let envelope = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .map_err(|_| "no such event came")??;
+        if let Some(found) = wanted(&envelope.event) {
+            return Ok(found);
+        }
+    }
+}
+
+fn subscription(
+    status: &str,
+    resets_at: Option<&str>,
+) -> yulius_contracts::api::admin::AccountView {
+    use yulius_contracts::api::admin::{AccountUsageView, AccountView, UsageWindowView};
+    AccountView {
+        id: "acc1".into(),
+        provider: "anthropic".into(),
+        label: "Team Max".into(),
+        status: status.into(),
+        usage: AccountUsageView {
+            primary: resets_at.map(|at| UsageWindowView {
+                used_percent: Some(100.0),
+                resets_at: Some(at.into()),
+                window_minutes: Some(300),
+            }),
+            ..AccountUsageView::default()
+        },
+        last_error: None,
+        email: None,
+        email_typed: false,
+        in_use_by: 0,
+        tokens_24h: None,
+        tokens_7d: None,
+        usage_read: None,
+    }
+}
+
+fn publish_subscription(p: &People, view: yulius_contracts::api::admin::AccountView) {
+    p.w.h.app.events.publish(
+        None,
+        true,
+        UiEvent::AccountUpdated {
+            account: Box::new(view),
+        },
+    );
+}
+
+/// NTC-010, AC-9: a subscription at its limit is one notice `account:<id>` for administrators
+/// that expires at its reset; the same state again posts nothing; another reset replaces it; a
+/// usable subscription removes it; one that must sign in again never expires.
+#[tokio::test]
+async fn a_subscription_problem_is_one_keyed_notice() -> TestResult {
+    let p = people().await?;
+    let mut events = p.w.h.app.events.subscribe();
+    p.w.h.app.start_notice_producers();
+    let reset = "2026-01-01T05:00:00Z";
+    p.w.h.clock.0.store(
+        yulius_domain::time::parse_rfc3339("2026-01-01T01:00:00Z")
+            .ok_or("time")?
+            .0,
+        Ordering::SeqCst,
+    );
+    publish_subscription(&p, subscription("limited", Some(reset)));
+    let posted = next_event(&mut events, |e| match e {
+        UiEvent::NoticePosted { notice } if notice.key == "account:acc1" => Some(notice.clone()),
+        _ => None,
+    })
+    .await?;
+    assert_eq!(
+        (
+            posted.key.as_str(),
+            posted.title.as_str(),
+            posted.expires_at.as_deref()
+        ),
+        (
+            "account:acc1",
+            "Team Max reached its usage limit",
+            Some("2026-01-01T05:00:00Z")
+        )
+    );
+    // People of the project cannot see it; the administrator can, through the session-bound
+    // read (the browser's session is younger than the clock this test set).
+    assert!(p.w.h.app.notices_for(&p.bob.0, None).await?.is_empty());
+    let ours = |list: Vec<yulius_app::ports::store_ext::NoticeRecord>| {
+        list.into_iter()
+            .filter(|n| n.key.as_str() == "account:acc1")
+            .count()
+    };
+    assert_eq!(ours(p.w.h.app.notices_for(&p.dave.0, None).await?), 1);
+
+    // The same state again is no news; a later reset replaces the notice.
+    publish_subscription(&p, subscription("limited", Some(reset)));
+    publish_subscription(&p, subscription("limited", Some("2026-01-01T06:00:00Z")));
+    let replaced = next_event(&mut events, |e| match e {
+        UiEvent::NoticePosted { notice } if notice.key == "account:acc1" => Some(notice.clone()),
+        _ => None,
+    })
+    .await?;
+    assert_eq!(replaced.expires_at.as_deref(), Some("2026-01-01T06:00:00Z"));
+    assert_eq!(
+        ours(p.w.h.app.notices_for(&p.dave.0, None).await?),
+        1,
+        "one notice per subscription"
+    );
+
+    // Usable again: removed.
+    publish_subscription(&p, subscription("ok", None));
+    let removed = next_event(&mut events, |e| match e {
+        UiEvent::NoticeRemoved { key, .. } if key == "account:acc1" => Some(key.clone()),
+        _ => None,
+    })
+    .await?;
+    assert_eq!(removed, "account:acc1");
+    assert!(
+        !p.w.h
+            .app
+            .notices_for(&p.dave.0, None)
+            .await?
+            .iter()
+            .any(|n| n.key.as_str() == "account:acc1")
+    );
+
+    // Signing in again waits for a person: a decision without an expiry.
+    publish_subscription(&p, subscription("relogin", None));
+    let relogin = next_event(&mut events, |e| match e {
+        UiEvent::NoticePosted { notice } if notice.key == "account:acc1" => Some(notice.clone()),
+        _ => None,
+    })
+    .await?;
+    assert!(
+        relogin.decision && relogin.expires_at.is_none(),
+        "{relogin:?}"
+    );
+    Ok(())
+}
