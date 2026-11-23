@@ -3332,11 +3332,15 @@ Notices for people carry a key and an expiry
   project or none, an optional recipient, `admin_only`, a `NoticeKey`
   (`yulius_domain::notice`), a category (the Telegram choice), a tone, texts, a link, `decision`
   and an optional `Expiry`. It resolves the expiry (`notice_expiry`: a decision never expires
-  and refuses an expiry), cuts and redacts the texts as the project's transcripts are, and stores
-  the notice. `NoticeStore::put_notice` (migration 0091, `notices`) deletes the notice with the
-  same project, recipient and key, and its dismissals, inserts the new one and keeps the scope's
-  newest 200, all in one transaction. The notice is then published as `notice.posted` in an
-  envelope with its project, recipient and `admin_only`.
+  and refuses an expiry), redacts the texts as the project's transcripts are, then puts the
+  title on one line and cuts both, and stores the notice. Keys of the derived notices (`task:`,
+  `control:`, `needs-you:`, `digest`) are refused. `NoticeStore::put_notice` (migration 0091,
+  `notices`) deletes the notice with the same project, recipient and key, and its dismissals,
+  inserts the new one and keeps 200 per scope, decisions first and then the newest, all in one
+  transaction. Posts and removals run one at a time (`POSTING`). The notice is then published as
+  `notice.posted` in an envelope with its project, recipient and `admin_only`. Pages hear
+  `notice.removed` for each notice the cap drops, and for a replaced notice whose `admin_only`
+  changed. A post that the cap would drop at once (its scope holds 200 decisions) is refused.
 - **Reading.** `App::notices_for` reads the live, undismissed notices addressed to the person or
   to nobody in particular. The store applies the reader's reach before its limit: the projects
   holding such notices that they can see, instance-wide notices unless they are a guest, and
@@ -3351,12 +3355,42 @@ Notices for people carry a key and an expiry
   deletes it (`NotificationChannel::delete`, Telegram's `deleteMessage`). A refused delete leaves
   the old message in the chat. `telegram_keyed` rows go with their chat's link, like
   `telegram_sent`, and the tick forgets rows older than 48 hours.
+- **Yulius's own notices** (`crates/yulius-app/src/notice_producers.rs`). `start_notice_producers`
+  (from `serve`) reconciles every subscription, then follows `account.updated`: a problem is
+  posted as `account:<id>` for administrators, and removed once the subscription is usable.
+  Signing in again is a decision. A usage limit expires at its reset (`limit_reset`), and none
+  is posted once that reset has passed. An error, or a limit without a known reset, lasts until
+  the subscription is usable. The tick and the event loop read the stored subscription under one
+  lock (`ACCOUNT_SYNC`). A repeat
+  that says the same, compared with the texts as posting stores them (`stored_texts`), is not
+  posted again. The background tick runs `sync_all_account_notices` too: it catches a status
+  written without an event, and removes the notices of deleted subscriptions. The staging
+  tick's `tell_gate_repairs` passes the failures to `sync_gate_notices` while the project has
+  no worker in stored state (`gate_workers`), or while its workers have all been unable to take
+  the repair for `GATE_GRACE_TICKS` ticks in a row (`App::gate_unavailable_ticks`; a green
+  branch or an able worker resets it). Within that period a notice already told stays and no
+  new one is posted, so neither a busy worker nor a restart retells it. The sync posts `gate:<test>`
+  for at most 20 failures and `gates:more` for the rest, none expiring, and removes the ones no
+  longer failing or now owned. The notifier no longer derives
+  subscription messages: they reach Telegram as posted notices.
+- **The bell** (`web/assets/notifications.js`). Every entry has a key and an `expires` time:
+  its kind's default (`EXPIRES_MS`), or none while it waits for a decision. An answered entry
+  goes a day later. Expired entries are pruned at load, when the panel opens, and by a timer
+  within ten seconds of their time.
+  History stored before this change gets its kind's default from its own time. Server notices
+  join it from `GET /api/me/notices` and `notice.posted` under
+  `notice:<project>:<me or ->:<key>`. `notice.removed` drops them. Each load and resync drops
+  those the server no longer lists, keeping what the event stream said while that read was under
+  way, and a newer read supersedes an older one's answer. Clear dismisses them on the server. A shared problem's
+  entry is settled only from a loaded task list. A task has one entry, `task:<task id>`.
 - **Digest.** Each person's digest lists up to 20 of their live notices (`DigestView.notices`).
   Its items carry `task:<task id>`, and its Telegram message has the scope `-:digest`, so today's
   digest replaces yesterday's.
 
 ```mermaid
 flowchart LR
+  S["account.updated · staging tick"] --> PR["notice producers"]
+  PR -->|"account:&lt;id&gt; · gate:&lt;test&gt;"| A
   P["producer or script watch"] -->|"NewNotice: key, expiry"| A["App::post_notice"]
   A -->|"replace by project, recipient, key"| DB[("notices")]
   A -->|"notice.posted (envelope)"| BUS["event bus"]

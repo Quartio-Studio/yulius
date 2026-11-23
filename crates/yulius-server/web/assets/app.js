@@ -239,13 +239,13 @@ function createApp(root, transport) {
     if (user.is_superadmin) {
       api.get('/api/auth/recovery').then((state) => {
         if (!state || state.available) return;
-        ctx.notifications.add({ kind: 'warn', title: 'No recovery code yet', detail: 'A forgotten superadmin password can’t be reset without one.', route: '/admin/users', key: 'notice:recovery', once: true });
+        ctx.notifications.add({ kind: 'warn', title: 'No recovery code yet', detail: 'A forgotten superadmin password can’t be reset without one.', route: '/admin/users', key: 'notice:recovery', once: true, expires: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString() });
       }).catch(() => {});
     }
     // GitHub is optional (SPEC-099): playgrounds work without it, so it is a quiet notification for
     // later, never a toast on every sign-in.
     if (user.is_superadmin && me.instance && me.instance.github_configured === false) {
-      ctx.notifications.add({ kind: 'info', title: 'GitHub is optional', detail: 'Playgrounds work without it. Connect GitHub to import or create your organisation’s repositories.', route: '/admin/github', key: 'notice:github', once: true });
+      ctx.notifications.add({ kind: 'info', title: 'GitHub is optional', detail: 'Playgrounds work without it. Connect GitHub to import or create your organisation’s repositories.', route: '/admin/github', key: 'notice:github', once: true, expires: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString() });
     }
     const loc = currentLocation();
     if (next) navigate(next, { replace: true });
@@ -493,7 +493,7 @@ function createApp(root, transport) {
           await store.loadSandboxes();
           if (currentSandbox && !store.sandboxById(currentSandbox.id)) {
             toast(`${currentSandbox.name} was removed or is no longer visible to you.`, { kind: 'info' });
-            ctx.notifications.add({ kind: 'info', title: `${currentSandbox.name} was removed or is no longer visible to you` });
+            ctx.notifications.add({ kind: 'info', title: `${currentSandbox.name} was removed or is no longer visible to you`, key: `project-gone:${currentSandbox.id}` });
             navigate('/', { replace: true });
             return;
           }

@@ -9,14 +9,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast::error::RecvError;
-use yulius_contracts::api::admin::AccountView;
 use yulius_contracts::api::tasks::TaskSummary;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::notice::NoticeKey;
 use yulius_domain::notify::{
-    AskedOf, NoticeKind, TaskNotice, Throttle, account_problem, account_text, control_text,
-    posted_text, shared_cause, taken_text, task_notice, task_signature,
+    AskedOf, NoticeKind, TaskNotice, Throttle, control_text, posted_text, shared_cause, taken_text,
+    task_notice, task_signature,
 };
 
 use crate::context::App;
@@ -32,7 +31,8 @@ const ONCE_MAX: usize = 20_000;
 /// The notifier's memory, in this process only.
 #[derive(Debug, Default)]
 pub(crate) struct NotifierState {
-    /// The last signature told (or seen) per task (`task:<id>`) and subscription (`account:<id>`),
+    /// The last signature told (or seen) per task (`task:<id>`; a subscription's problems are
+    /// posted notices, SPEC-624),
     /// replaced by the seed when a bot becomes active (TGC-022); a removed task is forgotten.
     told: Mutex<HashMap<String, String>>,
     /// The sandbox-wide episodes (`shared:…`) and requests for control (`control:…`) told.
@@ -76,8 +76,8 @@ struct Notice {
     headline: String,
     text: String,
     about: Option<crate::ports::notify::SentAbout>,
-    /// Its project and key (`<sandbox or ->:<key>`): the bot's next message with them replaces
-    /// this one in the chat (SPEC-624 NTC-007, NTC-008).
+    /// Its project, recipient and key (`<sandbox or ->:<recipient or ->:<key>`): the bot's next
+    /// message with them replaces this one in the chat (SPEC-624 NTC-007, NTC-008).
     scope: Option<String>,
 }
 
@@ -182,7 +182,8 @@ impl App {
         if services.active().is_none() {
             return;
         }
-        // Only tasks and subscriptions are told; every other event costs nothing.
+        // Only tasks, takes of control and posted notices (subscription problems among them,
+        // SPEC-624) are told; every other event costs nothing.
         if let UiEvent::TaskRemoved { task_id } = &envelope.event {
             services.notifier.forget(&format!("task:{task_id}"));
             return;
@@ -190,7 +191,6 @@ impl App {
         if !matches!(
             envelope.event,
             UiEvent::TaskUpdated { .. }
-                | UiEvent::AccountUpdated { .. }
                 | UiEvent::ControlTaken { .. }
                 | UiEvent::ControlTakenBack { .. }
                 | UiEvent::NoticePosted { .. }
@@ -212,9 +212,6 @@ impl App {
                         .await
                         .map(|n| n.map(|(owner, n)| (n, Some(owner)))),
                 );
-            }
-            UiEvent::AccountUpdated { account } => {
-                notices.push(Ok(self.account_notice(account).map(|n| (n, None))));
             }
             // Sent only to the person it was taken from, as the event is (SPEC-510 TKC-002).
             UiEvent::ControlTaken { task_id, by, .. } => {
@@ -448,8 +445,8 @@ impl App {
     }
 
     /// Seeds the notifier's memory with what is the case now: every task's reading, its
-    /// sandbox-wide episode and waiting request for control, and every subscription's problem,
-    /// replacing what it held in one step, so only what changes after it is told (TGC-022; review
+    /// sandbox-wide episode and waiting request for control (a subscription's problem is a
+    /// posted notice, told when posted, SPEC-624), replacing what it held in one step, so only what changes after it is told (TGC-022; review
     /// round 1: judging "first seen" by the task's state time dropped a chain blocked later, for
     /// good). Run by the notifier's own task, in order with the events (review round 2).
     async fn seed_notices(&self) {
@@ -490,11 +487,6 @@ impl App {
                     seeded += 1;
                 }
             }
-        }
-        for account in store.accounts().await? {
-            let status = account.status.as_str();
-            let seen = account_problem(status).map_or_else(String::new, |_| status.to_owned());
-            told.insert(format!("account:{}", account.id), seen);
         }
         if let Ok(mut held) = services.notifier.told.lock() {
             *held = told;
@@ -628,43 +620,6 @@ impl App {
                 ),
             )),
         }))
-    }
-
-    /// A subscription's problem (TGC-020), once per status.
-    fn account_notice(&self, account: &AccountView) -> Option<Notice> {
-        let services = self.channel_services().ok()?;
-        let problem = account_problem(&account.status);
-        let previous = services.notifier.remember(
-            format!("account:{}", account.id),
-            problem.map(|_| account.status.clone()).unwrap_or_default(),
-        );
-        let problem = problem?;
-        if previous.as_deref() == Some(account.status.as_str()) {
-            return None;
-        }
-        let link = format!(
-            "{}/admin/accounts",
-            self.config.public_url.trim_end_matches('/')
-        );
-        let (headline, text) = account_text(
-            &account.label,
-            problem,
-            account.last_error.as_deref(),
-            &link,
-        );
-        // No sandbox: the instance-wide redaction of credential shapes (TGC-023).
-        let redact = |text: String| yulius_domain::redact::redact(&text).map_or(text, |r| r.text);
-        Some(Notice {
-            kind: NoticeKind::Account,
-            headline: redact(headline),
-            text: redact(text),
-            about: None,
-            scope: Some(chat_scope(
-                None,
-                None,
-                &NoticeKey::lossy("account:", &account.id),
-            )),
-        })
     }
 
     /// Sends `notice` to every linked person (or `only` that one) who chose its kind and whose

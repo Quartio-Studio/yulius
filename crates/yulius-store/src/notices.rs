@@ -117,11 +117,12 @@ impl NoticeStore for SqliteStore {
                 let mut stmt = tx
                     .prepare(&format!(
                         "DELETE FROM notices WHERE id IN (SELECT id FROM notices WHERE {SCOPE} \
-                         ORDER BY decision DESC, created_at DESC, id DESC LIMIT -1 OFFSET ?3) \
-                         RETURNING {COLS}"
+                         ORDER BY decision DESC, created_at DESC, id = ?4 DESC, id DESC \
+                         LIMIT -1 OFFSET ?3) RETURNING {COLS}"
                     ))
                     .map_err(db)?;
-                stmt.query_map(params![sandbox, user, keep], from_row)
+                // On a tie of times the notice just stored stays (review of #1711).
+                stmt.query_map(params![sandbox, user, keep, n.id], from_row)
                     .map_err(db)?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(db)?
@@ -200,7 +201,7 @@ impl NoticeStore for SqliteStore {
                     "SELECT {COLS} FROM notices n \
                      WHERE (n.user_id IS NULL OR n.user_id = ?1) \
                        AND (n.sandbox_id IN (SELECT value FROM json_each(?4)) \
-                            OR (n.sandbox_id IS NULL AND ?5)) \
+                            OR (n.sandbox_id IS NULL AND (?5 OR n.user_id = ?1))) \
                        AND (n.admin_only = 0 OR ?6) \
                        AND (n.expires_at IS NULL OR n.expires_at > ?2) \
                        AND NOT EXISTS (SELECT 1 FROM notice_dismissals d \
@@ -584,6 +585,23 @@ mod tests {
         Ok(())
     }
 
+    /// Review of #1711: on a tie of times the notice just stored stays and an older one goes.
+    #[tokio::test]
+    async fn the_cap_keeps_the_new_notice_on_a_tie() -> TestResult {
+        let store = store().await?;
+        let u1 = UserId::parse("u1")?;
+        for id in ["zz_older", "aa_newer"] {
+            store.put_notice(&notice(id, Some("s1"), id, 5), 1).await?;
+        }
+        assert_eq!(
+            ids(&store
+                .live_notices(&u1, &everywhere(), Timestamp(9), 50)
+                .await?),
+            ["aa_newer"]
+        );
+        Ok(())
+    }
+
     /// Review round 1: the bot's remembered messages go with the chat's link (unlinked, the chat
     /// changed hands, every link cleared with the bot) and once they are older than Telegram
     /// lets a bot delete.
@@ -686,6 +704,17 @@ mod tests {
         assert_eq!(
             ids(&store.live_notices(&u1, &guest, Timestamp(30), 2).await?),
             ["mine"]
+        );
+        // An instance-wide notice addressed to the guest is theirs, as the event stream says
+        // (review round 2).
+        let theirs = NoticeRecord {
+            user: Some(u1.clone()),
+            ..notice("theirs", None, "watch:x", 25)
+        };
+        store.put_notice(&theirs, 200).await?;
+        assert_eq!(
+            ids(&store.live_notices(&u1, &guest, Timestamp(30), 3).await?),
+            ["theirs", "mine"]
         );
         Ok(())
     }
