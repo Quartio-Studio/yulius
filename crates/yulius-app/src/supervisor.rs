@@ -6149,8 +6149,12 @@ impl App {
                 Ok(()) => {}
                 // Not running any more: a task that rests or is being stopped can go once its
                 // run has ended; any other (switching, starting) was not closed.
-                Err(AppError::Conflict(_)) => {
+                Err(AppError::Conflict(why)) => {
                     let status = self.deps.store.task(task_id).await?.map(|t| t.status);
+                    // Still running: the owner's delivery could not be held; say so.
+                    if achieved.is_some() && status == Some(TaskStatus::Running) {
+                        return Err(AppError::Conflict(why));
+                    }
                     // Archive and delete both close this way: the message names neither.
                     if status.is_some_and(|s| !s.is_resting() && s != TaskStatus::Stopping) {
                         return Err(AppError::Conflict(

@@ -121,7 +121,10 @@ fn delete_keeps_the_owner_when_a_replacement_arm_arrives_at_close() -> TestResul
             reached.load(std::sync::atomic::Ordering::SeqCst),
             "the delete decided to close: {deleted:?} {told:?}"
         );
-        assert!(deleted.is_err(), "{deleted:?}");
+        assert!(
+            matches!(&deleted, Err(yulius_app::error::AppError::Conflict(why)) if why.contains("being verified")),
+            "{deleted:?}"
+        );
         assert!(app.deps.store.task(&id).await?.is_some());
         assert!(app.deps.store.live_attempt(&id).await?.is_some());
         Ok(())
@@ -152,7 +155,18 @@ fn removing_the_subscription_moves_an_unverified_owner_instead_of_closing_it() -
             session_hash: None,
             token: None,
         };
+        let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = Arc::clone(&reached);
+        yulius_app::race::on(
+            super::Point::CloseDecided,
+            Path::new(id.as_str()),
+            move || seen.store(true, std::sync::atomic::Ordering::SeqCst),
+        );
         app.delete_account(&ctx, account.as_str()).await?;
+        assert!(
+            reached.load(std::sync::atomic::Ordering::SeqCst),
+            "the removal tried to close the owner as Done"
+        );
         let status = super::status_of(app, &id).await.0;
         assert_ne!(status, Some(TaskStatus::Closed), "{status:?}");
         Ok(())
