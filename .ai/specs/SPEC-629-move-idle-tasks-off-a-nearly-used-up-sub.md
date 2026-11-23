@@ -214,23 +214,30 @@ Each test below was shown to fail with the line it guards undone, then restored:
   fails. `serve::tests::each_harness_has_a_rebalance_threshold_of_50_to_98` checks the variables,
   the default and the 50–98 range.
 - Told once (RBL-006, RBL-007): with the episode check removed, `rebalance::nothing_has_room_is_told_once`
-  fails (three lines). With `key` and `once` dropped in `notifications.js`, the e2e test
-  "a task moved off a nearly used-up subscription is told once (SPEC-629)" fails.
+  fails (three lines). With the notice not posted, `rebalance::an_idle_task_leaves_a_subscription_past_the_threshold`
+  and `rebalance::nothing_has_room_is_told_once` fail; the first also reads the notice back from
+  `my_notices` (key `rebalance:<task id>`, with its link to the task).
 - Codex: `codex::a_rebalance_moves_a_finished_codex_goal_task_and_keeps_it_done` moves an idle Codex
   goal task in the same conversation with `prompt: None` and keeps Done.
 - Store: `a_pin_names_the_chosen_subscription_until_it_is_removed`; the migration list pins schema
-  89 to `0090_task_account_pin.sql` after dev's 0089.
+  92 to `0090_task_account_pin.sql`, after dev's 0089, 0091, 0088 and 0092.
 
-Runs at the final code: `scripts/cargo nextest run -p yulius-domain -p yulius-store -p yulius-app
--p yulius-contracts -p yulius` passed 4890 tests (24 skipped); `scripts/cargo clippy --locked
---workspace --all-targets --all-features -- -D warnings` and `cargo doc --workspace -D warnings`
-are clean; `npx e2e run tests/notifications.e2e.ts` passed 3; `scripts/dev quick` passed. Yulius CI
-run af8eaa6a failed `docs` at `ba45e49` (private intra-doc links), fixed in `84fcae6e5`, whose run
-passed. `yulius security-scan` printed "Security scan disabled" (Vidoc is off for this project; nothing was scanned, not a pass).
+Runs at the final code (merged with dev at 6611b4d54): `scripts/cargo nextest run -p yulius-domain
+-p yulius-store -p yulius-app -p yulius-contracts -p yulius` ran 4964 tests: 4963 passed and
+`parking::a_staging_outcome_reaches_its_task_once` failed once under that load. It was on dev before
+this change and touches no rebalance code; alone it passed 3 of 3 and 30 of 30 with
+`--stress-count 30`; filed as #1712. `scripts/cargo clippy --locked --workspace --all-targets
+--all-features -- -D warnings` and `cargo doc --workspace -D warnings` are clean; `scripts/dev
+quick` passed. Yulius CI run af8eaa6a failed `docs` at `ba45e49` (private intra-doc links), fixed
+in `84fcae6e5`; the runs at `84fcae6e5` and `52162c900` passed. `yulius security-scan` printed
+"Security scan disabled" (Vidoc is off for this project; nothing was scanned, not a pass).
 
 Reviews: round 1 (Fable 5.2) at `ba45e49` asked for changes (1 blocker, 3 major, 7 minor, 2 nit),
 answered in `84fcae6e5`, `9df7cc5b5` and the tests after it. Round 2 at `ac6020ef1` asked for changes
-in the park path (2 major, 4 minor, 3 nit), answered in the commits after it.
+in the park path (2 major, 4 minor, 3 nit), answered in the commits after it. Round 3 approved
+`52162c900` (3 minor, 1 nit left). After it, dev brought SPEC-624's keyed notices: the live
+`task.rebalanced` event became one stored notice per task (`rebalance:<task id>`), and a switch
+whose old run did not end in time marks its target failed.
 
 Not tested here: real Claude Code, Codex or Antigravity subscriptions and their usage readings
 (synthetic usage and the fake agent stand in); the fake agent runs no hooks, so the tests record a
