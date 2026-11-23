@@ -232,6 +232,9 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
     // A snapshot import's checkout a failed import left (ADR-0213).
     write(&w.at("import-worktrees/old/import-j1/src/a.txt"), "x")?;
     write(&w.at("import-worktrees/live/import-j2/src/a.txt"), "x")?;
+    // Script watches' files (SPEC-630): written by the sandbox's mapped ids too.
+    write(&w.at("watches/old/home/.cache/x"), "x")?;
+    write(&w.at("watches/live/home/.cache/x"), "x")?;
     w.remove("old").await?;
 
     let early = w.h.app.run_leftovers_round().await.ok_or("round")?;
@@ -252,9 +255,14 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
         "runtime/sandboxes/old",
         "cd/old",
         "import-worktrees/old",
+        "watches/old",
     ] {
         assert!(!w.at(gone).exists(), "{gone} is gone");
     }
+    assert!(
+        w.holders.mapped().contains(&w.at("watches/old")),
+        "watch files go through the mapped removal"
+    );
     let mapped = w.holders.mapped();
     assert!(
         mapped.contains(&w.at("sysroots/old")),
@@ -288,6 +296,7 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
     }
     assert!(w.at("sysroots/live").exists() && w.at("cd/live").exists());
     assert!(w.at("import-worktrees/live/import-j2").exists());
+    assert!(w.at("watches/live/home/.cache/x").exists());
     let audited = w.audit("old", "leftovers.delete").await?;
     assert_eq!(audited.len(), report.deleted, "{audited:?}");
     assert!(

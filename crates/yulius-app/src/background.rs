@@ -68,6 +68,8 @@ impl App {
         self.begin_cross_restore();
         // The Superagents' checks, read before anything can save them (SPEC-487 CHK-002).
         self.restore_superagent_checks();
+        // Script watches (SPEC-630): runs a restart interrupted are recorded, then the scheduler.
+        self.start_watch_scheduler();
         let checks = Arc::clone(self);
         tokio::spawn(async move {
             // A Superagent that is not running is started for a due check (CHK-004).
