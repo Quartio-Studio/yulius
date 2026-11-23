@@ -66,7 +66,7 @@ the shifted clock (`turn_began_ms`, `last_stop_ms`); no test hit that, and it is
 ## Plan
 
 - [x] Spec with the root cause of the late Stop
-- [ ] Deterministic regression: an opening submit held past the held-message flag
+- [x] Deterministic regression: an opening submit held past the held-message flag
 - [ ] Hook send times read on Yulius's clock
 - [ ] Docs, ADR and changes entry
 - [ ] Independent review approves the head

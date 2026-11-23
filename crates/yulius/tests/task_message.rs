@@ -674,7 +674,7 @@ const HELD_MESSAGE_NOTICE: &str = "Yulius holds a message for this session: text
 /// [`app`] on a clock the test moves, which starts `behind_ms` behind the system's.
 async fn app_behind(data: &Path, behind_ms: i64) -> Result<(Arc<App>, Arc<ShiftedClock>), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let clock = Arc::new(ShiftedClock(AtomicI64::new(-behind_ms)));
+    let clock = Arc::new(ShiftedClock::new(-behind_ms));
     let probe = Arc::new(ScriptedUsage::default());
     let (app, _) = start_on(data, &fake, fake_agent(), 0, probe, clock.clone(), |_| {}).await?;
     Ok((app, clock))
@@ -724,7 +724,7 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
         // They type half a prompt and leave it; two minutes pass.
         app.terminal_input(&ctx, &attach, b"half a thought", false)
             .await?;
-        clock.0.store(-9 * MINUTE, Ordering::SeqCst);
+        clock.shift(-9 * MINUTE);
 
         let message = json!({"task_id": id.as_str(), "text": "Go on"});
         let Err(refused) = app.tool_task_message(&caller, &message).await else {
@@ -752,7 +752,7 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
         );
         // Eleven minutes after their last key it is refused all the same, and its sender is
         // the one who was told: no flag, no line in the terminal.
-        clock.0.store(0, Ordering::SeqCst);
+        clock.shift(0);
         let again = app.tool_task_message(&caller, &message).await.err();
         assert!(
             matches!(&again, Some(AppError::Conflict(why)) if why.contains("prompt box")),
@@ -774,7 +774,7 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
         })
         .await?;
         // The minute after their Enter passes (DRF-002), and the same message is typed.
-        clock.0.store(MINUTE + 1_000, Ordering::SeqCst);
+        clock.shift(MINUTE + 1_000);
         let answer = app.tool_task_message(&caller, &message).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
         wait_for("the message", Duration::from_secs(30), || async {
@@ -812,7 +812,7 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
             matches!(&typing, Some(AppError::Conflict(why)) if why.contains("in the last minute")),
             "{typing:?}"
         );
-        clock.0.store(-9 * MINUTE, Ordering::SeqCst);
+        clock.shift(-9 * MINUTE);
         // Without it: refused, and told how to send past it.
         let plain = json!({"task_id": id.as_str(), "text": "Go on"});
         let refused = app.tool_task_message(&caller, &plain).await.err();
@@ -934,7 +934,7 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
         assert_eq!(audited(&data, &id)?.len(), 1);
         assert!(audited(&data, &id)?[0].1.contains("with_draft"));
         // The box is empty again: the next plain message is typed, a minute later.
-        clock.0.store(-7 * MINUTE, Ordering::SeqCst);
+        clock.shift(-7 * MINUTE);
         let again = app
             .tool_task_message(
                 &caller,
@@ -961,7 +961,7 @@ fn a_message_sent_past_a_draft_from_before_a_restart_ends_that_draft() -> TestRe
     let first = runtime()?;
     let (port, id, caller) = first.block_on(async {
         // The first server's clock is five minutes behind: the draft is that old afterwards.
-        let clock = Arc::new(ShiftedClock(AtomicI64::new(-5 * MINUTE)));
+        let clock = Arc::new(ShiftedClock::new(-5 * MINUTE));
         let probe = Arc::new(ScriptedUsage::default());
         let (app, port) = start_on(&data, &fake, fake_agent(), 0, probe, clock, |_| {}).await?;
         let (id, caller) = running(&app, &data).await?;
@@ -1185,14 +1185,14 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
             .await?;
 
         // Two minutes later its Yulius MCP has long been silent, and the reconnect waits.
-        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        clock.shift(-11 * MINUTE);
         assert!(app.watch_mcp(&bounds).await.is_empty());
         assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
         let mut said = notices(&mut watch);
         assert!(said.is_empty(), "told within ten minutes: {said:?}");
 
         // Eleven minutes after their last key the person is told, once.
-        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        clock.shift(-2 * MINUTE);
         for _ in 0..2 {
             assert!(app.watch_mcp(&bounds).await.is_empty());
         }
@@ -1230,7 +1230,7 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
             matches!(support::attention(&app, id.as_str()).await, Ok(Value::Null))
         })
         .await?;
-        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        clock.shift(-MINUTE + 1_000);
         // Passes run until the turn of the person's prompt has closed.
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut typed = Vec::new();
@@ -1268,73 +1268,46 @@ async fn idle_full_screen(
     data: &Path,
     behind_ms: i64,
 ) -> Result<(Arc<App>, Arc<ShiftedClock>, TaskId, ProjectCaller), Error> {
-    let (app, clock, id, caller, _) = idle_full_screen_late(data, behind_ms, false).await?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let clock = Arc::new(ShiftedClock::new(-behind_ms));
+    let probe = Arc::new(ScriptedUsage::default());
+    let (app, _) = start_on(data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
+    let (id, caller) = running(&app, data).await?;
+    turn_ended(&app, &id).await?;
     Ok((app, clock, id, caller))
 }
 
-/// The opening prompt's submit hook, kept at its arrival (`race::Point::HookArrived`) until
-/// [`Self::release`]. Its client gave up on it meanwhile (`HOOK_TIMEOUT`), and the agent went on
-/// and ended its turn, as on a loaded host (#1615).
+/// Waits until the turn of `id` ended and its prompt box is drawn empty.
+async fn turn_ended(app: &App, id: &TaskId) -> TestResult {
+    wait_for("the turn's end", Duration::from_secs(30), || async {
+        activity(app, id).await.is_some_and(Activity::is_idle)
+    })
+    .await?;
+    wait_for("the empty prompt box", Duration::from_secs(30), || async {
+        fixture_box_empty(app, id)
+    })
+    .await
+}
+
+/// A prompt's submit hook, kept at its arrival (`race::Point::HookArrived`) until
+/// [`Self::release`]. Its client gave up on it meanwhile (`HOOK_TIMEOUT`), and the agent
+/// answered and ended its turn, as on a loaded host (#1615).
 struct HeldSubmit {
     release: std::sync::mpsc::Sender<()>,
 }
 
 impl HeldSubmit {
-    /// Lets the submit reach Yulius, and waits until Yulius answered it.
-    async fn release(self, app: &App, id: &TaskId) -> TestResult {
-        let before = app.prompts_passed(id);
-        self.release.send(())?;
-        wait_for(
-            "the late submit's answer",
-            Duration::from_secs(30),
-            || async { app.prompts_passed(id) > before },
-        )
-        .await
-    }
-}
-
-/// [`idle_full_screen`], with the opening prompt's submit hook kept back when `late_submit` says
-/// so: the turn ends by its Stop alone, and the submit comes when the test releases it.
-async fn idle_full_screen_late(
-    data: &Path,
-    behind_ms: i64,
-    late_submit: bool,
-) -> Result<
-    (
-        Arc<App>,
-        Arc<ShiftedClock>,
-        TaskId,
-        ProjectCaller,
-        Option<HeldSubmit>,
-    ),
-    Error,
-> {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let clock = Arc::new(ShiftedClock(AtomicI64::new(-behind_ms)));
-    let probe = Arc::new(ScriptedUsage::default());
-    // The agent starts its session once the hold below is in place.
-    let stuck = data.join("stuck-at-start");
-    if late_submit {
-        std::fs::write(&stuck, b"")?;
-    }
-    let agent = FakeAgentOptions {
-        stuck_at_start_file: late_submit.then(|| stuck.clone()),
-        ..full_screen()
-    };
-    let (app, _) = start_on(data, &fake, agent, 0, probe, clock.clone(), |_| {}).await?;
-    let (sandbox, user) = seed(&app, data, &["a-only"]).await?;
-    let prompt = "Budget: answer with an echo";
-    let id = new_task(&app, &sandbox, &user, prompt, TaskMode::Prompt).await?;
-    let held = if late_submit {
-        let session = || async {
-            let attempt = app.deps.store.live_attempt(&id).await.ok().flatten();
-            attempt.and_then(|attempt| attempt.provider_session_id)
-        };
-        wait_for("the run's session", Duration::from_secs(30), || async {
-            session().await.is_some()
-        })
-        .await?;
-        let session = session().await.ok_or("session")?;
+    /// The person sends `prompt` through `attach`; its submit hook is held, and the turn it
+    /// started ends without it.
+    async fn send(
+        app: &Arc<App>,
+        ctx: &AuthContext,
+        attach: &TerminalAttach,
+        prompt: &str,
+    ) -> Result<Self, Error> {
+        let id = &attach.task_id;
+        let attempt = app.deps.store.live_attempt(id).await?.ok_or("run")?;
+        let session = attempt.provider_session_id.ok_or("session")?;
         let (reached, parked) = tokio::sync::oneshot::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
         yulius_app::race::on(
@@ -1347,25 +1320,29 @@ async fn idle_full_screen_late(
                 assert!(go_on.is_ok(), "the held submit was never released");
             },
         );
-        std::fs::remove_file(&stuck)?;
+        app.terminal_input(ctx, attach, format!("{prompt}\r").as_bytes(), false)
+            .await?;
         tokio::time::timeout(Duration::from_secs(30), parked).await??;
-        Some(HeldSubmit { release })
-    } else {
-        None
-    };
-    wait_for("the first answer", Duration::from_secs(30), || async {
-        screen(&app, &id).contains("ECHO: Budget: answer with an echo")
-    })
-    .await?;
-    wait_for("the first turn's end", Duration::from_secs(30), || async {
-        activity(&app, &id).await.is_some_and(Activity::is_idle)
-    })
-    .await?;
-    wait_for("the empty prompt box", Duration::from_secs(30), || async {
-        fixture_box_empty(&app, &id)
-    })
-    .await?;
-    Ok((app, clock, id, superagent(&sandbox, &user, "admin"), held))
+        let answer = format!("ECHO: {prompt}");
+        wait_for("the answer", Duration::from_secs(30), || async {
+            screen(app, id).contains(&answer)
+        })
+        .await?;
+        turn_ended(app, id).await?;
+        Ok(Self { release })
+    }
+
+    /// Lets the submit reach Yulius, and waits until Yulius answered it.
+    async fn release(self, app: &App, id: &TaskId) -> TestResult {
+        let before = app.prompts_passed(id);
+        self.release.send(())?;
+        wait_for(
+            "the late submit's answer",
+            Duration::from_secs(30),
+            || async { app.prompts_passed(id) > before },
+        )
+        .await
+    }
 }
 
 /// The mark of a possible draft in the folder of `id`'s live run (SPEC-480 DRF-009).
@@ -1417,7 +1394,7 @@ fn a_key_that_left_nothing_in_the_prompt_box_holds_no_message() -> TestResult {
 
         // Half a minute later the person may still be there: refused, whatever the screen shows.
         let message = json!({"task_id": id.as_str(), "text": "Go on"});
-        clock.0.store(-13 * MINUTE + 30_000, Ordering::SeqCst);
+        clock.shift(-13 * MINUTE + 30_000);
         let young = app.tool_task_message(&caller, &message).await.err();
         assert!(
             matches!(&young, Some(AppError::Conflict(why)) if why.contains("prompt box")),
@@ -1426,7 +1403,7 @@ fn a_key_that_left_nothing_in_the_prompt_box_holds_no_message() -> TestResult {
         assert!(mark.exists());
 
         // Two minutes after the key the box is seen empty, and the message is typed.
-        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        clock.shift(-11 * MINUTE);
         let answer = app.tool_task_message(&caller, &message).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
         wait_for("the message", Duration::from_secs(30), || async {
@@ -1467,7 +1444,7 @@ fn a_message_of_yulius_is_typed_into_a_box_a_key_left_empty() -> TestResult {
         app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
             .await?;
 
-        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        clock.shift(-2 * MINUTE);
         let typed = app.watch_mcp(&bounds).await;
         assert_eq!(
             typed,
@@ -1500,28 +1477,33 @@ fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
     draft_held_until_cleared(false)
 }
 
-/// #1615: on a loaded host the opening prompt's submit hook reaches Yulius after its client gave
-/// up, the agent ended its turn and the steps of SPEC-572 AC2 flagged the held message and
-/// cleared the box. That submit was sent before the turn's Stop, so it changes nothing: the
-/// flag stands through the keyboard minute and ends with the hold. On the test's shifted clock
-/// its send time used to read as its arrival, after the Stop: it set Working over the flag, and
-/// nothing raised the flag again within the minute.
+/// #1615: on a loaded host a prompt's submit hook reaches Yulius after its client gave up, the
+/// agent ended its turn, and the steps of SPEC-572 AC2 flagged the held message and cleared the
+/// box. That submit was sent before the turn's Stop, so it changes nothing: the flag stands
+/// through the keyboard minute and ends with the hold. On the test's shifted clock its send time
+/// used to read as its arrival, after the Stop: it set Working over the flag, and nothing raised
+/// the flag again within the minute. (In #1615 it was the opening prompt's submit; a prompt the
+/// person sends is held here, as its session is known before its Enter.)
 #[test]
 fn a_submit_that_arrives_after_its_turn_keeps_the_held_message_flag() -> TestResult {
     draft_held_until_cleared(true)
 }
 
-/// The steps of SPEC-572 AC2, the opening prompt's submit kept back until the box is cleared
+/// The steps of SPEC-572 AC2, after a prompt whose submit is kept back until the box is cleared
 /// when `late_submit` says so.
 fn draft_held_until_cleared(late_submit: bool) -> TestResult {
     use yulius_app::mcp_watch::{RECONNECT_TEXT, WatchAction, WatchBounds};
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let (app, clock, id, caller, held) =
-            idle_full_screen_late(&data, 13 * MINUTE, late_submit).await?;
+        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
         crate::pr_watch::leave_verification_step(&app, &id).await?;
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
+        let held = if late_submit {
+            Some(HeldSubmit::send(&app, &ctx, &attach, "one more thing").await?)
+        } else {
+            None
+        };
         let mut watch = app.runtime(&id).hub.watch();
         let bounds = WatchBounds {
             silent_after_ms: 1_000,
@@ -1536,7 +1518,7 @@ fn draft_held_until_cleared(late_submit: bool) -> TestResult {
         .await?;
 
         // Eleven minutes later: held, flagged, said once.
-        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        clock.shift(-2 * MINUTE);
         assert!(app.watch_mcp(&bounds).await.is_empty());
         assert_eq!(
             support::attention(&app, id.as_str()).await?,
@@ -1553,7 +1535,7 @@ fn draft_held_until_cleared(late_submit: bool) -> TestResult {
         if let Some(held) = held {
             held.release(&app, &id).await?;
         }
-        clock.0.store(-2 * MINUTE + 30_000, Ordering::SeqCst);
+        clock.shift(-2 * MINUTE + 30_000);
         assert!(app.watch_mcp(&bounds).await.is_empty());
         assert_eq!(
             support::attention(&app, id.as_str()).await?,
@@ -1561,7 +1543,7 @@ fn draft_held_until_cleared(late_submit: bool) -> TestResult {
         );
 
         // Past the minute the box is seen empty: the command is typed, the flag ends.
-        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        clock.shift(-MINUTE + 1_000);
         assert_eq!(
             app.watch_mcp(&bounds).await,
             vec![(id.clone(), WatchAction::Reconnect)]
@@ -1595,7 +1577,7 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
     rt.block_on(async {
         let fake =
             locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-        let clock = Arc::new(ShiftedClock(AtomicI64::new(-13 * MINUTE)));
+        let clock = Arc::new(ShiftedClock::new(-13 * MINUTE));
         let probe = Arc::new(ScriptedUsage::default());
         let hookless = FakeAgentOptions {
             hooks: false,
@@ -1626,7 +1608,7 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
         })
         .await?;
         let mark = draft_mark(&app, &id).await?;
-        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        clock.shift(-2 * MINUTE);
         wait_for("the flag", Duration::from_secs(30), || async {
             app.watch_mcp(&bounds).await.is_empty()
                 && matches!(
@@ -1642,7 +1624,7 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
             fixture_box_empty(&app, &id)
         })
         .await?;
-        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        clock.shift(-MINUTE + 1_000);
         assert_eq!(
             app.watch_mcp(&bounds).await,
             vec![(id.clone(), WatchAction::Reconnect)]
@@ -1668,7 +1650,7 @@ fn a_key_typed_while_the_empty_box_is_taken_in_holds_the_message() -> TestResult
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
         app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
             .await?;
-        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        clock.shift(-11 * MINUTE);
         // The person's next key arrives exactly there (recorded as a viewer's key is, before
         // it is passed on).
         let mark = draft_mark(&app, &id).await?;
@@ -1712,7 +1694,7 @@ fn a_stash_hint_that_replaces_the_empty_box_proof_keeps_the_mark() -> TestResult
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
         app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
             .await?;
-        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        clock.shift(-11 * MINUTE);
         let runtime = app.runtime(&id);
         yulius_app::race::on(
             yulius_app::race::Point::BoxSeenEmpty,
@@ -1751,7 +1733,7 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
     let first = runtime()?;
     let (port, id, caller) = first.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
-        let clock = Arc::new(ShiftedClock(AtomicI64::new(-2 * MINUTE)));
+        let clock = Arc::new(ShiftedClock::new(-2 * MINUTE));
         let (app, port) =
             start_on(&data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
         let (id, caller) = running(&app, &data).await?;
@@ -1765,7 +1747,7 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
             screen(&app, &id).contains("❯ draft")
         })
         .await?;
-        clock.0.store(0, Ordering::SeqCst);
+        clock.shift(0);
         app.terminal_input(&ctx, &attach, b"\x15", false).await?;
         wait_for("the cleared box", Duration::from_secs(30), || async {
             fixture_box_empty(&app, &id)
@@ -1779,7 +1761,7 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
 
     let rt = runtime()?;
     rt.block_on(async {
-        let clock = Arc::new(ShiftedClock(AtomicI64::new(0)));
+        let clock = Arc::new(ShiftedClock::new(0));
         let probe = Arc::new(ScriptedUsage::default());
         let (app, _) = start_on(
             &data,
@@ -1806,7 +1788,7 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
             "{young:?}"
         );
         assert!(mark.exists());
-        clock.0.store(2 * MINUTE, Ordering::SeqCst);
+        clock.shift(2 * MINUTE);
         let answer = send(&app, &caller, &id).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
         wait_for("the message", Duration::from_secs(30), || async {
@@ -1884,7 +1866,7 @@ async fn codex_with_pr_fixture(
     use yulius_domain::ci::RunState;
 
     let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-    let clock = Arc::new(ShiftedClock(AtomicI64::new(-13 * MINUTE)));
+    let clock = Arc::new(ShiftedClock::new(-13 * MINUTE));
     let probe = Arc::new(ScriptedUsage::default());
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
@@ -1936,7 +1918,7 @@ fn reattached_idle_codex_repaints_and_receives_its_ci_notice() -> TestResult {
             full_screen(),
             tokio::net::TcpListener::from_std(listener)?,
             Arc::new(ScriptedUsage::default()),
-            Arc::new(ShiftedClock(AtomicI64::new(0))),
+            Arc::new(ShiftedClock::new(0)),
         )
         .await?;
         app.reconcile().await?;
@@ -2044,7 +2026,7 @@ fn restarting_the_server_during_a_codex_repaint_restores_the_childs_size() -> Te
             fake_agent(),
             tokio::net::TcpListener::from_std(listener)?,
             Arc::new(ScriptedUsage::default()),
-            Arc::new(ShiftedClock(AtomicI64::new(0))),
+            Arc::new(ShiftedClock::new(0)),
         )
         .await?;
         app.reconcile().await?;
@@ -2608,7 +2590,7 @@ fn codex_paste_across_restart(interrupt_before_enter: bool) -> TestResult {
             fake_agent(),
             tokio::net::TcpListener::from_std(listener)?,
             Arc::new(ScriptedUsage::default()),
-            Arc::new(ShiftedClock(AtomicI64::new(0))),
+            Arc::new(ShiftedClock::new(0)),
         )
         .await?;
         app.reconcile().await?;
@@ -2688,7 +2670,7 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
         .await?;
         let (red, job) = crate::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
         app.deps.store.insert_ci_run(&red, &[job]).await?;
-        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        clock.shift(-2 * MINUTE);
         assert!(app.watch_prs(&bounds).await.is_empty());
         assert_eq!(
             support::attention(&app, id.as_str()).await?,
@@ -2711,12 +2693,12 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
         runtime
             .hub
             .output(runtime.hub.output_seq() + 1, repaint.as_bytes());
-        clock.0.store(-2 * MINUTE + 30_000, Ordering::SeqCst);
+        clock.shift(-2 * MINUTE + 30_000);
         assert!(app.watch_prs(&bounds).await.is_empty());
         let mark = draft_mark(&app, &id).await?;
         assert!(mark.exists());
 
-        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        clock.shift(-MINUTE + 1_000);
         let news = app.watch_prs(&bounds).await;
         let [(recipient, notice)] = news.as_slice() else {
             return Err(format!("expected one Codex PR notice, got {news:?}").into());
@@ -2772,7 +2754,7 @@ fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult
 
         // Eleven minutes after their last key: the news waits and the task is flagged; a
         // second pass leaves it so.
-        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        clock.shift(-2 * MINUTE);
         for _ in 0..2 {
             assert_eq!(watched(app.clone(), id.clone()).await, None);
             assert_eq!(
@@ -2787,7 +2769,7 @@ fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult
             fixture_box_empty(&app, &id)
         })
         .await?;
-        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        clock.shift(-MINUTE + 1_000);
         let typed = watched(app.clone(), id.clone())
             .await
             .ok_or("the news was not typed into the flagged task")?;
@@ -2816,7 +2798,7 @@ fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult
             .store
             .set_activity(&id, Some(Activity::NeedsAttention), app.now())
             .await?;
-        clock.0.store(MINUTE, Ordering::SeqCst);
+        clock.shift(MINUTE);
         assert_eq!(watched(app.clone(), id.clone()).await, None);
         app.terminal_leave(&attach).await;
         stop(&app, &id).await
@@ -2851,7 +2833,7 @@ fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult
 
     let rt = runtime()?;
     rt.block_on(async {
-        let clock = Arc::new(ShiftedClock(AtomicI64::new(-3 * MINUTE)));
+        let clock = Arc::new(ShiftedClock::new(-3 * MINUTE));
         let probe = Arc::new(ScriptedUsage::default());
         let (app, _) = start_on(
             &data,
@@ -2886,7 +2868,7 @@ fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult
         let mut watch = app.runtime(&id).hub.watch();
         app.terminal_input(&ctx, &attach, b"half a thought", false)
             .await?;
-        clock.0.store(-MINUTE, Ordering::SeqCst);
+        clock.shift(-MINUTE);
 
         // A pass that is not the last waits and says nothing; the last one tells the person.
         let woken = app.wake_after_outage(down_since, started, false).await;
@@ -3208,7 +3190,7 @@ fn a_stale_mark_leaves_the_run_folder_with_the_next_prompt() -> TestResult {
         app.terminal_leave(&attach).await;
         // A mark the server does not remember, and the minute after their Enter has passed.
         std::fs::write(&mark, app.now().0.to_string())?;
-        clock.0.store(0, Ordering::SeqCst);
+        clock.shift(0);
         let answer = send(&app, &caller, &id).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
         wait_for("the mark's removal", Duration::from_secs(30), || async {
@@ -3258,7 +3240,7 @@ fn a_mark_ahead_of_the_clock_is_read_as_typed_now() -> TestResult {
 
     let rt = runtime()?;
     rt.block_on(async {
-        let clock = Arc::new(ShiftedClock(AtomicI64::new(0)));
+        let clock = Arc::new(ShiftedClock::new(0));
         let probe = Arc::new(ScriptedUsage::default());
         let (app, _) = start_on(
             &data,
@@ -3287,7 +3269,7 @@ fn a_mark_ahead_of_the_clock_is_read_as_typed_now() -> TestResult {
         };
         // Eleven minutes later (the run was spawned on the system's clock, so this one goes
         // ahead of it).
-        clock.0.store(11 * MINUTE, Ordering::SeqCst);
+        clock.shift(11 * MINUTE);
         assert!(app.watch_mcp(&bounds).await.is_empty());
         assert_eq!(
             support::attention(&app, id.as_str()).await?,
@@ -3784,7 +3766,7 @@ fn an_answer_leaves_a_question_asked_while_it_was_typed() -> TestResult {
 /// the next submit. A refusal leaves it available to its author.
 async fn restored_draft(submit: &str, response: &str) -> TestResult {
     let (_dir, data) = data_dir()?;
-    let clock = Arc::new(ShiftedClock(AtomicI64::new(-3 * MINUTE)));
+    let clock = Arc::new(ShiftedClock::new(-3 * MINUTE));
     let agent = FakeAgentOptions {
         tui: true,
         ..fake_agent()
@@ -3816,7 +3798,7 @@ async fn restored_draft(submit: &str, response: &str) -> TestResult {
         },
     )
     .await?;
-    clock.0.store(0, Ordering::SeqCst);
+    clock.shift(0);
     let message = json!({"task_id": id.as_str(), "text": "Go on"});
     let reply = app.tool_task_message(&caller, &message).await;
     if reply.is_ok() {
@@ -3852,7 +3834,7 @@ async fn restored_draft(submit: &str, response: &str) -> TestResult {
         read_alone(&app, &id, "my draft")
     })
     .await?;
-    clock.0.store(2 * MINUTE, Ordering::SeqCst);
+    clock.shift(2 * MINUTE);
     assert_eq!(
         app.tool_task_message(&caller, &message).await?["delivered"],
         "sent"
@@ -3896,7 +3878,7 @@ fn a_new_key_keeps_its_mark_during_draft_cleanup() -> TestResult {
                 run_dir,
                 move || {
                     use futures::FutureExt as _;
-                    clock.0.fetch_add(1_000, Ordering::SeqCst);
+                    clock.advance(1_000);
                     // Start the key in the check/remove gap. If cleanup holds its lock,
                     // let the hook finish and the same pending key proceed afterwards.
                     let mut key = Box::pin(async move {
