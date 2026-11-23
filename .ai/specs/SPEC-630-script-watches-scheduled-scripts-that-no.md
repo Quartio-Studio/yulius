@@ -465,3 +465,19 @@ undone by hand:
 - Whole `yulius::main` binary: 2,738 passed. Library crates: 1,901 passed. Clippy
   `--workspace -D warnings` and `scripts/dev quick` are clean. `npx e2e run tests/watches.e2e.ts`
   passed.
+
+### Review round 2 of PR #1722 (head `b5b8abd30`): approved; its notes fixed after it
+
+Round 2 approved `b5b8abd30`, with the reviewer's probe on the owner-or-administrator rule
+failing its test. It left two minors and two nits:
+- The Run-now `again` assertion now checks "a run of this watch is going". With that refusal
+  switched off, the test fails.
+- `docs/api.md` says that Run now's 409 also covers a full instance, that resuming an active
+  watch changes nothing, that a removal frees the state files, and that `watch_update` keeps the
+  fields it is not given.
+- The edit no longer computes a `since` the store ignores.
+- **Kept as it is, with the reason:** the state directory is removed right after the cancel. A
+  cancelled run that writes files at that moment can leave the directory with a warning in the
+  log. The leftovers of a removed project, and the next removal attempt by a person, clear it.
+  Waiting for the run's end would hold the removal's answer on a process exit, which the API
+  does not do elsewhere.

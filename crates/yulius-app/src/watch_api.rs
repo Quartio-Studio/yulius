@@ -256,8 +256,7 @@ impl App {
             timeout_seconds: checked.timeout_seconds,
             secrets: checked.secrets,
             updated_at: now,
-            // A new schedule counts from now; an interval keeps its last start.
-            since: if schedule_changed { now } else { watch.since },
+            // `since` is written by `update_watch` itself: now for a new schedule, else kept.
             ..watch.clone()
         };
         if !self

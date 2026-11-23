@@ -1517,6 +1517,15 @@ async fn removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule() ->
     )
     .await?;
     assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+    // Refused because a run of it goes, before the instance's bound (review round 2).
+    assert!(
+        again
+            .body
+            .to_string()
+            .contains("a run of this watch is going"),
+        "{}",
+        again.body
+    );
     let full = http(
         &w,
         Method::POST,

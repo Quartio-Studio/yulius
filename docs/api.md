@@ -2126,17 +2126,18 @@ output and error tail are redacted of the project's agent secrets.
 | POST | `/api/sandboxes/{sid}/watches` | (write) `{name, script, every?: "15m"\|"2h"\|"1d" (1 minute to 7 days), cron?, utc_offset_minutes?, expiry?: "never"\|"2h"\|"3d", timeout_seconds?: 1-3600 (300), secrets?: [NAME]}` → 201 `Watch`, owned by the caller. Exactly one of `every` and `cron`. 422 for a name outside 1-40 of `a-z0-9-` (starting with a letter or digit), an empty script or one over 16 KiB, a bad schedule, an expiry that is a time, more than 20 secret names, an unknown field; 409 for a name taken or a project with 20 watches. Audited `watch.create` |
 | GET | `/api/watches/{id}` | (read) → `Watch` |
 | PUT | `/api/watches/{id}` | (its owner) the same body without a new `name` (a name never changes: it keys the watch's notices; 422 for another) → `Watch`; 409 when it changed meanwhile. A new schedule counts from now. Audited `watch.update` |
-| POST | `/api/watches/{id}/run` | (its owner) → 202 `Watch`: it runs once at once, also when paused or ended, and posts as usual; 409 while a run of it goes. Audited `watch.run` |
+| POST | `/api/watches/{id}/run` | (its owner) → 202 `Watch`: it runs once at once, also when paused or ended, and posts as usual; 409 while a run of it goes, or while the instance runs as many watches as it may at once (never queued). Audited `watch.run` |
 | POST | `/api/watches/{id}/pause` | (its owner or a project administrator) → `Watch`. Audited `watch.pause` |
-| POST | `/api/watches/{id}/resume` | (its owner) → `Watch`; an ended watch starts again, its schedule counted from now. Audited `watch.resume` |
-| DELETE | `/api/watches/{id}` | (its owner or a project administrator) → 204: its going run is cancelled and its notices removed. Audited `watch.remove` |
+| POST | `/api/watches/{id}/resume` | (its owner) → `Watch`; a paused or ended watch starts again, its schedule counted from now, audited `watch.resume`; an active watch is left as it is |
+| DELETE | `/api/watches/{id}` | (its owner or a project administrator) → 204: its going run is cancelled, its notices and its state files removed. Audited `watch.remove` |
 
 Each change, and each run's start and end, publishes `watches.updated` `{"sandbox_id"}`. A
 run's output posts the notice `watch:<name>` (category `done`), the third failure in a row the
 notice `watch:<name>:failing` (category `failed`), both for the owner only
 (`GET /api/me/notices`). The Superagent and a person's own agent manage watches with the person
 tools `watches_list`, `watch_create`, `watch_update`, `watch_run`, `watch_pause` (with
-`paused: false` to resume) and `watch_remove`, taking the same fields as the bodies above.
+`paused: false` to resume) and `watch_remove`, taking the same fields as the bodies above;
+`watch_update` keeps every field it is not given.
 
 **Brokered commands** — a project's CLIs that need an agent secret as a file, run by agents
 outside their sandbox ([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
