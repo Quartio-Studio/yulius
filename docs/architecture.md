@@ -3643,7 +3643,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
     still testing.
   - Requests staging already contains are `included`.
 - **Deploy.**
-  - `CdRequest::DeployRevision` deploys exactly that commit, as the task's owner.
+  - `CdRequest::DeployRevision` deploys exactly that commit with the task owner's access; the
+    run is the task's (`CdActor::ForTask`, requested by `task:<n>`).
   - One deploy per environment (unique index). It waits, costing no attempt, while another
     run of it goes on or an update holds deploys.
   - A lost or errored run is retried up to 3 attempts, and a person's cancel stands.
@@ -3651,7 +3652,9 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   verified once (`CdRequest::Restore`, a rollback run).
 - **Told and shown.**
   - A running task with an unfinished step shows which part of staging it awaits. The queue
-    delivers its verdict to that session. Finished tasks show the receipt on their page and in lists. Each stage change
+    delivers its verdict to that session. Finished tasks show the receipt on their page and in lists,
+    and hear it only while their idle agent still runs background work that waits for it
+    (`Sender::YuliusAwaited`, [ADR-0466](decisions/0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md)). Each stage change
     updates the task view. If the summary exceeds its budget, sandbox viewers receive a resync.
     [ADR-0437](decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
   - `tell_staging_outcomes` sends delivery outcomes to working sessions once.

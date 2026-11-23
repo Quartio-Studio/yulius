@@ -375,7 +375,7 @@ impl App {
         self.cd_names_present(sandbox, &target).await?;
         let asker = match actor {
             CdActor::Agent(ctx) => Some(*ctx),
-            CdActor::Person(..) => None,
+            CdActor::Person(..) | CdActor::ForTask(..) => None,
         };
         let why = format!("CD {} rollback", env_label(env));
         let secrets = self

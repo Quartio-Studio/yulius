@@ -638,7 +638,8 @@ watching, steering and unblocking.
       the merged revision.
     - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
       verifies that tested revision in revision order, once per task. A running task with an unfinished step shows the full-suite
-      or staging wait. Finished tasks keep the outcome on their delivery. Later deliveries
+      or staging wait. Finished tasks keep the outcome on their delivery; one whose agent still waits
+      for it in a background command hears it and ends Done. Later deliveries
       record inherited failures and complete when staging serves the verified fix.
     - Working tasks hear the failing tests and their introducing merges. One worker takes the repair.
       With no worker available, project CI and Status name the tests and their introducing merges.

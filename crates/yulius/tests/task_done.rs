@@ -8414,3 +8414,291 @@ fn an_exited_process_not_yet_reaped_is_gone() -> TestResult {
     let _ = exited.wait();
     Ok(())
 }
+
+/// SPEC-631 SWK-001 to SWK-003, replaying quartio-v2 task #377 (2026-11-23): the task's pull
+/// request merged with its plan complete, it asked for staging, then ended its turn with a
+/// background shell that waits for the staging verdict. Yulius recorded the verdict silently (a
+/// finished task gets no machine prompt) while the shell kept the task Working, so it never read
+/// Done until its owner closed it. Now each outcome of its requests (gate_failed, deploy_failed,
+/// verified) is typed into the session while that wait runs, also one that waited out a hold or
+/// a turn; once the agent stopped its wait the task is Done with nobody acting, and an outcome
+/// whose wait ended before its admission is recorded silently.
+#[test]
+fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> TestResult {
+    use yulius_app::auth::AuthContext;
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::ports::store_ext::{StagingChange, StagingRequestRecord};
+    use yulius_app::race::Point;
+    use yulius_domain::delivery::DeliveryStage;
+    use yulius_domain::staging::StagingState::{
+        DeployFailed, Deploying, GateFailed, Ready, Testing, Verified,
+    };
+
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    // The agent's staging wait runs until this file exists: the agent stops it.
+    let heard = data.join("outcome-heard");
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            answers_first_message: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Fix: answer with an echo".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Fix".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+                supertask: false,
+            })
+            .await?
+            .id;
+        wait_for("the first answer", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "ECHO: Fix: answer with an echo")
+        })
+        .await?;
+        let idle = || async { activity(&app, &id).await == Some(Activity::Waiting) };
+        wait_for("the first turn's end", Duration::from_secs(30), idle).await?;
+        // Its pull request merged (#1623 at 11:05) with nothing declared left.
+        let store = &app.deps.store;
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(1623),
+            updated_at: app.now(),
+        };
+        store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        let merged = DeliveryRecord {
+            stage: DeliveryStage::MergedIntegration,
+            updated_at: app.now(),
+            ..open
+        };
+        store
+            .transition_delivery(&DeliveryStage::PrOpen, &merged)
+            .await?;
+        let ctx = AuthContext {
+            user: store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        // The sidebar's Working, Needs you and Queued counts: all zero is the Done group.
+        let counts = || async {
+            app.list_sandboxes(&ctx)
+                .await
+                .ok()
+                .and_then(|sandboxes| sandboxes.into_iter().find(|s| s.id == sandbox.as_str()))
+                .map(|s| (s.counts.running, s.counts.needs_attention, s.counts.queued))
+        };
+        let done = || async { counts().await == Some((0, 0, 0)) };
+        wait_for("Done once merged", Duration::from_secs(20), done).await?;
+
+        // 11:12:36: it waits for the staging verdict in a background shell, its turn over.
+        let wait = format!(
+            "/bg while [ ! -e {} ]; do sleep 0.2; done\r",
+            heard.display()
+        );
+        app.send_input(&id, wait.as_bytes()).await?;
+        wait_for("the waiting shell", Duration::from_secs(30), || async {
+            app.probe_idle_shells(&id).await;
+            shown(&app, &id).await.ok().and_then(|(_, shells)| shells) == Some(1)
+        })
+        .await?;
+        assert_eq!(
+            counts().await,
+            Some((1, 0, 0)),
+            "its shell keeps it Working"
+        );
+
+        // Each of its staging requests ends; the verified one replays request 8d7d15c1.
+        let requests = [
+            (
+                "sr-gate",
+                "0123456789abcdef0123456789abcdef01234567",
+                vec![GateFailed],
+                "the full gate failed",
+            ),
+            (
+                "sr-deploy",
+                "abcdef0123456789abcdef0123456789abcdef01",
+                vec![Ready, Deploying, DeployFailed],
+                "the deploy failed",
+            ),
+            (
+                "sr-377",
+                "ec4e7b48426610760b67c18c573c7fc5b185d54b",
+                vec![Ready, Deploying, Verified],
+                "deployed and verified",
+            ),
+        ];
+        for (number, (request, revision, path, note)) in requests.into_iter().enumerate() {
+            let record = StagingRequestRecord {
+                id: request.into(),
+                sandbox_id: sandbox.clone(),
+                environment: "dev".into(),
+                task_id: Some(id.clone()),
+                revision: revision.into(),
+                state: Testing,
+                ci_run_id: Some("3b9642c5-31d7-4472-a76a-70b11580e6e5".into()),
+                cd_run_id: None,
+                attempts: 0,
+                note: None,
+                requested_by: "task:1".into(),
+                told: false,
+                created_at: app.now(),
+                updated_at: app.now(),
+            };
+            assert!(store.insert_staging_request(&record).await?);
+            assert_eq!(app.tell_staging_outcomes().await, 0, "nothing ended yet");
+            let mut from = Testing;
+            for to in path {
+                let change = StagingChange {
+                    note: Some(note.into()),
+                    cd_run_id: (to != GateFailed)
+                        .then(|| "982a24b6-99c2-4bec-9ca4-ed72571d7b51".into()),
+                    ..StagingChange::default()
+                };
+                assert!(
+                    store
+                        .move_staging_request(request, from, to, &change, app.now())
+                        .await?
+                );
+                from = to;
+            }
+            assert_eq!(
+                app.tell_staging_outcomes().await,
+                1,
+                "the finished task's waiting agent hears {request}"
+            );
+            assert!(store.untold_staging_requests().await?.is_empty());
+            wait_for("the outcome's turn", Duration::from_secs(30), || async {
+                screen_contains(
+                    &app,
+                    &id,
+                    &format!("ECHO: Yulius: staging request {request}"),
+                )
+                .await
+            })
+            .await?;
+            wait_for("its end", Duration::from_secs(30), idle).await?;
+            assert_eq!(
+                app.deps.store.attempts(&id).await?.len(),
+                1,
+                "told in the same session ({number})"
+            );
+        }
+        assert!(
+            screen_contains(&app, &id, "waits for this outcome, stop it").await,
+            "the outcome tells the agent to stop its wait"
+        );
+
+        // A later request ends while a hold or a turn keeps the task from idle (review round 1:
+        // a hold its own outcome raised): the outcome waits for the next tick, then is typed.
+        let (app_ref, id_ref) = (&app, &id);
+        let failed = |request: &'static str, revision: &'static str| {
+            let record = StagingRequestRecord {
+                id: request.into(),
+                sandbox_id: sandbox.clone(),
+                environment: "dev".into(),
+                task_id: Some(id.clone()),
+                revision: revision.into(),
+                state: Testing,
+                ci_run_id: None,
+                cd_run_id: None,
+                attempts: 0,
+                note: None,
+                requested_by: "task:1".into(),
+                told: false,
+                created_at: app.now(),
+                updated_at: app.now(),
+            };
+            async move {
+                assert!(store.insert_staging_request(&record).await?);
+                let change = StagingChange::default();
+                let at = app_ref.now();
+                assert!(
+                    store
+                        .move_staging_request(request, Testing, GateFailed, &change, at)
+                        .await?
+                );
+                Ok::<_, BoxError>(())
+            }
+        };
+        let set_activity = |to: Activity| async move {
+            TaskStore::transition_task(
+                store.as_ref(),
+                id_ref,
+                None,
+                TaskStatus::Running,
+                Some(to),
+                app_ref.now(),
+            )
+            .await
+        };
+        failed("sr-held", "1111111111111111111111111111111111111111").await?;
+        for busy in [Activity::NeedsAttention, Activity::Working] {
+            set_activity(busy).await?;
+            for _ in 0..2 {
+                assert_eq!(app.tell_staging_outcomes().await, 0, "{busy:?}");
+            }
+            assert_eq!(
+                store.untold_staging_requests().await?.len(),
+                1,
+                "a {busy:?} task's outcome waits"
+            );
+        }
+        assert!(!screen_contains(&app, &id, "sr-held").await);
+        set_activity(Activity::Waiting).await?;
+        assert_eq!(app.tell_staging_outcomes().await, 1, "typed once idle");
+        wait_for("the held outcome's turn", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: Yulius: staging request sr-held")
+        })
+        .await?;
+        wait_for("its end", Duration::from_secs(30), idle).await?;
+
+        // The wait ends between the decision and the admission: nothing is typed, and the next
+        // tick records the outcome silently. The agent stopped its wait: Done, nobody acting.
+        failed("sr-race", "2222222222222222222222222222222222222222").await?;
+        let (decided, go_on) = support::hold_point(Point::AwaitedOutcomeDecided, id.as_str());
+        let tick = tokio::spawn({
+            let app = Arc::clone(&app);
+            async move { app.tell_staging_outcomes().await }
+        });
+        support::point_reached(decided).await?;
+        std::fs::write(&heard, b"")?;
+        wait_for("the wait's end", Duration::from_secs(30), || async {
+            app.probe_idle_shells(&id).await;
+            shown(&app, &id).await.ok().and_then(|(_, shells)| shells) == Some(0)
+        })
+        .await?;
+        let _ = go_on.send(());
+        assert_eq!(tick.await?, 0, "its work ended before the admission");
+        assert_eq!(store.untold_staging_requests().await?.len(), 1);
+        assert_eq!(app.tell_staging_outcomes().await, 0);
+        assert!(
+            store.untold_staging_requests().await?.is_empty(),
+            "recorded"
+        );
+        assert!(!screen_contains(&app, &id, "sr-race").await, "not typed");
+        wait_for("Done after the wait", Duration::from_secs(30), done).await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

@@ -191,6 +191,11 @@ pub(crate) enum Sender {
     /// Yulius itself, at the last try of a message it gives up after it (the wake after an
     /// outage): the session's person is told whatever the age of their keystroke (DRF-006).
     YuliusLastTry,
+    /// Yulius itself, with the news a finished task's own background work waits for (its
+    /// staging outcome, SPEC-631 SWK-001): typed although the task finished its work, as
+    /// [`Self::Yulius`] otherwise. Its caller passes the admission check that confirms the task
+    /// is still finished and that work still runs (`tell_staging_outcomes`, its only sender).
+    YuliusAwaited,
 }
 
 impl Sender {
@@ -198,9 +203,17 @@ impl Sender {
     fn tells_person(self, held: BoxHeld) -> bool {
         match self {
             Self::Person | Self::OwnerPastDraft => false,
-            Self::Yulius => held.tells_person(),
+            Self::Yulius | Self::YuliusAwaited => held.tells_person(),
             Self::YuliusLastTry => matches!(held, BoxHeld::Draft { .. }),
         }
+    }
+
+    /// Whether Yulius itself sends it (a machine notice), not a person.
+    fn is_yulius(self) -> bool {
+        matches!(
+            self,
+            Self::Yulius | Self::YuliusLastTry | Self::YuliusAwaited
+        )
     }
 }
 
@@ -977,7 +990,7 @@ impl App {
             && runtime.hub.shows_draft()
         {
             drop(mark);
-            if matches!(from, Sender::Yulius | Sender::YuliusLastTry) {
+            if from.is_yulius() {
                 self.tell_of_held_message(
                     task,
                     emptied.max(1),
@@ -1006,7 +1019,7 @@ impl App {
             _ => codex_attempt.as_ref(),
         };
         if let Some(attempt) = &codex_attempt
-            && matches!(from, Sender::Yulius | Sender::YuliusLastTry)
+            && from.is_yulius()
             && !matches!(what, Typed::Notice(_))
         {
             self.settle_codex_input_hold(task, attempt, Some(&pasted_notice(paste)))
@@ -1044,7 +1057,7 @@ impl App {
         }
         tokio::time::sleep(SUBMIT_DELAY).await;
         if task.mode == crate::model::TaskMode::Goal
-            && matches!(from, Sender::Yulius | Sender::YuliusLastTry)
+            && from.is_yulius()
             && let Some(text) = paste
                 .strip_prefix(b"\x1b[200~")
                 .and_then(|data| data.strip_suffix(b"\x1b[201~"))
@@ -1133,7 +1146,7 @@ impl App {
         let AppError::Conflict(problem) = err else {
             return Ok(());
         };
-        let machine = matches!(from, Sender::Yulius | Sender::YuliusLastTry);
+        let machine = from.is_yulius();
         if problem != CODEX_UNREADABLE && !(problem == CODEX_PICKER && machine) {
             return Ok(());
         }
