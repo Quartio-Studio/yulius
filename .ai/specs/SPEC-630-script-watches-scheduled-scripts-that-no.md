@@ -422,3 +422,46 @@ called. The operations doc, this Evidence and the test's name now say so.
   `tests/navigation.e2e.ts` (the Watches link under More) and `tests/automations.e2e.ts`.
 - Not tested here: the page against a real server in a browser (the e2e suite runs on the mock,
   whose routes the UI contract test checks against the server's).
+
+### Review round 1 of PR #1722 (head `98cf1457d`): request changes, all answered
+
+All findings were in this pull request's own code. Each fix's test was seen failing with the fix
+undone by hand:
+- **The rights test could not fail on writer versus administrator (major).**
+  `people_manage_watches_over_http` now has a writer who is not the owner (dave). Their `PUT`,
+  `run`, `pause`, `resume` and `DELETE` are each an exact 403, and their view has no rights. The
+  administrator's `run` is a 403, and the reader's refusals are exact 403s. With the reviewer's
+  probe (`Administer` read as `Configure`), the test fails.
+- **Minor findings:**
+  - A removed watch's state directory goes with it, through the isolation's mapped removal when
+    there is one (`remove_watch_files`).
+  - Run now takes a permit of the instance's run bound or is refused with 409: it never queues
+    presses. A run already going is a 409 too.
+  - An edit writes the schedule's anchor only when the schedule changed (`update_watch(…, since,
+    …)` with `COALESCE`), so an unchanged one keeps it and an edit cannot undo a racing resume.
+  - `watch_update` keeps every field it is not given: script, schedule, offset, expiry, timeout
+    and secrets (`watch_update_keeps_what_it_is_not_given`). Without `keep("secrets", …)` it
+    fails.
+  - The page reloads quietly on `watches.updated` and keeps the folds its reader opened (e2e:
+    an open "Last output" shows the next run's output).
+  - The e2e test clicks Pause and sees Paused and Resume.
+  - `removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule` covers the state
+    removal, both 409s, the permit, an edit to a cron whose slot passed (no run until tomorrow)
+    and a no-op resume. Each of those fixes undone fails it.
+- **Nits:**
+  - A run whose watch was removed between its claim and its cancel entry does not run. A post
+    that lands after its watch's removal removes its notice again.
+  - Resuming an active watch changes nothing.
+  - `watch_project` and `watch_seen` no longer repeat `require_for`'s checks.
+  - `watch_input` takes the stored record instead of a skip list.
+  - `paused` must be a boolean.
+  - `product.md` and WCH-012 list `watch_update`.
+  - The day's list in `changes.md` is whole.
+- **Kept as they are, with the reason:**
+  - `watch.run` is audited when the person presses Run now, which is what the audit records.
+  - REST calls with a token are `created_via: ui`, as automations made over the API are.
+  - The `superagent.tool` entry names the tool, as for every person tool; the `watch.*` entry
+    beside it names the watch.
+- Whole `yulius::main` binary: 2,738 passed. Library crates: 1,901 passed. Clippy
+  `--workspace -D warnings` and `scripts/dev quick` are clean. `npx e2e run tests/watches.e2e.ts`
+  passed.
