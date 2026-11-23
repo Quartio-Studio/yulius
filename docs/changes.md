@@ -7,6 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-23
 
 - A task chained after, or ruled to start after, a live task whose goal is achieved no longer starts while that task's integration failure still applies or a new merge request arrives; archive and delete keep such a session too, and its merge cannot be armed while it closes. A test of the session-capacity watch that failed about one run in ten now waits for the watch's next read. [SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md)
+- `yulius run` (brokered commands) works in a task's session: the agent's `yulius` command passes it on, as the CLI test of session commands requires; the dev gate failed on it since #1715.
 - Fork… in a task's menu and on its details page opens a dialog for what the fork should do differently, its model and its subscription, then opens the new task; each task's page links the other ("Fork of #N", "Forked: #M"). [SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md)
 
 ## 2026-11-22

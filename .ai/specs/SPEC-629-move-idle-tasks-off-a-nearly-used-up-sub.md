@@ -132,6 +132,8 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - [x] Pass the independent review of the exact head
 - [x] Remove a stale "no room" notice and pin a fork to its chosen subscription
 - [x] Pass the independent review of the follow-up
+- [x] Repair the red staging gate: the agent shim passes `yulius run`
+- [x] Pass the independent review of the staging repair
 
 ## Acceptance criteria
 
@@ -246,7 +248,13 @@ removed once its subscription has room again (`rebalance::nothing_has_room_is_to
 without it), a fork started on a named subscription is pinned there
 (`forks::a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session` fails without
 it), and the Telegram choice says that moves come under it. Round 5 approved `5a4893dea` (one nit
-left: after a Yulius restart a "stays on" notice can stand until its one-day expiry).
+left: after a Yulius restart a "stays on" notice can stand until its one-day expiry). Staging request 8c86a433 for the merged revision 7dc2641 failed its full gate (run 72091baf):
+`tests::the_agent_wrapper_passes_every_session_command` (crates/yulius/src/main.rs) found the
+session command `yulius run`, which #1715 (SPEC-626 BRK-007) added, missing from the agent's
+`yulius` shim. Yulius asked this task to fix it forward: `agent_yulius_shim` passes `run`, and the
+test that failed on dev passes. Round 6 approved `1cf706eb9`. Before it merged, #1718 brought the same
+shim fix to dev (its test runs `yulius run deploy-cli status --json` through the shim), so this
+task kept dev's version and delivered only these spec lines (round 7 approved that).
 
 Not tested here: real Claude Code, Codex or Antigravity subscriptions and their usage readings
 (synthetic usage and the fake agent stand in); the fake agent runs no hooks, so the tests record a
