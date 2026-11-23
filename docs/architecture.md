@@ -2348,7 +2348,8 @@ of its own, `launch_attempt` places the stored copy in the fork worktree's proje
 `--resume <source> --fork-session --session-id <new>`; for Codex, `codex fork <source>`. The
 Antigravity CLI cannot fork at launch, so its tasks are refused. The opening message names the
 fork, its branch and spec and the source's commit, then the person's message. Later launches
-resume the fork's own session.
+resume the fork's own session. A fork publishes its source's summary, and deleting a task
+publishes its source and its forks, so each page's links stay current.
 
 ```mermaid
 flowchart LR

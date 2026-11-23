@@ -845,3 +845,87 @@ fn a_fork_whose_record_fails_leaves_nothing_behind() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// The `task.updated` summaries of `id` delivered on `events` so far.
+fn summaries_of(
+    events: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+    id: &TaskId,
+) -> Vec<yulius_contracts::api::tasks::TaskSummary> {
+    let mut found = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event
+            && task.id == id.as_str()
+        {
+            found.push(*task);
+        }
+    }
+    found
+}
+
+/// SPEC-628 FRK-008 (UI review round 1): the source's page learns of its fork without a reload:
+/// a fork publishes the source's summary with the fork in `forks`; deleting the fork publishes
+/// the source without it, and deleting the source publishes the fork with its origin's id gone.
+#[test]
+fn a_fork_and_its_deletion_publish_the_other_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a1"]).await?;
+        let source_id = new_task(&app, &sandbox, &user, "Parser").await?;
+        ready(&app, &source_id).await?;
+        let source = task(&app, &source_id).await?;
+        let source_session = latest_session(&app, &source_id).await?;
+        let path = transcript(&app, &source, &source_session)?;
+        std::fs::create_dir_all(path.parent().ok_or("folder")?)?;
+        std::fs::write(&path, "{\"type\":\"user\",\"uuid\":\"fixture-user-1\"}\n")?;
+        stop(&app, &source_id).await?;
+        let ctx = ctx(&app, &user).await?;
+        let mut events = app.events.subscribe();
+        let make = |app: Arc<App>, ctx: AuthContext, id: TaskId| async move {
+            Ok::<_, BoxError>(TaskId::parse(
+                &app.fork_task(&ctx, id.as_str(), &ForkTask::default())
+                    .await?
+                    .id,
+            )?)
+        };
+        let first = make(app.clone(), ctx.clone(), source_id.clone()).await?;
+        let published = summaries_of(&mut events, &source_id);
+        assert!(
+            published
+                .last()
+                .is_some_and(|s| s.forks.iter().any(|f| f.task_id == first.as_str())),
+            "the source is published with its fork: {published:?}"
+        );
+        let second = make(app.clone(), ctx.clone(), source_id.clone()).await?;
+        stop(&app, &first).await?;
+        stop(&app, &second).await?;
+        let _ = summaries_of(&mut events, &source_id);
+        app.delete_task(&ctx, first.as_str()).await?;
+        let published = summaries_of(&mut events, &source_id);
+        assert!(
+            published
+                .last()
+                .is_some_and(|s| s.forks.len() == 1 && s.forks[0].task_id == second.as_str()),
+            "the source is published without the deleted fork: {published:?}"
+        );
+        let mut events = app.events.subscribe();
+        app.delete_task(&ctx, source_id.as_str()).await?;
+        let published = summaries_of(&mut events, &second);
+        assert!(
+            published
+                .last()
+                .and_then(|s| s.forked_from.as_ref())
+                .is_some_and(|origin| origin.task_id.is_none() && origin.number == source.number),
+            "the fork is published with its source gone: {published:?}"
+        );
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

@@ -232,3 +232,33 @@ UI pull request (Plan items 9 to 12):
   `peer_status::a_task_reads_only_what_its_owner_may_view`. With `require_reader` removed, that
   case still passes, because `manage_authority` refuses a disabled person first. That check stays
   as the reviewer called it: defence in depth.
+
+UI review round 1 (Fable 5.2, head `3bcd4bcf5`): request changes, 1 major, 4 minor and 3 nits in
+own code, and 1 pre-existing. Answered:
+
+- Major: the source's page learned of its fork only through an event the mock sent and the server
+  did not. The server now publishes the source after a fork, and a deleted task's source and forks
+  (`fork_neighbours`, in `delete_task_as`). The client takes `forked_from` and `forks` from every
+  summary and detail, with no stale value kept when they are absent (`pickSummary`,
+  `lifecycleSummary`, the task view's `update`). Test:
+  `forks::a_fork_and_its_deletion_publish_the_other_task` (the source is published with its fork,
+  then without a deleted fork, and the fork is published with its deleted source's id gone). It
+  failed before the change ("the source is published with its fork: []").
+- Minor:
+  - `forkWhy` refuses a `not_started` task.
+  - A refusal shows inside the dialog, through `openModal`'s error line.
+  - The message is counted in bytes (64 KiB) in the dialog and in the mock.
+  - The details page's Fork… uses `aria-disabled`, with the reason in words beside it
+    (`aria-describedby`).
+  - The mock's delete clears its source's and forks' links.
+- e2e (`tests/fork.e2e.ts`, now 4 tests): a `not_started` task's Fork… is off with its reason; the
+  details page's off state shows its reason, opens no dialog from the keyboard and has no WCAG
+  violations; a refusal is said in the dialog; deleting the source leaves the fork a plain "Fork of
+  #4" chip whose title says "(deleted since)".
+- Nits: the mock answers 200, and its other-provider refusal says "cannot take the fork".
+- Pre-existing: `openModal` leaves focus on the body after a failed action. Filed as
+  [#1714](https://github.com/Quartio-Studio/yulius/issues/1714); it is outside this change, since
+  `openModal` is unchanged on dev.
+- After the fixes: `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main)'` 2671 passed,
+  24 skipped; `-p yulius-app -p yulius-server` 749 passed; the fork e2e spec 4 passed; menus,
+  ownership, consistency, git and archive 75 passed.

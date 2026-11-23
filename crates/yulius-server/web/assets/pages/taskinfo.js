@@ -73,15 +73,19 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   const reviewButton = h('a', { class: 'btn', href: href(reviewPath), dataset: { route: reviewPath }, hidden: true }, icon('branch', { size: 14 }), 'Review changes');
   const reviewable = (git) => Boolean(git && !worktreeMissing(git));
   // Fork (SPEC-628 FRK-009): a new task continues a copy of this conversation.
-  const forkButton = h('button', { type: 'button', class: 'btn fork-button', onClick: () => openForkDialog(ctx, current) }, icon('branch', { size: 14 }), 'Fork…');
+  // Off, it says why in words beside it, which keyboard and touch users reach as well.
+  const forkWhyEl = h('span', { class: 'muted small fork-why', id: `fork-why-${task.id}`, hidden: true });
+  const forkButton = h('button', { type: 'button', class: 'btn fork-button', 'aria-describedby': forkWhyEl.id, onClick: () => { if (forkButton.getAttribute('aria-disabled') !== 'true') openForkDialog(ctx, current); } }, icon('branch', { size: 14 }), 'Fork…');
   const paintFork = () => {
     const why = forkWhy(current, allows((ctx.store.sandboxById(current.sandbox_id) || sandbox).access || 'read', 'write'));
-    forkButton.disabled = Boolean(why);
-    forkButton.title = why || 'A new task continues a copy of this conversation from its last commit; this one goes on';
+    forkButton.setAttribute('aria-disabled', String(Boolean(why)));
+    forkButton.title = why ? '' : 'A new task continues a copy of this conversation from its last commit; this one goes on';
+    forkWhyEl.hidden = !why;
+    forkWhyEl.textContent = why || '';
   };
   const head = h('header', { class: 'gt-head' },
     h('a', { class: 'gt-back', href: href(`${base}/tasks`), dataset: { route: `${base}/tasks`, restore: 'page' } }, icon('back', { size: 14 }), 'Tasks'),
-    h('div', { class: 'gt-title-row' }, titleEl, reviewButton, forkButton,
+    h('div', { class: 'gt-title-row' }, titleEl, reviewButton, forkButton, forkWhyEl,
       h('a', { class: 'btn btn-primary gt-go', href: href(taskPath), dataset: { route: taskPath } }, 'Go to task', icon('forward', { size: 14 }))),
     meta);
 

@@ -78,7 +78,7 @@ export function openTaskMenu(ctx, anchor, task) {
 export function forkWhy(task, write) {
   if (!write) return 'Requires write access';
   if (task.harness === 'antigravity') return 'Antigravity cannot fork a conversation';
-  if (['queued', 'chained', 'prepared'].includes(task.status)) return 'Not started yet: no conversation to fork';
+  if (['queued', 'chained', 'prepared'].includes(task.status) || task.not_started) return 'Not started yet: no conversation to fork';
   return null;
 }
 
@@ -89,7 +89,7 @@ export function forkWhy(task, write) {
 export async function openForkDialog(ctx, task) {
   const agent = agentOfHarness(task.harness);
   const provider = PROVIDERS.find((p) => p.harness === task.harness);
-  const message = h('textarea', { class: 'textarea', rows: 5, maxlength: 65536, placeholder: 'For example: try a hand-written parser instead (optional)' });
+  const message = h('textarea', { class: 'textarea', rows: 5, placeholder: 'For example: try a hand-written parser instead (optional)' });
   const model = h('select', { class: 'select' },
     h('option', { value: '' }, 'Default (as for a new task)'),
     ...(provider ? provider.models.filter((m) => !m.harnessOnly) : []).map((m) => h('option', { value: m.id }, m.name)));
@@ -111,11 +111,15 @@ export async function openForkDialog(ctx, task) {
       { label: 'Cancel', value: false },
       { label: 'Fork', kind: 'primary', run: async () => {
         const body = {};
-        if (message.value.trim()) body.message = message.value.trim();
+        const text = message.value.trim();
+        // The server counts bytes (64 KiB), not characters.
+        if (new TextEncoder().encode(text).length > 65536) { invalid(message, 'Keep it to 64 KiB.'); return false; }
+        if (text) body.message = text;
         if (model.value) body.model = model.value;
         if (account.value) body.account_id = account.value;
-        const fork = await taskPost(ctx, task, 'fork', () => ctx.api.post(`/api/tasks/${enc(task.id)}/fork`, body), null);
-        if (!fork) return false;
+        // A refusal throws: the dialog says why, in place (openModal).
+        const fork = await ctx.api.post(`/api/tasks/${enc(task.id)}/fork`, body);
+        if (fork && fork.id) ctx.store.upsertTask(fork);
         const sandbox = ctx.store.sandboxById(fork.sandbox_id);
         toast(`#${fork.number} continues #${task.number}'s conversation.`, { kind: 'ok' });
         if (sandbox) ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${fork.number}`);
