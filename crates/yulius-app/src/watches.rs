@@ -305,20 +305,11 @@ impl App {
         let run_id = random_id(self, "wr_");
         let started = self.now();
         let store = &self.deps.store;
-        match store.watch_run_started(id, &run_id, started, forced).await {
-            Ok(true) => {}
-            Ok(false) => return false,
-            Err(error) => {
-                tracing::warn!(watch = %id, error = %error, "a watch's run could not be claimed");
-                return false;
-            }
-        }
-        let watch = match store.watch(id).await {
+        let watch = match store.watch_run_started(id, &run_id, started, forced).await {
             Ok(Some(watch)) => watch,
             Ok(None) => return false,
             Err(error) => {
-                // Claimed, so recorded as lost at the next start if this end is not written.
-                tracing::warn!(watch = %id, error = %error, "a claimed watch could not be read");
+                tracing::warn!(watch = %id, error = %error, "a watch's run could not be claimed");
                 return false;
             }
         };
@@ -368,12 +359,8 @@ impl App {
         };
         // Redacted of the project's agent secrets before anything is kept or posted: the
         // Watches page shows the last output to the project's readers (review round 1).
-        let output = self
-            .redact_for_sandbox(&watch.sandbox_id, &result.output)
-            .await;
-        let errors = self
-            .redact_for_sandbox(&watch.sandbox_id, &result.errors)
-            .await;
+        let output = self.watch_redacted(&watch.sandbox_id, &result.output).await;
+        let errors = self.watch_redacted(&watch.sandbox_id, &result.errors).await;
         let decided = outcome(
             &name,
             &result.end,
@@ -566,10 +553,20 @@ impl App {
         }
     }
 
+    /// `text` redacted of `sandbox`'s agent secrets; empty text stays empty (the redaction says
+    /// "withheld" when the secrets cannot be read, which would read as a report; review round 2).
+    async fn watch_redacted(&self, sandbox: &SandboxId, text: &str) -> String {
+        if text.trim().is_empty() {
+            return String::new();
+        }
+        self.redact_for_sandbox(sandbox, text).await
+    }
+
     /// At a start (WCH-010): each run the previous process left going is recorded as lost, its
     /// process host and files end, and its watch is due again from now.
     pub async fn watch_startup(&self) {
-        let watches = match self.deps.store.all_watches().await {
+        // Removed projects' too: a run going when its project was removed still has a host.
+        let watches = match self.deps.store.watches_running().await {
             Ok(watches) => watches,
             Err(error) => {
                 tracing::warn!(error = %error, "watches could not be read at the start");

@@ -956,3 +956,42 @@ async fn a_run_that_fills_the_watch_files_is_stopped() -> TestResult {
     );
     Ok(())
 }
+
+/// Review round 2: a run that was going when its project was removed is still recovered at the
+/// next start, and runs never dump core.
+#[tokio::test]
+async fn a_removed_projects_lost_run_is_recovered_and_runs_dump_no_core() -> TestResult {
+    use yulius_app::ports::store::SandboxStore as _;
+    let w = world().await?;
+    let cores =
+        w.h.app
+            .watch_create(new_watch("cores", "ulimit -c; ulimit -Hc")?)
+            .await?;
+    let ran = w.run(&cores.id).await?;
+    assert_eq!(ran.state.last_output.as_deref(), Some("0\n0"));
+
+    let lost = w.h.app.watch_create(new_watch("lost", "echo hi")?).await?;
+    assert!(
+        w.h.store
+            .watch_run_started(&lost.id, "wr_lost", w.h.app.now(), false)
+            .await?
+            .is_some()
+    );
+    w.h.store
+        .remove_sandbox(&SandboxId::parse("s1")?, w.h.app.now())
+        .await?;
+    let after = Arc::new(App::new(w.h.app.config.clone(), w.h.app.deps.clone()));
+    after.watch_startup().await;
+    let recovered = w.watch(&lost.id).await?;
+    assert_eq!(recovered.state.running, None);
+    assert!(
+        recovered
+            .state
+            .last_failure
+            .as_deref()
+            .is_some_and(|f| f.contains("lost")),
+        "{:?}",
+        recovered.state
+    );
+    Ok(())
+}

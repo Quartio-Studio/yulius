@@ -1009,15 +1009,17 @@ pub trait WatchStore: Send + Sync {
     /// Removes a watch and its pending posts; `false` when it was gone.
     async fn delete_watch(&self, id: &str) -> AppResult<bool>;
     /// Records that run `run_id` of a watch started at `at`, only when none is going, its project
-    /// is not removed and, unless `forced` (Run now), it is neither paused nor ended; `false`
-    /// otherwise, or when the watch is gone.
+    /// is not removed and, unless `forced` (Run now), it is neither paused nor ended, and answers
+    /// the record as claimed, in one transaction; `None` otherwise, or when the watch is gone.
     async fn watch_run_started(
         &self,
         id: &str,
         run_id: &str,
         at: Timestamp,
         forced: bool,
-    ) -> AppResult<bool>;
+    ) -> AppResult<Option<WatchRecord>>;
+    /// Every watch with a run going, removed projects' too (a start recovers them all).
+    async fn watches_running(&self) -> AppResult<Vec<WatchRecord>>;
     /// Makes a watch due again from `at` (its last start forgotten), only while it is neither
     /// paused, ended nor running; `false` otherwise.
     async fn watch_due_again(&self, id: &str, at: Timestamp) -> AppResult<bool>;

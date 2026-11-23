@@ -274,10 +274,13 @@ impl WatchStore for SqliteStore {
         run_id: &str,
         at: Timestamp,
         forced: bool,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<WatchRecord>> {
         let (id, run_id) = (id.to_owned(), run_id.to_owned());
         self.call(move |c| {
-            let changed = c
+            // The claim and the record as claimed, in one transaction: no claim is left behind
+            // a read that failed (review round 2).
+            let tx = c.transaction().map_err(db)?;
+            let changed = tx
                 .execute(
                     "UPDATE watches SET run_id = ?2, running_since = ?3, last_started_at = ?3
                      WHERE id = ?1 AND run_id IS NULL
@@ -286,7 +289,35 @@ impl WatchStore for SqliteStore {
                     params![id, run_id, at.0, forced],
                 )
                 .map_err(db)?;
-            Ok(changed == 1)
+            if changed != 1 {
+                return Ok(None);
+            }
+            let claimed = tx
+                .query_row(
+                    &format!("SELECT {COLUMNS} FROM watches WHERE id = ?1"),
+                    [&id],
+                    watch_row,
+                )
+                .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(Some(claimed))
+        })
+        .await
+    }
+
+    async fn watches_running(&self) -> AppResult<Vec<WatchRecord>> {
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {COLUMNS} FROM watches WHERE run_id IS NOT NULL ORDER BY id"
+                ))
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([], watch_row)
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
         })
         .await
     }
@@ -481,7 +512,9 @@ mod tests {
     }
 
     /// Review round 1: a removed project's watches are not scheduled and cannot be claimed; a
-    /// paused or ended watch is claimed only by Run now (`forced`).
+    /// paused or ended watch is claimed only by Run now (`forced`). Review round 2: the claim
+    /// answers the record as claimed, and a run that was going when its project was removed is
+    /// still found at a start.
     #[tokio::test]
     async fn claims_skip_removed_projects_and_paused_watches() -> TestResult {
         let store = store().await?;
@@ -491,6 +524,14 @@ mod tests {
         store
             .insert_watch(&watch("wt_2", "s2", "disk")?, 20)
             .await?;
+        store.insert_watch(&watch("wt_3", "s2", "ci")?, 20).await?;
+        let going = store
+            .watch_run_started("wt_3", "r3", Timestamp(80), false)
+            .await?;
+        assert_eq!(
+            going.map(|w| w.state.running),
+            Some(Some(("r3".into(), Timestamp(80))))
+        );
         store
             .call(|c| {
                 c.execute("UPDATE sandboxes SET removed_at = 5 WHERE id = 's2'", [])
@@ -504,27 +545,39 @@ mod tests {
             .map(|w| w.id)
             .collect();
         assert_eq!(listed, ["wt_1"]);
+        let running: Vec<_> = store
+            .watches_running()
+            .await?
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(
+            running,
+            ["wt_3"],
+            "a removed project's lost run is still found"
+        );
         assert!(
-            !store
+            store
                 .watch_run_started("wt_2", "r0", Timestamp(90), true)
                 .await?
+                .is_none()
         );
 
         assert!(store.set_watch_paused("wt_1", true, Timestamp(95)).await?);
         assert!(
-            !store
+            store
                 .watch_run_started("wt_1", "r1", Timestamp(100), false)
                 .await?
+                .is_none()
         );
         assert!(
             !store.watch_due_again("wt_1", Timestamp(100)).await?,
             "paused stays paused"
         );
-        assert!(
-            store
-                .watch_run_started("wt_1", "r2", Timestamp(101), true)
-                .await?
-        );
+        let forced = store
+            .watch_run_started("wt_1", "r2", Timestamp(101), true)
+            .await?;
+        assert!(forced.is_some_and(|w| w.paused && w.state.running.is_some()));
         assert!(
             !store.watch_due_again("wt_1", Timestamp(102)).await?,
             "running"
@@ -544,11 +597,13 @@ mod tests {
             store
                 .watch_run_started("wt_1", "r1", Timestamp(100), false)
                 .await?
+                .is_some_and(|w| w.state.running == Some(("r1".into(), Timestamp(100))))
         );
         assert!(
             !store
                 .watch_run_started("wt_1", "r2", Timestamp(101), false)
                 .await?
+                .is_some()
         );
         let going = store.watch("wt_1").await?.ok_or("gone")?;
         assert_eq!(going.state.running, Some(("r1".into(), Timestamp(100))));

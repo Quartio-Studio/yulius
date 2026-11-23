@@ -29,8 +29,9 @@ use crate::ports::store_ext::WatchRecord;
 
 /// `$1` stdout, `$2` stderr, `$3` CPU seconds (soft: SIGXCPU), `$4` CPU seconds (hard: SIGKILL),
 /// `$5` data KiB, `$6` file KiB, `$7` the script, after `--` so a script starting with `-` is
-/// never read as bash's options (review round 1).
-const WRAPPER: &str = r#"ulimit -St "$3" && ulimit -Ht "$4" && ulimit -d "$5" && ulimit -f "$6" || exit 125
+/// never read as bash's options (review round 1). No core files: SIGXCPU's default action
+/// dumps one (review round 2).
+const WRAPPER: &str = r#"ulimit -St "$3" && ulimit -Ht "$4" && ulimit -d "$5" && ulimit -f "$6" && ulimit -c 0 || exit 125
 exec >>"$1" 2>>"$2" </dev/null
 exec /bin/bash -c -- "$7""#;
 /// CPU seconds a run gets past its soft limit (SIGXCPU) before the hard one kills it.
