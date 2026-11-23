@@ -114,6 +114,8 @@ impl App {
             app.drain_queue().await;
             // Paused tasks (also those paused before a restart) resume from here.
             app.start_capacity_loop();
+            // Idle tasks leave a subscription past its harness's rebalance threshold (SPEC-629).
+            app.start_rebalance_loop();
             let mut tick = tokio::time::interval(TICK);
             tick.tick().await;
             let started = tokio::time::Instant::now();
