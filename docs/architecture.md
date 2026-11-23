@@ -2840,6 +2840,32 @@ read, not measured anew: `task_screen` takes a task's live hub screen, or render
 `analytics_tasks` and `analytics_summary`; `checkout` the git port's `ahead_behind` of the sandbox
 repository's `HEAD` against `origin/<integration branch>`, without a fetch.
 
+A task's agent reads its neighbours the same way, read-only
+([decision 0460](decisions/0460-a-task-reads-its-neighbours-status-and-never-steers-them.md),
+SPEC-625, `peer_status.rs`): `task_get` adds to the brief the owner's login, the delivery record's
+stage and PR with `merge_is_armed`, the task's `active_claims`, `waits_for` (fixed sentences built
+from the brief and `task_attention_facts`) and `last_words` (`last_agent_words`, the digest's
+read of the transcript's last assistant message); a person's own callers also get the last 20
+lines of the screen `task_screen_of` reads for `task_screen`, a task's agent never (a held prompt
+and a person's draft show there). `require_reader` checks that the owner is enabled and that
+`settled_access_level` allows `Action::View` before a task's `tasks_list` or `task_get`, and
+refuses when the access cannot be settled. `withholds_from` compares `Holder::of_task` of the reader and
+the peer and asks `reaches_owners_personal`: a peer holding its owner's personal secrets or MCP
+servers loses its free text (`withhold`) in `task_get` and `tasks_list` rows, and
+`session_read`/`sessions_search` refuse or skip its transcripts for that reader; the scope tools,
+the tidy tools' briefs and the briefing's recent changes (`withholds_text`) leave out its notes,
+step and request.
+
+```mermaid
+flowchart LR
+  reader["task agent (task token)"] -->|task_get / tasks_list| view["require_reader: owner may view"]
+  view --> brief["brief + add_peer_status: owner, delivery, claims, waits_for, last_words"]
+  brief -.->|person callers only| screen["screen: task_screen_of"]
+  brief --> hold{"withholds_from: peer holds another person's personal secrets?"}
+  hold -->|no| full["full answer"]
+  hold -->|yes| shape["withhold: shape only, withheld says why"]
+```
+
 A Superagent's standing jobs are scheduled checks held by Yulius
 ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
 `superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`
@@ -2910,6 +2936,39 @@ the team secrets (none had a sandbox) in `vault_scope_pending`; at the next star
 serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets have their own scopes (below).
+
+### Method and path rules
+
+Since SPEC-627 ([decision 0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md))
+a person who manages an agent secret can limit it to requests: `vault_secrets.rules` holds 0–32
+rules, each 1–16 HTTP methods and a path pattern (`*` matching any characters, `/` included;
+schema version 90, `[]` = any request). The domain parses and matches them
+(`yulius-domain` `vault/rules.rs`: the pattern is split on `*` and its pieces found in order, linear
+in the path); the egress policy applies them (`yulius-app` `vault/rules.rs`, called from
+`egress_apply` in `vault/runtime.rs`), so they hold for agent runs, CI jobs and Superagents alike.
+The proxy passes each request's method in `EgressRequest::method`.
+
+```mermaid
+flowchart TD
+  R["request to a bound host<br/>(intercepted HTTP/1.1 or absolute http://)"] --> U{"uses a secret with rules?<br/>placeholder, X-Yulius-Secret,<br/>or its injected header"}
+  U -->|no| F["forwarded as before"]
+  U -->|yes| M{"method and path (sent and outgoing) match a rule,<br/>no dot segment, backslash, ; # or encoded dot/NUL/%,<br/>no method or path override?"}
+  M -->|yes| F
+  M -->|"no (another secret's rules allow the header)"| O["that secret's header instead"] --> F
+  M -->|no| X["403 naming request, host, secret and rules;<br/>nothing sent"] --> A["audit vault.agent.refused<br/>once per run, secret, method, path;<br/>20 per run and secret, then one more"]
+```
+
+The path is matched as the agent sent it and as it goes out (another secret's value replaced in,
+which could otherwise add `..`, `?` or `#`), query left out, no decoding, so spellings the proxy's
+own client or a server could normalise to another resource are refused instead of decoded. A
+run's different refusals of a secret are audited up to 20 (`REFUSALS_LISTED`), then once as "not
+listed" (`VaultState::refusals`). Hosts agents ask for a secret with rules wait for a person even
+with `auto_allow` (`vault/requests.rs`): a server of the agent's own would get the value. Rules
+are set in the Secrets page's Edit dialog or with `rules` in the create and edit bodies; an edit
+is a compare-and-set on the rules it read (`vault_update`), and a row whose stored rules no longer
+parse fails to load rather than becoming unlimited. `secrets_list` shows them to agents. gRPC
+(HTTP/2) to a bound host is not proxied at all (the interception speaks HTTP/1.1), so rules cover
+every request that can carry a value.
 
 ### Copies of production secrets
 
@@ -3166,6 +3225,51 @@ sequenceDiagram
   Y->>Y: envelope_reaches(person) · choices · redact · throttle
   Y->>T: sendMessage(chat, text with /s/{slug}/t/{n})
   T-->>C: notification
+```
+
+## Notices: a key and an expiry
+
+Notices for people carry a key and an expiry
+([SPEC-624](../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md),
+[decision 0462](decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md)).
+
+- **Posting.** `App::post_notice` (`crates/yulius-app/src/notices.rs`) takes a `NewNotice`: a
+  project or none, an optional recipient, `admin_only`, a `NoticeKey`
+  (`yulius_domain::notice`), a category (the Telegram choice), a tone, texts, a link, `decision`
+  and an optional `Expiry`. It resolves the expiry (`notice_expiry`: a decision never expires
+  and refuses an expiry), cuts and redacts the texts as the project's transcripts are, and stores
+  the notice. `NoticeStore::put_notice` (migration 0091, `notices`) deletes the notice with the
+  same project, recipient and key, and its dismissals, inserts the new one and keeps the scope's
+  newest 200, all in one transaction. The notice is then published as `notice.posted` in an
+  envelope with its project, recipient and `admin_only`.
+- **Reading.** `App::notices_for` reads the live, undismissed notices addressed to the person or
+  to nobody in particular. The store applies the reader's reach before its limit: the projects
+  holding such notices that they can see, instance-wide notices unless they are a guest, and
+  `admin_only` ones for administrators. The read then keeps those whose envelope reaches them
+  (`envelope_reaches`, the event stream's rule). `GET /api/me/notices`, the person tools `notices_list` and
+  `notice_dismiss`, and the digest use it. The background tick deletes expired notices
+  (`prune_notices_now`). A producer removes a notice by its scope and key (`notice.removed`).
+- **Telegram.** The notifier turns `notice.posted` into a message and gives task-state, control,
+  shared-cause and subscription messages a scope (`<project or ->:<recipient or ->:<key>`; a
+  task's key is `task:<task id>`; posted keys may not use the derived prefixes). After the send queue sends a scoped message, `swap_keyed_message`
+  (`telegram_keyed`) returns the bot's earlier message for that scope in the chat, and the bot
+  deletes it (`NotificationChannel::delete`, Telegram's `deleteMessage`). A refused delete leaves
+  the old message in the chat. `telegram_keyed` rows go with their chat's link, like
+  `telegram_sent`, and the tick forgets rows older than 48 hours.
+- **Digest.** Each person's digest lists up to 20 of their live notices (`DigestView.notices`).
+  Its items carry `task:<task id>`, and its Telegram message has the scope `-:digest`, so today's
+  digest replaces yesterday's.
+
+```mermaid
+flowchart LR
+  P["producer or script watch"] -->|"NewNotice: key, expiry"| A["App::post_notice"]
+  A -->|"replace by project, recipient, key"| DB[("notices")]
+  A -->|"notice.posted (envelope)"| BUS["event bus"]
+  BUS --> WEB["open pages: the bell"]
+  BUS --> N["notifier"] -->|"scoped message"| Q["send queue"]
+  Q -->|"send, then delete the earlier one"| TG["Telegram chat"]
+  DB -->|"live, undismissed, visible"| R["GET /api/me/notices · notices_list · digest"]
+  T["tick"] -->|"delete expired"| DB
 ```
 
 ## Vidoc: the instance key and the security scan
@@ -4124,7 +4228,7 @@ flowchart LR
 ```
 
 A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
-A Codex goal has no native evaluator, so its own red pull request counts as declared work too: once the PR watcher has pasted the failure (SPEC-578), a Stop with the plan and spec finished continues the goal under the same retry bound when the task's latest Yulius CI run for its open pull request failed at the commit its worktree is on. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
+A Codex goal has no native evaluator, so its own red pull request counts as declared work too: a Stop with the plan and spec finished continues the goal under the same retry bound when the newest Yulius CI run of its open pull request at the commit its worktree is on failed, the PR watcher has already pasted that failure (SPEC-578), and neither a newer run of the pull request nor a pushed head past that commit superseded it. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
 
 A `needs_attention` flag keeps its reason with the task
 ([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),

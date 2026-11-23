@@ -31,6 +31,8 @@ use crate::transcripts;
 pub const MAX_PARK_IDLE_HOURS: u32 = 720;
 /// How much of the last message a parked task's line keeps (DIG-004).
 pub const LAST_WORDS: usize = 300;
+/// How many notices a digest lists (SPEC-624 NTC-009).
+const DIGEST_NOTICES: usize = 20;
 /// How many working tasks a digest names.
 const WORKING_NAMED: usize = 10;
 /// How long a run waits for the sessions it parks to end before it lists them.
@@ -89,7 +91,7 @@ pub fn last_words(text: &str, max: usize) -> String {
 
 /// The digest as one Telegram message (DIG-005), within its bound.
 #[must_use]
-pub fn digest_text(digest: &DigestView) -> String {
+pub fn digest_text(digest: &DigestView, base_url: &str) -> String {
     let mut out = String::from("Your Yulius digest");
     let line = |item: &DigestItem| {
         let mut s = format!("\n• {} #{} {}", item.project, item.number, item.title);
@@ -108,6 +110,21 @@ pub fn digest_text(digest: &DigestView) -> String {
     if !digest.parked.is_empty() {
         out.push_str(&format!("\n\nParked ({}):", digest.parked.len()));
         digest.parked.iter().for_each(|i| out.push_str(&line(i)));
+    }
+    if !digest.notices.is_empty() {
+        out.push_str(&format!("\n\nNotices ({}):", digest.notices.len()));
+        for notice in &digest.notices {
+            out.push_str(&format!("\n• {}", notice.title));
+            if let Some(detail) = notice.detail.as_deref().and_then(|d| d.lines().next()) {
+                out.push_str(": ");
+                out.push_str(detail);
+            }
+            if let Some(link) = &notice.link {
+                out.push_str("\n  ");
+                out.push_str(base_url.trim_end_matches('/'));
+                out.push_str(link);
+            }
+        }
     }
     if digest.working_count > 0 {
         out.push_str(&format!("\n\nStill working: {}", digest.working_count));
@@ -144,6 +161,7 @@ struct Draft {
     waiting: Vec<DigestItem>,
     parked: Vec<DigestItem>,
     working: Vec<DigestItem>,
+    notices: Vec<yulius_contracts::api::notices::NoticeView>,
 }
 
 impl App {
@@ -284,7 +302,11 @@ impl App {
         }
         let mut sent = 0;
         for (user, draft) in drafts {
-            if draft.waiting.is_empty() && draft.parked.is_empty() && draft.working.is_empty() {
+            if draft.waiting.is_empty()
+                && draft.parked.is_empty()
+                && draft.working.is_empty()
+                && draft.notices.is_empty()
+            {
                 continue;
             }
             match self.deliver_digest(&user, draft).await {
@@ -439,6 +461,23 @@ impl App {
                 }
             }
         }
+        // Each person's live notices (SPEC-624 NTC-009): expired and dismissed ones are left out
+        // by the read every page and tool uses.
+        for (user, person) in &enabled {
+            match self.notices_for(person, None).await {
+                Ok(notices) if !notices.is_empty() => {
+                    drafts.entry(user.clone()).or_default().notices = notices
+                        .iter()
+                        .take(DIGEST_NOTICES)
+                        .map(crate::notices::notice_view)
+                        .collect();
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!(user = %user, error = %err, "notices were left out of a digest");
+                }
+            }
+        }
         Ok(drafts)
     }
 
@@ -538,12 +577,13 @@ impl App {
                 sandbox.slug,
                 task.number
             ),
+            key: Some(yulius_domain::notice::NoticeKey::task(task.id.as_str()).to_string()),
         })
     }
 
     /// The end of the agent's last message in its transcript (DIG-004), redacted as the
     /// transcript is; `None` when there is none to read.
-    async fn last_agent_words(&self, task: &TaskRecord) -> Option<String> {
+    pub(crate) async fn last_agent_words(&self, task: &TaskRecord) -> Option<String> {
         let entry = self
             .deps
             .store
@@ -599,6 +639,7 @@ impl App {
             parked: draft.parked,
             working_count,
             working: draft.working,
+            notices: draft.notices,
         };
         let body = serde_json::to_string(&view).map_err(AppError::internal)?;
         self.deps
@@ -612,7 +653,7 @@ impl App {
                 },
             )
             .await?;
-        let text = digest_text(&view);
+        let text = digest_text(&view, &self.config.public_url);
         self.events.publish_to_user(
             user.clone(),
             UiEvent::DigestReady {
@@ -623,7 +664,8 @@ impl App {
             && let Some(link) = self.deps.store.chat_link(user).await?
             && link.choices.digest
         {
-            self.enqueue(link.chat, text);
+            // Today's digest replaces yesterday's in the chat (SPEC-624 NTC-009).
+            self.enqueue_keyed(link.chat, text, None, Some("-:digest".into()));
         }
         Ok(())
     }
@@ -738,6 +780,7 @@ mod tests {
             title: format!("Task {n}"),
             detail: detail.map(str::to_owned),
             link: format!("https://y.test/s/app/t/{n}"),
+            key: None,
         };
         let view = DigestView {
             id: "dg_1".into(),
@@ -746,17 +789,39 @@ mod tests {
             parked: vec![item(2, Some("Finished. Last message: promote dev to main"))],
             working_count: 12,
             working: (3..13).map(|n| item(n, None)).collect(),
+            notices: vec![yulius_contracts::api::notices::NoticeView {
+                id: "nt_1".into(),
+                sandbox_id: Some("s1".into()),
+                key: "gate:quick::a".into(),
+                category: "failed".into(),
+                tone: "error".into(),
+                title: "app: quick::a fails".into(),
+                detail: Some("at abc123\nmore".into()),
+                link: Some("/s/app/ci".into()),
+                decision: false,
+                personal: false,
+                created_at: "2026-11-19T17:00:00Z".into(),
+                expires_at: None,
+            }],
         };
-        let text = digest_text(&view);
+        let text = digest_text(&view, "https://y.test/");
         let waiting = text.find("Waiting for you (1):").unwrap_or(usize::MAX);
         let parked = text.find("Parked (1):").unwrap_or(usize::MAX);
         let working = text.find("Still working: 12").unwrap_or(usize::MAX);
-        assert!(waiting < parked && parked < working, "{text}");
+        let notices = text.find("Notices (1):").unwrap_or(usize::MAX);
+        assert!(
+            waiting < parked && parked < notices && notices < working,
+            "{text}"
+        );
+        assert!(text.contains("• app: quick::a fails: at abc123\n  https://y.test/s/app/ci"));
         assert!(text.contains("acme/app #1 Task 1: Choose the colour\n  https://y.test/s/app/t/1"));
         let huge = DigestView {
             waiting: (0..200).map(|n| item(n, Some(&"x".repeat(100)))).collect(),
             ..view
         };
-        assert!(digest_text(&huge).chars().count() <= yulius_domain::notify::MAX_MESSAGE_CHARS);
+        assert!(
+            digest_text(&huge, "https://y.test").chars().count()
+                <= yulius_domain::notify::MAX_MESSAGE_CHARS
+        );
     }
 }

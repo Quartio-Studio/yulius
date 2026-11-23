@@ -3373,7 +3373,7 @@ function agentShadow(db, s, sandbox) {
 function agentView(db, s, sandbox) {
   const admin = Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
   const manage = s.scope === 'instance' ? admin : s.scope === 'personal' ? s.owner === db.me.user.login : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), interpreter_name: manage && INTERPRETER_SETTINGS.has(s.name), can_manage: manage, ...copyRequestOf(s, sandbox, manage) };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, rules: s.rules || [], requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), interpreter_name: manage && INTERPRETER_SETTINGS.has(s.name), can_manage: manage, ...copyRequestOf(s, sandbox, manage) };
 }
 
 /** The copy of a production secret an agent of `sandbox` asked for (SPEC-440), as the list shows it. */
@@ -3560,7 +3560,7 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
   const me = db.me.user.login;
   const sameScope = (s) => s.scope === scope && (scope === 'sandbox' ? s.sandbox === sandbox.id : scope === 'personal' ? s.owner === me : true);
   if (vaultOf(db).agent.some((s) => s.name === body.name && sameScope(s))) fail(409, 'conflict', `an agent secret named ${body.name} already exists in this scope`);
-  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, owner: scope === 'personal' ? me : undefined, on: scope === 'sandbox' ? undefined : [sandbox.id], name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null, auto_allow: body.auto_allow !== false };
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, owner: scope === 'personal' ? me : undefined, on: scope === 'sandbox' ? undefined : [sandbox.id], name: body.name, description: body.description || '', hosts: body.hosts || [], rules: body.rules || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null, auto_allow: body.auto_allow !== false };
   vaultOf(db).agent.push(secret);
   audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ') || 'no hosts yet'}`);
   return json(201, agentView(db, secret, sandbox));
@@ -3584,7 +3584,7 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   const widens = (body.auto_allow === true && !secret.auto_allow) || (body.hosts || []).some((host) => !bound.includes(hostOf(host)));
   const refused = widens && needFreshToWiden(db, secret);
   if (refused) return refused;
-  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'auto_allow']) if (body[key] !== undefined) secret[key] = body[key];
+  for (const key of ['name', 'description', 'hosts', 'rules', 'injection', 'header_name', 'username', 'value', 'auto_allow']) if (body[key] !== undefined) secret[key] = body[key];
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.agent.update', secret.id, secret.name);
   return agentView(db, secret, sandbox);

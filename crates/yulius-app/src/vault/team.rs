@@ -251,6 +251,7 @@ impl App {
             name: title(&input.title)?,
             description: String::new(),
             hosts: Vec::new(),
+            rules: Vec::new(),
             injection: "none".into(),
             header_name: None,
             fields: payload.fields(),

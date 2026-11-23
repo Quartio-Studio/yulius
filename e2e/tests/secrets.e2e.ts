@@ -119,14 +119,15 @@ test('an agent secret is a name, a value and a description, readable by its mana
   expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), 're_mock_value_123')).toBe(false);
   expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), AGENT_VALUE)).toBe(false);
 
-  // Editing keeps the hosts; the request style shows only for a secret that has one.
+  // Editing keeps the hosts and offers the rules (SPEC-627); the request style shows only for a
+  // secret that has one.
   await screen.getByRole('button', 'Edit RESEND_KEY').click();
   const edit = screen.getByRole('dialog', 'Edit RESEND_KEY');
-  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts']);
+  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts', 'Rules']);
   await edit.getByRole('button', 'Cancel').click();
   await screen.getByRole('button', 'Edit STRIPE_KEY').click();
   const stripe = screen.getByRole('dialog', 'Edit STRIPE_KEY');
-  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts', 'Added to requests as']);
+  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts', 'Rules', 'Added to requests as']);
   await stripe.getByRole('button', 'Cancel').click();
 
   // Its manager reads it back after a two-factor code.
@@ -542,6 +543,37 @@ test('a production secret’s Edit dialog offers no hosts and says why', async (
   await expect(prod.getByText('None. This is a production secret: agents never get it, so it is sent to no host. Add a separate secret for agents to send to a host.')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await prod.getByRole('button', 'Cancel').click();
+});
+
+// Task #611 (SPEC-627): a manager limits an agent secret to methods and paths; its card shows the
+// rules, a malformed line is refused before anything is sent, and emptying the field removes them.
+test('a manager edits an agent secret’s method and path rules and its card shows them', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents', '&ambient=0'));
+  const rulesOf = () => browser.evaluate(() => (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_stripe').rules || []);
+  await screen.getByRole('button', 'Edit STRIPE_KEY').click();
+  const edit = screen.getByRole('dialog', 'Edit STRIPE_KEY');
+  await expect(edit.getByLabel('Rules')).toHaveValue('');
+  await edit.getByLabel('Rules').fill('/v1/charges');
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit.getByRole('alert')).toHaveText(/write the methods, then a path starting with \//);
+  expect(await rulesOf()).toEqual([]);
+  await edit.getByLabel('Rules').fill('get, HEAD /v1/charges/*\nPOST /v1/refunds');
+  expect(await axeViolations(browser)).toEqual([]);
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit).toBeHidden();
+  expect(await rulesOf()).toEqual([{ methods: ['GET', 'HEAD'], path: '/v1/charges/*' }, { methods: ['POST'], path: '/v1/refunds' }]);
+  await expect(browser.locator('[aria-label="Rules"] .badge:has-text("GET, HEAD /v1/charges/*")')).toBeVisible();
+  await expect(browser.locator('[aria-label="Rules"] .badge:has-text("POST /v1/refunds")')).toBeVisible();
+
+  // An edit that leaves the rules alone sends none; emptying the field removes them.
+  await screen.getByRole('button', 'Edit STRIPE_KEY').click();
+  const again = screen.getByRole('dialog', 'Edit STRIPE_KEY');
+  await expect(again.getByLabel('Rules')).toHaveValue('GET, HEAD /v1/charges/*\nPOST /v1/refunds');
+  await again.getByLabel('Rules').fill('');
+  await again.getByRole('button', 'Save').click();
+  await expect(again).toBeHidden();
+  expect(await rulesOf()).toEqual([]);
+  await expect(browser.locator('[aria-label="Rules"]')).toHaveCount(0);
 });
 
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and

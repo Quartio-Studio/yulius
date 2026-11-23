@@ -1029,6 +1029,7 @@ impl EgressProxy {
             .collect();
         let (path, headers) = if upstream.bound {
             let request = EgressRequest {
+                method: parts.method.as_str().to_owned(),
                 host: upstream.host.clone(),
                 port: upstream.port,
                 path_and_query: path,

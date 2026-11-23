@@ -524,12 +524,15 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0456 -->
 - [0457](0457-new-tasks-default-to-claude-code-on-opus-5-5.md): New tasks default to Claude Code on Opus 5.5 when nothing is chosen; supersedes 0422 and 0426.
 <!-- ADR 0457 -->
+- [0458](0458-an-agent-secret-can-be-limited-to-methods-and-paths.md): An agent secret can be limited to HTTP methods and path patterns; a request that would use it outside them is refused with 403 and audited, never forwarded without the value (SPEC-627, #611).
 <!-- ADR 0458 -->
 - [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md): Brokered commands run in the production holder with a temporary key file; amends SPEC-002 ADR-20
 <!-- ADR 0459 -->
+- [0460](0460-a-task-reads-its-neighbours-status-and-never-steers-them.md): A task reads its neighbours' status (owner, PR and stage, claims, waits, last words) read-only and never steers them; a personal task shows other people's tasks only its shape.
 <!-- ADR 0460 -->
 - [0461](0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md): a subscription past its harness's rebalance threshold (default 95 %) gets no new task while another has room, and idle, unpinned tasks on it move to the one with the most room; a person's choice pins a task (SPEC-629)
 <!-- ADR 0461 -->
+- [0462](0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md): Notices carry a key and an expiry, and the newest per key wins
 <!-- ADR 0462 -->
 <!-- ADR 0463 -->
 - [0464](0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md): A Codex goal whose plan is finished continues on its own red Yulius CI run at its current head; extends 0428.

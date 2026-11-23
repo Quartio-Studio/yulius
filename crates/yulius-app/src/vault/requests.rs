@@ -191,7 +191,9 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         let link = self.agent_secret_link(&sandbox.slug, &record);
-        if record.auto_allow {
+        // A secret with rules waits for a person (SPEC-627 MPR-009): bound by an agent to a server
+        // of its own, its value would leave whatever the rules allow on its real host.
+        if record.auto_allow && record.rules.is_empty() {
             return self
                 .auto_bind(user, &record, &asked, merged, link, args.reason.as_deref())
                 .await;

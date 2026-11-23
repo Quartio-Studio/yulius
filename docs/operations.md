@@ -3374,7 +3374,13 @@ up. Queued tasks start when capacity allows.
   `master.key`), with re-authenticated, audited reveals (ADR-20).
 - Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and
   every channel an agent reads is redacted. Remaining threats (a bound host echoing a credential
-  in another form, misuse on its hosts, weak values): SPEC-002 ADR-20.
+  in another form, misuse on its hosts, weak values): SPEC-002 ADR-20. Misuse on its hosts is
+  narrowed by method and path rules: for a token agents only read with, set `GET` rules on the
+  Secrets page (Edit), and the proxy refuses any other request that would use it (403, audited
+  `vault.agent.refused`; [ADR-0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)).
+  Hosts agents ask for such a secret then wait for you; do not allow it into `.env` files, which
+  give code the value itself. Rules cannot tell request bodies apart (a GraphQL mutation is a
+  `POST /graphql` like a query).
 - Agents receive per-run task tokens (MCP, hooks) and, through the credential helper and `gh`,
   their task creator's GitHub token (8 h, capped by that person's access within the App's
   installation; an agent could read it and act as them there until it expires), or without one a
