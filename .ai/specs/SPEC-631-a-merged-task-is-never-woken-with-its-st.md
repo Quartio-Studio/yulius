@@ -1,6 +1,6 @@
 ---
 yulius-task: ad87074f-2de4-4f60-989b-e5d2217b45e1
-status: in-progress
+status: done
 ---
 
 # SPEC-631 A merged task whose own wait outlives its staging outcome ends Done
@@ -100,14 +100,17 @@ same pattern in this project's tasks #608 and #613.
 - [x] A finished task whose background work waits hears its staging outcome
 - [x] Staging deploys are recorded as the requesting task's CD runs
 - [x] Decision, docs and changes entry; issue for the unended review round
-- [ ] Independent review approved
+- [x] Independent review approved
 
 ## Acceptance criteria
 
 - A merged task with a complete plan, idle with a background shell, gets each of a gate_failed,
   a deploy_failed and a verified outcome typed into its session once; once the shell ends and the
   turn is over, the task is in the Done group with no person acting.
-- The same task with no background work gets a later outcome silently and stays Done.
+- An outcome that ends while the finished task is mid-turn or flagged needs-attention is not
+  recorded silently: it is typed at the first tick the task is idle with its wait running.
+- An outcome whose wait ended between the decision and the paste is not typed and is recorded
+  silently at the next tick; the task is Done.
 - A staging request's CD run reads `requested_by = task:<n>` and carries the task id; `yulius
   wait` of that task sees the run.
 
@@ -115,8 +118,10 @@ same pattern in this project's tasks #608 and #613.
 
 - `task_done::a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done` (new, real
   `yulius ptyhost` and fake Claude Code agent): replays #377 with a `/bg` shell standing in for
-  the agent's staging wait, the three final states, then the shell's end and Done, then a quiet
-  outcome. Fails before the fix: the outcome is never typed.
+  the agent's staging wait, the three final states; an outcome held by a needs-attention flag
+  and by a turn ("sr-held"); the wait ending between the decision and the admission at race
+  point `AwaitedOutcomeDecided` ("sr-race"), a silent record and Done. Fails before the fix: the
+  outcome is never typed.
 - `staging::a_staging_deploy_is_the_requesting_tasks_cd_run` (new): the deploy's CD run record.
 - Rerun the touched test binaries' files in full: `task_done`, `staging`, `parking` (staging
   outcome tests), the `yulius-app` unit tests; `scripts/dev quick`.
@@ -133,3 +138,32 @@ same pattern in this project's tasks #608 and #613.
 - `yulius wait` following a staging request is left out of this change (#1727): with the
   outcome typed, any wait ends. The CD-run attribution makes its existing CD fields see the
   staging deploy.
+
+## Evidence
+
+- Before the fix, the new `task_done` regression test failed at `the finished task's waiting
+  agent hears sr-gate` (left 0, right 1): the outcome was recorded without being typed. After
+  it, the test passes (about 2 s; the reviewer ran it with `--stress-count 20`, 20 of 20).
+- `staging::a_staging_deploy_is_the_requesting_tasks_cd_run` failed before its fix
+  (`requested_by` left "alice", right "task:1") and passes after.
+- Hand mutations, each restored: making every finished task "awaited" failed the test at
+  `recorded`; removing the not-idle deferral failed it at `a NeedsAttention task's outcome
+  waits`; removing the admission recheck failed it at `its work ended before the admission`.
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^agent_hooks::/) |
+  test(/^disk::/) | test(/^delivery::/) | test(/staging/) | test(/^task_done::/) |
+  test(/^parking::/))'`: 661 passed. With `cd::` and `task_message::`: 434 passed (the one
+  failure in between was the quiet-receipt test's finished tasks seeded mid-turn; they are now
+  idle, 62 of 62 staging tests pass). `scripts/cargo nextest run -p yulius-app`: 723 passed.
+  `scripts/cargo clippy -p yulius-app -p yulius --all-targets -- -D warnings`: clean.
+  `scripts/dev quick`: passed.
+- Yulius CI run 28dabb5e at 7509bb86f passed (quality, lint, macos, docs, deps,
+  file-contracts); the test shards and e2e run on the merged revision (merge-first).
+- Independent review (yulius-reviewer, Fable 5.2): round 1 requested changes (a hold the
+  outcome raised made the next tick drop it; the mid-turn case; the prompt's wording; the
+  untested admission recheck; nits), all answered; round 2 approved 314816387.
+- Security scan: Vidoc is switched off for this project, so `yulius security-scan` scans
+  nothing (disabled, not passed).
+- Not tested: a Codex session (the decision, the probe and the paste are shared code; only the
+  fake Claude Code agent ran); a real person's draft raising the hold (the test writes the
+  flagged activity, the flag-raising code is unchanged); the incident's own transcript, which
+  this project cannot read, so the shell's command is inferred.
