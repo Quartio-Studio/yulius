@@ -227,6 +227,7 @@ impl GateFailures {
             .chain(self.unknown)
             .chain(self.run_failure)
             .map(|(test, origin)| GateNotice {
+                key: crate::notice_producers::gate_key(&test).to_string(),
                 revision: origin.sha,
                 merge_task: origin.owner,
                 run_id: run_id.clone(),
@@ -400,6 +401,12 @@ impl App {
         } else {
             self.available_gate_workers(sandbox).await?
         };
+        // The project's people are told of what nobody repairs, one keyed notice per failure,
+        // removed once it is repaired or owned (SPEC-624 NTC-010).
+        let unowned: &[GateNotice] = if available.is_empty() { &failures } else { &[] };
+        if let Err(err) = self.sync_gate_notices(sandbox, unowned).await {
+            tracing::warn!(sandbox = %sandbox.slug, error = %err, "gate notices could not be reconciled");
+        }
         let recipients = store
             .reconcile_gate_repair(&sandbox.id, &detail, &available)
             .await?;

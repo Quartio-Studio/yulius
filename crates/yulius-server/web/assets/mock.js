@@ -2304,7 +2304,7 @@ function seedCi(params) {
     },
     sb_three: {
       gate: { source: 'profile', jobs: [{ name: 'gate', command: 'make ci', matrix: null }] }, gate_problem: null, status_access: null, actions_workflows: [],
-      gate_notices: params.get('gate_notice') === 'reader' ? [{ revision: '77aa01bc3d4e', run_id: 'ci_t1', merge_task: null, test: 'store::retry' }] : [],
+      gate_notices: params.get('gate_notice') === 'reader' ? [{ key: 'gate:store::retry', revision: '77aa01bc3d4e', run_id: 'ci_t1', merge_task: null, test: 'store::retry' }] : [],
       runs: [params.get('gate_notice') === 'reader'
         ? ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'failed', 180, { failJob: 'test (1/2)' })
         : ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'passed', 180)],

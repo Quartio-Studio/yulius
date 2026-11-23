@@ -380,6 +380,59 @@ async fn a_closed_merge_owners_failed_test_reaches_the_project_without_a_staging
     Ok(())
 }
 
+/// SPEC-624 NTC-010, AC-10: a failure nobody repairs is one notice `gate:<test>` for the
+/// project's people, posted once across ticks and removed once the gate passes.
+#[tokio::test]
+async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    named_gate(&f, &revision, &["flaky::result"]).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox = sandbox(&f).await?;
+    let gate_notices = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            f.h.app
+                .notices_for(&alice, Some(&sandbox.id))
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str().starts_with("gate:"))
+                .map(|n| (n.id, n.key.to_string(), n.expires_at))
+                .collect::<Vec<_>>(),
+        )
+    };
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let first = gate_notices().await?;
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0].1, "gate:flaky::result");
+    assert_eq!(first[0].2, None, "it waits until repaired");
+    let status = f.get("/api/status").await?;
+    assert_eq!(
+        status["sandboxes"][0]["gate_notices"][0]["key"], "gate:flaky::result",
+        "{status}"
+    );
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(
+        gate_notices().await?,
+        first,
+        "the next tick posts nothing new"
+    );
+
+    let fix = f.push("dev", &[("fixed", Some("yes"))])?;
+    gate(&f, &fix, RunState::Passed).await?;
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert!(gate_notices().await?.is_empty());
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_later_candidate_waits_for_the_older_full_gate() -> TestResult {
     let f = fixture(&staging_toml()).await?;
@@ -657,7 +710,7 @@ async fn rerunning_an_ancestor_keeps_the_archived_red_heads_notice_and_rerun_tar
             .unwrap_or(&view["sandboxes"][0]["gate_notices"]);
         assert_eq!(
             *notices,
-            json!([{"test":"suite::broken","merge_task":owner,"revision":head,"run_id":failed}])
+            json!([{"key":"gate:suite::broken","test":"suite::broken","merge_task":owner,"revision":head,"run_id":failed}])
         );
     }
     let path = format!("/api/sandboxes/s1/ci/runs/{failed}");
@@ -932,7 +985,7 @@ async fn a_pruned_gate_and_deleted_task_still_identify_the_inherited_test() -> T
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
     assert_eq!(
         notices,
-        json!([{ "test": "delivery::gate", "revision": old, "run_id": live_run, "merge_task": number }])
+        json!([{ "key": "gate:delivery::gate", "test": "delivery::gate", "revision": old, "run_id": live_run, "merge_task": number }])
     );
     Ok(())
 }
