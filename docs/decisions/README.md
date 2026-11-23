@@ -540,6 +540,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0464 -->
 - [0465](0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md): Script watches run in the sandbox without an agent and post keyed notices
 <!-- ADR 0465 -->
+- [0466](0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md): A finished task whose background work waits hears its staging outcome; narrows 0450
 <!-- ADR 0466 -->
 <!-- ADR 0467 -->
 <!-- ADR 0468 -->

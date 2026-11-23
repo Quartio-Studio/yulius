@@ -67,7 +67,7 @@ same pattern in this project's tasks #608 and #613.
    10:16:39) with no `ended_at`, `reported: false` and no verdict, while its notes say round 2
    approved. A round ends only on the reviewer's `SubagentStop` (`review_subagent_stopped`);
    finding why it never matched needs that session's hook and transcript records, which this
-   project cannot read. Filed as an issue.
+   project cannot read. Filed as #1726.
 2. A staging request's deploy runs `cd_start` with `CdActor::Person` (the owner's write access),
    so the CD run records `requested_by` as the person's login and no `task_id`, although its note
    says "a task's delivery". Before merge-first a task's deploy read "task #N". Fixed here.
@@ -92,10 +92,10 @@ same pattern in this project's tasks #608 and #613.
 ## Plan
 
 - [x] Root cause of #377's missing Done recorded in the spec
-- [ ] Regression test replays #377: finished task, waiting shell, staging outcome
-- [ ] A finished task whose background work waits hears its staging outcome
-- [ ] Staging deploys are recorded as the requesting task's CD runs
-- [ ] Decision, docs and changes entry; issue for the unended review round
+- [x] Regression test replays #377: finished task, waiting shell, staging outcome
+- [x] A finished task whose background work waits hears its staging outcome
+- [x] Staging deploys are recorded as the requesting task's CD runs
+- [x] Decision, docs and changes entry; issue for the unended review round
 - [ ] Independent review approved
 
 ## Acceptance criteria
@@ -126,5 +126,6 @@ same pattern in this project's tasks #608 and #613.
 - A fresh look at the agent's processes decides (`background_or_wait_now`), falling back to the
   last probe when it gives no answer, so a stale count neither wakes a finished task nor
   leaves the wait running.
-- `yulius wait` following a staging request is left out of this change: with the outcome typed,
-  any wait ends. The CD-run attribution makes its existing CD fields see the staging deploy.
+- `yulius wait` following a staging request is left out of this change (#1727): with the
+  outcome typed, any wait ends. The CD-run attribution makes its existing CD fields see the
+  staging deploy.
