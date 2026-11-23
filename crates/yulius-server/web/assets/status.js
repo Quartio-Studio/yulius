@@ -485,9 +485,9 @@ function taskInfoOf(task, actionRequests, pr) {
     const done = { ...info, ...DONE, label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, pr };
     // An achieved goal is done whatever the checks are still doing (TSK-014), unless its merge
     // is armed (SPEC-487 CHN-001).
-    if (task.activity === 'done' && task.merge_armed !== true && task.candidate_pending !== true) return done;
+    if (task.activity === 'done' && task.merge_armed !== true) return done;
     // Its agent waits for its checks or the merge it armed: not done before that (SPEC-130 DMD-003).
-    if (task.yulius_wait === true || task.candidate_pending === true) return { ...info, pr };
+    if (task.yulius_wait === true) return { ...info, pr };
     // Tested means it would merge as it is: known green (or no required checks) and no conflict
     // with its base (SPEC-491 DON-001); running or unreadable checks are not. Of a conflict the
     // pull request watch tells its agent, which goes on by itself.

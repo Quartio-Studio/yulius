@@ -196,7 +196,7 @@ fn a_replacement_merge_is_refused_while_the_reader_settles_a_close() -> TestResu
 #[test]
 fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResult {
     use yulius_domain::task::{Activity, TaskStatus};
-    with_idle_candidate(async |_, app, remote, id, _| {
+    with_idle_candidate(async |data, app, remote, id, _| {
         app.deps
             .store
             .set_activity(&id, Some(Activity::Done), app.now())
@@ -270,6 +270,43 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             "{failed:?}"
         );
         *remote.pulls.lock().map_err(|_| "PR")? = pulls;
+        // The same answer again is no news.
+        let task_updates = |events: &mut tokio::sync::broadcast::Receiver<_>| {
+            let mut seen = Vec::new();
+            while let Ok(envelope) = events.try_recv() {
+                let envelope: yulius_app::events::Envelope = envelope;
+                if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event
+                    && task.id == id.as_str()
+                {
+                    seen.push(task.candidate_pending);
+                }
+            }
+            seen
+        };
+        let mut events = app.events.subscribe();
+        let again = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(task_updates(&mut events), Vec::<bool>::new(), "{again:?}");
+        // A second decision, tested on the moved base, fails too: the cleared answer was the
+        // first decision's, so the owner waits again at once and the watch says so.
+        let span = app
+            .deps
+            .store
+            .latest_merge_wait(&id)
+            .await?
+            .ok_or("candidate")?;
+        let mut decision: serde_json::Value =
+            serde_json::from_str(span.detail.as_deref().ok_or("receipt")?)?;
+        decision["singleton"]["base"] = json!("advanced-base");
+        let saved = decision.to_string();
+        let changed = rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+            "UPDATE spans SET detail=?1 WHERE key=?2",
+            [saved.as_str(), span.key.as_str()],
+        )?;
+        assert_eq!(changed, 1);
+        assert!(app.task_summary(&owner).await?.candidate_pending);
+        let mut events = app.events.subscribe();
+        let second = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(task_updates(&mut events), vec![true], "{second:?}");
         Ok(())
     })
 }

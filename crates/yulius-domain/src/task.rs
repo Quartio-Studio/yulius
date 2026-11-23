@@ -538,7 +538,8 @@ impl AttentionFacts {
     /// you, and so does "Your turn", an idle agent with declared work left or an unfinished goal (unless
     /// the agent's background shells still run or it waits in `yulius wait`: it goes on by itself);
     /// an idle agent with neither answered and is Done ("Answered", SPEC-429), as is an achieved
-    /// goal; a queued, chained or prepared task is Queued (a chain whose predecessor ended
+    /// goal unless its merge is armed, a staging outcome is due or its integration failure is
+    /// pending; a queued, chained or prepared task is Queued (a chain whose predecessor ended
     /// otherwise needs you), and the rest is Working.
     #[must_use]
     pub fn group(&self) -> TaskGroup {
@@ -562,7 +563,8 @@ impl AttentionFacts {
         }
         let finished =
             self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
-        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
+        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001), or
+        // settles its achieved goal's integration failure first (SPEC-621 FIN-004).
         if finished && (self.merge_armed || self.candidate_pending || self.staging_wait.is_some()) {
             return G::Working;
         }
