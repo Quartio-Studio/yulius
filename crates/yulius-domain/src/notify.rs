@@ -281,23 +281,6 @@ pub fn account_problem(status: &str) -> Option<&'static str> {
     }
 }
 
-/// A subscription's notification: (headline, text), before redaction.
-#[must_use]
-pub fn account_text(
-    label: &str,
-    problem: &str,
-    detail: Option<&str>,
-    link: &str,
-) -> (String, String) {
-    let headline = format!("{} {problem}", one_line(label));
-    let mut lines = vec![headline.clone()];
-    if let Some(detail) = detail.filter(|d| !d.trim().is_empty()) {
-        lines.push(plain(detail));
-    }
-    lines.push(link.to_owned());
-    (headline, truncate(&lines.join("\n")))
-}
-
 /// A posted notice (SPEC-624): (headline, text), before redaction: its project, its title, its
 /// detail and its link.
 #[must_use]
@@ -808,8 +791,9 @@ mod tests {
     }
 
     #[test]
-    fn an_account_message_names_its_problem() {
-        let (headline, text) = account_text("Team Max", "needs to sign in again", None, "L");
+    fn a_posted_message_names_its_problem() {
+        let (headline, text) =
+            posted_text(None, "Team Max needs to sign in again", None, Some("L"));
         assert_eq!(headline, "Team Max needs to sign in again");
         assert_eq!(text, "Team Max needs to sign in again\nL");
         assert_eq!(account_problem("limited"), Some("reached its usage limit"));

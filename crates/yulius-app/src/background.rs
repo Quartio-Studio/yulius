@@ -150,6 +150,8 @@ impl App {
                 app.expire_due_command_runs().await;
                 // Expired notices (SPEC-624 NTC-004): reads already leave them out.
                 app.prune_notices_now().await;
+                // Subscription notices follow statuses written without an event (SPEC-624).
+                app.sync_all_account_notices().await;
                 // Expired and consumed CLI device grants (#169).
                 if let Err(err) = app.purge_device_grants().await {
                     tracing::warn!(error = %err, "device grants could not be purged");

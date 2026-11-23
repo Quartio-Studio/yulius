@@ -597,6 +597,7 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "tasks_reorder",
         "tasks_bulk",
         "task_question_dismiss",
+        "notice_dismiss",
         "task_held_prompt",
         "task_merge",
         "task_switch",

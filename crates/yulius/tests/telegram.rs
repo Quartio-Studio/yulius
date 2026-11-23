@@ -332,6 +332,8 @@ struct World {
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
     let w = world_unstarted().await?;
     w.h.app.start_channel().await;
+    // Subscription problems are posted notices (SPEC-624 NTC-010), as the server starts them.
+    w.h.app.start_notice_producers();
     Ok(w)
 }
 
@@ -877,6 +879,20 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
         })
         .await?;
     subscription(&w, AccountStatus::Relogin).await?;
+    // The change as an event (the tick would reconcile it too): its notice is posted before any
+    // bot is active.
+    let mut events = w.h.app.events.subscribe();
+    account_event(&w, "relogin");
+    loop {
+        if let yulius_contracts::events::UiEvent::NoticePosted { notice } =
+            tokio::time::timeout(Duration::from_secs(10), events.recv())
+                .await??
+                .event
+            && notice.key == "account:acc1"
+        {
+            break;
+        }
+    }
     w.h.clock.0.fetch_add(MINUTE_MS, Ordering::SeqCst);
 
     set_bot(&w, TOKEN_A).await?;
@@ -908,6 +924,16 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
         sent[1].starts_with(&format!("Needs you · app\n#{} task t2\n", first.number + 1)),
         "{sent:?}"
     );
+    // Stored first, as the accounts code does before it publishes the view.
+    w.h.store
+        .set_account_state(
+            &AccountId::parse("acc1")?,
+            AccountStatus::Limited,
+            None,
+            None,
+            w.h.app.now(),
+        )
+        .await?;
     account_event(&w, "limited");
     let sent = w.fake.wait_sent(100, 3).await?;
     assert!(
@@ -958,7 +984,8 @@ async fn subscription(w: &World, status: AccountStatus) -> TestResult {
     Ok(())
 }
 
-/// Publishes `acc1`'s view with `status`, as the accounts code does after a change.
+/// Publishes `acc1`'s view with `status`, as the accounts code does after an edit or a sign-in
+/// (a status written without one is reconciled by the tick, SPEC-624).
 fn account_event(w: &World, status: &str) {
     use yulius_contracts::api::admin::{AccountUsageView, AccountView};
     use yulius_contracts::events::UiEvent;
