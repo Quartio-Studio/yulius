@@ -3046,8 +3046,11 @@ production stage, without its Docker directory): the host's read-only system, it
 key at `key/<random>/key` (0600, rebuilt as a key file from a stored key block), an environment of
 `HOME`, `PATH`, `LANG`, `TERM`, `TMPDIR` and the definition's env (`{secret}` only through the
 process environment), stdin empty and stdout and stderr in two files. It is stopped at its time
-limit or once its files pass 16 MiB. Each stream is redacted with `redact_for_sandbox` and then cut
-to 96 KiB before it is stored or returned. Its files go when it ends, and a starting server
+limit or once its files pass 16 MiB. Yulius makes `out` and `err` (`O_NOFOLLOW`) before the run
+and reads them back through those handles, so a link or FIFO the run puts at their paths is never
+followed. Each stream is redacted with `redact_for_sandbox` and then cut to 96 KiB of JSON
+before it is stored or returned. At most 4 runs of a project's commands run at once
+(`MAX_RUNNING`, counted and stored in one transaction by the run's own task). Its files go when it ends, and a starting server
 records a run it did not see end as `lost` and removes its files (`App::reconcile_command_runs`).
 Every run is audited `command.run` with the redacted command line, outcome, exit code and time.
 
