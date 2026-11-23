@@ -5804,6 +5804,20 @@ impl App {
         task_id: &TaskId,
         rule: crate::parking::ParkRule,
     ) -> AppResult<bool> {
+        self.park_task_because(task_id, rule, None).await
+    }
+
+    /// [`Self::park_task_now`]; the parked screen's notice says `because` instead of how long
+    /// the session was idle (a rebalance off a nearly used-up subscription, SPEC-629 RBL-006).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn park_task_because(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        rule: crate::parking::ParkRule,
+        because: Option<&str>,
+    ) -> AppResult<bool> {
         let Some(candidate) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
@@ -5888,8 +5902,13 @@ impl App {
             {
                 return Ok(false);
             }
-            crate::parking::save_parked_screen(&runtime.hub, Path::new(&run.run_dir), quiet_ms)
-                .map_err(AppError::internal)?;
+            crate::parking::save_parked_screen(
+                &runtime.hub,
+                Path::new(&run.run_dir),
+                quiet_ms,
+                because,
+            )
+            .map_err(AppError::internal)?;
             *intent = Some(EndIntent::Park);
             // Under the intent's lock: the run's end that takes the intent finds it.
             if let Ok(mut kept) = runtime.parked_activity.lock() {
@@ -6449,7 +6468,7 @@ impl App {
             )));
         }
         let attempt = store.live_attempt(task_id).await?;
-        let idle_codex = match &condition {
+        let idle_claim = match &condition {
             SwitchCondition::Idle { from, attempt } => Some((*from, attempt)),
             _ if task.harness == Harness::Codex
                 && task.status == TaskStatus::Running
@@ -6512,7 +6531,7 @@ impl App {
         // A saved start has no live run to switch out. Keep its pause until the launch lock
         // claims that exact pause, even if Stop and Continue created a new one during preflight.
         if pause.is_none() {
-            let claimed = if let Some((from, attempt)) = idle_codex {
+            let claimed = if let Some((from, attempt)) = idle_claim {
                 let runtime = self.runtime(task_id);
                 let _order = runtime.turn_order.lock().await;
                 store

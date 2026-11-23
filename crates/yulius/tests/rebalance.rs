@@ -3,8 +3,8 @@
 //! processes as in `subscription_moves.rs`.
 
 use crate::pool_supervision::{
-    HOUR, ScriptedUsage, build_served_tuned, build_with, new_task, refresh, runtime, seed, stop,
-    task, temp, usage, wait_for,
+    HOUR, ScriptedUsage, build_served_tuned, build_with, new_task, refresh, runtime, screen, seed,
+    stop, task, temp, usage, wait_for,
 };
 use crate::subscription_moves::{live_run, notices, ready, run_accounts};
 use crate::support::agents::FakeAgentOptions;
@@ -597,6 +597,13 @@ fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
                 let told = rebalanced(&mut events);
                 assert_eq!(told.len(), 1, "{told:?}");
                 assert!(told[0].4.starts_with(&format!("rebalance:{id}:parked:")));
+                // The parked screen says why, for whoever opens the task later (RBL-006).
+                wait_for("the parked screen", Duration::from_secs(30), || async {
+                    screen(&app, &id)
+                        .replace('\n', "")
+                        .contains("because Claude a-first is at 96% of its 5-hour window")
+                })
+                .await?;
                 // Its resume is placed off the full subscription.
                 let user = UserId::parse("u-admin")?;
                 app.continue_task(&ctx(&app, &user).await?, id.as_str(), &Default::default())
@@ -615,5 +622,72 @@ fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
     }
+    Ok(())
+}
+
+/// RBL-003: an idle goal session that parking's own facts keep (quiet for less than the
+/// rebalance's minute, under a 30-minute grace period) stays through passes without a single
+/// pull request read: the pass asks the local facts before a park reads GitHub.
+#[test]
+fn a_goal_session_parking_keeps_costs_no_github_reads() -> TestResult {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let github = Arc::new(FakeGitHub::default());
+        let app = build_served_tuned(
+            &data,
+            &fake,
+            probe.clone(),
+            agent(),
+            github.clone(),
+            "http://127.0.0.1:9",
+            |config| config.park_after_ms = 30 * 60_000,
+        )?;
+        let id = done_goal_on_a_full_first(&app, &probe, &data).await?;
+        let reads = || {
+            github.pull_list_count.load(SeqCst)
+                + github.pull_get_count.load(SeqCst)
+                + github.pull_reads.load(SeqCst)
+        };
+        let before = reads();
+        for _ in 0..2 {
+            let pass = app.rebalance_now().await;
+            assert_eq!((pass.moved, pass.parked, pass.kept), (0, 0, 1), "{pass:?}");
+        }
+        assert_eq!(reads(), before, "no pull request read");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// RBL-001: at 98 a harness's rebalance is off: an idle task on a subscription at 96 % stays.
+#[test]
+fn at_98_the_rebalance_is_off() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_served_tuned(
+            &data,
+            &fake,
+            probe.clone(),
+            agent(),
+            Arc::new(FakeGitHub::default()),
+            "http://127.0.0.1:9",
+            |config| config.rebalance.claude_code = 98.0,
+        )?;
+        let (id, _user) = idle_on_a_full_first(&app, &probe, &data).await?;
+        assert_eq!(app.rebalance_now().await, Default::default());
+        assert_eq!(run_accounts(&app, &id).await.len(), 1);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }

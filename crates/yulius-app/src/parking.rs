@@ -312,6 +312,7 @@ fn with_park_notice(
     bytes: &[u8],
     quiet_ms: Option<i64>,
     legacy_codex: bool,
+    because: Option<&str>,
 ) -> (u16, u16, Vec<u8>) {
     let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
     parser.process(bytes);
@@ -324,15 +325,19 @@ fn with_park_notice(
     }
     let kept = &lines[..footer.unwrap_or(lines.len())];
     let last = kept.iter().rposition(|line| !line.trim_end().is_empty());
-    let reason = quiet_ms.map_or_else(
-        || "because it stayed idle after its turn ended".to_owned(),
-        |ms| {
-            format!(
-                "after {} idle since its turn ended",
-                yulius_domain::ci::format_duration(ms)
+    let reason = because
+        .map(|why| format!("because {why}"))
+        .unwrap_or_else(|| {
+            quiet_ms.map_or_else(
+                || "because it stayed idle after its turn ended".to_owned(),
+                |ms| {
+                    format!(
+                        "after {} idle since its turn ended",
+                        yulius_domain::ci::format_duration(ms)
+                    )
+                },
             )
-        },
-    );
+        });
     let notice = format!(
         "Yulius parked this session {reason}. Send a message or choose Resume to continue."
     );
@@ -350,9 +355,10 @@ pub(crate) fn save_parked_screen(
     hub: &crate::hub::Hub,
     dir: &Path,
     quiet_ms: i64,
+    because: Option<&str>,
 ) -> std::io::Result<()> {
     let (bytes, (cols, rows)) = hub.formatted_screen();
-    let (cols, rows, screen) = with_park_notice(cols, rows, &bytes, Some(quiet_ms), false);
+    let (cols, rows, screen) = with_park_notice(cols, rows, &bytes, Some(quiet_ms), false, because);
     let mut record = format!("{cols} {rows}\n").into_bytes();
     record.extend(screen);
     crate::supervisor::write_private_file(&dir.join(PARKING_SCREEN), &record)
@@ -481,6 +487,7 @@ impl App {
             &bytes,
             quiet_ms,
             run.harness == yulius_domain::harness::Harness::Codex,
+            None,
         );
         Some(EndedScreen { grid, parked: true })
     }
@@ -607,8 +614,14 @@ mod tests {
 
     #[test]
     fn parking_preserves_every_occupied_row_and_adds_one_timed_notice() {
-        let (cols, rows, bytes) =
-            with_park_notice(72, 2, b"first row\r\nlast row", Some(1_800_000), false);
+        let (cols, rows, bytes) = with_park_notice(
+            72,
+            2,
+            b"first row\r\nlast row",
+            Some(1_800_000),
+            false,
+            None,
+        );
         let hub = crate::hub::Hub::new(cols, rows);
         hub.reset(1, &bytes, cols, rows);
         let shown = hub.screen_text();
@@ -626,7 +639,7 @@ mod tests {
     fn legacy_codex_exit_instructions_scrolled_past_token_usage_are_removed() {
         let (cols, rows, bytes) = with_park_notice(80, 3,
             b"To continue this session, run:\r\n  codex resume synthetic-rollout\r\nOr run codex resume and select Resolve compatibility",
-            None, true);
+            None, true, None);
         let hub = crate::hub::Hub::new(cols, rows);
         hub.reset(1, &bytes, cols, rows);
         let shown = hub.screen_text();
@@ -641,7 +654,7 @@ mod tests {
         let screen = format!(
             "The answer\r\n{usage}\r\nTo continue this session, run:\r\n  codex resume 01a1f59f-f713-7aa2-a183-1466175f06b5\r\n{hint}"
         );
-        let (cols, rows, bytes) = with_park_notice(80, 24, screen.as_bytes(), None, true);
+        let (cols, rows, bytes) = with_park_notice(80, 24, screen.as_bytes(), None, true, None);
         let hub = crate::hub::Hub::new(cols, rows);
         hub.reset(1, &bytes, cols, rows);
         let shown = hub.screen_text();
@@ -659,7 +672,7 @@ mod tests {
             "Or run codex resume and select yesterday's task.",
         ] {
             let answer = format!("To reopen yesterday's worktree, use\r\n{command}");
-            let (cols, rows, bytes) = with_park_notice(80, 8, answer.as_bytes(), None, true);
+            let (cols, rows, bytes) = with_park_notice(80, 8, answer.as_bytes(), None, true, None);
             let hub = crate::hub::Hub::new(cols, rows);
             hub.reset(1, &bytes, cols, rows);
             assert!(hub.screen_text().contains(command), "{command}");
@@ -672,7 +685,7 @@ mod tests {
             "Or run codex resume and select yesterday's task.",
             "codex resume yesterday",
         ] {
-            let (cols, rows, bytes) = with_park_notice(80, 24, line.as_bytes(), None, true);
+            let (cols, rows, bytes) = with_park_notice(80, 24, line.as_bytes(), None, true, None);
             let hub = crate::hub::Hub::new(cols, rows);
             hub.reset(1, &bytes, cols, rows);
             assert!(hub.screen_text().starts_with(line), "{line}");
@@ -692,7 +705,8 @@ mod tests {
             ),
             (1, "codex resume --last".to_owned(), false),
         ] {
-            let (cols, rows, bytes) = with_park_notice(80, rows, contents.as_bytes(), None, true);
+            let (cols, rows, bytes) =
+                with_park_notice(80, rows, contents.as_bytes(), None, true, None);
             let hub = crate::hub::Hub::new(cols, rows);
             hub.reset(1, &bytes, cols, rows);
             let rendered = hub.screen_text();

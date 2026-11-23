@@ -2,9 +2,10 @@
 //!
 //! Every [`REBALANCE_EVERY`] a pass ([`App::rebalance_now`]) looks at the running tasks whose
 //! live run sits on a subscription past its harness's rebalance threshold and moves each idle one
-//! to the best subscription below it (`rebalance::idle_move`), through a person's move
-//! (`App::move_task`) and only when a restart loses nothing (`agent_cli::kept_idle`). A task
-//! mid-turn, switching or paused is not looked at; it is looked at again in the next pass.
+//! to the best subscription below it (`rebalance::idle_move`), with nothing typed and a claim of
+//! the idle state it read (`App::switch_from`, `SwitchCondition::Idle`), only when a restart
+//! loses nothing (`agent_cli::kept_idle`) and opens no turn; a goal session is parked instead.
+//! A task mid-turn, switching or paused is not looked at; it is looked at again in the next pass.
 //!
 //! A person's choice of a subscription pins the task to it (`App::pin_task`): the rebalance
 //! never moves a task running on its pin, and a parked task resumes on it while it can take the
@@ -24,6 +25,7 @@ use yulius_domain::task::TaskStatus;
 
 use crate::account_gate::account_kind;
 use crate::context::App;
+use crate::error::AppError;
 use crate::model::{TaskMode, TaskRecord};
 use crate::parking::ParkRule;
 use crate::supervisor::{RunStart, SwitchCondition};
@@ -75,7 +77,7 @@ fn move_reason(label: &str, said: &str) -> String {
 
 /// Logs why the pass keeps an idle task where it is (SPEC-629 RBL-008).
 fn kept(task: &TaskId, why: &str) -> Looked {
-    tracing::info!(task = %task, why, "rebalance: the idle task stays for now");
+    tracing::debug!(task = %task, why, "rebalance: the idle task stays for now");
     Looked::Kept
 }
 
@@ -197,13 +199,16 @@ impl App {
             if self.config.park_after_ms == 0 {
                 return kept(&task.id, why);
             }
-            return match self
-                .park_task_now(
-                    &task.id,
-                    ParkRule::Rebalance(PARK_QUIET_MS.min(self.config.park_after_ms)),
-                )
-                .await
-            {
+            let rule = ParkRule::Rebalance(PARK_QUIET_MS.min(self.config.park_after_ms));
+            // Local facts first: the park itself reads the task's pull requests on GitHub.
+            if self.parkable_now(task, rule).await.is_none() {
+                return kept(&task.id, why);
+            }
+            let because = format!(
+                "{label} {}: it continues on a subscription with room",
+                from.said()
+            );
+            return match self.park_task_because(&task.id, rule, Some(&because)).await {
                 Ok(true) => {
                     self.end_no_room(&task.id);
                     self.tell_parked(task, &label, &from).await;
@@ -239,10 +244,15 @@ impl App {
         let moved = self
             .switch_from(&task.id, Some(account.clone()), &reason, start, condition)
             .await;
-        if let Err(err) = moved {
-            tracing::warn!(task = %task.id, error = %err, "rebalance: the move was refused");
-            failed.insert(account);
-            return Looked::Kept;
+        match moved {
+            Ok(()) => {}
+            // A turn began first: this task stays, the subscription stays a target.
+            Err(AppError::Conflict(why)) => return kept(&task.id, &why),
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "rebalance: the move was refused");
+                failed.insert(account);
+                return Looked::Kept;
+            }
         }
         // Told once it runs there: a launch that found no capacity paused the task instead.
         let running = matches!(
