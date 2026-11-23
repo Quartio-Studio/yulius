@@ -253,7 +253,8 @@ left: after a Yulius restart a "stays on" notice can stand until its one-day exp
 session command `yulius run`, which #1715 (SPEC-626 BRK-007) added, missing from the agent's
 `yulius` shim. Yulius asked this task to fix it forward: `agent_yulius_shim` passes `run`, and the
 test that failed on dev passes. Round 6 approved `1cf706eb9`; the shim's own test now also runs
-`yulius run deploy --dry-run` through it.
+`yulius run deploy --dry-run` through it. Before it merged, #1718 brought the same shim fix to
+dev, so this task's repair kept dev's version and delivered only these spec lines.
 
 Not tested here: real Claude Code, Codex or Antigravity subscriptions and their usage readings
 (synthetic usage and the fake agent stand in); the fake agent runs no hooks, so the tests record a

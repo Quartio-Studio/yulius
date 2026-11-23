@@ -110,7 +110,7 @@ exec "$real" "$@"
 /// at the agent's head finish, its delivery moves or an armed merge is decided, `yulius tool`,
 /// a Yulius tool called from the shell (SPEC-432), `yulius security-scan`, Vidoc's scan of the
 /// repository (SPEC-195), `yulius remove`, for the task's own files (SPEC-192), and `yulius run`,
-/// a brokered command of the project run outside the sandbox (SPEC-626 BRK-007). Every
+/// a brokered command of the project (SPEC-626). Every
 /// subcommand documented "In a task's session" must be in its `case` (SPEC-451).
 #[must_use]
 pub fn agent_yulius_shim(exe: &Path) -> String {
@@ -120,10 +120,10 @@ pub fn agent_yulius_shim(exe: &Path) -> String {
 # Yulius agent commands: `yulius wait [--minutes N]` (start it with run_in_background),
 # `yulius tool <name> [<json>]` (a Yulius tool from the shell), `yulius security-scan [--all]`
 # (Vidoc's scan of this repository), `yulius remove <paths>` (this task's own files) and
-# `yulius run <name> [args…]` (a brokered command of the project, outside the sandbox).
+# `yulius run <command> [<args>]` (a brokered command of the project, outside the sandbox).
 case "${{1:-}}" in
   wait|tool|security-scan|remove|run) exec '{exe}' "$@" ;;
-  *) echo "In a task's session yulius offers: yulius wait [--minutes N], yulius tool <name> [<json>], yulius security-scan [--all], yulius remove <paths>, yulius run <name> [args…]" >&2; exit 2 ;;
+  *) echo "In a task's session yulius offers: yulius wait [--minutes N], yulius tool <name> [<json>], yulius security-scan [--all], yulius remove <paths>, yulius run <command> [<args>]" >&2; exit 2 ;;
 esac
 "#
     )
@@ -855,9 +855,8 @@ mod tests {
         Ok(exe)
     }
 
-    /// SPEC-195 VSC-001, SPEC-451 WRP-001, SPEC-626 BRK-007: the agent's `yulius` offers `wait`,
-    /// `tool`, `security-scan`, `remove` and `run`, passing their arguments through, and nothing
-    /// else.
+    /// SPEC-195 VSC-001, SPEC-451 WRP-001: the agent's `yulius` offers `wait`, `tool`,
+    /// `security-scan` and `remove`, passing their arguments through, and nothing else.
     #[test]
     fn the_agent_yulius_shim_offers_the_session_commands() -> TestResult {
         let exe = fake_exe(r#"echo "ran $*"; exit 3"#)?;
@@ -891,8 +890,8 @@ mod tests {
         );
         assert_eq!(run(&["remove", "a", "b"])?, (3, "ran remove a b\n".into()));
         assert_eq!(
-            run(&["run", "deploy", "--dry-run"])?,
-            (3, "ran run deploy --dry-run\n".into())
+            run(&["run", "deploy-cli", "status", "--json"])?,
+            (3, "ran run deploy-cli status --json\n".into())
         );
         let (code, text) = run(&["serve"])?;
         assert_eq!(code, 2);
@@ -901,7 +900,7 @@ mod tests {
             "yulius tool <name> [<json>]",
             "yulius security-scan [--all]",
             "yulius remove <paths>",
-            "yulius run <name> [args…]",
+            "yulius run <command> [<args>]",
         ] {
             assert!(text.contains(usage), "{text}");
         }
