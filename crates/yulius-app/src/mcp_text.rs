@@ -1301,6 +1301,29 @@ mod tests {
         }
     }
 
+    /// SPEC-633 RRE-003 (#1726): a round with no report whose pull request merged reads
+    /// unreported, not as one still waiting for its report; a cut-off one keeps its reason.
+    #[test]
+    fn delivery_status_reads_a_round_its_merge_left_open_as_unreported() {
+        let value = json!({"stage": "merged_integration", "review_rounds": [
+            {"round": 1, "model": "claude-fable-5-2", "verdict": "approve", "reported": true,
+             "cut_off": false, "merged_at": "2026-11-23T11:05:00Z"},
+            {"round": 2, "model": "claude-fable-5-2", "verdict": null, "reported": false,
+             "cut_off": false, "merged_at": "2026-11-23T11:05:00Z"},
+            {"round": 3, "model": "claude-fable-5-2", "verdict": null, "reported": false,
+             "cut_off": true, "merged_at": "2026-11-23T11:05:00Z"}
+        ]});
+        let text = render("delivery_status", &json!({}), &value);
+        for line in [
+            "- round 1 on Fable 5.2: approve",
+            "- round 2 on Fable 5.2: unreported (the pull request merged without its report)",
+            "- round 3 on Fable 5.2: cut off by a usage limit",
+        ] {
+            assert!(text.contains(line), "{line:?} in {text}");
+        }
+        assert!(!text.contains("no report yet"), "{text}");
+    }
+
     /// SPEC-493 REV-005: `delivery_status` lists the review's rounds of the open pull request:
     /// the model that answered (else the one asked for) and how each stands.
     #[test]

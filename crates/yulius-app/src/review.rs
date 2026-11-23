@@ -600,6 +600,18 @@ impl App {
         }
     }
 
+    /// Injects the transcript watcher's report of the background agent `id` in tests.
+    #[cfg(feature = "test-support")]
+    pub async fn review_reported_for_test(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        id: &str,
+        report: &str,
+        at: Option<Timestamp>,
+    ) {
+        let _ = (task, id, report, at);
+    }
+
     /// Reads the resume instruction's recipient and the scheduled subscription move in tests.
     #[cfg(feature = "test-support")]
     pub async fn review_recovery_for_test(
