@@ -515,6 +515,11 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
             Some(&named),
             "the named subscription"
         );
+        assert_eq!(
+            app.deps.store.task_pin(&fork_id).await?.as_ref(),
+            Some(&named),
+            "a person's choice pins the fork there (SPEC-629 RBL-005)"
+        );
         let launch = launch_of(&first)?;
         assert!(
             launch.contains(&format!("session_id: \"{source_session}\"")),
