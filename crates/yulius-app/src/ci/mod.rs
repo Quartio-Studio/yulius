@@ -38,6 +38,8 @@ pub mod cd;
 mod disk_wait;
 mod environment;
 mod exec;
+mod watch_run;
+pub(crate) use watch_run::WatchRunOutput;
 mod findings;
 mod flaky;
 mod gate_history;
