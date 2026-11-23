@@ -739,6 +739,10 @@ impl App {
             self.set_task_activity(task, settled).await?;
             settled
         };
+        crate::race::reached(
+            crate::race::Point::TurnSettled,
+            std::path::Path::new(task.id.as_str()),
+        );
         let (app, task_id) = (Arc::clone(self), task.id.clone());
         tokio::spawn(async move {
             // The background work first: chains and the queue read it.

@@ -233,6 +233,9 @@ pub enum Point {
     /// A Stop hook (SPEC-453) found its turn ended cleanly; it has not taken the turn lock to
     /// remember when, or settled the turn, yet. The path is the task id.
     StopClean,
+    /// A clean turn's end was settled (`settle_clean_turn`): its activity is written, or kept
+    /// for a flag that still stands. The path is the task id.
+    TurnSettled,
     /// A verdict or timeout found its Stop and is about to claim the turn for settlement.
     GoalVerdictReady,
     /// The watcher read a native goal record. The path identifies its attempt.

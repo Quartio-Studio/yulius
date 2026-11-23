@@ -2927,6 +2927,68 @@ fn a_switch_whose_old_run_cannot_be_ended_starts_no_new_run() -> TestResult {
     Ok(())
 }
 
+/// SPEC-635 EFL-001 (#1611): the switch's old run cannot be ended while its goal turn's prompt
+/// hook is still on its way, as on a loaded host. That prompt and the turn's Stop come after the
+/// flag was raised: the task keeps reading the flag "Yulius could not end this session", which
+/// no work of that session answers. Before, the prompt set Working and the Stop settled the turn:
+/// the reason was gone.
+#[test]
+fn a_late_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        use yulius_app::race::{Point, on};
+        // The only task of this test process: its id is not known before its prompt can come.
+        let (failed_tx, failed) = std::sync::mpsc::channel::<()>();
+        on(Point::PromptTurnChecked, Path::new(""), move || {
+            let _ = tokio::task::block_in_place(|| failed.recv_timeout(Duration::from_secs(30)));
+        });
+        let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        let (settled_tx, settled) = std::sync::mpsc::channel();
+        on(Point::TurnSettled, Path::new(id.as_str()), move || {
+            let _ = settled_tx.send(());
+        });
+        host.refuse_ends(true);
+        let outcome = switch_result(switch_on_worker(&app, &id)).await?;
+        assert_eq!(
+            outcome,
+            Err("the session could not be ended, so it was not switched".to_owned()),
+            "{}",
+            run_states(&app, &id).await
+        );
+        // The goal's prompt goes on only now; its turn's Stop settles after it.
+        failed_tx.send(())?;
+        tokio::task::spawn_blocking(move || settled.recv_timeout(Duration::from_secs(60)))
+            .await??;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        assert_eq!(
+            activity(&app, &id).await,
+            Some(Activity::NeedsAttention),
+            "{}",
+            run_states(&app, &id).await
+        );
+        let why = support::attention(&app, id.as_str()).await?;
+        assert!(
+            why["problem"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("Yulius could not end this session")),
+            "{why}"
+        );
+        assert_eq!(why["action"], "Stop the task to try again.");
+        host.refuse_ends(false);
+        app.send_input(&id, b"/exit\r").await?;
+        wait_for("the task at rest", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Closed);
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-483 SWT-002: the session a switch asked to end does not end in time and its host is
 /// terminated. The switch failed and starts no new run: the task rests as
 /// `stopped_switch_timeout` with its one run ended. Who records the run's end first, its reader

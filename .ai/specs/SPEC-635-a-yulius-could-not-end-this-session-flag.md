@@ -1,0 +1,50 @@
+---
+yulius-task: 632c1599-fc0c-44a1-a855-eb18a9d766bd
+status: in-progress
+---
+
+# SPEC-635. A "could not end this session" flag outlives the session's late turn
+
+## Goal
+
+Keep the flag "Yulius could not end this session" on a running task while its cause stands: the live run's host could not be terminated. The session's own work must not clear it. Fixes #1611 (the flaky `task_done::a_switch_whose_old_run_cannot_be_ended_starts_no_new_run`).
+
+## Context
+
+`run_stays_live` (`supervisor.rs`, SPEC-065 END-001) records `end_failed` for the run and flags the task with a Yulius reason whose `work_answers` is false. `attention_view` shows the reason only while the task reads `NeedsAttention`. Every session-driven activity write replaces that activity with no look at the flag:
+
+- the prompt hook sets Working (`hooks.rs`, `set_task_activity`);
+- a clean Stop and a goal verdict settle the turn (`settle_clean_turn`, `settle_idle_activity` in `finish.rs`); a met goal settles Done;
+- agent work read from the transcript resumes Working (`resume_working`), a transcript prompt starts a turn (`supervisor.rs`), an interrupt sets Waiting.
+
+The test's fixture starts the switch once fake-agent prints `GOAL SET`, before the goal turn's prompt hook, Stop and met verdict. Normally they land within the switch's 300 ms wait. Under load they land after the flag and overwrite it: the task reads Done, and the person never learns that the session cannot be ended and blocks deletion. The same happens in production to any run whose stop, park or switch could not terminate it while its session keeps working.
+
+## Requirements
+
+- EFL-001. While the task's live run is the one whose host could not be terminated, no session-driven activity write (prompt hook, Stop or verdict settle, transcript work, transcript turn start, interrupt) changes the task's activity: the flag and its reason stay.
+- EFL-002. The flag ends when its cause ends: a person stops the task (the re-armed escalation clears `end_failed`), or the run ends (its task changes status). A later run of the task is not held by an earlier run's failure.
+- EFL-003. The check and the write are one step against the flag: a write that began before the failure was recorded lands before the flag is raised, so the flag is always the last word.
+
+## Plan
+
+- [ ] Reproduce the overwritten flag with a held goal turn
+- [ ] Keep the flag against session activity while the run cannot be ended
+- [ ] Prove the fix under stress with a busy loop beside it
+- [ ] Record the decision and update the docs
+- [ ] Get the independent review approved
+
+## Acceptance criteria
+
+1. A goal turn held until the switch failed, then released and settled (met), leaves the task reading `NeedsAttention` with the reason "Yulius could not end this session…". On dev it reads Done with no reason.
+2. `task_done::a_switch_whose_old_run_cannot_be_ended_starts_no_new_run` passes under `--stress-count` with a busy loop beside it.
+3. A stop of the task and the run's own end still work as before (existing `task_done`, `task_delete`, `parking` tests).
+
+## Test plan
+
+New `task_done` test: the fixture's fake agent holds its goal turn (`turn_hold_file`); the switch fails on a host that refuses ends; the hold is released; a race point at the end of `settle_clean_turn` (`Point::TurnSettled`) tells the test the late turn settled; then the attention is read. It fails without the fix. Run `task_done`, `task_delete`, `parking`, `shells`, `cockpit` in full, and the flaky test with `--stress-count 40` beside busy loops.
+
+## Decisions
+
+- A product fix, not a test-only wait: the flag's cause (an un-endable host) stands while the session works, so work must not answer it. [Decision 0468](../../docs/decisions/0468-a-flag-whose-cause-stands-is-not-answered-by-work.md)
+- The guard reads the runtime's `end_failed` for the live run, not a stored attribute of the reason: a restarted server reattaches the run and can end it again, so the flag must not outlive the runtime that knows the failure.
+- A person's typed prompt does not clear the flag either: the flag's action is to stop the task; typing does not make the host endable.
