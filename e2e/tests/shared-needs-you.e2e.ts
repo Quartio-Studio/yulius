@@ -38,7 +38,7 @@ test('tasks asking about the same sandbox problem share one Needs you card (SPEC
   expect(await links.first().textContent()).toBe('#12');
   expect(await links.nth(1).getAttribute('data-route')).toBe('/s/studio/t/4');
   // The notification center holds one entry for the shared problem, none per task.
-  await expect.poll(() => entries(browser)).toEqual(['needs-you:sb_studio:docker:1970-01-01T00:00:01.000Z']);
+  await expect.poll(() => entries(browser)).toEqual(['needs-you:sb_studio:docker']);
   // Each task keeps its own row, right under the card.
   await expect(browser.locator('.sidebar .task-group.group-needs .task-link[data-route="/s/studio/t/12"]')).toHaveCount(1);
   await expect(browser.locator('.sidebar .task-group.group-needs .task-link[data-route="/s/studio/t/4"]')).toHaveCount(1);
@@ -52,6 +52,12 @@ test('tasks asking about the same sandbox problem share one Needs you card (SPEC
   await touchTask(browser, 'sb_studio', 4, { needs_you: null });
   await expect(card).toHaveCount(0);
   await expect(browser.locator('.sidebar .task-link[data-route="/s/studio/t/12"]')).toHaveCount(1);
+  // Its entry waited for a decision and never expired; answered, it goes a day later (SPEC-624).
+  await expect.poll(() => browser.evaluate(() => {
+    const name = Object.keys(localStorage).find((k) => k.startsWith('yulius.notifications.') && k !== 'yulius.notifications.filter') || '';
+    const entry = JSON.parse(localStorage.getItem(name) || '[]').find((e: { key: string }) => e.key === 'needs-you:sb_studio:docker');
+    return entry ? Math.round((Date.parse(entry.expires) - Date.now()) / 3600000) : null;
+  })).toBe(24);
 });
 
 test('one notification per shared problem, also seen from another project (SPEC-494)', async ({ app, browser }) => {
@@ -59,5 +65,5 @@ test('one notification per shared problem, also seen from another project (SPEC-
   const docker = (at: number) => ({ action: 'Restart the sandbox’s Docker', decision: false, at: new Date(at).toISOString(), cause: 'docker', episode: new Date(1_000).toISOString() });
   await touchTask(browser, 'sb_studio', 12, { needs_you: docker(1_000) });
   await touchTask(browser, 'sb_studio', 4, { status: 'running', needs_you: docker(2_000) });
-  await expect.poll(() => entries(browser)).toEqual(['needs-you:sb_studio:docker:1970-01-01T00:00:01.000Z']);
+  await expect.poll(() => entries(browser)).toEqual(['needs-you:sb_studio:docker']);
 });

@@ -234,6 +234,7 @@ function seed(params) {
     // digest (`digest=1` starts with one). `__yuliusMock.sendDigest()` makes a new one and sends
     // `digest.ready`, as the server's daily run does.
     digest: { setting: { enabled: false, at: '18:00', park_idle_hours: null }, latest: params.get('digest') ? mockDigest('dg_mock_1') : null },
+    notices: { list: [], reads: 0, dismissed: [] },
     // Handoffs between sandboxes (SPEC-512 part 5): `handoff=1` seeds a request on #12 and a
     // provenance on #11.
     handoffs: mockHandoffs(params.get('handoff'), params.get('handoff') === 'long'),
@@ -5834,6 +5835,20 @@ route('POST', `/api/tasks/${ID}/handoffs/${ID}`, ({ db, p, body }) => {
   return entry;
 });
 
+// A person's notices (SPEC-624): keyed, expiring; `reads` counts the page's reads of them.
+route('GET', '/api/me/notices', ({ db }) => {
+  db.notices.reads += 1;
+  const now = Date.now();
+  return db.notices.list.filter((n) => !n.dismissed && (!n.expires_at || Date.parse(n.expires_at) > now));
+});
+route('DELETE', `/api/me/notices/${ID}`, ({ db, p }) => {
+  const notice = db.notices.list.find((n) => n.id === p[0]);
+  if (!notice) fail(404, 'not_found', 'not found');
+  notice.dismissed = true;
+  db.notices.dismissed.push(p[0]);
+  return json(204);
+});
+
 // `reads` counts the page's reads of it, so a test knows the bell has read it.
 route('GET', '/api/me/digest', ({ db }) => { db.digest.reads = (db.digest.reads || 0) + 1; return db.digest.latest; });
 
@@ -7440,6 +7455,18 @@ function startAmbient(db) {
 export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
+  // A notice posted as the server does (SPEC-624): newest wins per project and key.
+  db.postNotice = (notice) => {
+    const full = { sandbox_id: null, category: 'needs_you', tone: 'info', detail: null, link: null, decision: false, personal: false, created_at: new Date(Date.now()).toISOString(), expires_at: null, ...notice };
+    db.notices.list = db.notices.list.filter((n) => !(n.key === full.key && n.sandbox_id === full.sandbox_id && n.personal === full.personal));
+    db.notices.list.push(full);
+    emit(db, { type: 'notice.posted', notice: full });
+  };
+  db.removeNotice = (id) => {
+    const notice = db.notices.list.find((n) => n.id === id);
+    db.notices.list = db.notices.list.filter((n) => n.id !== id);
+    if (notice) emit(db, { type: 'notice.removed', id, sandbox_id: notice.sandbox_id, key: notice.key });
+  };
   db.sendDigest = (id = `dg_mock_${Date.now()}`) => {
     db.digest.latest = mockDigest(id);
     emit(db, { type: 'digest.ready', digest: db.digest.latest });

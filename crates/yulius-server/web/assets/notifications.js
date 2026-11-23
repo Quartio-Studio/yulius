@@ -4,6 +4,8 @@
 // notices. Built from the event stream the UI already receives; toasts still show. Kept per
 // user in this browser and bounded, so a reload keeps the history. With desktop notifications
 // on (Settings), entries also reach the operating system while the tab is in the background.
+// Every entry has a key and an expiry (SPEC-624): a newer entry with its key replaces it, and
+// an expired one goes away by itself. Notices the server keeps (`/api/me/notices`) join it.
 
 import { h, icon, iconButton, setChildren, popoverFocus, keepFocus, toast } from './dom.js';
 import { relShort, dateTime } from './format.js';
@@ -12,19 +14,41 @@ import { readJson, writeJson } from './store.js';
 import { digestSummary } from './digest.js';
 
 const MAX_ITEMS = 100;
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Default expiries of the bell's entries (SPEC-624, the spec's table), by kind. */
+export const EXPIRES_MS = { info: DAY_MS, warn: DAY_MS, ok: 3 * DAY_MS, error: 7 * DAY_MS };
+
+/** When an entry of `kind` made at `at` expires by default (ISO). */
+function defaultExpires(kind, at) {
+  const start = Date.parse(at);
+  return new Date((Number.isFinite(start) ? start : Date.now()) + (EXPIRES_MS[kind] || DAY_MS)).toISOString();
+}
+
+/** Whether an entry has expired (`expires` null: never). */
+function expired(entry, now = Date.now()) {
+  return typeof entry.expires === 'string' && Date.parse(entry.expires) <= now;
+}
 const KINDS = new Set(['info', 'ok', 'warn', 'error']);
 /** Task tones that notify when a task enters them, and the notification kind. */
 const TASK_TONES = { waiting: 'info', done: 'ok', attention: 'warn', failed: 'error', 'stopped-abnormal': 'error' };
-const ACCOUNT_PROBLEMS = { relogin: 'needs to sign in again', limited: 'reached its usage limit', error: 'reports an error' };
 /** Settings → Preferences: also notify through the operating system while the tab is hidden. */
 export const DESKTOP_KEY = 'yulius.desktopNotifications';
 const FILTER_KEY = 'yulius.notifications.filter';
 
+/**
+ * The stored history, checked: an entry kept before entries had expiries gets its kind's
+ * default, counted from its own time, and one already past its expiry is dropped (SPEC-624).
+ */
 function sanitize(list) {
   if (!Array.isArray(list)) return [];
   return list
     .filter((n) => n && typeof n.id === 'string' && typeof n.title === 'string' && typeof n.at === 'string')
-    .map((n) => ({ ...n, kind: KINDS.has(n.kind) ? n.kind : 'info', route: typeof n.route === 'string' && n.route.startsWith('/') ? n.route : null }))
+    .map((n) => {
+      const kind = KINDS.has(n.kind) ? n.kind : 'info';
+      const expires = n.expires === null || typeof n.expires === 'string' ? n.expires : defaultExpires(kind, n.at);
+      return { ...n, kind, expires, route: typeof n.route === 'string' && n.route.startsWith('/') && !n.route.startsWith('//') ? n.route : null };
+    })
+    .filter((n) => !expired(n))
     .slice(0, MAX_ITEMS);
 }
 
@@ -33,10 +57,11 @@ export function createNotificationCenter(ctx) {
   const user = (ctx.store.state.me && ctx.store.state.me.user) || {};
   const storageKey = `yulius.notifications.${user.id || user.login || 'anonymous'}`;
   let items = sanitize(readJson(storageKey, []));
+  writeJson(storageKey, items);
   let seq = 0;
+  let expiryTimer = null;
   const taskTones = new Map(); // task id → last tone seen this session
   const taskEpisodes = new Map(); // task id → last Needs You episode seen this session
-  const accountStatus = new Map(); // account id → last status seen this session
 
   const badge = h('span', { class: 'notif-badge', hidden: true });
   const button = h('button', { type: 'button', class: 'btn-icon notif-btn', title: 'Notifications', 'aria-label': 'Notifications', 'aria-haspopup': 'dialog', 'aria-expanded': 'false' }, icon('bell'), badge);
@@ -54,7 +79,19 @@ export function createNotificationCenter(ctx) {
     return items.filter((n) => !n.read).length;
   }
 
+  /** Drops expired entries and wakes at the next expiry (a minute at most, so a page whose
+   * clock moved catches up). */
+  function prune() {
+    const now = Date.now();
+    const kept = items.filter((n) => !expired(n, now));
+    if (kept.length !== items.length) { items = kept; save(); }
+    clearTimeout(expiryTimer);
+    const next = Math.min(...items.filter((n) => typeof n.expires === 'string').map((n) => Date.parse(n.expires) - now), 60000);
+    expiryTimer = setTimeout(() => render(), Math.max(1000, next));
+  }
+
   function render() {
+    prune();
     const count = unread();
     badge.hidden = count === 0;
     badge.textContent = count > 99 ? '99+' : String(count);
@@ -82,18 +119,23 @@ export function createNotificationCenter(ctx) {
 
   /**
    * Records a notification. A `key` keeps one entry per subject (a task, a browser tab): a new
-   * one replaces it and is unread again; with `once`, an existing entry is left as it is.
+   * one replaces it and is unread again; with `once`, an existing entry of the same `episode`
+   * (any, without one) is left as it is. `expires` is when it goes away (ISO; null: never, for
+   * what waits for a decision); left out, its kind's default (SPEC-624).
    */
-  function add({ kind = 'info', title, detail = null, route = null, key = null, once = false, at = null }) {
+  function add({ kind = 'info', title, detail = null, route = null, key = null, once = false, at = null, expires, episode = null, notice = null }) {
     if (key) {
       const index = items.findIndex((n) => n.key === key);
       if (index >= 0) {
-        if (once) return;
+        if (once && (episode === null || items[index].episode === episode)) return;
         items.splice(index, 1);
       }
     }
     seq += 1;
-    items.unshift({ id: `${Date.now().toString(36)}-${seq}`, kind, title, detail, route, key, at: at || new Date().toISOString(), read: false });
+    const when = at || new Date().toISOString();
+    const entry = { id: `${Date.now().toString(36)}-${seq}`, kind, title, detail, route, key, at: when, read: false, expires: expires === undefined ? defaultExpires(kind, when) : expires, episode, notice };
+    if (expired(entry)) return;
+    items.unshift(entry);
     if (items.length > MAX_ITEMS) items.length = MAX_ITEMS;
     save();
     render();
@@ -106,6 +148,23 @@ export function createNotificationCenter(ctx) {
     if (changed) { save(); render(); }
   }
 
+  /** An entry that waited for a decision that is now taken goes away a day later. */
+  function settle(predicate) {
+    const until = new Date(Date.now() + DAY_MS).toISOString();
+    let changed = false;
+    for (const n of items) if (predicate(n) && (n.expires === null || !n.read)) { n.read = true; n.expires = until; changed = true; }
+    if (changed) { save(); render(); }
+  }
+
+  /** Clears the list; notices the server keeps are dismissed there too, so a reload does not
+   * bring them back. */
+  function clearAll() {
+    for (const n of items) if (n.notice && ctx.api) ctx.api.del(`/api/me/notices/${encodeURIComponent(n.notice)}`).catch(() => {});
+    items = [];
+    save();
+    render();
+  }
+
   // ------------------------------------------------------------ panel
 
   function renderPanel() {
@@ -115,7 +174,7 @@ export function createNotificationCenter(ctx) {
       h('h2', null, 'Notifications'),
       h('span', { class: 'spacer' }),
       h('button', { type: 'button', class: 'btn btn-sm', disabled: count === 0, onClick: () => markRead(() => true) }, 'Mark all read'),
-      h('button', { type: 'button', class: 'btn btn-sm', disabled: items.length === 0, onClick: () => { items = []; save(); render(); } }, 'Clear'),
+      h('button', { type: 'button', class: 'btn btn-sm', disabled: items.length === 0, onClick: () => clearAll() }, 'Clear'),
       h('div', { class: 'seg notif-filter', role: 'radiogroup', 'aria-label': 'Show' }, choice('all', 'All'), choice('unread', count ? `Unread (${count})` : 'Unread')));
     const shown = filter === 'unread' ? items.filter((n) => !n.read) : items;
     // One row = the entry (a button when it leads somewhere) plus its own "Mark read" button,
@@ -139,6 +198,7 @@ export function createNotificationCenter(ctx) {
   }
 
   function open() {
+    prune();
     pop = h('div', { class: 'status-pop notif-pop', role: 'dialog', 'aria-label': 'Notifications' });
     document.body.append(pop);
     button.setAttribute('aria-expanded', 'true');
@@ -190,13 +250,14 @@ export function createNotificationCenter(ctx) {
     const me = ctx.store.state.me?.user?.login;
     const request = task.control_request;
     if (!me || !task.owner || task.owner.login !== me) return;
-    if (!request) { markRead((n) => n.key && n.key.startsWith(`control:${task.id}:`)); return; }
-    const key = `control:${task.id}:${request.by.login}:${request.at}`;
-    if (items.some((n) => n.key === key) || watching(task.id)) return;
+    const key = `control:${task.id}`;
+    if (!request) { settle((n) => n.key === key && n.expires === null); return; }
+    const episode = `${request.by.login}:${request.at}`;
+    if (items.some((n) => n.key === key && n.episode === episode) || watching(task.id)) return;
     const title = `@${request.by.login} asks for control of #${task.number} ${task.title || 'Task'}`;
     const sandbox = sandboxOf(task.sandbox_id);
     const route = taskRoute(task);
-    add({ kind: 'warn', title, detail: `It would act on GitHub as them${sandbox ? ` · ${sandbox.name}` : ''}`, route, key, once: true });
+    add({ kind: 'warn', title, detail: `It would act on GitHub as them${sandbox ? ` · ${sandbox.name}` : ''}`, route, key, episode, once: true, expires: null });
     if (live) toast(title, { kind: 'warn', timeout: 10000, action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
   }
   watch('task', (task) => heardRequest(task, true));
@@ -212,7 +273,8 @@ export function createNotificationCenter(ctx) {
     if (!digest || typeof digest.id !== 'string') return;
     if (!live && readJson(digestSeenKey, null) === digest.id) return;
     writeJson(digestSeenKey, digest.id);
-    add({ kind: 'info', title: 'Your end-of-day digest', detail: digestSummary(digest), route: '/digest', key: `digest:${digest.id}`, once: true, at: digest.created_at });
+    // Today's digest replaces yesterday's (SPEC-624).
+    add({ kind: 'info', title: 'Your end-of-day digest', detail: digestSummary(digest), route: '/digest', key: 'digest', episode: digest.id, once: true, at: digest.created_at, expires: defaultExpires('ok', digest.created_at) });
   }
   watch('digest', (digest) => heardDigest(digest, true));
   if (ctx.api) ctx.api.get('/api/me/digest').then((digest) => heardDigest(digest, false), () => {});
@@ -233,7 +295,7 @@ export function createNotificationCenter(ctx) {
     const task = ctx.store.findTask(event.task_id) || { id: event.task_id, sandbox_id: event.sandbox_id, number: event.number };
     const title = `@${event.by} took back control of #${event.number} ${event.title || 'Task'}`;
     const route = taskRoute(task);
-    add({ kind: 'info', title, detail: 'It acts on GitHub as them again', route });
+    add({ kind: 'info', title, detail: 'It acts on GitHub as them again', route, key: `control:${event.task_id}`, expires: defaultExpires('ok', new Date().toISOString()) });
     toast(title, { kind: 'info', action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
   });
 
@@ -243,7 +305,7 @@ export function createNotificationCenter(ctx) {
     const task = ctx.store.findTask(event.task_id) || { id: event.task_id, sandbox_id: event.sandbox_id, number: event.number };
     const title = `@${event.by} took control of #${event.number} ${event.title || 'Task'}`;
     const route = taskRoute(task);
-    add({ kind: 'info', title, detail: 'It acts on GitHub as them now; you can take it back', route });
+    add({ kind: 'info', title, detail: 'It acts on GitHub as them now; you can take it back', route, key: `control:${event.task_id}`, expires: defaultExpires('ok', new Date().toISOString()) });
     toast(title, { kind: 'info', action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
   });
 
@@ -268,6 +330,13 @@ export function createNotificationCenter(ctx) {
     else taskEpisodes.delete(task.id);
     const sameEpisode = Boolean(notice && episode && prevEpisode === episode);
     const sameState = notice ? (previous === info.tone && (sameEpisode || !episode)) : previous === info.tone;
+    // An entry that waited for the person goes a day after the task no longer does, and a
+    // shared problem's once no task of its project asks about it (SPEC-624).
+    if (!notice) settle((n) => n.key === `task:${task.id}` && n.expires === null);
+    for (const shared of Object.keys(SHARED_CAUSES)) {
+      const asked = (ctx.store.tasksOf(task.sandbox_id) || []).some((t) => t.needs_you && t.needs_you.cause === shared);
+      if (!asked) settle((n) => n.key === `needs-you:${task.sandbox_id}:${shared}` && n.expires === null);
+    }
     if (sameState || !(info.tone in TASK_TONES) || watching(task.id)) return;
     const sandbox = sandboxOf(task.sandbox_id);
     // A problem of the whole sandbox several tasks ask about (SPEC-494): one entry per episode
@@ -279,8 +348,10 @@ export function createNotificationCenter(ctx) {
         title: `${sandbox ? sandbox.name : 'A project'}: ${SHARED_CAUSES[cause]}`,
         detail: `Needs you, asked by #${task.number} and any other task of it that shares the problem`,
         route: taskRoute(task),
-        key: `needs-you:${task.sandbox_id}:${cause}:${task.needs_you.episode}`,
+        key: `needs-you:${task.sandbox_id}:${cause}`,
+        episode: String(task.needs_you.episode),
         once: true,
+        expires: null,
       });
       return;
     }
@@ -299,14 +370,18 @@ export function createNotificationCenter(ctx) {
       title: `#${task.number} ${task.title || 'Task'}`,
       detail,
       route,
-      key: notice && episode ? `task:${task.id}:${episode}` : `task:${task.id}`,
+      // One entry per task: its newer state, or a newer red run of its pull request, replaces
+      // the older one; while it waits for the person it never expires (SPEC-624).
+      key: `task:${task.id}`,
+      episode,
       at: (notice && notice.at) || null,
+      expires: info.group === 'needs' ? null : undefined,
     });
   });
 
   watch('browser-action', (event) => {
     const key = `browser:${event.sandbox_id}:${event.tab_id}`;
-    if (event.cleared) { markRead((n) => n.key === key); return; }
+    if (event.cleared) { settle((n) => n.key === key); return; }
     const sandbox = sandboxOf(event.sandbox_id);
     if (!sandbox) return;
     const task = event.task_id ? ctx.store.findTask(event.task_id) : null;
@@ -316,6 +391,7 @@ export function createNotificationCenter(ctx) {
       detail: [event.reason, sandbox.name].filter(Boolean).join(' · '),
       route: `/s/${encodeURIComponent(sandbox.slug)}/browser?tab=${encodeURIComponent(event.tab_id || '')}`,
       key,
+      expires: null,
     });
   });
 
@@ -326,16 +402,37 @@ export function createNotificationCenter(ctx) {
       kind: event.state === 'failed' ? 'error' : 'info',
       title: event.state === 'failed' ? 'An automation run failed' : `An automation started ${task ? `#${task.number} ${task.title}` : 'a task'}`,
       route: taskRoute(task),
+      key: `automation:${event.automation_id || event.task_id || ''}`,
+      expires: defaultExpires('ok', new Date().toISOString()),
     });
   });
 
-  watch('account', (account) => {
-    if (!account || !account.id) return;
-    const previous = accountStatus.get(account.id);
-    accountStatus.set(account.id, account.status);
-    if (previous === account.status || !(account.status in ACCOUNT_PROBLEMS)) return;
-    add({ kind: 'warn', title: `${account.label || 'A subscription'} ${ACCOUNT_PROBLEMS[account.status]}`, detail: account.last_error || null, route: '/admin/accounts', key: `account:${account.id}` });
+  // Notices the server keeps (SPEC-624): subscription problems, integration failures nobody
+  // repairs, script watches. One entry per project and key; the server's own expiry; removed
+  // when the server removes it. Each is told once, also across a reload.
+  const noticeKey = (n) => `notice:${n.sandbox_id || '-'}:${n.personal ? 'me' : '-'}:${n.key}`;
+  function heardNotice(notice) {
+    if (!notice || typeof notice.id !== 'string' || typeof notice.title !== 'string') return;
+    const key = noticeKey(notice);
+    if (items.some((n) => n.key === key && n.notice === notice.id)) return;
+    const sandbox = notice.sandbox_id ? sandboxOf(notice.sandbox_id) : null;
+    add({
+      kind: KINDS.has(notice.tone) ? notice.tone : 'info',
+      title: notice.title,
+      detail: [notice.detail, sandbox ? sandbox.name : null].filter(Boolean).join(' · ') || null,
+      route: typeof notice.link === 'string' && notice.link.startsWith('/') && !notice.link.startsWith('//') ? notice.link : null,
+      key,
+      at: notice.created_at,
+      expires: notice.expires_at || null,
+      notice: notice.id,
+    });
+  }
+  watch('notice', heardNotice);
+  watch('notice-removed', (event) => {
+    const kept = items.filter((n) => n.notice !== event.id);
+    if (kept.length !== items.length) { items = kept; save(); render(); }
   });
+  if (ctx.api) ctx.api.get('/api/me/notices').then((list) => { if (Array.isArray(list)) list.slice().reverse().forEach(heardNotice); }, () => {});
 
   render();
   return {
@@ -346,6 +443,6 @@ export function createNotificationCenter(ctx) {
     /** Forgets every entry. */
     clear() { items = []; save(); render(); },
     /** Stops watching the store (sign-out): a later shell builds a new center. */
-    destroy() { close(); offs.splice(0).forEach((off) => off()); },
+    destroy() { close(); clearTimeout(expiryTimer); offs.splice(0).forEach((off) => off()); },
   };
 }

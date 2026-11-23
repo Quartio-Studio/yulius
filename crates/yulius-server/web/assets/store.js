@@ -569,6 +569,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       case 'update.updated': emit('update', event); break;
       case 'disk.updated': emit('disk', event); break;
       case 'digest.ready': emit('digest', event.digest); break;
+      case 'notice.posted': emit('notice', event.notice); break;
+      case 'notice.removed': emit('notice-removed', event); break;
       case 'handoffs.updated': emit('handoffs', event.task_id); break;
       case 'commands.updated': emit('commands', event); break;
       case 'connections.updated': emit('connections', event); break;
