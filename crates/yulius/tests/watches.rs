@@ -1232,3 +1232,172 @@ async fn people_manage_watches_over_http() -> TestResult {
     }
     Ok(())
 }
+
+/// A remote tool's `(is_error, text, record)` for the person of `creds`.
+async fn tool(
+    w: &World,
+    creds: &Creds,
+    name: &str,
+    args: serde_json::Value,
+) -> Result<(bool, String, serde_json::Value), Error> {
+    let r = http(
+        w,
+        Method::POST,
+        "/mcp",
+        Some(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": args, "_meta": {"yulius/structured": true}}}),
+        ),
+        creds,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{name}: {}", r.body);
+    let result = &r.body["result"];
+    Ok((
+        result["isError"] == true,
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        result["structuredContent"].clone(),
+    ))
+}
+
+async fn token(w: &World, scope: &str) -> Result<Creds, Error> {
+    use yulius_app::ports::store::SessionStore as _;
+    // Tokens are made in the browser: alice's cookie session, as the web UI has it.
+    let (cookie, csrf) = (format!("browser-{scope}"), format!("csrf-{scope}"));
+    let now = w.h.app.now();
+    w.h.store
+        .insert_web_session(&yulius_app::model::WebSessionRecord {
+            id_hash: w.h.app.deps.crypto.sha256_hex(cookie.as_bytes()),
+            user_id: UserId::parse("u-alice")?,
+            csrf_token: csrf.clone(),
+            created_at: now,
+            expires_at: now.plus_millis(86_400_000),
+            revoked_at: None,
+        })
+        .await?;
+    let browser = Creds {
+        cookie: Some(cookie),
+        csrf: Some(csrf),
+        bearer: None,
+        oauth: None,
+    };
+    let made = http(
+        w,
+        Method::POST,
+        "/api/me/tokens",
+        Some(serde_json::json!({"label": scope, "scope": scope})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    Ok(Creds {
+        bearer: made.body["token"].as_str().map(str::to_owned),
+        ..Creds::default()
+    })
+}
+
+/// WCH-012: the person tools (the Superagent's, and a person's own agent's over the remote MCP)
+/// create, list, update, run, pause, resume and remove watches; a read-only token only lists.
+#[tokio::test]
+async fn the_person_tools_manage_watches() -> TestResult {
+    let w = world().await?;
+    let agent = token(&w, "operate").await?;
+    let reader = token(&w, "read").await?;
+    let project = "acme/app";
+    let (error, text, made) = tool(
+        &w,
+        &agent,
+        "watch_create",
+        serde_json::json!({"project": project, "name": "due-date", "every": "1d",
+            "script": "[ \"$(date -u +%F)\" \\< 2026-11-24 ] && exit 0; echo 'due'; exit 3"}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    assert_eq!(made["created_via"], "agent");
+    assert_eq!(made["owner"], "alice");
+    let (error, text, _) = tool(
+        &w,
+        &reader,
+        "watch_create",
+        serde_json::json!({"project": project, "name": "nope", "every": "1d", "script": "echo"}),
+    )
+    .await?;
+    assert!(error, "a read token creates none: {text}");
+
+    let (_, _, listed) = tool(
+        &w,
+        &reader,
+        "watches_list",
+        serde_json::json!({"project": project}),
+    )
+    .await?;
+    assert_eq!(listed["watches"][0]["name"], "due-date", "{listed}");
+
+    let (error, text, updated) = tool(
+        &w,
+        &agent,
+        "watch_update",
+        serde_json::json!({"project": project, "watch": "due-date", "every": "12h", "script": "echo 'merge-queue targets are due'; exit 3"}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    assert_eq!(updated["every"], "12h");
+
+    let (error, text, _) = tool(
+        &w,
+        &agent,
+        "watch_run",
+        serde_json::json!({"project": project, "watch": "due-date"}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    let id = made["id"].as_str().ok_or("id")?.to_owned();
+    until("the run ended", || async {
+        Ok(w.watch(&id).await?.state.runs == 1)
+    })
+    .await?;
+    let ended = w.watch(&id).await?;
+    assert!(ended.ended_reason.is_some(), "exit 3 ends it");
+    assert_eq!(
+        keys(&w.notices().await?),
+        [("watch:due-date", "due-date: merge-queue targets are due")]
+    );
+
+    let (_, _, resumed) = tool(
+        &w,
+        &agent,
+        "watch_pause",
+        serde_json::json!({"project": project, "watch": "due-date", "paused": false}),
+    )
+    .await?;
+    assert_eq!(resumed["state"], "active");
+    let (_, _, paused) = tool(
+        &w,
+        &agent,
+        "watch_pause",
+        serde_json::json!({"project": project, "watch": "due-date"}),
+    )
+    .await?;
+    assert_eq!(paused["state"], "paused");
+    let (error, text, _) = tool(
+        &w,
+        &agent,
+        "watch_remove",
+        serde_json::json!({"project": project, "watch": id}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    assert!(w.h.store.watch(&id).await?.is_none());
+    let (error, text, _) = tool(
+        &w,
+        &agent,
+        "watch_run",
+        serde_json::json!({"project": project, "watch": "due-date"}),
+    )
+    .await?;
+    assert!(error && text.contains("no watch"), "{text}");
+    Ok(())
+}

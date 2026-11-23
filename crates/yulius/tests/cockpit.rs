@@ -1809,6 +1809,12 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "variable_delete",
             "variables_list",
             "variables_set",
+            "watch_create",
+            "watch_pause",
+            "watch_remove",
+            "watch_run",
+            "watch_update",
+            "watches_list",
             "workflows_list",
         ]
     );

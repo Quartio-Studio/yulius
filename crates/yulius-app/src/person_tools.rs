@@ -81,6 +81,13 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("task_screen", Action::View),
     ("task_usage", Action::View),
     ("checkout", Action::View),
+    // The project's script watches, as its Watches page manages them (SPEC-630 WCH-012).
+    ("watches_list", Action::View),
+    ("watch_create", Action::Configure),
+    ("watch_update", Action::Configure),
+    ("watch_run", Action::Configure),
+    ("watch_pause", Action::Configure),
+    ("watch_remove", Action::Configure),
 ];
 
 /// The person's tools the remote MCP does not serve (review of slice 7, F3): updating or
@@ -286,6 +293,22 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         "number": {"type": "integer", "description": "Task number within the project"}
     });
     let run = json!({"run_id": {"type": "string", "description": "A run id from ci_runs"}});
+    let watch_ref = json!({"watch": {"type": "string", "description": "The watch's name or id (watches_list)"}});
+    let watch_fields = json!({
+        "script": {"type": "string", "description": "The bash script (at most 16 KiB). It runs in the project's clone with HOME kept between runs and $YULIUS_WATCH_STATE for its own files"},
+        "every": {"type": "string", "description": "An interval: 15m, 2h, 1d (1 minute to 7 days); or give cron"},
+        "cron": {"type": "string", "description": "A five-field cron expression, e.g. 0 9 * * *"},
+        "utc_offset_minutes": {"type": "integer", "description": "The cron expression's UTC offset in minutes (default 0)"},
+        "expiry": {"type": "string", "description": "How long each post stays: never, 2h, 3d (default 1 day)"},
+        "timeout_seconds": {"type": "integer", "description": "A run's time limit, 1 to 3600 (default 300)"},
+        "secrets": {"type": "array", "items": {"type": "string"}, "description": "Agent secret NAMES the script uses as $NAME placeholders through the egress proxy"}
+    });
+    let mut create_fields = watch_fields.clone();
+    create_fields["name"] = json!({"type": "string", "description": "1 to 40 of a-z, 0-9 and -: its posts are keyed watch:<name>, so each replaces the last"});
+    let mut update_fields = watch_fields;
+    update_fields["watch"] = watch_ref["watch"].clone();
+    let mut pause_fields = watch_ref.clone();
+    pause_fields["paused"] = json!({"type": "boolean", "description": "false resumes it (also an ended watch); default true"});
     vec![
         tool(
             "task_delivery",
@@ -555,10 +578,73 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
             json!({}),
             &[],
         ),
+        tool(
+            "watches_list",
+            "The project's script watches: name, schedule, owner, state (active, running, paused, ended), next and last run, last exit, failure and output, runs and posts.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "watch_create",
+            "Create a script watch for the person: a bash script Yulius runs on a schedule in this project's sandbox, without any agent or subscription, whose output becomes a notice for the person (web, Telegram, digest), keyed watch:<name> so each post replaces the last. Exit 0 with output posts it; no output posts nothing; exit 3 posts and ends the watch (the awaited thing happened); any other exit is a failure, and 3 in a row post one warning. Use it, not a scheduled check of yours, whenever a script can decide (a date, a URL, a release, a CI number): it costs no turn. Each run is bounded (its timeout, 120 s CPU, 1 GiB memory, 1 MiB per file).",
+            create_fields,
+            &["name", "script"],
+        ),
+        tool(
+            "watch_update",
+            "Change one of the person's watches: its script, schedule, expiry, timeout or secrets (its name never changes). Give the whole definition.",
+            update_fields,
+            &["watch", "script"],
+        ),
+        tool(
+            "watch_run",
+            "Run one of the person's watches once now (also a paused or ended one); it posts as usual. Answers at once; watches_list shows its result.",
+            watch_ref.clone(),
+            &["watch"],
+        ),
+        tool(
+            "watch_pause",
+            "Pause a watch (its owner or a project administrator), or resume it with paused: false (its owner); a resumed watch's schedule counts from now.",
+            pause_fields,
+            &["watch"],
+        ),
+        tool(
+            "watch_remove",
+            "Remove a watch (its owner or a project administrator): its going run is cancelled and its notices removed.",
+            watch_ref,
+            &["watch"],
+        ),
     ]
 }
 
+/// A watch's definition from a tool's arguments, `skip` (its reference) left out; the name
+/// is the `name` argument.
+fn watch_input(
+    args: &Value,
+    skip: &[&str],
+) -> AppResult<yulius_contracts::api::watches::WatchInput> {
+    let mut fields = args.as_object().cloned().unwrap_or_default();
+    for key in skip.iter().filter(|k| **k != "name") {
+        fields.remove(*key);
+    }
+    serde_json::from_value(Value::Object(fields))
+        .map_err(|err| AppError::Invalid(format!("invalid arguments: {err}")))
+}
+
 impl App {
+    /// The id of the watch of `sandbox` named (or with the id) `args.watch`.
+    async fn watch_named(&self, sandbox: &SandboxRecord, args: &Value) -> AppResult<String> {
+        let wanted = str_arg(args, "watch")?;
+        self.deps
+            .store
+            .watches_in(&sandbox.id)
+            .await?
+            .into_iter()
+            .find(|w| w.name == wanted || w.id == wanted)
+            .map(|w| w.id)
+            .ok_or_else(|| AppError::Invalid(format!("this project has no watch {wanted}")))
+    }
+
     /// Runs the person's project tool `name` in `sandbox` for the person of `ctx`: what the web
     /// UI's route does. The caller checked the tool's [`action`] on the project and audits.
     ///
@@ -764,6 +850,30 @@ impl App {
                 let id = str_arg(args, "id")?;
                 self.dismiss_notice(&ctx.user, id).await?;
                 Ok(json!({ "dismissed": id }))
+            }
+            "watches_list" => Ok(json!({ "watches": self.watches_for(ctx, sid).await? })),
+            "watch_create" => {
+                let input = watch_input(args, &["name"])?;
+                record(&self.watch_create_for(ctx, sid, input, "agent").await?)
+            }
+            "watch_update" => {
+                let id = self.watch_named(sandbox, args).await?;
+                let input = watch_input(args, &["watch"])?;
+                record(&self.watch_update_for(ctx, &id, input).await?)
+            }
+            "watch_run" => {
+                let id = self.watch_named(sandbox, args).await?;
+                record(&self.watch_run_now(ctx, &id).await?)
+            }
+            "watch_pause" => {
+                let id = self.watch_named(sandbox, args).await?;
+                let paused = args.get("paused").and_then(Value::as_bool).unwrap_or(true);
+                record(&self.watch_set_paused_for(ctx, &id, paused).await?)
+            }
+            "watch_remove" => {
+                let id = self.watch_named(sandbox, args).await?;
+                self.watch_remove_for(ctx, &id).await?;
+                Ok(json!({ "removed": id }))
             }
             "ci_runs" => record(&self.ci_overview(ctx, sid).await?),
             "ci_run" => record(
