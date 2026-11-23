@@ -701,7 +701,7 @@ watching, steering and unblocking.
 - **Script watches** (SPEC-630, [ADR-0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md)):
   a bash script on a schedule (an interval of 1 minute to 7 days, or cron), run by Yulius in the
   project's sandbox without any agent or subscription, so watching a URL, a release, a CI number
-  or a date costs no tokens. What it prints becomes a notice for its owner (pages, digest,
+  or a date costs no tokens. What it prints becomes a notice for its owner (the bell, digest,
   Telegram), keyed `watch:<name>`, so each post replaces the last: exit 0 with output posts it, no
   output posts nothing, exit 3 posts and ends the watch, and the third failure in a row posts one
   warning. Each run is bounded (its timeout, CPU, memory and file size) and gets only the agent

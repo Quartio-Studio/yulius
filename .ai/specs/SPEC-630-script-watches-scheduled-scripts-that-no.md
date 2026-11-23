@@ -25,10 +25,10 @@ approved this on 22 Nov 2026 after a review of iTermX, a separate tool. Its desi
   wins). It resolves an expiry (`never`, `30m`, `2h`, `3d`, RFC 3339) and publishes
   `notice.posted` to the people it reaches. Their Telegram chats get it through the notifier,
   under their channel choices (`NoticeKind`). `watch:` is reserved for this task, and the
-  spec's table says a watch's output gets "the watch's expiry, else 1 day". The bell gets server
-  notices in SPEC-624's second pull request, which is still open. Until it merges, a watch's
-  notice reaches `GET /api/me/notices`, `notices_list`, the digest and Telegram, and its last
-  output shows on the Watches page.
+  spec's table says a watch's output gets "the watch's expiry, else 1 day". The bell got server
+  notices in SPEC-624's second pull request (#1711, merged before this task's second pull
+  request), so a watch's notice reaches the bell, `GET /api/me/notices`, `notices_list`, the
+  digest and Telegram, and its last output shows on the Watches page.
 - **Automations** (`automations.rs`, SPEC-001 AUT-*) create a *task* on a cron schedule
   (`yulius_domain::cron::Schedule`, with a UTC offset). Their scheduler ticks every 30 s.
 - **Superagent checks** (`superagent_checks.rs`, SPEC-487 CHK-*) type a prompt into a person's
@@ -118,8 +118,7 @@ posting to people other than the owner.
   - expiry the watch's own, else 1 day.
 
   Each post replaces the previous one (NTC-003). It reaches the owner's channels as every notice
-  does (pages, the person tools, the digest, Telegram, and the bell once SPEC-624's second pull
-  request merges).
+  does (the bell and open pages, the person tools, the digest and Telegram).
 - **WCH-007 Three failures, one warning.** The third failure in a row posts one warning keyed
   `watch:<name>:failing` (category `failed`, tone `error`). It says how many runs failed, and
   gives the last reason and the tail of the error output. Later failures post nothing more
@@ -330,8 +329,8 @@ script through the tools.
   not passed.
 - Not tested here: a real bubblewrap run joined to a real holder. The contained plan is checked
   through a recording process host with a fake holder, as the CD tests check theirs, and the
-  bounds are proven on the host. Also not tested: the bell showing a watch's notice, which waits
-  for SPEC-624's second pull request.
+  bounds are proven on the host. Also not tested: the bell showing a watch's notice in a browser:
+  the bell shows server notices since #1711, whose own e2e tests cover posted notices.
 
 ### Review round 1 of PR #1713 (head `cc8825af8`): request changes, all answered
 
