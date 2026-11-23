@@ -888,6 +888,71 @@ pub struct CommandRecord {
     pub updated_at: Timestamp,
 }
 
+/// One run of a brokered command as stored (SPEC-626 BRK-005..BRK-016). Its command line and
+/// output are redacted before they are stored; its arguments are the agent's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRunRecord {
+    /// Its id.
+    pub id: String,
+    /// Its project.
+    pub sandbox_id: SandboxId,
+    /// The command's id and name when it was asked.
+    pub command_id: String,
+    /// The command's name.
+    pub command: String,
+    /// The definition's version it was asked against: a run approved after a change of it does
+    /// not run.
+    pub command_updated_at: Timestamp,
+    /// The task that asked, and its number.
+    pub task_id: TaskId,
+    /// Its number.
+    pub task_number: u32,
+    /// The agent's arguments.
+    pub args: Vec<String>,
+    /// The full command line shown to people (redacted).
+    pub line: String,
+    /// The agent said it changes something.
+    pub changes: bool,
+    /// `waiting`, `approved`, `running`, `done`, `timed_out`, `output_limit`, `failed`,
+    /// `rejected`, `expired` or `lost`.
+    pub state: String,
+    /// Why it ended as it did.
+    pub reason: Option<String>,
+    /// When a waiting run's approval ends.
+    pub deadline: Option<Timestamp>,
+    /// Who answered it (login).
+    pub answered_by: Option<String>,
+    /// The command's exit code.
+    pub exit_code: Option<i32>,
+    /// Its stdout, redacted and cut.
+    pub stdout: String,
+    /// Its stderr, redacted and cut.
+    pub stderr: String,
+    /// When it was asked.
+    pub created_at: Timestamp,
+    /// When it started.
+    pub started_at: Option<Timestamp>,
+    /// When it ended.
+    pub ended_at: Option<Timestamp>,
+}
+
+/// How a run ended (SPEC-626 BRK-011).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRunEnd {
+    /// The final state.
+    pub state: String,
+    /// Why.
+    pub reason: Option<String>,
+    /// The exit code.
+    pub exit_code: Option<i32>,
+    /// stdout, redacted and cut.
+    pub stdout: String,
+    /// stderr, redacted and cut.
+    pub stderr: String,
+    /// When.
+    pub at: Timestamp,
+}
+
 /// Brokered commands (SPEC-626, migration 0089).
 #[async_trait]
 pub trait CommandStore: Send + Sync {
@@ -914,6 +979,25 @@ pub trait CommandStore: Send + Sync {
     async fn update_command(&self, command: &CommandRecord, read_at: Timestamp) -> AppResult<bool>;
     /// Removes a command; `false` when it was gone.
     async fn delete_command(&self, sandbox: &SandboxId, id: &str) -> AppResult<bool>;
+    /// Stores a new run while fewer than `max_running` runs of its project are `running`
+    /// (`false`, nothing stored, otherwise), and keeps only the newest 200 ended runs of its
+    /// project.
+    async fn insert_command_run(&self, run: &CommandRunRecord, max_running: u32)
+    -> AppResult<bool>;
+    /// The newest run `task` started.
+    async fn latest_command_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<CommandRunRecord>>;
+    /// One run.
+    async fn command_run(&self, id: &str) -> AppResult<Option<CommandRunRecord>>;
+    /// Marks a run `running` (started at `at`) only while it is `from`; `false` when it was not.
+    async fn start_command_run(&self, id: &str, from: &str, at: Timestamp) -> AppResult<bool>;
+    /// Records a run's end only while it is `from`, and drops its raw arguments (its redacted
+    /// command line stays); `false` when it was not.
+    async fn end_command_run(&self, id: &str, from: &str, end: &CommandRunEnd) -> AppResult<bool>;
+    /// Every run in `state`, oldest first.
+    async fn command_runs_in_state(&self, state: &str) -> AppResult<Vec<CommandRunRecord>>;
 }
 
 /// One handoff as stored (SPEC-512 HOF-003..HOF-006).
