@@ -198,3 +198,10 @@ left after it:
 - Not changed: when `queue_task` finds that someone already started or cancelled the fork in the
   milliseconds before it is published, the fork is removed. The task is not yet shown to anyone at
   that point, so no person's action is lost.
+
+Review round 4 (Fable 5.2, head `d224b2645`, the dev merge with SPEC-625): request changes, one
+major. `task_fork` let a task agent fork a personal peer whose transcript ADR-0460 withholds from
+it. `tool_task_fork` now asks `require_reader` and `require_transcript_reader` before anything is
+staged. Test: `peer_status::a_personal_tasks_conversation_is_not_forked_by_a_task_without_its_secrets`
+(bob's agent and an automation's are refused with that sentence and nothing is created; alice's
+other task passes the check). It failed before the change ("no conversation to fork yet").

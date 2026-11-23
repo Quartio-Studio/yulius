@@ -452,6 +452,10 @@ impl App {
     ) -> AppResult<Value> {
         let user = self.manage_authority(caller).await?;
         let source = self.agent_task_ref(caller, args).await?;
+        // A fork carries the source's conversation: a task agent forks only what it may read
+        // (SPEC-625 PSV-004, ADR-0460).
+        self.require_reader(caller).await?;
+        self.require_transcript_reader(caller, &source).await?;
         let request = yulius_contracts::api::tasks::ForkTask {
             message: opt_str(args, "message")?,
             title: opt_str(args, "title")?,
