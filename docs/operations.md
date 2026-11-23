@@ -1770,7 +1770,7 @@ and CI's resource group. Nothing needs setting up.
   `<data>/runs/watch-<run>`.
 - **Bounds.** Each run gets 120 s of CPU time (then 2 s more before it is killed), a 1 GiB data
   segment, 1 MiB per file it writes, and its watch's timeout (5 minutes by default, 1 hour at
-  most). A project's watch files may use 1 GiB in all; while they are over it, its watches' runs are stopped within about 5 s, until a script or a person frees room. Runs dump no core (`ulimit -c 0`).
+  most). A project's watch files may use 1 GiB in all; while they are over it, its watches' runs are stopped within about 5 s, until a script or a person frees room. Runs write no core file (`ulimit -c 0`); where the host's core pattern is a pipe (apport), the kernel still hands a crashed run's dump to that handler.
   When a project is removed, its watches stop and their files are listed among its leftovers. At most 4 runs go at once on the
   instance, and a project has at most 20 watches.
 - **Restarts and updates.** A run cut off by a restart is recorded as a lost failure when the

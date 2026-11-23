@@ -173,7 +173,7 @@ posting to people other than the owner.
 - [x] The scheduler runs due watches and picks them up again after a restart
 - [x] Review round 1 of the watch core: every finding fixed test-first
 - [x] Independent review round 2 of the watch core, every finding answered
-- [ ] Independent review round 3 of the watch core: the dev merge and round 2's notes
+- [x] Independent review round 3 of the watch core: the dev merge and round 2's notes
 - [ ] People create, edit, run, pause and remove watches over HTTP
 - [ ] The Superagent manages watches through MCP tools, and checks point to watches
 - [ ] The project's Watches page offers Run now, Pause/Resume, Edit and Remove
@@ -355,16 +355,22 @@ round 3, each with its test seen failing first or with its fix undone:
   `a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_keeps` now writes them and
   asserts their mapped removal; it failed before the mapping.
 - **A removed project's lost run (minor).** `watch_startup` reads `watches_running`, without the
-  project filter. `a_removed_projects_lost_run_is_recovered_and_runs_dump_no_core` fails with
+  project filter. `a_removed_projects_lost_run_is_recovered_and_runs_write_no_core` fails with
   `all_watches` there.
 - **Nits:**
   - The claim answers the record as claimed, in one transaction (store test), so no claim
     outlives a failed read.
   - Empty output is never redacted into "withheld" text (`watch_redacted`). Not covered by a
     test: making the vault's matcher fail needs a broken vault.
-  - Runs dump no core (`ulimit -c 0`; the same test checks `ulimit -c` and `-Hc` print 0, and it
-    fails without the line).
+  - Runs write no core file (`ulimit -c 0`; the same test checks `ulimit -c` and `-Hc` print 0,
+    and it fails without the line). A piped core handler on the host is still called (round 3).
   - The disk bound's wording now says that runs are stopped while the files are over it.
   - The watch files stay under the leftover kind `removed-ci`: a watch run is a CI-like job of
     the sandbox, and a new kind would change the Leftovers page's list for nothing a person does
     differently.
+
+### Review round 3 (head `1367256ac`): approved
+
+Round 3 approved `1367256ac` with no blocker, major or minor findings. Its one nit was
+documentation: `ulimit -c 0` stops core files, but a piped core handler on the host is still
+called. The operations doc, this Evidence and the test's name now say so.

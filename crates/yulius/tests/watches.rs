@@ -958,9 +958,9 @@ async fn a_run_that_fills_the_watch_files_is_stopped() -> TestResult {
 }
 
 /// Review round 2: a run that was going when its project was removed is still recovered at the
-/// next start, and runs never dump core.
+/// next start, and runs write no core file.
 #[tokio::test]
-async fn a_removed_projects_lost_run_is_recovered_and_runs_dump_no_core() -> TestResult {
+async fn a_removed_projects_lost_run_is_recovered_and_runs_write_no_core() -> TestResult {
     use yulius_app::ports::store::SandboxStore as _;
     let w = world().await?;
     let cores =
