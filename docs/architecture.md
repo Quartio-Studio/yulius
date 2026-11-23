@@ -2250,6 +2250,7 @@ a start rule for all outstanding tasks includes an owner it cannot clear locally
 compound Done rule holds each live owner's delivery read guard until the successor is
 released, and archive, tidy and a removed subscription's close hold it until the Close
 intent is recorded, so an arm that arrives meanwhile keeps the session.
+The views say the same: such an owner's summary carries `candidate_pending`, its group is Working ("Waiting for checks or merge") in the list, Home, the tools, the terminal and Task Info, and the PR watch publishes the task when its observation of the failure flips.
 An explicit `#N merged` rule follows the recorded merge.
 
 The individual HTTP task detail verifies both recorded and branch PRs.

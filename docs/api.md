@@ -529,6 +529,8 @@ session limit the resume waits `queued` with its prompt. Archive and close make 
 `stopped_cancelled`. A message while the park is ending the session is 409 ("is parking its idle
 session"). Each park is audited `task.parked` by `yulius`.
 
+A live task whose goal is achieved includes `candidate_pending: true` while its recorded integration failure still applies (the PR watch has not seen its pull request close or its head or base move): it reads as waiting on Yulius, not Done, and the watch publishes the task when that changes; otherwise the field is absent (SPEC-621 FIN-004).
+
 A parked task in the sandbox task list or the task detail includes `parked_needs_you`, the server’s classification from its
 local work, owner decisions and current ordinary PR checks. When a PR is known, `parked_pr`
 gives its `number` and whether it is `open`. A branch lookup can identify a replacement

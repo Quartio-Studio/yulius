@@ -72,7 +72,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Unpack CI test shards on disk within the one-GiB temporary-filesystem cap
 - [x] Restore the reviewed session-capacity slice after the CI repair
 - [x] Verify live owners when constructing and releasing dependent tasks or closing their sessions
-- [ ] Render verified live integration status in the terminal, sidebar and Task Info
+- [x] Render verified live integration status in the terminal, sidebar and Task Info
 - [x] Deliver bounded Codex goal continuation to dev
 - [x] Recover screens from tasks parked before the upgrade
 
