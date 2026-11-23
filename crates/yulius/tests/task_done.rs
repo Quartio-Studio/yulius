@@ -2976,6 +2976,18 @@ fn a_late_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResult {
             "{why}"
         );
         assert_eq!(why["action"], "Stop the task to try again.");
+        // A person's prompt does not end the run either: its turn leaves the flag too.
+        let (settled_tx, settled) = std::sync::mpsc::channel();
+        on(Point::TurnSettled, Path::new(id.as_str()), move || {
+            let _ = settled_tx.send(());
+        });
+        app.send_input(&id, b"Still there?\r").await?;
+        tokio::task::spawn_blocking(move || settled.recv_timeout(Duration::from_secs(60)))
+            .await??;
+        assert!(screen_contains(&app, &id, "ECHO: Still there?").await);
+        assert_eq!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        let why = support::attention(&app, id.as_str()).await?;
+        assert_eq!(why["action"], "Stop the task to try again.", "{why}");
         host.refuse_ends(false);
         app.send_input(&id, b"/exit\r").await?;
         wait_for("the task at rest", Duration::from_secs(30), || async {

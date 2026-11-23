@@ -650,6 +650,10 @@ pub struct TaskRuntime {
     /// The run whose host could not be terminated after its stop or close escalation, and why
     /// (SPEC-065 END-001): it stays live until its processes are gone.
     end_failed: Mutex<Option<(AttemptId, String)>>,
+    /// Taken by each session activity write with its look at `end_failed`, and by the record of
+    /// that failure: a write lands before the flag the failure raises, or sees the failure and
+    /// leaves the flag (SPEC-635 EFL-003).
+    end_gate: tokio::sync::Mutex<()>,
     /// The attempt committed to park and its idle activity. Kept until the stored
     /// task state settles, including when a switch cleared its activity meanwhile.
     parked_activity: Mutex<Option<(AttemptId, Activity)>>,
@@ -1147,6 +1151,7 @@ impl TaskRuntime {
             recording_exit: tokio::sync::Mutex::new(()),
             terminal_cleanup: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
+            end_gate: tokio::sync::Mutex::new(()),
             parked_activity: Mutex::new(None),
             taken_request: Mutex::new(None),
         }
@@ -5101,8 +5106,11 @@ impl App {
     ) {
         tracing::warn!(task = %task_id, error = %err, "the run's host could not be terminated; the run stays live");
         let runtime = self.runtime(task_id);
-        if let Ok(mut failed) = runtime.end_failed.lock() {
-            *failed = Some((attempt.id.clone(), err.to_string()));
+        {
+            let _gate = runtime.end_gate.lock().await;
+            if let Ok(mut failed) = runtime.end_failed.lock() {
+                *failed = Some((attempt.id.clone(), err.to_string()));
+            }
         }
         let problem = format!(
             "Yulius could not end this session ({err}). It still counts as running, so the task \
@@ -5111,6 +5119,38 @@ impl App {
         runtime.hub.notice(format!("{problem} {action}"));
         self.flag_task(task_id, AttentionRecord::yulius(&problem, action))
             .await;
+    }
+
+    /// Writes a running task's `activity`, as its session's work or turns decide it, unless its
+    /// live run is the one whose host could not be terminated: that run's flag ("Yulius could
+    /// not end this session") stays until a person stops the task or the run ends, as no work of
+    /// the session can end it (SPEC-635 EFL-001). Whether it wrote.
+    ///
+    /// # Errors
+    /// The store's.
+    pub(crate) async fn write_session_activity(
+        &self,
+        task_id: &TaskId,
+        activity: Activity,
+    ) -> AppResult<bool> {
+        let runtime = self.runtime(task_id);
+        let _gate = runtime.end_gate.lock().await;
+        let failed = runtime
+            .end_failed
+            .lock()
+            .is_ok_and(|failed| failed.is_some());
+        if failed
+            && let Some(live) = self.deps.store.live_attempt(task_id).await?
+            && runtime.end_failed_for(&live.id).is_some()
+        {
+            tracing::info!(task = %task_id, ?activity, "the run cannot be ended: its flag stays");
+            return Ok(false);
+        }
+        self.deps
+            .store
+            .set_activity(task_id, Some(activity), self.now())
+            .await?;
+        Ok(true)
     }
 
     /// Publish the attached attempt's final grid before its terminal state becomes visible.
@@ -8176,9 +8216,7 @@ impl App {
                     None
                 };
                 let _ = self
-                    .deps
-                    .store
-                    .set_activity(task_id, Some(Activity::Working), self.now())
+                    .write_session_activity(task_id, Activity::Working)
                     .await;
                 // When this turn began after the pull request watch typed, it is that news'
                 // turn (SPEC-487 CHN-002); a prompt read late is another turn's.

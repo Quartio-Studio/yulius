@@ -741,10 +741,9 @@ impl App {
         self.runtime(&task.id)
             .notice_attention_ms
             .store(0, Ordering::SeqCst);
-        self.deps
-            .store
-            .set_activity(&task.id, Some(activity), self.now())
-            .await?;
+        if !self.write_session_activity(&task.id, activity).await? {
+            return Ok(());
+        }
         // The turn settled: its screen is kept, so a run lost later (a reboot) still shows how
         // its last turn ended (SPEC-229 RBT-002).
         if activity.is_idle()

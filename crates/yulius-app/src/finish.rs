@@ -856,12 +856,13 @@ impl App {
             .last_stop_ms
             .store(at.map_or(now.0, |at| at.0.max(0)), Ordering::SeqCst);
         tracing::info!(task = %task_id, "the person interrupted the agent's turn");
-        let _ = self
-            .deps
-            .store
-            .set_activity(task_id, Some(Activity::Waiting), now)
-            .await;
-        self.publish_task(task_id).await;
+        if matches!(
+            self.write_session_activity(task_id, Activity::Waiting)
+                .await,
+            Ok(true)
+        ) {
+            self.publish_task(task_id).await;
+        }
         self.probe_idle_shells(task_id).await;
     }
 
@@ -1251,12 +1252,9 @@ impl App {
             if task.activity == Some(Activity::Working) {
                 self.runtime(task_id).end_turn();
             }
-            let _ = self
-                .deps
-                .store
-                .set_activity(task_id, Some(next), self.now())
-                .await;
-            self.publish_task(task_id).await;
+            if matches!(self.write_session_activity(task_id, next).await, Ok(true)) {
+                self.publish_task(task_id).await;
+            }
         }
         Some(next == Some(Activity::Done))
     }
