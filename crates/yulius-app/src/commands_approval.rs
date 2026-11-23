@@ -44,7 +44,7 @@ fn shown_whole(line: &str) -> bool {
 
 /// The command line as a request shows it: cut at a character, saying so.
 fn shown_line(line: &str) -> String {
-    if shown_whole(line) {
+    if line.chars().count() <= SHOWN_LINE {
         return line.to_owned();
     }
     let cut: String = line.chars().take(SHOWN_LINE).collect();

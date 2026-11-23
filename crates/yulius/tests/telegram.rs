@@ -3102,6 +3102,12 @@ async fn a_runs_notice_takes_only_an_answer_its_reader_may_give() -> TestResult 
                 .await?
                 .contains("reply approve or reject")
         );
+        // An empty reply too (review of slice 4): it is no message to the task.
+        assert!(
+            reply_to(&w, 100, to_alice, "")
+                .await?
+                .contains("reply approve or reject")
+        );
         assert_eq!(
             reply_to(&w, 100, to_alice, "reject").await?,
             "Rejected: task #1's run of deploy runs nothing."

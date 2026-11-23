@@ -9,7 +9,7 @@
 // minutes), and every reveal is audited.
 
 import { enc } from '../api.js';
-import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, setChildren, iconButton, emptyState, openModal, field, invalid, toggle } from '../dom.js';
+import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, setChildren, iconButton, emptyState, openModal, field, invalid, toggle, keepFocus } from '../dom.js';
 import { replaceQuietly } from '../router.js';
 import { allows } from '../status.js';
 import { relLong } from '../format.js';
@@ -1045,20 +1045,22 @@ function mountCommands(ctx, sandbox, host, actions) {
     setChildren(host, emptyState({ iconName: 'terminal', title: 'Open a sandbox', text: 'Commands belong to a project. Open one to see and add them.' }));
     return () => {};
   }
-  const runsBox = h('div', { class: 'stack' });
+  // Focusable, so the keyboard lands here when the run it was on leaves the list.
+  const runsBox = h('div', { class: 'stack', tabindex: '-1' });
   const list = h('div');
   let canEdit = allows(sandbox.access, 'admin');
   const addTitle = 'Add command';
   setChildren(actions, createButton(addTitle, () => edit(null), { disabled: !canEdit, title: canEdit ? null : 'Requires admin access' }));
   setChildren(host,
-    h('p', { class: 'muted small' }, `CLIs of ${sandbox.name} that need a key file — a deploy tool, a cloud SDK with a service-account key, a signing tool. Agents run one by name with \`yulius run NAME ARGS\`; it runs outside their sandbox with its agent secret as a temporary file they never see, and its output comes back with every secret blanked out.`),
+    h('p', { class: 'muted small' }, `CLIs of ${sandbox.name} that need a key file — a deploy tool, a cloud SDK with a service-account key, a signing tool. Agents run one by name with \`yulius run NAME ARGS\`; it runs outside their sandbox with its agent secret as a temporary file they never see, and its output comes back with every agent secret of the project blanked out (as stored, encoded or line by line).`),
     runsBox,
     list);
 
   const MODES = { always: 'Asks a person every run', send: 'Asks when a run changes something', never: 'Runs without asking' };
 
   function commandCard(command) {
-    const line = [command.binary, ...(command.fixed || [])].join(' ');
+    // Quoted as a run's line is (an empty or spaced argument reads as what it is).
+    const line = [command.binary, ...(command.fixed || [])].map(shellWord).join(' ');
     const chips = [
       badge(MODES[command.approve] || command.approve, command.approve === 'never' ? '' : 'accent'),
       command.secret_ready ? badge(command.secret, 'ok') : badge(`${command.secret} not set up`, 'warn'),
@@ -1081,12 +1083,25 @@ function mountCommands(ctx, sandbox, host, actions) {
     });
   }
 
+  // A run's buttons answer that run only (review of slice 4): they carry its id as their focus
+  // key, so a list drawn again never hands their focus to another run's; and while the waiting
+  // runs just changed under the pointer or keyboard they stay off for a moment, as Allow does
+  // (ALLOW_SETTLE_MS), so a click or Enter meant for one run never answers another.
+  let shownWaiting = null;
+  let settling = false;
+  let settleTimer = null;
+  let answering = 0;
+
   function runRow(run) {
     const waiting = run.state === 'waiting';
-    const controls = waiting && run.can_answer ? [
-      smallButton('Approve', `Approve task #${run.task_number}'s run of ${run.command}`, () => answer(run, true), { class: 'btn-primary' }),
-      smallButton('Reject', `Reject task #${run.task_number}'s run of ${run.command}`, () => answer(run, false)),
+    const buttons = waiting && run.can_answer ? [
+      smallButton('Approve', `Approve task #${run.task_number}'s run of ${run.command}`, () => answer(run, true, buttons), { class: 'btn-primary' }),
+      smallButton('Reject', `Reject task #${run.task_number}'s run of ${run.command}`, () => answer(run, false, buttons)),
     ] : [];
+    buttons.forEach((b, i) => {
+      b.setAttribute('data-focus-key', `run:${run.id}:${i === 0 ? 'approve' : 'reject'}`);
+      if (settling) b.setAttribute('aria-disabled', 'true');
+    });
     const state = waiting ? `waits until ${new Date(run.deadline).toLocaleTimeString()}` : run.state.replace('_', ' ');
     return itemCard({
       iconName: waiting ? 'clock' : 'terminal',
@@ -1097,28 +1112,58 @@ function mountCommands(ctx, sandbox, host, actions) {
         run.changes ? badge('says it changes something', 'accent') : null,
         run.answered_by ? badge(`answered by ${run.answered_by}`) : null,
         run.exit_code !== null && run.exit_code !== undefined ? badge(`exit ${run.exit_code}`, run.exit_code === 0 ? 'ok' : '') : null),
-      controls,
+      controls: buttons,
     });
   }
 
-  async function answer(run, approve) {
+  async function answer(run, approve, buttons) {
+    if (settling || answering) return;
+    answering += 1;
+    buttons.forEach((b) => { b.disabled = true; });
     try {
       await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/command-runs/${enc(run.id)}`, { approve });
       toast(approve ? `Approved: task #${run.task_number}'s run of ${run.command} starts.` : 'Rejected: it runs nothing.', { kind: 'ok' });
-    } catch (error) { errorToast(error, 'Couldn’t answer'); }
-    reloadRuns();
+    } catch (error) { errorToast(error, 'Couldn’t answer'); } finally {
+      answering -= 1;
+      reloadRuns();
+    }
   }
 
   function renderRuns(data) {
     const runs = data.items || [];
     const waiting = runs.filter((r) => r.state === 'waiting');
     const others = runs.filter((r) => r.state !== 'waiting').slice(0, 10);
+    const ids = waiting.map((r) => r.id).join(' ');
+    if (shownWaiting !== null && ids !== shownWaiting && waiting.length) {
+      settling = true;
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settling = false;
+        runsBox.querySelectorAll('[data-focus-key^="run:"]').forEach((b) => b.removeAttribute('aria-disabled'));
+      }, ALLOW_SETTLE_MS);
+    }
+    shownWaiting = ids;
     if (runs.length === 0) return h('div');
     return h('div', { class: 'stack' },
       waiting.length ? h('h2', { class: 'wf-section-title' }, `Waiting for approval (${waiting.length})`) : null,
       waiting.length ? h('div', { class: 'item-list' }, waiting.map(runRow)) : null,
+      settling ? h('span', { class: 'muted small' }, 'The runs waiting changed while this page was open.') : null,
       others.length ? h('h2', { class: 'wf-section-title' }, 'Recent runs') : null,
       others.length ? h('div', { class: 'item-list' }, others.map(runRow)) : null);
+  }
+
+  let runsGeneration = 0;
+  /** Reads the runs again, keeping focus on the same run's control (or the list), never another's. */
+  async function reloadRuns() {
+    runsGeneration += 1;
+    const mine = runsGeneration;
+    try {
+      const data = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/command-runs`);
+      if (mine !== runsGeneration || answering) return;
+      keepFocus(runsBox, () => setChildren(runsBox, renderRuns(data)), runsBox);
+    } catch (error) {
+      if (mine === runsGeneration && shownWaiting === null) setChildren(runsBox, h('p', { class: 'muted small' }, `Couldn’t load the runs: ${error.message || String(error)}`));
+    }
   }
 
   function render(data) {
@@ -1131,8 +1176,8 @@ function mountCommands(ctx, sandbox, host, actions) {
   }
 
   const reload = loader(list, 'the commands', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/commands`), render, { shape: 'items' });
-  const reloadRuns = loader(runsBox, 'the runs', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/command-runs`), renderRuns, { shape: 'items' });
-  const follow = () => { reload({ quiet: true }); reloadRuns({ quiet: true }); };
+  reloadRuns();
+  const follow = () => { reload({ quiet: true }); if (!answering) reloadRuns(); };
   const offs = [
     ctx.store.on('commands', (event) => { if (!event.sandbox_id || event.sandbox_id === sandbox.id) follow(); }),
     ctx.store.on('secrets', (event) => { if (!event.sandbox_id || event.sandbox_id === sandbox.id) reload({ quiet: true }); }),
@@ -1173,11 +1218,18 @@ function mountCommands(ctx, sandbox, host, actions) {
       field('Approval minutes', minutes, 'No answer in time is a no.'),
       field('Time limit (seconds)', timeout, 'A run is stopped at it.'),
       field('Tasks', tasks, 'Task numbers that may run it. Empty: every task.'),
-      field('Environment', env, 'NAME=value per line. {secret} is the key itself, in the environment only.'),
+      field('Environment', env, 'NAME=value per line. {secret} is the key itself, in the environment only. Other values are no secret: everyone who views the project reads them, and the audit keeps them.'),
       field('owner/repo arguments pass', slashes, 'A / only between letters or digits of a value; never a path.'),
     ), actions: [
       { label: 'Cancel', value: false },
       { label: command ? 'Save' : 'Add', kind: 'primary', submit: true, run: async () => {
+        const whole = (el, text) => (/^\d+$/.test(text.trim()) ? Number(text.trim()) : invalid(el, 'A whole number.'));
+        const taskNumbers = csv(tasks).map((n) => n.replace(/^#/, ''));
+        if (taskNumbers.some((n) => !/^\d+$/.test(n))) return invalid(tasks, 'Task numbers, like 12, 15.');
+        const approvalMinutes = whole(minutes, minutes.value);
+        if (approvalMinutes === false || approvalMinutes === undefined) return false;
+        const timeoutSeconds = whole(timeout, timeout.value);
+        if (timeoutSeconds === false || timeoutSeconds === undefined) return false;
         const vars = {};
         for (const line of lines(env.value)) {
           const at = line.indexOf('=');
@@ -1187,7 +1239,7 @@ function mountCommands(ctx, sandbox, host, actions) {
         const body = {
           name: name.value.trim(), description: description.value.trim(), binary: binary.value.trim(), secret: secret.value.trim(),
           fixed: lines(fixed.value), subcommands: csv(subcommands), refuse: csv(refuse), approve: approve.value, send_flags: csv(sendFlags),
-          approval_minutes: Number(minutes.value), timeout_seconds: Number(timeout.value), tasks: csv(tasks).map(Number), env: vars, slashes: slashed,
+          approval_minutes: approvalMinutes, timeout_seconds: timeoutSeconds, tasks: taskNumbers.map(Number), env: vars, slashes: slashed,
         };
         const saved = await withReauth(ctx, () => (command
           ? ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/commands/${enc(command.id)}?version=${command.version}`, body)
@@ -1209,7 +1261,12 @@ function mountCommands(ctx, sandbox, host, actions) {
     } catch (error) { errorToast(error, 'Couldn’t delete'); }
   }
 
-  return () => offs.forEach((off) => off());
+  return () => { clearTimeout(settleTimer); offs.forEach((off) => off()); };
+}
+
+/** A word of a command line as a person reads it: bare when plain, else single-quoted (as the server's `command_line`). */
+function shellWord(word) {
+  return word !== '' && /^[A-Za-z0-9\-_./=:@,+%{}]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
 }
 
 /** The tabs of the Secrets page (SPEC-245 WUI-001): `section` in the address, `agents` being Project. */

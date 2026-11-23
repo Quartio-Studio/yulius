@@ -303,7 +303,7 @@ approved the exact head, and merged on green Yulius CI: #1701 (definitions, roun
 1-2), and this one (the page and docs).
 
 - **Tests** (all pass at each head):
-  - `crates/yulius/tests/brokered_commands.rs`: 33 integration tests with the real detached
+  - `crates/yulius/tests/brokered_commands.rs`: 29 integration tests with the real detached
     process host. They cover definitions, permissions, secret binding with the manager and
     two-factor, the key never in the output, row, audit or sandbox and its files gone, refusals,
     other projects and tasks, the time, file and output bounds, the cap of 4, link and FIFO swaps,
@@ -315,7 +315,9 @@ approved the exact head, and merged on green Yulius CI: #1701 (definitions, roun
     `a_runs_notice_takes_only_an_answer_its_reader_may_give`, through a fake bot.
   - `cockpit::the_superagent_lists_its_projects_brokered_commands`; unit tests in
     `yulius_domain::commands` (15), `ci::brokered`, `run_cli`, `tool_cli` and `commands`.
-  - `e2e/tests/commands.e2e.ts`: 3 tests against the mock; `secrets.e2e.ts` still passes (33).
+  - `e2e/tests/commands.e2e.ts`: 6 tests against the mock (a click or Enter meant for one run
+    never answers another, a reader sees no answer, a stale edit is refused); `secrets.e2e.ts`
+    still passes (33).
   - Before each delivery: `scripts/cargo nextest run` of every touched crate. Slice 3's last
     full run was `-p yulius`, 3425 passed; `forks::` needed `cargo build -p fake-agent` first,
     as a stale binary times out.
@@ -327,6 +329,8 @@ approved the exact head, and merged on green Yulius CI: #1701 (definitions, roun
     `yulius run`, the definition-version check before a run.
   - Slice 3: the deadline in the approve write, the task-waits check in the transaction, the run
     id in the notice, the cut-line refusal, ending any request, Configure → View.
+  - Slice 4: the backtick refusal; the page's settle guard on Approve and Reject; the focus
+    target when a run's control leaves the list.
 - **Checks**: `scripts/dev quick`, clippy `-D warnings` on the touched crates and the workspace
   doc build pass. Vidoc is switched off for this project: `security` ends skipped, which is not
   passed.

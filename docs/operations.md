@@ -3427,9 +3427,13 @@ up. Queued tasks start when capacity allows.
     line. A CLI that prints the key transformed (`openssl rsa -text`, a hex dump) is not caught:
     do not define such subcommands.
   - Arguments may hold any printable character, so a look-alike letter can make an argument read
-    like another: read the command line on the Secrets page, where it is exact, before approving
-    a run that changes something. A line Telegram cannot show exactly (over 380 characters, or
-    with a backtick) is approved on the page only.
+    like another. An argument with a character outside plain ASCII shows single-quoted in the
+    line: that is the cue to read it closely on the Secrets page, where it is exact, before
+    approving a run that changes something. A line Telegram cannot show exactly (over 380
+    characters, or with a backtick) is approved on the page only.
+  - An approval by a Telegram reply needs only the person's linked chat, no two-factor code per
+    run: unlink a chat you no longer hold (`/stop`), and use `approve: always` with care for
+    commands whose runs you would not approve from a phone.
   - Env values are not secret (people who view the project read them); the key goes into env only
     as `{secret}`. At most 4 runs of a project's commands run at once; each run's files, its key
     with them, are removed when it ends and at the next start after a crash.

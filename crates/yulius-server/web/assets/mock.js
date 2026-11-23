@@ -7762,6 +7762,13 @@ export function createMockTransport(params) {
     db.announceSecrets(secret.sandbox);
   };
   db.announceSecrets = (sandboxId) => emit(db, { type: 'secrets.updated', sandbox_id: sandboxId });
+  // SPEC-626: run `id` waits no more (its time ran out), as the server says.
+  db.expireRun = (id) => {
+    const run = db.commandRuns.find((r) => r.id === id);
+    run.state = 'expired';
+    run.ended_at = new Date().toISOString();
+    emit(db, { type: 'commands.updated', sandbox_id: 'sb_studio' });
+  };
   // SPEC-626: an agent of task `task` asks to run `deploy` with `line`, which waits for approval.
   db.askRun = (line, task) => {
     commandsOf(db);
