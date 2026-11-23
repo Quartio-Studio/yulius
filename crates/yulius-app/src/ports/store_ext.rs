@@ -999,10 +999,16 @@ pub trait WatchStore: Send + Sync {
     /// # Errors
     /// `Conflict` when the project has a watch of that name, or `max` watches.
     async fn insert_watch(&self, watch: &WatchRecord, max: usize) -> AppResult<()>;
-    /// Replaces a watch's definition (script, schedule, expiry, timeout, secrets, `updated_at`,
-    /// `since`; its name is its notices' key and never changes) only while it was last changed at
-    /// `read_at`; `false` when it changed meanwhile or is gone.
-    async fn update_watch(&self, watch: &WatchRecord, read_at: Timestamp) -> AppResult<bool>;
+    /// Replaces a watch's definition (script, schedule, expiry, timeout, secrets, `updated_at`;
+    /// its name is its notices' key and never changes) and, when given, its schedule's anchor
+    /// `since` (a new schedule), only while it was last changed at `read_at`; `false` when it
+    /// changed meanwhile or is gone.
+    async fn update_watch(
+        &self,
+        watch: &WatchRecord,
+        since: Option<Timestamp>,
+        read_at: Timestamp,
+    ) -> AppResult<bool>;
     /// Pauses or resumes a watch; a resume also ends its end and counts its schedule from `at`.
     /// `false` when it is gone.
     async fn set_watch_paused(&self, id: &str, paused: bool, at: Timestamp) -> AppResult<bool>;

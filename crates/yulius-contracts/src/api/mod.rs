@@ -32,4 +32,5 @@ pub mod tasks;
 pub mod telegram;
 pub mod updates;
 pub mod variables;
+pub mod watches;
 pub mod workflows;

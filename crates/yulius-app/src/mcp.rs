@@ -35,7 +35,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
 /// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
-pub const COCKPIT_TOOLS: [&str; 88] = [
+pub const COCKPIT_TOOLS: [&str; 94] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -104,6 +104,13 @@ pub const COCKPIT_TOOLS: [&str; 88] = [
     "docker_restart",
     "notices_list",
     "notice_dismiss",
+    // The project's script watches (SPEC-630 WCH-012).
+    "watches_list",
+    "watch_create",
+    "watch_update",
+    "watch_run",
+    "watch_pause",
+    "watch_remove",
     "ci_runs",
     "ci_run",
     "ci_rerun",
@@ -377,7 +384,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "superagent_check_set".into(),
-            description: "Keep a standing job the person asks for (\"keep monitoring the deploy\", \"check the disk every hour\") as a scheduled check Yulius holds: every every_minutes (5 to 1440) its prompt is typed into this session as a check of Yulius's when it is idle, also after a restart of this session or of Yulius, and a Superagent that is not running is started for it. Use it instead of a timer, loop or background script of your own, which ends with this session. The same name replaces a check; at most 10.".into(),
+            description: "Keep a standing job the person asks for (\"keep monitoring the deploy\", \"check the disk every hour\") as a scheduled check Yulius holds: every every_minutes (5 to 1440) its prompt is typed into this session as a check of Yulius's when it is idle, also after a restart of this session or of Yulius, and a Superagent that is not running is started for it. Use it instead of a timer, loop or background script of your own, which ends with this session. When a script can decide the check (a date, a URL, a release, a CI number), create a watch with watch_create instead: it runs without you and costs no turn. The same name replaces a check; at most 10.".into(),
             input_schema: schema(json!({
                 "name": {"type": "string", "description": "A short name, e.g. disk guard"},
                 "every_minutes": {"type": "integer", "description": "How often, in minutes (5 to 1440)"},

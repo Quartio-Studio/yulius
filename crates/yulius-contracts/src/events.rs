@@ -104,6 +104,13 @@ pub enum UiEvent {
         /// The project.
         sandbox_id: String,
     },
+    /// A project's script watches or their runs changed (SPEC-630 WCH-013): an open Watches page
+    /// reads them again.
+    #[serde(rename = "watches.updated")]
+    WatchesUpdated {
+        /// The project.
+        sandbox_id: String,
+    },
     /// A task's handoffs changed (SPEC-512 HOF-004): its page reads them again.
     #[serde(rename = "handoffs.updated")]
     HandoffsUpdated {

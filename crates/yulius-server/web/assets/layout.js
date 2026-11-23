@@ -45,6 +45,7 @@ const NAV_MORE = [
   ['workflows', 'Workflows', 'workflow'],
   ['skills', 'Skills', 'book'],
   ['automations', 'Automations', 'zap'],
+  ['watches', 'Watches', 'eye'],
   ['mcp', 'MCP', 'plug'],
 ];
 const MORE_OPEN_KEY = 'yulius.sidebarMoreOpen';

@@ -35,6 +35,7 @@ const MORE = [
   ['Workflows', 'workflows'],
   ['Skills', 'skills'],
   ['Automations', 'automations'],
+  ['Watches', 'watches'],
   ['MCP', 'mcp'],
 ];
 

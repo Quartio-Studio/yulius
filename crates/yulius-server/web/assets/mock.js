@@ -381,6 +381,12 @@ function seed(params) {
     // A shipped automation an agent created by name (SPEC-042 OPS-010): a default all the same (SPEC-197).
     { id: 'aut_3', sandbox: 'sb_studio', owner_id: db.me.user.id, owner_login: db.me.user.login, name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
+  // Script watches (SPEC-630): one active with output, one ended, one another person's that failed.
+  db.watches = [
+    { id: 'wt_1', sandbox_id: 'sb_studio', name: 'release-check', script: 'curl -fsS https://example.com/version\necho "v2.1 is out"', every: '1h', cron: null, utc_offset_minutes: 0, expiry: '1d', timeout_seconds: 300, secrets: [], owner_id: db.me.user.id, owner: db.me.user.login, created_via: 'agent', created_at: iso(3 * DAY), state: 'active', ended_reason: null, next_run_at: isoIn(40 * MIN), last_started_at: iso(20 * MIN), last_ended_at: iso(20 * MIN), last_exit: 0, last_failure: null, last_output: 'v2.1 is out', last_errors: null, failures: 0, runs: 71, posts: 2, pending_posts: 0, can_edit: true, can_remove: true },
+    { id: 'wt_2', sandbox_id: 'sb_studio', name: 'merge-queue-targets', script: '[ "$(date -u +%F)" \\< 2026-11-24 ] && exit 0\necho "#479: merge-queue targets are due"; exit 3', every: '1d', cron: null, utc_offset_minutes: 0, expiry: 'never', timeout_seconds: 60, secrets: [], owner_id: db.me.user.id, owner: db.me.user.login, created_via: 'agent', created_at: iso(5 * DAY), state: 'ended', ended_reason: 'the script said it is done (exit 3)', next_run_at: null, last_started_at: iso(2 * HOUR), last_ended_at: iso(2 * HOUR), last_exit: 3, last_failure: null, last_output: '#479: merge-queue targets are due', last_errors: null, failures: 0, runs: 5, posts: 1, pending_posts: 0, can_edit: true, can_remove: true },
+    { id: 'wt_3', sandbox_id: 'sb_studio', name: 'staging-health', script: 'curl -fsS https://staging.example.com/health', every: null, cron: '*/30 * * * *', utc_offset_minutes: 60, expiry: null, timeout_seconds: 30, secrets: ['STAGING_TOKEN'], owner_id: 'u_other', owner: 'kamil', created_via: 'ui', created_at: iso(DAY), state: 'active', ended_reason: null, next_run_at: isoIn(10 * MIN), last_started_at: iso(20 * MIN), last_ended_at: iso(20 * MIN), last_exit: 7, last_failure: 'exit 7', last_output: null, last_errors: 'curl: (7) Failed to connect to staging.example.com', failures: 3, runs: 40, posts: 0, pending_posts: 0, can_edit: false, can_remove: true },
+  ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', audience: 'team', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
     { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', audience: 'team', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true, origin: 'person' },
@@ -3355,6 +3361,64 @@ route('GET', `/api/automations/${ID}/runs`, ({ db, p }) => {
   if (!a) fail(404, 'not_found', 'not found');
   return [0, 1, 2, 3, 4].map((i) => ({ scheduled_for: iso((i + 1) * DAY - 10 * HOUR), state: i === 2 ? 'skipped_previous_active' : i === 4 ? 'failed' : 'task_created', task_id: i === 2 || i === 4 ? null : 'tsk_studio_8', error: i === 4 ? 'the task could not be created: capacity reached' : null }));
 });
+
+// ------------------------------------------------------------------ script watches (SPEC-630)
+const watchOf = (db, id) => {
+  const w = db.watches.find((x) => x.id === id);
+  if (!w) fail(404, 'not_found', 'not found');
+  return w;
+};
+const watchesChanged = (db, sandbox) => emit(db, { type: 'watches.updated', sandbox_id: sandbox });
+function watchDefinition(body) {
+  if (!body.script || !String(body.script).trim()) fail(422, 'invalid', 'a watch needs a script');
+  if (Boolean(body.every) === Boolean(body.cron)) fail(422, 'invalid', 'a watch runs either every interval (every) or on a cron schedule (cron)');
+  if (body.every && !/^\d+[smhd]$/.test(body.every)) fail(422, 'invalid', 'an interval is a number and s, m, h or d, like 15m, from 1 minute to 7 days');
+  return { script: body.script, every: body.every || null, cron: body.cron || null, utc_offset_minutes: Number(body.utc_offset_minutes) || 0, expiry: body.expiry || null, timeout_seconds: body.timeout_seconds || 300, secrets: body.secrets || [] };
+}
+route('GET', `/api/sandboxes/${ID}/watches`, ({ db, p }) => db.watches.filter((w) => w.sandbox_id === p[0]));
+route('POST', `/api/sandboxes/${ID}/watches`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(body.name || '')) fail(422, 'invalid', 'a watch\'s name is 1 to 40 lowercase letters, digits and dashes, starting with a letter or a digit, like disk-report');
+  if (db.watches.some((w) => w.sandbox_id === p[0] && w.name === body.name)) fail(409, 'conflict', 'this project already has a watch of that name');
+  db.nextId += 1;
+  const w = { id: `wt_${db.nextId}`, sandbox_id: p[0], name: body.name, ...watchDefinition(body), owner_id: db.me.user.id, owner: db.me.user.login, created_via: 'ui', created_at: new Date().toISOString(), state: 'active', ended_reason: null, next_run_at: isoIn(MIN), last_started_at: null, last_ended_at: null, last_exit: null, last_failure: null, last_output: null, last_errors: null, failures: 0, runs: 0, posts: 0, pending_posts: 0, can_edit: true, can_remove: true };
+  db.watches.push(w);
+  watchesChanged(db, p[0]);
+  return json(201, w);
+});
+route('PUT', `/api/watches/${ID}`, ({ db, p, body }) => {
+  const w = watchOf(db, p[0]);
+  if (!w.can_edit) fail(403, 'forbidden', 'only its owner changes a watch');
+  if (body.name && body.name !== w.name) fail(422, 'invalid', 'a watch\'s name is the key of its notices and does not change: remove it and create one with the new name');
+  Object.assign(w, watchDefinition(body));
+  watchesChanged(db, w.sandbox_id);
+  return w;
+});
+route('DELETE', `/api/watches/${ID}`, ({ db, p }) => {
+  const w = watchOf(db, p[0]);
+  if (!w.can_remove) fail(403, 'forbidden', 'only its owner or a project administrator removes a watch');
+  db.watches = db.watches.filter((x) => x.id !== w.id);
+  watchesChanged(db, w.sandbox_id);
+  return json(204);
+});
+// Run now: the mock's run ends at once, exit 0, and posts its last line.
+route('POST', `/api/watches/${ID}/run`, ({ db, p }) => {
+  const w = watchOf(db, p[0]);
+  if (!w.can_edit) fail(403, 'forbidden', 'only its owner runs a watch now');
+  const now = new Date().toISOString();
+  Object.assign(w, { last_started_at: now, last_ended_at: now, last_exit: 0, last_failure: null, failures: 0, runs: w.runs + 1, posts: w.posts + 1, last_output: `ran now (${w.runs + 1})` });
+  watchesChanged(db, w.sandbox_id);
+  return json(202, w);
+});
+function watchPaused(db, id, paused) {
+  const w = watchOf(db, id);
+  if (paused ? !(w.can_edit || w.can_remove) : !w.can_edit) fail(403, 'forbidden', paused ? 'only its owner or a project administrator pauses a watch' : 'only its owner resumes a watch');
+  Object.assign(w, paused ? { state: 'paused', next_run_at: null } : { state: 'active', ended_reason: null, next_run_at: isoIn(w.every === '1d' ? DAY : HOUR) });
+  watchesChanged(db, w.sandbox_id);
+  return w;
+}
+route('POST', `/api/watches/${ID}/pause`, ({ db, p }) => watchPaused(db, p[0], true));
+route('POST', `/api/watches/${ID}/resume`, ({ db, p }) => watchPaused(db, p[0], false));
 
 // ------------------------------------------------------------------ secrets vault (VLT-001..009, SPEC-040)
 // Synthetic values only. Reveals need a two-factor code within 10 minutes (the mock accepts the
