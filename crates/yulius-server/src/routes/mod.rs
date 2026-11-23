@@ -324,6 +324,11 @@ pub fn public() -> Router<AppState> {
             "/api/sandboxes/{sid}/commands/{id}",
             put(commands::update).delete(commands::delete),
         )
+        .route("/api/sandboxes/{sid}/command-runs", get(commands::runs))
+        .route(
+            "/api/sandboxes/{sid}/command-runs/{id}",
+            post(commands::answer),
+        )
         .route("/api/tasks/{tid}/handoffs", get(handoffs::task))
         .route("/api/tasks/{tid}/handoffs/{hid}", post(handoffs::answer))
         // The personal Telegram channel's bot (SPEC-498 TGC-001).

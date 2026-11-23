@@ -146,6 +146,8 @@ impl App {
                         digest.digest_tick().await;
                     });
                 }
+                // Brokered runs no person answered in time are a no (SPEC-626 BRK-016).
+                app.expire_due_command_runs().await;
                 // Expired notices (SPEC-624 NTC-004): reads already leave them out.
                 app.prune_notices_now().await;
                 // Subscription notices follow statuses written without an event (SPEC-624).

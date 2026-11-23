@@ -320,6 +320,7 @@ impl App {
             about: Some(crate::ports::notify::SentAbout {
                 task: task.id.clone(),
                 asked_at: None,
+                command_run: None,
             }),
             scope: Some(chat_scope(
                 Some(&task.sandbox_id),
@@ -369,6 +370,7 @@ impl App {
                 about: Some(crate::ports::notify::SentAbout {
                     task: task.id.clone(),
                     asked_at: None,
+                    command_run: None,
                 }),
                 scope: Some(chat_scope(
                     Some(&task.sandbox_id),
@@ -601,6 +603,12 @@ impl App {
             about: Some(crate::ports::notify::SentAbout {
                 task: task.id.clone(),
                 asked_at: asked.as_ref().map(|a| a.at),
+                // A brokered run's request names its run (SPEC-626 BRK-015).
+                command_run: asked
+                    .as_ref()
+                    .and_then(|a| a.cause.as_deref())
+                    .and_then(crate::commands_approval::run_of_cause)
+                    .map(str::to_owned),
             }),
             // One message per task, or per sandbox-wide problem (the spec's table).
             scope: Some(chat_scope(

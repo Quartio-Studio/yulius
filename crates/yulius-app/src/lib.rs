@@ -25,6 +25,7 @@ pub mod ci;
 pub mod claude_code;
 pub mod cockpit;
 pub mod commands;
+pub mod commands_approval;
 pub mod commands_run;
 pub mod connection_health;
 pub mod context;
