@@ -1,6 +1,6 @@
 ---
 yulius-task: ef2914ca-cd05-4224-a8ff-3b9f4bd95dbd
-status: in-progress
+status: done
 ---
 
 # SPEC-634 A second idle-park pass at the run's end leaves the parked task open to messages
@@ -35,7 +35,7 @@ The reproduction found a second defect in the same interval. After the reader to
 - [x] Write the fix spec and the regression test, failing with #1662's guard reverted
 - [x] Refuse a message in the run-end interval and deliver the next one once, test-first
 - [x] Record the contract in the docs and changes, then pass the touched checks
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -63,3 +63,4 @@ Add an integration test to `crates/yulius/tests/parking.rs` using the race hooks
 - `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^parking::a_second_park_pass/)' --stress-count 30`: 30 of 30 passed.
 - `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^parking::/) | test(/^task_message::/))'`: 227 passed.
 - `scripts/cargo nextest run -p yulius -p yulius-app -E 'test(/park|message|notice|type_into|task_done::/)'`: 565 passed.
+- Review round 1 (fresh session, Fable 5.2) approved head `ebcde4661`: 0 blockers, 0 majors. Its two own-code minors are fixed in tests only. The once-count now waits for the resumed turn's end, and the early-message screen check, which could not fail, is dropped (AC-3 is held by the `Conflict` assertion). The new unit test `only_a_committed_parks_recorded_end_counts_as_park_end_recording` fails with `a run end without a park` when `&& self.park_committed()` is removed. The pre-existing minor stays out of this change: an unreproduced broken pipe on run ends without a park, while a close or self-exit is recorded. The nit stays too: a close that overtakes a committed park is refused with the parking wording, and its retry advice still holds.
