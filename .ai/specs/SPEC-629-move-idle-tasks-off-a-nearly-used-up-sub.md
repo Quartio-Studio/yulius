@@ -1,6 +1,6 @@
 ---
 yulius-task: 493cd2d9-3bf8-4aa6-85d1-a41a5771227e
-status: in-progress
+status: done
 ---
 
 # SPEC-629. Move idle tasks off a nearly used-up subscription before it runs out
@@ -131,7 +131,7 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - [x] Answer the first review: goal sessions parked, the idle claim, untested guards
 - [x] Pass the independent review of the exact head
 - [x] Remove a stale "no room" notice and pin a fork to its chosen subscription
-- [ ] Pass the independent review of the follow-up
+- [x] Pass the independent review of the follow-up
 
 ## Acceptance criteria
 
@@ -245,7 +245,8 @@ whose old run did not end in time marks its target failed. A follow-up after the
 removed once its subscription has room again (`rebalance::nothing_has_room_is_told_once` fails
 without it), a fork started on a named subscription is pinned there
 (`forks::a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session` fails without
-it), and the Telegram choice says that moves come under it.
+it), and the Telegram choice says that moves come under it. Round 5 approved `5a4893dea` (one nit
+left: after a Yulius restart a "stays on" notice can stand until its one-day expiry).
 
 Not tested here: real Claude Code, Codex or Antigravity subscriptions and their usage readings
 (synthetic usage and the fake agent stand in); the fake agent runs no hooks, so the tests record a
