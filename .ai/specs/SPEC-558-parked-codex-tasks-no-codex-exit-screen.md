@@ -71,7 +71,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Hold the original owner’s session slot while its open delivery cannot be verified
 - [x] Unpack CI test shards on disk within the one-GiB temporary-filesystem cap
 - [x] Restore the reviewed session-capacity slice after the CI repair
-- [ ] Verify live owners when constructing and releasing dependent tasks or closing their sessions
+- [x] Verify live owners when constructing and releasing dependent tasks or closing their sessions
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [x] Deliver bounded Codex goal continuation to dev
 - [x] Recover screens from tasks parked before the upgrade
@@ -95,7 +95,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-A live owner with a completed goal and a recorded failed single-PR candidate occupies a session slot until the PR watcher verifies that the hosted PR closed or its candidate inputs changed. Capacity reads stay local. A launch holds the owners’ delivery read guards until it reserves the slot. The watcher retries on its next pass when a launch holds the guard.
+A live owner with a completed goal and a recorded failed single-PR candidate occupies a session slot until the PR watcher verifies that the hosted PR closed or its candidate inputs changed. The same holds its dependents and its close: a chain, a start rule (including `after_all_tasks`), archive, delete and a removed subscription's close count such an owner Done only while they hold its delivery read guard, taken after the Done check, until the successor is released or the Close intent is recorded; arming a merge is refused while the session closes (SPEC-621). Capacity reads stay local. A launch holds the owners’ delivery read guards until it reserves the slot. The watcher retries on its next pass when a launch holds the guard.
 
 SPEC-612 supersedes the automatic continuation delivered by this spec. The parked PR owner retains its recorded integration decision and a person can resume its original session.
 

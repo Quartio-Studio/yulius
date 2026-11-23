@@ -538,6 +538,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0463 -->
 - [0464](0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md): A Codex goal whose plan is finished continues on its own red Yulius CI run at its current head; extends 0428.
 <!-- ADR 0464 -->
+- [0465](0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md): Script watches run in the sandbox without an agent and post keyed notices
 <!-- ADR 0465 -->
 <!-- ADR 0466 -->
 <!-- ADR 0467 -->
@@ -570,3 +571,35 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0494 -->
 <!-- ADR 0495 -->
 <!-- ADR 0496 -->
+<!-- ADR 0497 -->
+<!-- ADR 0498 -->
+<!-- ADR 0499 -->
+<!-- ADR 0500 -->
+<!-- ADR 0501 -->
+<!-- ADR 0502 -->
+<!-- ADR 0503 -->
+<!-- ADR 0504 -->
+<!-- ADR 0505 -->
+<!-- ADR 0506 -->
+<!-- ADR 0507 -->
+<!-- ADR 0508 -->
+<!-- ADR 0509 -->
+<!-- ADR 0510 -->
+<!-- ADR 0511 -->
+<!-- ADR 0512 -->
+<!-- ADR 0513 -->
+<!-- ADR 0514 -->
+<!-- ADR 0515 -->
+<!-- ADR 0516 -->
+<!-- ADR 0517 -->
+<!-- ADR 0518 -->
+<!-- ADR 0519 -->
+<!-- ADR 0520 -->
+<!-- ADR 0521 -->
+<!-- ADR 0522 -->
+<!-- ADR 0523 -->
+<!-- ADR 0524 -->
+<!-- ADR 0525 -->
+<!-- ADR 0526 -->
+<!-- ADR 0527 -->
+<!-- ADR 0528 -->

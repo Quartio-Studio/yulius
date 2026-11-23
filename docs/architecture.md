@@ -2244,6 +2244,12 @@ Capacity accounting can use that observation for two watch intervals. A new deci
 an unsuccessful read or a restart requires fresh verification. Before reserving a slot,
 a launch rechecks the owners it would omit and holds their delivery read guards through
 the reservation. A concurrent watcher retries on its next pass.
+The same check decides whether a live owner is Done for its dependents and its close
+([SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md) FIN-003):
+a start rule for all outstanding tasks includes an owner it cannot clear locally, a chain or
+compound Done rule holds each live owner's delivery read guard until the successor is
+released, and archive, tidy and a removed subscription's close hold it until the Close
+intent is recorded, so an arm that arrives meanwhile keeps the session.
 An explicit `#N merged` rule follows the recorded merge.
 
 The individual HTTP task detail verifies both recorded and branch PRs.
@@ -3372,6 +3378,54 @@ flowchart LR
   Q -->|"send, then delete the earlier one"| TG["Telegram chat"]
   DB -->|"live, undismissed, visible"| R["GET /api/me/notices · notices_list · digest"]
   T["tick"] -->|"delete expired"| DB
+```
+
+## Script watches
+
+A watch is a project's bash script on a schedule, run by Yulius without an agent, whose output
+becomes a notice for its owner
+([SPEC-630](../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
+[decision 0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md)).
+
+- **Record.** `watches` (migration 0093) holds the definition (name, script, `every_seconds` or
+  `cron` with its UTC offset, notice expiry, timeout, secret names, owner) and the state its runs
+  leave (the going run's id, last run, failures in a row, whether the warning was posted).
+  `watch_pending` holds the posts not stored yet, newest per notice key. The domain rules (names,
+  schedules, bounds, the outcome of a run's end) are in `yulius_domain::watch`.
+- **Scheduler.** `App::watch_tick` (`crates/yulius-app/src/watches.rs`) runs every 15 s from
+  `start_watch_scheduler`. It delivers pending posts, then starts each due watch, at most 4 runs
+  at once on the instance. `watch_run_started` claims a run in the store (one per watch), and
+  `watch_run_ended` records its end only for that run. The claim also refuses a removed
+  project's watch, and a paused or ended one unless it is Run now. Due watches start longest
+  overdue first, and a project's removal cancels its going runs (`watch_cancel_project`). At a start, `watch_startup` records a run
+  the previous process left going as lost, ends its process host and makes the watch due again.
+- **Run.** `App::watch_execute` (`crates/yulius-app/src/ci/watch_run.rs`) builds a `LaunchPlan`
+  like a CI job's and follows it with `ci_watch`. Its containment is bubblewrap on the sandbox
+  root, joined to the sandbox's holder in CI's group (`ci_join`). Its writable paths are
+  `<data>/watches/<sandbox>/home` (`HOME`), `state/<watch>` (`YULIUS_WATCH_STATE`) and
+  `runs/<run>`, whose output files are read through handles opened before the start. A fixed
+  wrapper sets `ulimit -t` (soft, then hard 2 s later), `-d` and `-f` as hard limits and runs the
+  script as its own `bash -c --` argument, with no core files. While the project's watch files
+  are over 1 GiB, a run is stopped. The process host enforces the timeout. Named agent secrets get placeholders and an
+  egress credential (`ci_egress_open`, run `watch:<name>`).
+- **Posts.** `yulius_domain::watch::outcome` decides a run's end:
+  - exit 0 with output posts, and exit 3 posts and ends the watch;
+  - other ends are failures, and the third in a row warns once;
+  - a success removes the warning.
+
+  The posts go to `watch_pending` in the run's transaction (an outbox). `watch_deliver` then
+  posts them as notices for the owner, keyed `watch:<name>` and `watch:<name>:failing`, and
+  drops each only once it is stored.
+
+```mermaid
+flowchart LR
+  S["watch_tick (15 s)"] -->|"due, claimed"| R["watch_execute"]
+  R -->|"LaunchPlan: ulimits, bash -c script"| H["process host"]
+  H -->|"bubblewrap + holder join (CI group)"| SB["sandbox"]
+  SB -->|"stdout, stderr, exit"| O["outcome: post, warn, end"]
+  O -->|"state + pending, one transaction"| DB[("watches, watch_pending")]
+  DB -->|"watch_deliver"| N["App::post_notice (watch:name)"]
+  N --> CH["owner's pages, digest, Telegram"]
 ```
 
 ## Vidoc: the instance key and the security scan

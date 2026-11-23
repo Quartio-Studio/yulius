@@ -599,6 +599,7 @@ impl App {
             "transcripts",
             "system",
             "import-worktrees",
+            "watches",
         ] {
             let path = self.data_path(&[top]);
             if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -666,6 +667,8 @@ impl App {
             (Kind::RemovedCi, dir.join("ci")),
             (Kind::RemovedBrowser, dir.join("browser")),
             (Kind::RemovedCd, self.data_path(&["cd", id])),
+            // Its script watches' files (SPEC-630).
+            (Kind::RemovedCi, self.data_path(&["watches", id])),
             // Snapshot imports' checkouts a failed import left (ADR-0213).
             (
                 Kind::RemovedWorktrees,
@@ -1378,7 +1381,8 @@ impl App {
         if !exists(path) {
             return Ok(());
         }
-        let mapped = ["sysroots", "system", "sandboxes"]
+        // Script watches' files too: their runs write as the sandbox's ids (SPEC-630).
+        let mapped = ["sysroots", "system", "sandboxes", "watches"]
             .iter()
             .map(|d| self.data_path(&[d]))
             .chain([self.data_path(&["runtime", "sandboxes"])])
