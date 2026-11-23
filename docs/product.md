@@ -484,7 +484,16 @@ watching, steering and unblocking.
 - **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
   Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
-  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why.
+  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
+  subscription past its harness's rebalance threshold (95 % of a 5-hour, weekly or model's
+  weekly window by default) gets no new task while another has room, and every 2 minutes its
+  idle tasks (the turn ended, also while waiting for a person) move to the subscription with the
+  most room, in the same session with nothing typed (an idle goal session, whose goal a restart
+  would type again, is parked instead and resumes elsewhere); a task mid-turn waits for its
+  turn's end, and one its person put on that subscription with "Run on…" or "Continue on…" stays
+  (SPEC-629). Each move is told once in the task's terminal, its info and one notice for its
+  person (the task's latest move, park or wait replaces its earlier one), as is a task that
+  stays because nothing has room.
   If a person has already signed it in again, the new sign-in stays available. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
   under Needs you. A subscription out of a model's usage credits (Fable runs on a weekly

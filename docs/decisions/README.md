@@ -530,6 +530,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0459 -->
 - [0460](0460-a-task-reads-its-neighbours-status-and-never-steers-them.md): A task reads its neighbours' status (owner, PR and stage, claims, waits, last words) read-only and never steers them; a personal task shows other people's tasks only its shape.
 <!-- ADR 0460 -->
+- [0461](0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md): a subscription past its harness's rebalance threshold (default 95 %) gets no new task while another has room, and idle, unpinned tasks on it move to the one with the most room; a person's choice pins a task (SPEC-629)
 <!-- ADR 0461 -->
 - [0462](0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md): Notices carry a key and an expiry, and the newest per key wins
 <!-- ADR 0462 -->

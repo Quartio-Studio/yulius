@@ -186,7 +186,7 @@ impl App {
             let attempt = store.live_attempt(task_id).await?.ok_or_else(|| {
                 AppError::Conflict("the idle session changed during the move".into())
             })?;
-            Some(SwitchCondition::IdleCodex {
+            Some(SwitchCondition::Idle {
                 from: (activity, task.updated_at),
                 attempt: attempt.id,
             })
