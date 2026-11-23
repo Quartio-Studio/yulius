@@ -423,16 +423,15 @@ impl App {
                 0
             }
         };
-        let unowned: &[GateNotice] = if failures.is_empty() || !available.is_empty() {
-            &[]
-        } else if unavailable_for >= crate::notice_producers::GATE_GRACE_TICKS
-            || store.gate_workers(&sandbox.id).await?.is_empty()
-        {
-            &failures
-        } else {
-            &[]
-        };
-        if let Err(err) = self.sync_gate_notices(sandbox, unowned).await {
+        let (unowned, hold_new): (&[GateNotice], bool) =
+            if failures.is_empty() || !available.is_empty() {
+                (&[], false)
+            } else {
+                let past = unavailable_for >= crate::notice_producers::GATE_GRACE_TICKS
+                    || store.gate_workers(&sandbox.id).await?.is_empty();
+                (&failures, !past)
+            };
+        if let Err(err) = self.sync_gate_notices(sandbox, unowned, hold_new).await {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "gate notices could not be reconciled");
         }
         let recipients = store

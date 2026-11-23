@@ -1,6 +1,6 @@
 ---
 yulius-task: 1f58ed73-02d4-4c49-8c66-dbf323eb4a3f
-status: in-progress
+status: done
 ---
 
 # SPEC-624: Notices that replace and expire: a key per notice, newest wins, an expiry
@@ -101,8 +101,10 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
     10 staging ticks in a row (`GATE_GRACE_TICKS`, about ten minutes). The notice holds the
     failing test, its first failing revision and the merge that showed it, and a link to the CI
     page. At most 20 failures get a notice each, and the rest share `gates:more`. A notice is
-    removed once the failure is repaired or a worker can take the repair again. A worker that is
-    only momentarily unable to take a notice still owns it, so the notice does not flap.
+    removed once the failure is repaired or a worker can take the repair again. Within the grace
+    period a notice already told stays and no new one is posted, so neither a worker that is only
+    momentarily busy nor a restart (which starts the count again) retells it. A green branch
+    ends the count.
     `GateNotice` carries its `key`.
   - A subscription's notice follows its stored state. `account.updated` updates it at once,
     and the background tick also catches a status written without one, and removes the notice
@@ -156,7 +158,7 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - [x] The bell shows server notices and keys and expires every entry
 - [x] Old browser notification history migrates with expiries
 - [x] Product, API and architecture docs describe keyed, expiring notices
-- [ ] Independent review of the producers and the bell, every finding answered
+- [x] Independent review of the producers and the bell, every finding answered
 
 ## Acceptance criteria
 
@@ -441,3 +443,27 @@ All findings except the last nit were in this PR's own code:
   - Library crates: 1,889 passed.
   - Chromium: 1,350 passed, 1 configured skip.
   - Clippy `-D warnings` clean, and `scripts/dev quick` passed.
+
+### Review round 3 of PR #1711 (head `59258cb79`): approved, notes fixed within the approval
+
+All notes were in this PR's own code:
+- **The grace counter's reset was untested (minor).** Now covered by
+  `staging::a_green_branch_starts_the_grace_period_again`, which fails with
+  `ticks.remove(&sandbox.id)` undone.
+- **A limit with no known end lost its notice when a window's reset passed (minor).**
+  `limit_reset` returns none for the subscription's own limit without an end (as
+  `AccountUsage::available_at_for` reads it), so the notice lasts until usable. Covered in
+  `a_subscription_notice_follows_the_table`, which failed before the fix.
+- **A restart retold a notice raised past the grace period (minor).** Within the grace period
+  `sync_gate_notices` keeps the notices already told and posts no new one (`hold_new`).
+  `staging::a_momentarily_busy_worker_raises_no_gate_notice` now expects the stored notice to
+  stay when a worker without a session appears, which is the restart case. It failed before
+  the fix.
+- **Nits:**
+  - The stray ". and" in the architecture document and the unit test's comment are fixed.
+  - The event fallback for a subscription the store does not hold, and grace counts of
+    removed projects, are unchanged. The fallback is what the tests publish, and it was so
+    before this PR; the next tick removes a deleted subscription's notice. The counts are one
+    integer per project.
+- After these fixes, `staging::`, `notices::` and the `yulius-app` tests passed (799).
+

@@ -3340,8 +3340,9 @@ Notices for people carry a key and an expiry
   written without an event, and removes the notices of deleted subscriptions. The staging
   tick's `tell_gate_repairs` passes the failures to `sync_gate_notices` while the project has
   no worker in stored state (`gate_workers`), or while its workers have all been unable to take
-  the repair for `GATE_GRACE_TICKS` ticks in a row (`App::gate_unavailable_ticks`). A worker
-  that is only momentarily unable to take a notice still owns it. The sync posts `gate:<test>`
+  the repair for `GATE_GRACE_TICKS` ticks in a row (`App::gate_unavailable_ticks`; a green
+  branch or an able worker resets it). Within that period a notice already told stays and no
+  new one is posted, so neither a busy worker nor a restart retells it. The sync posts `gate:<test>`
   for at most 20 failures and `gates:more` for the rest, none expiring, and removes the ones no
   longer failing or now owned. The notifier no longer derives
   subscription messages: they reach Telegram as posted notices.
@@ -3353,7 +3354,7 @@ Notices for people carry a key and an expiry
   join it from `GET /api/me/notices` and `notice.posted` under
   `notice:<project>:<me or ->:<key>`. `notice.removed` drops them. Each load and resync drops
   those the server no longer lists, keeping what the event stream said while that read was under
-  way, and a newer read supersedes an older one's answer. and Clear dismisses them on the server. A shared problem's
+  way, and a newer read supersedes an older one's answer. Clear dismisses them on the server. A shared problem's
   entry is settled only from a loaded task list. A task has one entry, `task:<task id>`.
 - **Digest.** Each person's digest lists up to 20 of their live notices (`DigestView.notices`).
   Its items carry `task:<task id>`, and its Telegram message has the scope `-:digest`, so today's

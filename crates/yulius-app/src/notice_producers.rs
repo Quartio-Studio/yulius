@@ -75,6 +75,10 @@ pub fn limit_reset(usage: &AccountUsageView) -> Option<Timestamp> {
         .then_some(usage.limit_resets_at.as_deref())
         .flatten()
         .and_then(parse_rfc3339);
+    // Its own limit without an end has none known, whatever a window says (review round 3).
+    if usage.limit_reached && own.is_none() {
+        return None;
+    }
     own.into_iter().chain(used_up).max()
 }
 
@@ -268,6 +272,7 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
         failures: &[GateNotice],
+        hold_new: bool,
     ) -> AppResult<()> {
         let mut wanted = Vec::new();
         for failure in failures.iter().take(GATE_NOTICES_MAX) {
@@ -314,6 +319,10 @@ impl App {
             .notices_by_prefix(Some(&sandbox.id), "gate", self.now())
             .await?;
         let ours = |key: &NoticeKey| key.as_str().starts_with("gate:") || *key == gates_more_key();
+        // Within the grace period what was told stays and nothing new is (review round 3).
+        if hold_new {
+            wanted.retain(|w| stored.iter().any(|n| n.user.is_none() && n.key == w.key));
+        }
         for old in stored.iter().filter(|n| n.user.is_none() && ours(&n.key)) {
             if !wanted.iter().any(|w| w.key == old.key) {
                 self.remove_notice(Some(&sandbox.id), None, &old.key)
@@ -357,8 +366,8 @@ mod tests {
         })
     }
 
-    /// The spec's table: a limit ends at its reset, a sign-in waits for a person, an error is a
-    /// day's report, a usable subscription has none.
+    /// The spec's table: a limit ends at its reset, a sign-in waits for a person, an error lasts
+    /// until the subscription is usable, a usable subscription has none.
     #[test]
     fn a_subscription_notice_follows_the_table() {
         let now = parse_rfc3339("2026-11-22T10:00:00Z").unwrap_or_default();
@@ -408,5 +417,19 @@ mod tests {
             ..AccountUsageView::default()
         };
         assert_eq!(limit_reset(&own), parse_rfc3339("2026-11-23T00:00:00Z"));
+        // The subscription's own limit without an end: unknown, whatever a window says (review
+        // round 3 of #1711).
+        let endless = AccountUsageView {
+            limit_reached: true,
+            limit_resets_at: None,
+            primary: window(100.0, "2026-11-22T11:00:00Z"),
+            ..AccountUsageView::default()
+        };
+        assert_eq!(limit_reset(&endless), None);
+        let later = parse_rfc3339("2026-11-22T12:00:00Z").unwrap_or_default();
+        assert_eq!(
+            account_notice(&view("limited", endless), later).and_then(|n| n.expiry),
+            Some(Expiry::Never)
+        );
     }
 }
