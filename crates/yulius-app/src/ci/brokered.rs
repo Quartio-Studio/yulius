@@ -61,6 +61,8 @@ pub(crate) struct BrokeredOutcome {
     pub stdout: String,
     /// stderr as read back.
     pub stderr: String,
+    /// The whole size of stdout and of stderr, of which the text is the start.
+    pub sizes: (u64, u64),
 }
 
 impl BrokeredOutcome {
@@ -71,6 +73,7 @@ impl BrokeredOutcome {
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
+            sizes: (0, 0),
         }
     }
 }
@@ -83,13 +86,29 @@ fn fresh_dir(path: &Path) -> std::io::Result<()> {
         .create(path)
 }
 
-/// Reads at most [`READ_BACK`] bytes of `path` (a missing file is empty).
-fn read_back(path: &Path) -> String {
+/// Makes a run's output file and keeps its handle: what Yulius reads back is that file, whatever
+/// the run puts at its path later (a link to a host file, a FIFO; review round 1 of slice 2).
+fn output_file(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+        .mode(0o600)
+        .open(path)
+}
+
+/// Reads at most [`READ_BACK`] bytes of an output file through its handle, from its start, and
+/// its whole size.
+fn read_back(file: &std::fs::File) -> (String, u64) {
+    use std::io::{Seek as _, SeekFrom};
+    let size = file.metadata().map_or(0, |m| m.len());
     let mut bytes = Vec::new();
-    if let Ok(file) = std::fs::File::open(path) {
-        let _ = file.take(READ_BACK).read_to_end(&mut bytes);
+    let mut reader = file;
+    if reader.seek(SeekFrom::Start(0)).is_ok() {
+        let _ = reader.take(READ_BACK).read_to_end(&mut bytes);
     }
-    String::from_utf8_lossy(&bytes).into_owned()
+    (String::from_utf8_lossy(&bytes).into_owned(), size)
 }
 
 impl App {
@@ -153,7 +172,7 @@ impl App {
         let keyfile = work.join("key").join(nonce).join("key");
         let _ = std::fs::remove_dir_all(run_dir);
         let _ = std::fs::remove_dir_all(files);
-        let prepared = (|| -> std::io::Result<()> {
+        let prepared = (|| -> std::io::Result<(std::fs::File, std::fs::File)> {
             for dir in [&home, &tmp, keyfile.parent().unwrap_or(&work)] {
                 fresh_dir(dir)?;
             }
@@ -164,11 +183,15 @@ impl App {
                 .mode(0o600)
                 .open(&keyfile)?;
             key.write_all(run.key.as_bytes())?;
-            key.sync_all()
+            key.sync_all()?;
+            Ok((output_file(&out)?, output_file(&err)?))
         })();
-        if let Err(e) = prepared {
-            return BrokeredOutcome::failed(format!("preparing the run's folder failed: {e}"));
-        }
+        let (out_file, err_file) = match prepared {
+            Ok(files) => files,
+            Err(e) => {
+                return BrokeredOutcome::failed(format!("preparing the run's folder failed: {e}"));
+            }
+        };
         let (containment, _lease) = match self
             .cd_containment(sandbox, CdStage::Prod, &work, &home, &tmp)
             .await
@@ -247,7 +270,11 @@ impl App {
                 ),
             )
             .await;
-        let (stdout, stderr) = (read_back(&out), read_back(&err));
+        // Off the async runtime, through the handles made before the run.
+        let ((stdout, stdout_size), (stderr, stderr_size)) =
+            tokio::task::spawn_blocking(move || (read_back(&out_file), read_back(&err_file)))
+                .await
+                .unwrap_or_default();
         let (state, reason, exit_code) = match watched {
             Err(reason) => ("failed", Some(reason), None),
             Ok((Ended::Exit(exit), _)) if exit.spawn_failed => (
@@ -275,7 +302,7 @@ impl App {
             Ok((Ended::OutputLimit | Ended::DiskLimit(_), _)) => (
                 "output_limit",
                 Some(format!(
-                    "stopped: its output passed {} MiB",
+                    "stopped: its files (its output, home and temporary files) passed {} MiB",
                     MAX_RUN_FILES >> 20
                 )),
                 None,
@@ -287,6 +314,7 @@ impl App {
             Ok((Ended::Lost, _)) => ("lost", Some("its process host was lost".to_owned()), None),
         };
         BrokeredOutcome {
+            sizes: (stdout_size, stderr_size),
             state,
             reason,
             exit_code,

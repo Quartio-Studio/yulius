@@ -77,6 +77,7 @@ enum Command {
     /// In a task's session: run a brokered command of the project (SPEC-626) outside the sandbox,
     /// with its key as a file you never see; prints its stdout and stderr and exits with its
     /// code (125: refused, rejected or not answered in time).
+    #[command(disable_help_flag = true)]
     Run {
         /// The command's name (`commands_list`).
         name: String,

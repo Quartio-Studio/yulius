@@ -10,7 +10,7 @@ use support::{
     Creds, Harness, TestResult, call, harness, perms, seed_github_user, seed_live_attempt,
     seed_sandbox, seed_task,
 };
-use yulius_app::ports::store::{AuditStore as _, TaskStore as _};
+use yulius_app::ports::store::AuditStore as _;
 use yulius_app::ports::store_ext::CommandStore as _;
 use yulius_app::ports::vault::VaultStore as _;
 use yulius_domain::task::TaskStatus;
@@ -608,6 +608,13 @@ touch "$MARK_DIR/ran"
 case "$3" in
   slow) sleep 30 ;;
   loud) head -c 200000 /dev/zero | tr '\0' 'a' ;;
+  big) head -c 20000000 /dev/zero > "$HOME/big"; sleep 30 ;;
+  swap)
+    echo "before the swap"
+    rm -f "$HOME/../out" "$HOME/../err"
+    ln -s "$OUTSIDE" "$HOME/../out"
+    mkfifo "$HOME/../err"
+    ;;
 esac
 exit 7
 "#;
@@ -626,6 +633,15 @@ struct Runs {
 /// [`world`] with the real process host, uncontained, the stand-in CLI and the command `deploy`
 /// of s1 running it without approval, with `patch` applied to its definition.
 async fn runs_world(patch: Value) -> Result<Runs, Error> {
+    runs_world_on(patch, None).await
+}
+
+/// [`runs_world`]; with `host`, runs are contained (`config.contained`) and go to that host.
+async fn runs_world_on(
+    patch: Value,
+    host: Option<std::sync::Arc<dyn yulius_app::ports::session::SessionHost>>,
+) -> Result<Runs, Error> {
+    let contained = host.is_some();
     // A short data directory: run sockets live at <data>/runs/cmd-<id>/pty.sock.
     let data = tempfile::Builder::new().prefix("ybc").tempdir_in("/tmp")?;
     // The binary is the host's own, outside /tmp and the data directory (BRK-001).
@@ -635,12 +651,12 @@ async fn runs_world(patch: Value) -> Result<Runs, Error> {
     let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let _ = std::process::Command::new(&exe).arg("version").output();
     let h = support::harness_with(support::HarnessOptions {
-        session_host: Some(std::sync::Arc::new(
-            yulius::wiring::session::PtySessionHost::new(exe),
-        )),
+        session_host: Some(host.unwrap_or_else(|| {
+            std::sync::Arc::new(yulius::wiring::session::PtySessionHost::new(exe))
+        })),
         dir: Some(data),
-        configure: Some(Box::new(|config| {
-            config.contained = false;
+        configure: Some(Box::new(move |config| {
+            config.contained = contained;
             config.command_wait_ms = 20_000;
         })),
         ..support::HarnessOptions::default()
@@ -665,7 +681,9 @@ async fn runs_world(patch: Value) -> Result<Runs, Error> {
         "DEPLOY_TOKEN": "{secret}",
         "SANDBOX_DIR": sandbox_dir.to_string_lossy(),
         "MARK_DIR": marks.to_string_lossy(),
+        "OUTSIDE": bin.path().join("outside").to_string_lossy(),
     });
+    std::fs::write(bin.path().join("outside"), "OUTSIDE-MARKER host file\n")?;
     if let (Some(obj), Some(p)) = (body.as_object_mut(), patch.as_object()) {
         for (k, v) in p {
             obj.insert(k.clone(), v.clone());
@@ -768,6 +786,7 @@ async fn the_key_never_reaches_the_sandbox_or_the_output() -> TestResult {
                 "DEPLOY_TOKEN",
                 "SANDBOX_DIR",
                 "MARK_DIR",
+                "OUTSIDE",
                 "PWD",
                 "OLDPWD",
                 "SHLVL",
@@ -801,12 +820,12 @@ async fn paths_refused_flags_and_other_subcommands_run_nothing() -> TestResult {
         (json!(["status", "~"]), "file path"),
         (json!(["status", "a/b"]), "file path"),
         (json!(["status", ".."]), "file path"),
-        (json!(["status", "--key-file", "x"]), "set by Yulius"),
-        (json!(["status", "--key-file=x"]), "set by Yulius"),
-        (json!(["status", "--key-f=x"]), "set by Yulius"),
-        (json!(["status", "-key-file", "x"]), "set by Yulius"),
-        (json!(["status", "-kx"]), "set by Yulius"),
-        (json!(["status", "-vk", "x"]), "set by Yulius"),
+        (json!(["status", "--key-file", "x"]), "which Yulius sets"),
+        (json!(["status", "--key-file=x"]), "which Yulius sets"),
+        (json!(["status", "--key-f=x"]), "which Yulius sets"),
+        (json!(["status", "-key-file", "x"]), "which Yulius sets"),
+        (json!(["status", "-kx"]), "which Yulius sets"),
+        (json!(["status", "-vk", "x"]), "which Yulius sets"),
         (json!(["rm", "all"]), "allowed subcommand"),
         (json!(["--verbose", "status"]), "allowed subcommand"),
         (json!(["status", "a\u{202e}b"]), "invisible"),
@@ -926,57 +945,52 @@ async fn a_run_that_needs_approval_runs_nothing_yet() -> TestResult {
     Ok(())
 }
 
-/// BRK-009: a server that starts records a run it did not see end as lost and removes its files,
-/// the key's among them.
+/// BRK-009: a server that starts records a run it did not see end as lost, ends its process and
+/// removes its files, the key's among them (review round 1 of slice 2: with a live run).
 #[tokio::test]
 async fn a_restart_loses_a_running_run_and_removes_its_files() -> TestResult {
-    use yulius_app::ports::store_ext::CommandRunRecord;
-    let r = runs_world(json!({})).await?;
-    let sid = yulius_domain::ids::SandboxId::parse("s1")?;
-    let command =
-        r.w.h
-            .store
-            .command_named(&sid, "deploy")
-            .await?
-            .ok_or("deploy")?;
-    let now = r.w.h.app.now();
-    let task =
-        r.w.h
-            .store
-            .task(&yulius_domain::ids::TaskId::parse("t1")?)
-            .await?
-            .ok_or("t1")?;
-    let run = CommandRunRecord {
-        id: "run-left".into(),
-        sandbox_id: sid.clone(),
-        command_id: command.id.clone(),
-        command: "deploy".into(),
-        command_updated_at: command.updated_at,
-        task_id: task.id.clone(),
-        task_number: task.number,
-        args: vec!["status".into()],
-        line: "deploy status".into(),
-        changes: false,
-        state: "running".into(),
-        reason: None,
-        deadline: None,
-        answered_by: None,
-        exit_code: None,
-        stdout: String::new(),
-        stderr: String::new(),
-        created_at: now,
-        started_at: Some(now),
-        ended_at: None,
+    let r = runs_world(json!({"timeout_seconds": 120})).await?;
+    let started = std::time::Instant::now();
+    let call = agent_tool(
+        &r.w.h,
+        TOKEN_S1,
+        "command_run",
+        json!({"name": "deploy", "args": ["slow"]}),
+    );
+    let restart = async {
+        // Until the stand-in CLI runs.
+        let ran = r.marks.join("ran");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !ran.exists() {
+            if std::time::Instant::now() > deadline {
+                return Err::<_, Error>("the run never started".into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let tid = yulius_domain::ids::TaskId::parse("t1")?;
+        let run =
+            r.w.h
+                .store
+                .latest_command_run_of_task(&tid)
+                .await?
+                .ok_or("run")?;
+        let files =
+            yulius_contracts::sandbox::production_runs_dir(&r.w.h.app.config.data_dir, "s1")
+                .join(format!("cmd-{}", run.id));
+        assert!(files.join("work/key").exists());
+        // Its own executor sees its process end and may record that first.
+        assert!(r.w.h.app.reconcile_command_runs().await? <= 1);
+        let lost = r.w.h.store.command_run(&run.id).await?.ok_or("run")?;
+        assert_eq!(lost.state, "lost");
+        assert!(!files.exists(), "{} is left", files.display());
+        Ok(())
     };
-    r.w.h.store.insert_command_run(&run).await?;
-    let files = yulius_contracts::sandbox::production_runs_dir(&r.w.h.app.config.data_dir, "s1")
-        .join("cmd-run-left");
-    std::fs::create_dir_all(files.join("work/key/x"))?;
-    std::fs::write(files.join("work/key/x/key"), "left key")?;
-    assert_eq!(r.w.h.app.reconcile_command_runs().await?, 1);
-    let lost = r.w.h.store.command_run("run-left").await?.ok_or("run")?;
-    assert_eq!(lost.state, "lost");
-    assert!(!files.exists(), "{} is left", files.display());
+    let (answered, restarted) = tokio::join!(call, restart);
+    restarted?;
+    // Its process ended: the call answers long before the CLI's 30 s sleep.
+    let answered = answered?.map_err(|e| format!("refused: {e}"))?;
+    assert_eq!(answered["state"], "lost", "{answered}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(25));
     Ok(())
 }
 
@@ -998,5 +1012,212 @@ async fn no_binary_of_the_data_directory() -> TestResult {
     let r = define(&w, "s1", inside, &w.alice).await?;
     assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
     assert!(r.body.to_string().contains("data directory"), "{}", r.body);
+    Ok(())
+}
+
+/// Review round 1 of slice 2: what comes back is read through the handles Yulius made before the
+/// run. A run that puts a link to a host file at its output's path, or a FIFO, gets neither read:
+/// the agent sees what the CLI wrote and the run ends.
+#[tokio::test]
+async fn output_is_read_from_the_files_yulius_made_not_from_their_paths() -> TestResult {
+    let r = runs_world(json!({"timeout_seconds": 20})).await?;
+    let ran = run_deploy(&r, json!(["swap"])).await?;
+    assert_eq!(ran["state"], "done", "{ran}");
+    let stdout = ran["stdout"].as_str().ok_or("stdout")?;
+    assert!(stdout.contains("before the swap"), "{stdout}");
+    assert!(!ran.to_string().contains("OUTSIDE-MARKER"), "{ran}");
+    Ok(())
+}
+
+/// BRK-010 (review round 1 of slice 2): a run whose files pass 16 MiB is stopped and says so.
+#[tokio::test]
+async fn a_run_whose_files_pass_the_bound_is_stopped() -> TestResult {
+    let r = runs_world(json!({"timeout_seconds": 60})).await?;
+    let started = std::time::Instant::now();
+    let big = run_deploy(&r, json!(["big"])).await?;
+    assert_eq!(big["state"], "output_limit", "{big}");
+    assert!(
+        big["reason"].as_str().is_some_and(|r| r.contains("16 MiB")),
+        "{big}"
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    Ok(())
+}
+
+/// BRK-012 (review round 1 of slice 2): a refused argument holding a value is audited without it,
+/// and the agent is told which argument by its place.
+#[tokio::test]
+async fn a_refusal_audits_no_value() -> TestResult {
+    let r = runs_world(json!({"refuse": ["--key-file", "-k", "--token"]})).await?;
+    let value = "tok-synthetic-abcdef0123456789";
+    let made = call(
+        &r.w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "API_TOKEN", "value": value})),
+        &r.w.alice,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    for args in [
+        json!(["status", format!("--token={value}")]),
+        json!(["status", format!("{value}/x")]),
+    ] {
+        let refused = agent_tool(
+            &r.w.h,
+            TOKEN_S1,
+            "command_run",
+            json!({"name": "deploy", "args": args}),
+        )
+        .await?;
+        let reason = refused.err().ok_or("ran")?;
+        assert!(reason.contains("argument 2"), "{reason}");
+        assert!(!reason.contains(value), "{reason}");
+    }
+    let audits =
+        r.w.h
+            .store
+            .audit_details("s1", "command.refused", 10)
+            .await?;
+    assert_eq!(audits.len(), 2, "{audits:?}");
+    for audit in &audits {
+        assert!(!audit.contains("tok-synthetic"), "{audit}");
+    }
+    Ok(())
+}
+
+/// RUN-003 (review round 1 of slice 2): at most four runs of a project's commands at once; the
+/// fifth is refused, audited, and runs nothing.
+#[tokio::test]
+async fn at_most_four_runs_of_a_project_at_once() -> TestResult {
+    let r = runs_world(json!({"timeout_seconds": 6})).await?;
+    let slow = || {
+        agent_tool(
+            &r.w.h,
+            TOKEN_S1,
+            "command_run",
+            json!({"name": "deploy", "args": ["slow"]}),
+        )
+    };
+    let fifth = async {
+        let tid = yulius_domain::ids::TaskId::parse("t1")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            use yulius_app::ports::store_ext::CommandStore as _;
+            let running = r.w.h.store.command_runs_in_state("running").await?.len();
+            if running == 4 {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                return Err::<_, Error>(format!("{running} runs started").into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let _ = tid;
+        let refused = agent_tool(
+            &r.w.h,
+            TOKEN_S1,
+            "command_run",
+            json!({"name": "deploy", "args": ["status"]}),
+        )
+        .await?;
+        Ok(refused)
+    };
+    let (a, b, c, d, refused) = tokio::join!(slow(), slow(), slow(), slow(), fifth);
+    for ended in [a, b, c, d] {
+        assert_eq!(ended??["state"], "timed_out");
+    }
+    let refused = refused?;
+    assert!(
+        refused.as_ref().is_err_and(|e| e.contains("4 runs")),
+        "{refused:?}"
+    );
+    let audits =
+        r.w.h
+            .store
+            .audit_details("s1", "command.refused", 5)
+            .await?;
+    assert_eq!(audits.len(), 1, "{audits:?}");
+    Ok(())
+}
+
+/// BRK-007 (review round 1 of slice 2): `yulius run` against Yulius's own `/mcp` prints the run's
+/// redacted streams and exits with its code; `command_result` without an id reads the task's
+/// newest run.
+#[tokio::test]
+async fn yulius_run_prints_the_run_and_exits_with_its_code() -> TestResult {
+    let r = runs_world(json!({})).await?;
+    let served = support::serve(r.w.h.internal.clone()).await?;
+    let url = format!("http://{}", served.addr);
+    let (code, out, err) = tokio::task::spawn_blocking(move || {
+        let env = move |name: &str| match name {
+            "YULIUS_URL" => Some(url.clone()),
+            "YULIUS_TASK_TOKEN" => Some(TOKEN_S1.to_owned()),
+            _ => None,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = yulius::run_cli::run(
+            &mut out,
+            &mut err,
+            "deploy",
+            &["status".to_owned()],
+            yulius::tool_cli::Pace::default(),
+            &env,
+        );
+        (code, out, err)
+    })
+    .await?;
+    let (out, err) = (String::from_utf8(out)?, String::from_utf8(err)?);
+    assert_eq!(code, 7, "{out}\n{err}");
+    assert!(out.contains("sandbox=clean"), "{out}");
+    assert!(out.contains("[secret:DEPLOY_KEY]"), "{out}");
+    assert!(!out.contains(BODY) && !err.contains(BODY));
+    assert!(err.contains("DEPLOY_TOKEN=[secret:DEPLOY_KEY]"), "{err}");
+    let newest = agent_tool(&r.w.h, TOKEN_S1, "command_result", json!({})).await??;
+    assert_eq!(newest["state"], "done", "{newest}");
+    assert_eq!(newest["exit_code"], 7);
+    Ok(())
+}
+
+/// BRK-008 (review round 1 of slice 2): on a contained server the run joins the project's
+/// production holder (never the agents' sandbox) on the host's read-only system, with only its own
+/// folder and without Docker.
+#[tokio::test]
+async fn a_contained_run_joins_the_production_holder_without_docker() -> TestResult {
+    let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let recording = std::sync::Arc::new(crate::cd::Recording {
+        inner: yulius::wiring::session::PtySessionHost::new(exe),
+        seen: std::sync::Mutex::default(),
+    });
+    let r = runs_world_on(json!({}), Some(recording.clone())).await?;
+    let holders = std::sync::Arc::new(crate::cd::Holders::default());
+    assert!(r.w.h.app.set_isolation(holders.clone()));
+    let ran = run_deploy(&r, json!(["status"])).await?;
+    assert_eq!(ran["state"], "done", "{ran}");
+    assert_eq!(
+        holders.calls(),
+        vec!["prepare_production", "release_production"]
+    );
+    let seen = recording.seen.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(seen.len(), 1);
+    let yulius_app::ports::session::Containment::Bubblewrap {
+        sandbox_root,
+        binds,
+        join: Some(join),
+        ..
+    } = &seen[0]
+    else {
+        return Err(format!("not contained: {:?}", seen[0]).into());
+    };
+    let id = ran["id"].as_str().ok_or("id")?;
+    let work = yulius_contracts::sandbox::production_runs_dir(&r.w.h.app.config.data_dir, "s1")
+        .join(format!("cmd-{id}"))
+        .join("work");
+    assert_eq!(sandbox_root, &work);
+    assert!(binds.is_empty());
+    assert!(join.host_system.is_some(), "the host's read-only system");
+    assert_eq!(join.docker_dir, None);
+    assert!(join.extra_binds.is_empty());
+    assert_eq!(join.hostname, "s1-prod");
     Ok(())
 }

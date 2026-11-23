@@ -192,11 +192,25 @@ impl CommandStore for SqliteStore {
         .await
     }
 
-    async fn insert_command_run(&self, run: &CommandRunRecord) -> AppResult<()> {
+    async fn insert_command_run(
+        &self,
+        run: &CommandRunRecord,
+        max_running: u32,
+    ) -> AppResult<bool> {
         let r = run.clone();
         self.call(move |c| {
             let args = serde_json::to_string(&r.args).map_err(AppError::internal)?;
             let tx = c.transaction().map_err(db)?;
+            let running: u32 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM command_runs WHERE sandbox_id = ?1 AND state = 'running'",
+                    [r.sandbox_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(db)?;
+            if r.state == "running" && running >= max_running {
+                return Ok(false);
+            }
             tx.execute(
                 &format!(
                     "INSERT INTO command_runs ({RUN_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, \
@@ -235,7 +249,27 @@ impl CommandStore for SqliteStore {
             )
             .map_err(db)?;
             tx.commit().map_err(db)?;
-            Ok(())
+            Ok(true)
+        })
+        .await
+    }
+
+    async fn latest_command_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<CommandRunRecord>> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                &format!(
+                    "SELECT {RUN_COLUMNS} FROM command_runs WHERE task_id = ?1 \
+                     ORDER BY created_at DESC, id DESC LIMIT 1"
+                ),
+                [task],
+                run_row,
+            )
+            .optional()
+            .map_err(db)
         })
         .await
     }
@@ -275,7 +309,8 @@ impl CommandStore for SqliteStore {
             let changed = c
                 .execute(
                     "UPDATE command_runs SET state = ?1, reason = ?2, exit_code = ?3, \
-                     stdout = ?4, stderr = ?5, ended_at = ?6 WHERE id = ?7 AND state = ?8",
+                     stdout = ?4, stderr = ?5, ended_at = ?6, args = '[]' \
+                     WHERE id = ?7 AND state = ?8",
                     params![
                         e.state,
                         e.reason,

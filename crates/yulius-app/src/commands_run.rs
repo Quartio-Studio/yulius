@@ -21,6 +21,9 @@ use crate::ports::store_ext::{CommandRecord, CommandRunEnd, CommandRunRecord};
 /// How long a call waits for a run's end before it answers its state (ADR-0227's bound for MCP
 /// clients).
 pub const RUN_WAIT: Duration = Duration::from_secs(240);
+/// Runs of a project's commands at once (RUN-003, review round 1 of slice 2): each is a process
+/// outside the agents' sandbox and two read-backs in the server. More are refused, audited.
+pub const MAX_RUNNING: u32 = 4;
 
 /// `command_run`'s arguments.
 #[derive(Deserialize)]
@@ -37,7 +40,9 @@ struct RunArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResultArgs {
-    id: String,
+    /// The run; none: the task's newest run, for a call cut before it told the id.
+    #[serde(default)]
+    id: Option<String>,
 }
 
 /// The states a run no longer leaves.
@@ -177,9 +182,29 @@ impl App {
             started_at: Some(now),
             ended_at: None,
         };
-        self.deps.store.insert_command_run(&run).await?;
-        self.spawn_command_run(sandbox, run.clone());
-        self.wait_command_run(&run.id).await
+        // Stored and run on a task of its own, so a call cut meanwhile leaves no row without an
+        // executor (review round 1 of slice 2).
+        let (stored_tx, stored) = tokio::sync::oneshot::channel();
+        let (app, id, place) = (Arc::clone(self), run.id.clone(), sandbox.clone());
+        tokio::spawn(async move {
+            let inserted = app.deps.store.insert_command_run(&run, MAX_RUNNING).await;
+            let go = matches!(inserted, Ok(true));
+            let _ = stored_tx.send(inserted);
+            if go {
+                app.run_command_to_its_end(place, run).await;
+            }
+        });
+        match stored.await.map_err(AppError::internal)? {
+            Ok(true) => self.wait_command_run(&id).await,
+            Ok(false) => {
+                refuse(format!(
+                    "{MAX_RUNNING} runs of this project's commands run already: wait for one to \
+                     end (command_result) and run it again"
+                ))
+                .await
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// `command_result` (BRK-014): the state of a run this task started, waiting up to
@@ -194,11 +219,19 @@ impl App {
     ) -> AppResult<Value> {
         let call: ResultArgs = serde_json::from_value(args.clone())
             .map_err(|e| AppError::Invalid(format!("command_result takes id: {e}")))?;
-        let run = self.deps.store.command_run(&call.id).await?;
-        if !run.is_some_and(|r| r.task_id == ctx.task.id) {
+        let run = match &call.id {
+            Some(id) => self.deps.store.command_run(id).await?,
+            None => {
+                self.deps
+                    .store
+                    .latest_command_run_of_task(&ctx.task.id)
+                    .await?
+            }
+        };
+        let Some(run) = run.filter(|r| r.task_id == ctx.task.id) else {
             return Err(AppError::NotFound);
-        }
-        self.wait_command_run(&call.id).await
+        };
+        self.wait_command_run(&run.id).await
     }
 
     /// Waits up to [`RUN_WAIT`] (the configuration's `command_wait_ms`) for run `id` to end, then
@@ -235,17 +268,16 @@ impl App {
     }
 
     /// Runs `run` on its own task, so a cut call never leaves it half done (BRK-009..BRK-012).
-    pub(crate) fn spawn_command_run(
-        self: &Arc<Self>,
+    /// Runs a stored `running` run to its end, then wakes the calls waiting on it and the open
+    /// pages (BRK-009..BRK-012).
+    pub(crate) async fn run_command_to_its_end(
+        &self,
         sandbox: SandboxRecord,
         run: CommandRunRecord,
     ) {
-        let app = Arc::clone(self);
-        tokio::spawn(async move {
-            app.execute_command_run(&sandbox, &run).await;
-            app.command_runs_changed.notify_waiters();
-            app.announce_commands(&sandbox.id);
-        });
+        self.execute_command_run(&sandbox, &run).await;
+        self.command_runs_changed.notify_waiters();
+        self.announce_commands(&sandbox.id);
     }
 
     /// The command as it is now, when it is still what the run was asked against: a command
@@ -297,10 +329,18 @@ impl App {
             }
         };
         // Redacted whole, then cut: no part of a value survives at the cut (BRK-011).
-        let stdout =
-            dom::shown_output(&self.redact_for_sandbox(&sandbox.id, &outcome.stdout).await);
-        let stderr =
-            dom::shown_output(&self.redact_for_sandbox(&sandbox.id, &outcome.stderr).await);
+        let stdout = {
+            let shown = self.redact_for_sandbox(&sandbox.id, &outcome.stdout).await;
+            // What was not read back counts as left out too.
+            let unread = outcome.sizes.0.saturating_sub(outcome.stdout.len() as u64);
+            dom::shown_output(&shown, shown.len() as u64 + unread)
+        };
+        let stderr = {
+            let shown = self.redact_for_sandbox(&sandbox.id, &outcome.stderr).await;
+            // What was not read back counts as left out too.
+            let unread = outcome.sizes.1.saturating_sub(outcome.stderr.len() as u64);
+            dom::shown_output(&shown, shown.len() as u64 + unread)
+        };
         let end = CommandRunEnd {
             state: outcome.state.to_owned(),
             reason: outcome.reason.clone(),

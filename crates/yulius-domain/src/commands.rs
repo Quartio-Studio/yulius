@@ -235,36 +235,37 @@ pub const MAX_ARGS: usize = 64;
 /// The most of each stream a run returns, in bytes (BRK-010).
 pub const OUTPUT_SHOWN: usize = 96 * 1024;
 
-/// Whether `arg` sets `flag` (BRK-006): `--flag`, `--flag=…`, and for a long flag the
-/// abbreviations a GNU or Python parser takes (`--key-f`) and the single-dash form Go's takes
-/// (`-key-file`); for a two-character `-k`, any cluster of short flags that holds `k` (`-k`,
-/// `-kVALUE`, `-vk`).
+/// Whether `arg` sets `flag` (BRK-006), in every form a parser reads it. A long flag
+/// (`--key-file`, or Go's one-dash `-address`) as `--name`, `--name=…`, an abbreviation a GNU or
+/// Python parser takes (`--key-f`), and the one-dash form (`-key-file`, `-address=…`); a
+/// two-character `-k` in any cluster of short flags that holds `k` (`-k`, `-kVALUE`, `-vk`).
 #[must_use]
 pub fn sets_flag(arg: &str, flag: &str) -> bool {
     if !arg.starts_with('-') || arg == "-" || arg == "--" {
         return false;
     }
-    if let Some(long) = flag.strip_prefix("--") {
-        let (name, _) = arg.split_once('=').unwrap_or((arg, ""));
-        if let Some(given) = name.strip_prefix("--") {
-            return !given.is_empty() && long.starts_with(given);
-        }
-        let single = name.trim_start_matches('-');
-        return single == long;
+    let short = flag.len() == 2 && !flag.starts_with("--");
+    if short {
+        let letter = &flag[1..];
+        return !arg.starts_with("--") && arg[1..].contains(letter);
     }
-    let Some(letter) = flag.strip_prefix('-').filter(|l| l.chars().count() == 1) else {
-        // A single-dash long flag (`-key`): exact, or with `=`.
-        return arg == flag || arg.starts_with(&format!("{flag}="));
-    };
-    if arg.starts_with("--") {
-        return false;
+    let long = flag.trim_start_matches('-');
+    let (name, _) = arg.split_once('=').unwrap_or((arg, ""));
+    if let Some(given) = name.strip_prefix("--") {
+        return !given.is_empty() && long.starts_with(given);
     }
-    arg[1..].contains(letter)
+    name.trim_start_matches('-') == long
 }
 
-/// Why `arg` names a path (BRK-006), if it does: anything with `/`, and anything that starts
-/// with `~`, holds `=~` or `@~`, holds `..` or names `file:`; with `slashes`, a `/` only inside a
-/// value like `owner/repo` (not at its start, not after `=`, `@` or `:`, not in a short flag).
+/// A character a `/` may stand between with `slashes`: `owner/repo`, `group/sub/name`.
+fn beside_slash(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')
+}
+
+/// Whether `arg` names a path (BRK-006): anything that starts with `~`, holds `=~`, `@~`, `..` or
+/// `file:`, and any `/`; with `slashes`, a `/` passes only between two letters, digits, `_`, `.`
+/// or `-` of a value (`owner/repo`, `--repo=owner/repo`), never in a short flag or a long flag
+/// without `=`.
 fn path_refusal(arg: &str, slashes: bool) -> bool {
     let tilde = arg.starts_with('~') || arg.contains("=~") || arg.contains("@~");
     let dots = arg.contains("..");
@@ -278,24 +279,28 @@ fn path_refusal(arg: &str, slashes: bool) -> bool {
     if !slashes {
         return true;
     }
-    if arg.starts_with('-') && !arg.starts_with("--") {
-        return true;
-    }
     let value = if arg.starts_with("--") {
         match arg.split_once('=') {
             Some((_, value)) => value,
             None => return true,
         }
+    } else if arg.starts_with('-') {
+        return true;
     } else {
         arg
     };
-    value.starts_with('/')
-        || value.contains("=/")
-        || value.contains("@/")
-        || value.contains(":/")
-        || value.contains("//")
-        || value.ends_with('/')
+    let chars: Vec<char> = value.chars().collect();
+    chars.iter().enumerate().any(|(i, c)| {
+        *c == '/'
+            && !(i > 0
+                && i + 1 < chars.len()
+                && beside_slash(chars[i - 1])
+                && beside_slash(chars[i + 1]))
+    }) || arg.split_once('=').is_some_and(|(_, v)| v.contains('='))
 }
+
+/// The most bytes of all of a run's arguments: the process host takes 256 KiB of argv in all.
+pub const MAX_ARGS_BYTES: usize = 64 * 1024;
 
 /// Why an agent's arguments are refused (BRK-006), if they are: their count and size, control
 /// characters, paths, flags Yulius owns, and a subcommand outside the allowed ones.
@@ -306,27 +311,34 @@ pub fn args_refusal(
     subcommands: &[String],
     slashes: bool,
 ) -> Option<String> {
+    // Arguments are named by their place, never quoted: a refusal is audited, and an argument
+    // may hold a value (review round 1 of slice 2).
     if args.len() > MAX_ARGS {
         return Some(format!("a run takes at most {MAX_ARGS} arguments"));
     }
-    for arg in args {
+    if args.iter().map(String::len).sum::<usize>() > MAX_ARGS_BYTES {
+        return Some(format!(
+            "a run's arguments are at most {} KiB in all",
+            MAX_ARGS_BYTES / 1024
+        ));
+    }
+    for (place, arg) in args.iter().enumerate() {
+        let n = place + 1;
         if arg.len() > MAX_ENTRY {
-            return Some(format!("an argument is at most {MAX_ENTRY} bytes"));
+            return Some(format!("argument {n} is over {MAX_ENTRY} bytes"));
         }
         if arg.chars().any(char::is_control) {
-            return Some(format!("{} holds a control character", shown(arg)));
+            return Some(format!("argument {n} holds a control character"));
         }
         if path_refusal(arg, slashes) {
             return Some(format!(
-                "{} looks like a file path, which is not allowed: the command cannot be pointed \
-                 at another file",
-                shown(arg)
+                "argument {n} looks like a file path, which is not allowed: the command cannot \
+                 be pointed at another file"
             ));
         }
         if let Some(flag) = refuse.iter().find(|flag| sets_flag(arg, flag)) {
             return Some(format!(
-                "{flag} is set by Yulius, not by you ({})",
-                shown(arg)
+                "argument {n} sets {flag}, which Yulius sets, not you"
             ));
         }
     }
@@ -335,9 +347,8 @@ pub fn args_refusal(
         let first = args.first().map_or("", String::as_str);
         if !subcommands.iter().any(|s| s == first) {
             return Some(format!(
-                "the first argument must be an allowed subcommand ({}), not {}",
-                subcommands.join(", "),
-                shown(first)
+                "the first argument must be an allowed subcommand ({})",
+                subcommands.join(", ")
             ));
         }
     }
@@ -389,17 +400,35 @@ pub fn command_line(binary: &str, fixed: &[String], args: &[String]) -> String {
         .join(" ")
 }
 
-/// The first [`OUTPUT_SHOWN`] bytes of a stream, cut at a character, with how much was left out.
+/// The bytes `c` takes in a JSON string: an MCP answer carries both streams in one record,
+/// which Yulius withholds past 256 KiB.
+fn json_len(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+        c if u32::from(c) < 0x20 => 6,
+        c => c.len_utf8(),
+    }
+}
+
+/// A stream as it is shown (BRK-010): what fits in [`OUTPUT_SHOWN`] bytes once written as a JSON
+/// string, cut at a character, with how many bytes of the whole stream (`total`, at least the
+/// text's own) were left out.
 #[must_use]
-pub fn shown_output(text: &str) -> String {
-    if text.len() <= OUTPUT_SHOWN {
+pub fn shown_output(text: &str, total: u64) -> String {
+    let total = total.max(text.len() as u64);
+    let mut size = 0;
+    let mut end = text.len();
+    for (at, c) in text.char_indices() {
+        size += json_len(c);
+        if size > OUTPUT_SHOWN {
+            end = at;
+            break;
+        }
+    }
+    if end == text.len() && total == text.len() as u64 {
         return text.to_owned();
     }
-    let mut end = OUTPUT_SHOWN;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}\n[… {} bytes more]", &text[..end], text.len() - end)
+    format!("{}\n[… {} bytes more]", &text[..end], total - end as u64)
 }
 
 #[cfg(test)]
@@ -542,6 +571,19 @@ mod tests {
         for arg in ["--keys", "--other", "-k", "key-file", "--", "-", "-key"] {
             assert!(!sets_flag(arg, "--key-file"), "{arg}");
         }
+        // Go's one-dash long flags, read in both forms (review round 1 of slice 2).
+        for arg in [
+            "-address",
+            "-address=x",
+            "--address",
+            "--address=evil.example.com",
+            "--addr",
+        ] {
+            assert!(sets_flag(arg, "-address"), "{arg}");
+        }
+        for arg in ["-a", "-addressx", "--other", "-addr"] {
+            assert!(!sets_flag(arg, "-address"), "{arg}");
+        }
         for arg in ["-k", "-kVALUE", "-vk", "-vkx"] {
             assert!(sets_flag(arg, "-k"), "{arg}");
         }
@@ -609,6 +651,12 @@ mod tests {
             "a//b",
             "a/",
             "x@/y",
+            "a,/etc/passwd",
+            "--values=x,/etc/passwd",
+            "x;/etc/passwd",
+            "a /etc/passwd",
+            "[/etc/hosts]",
+            "--a=b=/c",
         ] {
             let refused = if bad == "--repo" {
                 args_refusal(&strings(&["--repo/x"]), &[], &[], true)
@@ -641,6 +689,12 @@ mod tests {
             &strings(&["status"]),
             true
         ));
+        assert!(needs_approval(
+            Approve::Send,
+            &strings(&["-send"]),
+            &strings(&["push", "--send"]),
+            false
+        ));
         for flagged in ["--send", "--send=1", "--se", "-y", "-vy"] {
             assert!(
                 needs_approval(Approve::Send, &send, &strings(&["push", flagged]), false),
@@ -664,14 +718,57 @@ mod tests {
 
     #[test]
     fn output_is_cut_at_a_character_and_says_how_much() {
-        assert_eq!(shown_output("short"), "short");
-        let long = "é".repeat(OUTPUT_SHOWN);
-        let shown = shown_output(&long);
+        assert_eq!(shown_output("short", 5), "short");
+        // An odd start, so the cut falls inside a two-byte character (review round 1, slice 2).
+        let long = format!("x{}", "é".repeat(OUTPUT_SHOWN));
+        let shown = shown_output(&long, long.len() as u64);
         assert!(shown.len() < OUTPUT_SHOWN + 40, "{}", shown.len());
+        assert!(shown.starts_with("xé"));
         assert!(
-            shown.ends_with(&format!("[… {} bytes more]", long.len() - OUTPUT_SHOWN)),
+            shown.ends_with(&format!(
+                "[… {} bytes more]",
+                long.len() - (OUTPUT_SHOWN - 1)
+            )),
             "{}",
             &shown[shown.len() - 40..]
         );
+    }
+
+    #[test]
+    fn shown_output_fits_a_json_answer() {
+        // Quotes take two bytes each once written as JSON: half as many fit.
+        let quotes = "\"".repeat(OUTPUT_SHOWN);
+        let shown = shown_output(&quotes, quotes.len() as u64);
+        assert_eq!(shown.matches('"').count(), OUTPUT_SHOWN / 2);
+        // What was read back is not all the stream: the whole is counted.
+        assert_eq!(shown_output("abc", 10), "abc\n[… 7 bytes more]");
+    }
+
+    #[test]
+    fn a_refusal_names_the_argument_by_place_never_by_value() {
+        let value = "sk-live-0123456789abcdef/xyz";
+        for (args, refuse) in [
+            (vec![value.to_owned()], Vec::new()),
+            (vec![format!("--token={value}")], strings(&["--token"])),
+            (vec!["a\u{1}b".to_owned()], Vec::new()),
+        ] {
+            let reason = args_refusal(&args, &refuse, &[], false).unwrap_or_default();
+            assert!(reason.contains("argument 1"), "{reason}");
+            assert!(!reason.contains("sk-live"), "{reason}");
+        }
+        assert!(
+            args_refusal(
+                &strings(&["x"; 2])
+                    .iter()
+                    .map(|_| "y".repeat(4000))
+                    .collect::<Vec<_>>(),
+                &[],
+                &[],
+                false
+            )
+            .is_none()
+        );
+        let big: Vec<String> = (0..20).map(|_| "y".repeat(4000)).collect();
+        assert!(args_refusal(&big, &[], &[], false).is_some_and(|r| r.contains("KiB in all")));
     }
 }

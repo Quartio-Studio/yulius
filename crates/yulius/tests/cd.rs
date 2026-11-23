@@ -2890,7 +2890,7 @@ pub(crate) struct Holders {
 }
 
 impl Holders {
-    fn calls(&self) -> Vec<&'static str> {
+    pub(crate) fn calls(&self) -> Vec<&'static str> {
         self.calls.lock().map(|c| c.clone()).unwrap_or_default()
     }
 

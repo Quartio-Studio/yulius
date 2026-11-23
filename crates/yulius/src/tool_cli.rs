@@ -72,7 +72,7 @@ pub fn run(
         );
         return 2;
     }
-    match call(name, &arguments, pace, env) {
+    match call(name, &arguments, false, pace, env) {
         Answer::Text(text) => {
             let _ = writeln!(out, "{text}");
             0
@@ -80,6 +80,10 @@ pub fn run(
         Answer::ToolError(text) => {
             let _ = writeln!(out, "{text}");
             1
+        }
+        Answer::Record(record) => {
+            let _ = writeln!(out, "{record}");
+            0
         }
         Answer::Failed(code, why) => {
             let _ = writeln!(out, "yulius tool: {why}");
@@ -95,15 +99,19 @@ pub enum Answer {
     Text(String),
     /// The tool's error text.
     ToolError(String),
+    /// The tool's record, when the call asked for it and the answer carried it.
+    Record(Value),
     /// No answer: the exit code (2 a usage, environment or token error, 1 an MCP error, 3 an
     /// outage or a cut call) and why.
     Failed(i32, String),
 }
 
-/// Calls the tool `name` with `arguments` through the session's `POST /mcp`, as [`run`] does.
+/// Calls the tool `name` with `arguments` through the session's `POST /mcp`, as [`run`] does;
+/// `structured` asks for the tool's record (`yulius/structured`) instead of its text.
 pub fn call(
     name: &str,
     arguments: &Value,
+    structured: bool,
     pace: Pace,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Answer {
@@ -111,7 +119,11 @@ pub fn call(
         "jsonrpc": "2.0",
         "id": yulius_app::mcp_watch::SHELL_CALL_ID,
         "method": "tools/call",
-        "params": {"name": name, "arguments": arguments},
+        "params": if structured {
+            json!({"name": name, "arguments": arguments, "_meta": {"yulius/structured": true}})
+        } else {
+            json!({"name": name, "arguments": arguments})
+        },
     })
     .to_string();
     let started = Instant::now();
@@ -183,6 +195,11 @@ pub fn call(
         .unwrap_or(false)
     {
         Answer::ToolError(text)
+    } else if let Some(record) = answer
+        .pointer("/result/structuredContent")
+        .filter(|_| structured)
+    {
+        Answer::Record(record.clone())
     } else {
         Answer::Text(text)
     }

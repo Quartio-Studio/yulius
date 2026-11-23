@@ -8,7 +8,7 @@
 
 use std::io::Write;
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::tool_cli::{Answer, Pace, call};
 
@@ -34,27 +34,34 @@ pub fn run(
     let mut answer = call(
         "command_run",
         &json!({"name": name, "args": args}),
+        true,
         pace,
         env,
     );
     loop {
-        let text = match answer {
-            Answer::Text(text) => text,
+        let view = match answer {
+            Answer::Record(view) => view,
             Answer::ToolError(text) => {
                 let _ = writeln!(err, "yulius run: {text}");
                 return NOT_RUN;
             }
             Answer::Failed(code, why) => {
-                let _ = writeln!(err, "yulius run: {why}");
+                // The run may go on without this call (review round 1 of slice 2).
+                let _ = writeln!(
+                    err,
+                    "yulius run: {why}\nyulius run: a run that started goes on: read it with \
+                     `yulius tool command_result '{{}}'` before running it again"
+                );
                 return code;
             }
-        };
-        let Ok(view) = serde_json::from_str::<Value>(&text) else {
-            let _ = writeln!(
-                err,
-                "yulius run: Yulius answered something that is no run: {text}"
-            );
-            return 3;
+            Answer::Text(text) => {
+                let _ = writeln!(
+                    err,
+                    "yulius run: Yulius answered no run record (its output may be too large to \
+                     send whole): {text}"
+                );
+                return 3;
+            }
         };
         let state = view["state"].as_str().unwrap_or_default();
         if matches!(state, "waiting" | "approved" | "running") {
@@ -69,7 +76,7 @@ pub fn run(
                     "yulius run: waiting for a person to approve it (until {until})"
                 );
             }
-            answer = call("command_result", &json!({"id": id}), pace, env);
+            answer = call("command_result", &json!({"id": id}), true, pace, env);
             continue;
         }
         let _ = write!(out, "{}", view["stdout"].as_str().unwrap_or_default());
@@ -89,6 +96,7 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::time::Duration;
 
+    use serde_json::Value;
     use yulius_git::agent_call::CallLimits;
 
     use super::*;
@@ -153,8 +161,13 @@ mod tests {
         })
     }
 
+    /// An answer as Yulius gives it to a call that asks for the record: an outline as text (no
+    /// JSON) and the record beside it.
     fn text(view: &Value) -> Value {
-        json!({"content": [{"type": "text", "text": view.to_string()}]})
+        json!({
+            "content": [{"type": "text", "text": format!("id: {}\nstate: {}", view["id"], view["state"])}],
+            "structuredContent": view,
+        })
     }
 
     /// BRK-007: `yulius run` waits while the run waits or runs, then prints its streams and exits
@@ -182,6 +195,7 @@ mod tests {
         assert_eq!(String::from_utf8(err)?, "warning\n");
         let requests = server.join().map_err(|_| "server")??;
         assert_eq!(requests[0]["params"]["name"], "command_run");
+        assert_eq!(requests[0]["params"]["_meta"]["yulius/structured"], true);
         assert_eq!(
             requests[0]["params"]["arguments"],
             json!({"name": "deploy", "args": ["push", "--send"]})
@@ -223,6 +237,18 @@ mod tests {
         let code = run(&mut out, &mut err, "deploy", &[], pace(), &env(port));
         assert_eq!(code, NOT_RUN);
         assert!(String::from_utf8(err)?.contains("timed_out: stopped at its time limit"));
+        server.join().map_err(|_| "server")??;
+        // An answer without the record (withheld as too large) is said so, never parsed.
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let server = serve(
+            listener,
+            vec![json!({"content": [{"type": "text", "text": "id: run-3\nstate: done"}]})],
+        );
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run(&mut out, &mut err, "deploy", &[], pace(), &env(port));
+        assert_eq!(code, 3);
+        assert!(String::from_utf8(err)?.contains("no run record"));
         server.join().map_err(|_| "server")??;
         Ok(())
     }

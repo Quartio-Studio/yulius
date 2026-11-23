@@ -973,13 +973,22 @@ pub trait CommandStore: Send + Sync {
     async fn update_command(&self, command: &CommandRecord, read_at: Timestamp) -> AppResult<bool>;
     /// Removes a command; `false` when it was gone.
     async fn delete_command(&self, sandbox: &SandboxId, id: &str) -> AppResult<bool>;
-    /// Stores a new run, and keeps only the newest 200 ended runs of its project.
-    async fn insert_command_run(&self, run: &CommandRunRecord) -> AppResult<()>;
+    /// Stores a new run while fewer than `max_running` runs of its project are `running`
+    /// (`false`, nothing stored, otherwise), and keeps only the newest 200 ended runs of its
+    /// project.
+    async fn insert_command_run(&self, run: &CommandRunRecord, max_running: u32)
+    -> AppResult<bool>;
+    /// The newest run `task` started.
+    async fn latest_command_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<CommandRunRecord>>;
     /// One run.
     async fn command_run(&self, id: &str) -> AppResult<Option<CommandRunRecord>>;
     /// Marks a run `running` (started at `at`) only while it is `from`; `false` when it was not.
     async fn start_command_run(&self, id: &str, from: &str, at: Timestamp) -> AppResult<bool>;
-    /// Records a run's end only while it is `from`; `false` when it was not.
+    /// Records a run's end only while it is `from`, and drops its raw arguments (its redacted
+    /// command line stays); `false` when it was not.
     async fn end_command_run(&self, id: &str, from: &str, end: &CommandRunEnd) -> AppResult<bool>;
     /// Every run in `state`, oldest first.
     async fn command_runs_in_state(&self, state: &str) -> AppResult<Vec<CommandRunRecord>>;
