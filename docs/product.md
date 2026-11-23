@@ -328,7 +328,11 @@ watching, steering and unblocking.
   prompt box, it does (the text goes to the agent with the message); nobody else's message
   does. It sees which tasks wait for the person and why without anything pasted to it (what
   a task's agent asked, why a task is flagged, a prompt Yulius held, who paused it; `tasks_list`
-  shows the same to a task's agent, without a held prompt's words), reads the end of a
+  shows the same to a task's agent, without a held prompt's words; `task_get` also gives a task's
+  agent a neighbour's owner, pull request and delivery stage, claimed paths, what it waits for and
+  its agent's last words (never its screen, where a held prompt shows), read-only, so tasks look before overlapping work instead of asking a
+  person to relay a status; a task that holds its owner's personal secrets shows other people's
+  tasks only its shape, ADR-0460), reads the end of a
   session in one call, passes the person's answer on, dismisses a request they call settled
   and decides a held prompt as its card does. It says where a task's merge stands and why a
   pull request that passed has not merged yet, lists the project's merge queue and merge
@@ -394,6 +398,11 @@ watching, steering and unblocking.
   counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
   review round, and their named review subagents populate the same delivery history and Review
   card. Antigravity tasks request Gemini 4 Neon (High).
+  Forking a task (the API's fork and the `task_fork` tool) starts a new task from another task's
+  conversation and committed work: on the same agent, on a branch and worktree of its own with a
+  copy of its plan, and with an optional message saying what to do differently. The task forked
+  goes on untouched, and each task names the other. Claude Code and Codex tasks can be forked;
+  Antigravity tasks cannot (SPEC-628).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another
@@ -475,7 +484,16 @@ watching, steering and unblocking.
 - **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
   Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
-  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why.
+  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
+  subscription past its harness's rebalance threshold (95 % of a 5-hour, weekly or model's
+  weekly window by default) gets no new task while another has room, and every 2 minutes its
+  idle tasks (the turn ended, also while waiting for a person) move to the subscription with the
+  most room, in the same session with nothing typed (an idle goal session, whose goal a restart
+  would type again, is parked instead and resumes elsewhere); a task mid-turn waits for its
+  turn's end, and one its person put on that subscription with "Run on…" or "Continue on…" stays
+  (SPEC-629). Each move is told once in the task's terminal, its info and one notice for its
+  person (the task's latest move, park or wait replaces its earlier one), as is a task that
+  stays because nothing has room.
   If a person has already signed it in again, the new sign-in stays available. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
   under Needs you. A subscription out of a model's usage credits (Fable runs on a weekly
@@ -723,7 +741,12 @@ watching, steering and unblocking.
   is added with a name, a value and a description: agents find the service's host and bind it
   themselves, and production deploys get the secret, unless the person turns "Let agents set it up"
   off when adding it; then a person allows each host with one click and production separately
-  (SPEC-121, SPEC-216). Team secrets belong to the sandbox they were added in, or are team-wide when
+  (SPEC-121, SPEC-216). In Edit, a manager can limit it to certain requests, such as
+  `GET /repos/*`: the proxy then puts it only into requests that match, and refuses any other
+  request that would use it with a message the agent reads, audited, so a token given for
+  reading cannot write or delete while agents cannot learn it: hosts they ask for it wait for a
+  person, and its `.env` copies stay off (SPEC-627,
+  [ADR-0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)). Team secrets belong to the sandbox they were added in, or are team-wide when
   the person picks that; team secrets from before were copied into each sandbox (SPEC-216). Agent
   secrets ("keys and logins agents use without seeing them") are on three tabs (SPEC-245):
   **Project** (this project's), **Global** (defined once by instance administrators, who switch each

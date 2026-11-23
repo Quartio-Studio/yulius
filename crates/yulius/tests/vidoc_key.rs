@@ -328,6 +328,7 @@ const OWN: &str = "vidoc-project-own-key-0123456789";
 
 fn request(host: &str, headers: &[(&str, &str)]) -> EgressRequest {
     EgressRequest {
+        method: "GET".into(),
         host: host.into(),
         port: 443,
         path_and_query: "/v1/messages".into(),

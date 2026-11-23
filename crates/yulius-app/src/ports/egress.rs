@@ -90,6 +90,8 @@ impl EgressClient {
 /// A request to a bound host, as the proxy received it (lowercase header names).
 #[derive(Clone, PartialEq, Eq)]
 pub struct EgressRequest {
+    /// Method, as sent (a secret's rules compare it exactly, SPEC-627).
+    pub method: String,
     /// Destination host (lowercase, no brackets).
     pub host: String,
     /// Destination port.
@@ -104,6 +106,7 @@ impl std::fmt::Debug for EgressRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let names: Vec<&str> = self.headers.iter().map(|(n, _)| n.as_str()).collect();
         f.debug_struct("EgressRequest")
+            .field("method", &self.method)
             .field("host", &self.host)
             .field("port", &self.port)
             .field("headers", &names)

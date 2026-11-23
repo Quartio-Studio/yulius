@@ -336,6 +336,9 @@ pub enum Point {
     /// A refresh holds the launch lock; nothing of the home is read yet (SPEC-507 SKR-005). The
     /// path is the sandbox directory. Reached on a blocking thread.
     SkillsRefreshLocked,
+    /// A fork's task exists; its record, transcript copy and plan are not written yet (SPEC-628
+    /// FRK-001). The path is the sandbox directory.
+    ForkInserted,
 }
 
 #[cfg(feature = "test-support")]

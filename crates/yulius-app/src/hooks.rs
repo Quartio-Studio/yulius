@@ -916,22 +916,26 @@ impl App {
             .filter(|t| t.status == TaskStatus::Closed && t.id != task.id && t.closed_at.is_some())
             .collect();
         recent.sort_by_key(|t| std::cmp::Reverse(t.closed_at));
-        let recent_changes = recent
-            .into_iter()
-            .take(MAX_RECENT_CHANGES)
-            .map(|t| RecentChange {
-                title: t.title.clone(),
-                summary: t
-                    .prompt
+        let mut recent_changes = Vec::new();
+        for t in recent.into_iter().take(MAX_RECENT_CHANGES) {
+            // A personal task's request stays with tasks holding the same secrets (SPEC-625).
+            let summary = if self.withholds_text(task, t).await? {
+                String::new()
+            } else {
+                t.prompt
                     .lines()
                     .next()
                     .unwrap_or_default()
                     .chars()
                     .take(300)
-                    .collect(),
+                    .collect()
+            };
+            recent_changes.push(RecentChange {
+                title: t.title.clone(),
+                summary,
                 at: t.closed_at.unwrap_or(t.updated_at),
-            })
-            .collect();
+            });
+        }
         let parallel_tasks = all
             .iter()
             // A parked task's work goes on when it resumes (SPEC-512 PRK-001).
@@ -1238,20 +1242,52 @@ impl App {
         ) else {
             return StopPull::Settled;
         };
-        let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await else {
-            return StopPull::Settled;
-        };
-        if run.state != yulius_domain::ci::RunState::Failed {
-            return StopPull::Settled;
-        }
-        match self
+        let Ok(Some(head)) = self
             .deps
             .git
             .resolve_commit(Path::new(worktree), "HEAD")
             .await
+        else {
+            return StopPull::Settled;
+        };
+        // The newest run of this pull request at this commit, however busy the sandbox is.
+        let Ok(runs) = self
+            .deps
+            .store
+            .ci_runs_for_sha(&task.sandbox_id, &head.to_ascii_lowercase())
+            .await
+        else {
+            return StopPull::Settled;
+        };
+        let reference = yulius_domain::ci::CiRef::PullRequest(pr);
+        let Some(run) = runs.into_iter().find(|run| run.reference == reference) else {
+            return StopPull::Settled;
+        };
+        // Untold, the failure is the watch's to paste in first (SPEC-578). A newer run of the
+        // pull request, or a pushed head past this commit, supersedes it as the watch says.
+        if run.state != yulius_domain::ci::RunState::Failed
+            || !self.run_failure_told(&task.id, pr, &run.id)
         {
-            Ok(Some(head)) if head.eq_ignore_ascii_case(&run.sha) => StopPull::Failing(pr),
-            _ => StopPull::Settled,
+            return StopPull::Settled;
+        }
+        // The watch's window of recent runs: a newer run of the pull request in it supersedes
+        // this one; an unreadable window continues nothing.
+        let Ok(recent) = self
+            .deps
+            .store
+            .ci_runs(&task.sandbox_id, crate::pr_watch::RUNS_READ)
+            .await
+        else {
+            return StopPull::Settled;
+        };
+        let newer = recent
+            .iter()
+            .find(|newest| newest.reference == reference)
+            .is_some_and(|newest| newest.id != run.id);
+        if newer || self.run_superseded_by_pushed_head(task, &run.sha).await {
+            StopPull::Settled
+        } else {
+            StopPull::Failing(pr)
         }
     }
 

@@ -1183,6 +1183,20 @@ egress CA, bound read-only into containment). Without credentials of a live run 
   lacks it; two secrets adding the same header need `X-Yulius-Secret: NAME` (else 409 naming
   them); `X-Yulius-Secret` and proxy headers are removed; `Accept-Encoding: identity` so the
   response can be checked. Request bodies are never rewritten.
+- Method and path rules (SPEC-627, [ADR-0458](../../docs/decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)):
+  a secret with rules (methods and a path pattern, `*` across `/`) is used — its placeholder
+  replaced, its `X-Yulius-Secret` honoured, its header injected — only by a request whose method
+  and path (as sent and as it goes out, without the query) match one, whose path holds no `.` or
+  `..` segment, `\`, `;`, `#` or encoded `.`, `\`, NUL or `%`, and which carries no method or path
+  override (header or `_method` in the query). A request that would use it otherwise is refused
+  with 403 naming the request, the host, the secret and its rules (nothing is sent), audited
+  `vault.agent.refused` once per run, secret, method and path (at most 20 different ones per run
+  and secret, then one "not listed" entry); hosts agents ask for such a secret wait for a person
+  even with `auto_allow`; of several
+  secrets injecting one header, those outside their rules are left out first. Rules apply to
+  every request the proxy rewrites (HTTP/1.1 inside an intercepted connection, absolute
+  `http://` to a bound host); tunnels carry no secret, and gRPC (HTTP/2) to a bound host is not
+  proxied, while gRPC-Web is an ordinary HTTP/1.1 `POST`.
 - Responses (intercepted and plain HTTP): every in-scope value and encoding is redacted from
   headers and the streamed body; a compressed response that would hide one is refused (502).
 - Destinations are resolved first and loopback, unspecified, link-local (cloud metadata),
@@ -1679,7 +1693,7 @@ Schema version 1 (tables; columns abbreviated):
 | `audit_log` | id, at, actor, action, target, detail |
 | `task_chains` | task_id (PK), after_task_id (NULL once the predecessor is deleted), after_number, blocked_reason, created_at — ADR-16 |
 | `update_runs` | id, target_commit, from_commit, summary, state (building/draining/installing/resuming/succeeded/failed/rolled_back/cancelled), outcome (while resuming), error, requested_by, created_at, state_since, finished_at; at most one open (unique partial index) — ADR-18 |
-| `vault_secrets` | id, section (team/agent), sandbox_id (agent: one sandbox, NULL = every sandbox), name, description, hosts (json), injection, header_name, fields (json, names only), kek_id, wrapped_key, ciphertext, created/updated by and at, value_updated_at, last_used_at; agent names unique where they apply — ADR-20 (version 9) |
+| `vault_secrets` | id, section (team/agent), sandbox_id (agent: one sandbox, NULL = every sandbox), name, description, hosts (json), rules (json `[{methods, path}]`, `[]` = any request; version 90, SPEC-627), injection, header_name, fields (json, names only), kek_id, wrapped_key, ciphertext, created/updated by and at, value_updated_at, last_used_at; agent names unique where they apply — ADR-20 (version 9) |
 | `vault_reauth` | session_hash (PK), at: a browser session's last re-authentication — ADR-20 |
 | `vault_meta` | name (PK), kek_id, wrapped_key, ciphertext, created_at: sealed vault key material (the egress CA) — ADR-20 |
 | `prompt_holds` | id, task_id, class, prompt, prompt_sha256, percent, typed_by, state (pending/sent/consumed/parallel/after/skipped_after/reverted/dismissed/superseded), created_at, resolved_by, resolved_at, new_task_id — ADR-16 |
@@ -2056,7 +2070,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `workflows_list` | Workflows available, the defaults first with `builtin` and `when_to_use` (AUT-004, AUT-006) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `sessions_search`, `session_read` | Sessions as docs (SES-005): full-text search over the task and imported sessions of the agent's sandbox (its own sessions excluded; ≤ 20 sessions, ≤ 3 passages each) and a bounded read of one session by id or task number (≤ 200 entries, ≤ 100 000 characters, `next_from`); never another sandbox's |
-| `secrets_list`, `browser_fill_secret` | Agent secrets: names, descriptions and bindings; typing a value, user name or TOTP code into a page of a bound host (VLT-004/005, ADR-20) |
+| `secrets_list`, `browser_fill_secret` | Agent secrets: names, descriptions, bindings and method and path rules (SPEC-627); typing a value, user name or TOTP code into a page of a bound host (VLT-004/005, ADR-20) |
 | `secret_request_hosts`, `secret_copy_to_env`, `secret_create_from_file`, `secret_state_restore`, `secret_state_save` | Asking a person to bind a secret's hosts, real values into a git-ignored `.env`, a secret from a file nobody sees, and agent states restored into and saved from the sandbox home (SPEC-121, SPEC-129, SPEC-211, SPEC-271; the last two tasks only) |
 | `secret_verify` | The Cockpit only: whether a value the person holds is an agent secret's, from its SHA-256 (SPEC-178) |
 | `ci_status`, `ci_rerun` | The CI in force and recent runs (this task's pull request first), one run with the output tails (16 KiB) of its failed or errored jobs, or of the job named by `job`, run a commit again (DLV-006, SPEC-086) |
@@ -2417,7 +2431,8 @@ reach the default), a `wf-quick-task` row is listed as a custom instance workflo
   code entered in the browser session within 10 minutes and are audited (SPEC-040, ADR-0042);
   agents never read agent secrets (their managers can, after the code), which are added to
   requests by the egress proxy only for their bound hosts (TLS interception only there; local
-  destinations refused after resolution), typed by `browser_fill_secret` only into pages of those
+  destinations refused after resolution) and, for a secret with method and path rules, only to
+  requests those allow (others refused and audited, SPEC-627, ADR-0458), typed by `browser_fill_secret` only into pages of those
   hosts, and redacted with their encodings from every channel an agent reads, from the terminal
   and from served transcripts. In-sandbox redaction holds fingerprints, never values, and fails
   closed. Remaining threats: ADR-20.
@@ -2618,7 +2633,7 @@ reach the default), a `wf-quick-task` row is listed as a custom instance workflo
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
 | R-12 | Closed: Codex releases without `--no-daemon` (by F 2026-10-08; since F 2026-11-16 Codex by the pin). | SPEC-503 CLI-001: only the pinned 0.170.0 release, which has `--no-daemon`, reaches a run (its sha512 in the source). |
-| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07, closed by ADR-0191); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding, the 8-character minimum, values agents never read (since SPEC-040 a manager's session together with their authenticator can read one: the lockout after 10 wrong codes and the audit bound that), audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code. Raw CDP is closed (R-07, ADR-0191). |
+| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07, closed by ADR-0191); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding and, where a person set them, method and path rules (SPEC-627, ADR-0458: a read token cannot write while the agent cannot learn it: no agent-bound hosts, no `.env` copy), the 8-character minimum, values agents never read (since SPEC-040 a manager's session together with their authenticator can read one: the lockout after 10 wrong codes and the audit bound that), audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code. Raw CDP is closed (R-07, ADR-0191). |
 | R-13 | The server's own Git (worktree creation, commits, status and readiness checks, fetch, delivery pushes) runs outside containment in the sandbox repository and worktrees, whose Git directories agents can write (#54). | Every server-side Git command runs with repository hooks off (`core.hooksPath=/dev/null`), fsmonitor off and `ext::` refused; agents' own Git still runs hooks, so the pre-push guard applies to them. Open (#54 part B): repository-local configuration that runs programs or redirects remotes (filter, diff and merge drivers, credential helpers, URL rewriting) — read-only Git config in containment or a Yulius-owned mirror. |
 
 ## 13. Delivery checkpoints

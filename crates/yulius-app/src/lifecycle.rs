@@ -254,6 +254,32 @@ impl App {
         prepared: Option<Option<Timestamp>>,
         harness_drawn: bool,
     ) -> AppResult<TaskRecord> {
+        self.create_task_inner(req, (after, rule), prepared, harness_drawn, None)
+            .await
+    }
+
+    /// Creates a fork (SPEC-628 FRK-001): its record, stored transcript and copied plan are
+    /// written before it starts, on the subscription the person named if any.
+    ///
+    /// # Errors
+    /// As [`App::create_task_internal`]; a failure writing the fork removes the task again.
+    pub(crate) async fn create_task_forked(
+        self: &Arc<Self>,
+        req: NewTask,
+        fork: crate::forks::PendingFork,
+    ) -> AppResult<TaskRecord> {
+        self.create_task_inner(req, (None, None), None, false, Some(fork))
+            .await
+    }
+
+    async fn create_task_inner(
+        self: &Arc<Self>,
+        req: NewTask,
+        (after, rule): (Option<&TaskRecord>, Option<&Rule>),
+        prepared: Option<Option<Timestamp>>,
+        harness_drawn: bool,
+        fork: Option<crate::forks::PendingFork>,
+    ) -> AppResult<TaskRecord> {
         let store = &self.deps.store;
         if prepared.is_some() && (after.is_some() || rule.is_some() || req.supertask) {
             return Err(prepared_alone());
@@ -306,9 +332,11 @@ impl App {
                 || title_from_prompt(&prompt),
                 |t| t.chars().take(120).collect(),
             );
+        // A fork waits where the queue does not start it until its record and transcript copy
+        // are written, then joins the queue with its start in one step (SPEC-628 FRK-001).
         let status = if after.is_some() {
             TaskStatus::Chained
-        } else if prepared.is_some() {
+        } else if prepared.is_some() || fork.is_some() {
             TaskStatus::Prepared
         } else if req.start {
             TaskStatus::Queued
@@ -340,13 +368,25 @@ impl App {
             // The time of the close the task is in (SPEC-483 CLT-001).
             closed_at: (status == TaskStatus::Closed).then_some(now),
             archived_at: (!req.start).then_some(now),
-            queued_at: (req.start && after.is_none() && prepared.is_none()).then_some(now),
+            queued_at: (req.start && after.is_none() && prepared.is_none() && fork.is_none())
+                .then_some(now),
             gate_blocks: 0,
             wake_enabled: true,
             mode: req.mode,
             supertask: req.supertask,
         };
         let task = store.insert_task(&record).await?;
+        let account = match fork {
+            Some(fork) => {
+                crate::race::reached(
+                    crate::race::Point::ForkInserted,
+                    &self.sandbox_dir(&task.sandbox_id),
+                );
+                Some(self.start_fork(&task, fork).await?)
+            }
+            None => None,
+        }
+        .flatten();
         if let Some(before) = &after {
             self.link_chain(&task, before, rule).await?;
         }
@@ -416,7 +456,7 @@ impl App {
             let id = task.id.clone();
             tokio::spawn(async move {
                 if let Err(err) = app
-                    .start_run(&id, RunStart::Fresh { prompt: None }, None)
+                    .start_run(&id, RunStart::Fresh { prompt: None }, account)
                     .await
                 {
                     tracing::warn!(error = %err, task = %id, "task failed to start");
@@ -750,7 +790,10 @@ impl App {
             crate::race::Point::OwnerContinueRequested,
             std::path::Path::new(task.id.as_str()),
         );
-        self.start_ended_run(&task, account).await?;
+        self.start_ended_run(&task, account.clone()).await?;
+        // "Continue on…" pins the task there; a plain Continue lets the pool choose (SPEC-629
+        // RBL-005).
+        self.pin_task(&task.id, account.as_ref()).await;
         // Its waiting successors wait for it again (TSK-012).
         self.unblock_successors(&task.id).await;
         let task = self
@@ -781,7 +824,9 @@ impl App {
         }
         // Where the task stands decides how it goes on (SPEC-447 MOV-001): past a limit, its first
         // message again, a held prompt, or the cut turn told to go on.
-        self.move_task(&task.id, account, "manual").await?;
+        self.move_task(&task.id, account.clone(), "manual").await?;
+        // "Run on…" pins the task there; the pool's choice pins nothing (SPEC-629 RBL-005).
+        self.pin_task(&task.id, account.as_ref()).await;
         let task = self
             .deps
             .store

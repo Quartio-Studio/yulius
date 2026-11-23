@@ -55,6 +55,19 @@ pub struct ServeArgs {
     #[arg(long, env = "YULIUS_PARK_AFTER_MINUTES", default_value_t = 30,
           value_parser = clap::value_parser!(u32).range(0..=10_080))]
     pub park_after_minutes: u32,
+    /// Percent of a window binding a Claude Code task's model past which a Claude subscription
+    /// gets no new task while another has room, and its idle tasks move (SPEC-629 RBL-001).
+    #[arg(long, env = "YULIUS_REBALANCE_PERCENT_CLAUDE_CODE", default_value_t = 95,
+          value_parser = rebalance_percent())]
+    pub rebalance_percent_claude_code: u8,
+    /// The same for Codex tasks and OpenAI subscriptions.
+    #[arg(long, env = "YULIUS_REBALANCE_PERCENT_CODEX", default_value_t = 95,
+          value_parser = rebalance_percent())]
+    pub rebalance_percent_codex: u8,
+    /// The same for Antigravity tasks and Google subscriptions.
+    #[arg(long, env = "YULIUS_REBALANCE_PERCENT_ANTIGRAVITY", default_value_t = 95,
+          value_parser = rebalance_percent())]
+    pub rebalance_percent_antigravity: u8,
     /// CPUs an agent session, terminal or Cockpit plans for (`YULIUS_CPUS` in its environment;
     /// SPEC-082). Default: a third of a sandbox's CPUs, at least 2.
     #[arg(long, env = "YULIUS_AGENT_CPUS",
@@ -206,6 +219,12 @@ pub struct ServeArgs {
     /// Sandbox isolation (SPEC-002 ADR-22).
     #[command(flatten)]
     pub isolation: crate::wiring::sandbox::IsolationArgs,
+}
+
+/// A harness's rebalance threshold: 50 to 98 percent (SPEC-629 RBL-001).
+fn rebalance_percent() -> clap::builder::RangedI64ValueParser<u8> {
+    use yulius_domain::rebalance::{MAX_PERCENT, MIN_PERCENT};
+    clap::value_parser!(u8).range(i64::from(MIN_PERCENT)..=i64::from(MAX_PERCENT))
 }
 
 /// Parses a probability threshold (0.5–1).
@@ -530,6 +549,11 @@ pub fn build_app(
     let fixed = |limit: Limit| u32::try_from(limit.fixed()).unwrap_or(u32::MAX);
     config.max_live_sessions = args.max_live_sessions.unwrap_or(fixed(Limit::Sessions));
     config.park_after_ms = u64::from(args.park_after_minutes) * 60_000;
+    config.rebalance = yulius_domain::rebalance::Thresholds {
+        claude_code: f64::from(args.rebalance_percent_claude_code),
+        codex: f64::from(args.rebalance_percent_codex),
+        antigravity: f64::from(args.rebalance_percent_antigravity),
+    };
     config.agent_cpus = args.agent_cpus;
     config.contained = args.contained;
     config.bootstrap_upgrades = true;
@@ -999,6 +1023,52 @@ mod tests {
         let command = Serve::command().mut_args(|arg| arg.env(clap::builder::Resettable::Reset));
         let matches = command.try_get_matches_from([&["serve"], given].concat())?;
         Ok(Serve::from_arg_matches(&matches)?.args)
+    }
+
+    /// SPEC-629 RBL-001: each harness's rebalance threshold reads its own variable, is 95 by
+    /// default, and one outside 50–98 is refused, naming the argument.
+    #[test]
+    fn each_harness_has_a_rebalance_threshold_of_50_to_98() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let command = Serve::command();
+        for (id, env) in [
+            (
+                "rebalance_percent_claude_code",
+                "YULIUS_REBALANCE_PERCENT_CLAUDE_CODE",
+            ),
+            ("rebalance_percent_codex", "YULIUS_REBALANCE_PERCENT_CODEX"),
+            (
+                "rebalance_percent_antigravity",
+                "YULIUS_REBALANCE_PERCENT_ANTIGRAVITY",
+            ),
+        ] {
+            let arg = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .ok_or_else(|| format!("no {id} argument"))?;
+            assert_eq!(arg.get_env().and_then(|e| e.to_str()), Some(env));
+            assert_eq!(arg.get_default_values(), ["95"]);
+        }
+        let args = parsed(&["--rebalance-percent-codex", "90"])?;
+        assert_eq!(
+            (
+                args.rebalance_percent_codex,
+                args.rebalance_percent_claude_code
+            ),
+            (90, 95)
+        );
+        for refused in ["49", "99"] {
+            let Err(err) = parsed(&["--rebalance-percent-codex", refused]) else {
+                return Err(format!("{refused} was accepted").into());
+            };
+            assert!(
+                err.to_string().contains("--rebalance-percent-codex"),
+                "{err}"
+            );
+        }
+        assert!(parsed(&["--rebalance-percent-antigravity", "50"]).is_ok());
+        assert!(parsed(&["--rebalance-percent-antigravity", "98"]).is_ok());
+        Ok(())
     }
 
     /// SPEC-459 HSL-001: a limit the unit does not name is left to the host's size, so none of

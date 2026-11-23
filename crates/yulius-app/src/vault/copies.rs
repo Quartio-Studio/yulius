@@ -260,6 +260,8 @@ impl App {
                     hosts: request.hosts.clone(),
                     injection: Injection::parse(&record.injection, record.header_name.as_deref())
                         .unwrap_or(Injection::None),
+                    // A person's rules go with the value they limit.
+                    rules: record.rules.clone(),
                 },
                 description: description(Some(&about))
                     .unwrap_or_else(|_| about.chars().take(1000).collect()),

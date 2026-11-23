@@ -347,8 +347,7 @@ impl App {
         let paths = crate::scopes::paths_arg(args)?;
         let start_anyway = flag_arg(args, "start_anyway")?;
         if !paths.is_empty() && after_task_id.is_none() && !start_anyway {
-            let own = caller.task.as_ref().map(|t| &t.id);
-            let overlaps = self.planned_overlaps(&caller.sandbox, &paths, own).await?;
+            let overlaps = self.planned_overlaps(caller, &paths).await?;
             if let Some(first) = overlaps.first() {
                 return Ok(json!({
                     "created": false,
@@ -440,6 +439,54 @@ impl App {
 }
 
 impl App {
+    /// `task_fork` (SPEC-628 FRK-001): Fork on a task's page, for the person the caller acts
+    /// for, counted with the tasks tools create.
+    ///
+    /// # Errors
+    /// `NotFound` outside the project, `Forbidden` without write access, `Capacity` past the
+    /// tools' hourly tasks, and the fork's refusals.
+    pub async fn tool_task_fork(
+        self: &Arc<Self>,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let user = self.manage_authority(caller).await?;
+        let source = self.agent_task_ref(caller, args).await?;
+        // A fork carries the source's conversation: a task agent forks only what it may read
+        // (SPEC-625 PSV-004, ADR-0460).
+        self.require_reader(caller).await?;
+        self.require_transcript_reader(caller, &source).await?;
+        let request = yulius_contracts::api::tasks::ForkTask {
+            message: opt_str(args, "message")?,
+            title: opt_str(args, "title")?,
+            model: opt_str(args, "model")?,
+            effort: opt_str(args, "effort")?,
+            account_id: None,
+        };
+        let now = self.reserve_tool_task(&caller.sandbox)?;
+        let origin = if caller
+            .task
+            .as_ref()
+            .is_some_and(|t| crate::vault::Holder::of_task(t) == crate::vault::Holder::Nobody)
+        {
+            TaskOrigin::Automation
+        } else {
+            TaskOrigin::Agent
+        };
+        let task = match self.fork_task_as(&user, &source, &request, origin).await {
+            Ok(task) => task,
+            Err(err) => {
+                self.release_tool_task(&caller.sandbox, now);
+                return Err(err);
+            }
+        };
+        tracing::info!(task = %task.id, source = %source.id, actor = %caller.actor, "task forked by a tool");
+        Ok(json!({
+            "task": self.task_brief(&task).await?,
+            "forked_from": {"task_id": source.id.as_str(), "number": source.number},
+        }))
+    }
+
     /// `task_update` (SPEC-396 ATR-006): the UI's change of how a waiting task of the caller's
     /// project starts (SPEC-126), with `task_create`'s start arguments, for the person it acts
     /// for; audited once, with the caller (MGT-010).
@@ -488,7 +535,10 @@ impl App {
             .task(&task.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let mut answer = json!({"task": self.task_brief(&task).await?});
+        let mut brief = self.task_brief(&task).await?;
+        // A personal task's free text stays with tasks holding the same secrets (SPEC-625).
+        self.withhold_from(caller, &task, &mut brief).await?;
+        let mut answer = json!({"task": brief});
         if all_tasks == Some(None) {
             answer["note"] = json!(NOTHING_LEFT);
         }
@@ -598,7 +648,10 @@ impl App {
             .task(&task.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        Ok(json!({"task": self.task_brief(&task).await?}))
+        let mut brief = self.task_brief(&task).await?;
+        // A personal task's free text stays with tasks holding the same secrets (SPEC-625).
+        self.withhold_from(caller, &task, &mut brief).await?;
+        Ok(json!({"task": brief}))
     }
 
     /// `automation_delete` (SPEC-066 MGT-011): the UI's delete of an automation of the caller's
