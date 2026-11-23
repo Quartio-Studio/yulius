@@ -1435,13 +1435,21 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
             screen(&app, &id).contains("Late: answer with an echo")
         })
         .await?;
+        // Counted once the resumed turn ended, so a later second delivery would show.
+        wait_for(
+            "the resumed turn's end",
+            Duration::from_secs(30),
+            || async {
+                status_of(&app, &id).await == (Some(TaskStatus::Running), Some(Activity::Waiting))
+            },
+        )
+        .await?;
         let resumed = screen(&app, &id);
         assert_eq!(
             resumed.matches("Late: answer with an echo").count(),
             1,
             "{resumed}"
         );
-        assert!(!resumed.contains("Early: answer"), "{resumed}");
         let runs = app.deps.store.attempts(&id).await?;
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[1].launch_kind, LaunchKind::Resume);

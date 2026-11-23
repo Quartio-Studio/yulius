@@ -9114,6 +9114,29 @@ mod tests {
         assert!(runtime.closing_or_settling());
     }
 
+    /// SPEC-634 PSP-003: only a committed park whose run end is being recorded refuses typed
+    /// input as parking; another run's end, or a park not yet ending, does not.
+    #[test]
+    fn only_a_committed_parks_recorded_end_counts_as_park_end_recording()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = super::TaskRuntime::new();
+        assert!(!runtime.park_end_recording());
+        runtime.terminal_cleanup.send_replace(1);
+        assert!(!runtime.park_end_recording(), "a run end without a park");
+        runtime.terminal_cleanup.send_replace(0);
+        *runtime.parked_activity.lock().map_err(|_| "park lock")? = Some((
+            super::AttemptId::parse("parking-run")?,
+            super::Activity::Waiting,
+        ));
+        assert!(
+            !runtime.park_end_recording(),
+            "a park whose run end has not begun"
+        );
+        runtime.terminal_cleanup.send_replace(1);
+        assert!(runtime.park_end_recording());
+        Ok(())
+    }
+
     /// SPEC-613 CID-001: the saved Codex size is two big-endian u16s, columns then rows,
     /// within the host's dimensions; anything else is no record.
     #[test]
