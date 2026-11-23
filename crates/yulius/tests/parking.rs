@@ -1363,6 +1363,68 @@ fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> Test
     Ok(())
 }
 
+/// PRK-003 (#1605): a second idle-park pass that comes after the parking run's end took the
+/// park's intent, while the task still reads Running, parks nothing. A message in that interval
+/// is not typed into the ending session, and the next one, once the task is Parked, resumes it
+/// in the same conversation, once.
+#[test]
+fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let (taken, release) = pause_watch_or_queue(Point::RunEndTaken, &id);
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 1);
+        tokio::time::timeout(Duration::from_secs(30), taken.notified()).await?;
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+        let second = app.park_idle_sessions_now().await;
+        let early = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Early: answer with an echo"}),
+            )
+            .await;
+        release.notify_one();
+        assert_eq!(second, 0, "a second pass parked the ending run again");
+        assert!(
+            matches!(&early, Err(yulius_app::error::AppError::Conflict(why))
+                if why.contains("is parking its idle session")),
+            "{early:?}"
+        );
+        wait_for("the task to park", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
+        })
+        .await?;
+        let again = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Late: answer with an echo"}),
+            )
+            .await?;
+        assert_eq!(again["delivered"], "resumed");
+        wait_for("the resumed answer", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Late: answer with an echo")
+        })
+        .await?;
+        let resumed = screen(&app, &id);
+        assert_eq!(
+            resumed.matches("Late: answer with an echo").count(),
+            1,
+            "{resumed}"
+        );
+        assert!(!resumed.contains("Early: answer"), "{resumed}");
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
+        assert_eq!(runs[0].provider_session_id, runs[1].provider_session_id);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// PRK-003 (review round 1, M1): a stop that lands while the parked run's end is being recorded
 /// (after it took the park's intent) leaves the task stopped, never `stopping` with no run.
 #[test]
