@@ -235,6 +235,12 @@ impl App {
         let Ok(harness) = yulius_domain::harness::Harness::parse(harness) else {
             return Err(AppError::NotFound);
         };
+        if let Some(session) = input.session_id.as_deref() {
+            crate::race::reached(
+                crate::race::Point::HookArrived,
+                &Path::new(session).join(event),
+            );
+        }
         // Capture the ordering boundary before the token lookup yields to a viewer key.
         // Never later than now: the client's clock is the host's (loopback only), and a time
         // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).

@@ -1268,11 +1268,95 @@ async fn idle_full_screen(
     data: &Path,
     behind_ms: i64,
 ) -> Result<(Arc<App>, Arc<ShiftedClock>, TaskId, ProjectCaller), Error> {
+    let (app, clock, id, caller, _) = idle_full_screen_late(data, behind_ms, false).await?;
+    Ok((app, clock, id, caller))
+}
+
+/// The opening prompt's submit hook, kept at its arrival (`race::Point::HookArrived`) until
+/// [`Self::release`]. Its client gave up on it meanwhile (`HOOK_TIMEOUT`), and the agent went on
+/// and ended its turn, as on a loaded host (#1615).
+struct HeldSubmit {
+    release: std::sync::mpsc::Sender<()>,
+}
+
+impl HeldSubmit {
+    /// Lets the submit reach Yulius, and waits until Yulius answered it.
+    async fn release(self, app: &App, id: &TaskId) -> TestResult {
+        let before = app.prompts_passed(id);
+        self.release.send(())?;
+        wait_for(
+            "the late submit's answer",
+            Duration::from_secs(30),
+            || async { app.prompts_passed(id) > before },
+        )
+        .await
+    }
+}
+
+/// [`idle_full_screen`], with the opening prompt's submit hook kept back when `late_submit` says
+/// so: the turn ends by its Stop alone, and the submit comes when the test releases it.
+async fn idle_full_screen_late(
+    data: &Path,
+    behind_ms: i64,
+    late_submit: bool,
+) -> Result<
+    (
+        Arc<App>,
+        Arc<ShiftedClock>,
+        TaskId,
+        ProjectCaller,
+        Option<HeldSubmit>,
+    ),
+    Error,
+> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let clock = Arc::new(ShiftedClock(AtomicI64::new(-behind_ms)));
     let probe = Arc::new(ScriptedUsage::default());
-    let (app, _) = start_on(data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
-    let (id, caller) = running(&app, data).await?;
+    // The agent starts its session once the hold below is in place.
+    let stuck = data.join("stuck-at-start");
+    if late_submit {
+        std::fs::write(&stuck, b"")?;
+    }
+    let agent = FakeAgentOptions {
+        stuck_at_start_file: late_submit.then(|| stuck.clone()),
+        ..full_screen()
+    };
+    let (app, _) = start_on(data, &fake, agent, 0, probe, clock.clone(), |_| {}).await?;
+    let (sandbox, user) = seed(&app, data, &["a-only"]).await?;
+    let prompt = "Budget: answer with an echo";
+    let id = new_task(&app, &sandbox, &user, prompt, TaskMode::Prompt).await?;
+    let held = if late_submit {
+        let session = || async {
+            let attempt = app.deps.store.live_attempt(&id).await.ok().flatten();
+            attempt.and_then(|attempt| attempt.provider_session_id)
+        };
+        wait_for("the run's session", Duration::from_secs(30), || async {
+            session().await.is_some()
+        })
+        .await?;
+        let session = session().await.ok_or("session")?;
+        let (reached, parked) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::HookArrived,
+            &Path::new(&session).join("UserPromptSubmit"),
+            move || {
+                let _ = reached.send(());
+                let go_on =
+                    tokio::task::block_in_place(|| released.recv_timeout(Duration::from_secs(120)));
+                assert!(go_on.is_ok(), "the held submit was never released");
+            },
+        );
+        std::fs::remove_file(&stuck)?;
+        tokio::time::timeout(Duration::from_secs(30), parked).await??;
+        Some(HeldSubmit { release })
+    } else {
+        None
+    };
+    wait_for("the first answer", Duration::from_secs(30), || async {
+        screen(&app, &id).contains("ECHO: Budget: answer with an echo")
+    })
+    .await?;
     wait_for("the first turn's end", Duration::from_secs(30), || async {
         activity(&app, &id).await.is_some_and(Activity::is_idle)
     })
@@ -1281,7 +1365,7 @@ async fn idle_full_screen(
         fixture_box_empty(&app, &id)
     })
     .await?;
-    Ok((app, clock, id, caller))
+    Ok((app, clock, id, superagent(&sandbox, &user, "admin"), held))
 }
 
 /// The mark of a possible draft in the folder of `id`'s live run (SPEC-480 DRF-009).
@@ -1413,11 +1497,29 @@ fn a_message_of_yulius_is_typed_into_a_box_a_key_left_empty() -> TestResult {
 /// types the command, which the agent reads alone, and the flag ends with the hold.
 #[test]
 fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
+    draft_held_until_cleared(false)
+}
+
+/// #1615: on a loaded host the opening prompt's submit hook reaches Yulius after its client gave
+/// up, the agent ended its turn and the steps of SPEC-572 AC2 flagged the held message and
+/// cleared the box. That submit was sent before the turn's Stop, so it changes nothing: the
+/// flag stands through the keyboard minute and ends with the hold. On the test's shifted clock
+/// its send time used to read as its arrival, after the Stop: it set Working over the flag, and
+/// nothing raised the flag again within the minute.
+#[test]
+fn a_submit_that_arrives_after_its_turn_keeps_the_held_message_flag() -> TestResult {
+    draft_held_until_cleared(true)
+}
+
+/// The steps of SPEC-572 AC2, the opening prompt's submit kept back until the box is cleared
+/// when `late_submit` says so.
+fn draft_held_until_cleared(late_submit: bool) -> TestResult {
     use yulius_app::mcp_watch::{RECONNECT_TEXT, WatchAction, WatchBounds};
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        let (app, clock, id, caller, held) =
+            idle_full_screen_late(&data, 13 * MINUTE, late_submit).await?;
         crate::pr_watch::leave_verification_step(&app, &id).await?;
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
         let mut watch = app.runtime(&id).hub.watch();
@@ -1448,6 +1550,9 @@ fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
             fixture_box_empty(&app, &id)
         })
         .await?;
+        if let Some(held) = held {
+            held.release(&app, &id).await?;
+        }
         clock.0.store(-2 * MINUTE + 30_000, Ordering::SeqCst);
         assert!(app.watch_mcp(&bounds).await.is_empty());
         assert_eq!(
