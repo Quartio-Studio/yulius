@@ -116,6 +116,9 @@ pub struct CiRun {
 /// A failed integration gate with no available task to repair it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateNotice {
+    /// Its notice key (`gate:<test>`, SPEC-624): the bell's and the chat's notice of it.
+    #[serde(default)]
+    pub key: String,
     /// Number of the task whose merge first showed this failure.
     #[serde(default)]
     pub merge_task: Option<u32>,

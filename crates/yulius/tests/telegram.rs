@@ -332,6 +332,8 @@ struct World {
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
     let w = world_unstarted().await?;
     w.h.app.start_channel().await;
+    // Subscription problems are posted notices (SPEC-624 NTC-010), as the server starts them.
+    w.h.app.start_notice_producers();
     Ok(w)
 }
 
@@ -877,6 +879,20 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
         })
         .await?;
     subscription(&w, AccountStatus::Relogin).await?;
+    // The change as an event (the tick would reconcile it too): its notice is posted before any
+    // bot is active.
+    let mut events = w.h.app.events.subscribe();
+    account_event(&w, "relogin");
+    loop {
+        if let yulius_contracts::events::UiEvent::NoticePosted { notice } =
+            tokio::time::timeout(Duration::from_secs(10), events.recv())
+                .await??
+                .event
+            && notice.key == "account:acc1"
+        {
+            break;
+        }
+    }
     w.h.clock.0.fetch_add(MINUTE_MS, Ordering::SeqCst);
 
     set_bot(&w, TOKEN_A).await?;
@@ -908,6 +924,16 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
         sent[1].starts_with(&format!("Needs you · app\n#{} task t2\n", first.number + 1)),
         "{sent:?}"
     );
+    // Stored first, as the accounts code does before it publishes the view.
+    w.h.store
+        .set_account_state(
+            &AccountId::parse("acc1")?,
+            AccountStatus::Limited,
+            None,
+            None,
+            w.h.app.now(),
+        )
+        .await?;
     account_event(&w, "limited");
     let sent = w.fake.wait_sent(100, 3).await?;
     assert!(
@@ -958,7 +984,8 @@ async fn subscription(w: &World, status: AccountStatus) -> TestResult {
     Ok(())
 }
 
-/// Publishes `acc1`'s view with `status`, as the accounts code does after a change.
+/// Publishes `acc1`'s view with `status`, as the accounts code does after an edit or a sign-in
+/// (a status written without one is reconciled by the tick, SPEC-624).
 fn account_event(w: &World, status: &str) {
     use yulius_contracts::api::admin::{AccountUsageView, AccountView};
     use yulius_contracts::events::UiEvent;
@@ -2945,7 +2972,7 @@ async fn a_reply_to_a_runs_notice_answers_that_run() -> TestResult {
     assert!(ran.to_string().contains("rejected"), "{ran}");
 
     // A newer run of the task, asked while the harness's clock stands still: a reply to the first
-    // run's notice never answers it, as a task's runs never share a request time.
+    // run's notice never answers it, as each notice names its own run.
     let asked = support::mcp_tool(
         &w.h,
         "tok-t1-telegram-0123456789",
@@ -3075,6 +3102,12 @@ async fn a_runs_notice_takes_only_an_answer_its_reader_may_give() -> TestResult 
                 .await?
                 .contains("reply approve or reject")
         );
+        // An empty reply too (review of slice 4): it is no message to the task.
+        assert!(
+            reply_to(&w, 100, to_alice, "")
+                .await?
+                .contains("reply approve or reject")
+        );
         assert_eq!(
             reply_to(&w, 100, to_alice, "reject").await?,
             "Rejected: task #1's run of deploy runs nothing."
@@ -3088,6 +3121,49 @@ async fn a_runs_notice_takes_only_an_answer_its_reader_may_give() -> TestResult 
         audits(&w, "t1", "task.messaged").await?.is_empty(),
         "no reply reached the task"
     );
+
+    // A line holding a backtick, which a notice drops (review round 2 of slice 3): approved on
+    // the Secrets page only, as a cut line is.
+    let asked = support::mcp_tool(
+        &w.h,
+        "tok-t1-telegram-0123456789",
+        "command_run",
+        json!({"name": "deploy", "args": ["--ref=v1.2`.0"]}),
+    );
+    let replies = async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let tid = TaskId::parse("t1")?;
+        while w.h.store.task_needs_you(&tid).await?.is_none() {
+            assert!(tokio::time::Instant::now() < deadline, "it never waited");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let notice = loop {
+            let id = notice_to(&w, 100).await?;
+            if w.fake
+                .sent_to(100)
+                .iter()
+                .rev()
+                .find(|t| t.starts_with("Needs you"))
+                .is_some_and(|t| t.contains("v1.2"))
+            {
+                break id;
+            }
+            w.fake.wait_sent(100, w.fake.sent_to(100).len() + 1).await?;
+        };
+        assert!(
+            reply_to(&w, 100, notice, "approve")
+                .await?
+                .contains("could not show the whole command line")
+        );
+        assert_eq!(
+            reply_to(&w, 100, notice, "reject").await?,
+            "Rejected: task #1's run of deploy runs nothing."
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (ran, replied) = tokio::join!(asked, replies);
+    replied?;
+    assert!(support::tool_text(&ran?).to_string().contains("rejected"));
 
     // A short line, approved by reply: it runs (this harness has no process host, so it fails).
     let asked = support::mcp_tool(

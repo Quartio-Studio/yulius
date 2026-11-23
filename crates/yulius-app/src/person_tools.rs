@@ -867,6 +867,15 @@ impl App {
             }
             "notice_dismiss" => {
                 let id = str_arg(args, "id")?;
+                // Only a notice of this project, or an instance-wide one: the audit names the
+                // project (review round 2).
+                let of = self.deps.store.notice(id).await?.map(|n| n.sandbox);
+                if of
+                    .as_ref()
+                    .is_some_and(|s| s.as_ref().is_some_and(|s| *s != sandbox.id))
+                {
+                    return Err(AppError::NotFound);
+                }
                 self.dismiss_notice(&ctx.user, id).await?;
                 Ok(json!({ "dismissed": id }))
             }

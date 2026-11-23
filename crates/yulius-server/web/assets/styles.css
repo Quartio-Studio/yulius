@@ -3198,6 +3198,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ti-wait-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ti-wait-link { margin-left: auto; }
 
+/* A brokered command's line (SPEC-626): exact, wrapped anywhere so a long one stays in its card. */
+.command-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+
 /* Watches page (SPEC-630): a watch's last output and error tail, folded. */
 .watch-output { margin-top: 4px; }
 .watch-output > summary { cursor: pointer; color: var(--muted); font-size: var(--fs-sm); }

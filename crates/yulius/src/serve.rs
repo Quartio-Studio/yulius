@@ -753,6 +753,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // resumes the tasks an update froze (SPEC-507 SKR-001).
     app.skills_at_start().await;
     app.start_background();
+    // Yulius's own keyed notices: subscription problems (SPEC-624 NTC-010).
+    app.start_notice_producers();
     app.start_update_loop();
     // Long polling of the saved bot, if any, and the notifier (SPEC-498 TGC-003).
     app.start_channel().await;

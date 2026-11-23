@@ -227,6 +227,7 @@ impl GateFailures {
             .chain(self.unknown)
             .chain(self.run_failure)
             .map(|(test, origin)| GateNotice {
+                key: crate::notice_producers::gate_key(&test).to_string(),
                 revision: origin.sha,
                 merge_task: origin.owner,
                 run_id: run_id.clone(),
@@ -400,6 +401,39 @@ impl App {
         } else {
             self.available_gate_workers(sandbox).await?
         };
+        // The project's people are told of what nobody repairs, one keyed notice per failure,
+        // removed once it is repaired or owned (SPEC-624 NTC-010). "Nobody" is the stored state:
+        // no task works in the project. A worker only momentarily unable to take a notice (a
+        // draft, typing, no session yet) still owns it, so the notice does not flap (review of
+        // #1711).
+        // A worker that stays unable for the grace period no longer hides it (review round 2
+        // of #1711).
+        let unavailable_for = {
+            let red_and_stuck = !failures.is_empty() && available.is_empty();
+            let mut ticks = self
+                .gate_unavailable_ticks
+                .lock()
+                .map_err(|_| AppError::internal("gate tick counts poisoned"))?;
+            if red_and_stuck {
+                let count = ticks.entry(sandbox.id.clone()).or_default();
+                *count = count.saturating_add(1);
+                *count
+            } else {
+                ticks.remove(&sandbox.id);
+                0
+            }
+        };
+        let (unowned, hold_new): (&[GateNotice], bool) =
+            if failures.is_empty() || !available.is_empty() {
+                (&[], false)
+            } else {
+                let past = unavailable_for >= crate::notice_producers::GATE_GRACE_TICKS
+                    || store.gate_workers(&sandbox.id).await?.is_empty();
+                (&failures, !past)
+            };
+        if let Err(err) = self.sync_gate_notices(sandbox, unowned, hold_new).await {
+            tracing::warn!(sandbox = %sandbox.slug, error = %err, "gate notices could not be reconciled");
+        }
         let recipients = store
             .reconcile_gate_repair(&sandbox.id, &detail, &available)
             .await?;

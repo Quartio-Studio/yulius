@@ -1,6 +1,6 @@
 ---
 yulius-task: 1f58ed73-02d4-4c49-8c66-dbf323eb4a3f
-status: in-progress
+status: done
 ---
 
 # SPEC-624: Notices that replace and expire: a key per notice, newest wins, an expiry
@@ -63,7 +63,7 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - **NTC-004 Expired is hidden.** A notice whose `expires_at` has passed is left out of every read:
   `GET /api/me/notices`, the person tools `notices_list`, the digest and the bell. The bell hides
   it at its time without reloading. The background tick deletes expired notices within one tick
-  (30 s), and keeps at most 200 per (project, recipient). The cap drops the oldest notices that
+  (60 s), and keeps at most 200 per (project, recipient). The cap drops the oldest notices that
   wait for no decision first, and pages hear of each one it drops. A read decides which projects
   the reader sees before it applies its limit, so notices they cannot see never crowd theirs out.
 - **NTC-005 A decision never expires silently.** A notice posted with `decision: true` (it waits
@@ -96,12 +96,27 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - **NTC-010 Yulius's own repeated notices use keys** (table below):
   - A subscription problem is posted as `account:<id>` and removed once the subscription is
     usable again. A usage limit expires at its reset when the reset is known.
-  - An integration failure with no repair worker is posted to the project's people as
-    `gate:<test>`, with the same text as the Status and CI pages. It is removed once the failure
-    is repaired or a worker owns it. `GateNotice` carries its `key`.
+  - An integration failure is posted to the project's people as `gate:<test>` while no task
+    works in the project, or while every task that does has been unable to take the repair for
+    10 staging ticks in a row (`GATE_GRACE_TICKS`, about ten minutes). The notice holds the
+    failing test, its first failing revision and the merge that showed it, and a link to the CI
+    page. At most 20 failures get a notice each, and the rest share `gates:more`. A notice is
+    removed once the failure is repaired or a worker can take the repair again. Within the grace
+    period a notice already told stays and no new one is posted, so neither a worker that is only
+    momentarily busy nor a restart (which starts the count again) retells it. A green branch
+    ends the count.
+    `GateNotice` carries its `key`.
+  - A subscription's notice follows its stored state. `account.updated` updates it at once,
+    and the background tick also catches a status written without one, and removes the notice
+    of a subscription that no longer exists. Both read the stored subscription under one lock. A repeat is compared with the texts as posting
+    stores them, so a redacted or cut text is no news.
+  - The prefixes `gate:` and `account:` belong to these producers, and `watch:` to #614.
+    `App::post_notice` is internal: no person or agent posts through it.
 - **NTC-011 Bell compatibility.** The bell gives every entry a key and an `expires` time.
-  Entries already stored in a browser without `expires` get their kind's default, counted from
-  their own time. Entries already past it are pruned on load.
+  Entries already stored in a browser without `expires`, or with one that cannot be read, get
+  their kind's default, counted from their own time. Entries already past it are pruned on load.
+  The bell removes expired entries itself within ten seconds, panel open or not. On each load
+  and resync it drops server notices the server no longer lists.
 
 ### Kinds, keys and default expiries
 
@@ -117,9 +132,9 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 | Browser action request | bell | `browser:<tab>` (project) | never while asked (decision); 1 day once cleared |
 | Automation run failed / started a task | bell | `automation:<id>` (project) | 3 days |
 | Subscription needs to sign in again | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | never (decision); removed when usable |
-| Subscription at its usage limit | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | its reset when known, else 1 day; removed when usable |
-| Subscription reports an error | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | 1 day; removed when usable |
-| Integration failure with no repair worker | bell, Telegram, Status, CI page, `notices_list` | `gate:<test>` (project) | never while unrepaired; removed when repaired or owned |
+| Subscription at its usage limit | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | its reset when known (none is posted once it has passed); else until usable; removed when usable |
+| Subscription reports an error | bell, Telegram, `notices_list` | `account:<id>` (instance, admins) | until usable, then removed (told once, not each day) |
+| Integration failure with no repair worker | bell, Telegram, Status, CI page, `notices_list` | `gate:<test>` (project), past 20 failures `gates:more` | never while unrepaired; removed when repaired or owned |
 | End-of-day digest | bell, Telegram | `digest` (person) | 3 days |
 | Update available / update failed | bell (superadmins) | `update` / `update-run:<id>` | 7 days |
 | Connection trouble | bell | `connections:<trouble id>` | 1 day |
@@ -136,13 +151,14 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - [x] People read and dismiss their notices over HTTP and the person tools
 - [x] Telegram replaces a keyed notice's earlier message in the chat
 - [x] The digest lists live notices under a key and hides expired ones
-- [ ] Independent review of the notice core, every finding answered
-- [ ] Subscription problems are keyed notices that end with the problem
-- [ ] Unrepaired integration failures are keyed notices for the project's people
-- [ ] The bell shows server notices and keys and expires every entry
-- [ ] Old browser notification history migrates with expiries
-- [ ] Product, API and architecture docs describe keyed, expiring notices
-- [ ] Independent review of the producers and the bell, every finding answered
+- [x] Independent review of the notice core, every finding answered
+- [x] The notice core's round-2 review notes are fixed
+- [x] Subscription problems are keyed notices that end with the problem
+- [x] Unrepaired integration failures are keyed notices for the project's people
+- [x] The bell shows server notices and keys and expires every entry
+- [x] Old browser notification history migrates with expiries
+- [x] Product, API and architecture docs describe keyed, expiring notices
+- [x] Independent review of the producers and the bell, every finding answered
 
 ## Acceptance criteria
 
@@ -173,7 +189,7 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - **AC-11** (NTC-011) A browser whose localStorage holds old entries without `expires` loads them
   with defaults and drops those already past them. A server notice and an older local entry with
   the same key become one entry, and an entry is hidden at its expiry while the page stays open.
-- **AC-12** (migration) A store at schema 87 with digests and Telegram rows migrates. The rows
+- **AC-12** (migration) A store at the schema before 0091 (88 after dev's 0089) with digests and Telegram rows migrates. The rows
   are kept and the notice tables are empty and usable.
 
 ## Test plan
@@ -188,7 +204,7 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
   through the person tools, the digest's notice section and the expired one left out (AC-1,
   AC-3, AC-8). Telegram replacement with the fake channel, including a failing delete
   (`tests/telegram.rs`, AC-6, AC-7). Subscription limit and gate failure producers (AC-9, AC-10).
-- Chromium e2e (`e2e/tests/notifications.e2e.ts`): server notices, replacement by key, hiding at
+- Chromium e2e (`e2e/tests/notices.e2e.ts`): server notices, replacement by key, hiding at
   expiry with the page's clock, migration of old localStorage entries (AC-7, AC-11).
 - Mutation by hand: undo the replacement statement, the expiry filter and the decision refusal,
   and record which tests failed.
@@ -287,3 +303,176 @@ without its fix:
 - **Direction question.** A never-expiring notice, a decision or a gate failure, appears in each
   daily digest until it is removed. That is intended: the digest lists what still waits for the
   person, as it already does for open `needs_you` requests.
+
+### PR #1705 merged
+
+PR #1705 landed in `dev` at `6dda721e6` from head `8fbd51cb1`. Its own Yulius CI run
+`742ea20e-d77f-4e04-a5b9-ad9fa6d0ff8d` passed. Review round 2 (Fable 5.2) approved `e7c04d9b3`.
+Round 3 (Opus 5.5) approved the dev-merge delta at `8fbd51cb1`.
+
+### Second pull request: producers and the bell (steps 8 to 13)
+
+Round 2's notes, all own code and each with a test that failed without its fix:
+- A `read` token is no longer served `notice_dismiss` (`scope_may_call`, the read-token test in
+  `remote.rs`).
+- A guest's own instance-wide notice is read
+  (`a_readers_reach_comes_before_the_limit`), and a guest reaches `/api/me/notices` and its
+  DELETE (`a_guest_reaches_only_their_playgrounds_work`, mock `guestMayReach`).
+- `notice.removed` is published for a notice the cap drops and for a replacement that narrows
+  `admin_only`, and titles are one line (`the_cap_and_a_narrowed_replacement_are_heard`).
+- A report that the cap would drop at once is refused (`a_scope_full_of_decisions_refuses_a_report`).
+- `notice_dismiss` keeps to its project (`a_dismissal_names_its_own_project`).
+- The Cockpit audits a dismissal (`cockpit::the_superagents_notice_dismissal_is_audited`, which
+  fails with the audit tied back to `Action::View`).
+- `notice_dismiss` is listed among the changing tools in `manage_tools.rs`.
+- The wording in `notify.rs`, the architecture document and AC-12 is fixed.
+
+Producers:
+- `notices::a_subscription_problem_is_one_keyed_notice` (AC-9) covers a limit that expires at
+  its reset, no repost of the same state, a later reset that replaces it, removal once usable,
+  and sign-in as a decision. It and `telegram::a_state_entered_before_the_start_is_not_told`
+  fail with the repeat check (`says_the_same`) undone.
+- `staging::an_unrepaired_failure_is_one_keyed_notice_until_it_passes` (AC-10) covers one
+  `gate:flaky::result` notice that never expires, nothing new on the next tick, and removal
+  after the fix passes. `GateNotice.key` is in `/api/status`.
+
+The bell (`e2e/tests/notices.e2e.ts`, AC-7, AC-11). Each of its 4 tests fails against dev's
+`notifications.js`:
+- a newer server notice replaces the older one, and the server's removal drops it;
+- an entry goes away at its expiry by the page's clock, and Clear dismisses the server's notice;
+- a newer red run replaces the task's entry;
+- old history gets its kind's default, and entries past it are dropped.
+
+`shared-needs-you.e2e.ts` now expects the key `needs-you:<project>:<cause>`. Its first test
+checks that an answered shared problem's entry expires a day later.
+
+Runs at the second PR's head before review:
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main)'`: 2,645 passed, 24 skipped.
+- `scripts/cargo nextest run` on the 6 library crates: 1,858 passed.
+- `npx e2e run` (Chromium): 1,341 passed, 1 configured skip.
+- `scripts/cargo clippy -D warnings` on the touched crates: clean.
+- `scripts/dev quick`: passed.
+- The Vidoc scan is switched off for this project: disabled, not passed.
+
+Not tested here: a real Telegram chat (the fake Bot API stands in, and Telegram's 48-hour
+delete limit is not exercised), and a desktop operating system's notification tag (Chromium's
+`Notification` is a stand-in).
+
+### Review round 1 of PR #1711 (head `974e24b7c`): request changes, all answered
+
+All findings were in this PR's own code. Each fix has a test, and each test was seen failing
+without its fix:
+- **Gate notices flapped with momentary worker availability (major).** "Nobody repairs it" now
+  means no task works in the project (`gate_workers`). Covered by
+  `staging::a_momentarily_busy_worker_raises_no_gate_notice`, which fails on the worker
+  assertion with the old `available` rule.
+- **The repeat check compared raw texts with stored ones (major).** `stored_texts` is shared by
+  posting and the producers. The same test fails at "a normalised name is no news" with the old
+  check (a two-space, 300-character test name). `subscription_notices_follow_the_stored_state`
+  covers a redacted error and a two-space label.
+- **Status changes without `account.updated` (major).** The tick runs `sync_all_account_notices`,
+  which also removes a deleted subscription's notice.
+  `notices::subscription_notices_follow_the_stored_state` covers this through `set_account_state`
+  and `delete_account`, with no event.
+- **The bell kept notices the server removed (major).** Each load and resync reconciles with
+  `GET /api/me/notices`. `notices.e2e.ts` "a notice the server removed while no page was open"
+  fails without it.
+- **A shared decision was settled from an unloaded list (major).** The bell settles it only
+  from a loaded task list. The extended `shared-needs-you.e2e.ts` "seen from another project"
+  case fails without the guard.
+- **Minor findings:**
+  - Gate notices are bounded: 20, plus `gate:more` (`staging::many_unrepaired_failures_are_bounded_notices`).
+  - The store keeps the new notice on a time tie (`the_cap_keeps_the_new_notice_on_a_tie`).
+  - The expiry timer has its own test, with the panel closed ("an entry goes at its expiry
+    while the panel stays closed"), and fires within 10 s.
+  - An unreadable `expires` counts as none.
+  - An expired replacement saves and renders.
+  - The gate text is aligned in the requirement: revision to 12 characters, and no "run it
+    again" for readers.
+- **Nits:**
+  - Comments and the test-plan file name are corrected.
+  - A late read after `destroy()` arms no timer.
+  - Reserved prefixes, not changed: the spec now says `gate:` and `account:` belong to the
+    producers and that `post_notice` is internal (no person or agent posts through it), so a
+    refusal would only guard Yulius against itself. `sync_gate_notices` owning every
+    project-wide `gate:*` notice is intended.
+- **Not changed:** `mcp_config::probe::tests::silent_stdio_server_times_out_and_is_reaped`
+  failed in the reviewer's run. Its file is outside this change, and it passed in this task's
+  runs of the library crates (1,858 passed).
+- Runs after the round-1 fixes:
+  - `yulius::main`: 2,675 passed at first. 4 `forks::` tests (from dev, task #612) timed out
+    against a stale `fake-agent` build; after `cargo build -p fake-agent` all 7 `forks::` tests
+    passed.
+  - Library crates: 1,874 passed.
+  - Chromium: 1,344 passed, 1 configured skip.
+  - Clippy `-D warnings` clean, and `scripts/dev quick` passed.
+
+### Review round 2 of PR #1711 (head `bfdf9c659`): request changes, all answered
+
+All findings except the last nit were in this PR's own code:
+- **A limit's notice came back after its reset (major).** Once a known reset has passed,
+  `account_notice` calls for no notice. An error, or a limit with no known reset, holds until
+  the subscription is usable (`Expiry::Never`), so it is told once rather than each day; the
+  spec table says so. Covered by the reviewer's probe, adopted as
+  `notices::a_limit_past_its_reset_is_not_posted_again`, and by
+  `a_lasting_subscription_problem_is_told_once`. Both failed before the fix.
+- **The bell's reread could drop a live notice (minor).** A read keeps what the event stream
+  said while it ran, and a newer read supersedes an older one's answer.
+  `notices.e2e.ts` "a notice posted while the server list is read stays" (the reviewer's probe)
+  failed with `[]` before the fix. The button's `data-notices-read` counts the reads handled.
+- **The resync half had no test (minor).** Now covered by "a resync drops a notice the server no
+  longer holds". The background call itself stays untested; the tests call
+  `sync_all_account_notices` directly.
+- **The tick and the event loop raced (minor).** Both reconcile under one lock
+  (`ACCOUNT_SYNC`) from the stored subscription. An event for a subscription the store does not
+  hold is taken as it says. The Telegram seed test now stores `limited` before publishing it,
+  as Yulius does.
+- **Direction: a long-unavailable worker hid a red gate (minor).** After 10 staging ticks in a
+  row with no worker able to take the repair (`GATE_GRACE_TICKS`), the people are told.
+  `staging::a_worker_unavailable_past_the_grace_period_raises_the_gate_notice` fails with the
+  grace rule disabled.
+- **Nits:**
+  - The summary key is `gates:more`, so it can no longer equal a test named `more`.
+  - The bell's timer redraws only when an entry went.
+  - The README row names the new tests.
+  - NTC-004 says 60 s (pre-existing).
+  - `gate_workers` is still read twice per project and tick when the branch is red: one
+    indexed query, kept for clarity.
+- Runs after the round-2 fixes:
+  - `yulius::main`: 2,712 passed.
+  - Library crates: 1,889 passed.
+  - Chromium: 1,350 passed, 1 configured skip.
+  - Clippy `-D warnings` clean, and `scripts/dev quick` passed.
+
+### Review round 3 of PR #1711 (head `59258cb79`): approved, notes fixed within the approval
+
+All notes were in this PR's own code:
+- **The grace counter's reset was untested (minor).** Now covered by
+  `staging::a_green_branch_starts_the_grace_period_again`, which fails with
+  `ticks.remove(&sandbox.id)` undone.
+- **A limit with no known end lost its notice when a window's reset passed (minor).**
+  `limit_reset` returns none for the subscription's own limit without an end (as
+  `AccountUsage::available_at_for` reads it), so the notice lasts until usable. Covered in
+  `a_subscription_notice_follows_the_table`, which failed before the fix.
+- **A restart retold a notice raised past the grace period (minor).** Within the grace period
+  `sync_gate_notices` keeps the notices already told and posts no new one (`hold_new`).
+  `staging::a_momentarily_busy_worker_raises_no_gate_notice` now expects the stored notice to
+  stay when a worker without a session appears, which is the restart case. It failed before
+  the fix.
+- **Nits:**
+  - The stray ". and" in the architecture document and the unit test's comment are fixed.
+  - The event fallback for a subscription the store does not hold, and grace counts of
+    removed projects, are unchanged. The fallback is what the tests publish, and it was so
+    before this PR; the next tick removes a deleted subscription's notice. The counts are one
+    integer per project.
+- After these fixes, `staging::`, `notices::` and the `yulius-app` tests passed (799).
+
+
+### Review round 5 of PR #1711 (head `99f410979`): approved, two nits fixed within the approval
+
+- `a_green_branch_starts_the_grace_period_again` now runs the new grace period to its end and
+  expects the notice. A 0 can therefore no longer come from a failure that was missed.
+- `limit_reset` gives no known end when a used-up window has no reset time, as
+  `AccountUsage::available_at_for` reads it. Covered in `a_subscription_notice_follows_the_table`,
+  which failed before the fix.
+- `yulius-app`, `notices::` and `staging::` (800) passed; clippy was clean.

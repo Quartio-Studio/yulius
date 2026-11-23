@@ -380,6 +380,235 @@ async fn a_closed_merge_owners_failed_test_reaches_the_project_without_a_staging
     Ok(())
 }
 
+/// SPEC-624 NTC-010, AC-10: a failure nobody repairs is one notice `gate:<test>` for the
+/// project's people, posted once across ticks and removed once the gate passes.
+#[tokio::test]
+async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    named_gate(&f, &revision, &["flaky::result"]).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox = sandbox(&f).await?;
+    let gate_notices = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            f.h.app
+                .notices_for(&alice, Some(&sandbox.id))
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str().starts_with("gate:"))
+                .map(|n| (n.id, n.key.to_string(), n.expires_at))
+                .collect::<Vec<_>>(),
+        )
+    };
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let first = gate_notices().await?;
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0].1, "gate:flaky::result");
+    assert_eq!(first[0].2, None, "it waits until repaired");
+    let status = f.get("/api/status").await?;
+    assert_eq!(
+        status["sandboxes"][0]["gate_notices"][0]["key"], "gate:flaky::result",
+        "{status}"
+    );
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(
+        gate_notices().await?,
+        first,
+        "the next tick posts nothing new"
+    );
+
+    let fix = f.push("dev", &[("fixed", Some("yes"))])?;
+    gate(&f, &fix, RunState::Passed).await?;
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert!(gate_notices().await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-624 review round 1 of #1711: a project with a working task does not tell its people
+/// "nobody repairs it" while that task is only momentarily unable to take the notice (no
+/// session to type into, a draft, typing); a test name posting changes is posted once.
+#[tokio::test]
+async fn a_momentarily_busy_worker_raises_no_gate_notice() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    let long = format!("suite::a  spaced {}", "x".repeat(300));
+    named_gate(&f, &revision, &[long.as_str()]).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox = sandbox(&f).await?;
+    let gate_ids = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            f.h.app
+                .notices_for(&alice, Some(&sandbox.id))
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str().starts_with("gate:"))
+                .map(|n| n.id)
+                .collect::<Vec<_>>(),
+        )
+    };
+    // Nobody works: one notice, and the next tick keeps it although posting cut its name.
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let first = gate_ids().await?;
+    assert_eq!(first.len(), 1);
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(gate_ids().await?, first, "a normalised name is no news");
+    // A task works in the project but cannot take the repair yet (no session to type into),
+    // as after a restart with a fresh grace count: the notice told stays, the same one, until a
+    // worker can take it; nothing is told again (review round 3 of #1711).
+    agent(&f, "worker").await?;
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(gate_ids().await?, first, "kept within the grace period");
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(gate_ids().await?, first, "no flapping");
+    Ok(())
+}
+
+/// Review round 3 of #1711: a green branch ends the grace count, so a new failure soon after
+/// waits its own grace period instead of being told at once.
+#[tokio::test]
+async fn a_green_branch_starts_the_grace_period_again() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    named_gate(&f, &revision, &["flaky::result"]).await?;
+    agent(&f, "worker").await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox = sandbox(&f).await?;
+    let gate_count = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            f.h.app
+                .notices_for(&alice, Some(&sandbox.id))
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str().starts_with("gate"))
+                .count(),
+        )
+    };
+    for _ in 1..yulius_app::notice_producers::GATE_GRACE_TICKS {
+        f.h.app.tell_gate_repairs(&sandbox).await?;
+    }
+    let fix = f.push("dev", &[("fixed", Some("yes"))])?;
+    gate(&f, &fix, RunState::Passed).await?;
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let broken = f.push("dev", &[("broken", Some("again"))])?;
+    named_gate(&f, &broken, &["other::test"]).await?;
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(gate_count().await?, 0, "a new grace period");
+    // ...which, run to its end, tells the new failure: the 0 above was a grace period, not a
+    // failure missed (review round 5 of #1711).
+    for _ in 1..yulius_app::notice_producers::GATE_GRACE_TICKS {
+        f.h.app.tell_gate_repairs(&sandbox).await?;
+    }
+    assert_eq!(gate_count().await?, 1);
+    Ok(())
+}
+
+/// Review round 2 of #1711: a worker that stays unable to take the repair for the grace period
+/// (here: no session at all) no longer hides the failure from the project's people.
+#[tokio::test]
+async fn a_worker_unavailable_past_the_grace_period_raises_the_gate_notice() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    named_gate(&f, &revision, &["flaky::result"]).await?;
+    agent(&f, "worker").await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox = sandbox(&f).await?;
+    let gate = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            f.h.app
+                .notices_for(&alice, Some(&sandbox.id))
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str().starts_with("gate:"))
+                .count(),
+        )
+    };
+    for _ in 1..yulius_app::notice_producers::GATE_GRACE_TICKS {
+        f.h.app.tell_gate_repairs(&sandbox).await?;
+        assert_eq!(gate().await?, 0, "within the grace period");
+    }
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(gate().await?, 1, "past it, the people hear of it");
+    Ok(())
+}
+
+/// Review of #1711: a red branch with many failing tests gives at most twenty notices and one
+/// that counts the rest, stable across ticks.
+#[tokio::test]
+async fn many_unrepaired_failures_are_bounded_notices() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    let names: Vec<String> = (0..25).map(|n| format!("suite::t{n:02}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    named_gate(&f, &revision, &refs).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox = sandbox(&f).await?;
+    let gate = || async {
+        let mut list: Vec<(String, String)> =
+            f.h.app
+                .notices_for(&alice, Some(&sandbox.id))
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str().starts_with("gate"))
+                .map(|n| (n.id, n.key.to_string()))
+                .collect();
+        list.sort();
+        Ok::<_, Box<dyn std::error::Error>>(list)
+    };
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let first = gate().await?;
+    assert_eq!(first.len(), 21, "{first:?}");
+    assert!(
+        first.iter().any(|(_, key)| key == "gates:more"),
+        "{first:?}"
+    );
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(gate().await?, first, "stable across ticks");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_later_candidate_waits_for_the_older_full_gate() -> TestResult {
     let f = fixture(&staging_toml()).await?;
@@ -657,7 +886,7 @@ async fn rerunning_an_ancestor_keeps_the_archived_red_heads_notice_and_rerun_tar
             .unwrap_or(&view["sandboxes"][0]["gate_notices"]);
         assert_eq!(
             *notices,
-            json!([{"test":"suite::broken","merge_task":owner,"revision":head,"run_id":failed}])
+            json!([{"key":"gate:suite::broken","test":"suite::broken","merge_task":owner,"revision":head,"run_id":failed}])
         );
     }
     let path = format!("/api/sandboxes/s1/ci/runs/{failed}");
@@ -932,7 +1161,7 @@ async fn a_pruned_gate_and_deleted_task_still_identify_the_inherited_test() -> T
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
     assert_eq!(
         notices,
-        json!([{ "test": "delivery::gate", "revision": old, "run_id": live_run, "merge_task": number }])
+        json!([{ "key": "gate:delivery::gate", "test": "delivery::gate", "revision": old, "run_id": live_run, "merge_task": number }])
     );
     Ok(())
 }

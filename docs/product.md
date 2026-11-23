@@ -740,6 +740,20 @@ watching, steering and unblocking.
   meanwhile is told "Yulius is back; continue" (SPEC-358). An agent removes the files its task created
   with `yulius remove` (SPEC-192). A contained Claude reviewer whose scratch cleanup uses
   a variable or names a root-level scratch file receives a checked retry directly. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)
+- **Brokered commands**: a CLI that needs a key file (a deploy tool, a cloud SDK with a
+  service-account key, a signing tool) runs outside the agents' sandbox. A project's
+  administrators define it on the Secrets page's Commands tab: the host's binary, the agent secret
+  it gets as a temporary file, fixed arguments with `{keyfile}`, the subcommands agents may use,
+  the flags Yulius sets itself, env, which tasks may run it and whether a person approves each run,
+  only runs that change something, or none; saving one asks for the secret's manager and, for a
+  secret allowed use by use, their two-factor code. An agent runs it with `yulius run NAME ARGS`
+  (or `command_run`): Yulius runs it in the project's production holder in a fresh home, bounded in
+  time and output, and returns its exit code and output with every agent secret blanked out.
+  Arguments that name a path or a flag Yulius sets are refused. A run that needs approval puts its
+  task in Needs you with the full command line; people who manage the project's secrets approve or
+  reject it on the page or by replying to its Telegram notice, and no answer in time is a no. Every
+  run, refusal and answer is audited. [SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
+  [ADR-0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md)
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
@@ -809,6 +823,17 @@ watching, steering and unblocking.
   (SPEC-458). A task session whose Yulius tools Claude
   Code dropped is reconnected by Yulius, and an agent can call any Yulius tool from its shell with
   `yulius tool` (SPEC-432).
+- **Notices that replace and expire** (SPEC-624, ADR-0462): every notice Yulius raises for a
+  person has a key and an expiry, in the bell, Telegram, the digest and the Status and CI pages.
+  A newer notice with the same key replaces the older one for that person and project, so a
+  task has one entry however often its state or its pull request's CI changes. A subscription
+  problem is one notice per subscription, and an integration failure nobody repairs is one per
+  test. In Telegram, the bot deletes its earlier message about the same thing. A notice goes
+  away by itself at its expiry: a day for reports, three days for good news and the digest,
+  seven for failures. One that waits for a person's decision never expires, and goes a day
+  after it is answered. Expired notices are hidden everywhere, then pruned, and a browser's
+  earlier history gets the same expiries. Script watches (#614) post their output this way,
+  keyed `watch:<name>`.
 - **Notifications on a person's phone** (SPEC-498, ADR-0351, part 1 of #1107): an instance
   administrator sets one Telegram bot for the instance in Settings → Administration (checked with
   Telegram, stored encrypted, never shown again). Each person links their own chat in Settings →
