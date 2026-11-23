@@ -1608,6 +1608,51 @@ async fn removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule() ->
         "09:00 passed before the change: tomorrow"
     );
 
+    // A watch removed while it runs: its state goes once its cancelled run ended, also when the
+    // run wrote it again after the removal (review round 2).
+    let writer = w
+        .h
+        .app
+        .watch_create(new_watch(
+            "writer",
+            "while :; do mkdir -p \"$YULIUS_WATCH_STATE\"; echo x > \"$YULIUS_WATCH_STATE/late\"; sleep 0.05; done",
+        )?)
+        .await?;
+    let writer_state =
+        w.h.app
+            .config
+            .data_dir
+            .join("watches/s1/state")
+            .join(&writer.id);
+    let started = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{}/run", writer.id),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.body);
+    until("the writer runs", || {
+        let late = writer_state.join("late");
+        async move { Ok(late.exists()) }
+    })
+    .await?;
+    let removed = http(
+        &w,
+        Method::DELETE,
+        &format!("/api/watches/{}", writer.id),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    until("its state is gone after its run ended", || {
+        let state = writer_state.clone();
+        async move { Ok(!state.exists()) }
+    })
+    .await?;
+
     // Resuming an active watch changes nothing.
     let before = w.watch(&edited.id).await?;
     let resumed = http(

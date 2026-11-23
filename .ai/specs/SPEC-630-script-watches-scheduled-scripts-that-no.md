@@ -476,8 +476,8 @@ failing its test. It left two minors and two nits:
   watch changes nothing, that a removal frees the state files, and that `watch_update` keeps the
   fields it is not given.
 - The edit no longer computes a `since` the store ignores.
-- **Kept as it is, with the reason:** the state directory is removed right after the cancel. A
-  cancelled run that writes files at that moment can leave the directory with a warning in the
-  log. The leftovers of a removed project, and the next removal attempt by a person, clear it.
-  Waiting for the run's end would hold the removal's answer on a process exit, which the API
-  does not do elsewhere.
+- The state directory of a watch removed while it runs is removed again when its cancelled run
+  ends, so files written between the cancel and the kill do not stay. The removal itself still
+  removes it at once. The test's "writer" case (it recreates its state in a loop) passes with
+  this. It also passed once with the run-end removal undone, because the kill usually lands
+  before the removal, so it shows the behaviour but cannot force the order.

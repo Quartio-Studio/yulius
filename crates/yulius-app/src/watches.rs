@@ -377,6 +377,16 @@ impl App {
         self.watches.cancels().remove(&watch.id);
         self.watch_record_end(&watch, &run_id, started, &result)
             .await;
+        // Removed while it ran: its state goes now that nothing writes it (review round 2).
+        if matches!(self.deps.store.watch(&watch.id).await, Ok(None)) {
+            let state = self
+                .watch_base_dir(&watch.sandbox_id)
+                .join("state")
+                .join(&watch.id);
+            if let Err(error) = self.remove_watch_files(&state).await {
+                tracing::warn!(watch = %watch.id, error = %error, "a removed watch's state stays");
+            }
+        }
         self.publish_watches(&watch.sandbox_id);
         true
     }
