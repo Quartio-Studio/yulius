@@ -2244,6 +2244,12 @@ Capacity accounting can use that observation for two watch intervals. A new deci
 an unsuccessful read or a restart requires fresh verification. Before reserving a slot,
 a launch rechecks the owners it would omit and holds their delivery read guards through
 the reservation. A concurrent watcher retries on its next pass.
+The same check decides whether a live owner is Done for its dependents and its close
+([SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md) FIN-003):
+a start rule for all outstanding tasks includes an owner it cannot clear locally, a chain or
+compound Done rule holds each live owner's delivery read guard until the successor is
+released, and archive, tidy and a removed subscription's close hold it until the Close
+intent is recorded, so an arm that arrives meanwhile keeps the session.
 An explicit `#N merged` rule follows the recorded merge.
 
 The individual HTTP task detail verifies both recorded and branch PRs.
