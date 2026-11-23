@@ -36,7 +36,7 @@ Open on dev: steps 50 to 53 of SPEC-558. #540 left prepared patches in its hando
 - [x] Close the round-2 notes on the Codex goal continuation
 - [x] Reproduce a dependent task released by an unverified live owner
 - [x] Hold the live owner's delivery through chain release, start rules and close
-- [ ] Review and deliver live-owner verification for dependents and closes
+- [x] Review and deliver live-owner verification for dependents and closes
 - [ ] Reproduce a live owner shown Done while its integration candidate is pending
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Review and deliver the live integration status
