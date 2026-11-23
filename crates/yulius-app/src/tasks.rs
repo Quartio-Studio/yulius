@@ -206,6 +206,7 @@ impl App {
             None => (None, None),
         };
         let (after, next) = self.chain_links(task).await;
+        let (forked_from, forks) = self.fork_links(task).await;
         let times = store.task_times(&task.id).await?;
         let not_started =
             task.status == TaskStatus::Closed && !store.has_attempts(&task.id).await?;
@@ -303,6 +304,8 @@ impl App {
                     .is_ok_and(|a| a != crate::account_gate::AgentAccounts::Usable),
             after,
             next,
+            forked_from,
+            forks,
             held_prompt: self.held_prompt_view(&task.id).await,
             // An ended task waits for nobody (ADR-0111).
             needs_you: if task.status.is_resting() {

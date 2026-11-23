@@ -1385,6 +1385,12 @@ impl App {
             if doc.sandbox_id != *sandbox || kind.is_some_and(|k| k != doc.kind) {
                 continue;
             }
+            // A personal task's transcript stays with tasks holding the same secrets (SPEC-625).
+            if let Some(task) = doc.task_id.as_ref().and_then(|id| tasks.get(id))
+                && self.withholds_from(caller, task).await?
+            {
+                continue;
+            }
             let view = self.doc_view(&doc, &tasks, &mut logins, None).await;
             results.push(json!({
                 "id": view.id,
@@ -1440,6 +1446,8 @@ impl App {
                 .task_by_number(sandbox, number)
                 .await?
                 .ok_or(AppError::NotFound)?;
+            // A personal task's transcript stays with tasks holding the same secrets (SPEC-625).
+            self.require_transcript_reader(caller, &task).await?;
             self.sync_task_docs(sandbox).await?;
             store
                 .session_docs(sandbox)
@@ -1453,6 +1461,11 @@ impl App {
                 "give the session `id` from sessions_search or a `task_number`".into(),
             ));
         };
+        if let Some(task_id) = &doc.task_id
+            && let Some(task) = store.task(task_id).await?
+        {
+            self.require_transcript_reader(caller, &task).await?;
+        }
         // The end of the session instead of a place in it (SPEC-487 QST-003).
         let tail = match args.get("tail") {
             None | Some(Value::Null) => false,
@@ -1636,7 +1649,7 @@ struct CopyBudget {
 /// at any name, only regular files are copied and none is waited on, within
 /// [`MAX_AUX_DEPTH`], [`MAX_AUX_ENTRIES`] and `bytes`, what the transcript left of
 /// [`MAX_COPIED_BYTES`].
-fn copy_dir_below(anchor: &Path, src: &Path, dest: &Path, bytes: u64) -> AppResult<()> {
+pub(crate) fn copy_dir_below(anchor: &Path, src: &Path, dest: &Path, bytes: u64) -> AppResult<()> {
     use nix::errno::Errno;
     let Ok(below) = src.strip_prefix(anchor) else {
         return Err(AppError::Internal(

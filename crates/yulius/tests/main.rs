@@ -47,6 +47,7 @@ mod docker_trouble_notices;
 mod files;
 mod first_message;
 mod fixture_hygiene;
+mod forks;
 mod git_adapter;
 #[cfg(target_os = "linux")]
 mod git_confined;
@@ -87,6 +88,7 @@ mod notices;
 #[cfg(target_os = "linux")]
 mod opaque_restart;
 mod parking;
+mod peer_status;
 mod playground;
 mod playground_guests;
 mod playground_move;
@@ -111,6 +113,7 @@ mod secrets_copy;
 mod secrets_create;
 mod secrets_env;
 mod secrets_redaction;
+mod secrets_rules;
 mod secrets_scopes;
 mod self_update;
 mod session_sync;

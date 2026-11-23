@@ -380,6 +380,7 @@ impl App {
                     .map(str::trim)
                     .map(str::to_owned),
                 hosts: Vec::new(),
+                rules: None,
                 injection: None,
                 header_name: None,
                 username: None,
