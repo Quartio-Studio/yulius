@@ -637,3 +637,441 @@ async fn texts_are_redacted_whole_and_links_and_keys_checked() -> TestResult {
     }
     Ok(())
 }
+
+/// Review round 2: pages hear of each notice the cap drops; a notice dropped at once (its scope
+/// is full of decisions) is refused, not published; a replacement that narrows who sees the
+/// notice tells the others it is gone; a title is one line.
+#[tokio::test]
+async fn the_cap_and_a_narrowed_replacement_are_heard() -> TestResult {
+    use yulius_app::notices::NOTICES_KEPT;
+    let p = people().await?;
+    for n in 0..NOTICES_KEPT {
+        p.w.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        p.w.h
+            .app
+            .post_notice(gate(&p.shop, &format!("t{n}"), "Red")?)
+            .await?;
+    }
+    let mut events = p.w.h.app.events.subscribe();
+    p.w.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    p.w.h
+        .app
+        .post_notice(gate(&p.shop, "newest", "Newest")?)
+        .await?;
+    let removed = events.recv().await?;
+    assert!(
+        matches!(&removed.event, UiEvent::NoticeRemoved { key, .. } if key == "gate:t0"),
+        "{:?}",
+        removed.event
+    );
+    assert!(matches!(
+        events.recv().await?.event,
+        UiEvent::NoticePosted { .. }
+    ));
+
+    // A replacement for administrators only: the project's other people drop the old one.
+    let narrowed = NewNotice {
+        admin_only: true,
+        ..gate(&p.shop, "newest", "For administrators")?
+    };
+    p.w.h.app.post_notice(narrowed).await?;
+    let gone = events.recv().await?;
+    assert!(
+        matches!(&gone.event, UiEvent::NoticeRemoved { key, .. } if key == "gate:newest"),
+        "{:?}",
+        gone.event
+    );
+    assert!(!gone.admin_only, "the old notice's people hear it");
+    assert!(matches!(
+        events.recv().await?.event,
+        UiEvent::NoticePosted { .. }
+    ));
+
+    // A title is one line.
+    let lines =
+        p.w.h
+            .app
+            .post_notice(gate(&p.shop, "lines", "first\nsecond\tthird")?)
+            .await?;
+    assert_eq!(lines.title, "first second third");
+    Ok(())
+}
+
+/// Review round 2: a scope full of decisions refuses a notice that would be dropped at once.
+#[tokio::test]
+async fn a_scope_full_of_decisions_refuses_a_report() -> TestResult {
+    use yulius_app::notices::NOTICES_KEPT;
+    let p = people().await?;
+    for n in 0..NOTICES_KEPT {
+        p.w.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        p.w.h
+            .app
+            .post_notice(NewNotice {
+                decision: true,
+                ..gate(&p.shop, &format!("d{n}"), "Decide")?
+            })
+            .await?;
+    }
+    let mut events = p.w.h.app.events.subscribe();
+    let refused =
+        p.w.h
+            .app
+            .post_notice(gate(&p.shop, "report", "Report")?)
+            .await;
+    assert!(
+        matches!(&refused, Err(yulius_app::error::AppError::Capacity(_))),
+        "{refused:?}"
+    );
+    assert!(events.try_recv().is_err(), "nothing was published");
+    Ok(())
+}
+
+/// Review round 2: `notice_dismiss` takes only a notice of its project or an instance-wide one,
+/// and the Cockpit audits it as a change.
+#[tokio::test]
+async fn a_dismissal_names_its_own_project() -> TestResult {
+    let p = people().await?;
+    let other = support::seed_sandbox(&p.w.h, "s2", "other", "u-alice")
+        .await?
+        .id;
+    p.w.grant("alice", "acme/other", "push");
+    let elsewhere =
+        p.w.h
+            .app
+            .post_notice(gate(&other, "x", "Elsewhere")?)
+            .await?;
+    let (error, said, _) = remote(
+        &p,
+        &p.alice.2,
+        "notice_dismiss",
+        json!({"project": "acme/shop", "id": elsewhere.id}),
+    )
+    .await?;
+    assert!(error, "a notice of another project: {said}");
+    assert_eq!(listed(&p, &p.alice.1).await?.len(), 1);
+    let (error, said, _) = remote(
+        &p,
+        &p.alice.2,
+        "notice_dismiss",
+        json!({"project": "acme/other", "id": elsewhere.id}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    Ok(())
+}
+
+/// Waits (10 s at most) for an event on `events` that `wanted` picks, skipping the others.
+async fn next_event<T>(
+    events: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+    wanted: impl Fn(&UiEvent) -> Option<T>,
+) -> Result<T, Error> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let envelope = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .map_err(|_| "no such event came")??;
+        if let Some(found) = wanted(&envelope.event) {
+            return Ok(found);
+        }
+    }
+}
+
+fn subscription(
+    status: &str,
+    resets_at: Option<&str>,
+) -> yulius_contracts::api::admin::AccountView {
+    use yulius_contracts::api::admin::{AccountUsageView, AccountView, UsageWindowView};
+    AccountView {
+        id: "acc1".into(),
+        provider: "anthropic".into(),
+        label: "Team Max".into(),
+        status: status.into(),
+        usage: AccountUsageView {
+            primary: resets_at.map(|at| UsageWindowView {
+                used_percent: Some(100.0),
+                resets_at: Some(at.into()),
+                window_minutes: Some(300),
+            }),
+            ..AccountUsageView::default()
+        },
+        last_error: None,
+        email: None,
+        email_typed: false,
+        in_use_by: 0,
+        tokens_24h: None,
+        tokens_7d: None,
+        usage_read: None,
+    }
+}
+
+fn publish_subscription(p: &People, view: yulius_contracts::api::admin::AccountView) {
+    p.w.h.app.events.publish(
+        None,
+        true,
+        UiEvent::AccountUpdated {
+            account: Box::new(view),
+        },
+    );
+}
+
+/// NTC-010, AC-9: a subscription at its limit is one notice `account:<id>` for administrators
+/// that expires at its reset; the same state again posts nothing; another reset replaces it; a
+/// usable subscription removes it; one that must sign in again never expires.
+#[tokio::test]
+async fn a_subscription_problem_is_one_keyed_notice() -> TestResult {
+    let p = people().await?;
+    let mut events = p.w.h.app.events.subscribe();
+    p.w.h.app.start_notice_producers();
+    let reset = "2026-01-01T05:00:00Z";
+    p.w.h.clock.0.store(
+        yulius_domain::time::parse_rfc3339("2026-01-01T01:00:00Z")
+            .ok_or("time")?
+            .0,
+        Ordering::SeqCst,
+    );
+    publish_subscription(&p, subscription("limited", Some(reset)));
+    let posted = next_event(&mut events, |e| match e {
+        UiEvent::NoticePosted { notice } if notice.key == "account:acc1" => Some(notice.clone()),
+        _ => None,
+    })
+    .await?;
+    assert_eq!(
+        (
+            posted.key.as_str(),
+            posted.title.as_str(),
+            posted.expires_at.as_deref()
+        ),
+        (
+            "account:acc1",
+            "Team Max reached its usage limit",
+            Some("2026-01-01T05:00:00Z")
+        )
+    );
+    // People of the project cannot see it; the administrator can, through the session-bound
+    // read (the browser's session is younger than the clock this test set).
+    assert!(p.w.h.app.notices_for(&p.bob.0, None).await?.is_empty());
+    let ours = |list: Vec<yulius_app::ports::store_ext::NoticeRecord>| {
+        list.into_iter()
+            .filter(|n| n.key.as_str() == "account:acc1")
+            .count()
+    };
+    assert_eq!(ours(p.w.h.app.notices_for(&p.dave.0, None).await?), 1);
+
+    // The same state again is no news; a later reset replaces the notice.
+    publish_subscription(&p, subscription("limited", Some(reset)));
+    publish_subscription(&p, subscription("limited", Some("2026-01-01T06:00:00Z")));
+    let replaced = next_event(&mut events, |e| match e {
+        UiEvent::NoticePosted { notice } if notice.key == "account:acc1" => Some(notice.clone()),
+        _ => None,
+    })
+    .await?;
+    assert_eq!(replaced.expires_at.as_deref(), Some("2026-01-01T06:00:00Z"));
+    assert_eq!(
+        ours(p.w.h.app.notices_for(&p.dave.0, None).await?),
+        1,
+        "one notice per subscription"
+    );
+
+    // Usable again: removed.
+    publish_subscription(&p, subscription("ok", None));
+    let removed = next_event(&mut events, |e| match e {
+        UiEvent::NoticeRemoved { key, .. } if key == "account:acc1" => Some(key.clone()),
+        _ => None,
+    })
+    .await?;
+    assert_eq!(removed, "account:acc1");
+    assert!(
+        !p.w.h
+            .app
+            .notices_for(&p.dave.0, None)
+            .await?
+            .iter()
+            .any(|n| n.key.as_str() == "account:acc1")
+    );
+
+    // Signing in again waits for a person: a decision without an expiry.
+    publish_subscription(&p, subscription("relogin", None));
+    let relogin = next_event(&mut events, |e| match e {
+        UiEvent::NoticePosted { notice } if notice.key == "account:acc1" => Some(notice.clone()),
+        _ => None,
+    })
+    .await?;
+    assert!(
+        relogin.decision && relogin.expires_at.is_none(),
+        "{relogin:?}"
+    );
+    Ok(())
+}
+
+/// Review of #1711: a subscription's status written without an `account.updated` (a usage
+/// reading, a refused sign-in) is reconciled by the tick; a removed subscription's notice goes;
+/// a state whose texts posting normalises (a redacted error, repeated spaces) is posted once.
+#[tokio::test]
+async fn subscription_notices_follow_the_stored_state() -> TestResult {
+    use yulius_app::model::{AccountRecord, AccountStatus};
+    use yulius_app::ports::store::AccountStore as _;
+    use yulius_domain::ids::AccountId;
+    let p = people().await?;
+    let id = AccountId::parse("acc2")?;
+    let secret = concat!("ghp_", "Zx9Notice00Account1Fixture2Body34567");
+    p.w.h
+        .store
+        .insert_account(&AccountRecord {
+            id: id.clone(),
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Team  Two".into(),
+            credential: None,
+            status: AccountStatus::Error,
+            usage_json: None,
+            last_error: Some(format!("token {secret} refused")),
+            created_at: p.w.h.app.now(),
+            updated_at: p.w.h.app.now(),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    let ours = |list: Vec<yulius_app::ports::store_ext::NoticeRecord>| {
+        list.into_iter()
+            .filter(|n| n.key.as_str() == "account:acc2")
+            .map(|n| (n.id, n.title, n.detail))
+            .collect::<Vec<_>>()
+    };
+    p.w.h.app.sync_all_account_notices().await;
+    let first = ours(p.w.h.app.notices_for(&p.dave.0, None).await?);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0].1, "Team Two reports an error");
+    assert!(
+        !first[0].2.clone().unwrap_or_default().contains("Zx9Notice"),
+        "{first:?}"
+    );
+    p.w.h.app.sync_all_account_notices().await;
+    assert_eq!(
+        ours(p.w.h.app.notices_for(&p.dave.0, None).await?),
+        first,
+        "the same state, normalised by posting, is no news"
+    );
+
+    // Usable again, written without an event: the tick's reconcile removes the notice.
+    p.w.h
+        .store
+        .set_account_state(&id, AccountStatus::Ok, None, None, p.w.h.app.now())
+        .await?;
+    p.w.h.app.sync_all_account_notices().await;
+    assert!(ours(p.w.h.app.notices_for(&p.dave.0, None).await?).is_empty());
+
+    // A refused sign-in, then the subscription removed: its decision does not stay for good.
+    p.w.h
+        .store
+        .set_account_state(&id, AccountStatus::Relogin, None, None, p.w.h.app.now())
+        .await?;
+    p.w.h.app.sync_all_account_notices().await;
+    assert_eq!(ours(p.w.h.app.notices_for(&p.dave.0, None).await?).len(), 1);
+    p.w.h.store.delete_account(&id).await?;
+    p.w.h.app.sync_all_account_notices().await;
+    assert!(ours(p.w.h.app.notices_for(&p.dave.0, None).await?).is_empty());
+    Ok(())
+}
+
+/// Review round 2 of #1711 (the reviewer's probe): a limit's notice ends at its reset and is not
+/// posted again by the tick while the stored status still reads limited (no usage reading yet);
+/// the next state of it is told as it comes.
+#[tokio::test]
+async fn a_limit_past_its_reset_is_not_posted_again() -> TestResult {
+    use yulius_app::model::{AccountRecord, AccountStatus};
+    use yulius_app::ports::store::AccountStore as _;
+    use yulius_domain::ids::AccountId;
+    let p = people().await?;
+    let start = yulius_domain::time::parse_rfc3339("2026-01-01T01:00:00Z").ok_or("time")?;
+    let reset = yulius_domain::time::parse_rfc3339("2026-01-01T05:00:00Z").ok_or("time")?;
+    p.w.h.clock.0.store(start.0, Ordering::SeqCst);
+    let id = AccountId::parse("acc3")?;
+    let usage = format!(
+        "{{\"primary\":{{\"used_percent\":100.0,\"window_minutes\":300,\"resets_at\":{}}},\"limit_reached\":false,\"observed_at\":{}}}",
+        reset.0, start.0
+    );
+    p.w.h
+        .store
+        .insert_account(&AccountRecord {
+            id: id.clone(),
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Team Three".into(),
+            credential: None,
+            status: AccountStatus::Limited,
+            usage_json: Some(usage),
+            last_error: None,
+            created_at: p.w.h.app.now(),
+            updated_at: p.w.h.app.now(),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    let ours = |list: Vec<yulius_app::ports::store_ext::NoticeRecord>| {
+        list.into_iter()
+            .filter(|n| n.key.as_str() == "account:acc3")
+            .map(|n| (n.id, n.title, n.expires_at.map(|t| t.0)))
+            .collect::<Vec<_>>()
+    };
+    p.w.h.app.sync_all_account_notices().await;
+    let first = ours(p.w.h.app.notices_for(&p.dave.0, None).await?);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].2, Some(reset.0));
+    // Thirty seconds past the reset, no usage reading yet: the next tick.
+    p.w.h.clock.0.store(reset.0 + 30_000, Ordering::SeqCst);
+    p.w.h.app.sync_all_account_notices().await;
+    let after = ours(p.w.h.app.notices_for(&p.dave.0, None).await?);
+    assert!(
+        after.is_empty(),
+        "a limit notice was posted after its reset: {after:?}"
+    );
+    Ok(())
+}
+
+/// Review round 2 of #1711: an error, or a limit whose reset is unknown, holds until the
+/// subscription is usable: one notice, not one a day.
+#[tokio::test]
+async fn a_lasting_subscription_problem_is_told_once() -> TestResult {
+    use yulius_app::model::{AccountRecord, AccountStatus};
+    use yulius_app::ports::store::AccountStore as _;
+    use yulius_domain::ids::AccountId;
+    let p = people().await?;
+    let id = AccountId::parse("acc4")?;
+    p.w.h
+        .store
+        .insert_account(&AccountRecord {
+            id: id.clone(),
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Team Four".into(),
+            credential: None,
+            status: AccountStatus::Error,
+            usage_json: None,
+            last_error: Some("refused".into()),
+            created_at: p.w.h.app.now(),
+            updated_at: p.w.h.app.now(),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    let ids = || async {
+        Ok::<_, Error>(
+            p.w.h
+                .app
+                .notices_for(&p.dave.0, None)
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str() == "account:acc4")
+                .map(|n| n.id)
+                .collect::<Vec<_>>(),
+        )
+    };
+    p.w.h.app.sync_all_account_notices().await;
+    let first = ids().await?;
+    assert_eq!(first.len(), 1);
+    p.w.h.clock.0.fetch_add(2 * DAY_MS, Ordering::SeqCst);
+    p.w.h.app.prune_notices_now().await;
+    p.w.h.app.sync_all_account_notices().await;
+    assert_eq!(ids().await?, first, "still the one notice two days on");
+    Ok(())
+}

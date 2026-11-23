@@ -346,13 +346,23 @@ pub(crate) fn project_descriptors(names: &[&str]) -> Vec<ToolDescriptor> {
         .collect()
 }
 
+/// Whether a token of `scope` may call `name`, which needs `action` on its project: a tool that
+/// changes something, the person's own state included, needs more than a read token (RMT-011,
+/// SPEC-624).
+fn scope_may_call(scope: TokenScope, name: &str, action: Action) -> bool {
+    scope.allows(action)
+        && (!crate::person_tools::changes(name, action) || scope.allows(Action::Work))
+}
+
 /// The tools a token of `scope` is served by `tools/list` (RMT-011).
 #[must_use]
 pub fn remote_tool_descriptors(scope: TokenScope) -> Vec<ToolDescriptor> {
     // The Superagent's tools the remote MCP serves as they are, with `project` added.
     let shared = project_descriptors(&[PROJECT_TOOLS, &["task_message"]].concat());
     let mut tools: Vec<ToolDescriptor> = own_descriptors().into_iter().chain(shared).collect();
-    tools.retain(|t| remote_tool(&t.name).is_some_and(|(_, action)| scope.allows(action)));
+    tools.retain(|t| {
+        remote_tool(&t.name).is_some_and(|(_, action)| scope_may_call(scope, &t.name, action))
+    });
     tools.sort_by_key(|t| {
         REMOTE_TOOLS
             .iter()
@@ -483,7 +493,7 @@ impl App {
             return text_result(format!("unknown tool: {name}"), true);
         };
         let changes = crate::person_tools::changes(name, action);
-        if !caller.scope.allows(action) || (changes && !caller.scope.allows(Action::Work)) {
+        if !scope_may_call(caller.scope, name, action) {
             self.audit_remote(caller, name, None, false).await;
             return text_result(
                 format!(
@@ -972,6 +982,12 @@ mod tests {
             assert_eq!(
                 remote_tool(&t.name).map(|(_, a)| a),
                 Some(Action::View),
+                "{}",
+                t.name
+            );
+            // A tool that changes the person's own state is not served either (SPEC-624).
+            assert!(
+                !crate::person_tools::changes(&t.name, Action::View),
                 "{}",
                 t.name
             );

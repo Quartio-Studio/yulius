@@ -808,6 +808,17 @@ watching, steering and unblocking.
   (SPEC-458). A task session whose Yulius tools Claude
   Code dropped is reconnected by Yulius, and an agent can call any Yulius tool from its shell with
   `yulius tool` (SPEC-432).
+- **Notices that replace and expire** (SPEC-624, ADR-0462): every notice Yulius raises for a
+  person has a key and an expiry, in the bell, Telegram, the digest and the Status and CI pages.
+  A newer notice with the same key replaces the older one for that person and project, so a
+  task has one entry however often its state or its pull request's CI changes. A subscription
+  problem is one notice per subscription, and an integration failure nobody repairs is one per
+  test. In Telegram, the bot deletes its earlier message about the same thing. A notice goes
+  away by itself at its expiry: a day for reports, three days for good news and the digest,
+  seven for failures. One that waits for a person's decision never expires, and goes a day
+  after it is answered. Expired notices are hidden everywhere, then pruned, and a browser's
+  earlier history gets the same expiries. Script watches (#614) post their output this way,
+  keyed `watch:<name>`.
 - **Notifications on a person's phone** (SPEC-498, ADR-0351, part 1 of #1107): an instance
   administrator sets one Telegram bot for the instance in Settings → Administration (checked with
   Telegram, stored encrypted, never shown again). Each person links their own chat in Settings →
