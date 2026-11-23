@@ -165,13 +165,14 @@ posting to people other than the owner.
 
 ## Plan
 
-- [ ] Watch names, schedules, outcomes and run bounds are decided in the domain
-- [ ] Watches are stored with their state and pending posts (migration 0093)
-- [ ] A watch run executes its script in the project's sandbox under its bounds
-- [ ] A run's exit code posts, replaces, warns or ends the watch
-- [ ] Posts that could not be stored are kept and retried
-- [ ] The scheduler runs due watches and picks them up again after a restart
-- [ ] Independent review of the watch core, every finding answered
+- [x] Watch names, schedules, outcomes and run bounds are decided in the domain
+- [x] Watches are stored with their state and pending posts (migration 0093)
+- [x] A watch run executes its script in the project's sandbox under its bounds
+- [x] A run's exit code posts, replaces, warns or ends the watch
+- [x] Posts that could not be stored are kept and retried
+- [x] The scheduler runs due watches and picks them up again after a restart
+- [x] Review round 1 of the watch core: every finding fixed test-first
+- [ ] Independent review round 2 of the watch core, every finding answered
 - [ ] People create, edit, run, pause and remove watches over HTTP
 - [ ] The Superagent manages watches through MCP tools, and checks point to watches
 - [ ] The project's Watches page offers Run now, Pause/Resume, Edit and Remove
