@@ -324,7 +324,7 @@ impl App {
     }
 
     /// How long ago a person typed into the task's terminal, when one did.
-    fn typed_ms_ago(&self, task_id: &TaskId) -> Option<i64> {
+    pub(crate) fn typed_ms_ago(&self, task_id: &TaskId) -> Option<i64> {
         let typed = self.runtime(task_id).typed_at_ms.load(Ordering::SeqCst);
         (typed > 0).then(|| self.now().0.saturating_sub(typed))
     }

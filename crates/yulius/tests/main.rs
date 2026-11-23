@@ -100,6 +100,7 @@ mod production_branch;
 mod production_protection;
 mod projects;
 mod queued_messages;
+mod rebalance;
 mod recovery;
 mod reference_repo;
 mod remote_mcp;

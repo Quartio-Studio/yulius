@@ -61,6 +61,9 @@ pub struct AppConfig {
     pub person_freeze_pass_ms: u64,
     /// Wait between two resumes of tasks paused for lack of subscription capacity (ROT-010).
     pub resume_stagger_ms: u64,
+    /// The rebalance threshold of each harness (SPEC-629 RBL-001,
+    /// `YULIUS_REBALANCE_PERCENT_<HARNESS>`).
+    pub rebalance: yulius_domain::rebalance::Thresholds,
     /// How long a stopped or closed run gets to exit (interrupt, TERM, kill) before its host is
     /// terminated (SPEC-065 END-008).
     pub stop_escalation_ms: u64,
@@ -111,6 +114,9 @@ pub struct AppConfig {
     /// person's answer ([`crate::cross_sandbox::CROSS_REQUEST_WAIT`], SPEC-335 XSR-003). Tests
     /// shorten it.
     pub cross_request_wait_ms: u64,
+    /// How long a call waits for a brokered run before it answers its state
+    /// ([`crate::commands_run::RUN_WAIT`], SPEC-626 BRK-014). Tests change it.
+    pub command_wait_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
@@ -163,6 +169,7 @@ impl AppConfig {
             events_heartbeat_ms: 20_000,
             person_freeze_pass_ms: 2_000,
             resume_stagger_ms: crate::capacity::RESUME_STAGGER_MS,
+            rebalance: yulius_domain::rebalance::Thresholds::default(),
             stop_escalation_ms: u64::try_from(
                 yulius_domain::task::STOP_INTERRUPT_GRACE_MS
                     + yulius_domain::task::STOP_TERM_GRACE_MS
@@ -187,6 +194,8 @@ impl AppConfig {
                 crate::cross_sandbox::CROSS_REQUEST_WAIT.as_millis(),
             )
             .unwrap_or(240_000),
+            command_wait_ms: u64::try_from(crate::commands_run::RUN_WAIT.as_millis())
+                .unwrap_or(240_000),
             agent_cpus: None,
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),
@@ -320,6 +329,9 @@ pub struct App {
     pub(crate) move_helper: OnceLock<Arc<dyn crate::ports::migration::MoveHelper>>,
     /// One ask for a move at a time: what it finds and what it writes belong together.
     pub(crate) move_asks: tokio::sync::Mutex<()>,
+    /// Woken whenever a brokered run changes state: calls waiting on one read it again
+    /// (SPEC-626 BRK-014).
+    pub(crate) command_runs_changed: tokio::sync::Notify,
     /// Rolls queued for the next harness draws ([`App::queue_harness_rolls`], tests); empty:
     /// each draw uses unbiased rejection sampling over random bytes (SPEC-520 RHM-001).
     pub(crate) harness_rolls: Mutex<std::collections::VecDeque<u8>>,
@@ -443,6 +455,7 @@ impl App {
             updates: crate::updates::UpdateState::default(),
             move_helper: OnceLock::new(),
             move_asks: tokio::sync::Mutex::new(()),
+            command_runs_changed: tokio::sync::Notify::new(),
             harness_rolls: Mutex::default(),
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),

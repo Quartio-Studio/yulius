@@ -251,7 +251,12 @@ pub(crate) fn rotation_view(account: &AccountRecord, in_use: u32) -> AccountView
     }
 }
 
-fn start_input(task: &TaskRecord, accounts: Vec<AccountView>, at: Timestamp) -> RotationInput {
+fn start_input(
+    task: &TaskRecord,
+    accounts: Vec<AccountView>,
+    at: Timestamp,
+    rebalance: f64,
+) -> RotationInput {
     let model = task_model(task);
     RotationInput {
         current: None,
@@ -262,6 +267,7 @@ fn start_input(task: &TaskRecord, accounts: Vec<AccountView>, at: Timestamp) -> 
         accounts,
         now: at,
         threshold: rotation::THRESHOLD,
+        rebalance,
     }
 }
 
@@ -282,7 +288,8 @@ impl ContinuationAdmission {
             .filter(|account| account.credential.is_some())
             .map(|account| rotation_view(account, 0))
             .collect();
-        let input = start_input(task, views, at);
+        // A person's choice ranks nothing: the rebalance threshold plays no part.
+        let input = start_input(task, views, at, rotation::THRESHOLD);
         let (decision, reason) = rotation::decide(
             &input,
             Trigger::Manual {
@@ -339,7 +346,12 @@ impl App {
         Ok(RotationInput {
             current,
             running,
-            ..start_input(task, self.account_views().await?, self.now())
+            ..start_input(
+                task,
+                self.account_views().await?,
+                self.now(),
+                self.config.rebalance.of(task.harness.provider()),
+            )
         })
     }
 
@@ -408,6 +420,7 @@ impl App {
             accounts,
             now: self.now(),
             threshold: rotation::THRESHOLD,
+            rebalance: self.config.rebalance.of(provider),
         };
         match rotation::decide(&input, Trigger::Start).0 {
             Decision::Switch { account } => self
@@ -451,6 +464,7 @@ impl App {
             accounts: self.account_views().await?,
             now: self.now(),
             threshold: rotation::THRESHOLD,
+            rebalance: self.config.rebalance.of(provider),
         };
         match rotation::decide(&input, trigger).0 {
             Decision::Switch { account } => Ok(crate::supervisor::Placed {
@@ -1216,6 +1230,10 @@ impl App {
             accounts: views,
             now,
             threshold,
+            rebalance: self
+                .config
+                .rebalance
+                .of(yulius_domain::harness::Provider::Anthropic),
         };
         let placing = rotation::placing_family(&default_task);
         // Fable work (a task set to a Fable model) runs its fallback while no subscription can

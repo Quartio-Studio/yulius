@@ -398,11 +398,12 @@ watching, steering and unblocking.
   counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
   review round, and their named review subagents populate the same delivery history and Review
   card. Antigravity tasks request Gemini 4 Neon (High).
-  Forking a task (the API's fork and the `task_fork` tool) starts a new task from another task's
-  conversation and committed work: on the same agent, on a branch and worktree of its own with a
-  copy of its plan, and with an optional message saying what to do differently. The task forked
-  goes on untouched, and each task names the other. Claude Code and Codex tasks can be forked;
-  Antigravity tasks cannot (SPEC-628).
+  Fork… (in a task's menu and on its details page, and the `task_fork` tool) starts a new task
+  from another task's conversation and committed work: on the same agent, on a branch and
+  worktree of its own with a copy of its plan, and with an optional message saying what to do
+  differently, a model and a subscription. The task forked goes on untouched, and each task's page
+  links the other ("Fork of #N", "Forked: #M"). Claude Code and Codex tasks can be forked;
+  Antigravity tasks cannot, and Fork… says why (SPEC-628).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another
@@ -484,7 +485,16 @@ watching, steering and unblocking.
 - **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
   Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
-  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why.
+  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
+  subscription past its harness's rebalance threshold (95 % of a 5-hour, weekly or model's
+  weekly window by default) gets no new task while another has room, and every 2 minutes its
+  idle tasks (the turn ended, also while waiting for a person) move to the subscription with the
+  most room, in the same session with nothing typed (an idle goal session, whose goal a restart
+  would type again, is parked instead and resumes elsewhere); a task mid-turn waits for its
+  turn's end, and one its person put on that subscription with "Run on…" or "Continue on…" stays
+  (SPEC-629). Each move is told once in the task's terminal, its info and one notice for its
+  person (the task's latest move, park or wait replaces its earlier one), as is a task that
+  stays because nothing has room.
   If a person has already signed it in again, the new sign-in stays available. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
   under Needs you. A subscription out of a model's usage credits (Fable runs on a weekly
