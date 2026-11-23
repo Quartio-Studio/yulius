@@ -1189,6 +1189,15 @@ impl App {
         self.pr_news_due_of(task, record.as_ref(), false).await
     }
 
+    /// Whether the watch already pasted run `run`'s failure of pull request `pr` into `task`'s
+    /// session (SPEC-578).
+    pub(crate) fn run_failure_told(&self, task: &TaskId, pr: u64, run: &str) -> bool {
+        self.with_pr_notices(|told| {
+            told.get(task.as_str())
+                .is_some_and(|t| t.pr == pr && t.keys.get("run").map(String::as_str) == Some(run))
+        })
+    }
+
     /// Newest Yulius CI run for pull request `pr` in `sandbox`, if any (SPEC-578).
     pub(crate) async fn latest_pr_ci_run(
         &self,
@@ -1280,11 +1289,7 @@ impl App {
                 Ok(Some(sandbox)) if sandbox.is_playground()
             )
         {
-            return self.with_pr_notices(|told| {
-                told.get(task.id.as_str()).is_none_or(|t| {
-                    t.pr != pr || t.keys.get("run").map(String::as_str) != Some(run.id.as_str())
-                })
-            });
+            return !self.run_failure_told(&task.id, pr, &run.id);
         }
         false
     }
@@ -2282,7 +2287,13 @@ impl App {
     /// Whether a failed CI run at `failed_sha` has already been superseded by a newer commit
     /// pushed to `task`'s feature branch (SPEC-553 REP-002). Keeps stale failed-run notices
     /// suppressed across repeated `watch_prs` passes (and restarts) when no new CI run exists yet.
-    async fn run_superseded_by_pushed_head(&self, task: &TaskRecord, failed_sha: &str) -> bool {
+    /// The Stop gate asks it too before continuing a Codex goal on that failure (ADR-0464).
+    /// A Git error counts as not superseded, for both.
+    pub(crate) async fn run_superseded_by_pushed_head(
+        &self,
+        task: &TaskRecord,
+        failed_sha: &str,
+    ) -> bool {
         let Some(worktree) = task.worktree_path.as_deref() else {
             return false;
         };
