@@ -2110,6 +2110,34 @@ do its CD runs (dev: all; production: those its `[cd.<name>]` `variables` names;
 | PUT | `/api/sandboxes/{sid}/variables` | `{variables: [{name, value, description?}], only_new?: bool}` → `{created, changed, unchanged, existing}` (names): creates or changes each, all checked before any is written and each outcome decided in one transaction; `only_new` (the secrets import) leaves an existing one as it is (`existing`). Write access. `name` follows agent secret names; `value` one line, ≤ 4096 bytes, may be empty; `description` ≤ 1000 characters, absent keeps the stored one. 422 for a bad entry, a name given twice, more than 200 in the body or in the project; 409 when a name is an agent secret of the project (its own, or a global one switched on for it). Audited `variable.create` / `variable.update` (name and changed fields, never the value) |
 | DELETE | `/api/sandboxes/{sid}/variables/{name}` | → 204 (404 when there is none). Write access. Audited `variable.delete` |
 
+**Script watches** — a project's bash scripts on a schedule, run by Yulius in the sandbox without
+an agent, whose output becomes a notice keyed `watch:<name>` for the watch's owner
+([SPEC-630](../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
+[ADR-0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md)).
+`Watch` is `{id, sandbox_id, name, script, every?, cron?, utc_offset_minutes, expiry?,
+timeout_seconds, secrets, owner_id, owner, created_via, created_at, state: "active"|"running"|"paused"|"ended",
+ended_reason?, next_run_at?, last_started_at?, last_ended_at?, last_exit?, last_failure?,
+last_output?, last_errors?, failures, runs, posts, pending_posts, can_edit, can_remove}`; the last
+output and error tail are redacted of the project's agent secrets.
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/watches` | (read) → `[Watch]` by name |
+| POST | `/api/sandboxes/{sid}/watches` | (write) `{name, script, every?: "15m"\|"2h"\|"1d" (1 minute to 7 days), cron?, utc_offset_minutes?, expiry?: "never"\|"2h"\|"3d", timeout_seconds?: 1-3600 (300), secrets?: [NAME]}` → 201 `Watch`, owned by the caller. Exactly one of `every` and `cron`. 422 for a name outside 1-40 of `a-z0-9-` (starting with a letter or digit), an empty script or one over 16 KiB, a bad schedule, an expiry that is a time, more than 20 secret names, an unknown field; 409 for a name taken or a project with 20 watches. Audited `watch.create` |
+| GET | `/api/watches/{id}` | (read) → `Watch` |
+| PUT | `/api/watches/{id}` | (its owner) the same body without a new `name` (a name never changes: it keys the watch's notices; 422 for another) → `Watch`; 409 when it changed meanwhile. A new schedule counts from now. Audited `watch.update` |
+| POST | `/api/watches/{id}/run` | (its owner) → 202 `Watch`: it runs once at once, also when paused or ended, and posts as usual; 409 while a run of it goes. Audited `watch.run` |
+| POST | `/api/watches/{id}/pause` | (its owner or a project administrator) → `Watch`. Audited `watch.pause` |
+| POST | `/api/watches/{id}/resume` | (its owner) → `Watch`; an ended watch starts again, its schedule counted from now. Audited `watch.resume` |
+| DELETE | `/api/watches/{id}` | (its owner or a project administrator) → 204: its going run is cancelled and its notices removed. Audited `watch.remove` |
+
+Each change, and each run's start and end, publishes `watches.updated` `{"sandbox_id"}`. A
+run's output posts the notice `watch:<name>` (category `done`), the third failure in a row the
+notice `watch:<name>:failing` (category `failed`), both for the owner only
+(`GET /api/me/notices`). The Superagent and a person's own agent manage watches with the person
+tools `watches_list`, `watch_create`, `watch_update`, `watch_run`, `watch_pause` (with
+`paused: false` to resume) and `watch_remove`, taking the same fields as the bodies above.
+
 **Brokered commands** — a project's CLIs that need an agent secret as a file, run by agents
 outside their sandbox ([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
 [ADR-0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md)).

@@ -995,3 +995,240 @@ async fn a_removed_projects_lost_run_is_recovered_and_runs_write_no_core() -> Te
     );
     Ok(())
 }
+
+async fn http(
+    w: &World,
+    method: Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+    who: &Creds,
+) -> Result<support::Resp, Error> {
+    call(&w.h.router, method, path, body, who).await
+}
+
+/// WCH-011: people list, create, edit, run, pause, resume and remove watches over HTTP, each by
+/// their rights, and each change is audited.
+#[tokio::test]
+async fn people_manage_watches_over_http() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+    let w = world().await?;
+    let bob = seed_github_user(&w.h, "u-bob", "bob").await?;
+    let carol = seed_github_user(&w.h, "u-carol", "carol").await?;
+    w.h.github.set_perm("bob", "acme/app", perms("read"));
+    w.h.github.set_perm("carol", "acme/app", perms("admin"));
+    let body = serde_json::json!({
+        "name": "release", "script": "echo v1", "every": "1h", "expiry": "2h", "secrets": ["API_KEY"]
+    });
+
+    let refused = http(
+        &w,
+        Method::POST,
+        "/api/sandboxes/s1/watches",
+        Some(body.clone()),
+        &bob,
+    )
+    .await?;
+    assert!(
+        refused.status.is_client_error(),
+        "a reader creates none: {}",
+        refused.status
+    );
+    let made = http(
+        &w,
+        Method::POST,
+        "/api/sandboxes/s1/watches",
+        Some(body.clone()),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let id = made.body["id"].as_str().ok_or("id")?.to_owned();
+    assert_eq!(made.body["owner"], "alice");
+    assert_eq!(made.body["every"], "1h");
+    assert_eq!(made.body["state"], "active");
+    assert_eq!(
+        (
+            made.body["can_edit"].as_bool(),
+            made.body["can_remove"].as_bool()
+        ),
+        (Some(true), Some(true))
+    );
+    let again = http(
+        &w,
+        Method::POST,
+        "/api/sandboxes/s1/watches",
+        Some(body),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+
+    let listed = http(&w, Method::GET, "/api/sandboxes/s1/watches", None, &bob).await?;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    assert_eq!(listed.body[0]["name"], "release");
+    assert_eq!(
+        (
+            listed.body[0]["can_edit"].as_bool(),
+            listed.body[0]["can_remove"].as_bool()
+        ),
+        (Some(false), Some(false))
+    );
+    let by_admin = http(&w, Method::GET, &format!("/api/watches/{id}"), None, &carol).await?;
+    assert_eq!(
+        (
+            by_admin.body["can_edit"].as_bool(),
+            by_admin.body["can_remove"].as_bool()
+        ),
+        (Some(false), Some(true))
+    );
+
+    // Only the owner edits; a name never changes.
+    let edit =
+        serde_json::json!({"script": "echo v2", "cron": "0 9 * * *", "utc_offset_minutes": 60});
+    let other = http(
+        &w,
+        Method::PUT,
+        &format!("/api/watches/{id}"),
+        Some(edit.clone()),
+        &carol,
+    )
+    .await?;
+    assert_eq!(other.status, StatusCode::FORBIDDEN, "{}", other.body);
+    let renamed = http(
+        &w,
+        Method::PUT,
+        &format!("/api/watches/{id}"),
+        Some(serde_json::json!({"name": "other", "script": "echo", "every": "1h"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        renamed.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        renamed.body
+    );
+    let edited = http(
+        &w,
+        Method::PUT,
+        &format!("/api/watches/{id}"),
+        Some(edit),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.body);
+    assert_eq!(
+        (edited.body["script"].as_str(), edited.body["cron"].as_str()),
+        (Some("echo v2"), Some("0 9 * * *"))
+    );
+    assert_eq!(edited.body["every"], serde_json::Value::Null);
+
+    // Run now: its owner only; it posts as a scheduled run does.
+    let bob_runs = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/run"),
+        None,
+        &bob,
+    )
+    .await?;
+    assert!(bob_runs.status.is_client_error());
+    let ran = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/run"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(ran.status, StatusCode::ACCEPTED, "{}", ran.body);
+    until("the run ended", || async {
+        Ok(w.watch(&id).await?.state.runs == 1)
+    })
+    .await?;
+    assert_eq!(
+        keys(&w.notices().await?),
+        [("watch:release", "release: v2")]
+    );
+
+    // An administrator pauses; only the owner resumes.
+    let paused = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/pause"),
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(
+        (paused.status, paused.body["state"].as_str()),
+        (StatusCode::OK, Some("paused"))
+    );
+    w.advance(48 * 60 * MINUTE);
+    assert_eq!(w.tick().await?, 0, "paused");
+    let not_carol = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/resume"),
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(not_carol.status, StatusCode::FORBIDDEN);
+    let resumed = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/resume"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(resumed.body["state"], "active");
+    assert!(resumed.body["next_run_at"].is_string());
+
+    // Removal: its notices go with it.
+    let bob_removes = http(
+        &w,
+        Method::DELETE,
+        &format!("/api/watches/{id}"),
+        None,
+        &bob,
+    )
+    .await?;
+    assert!(bob_removes.status.is_client_error());
+    let removed = http(
+        &w,
+        Method::DELETE,
+        &format!("/api/watches/{id}"),
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    assert!(w.notices().await?.is_empty(), "its notices are removed");
+    let gone = http(
+        &w,
+        Method::GET,
+        &format!("/api/watches/{id}"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+
+    for action in [
+        "watch.create",
+        "watch.update",
+        "watch.run",
+        "watch.pause",
+        "watch.resume",
+        "watch.remove",
+    ] {
+        let entries = w.h.store.audit_details("s1", action, 5).await?;
+        assert!(
+            entries.iter().any(|e| e.contains("release")),
+            "{action}: {entries:?}"
+        );
+    }
+    Ok(())
+}

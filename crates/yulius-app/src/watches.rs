@@ -70,7 +70,7 @@ type Cancel = (SandboxId, watch::Sender<Option<String>>);
 
 /// What the scheduler holds between ticks.
 pub struct WatchRuntime {
-    permits: Arc<Semaphore>,
+    pub(crate) permits: Arc<Semaphore>,
     /// The going run of each watch, with its project, to cancel it (a removal).
     cancels: Mutex<HashMap<String, Cancel>>,
     /// Ends of runs the store refused, oldest first.
@@ -168,6 +168,67 @@ pub fn watch_expiry(text: &str) -> Result<Expiry, String> {
     }
 }
 
+/// A watch's definition once checked (WCH-001): what [`App::watch_create`] and an edit store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheckedDefinition {
+    pub(crate) every_seconds: Option<i64>,
+    pub(crate) cron: Option<String>,
+    pub(crate) utc_offset_minutes: i32,
+    pub(crate) expiry: Option<String>,
+    pub(crate) timeout_seconds: u32,
+    pub(crate) secrets: Vec<String>,
+}
+
+/// Checks `new`'s script, schedule, expiry, timeout and secret names (its name aside).
+///
+/// # Errors
+/// `Invalid`, with the rule in words.
+pub(crate) fn checked_definition(new: &NewWatch) -> AppResult<CheckedDefinition> {
+    dom::check_script(&new.script).map_err(AppError::Invalid)?;
+    let schedule = match (new.every.as_deref(), new.cron.as_deref()) {
+        (Some(every), None) => WatchSchedule::every(every),
+        (None, Some(cron)) => WatchSchedule::cron(cron, new.utc_offset_minutes),
+        _ => Err("a watch runs either every interval (every) or on a cron schedule (cron)".into()),
+    }
+    .map_err(AppError::Invalid)?;
+    if let Some(expiry) = &new.expiry {
+        watch_expiry(expiry).map_err(AppError::Invalid)?;
+    }
+    let timeout_seconds = new.timeout_seconds.unwrap_or(dom::TIMEOUT_DEFAULT_SECONDS);
+    dom::check_timeout(timeout_seconds).map_err(AppError::Invalid)?;
+    let mut secrets: Vec<String> = Vec::new();
+    for secret in &new.secrets {
+        let secret = secret.trim();
+        yulius_domain::vault::SecretName::parse(secret)
+            .map_err(|e| AppError::Invalid(format!("{secret}: {e}")))?;
+        if !secrets.iter().any(|s| s == secret) {
+            secrets.push(secret.to_owned());
+        }
+    }
+    if secrets.len() > MAX_WATCH_SECRETS {
+        return Err(AppError::Invalid(format!(
+            "a watch names at most {MAX_WATCH_SECRETS} agent secrets"
+        )));
+    }
+    let (every_seconds, cron, utc_offset_minutes) = match schedule {
+        WatchSchedule::Every(seconds) => (Some(seconds), None, 0),
+        WatchSchedule::Cron(cron, offset) => (None, Some(cron.as_str().to_owned()), offset),
+    };
+    Ok(CheckedDefinition {
+        every_seconds,
+        cron,
+        utc_offset_minutes,
+        expiry: new
+            .expiry
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(str::to_owned),
+        timeout_seconds,
+        secrets,
+    })
+}
+
 /// A pending post's notice, as kept (WCH-008).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct PostBody {
@@ -199,50 +260,19 @@ impl App {
     /// a name taken in the project or a full project; store failures.
     pub async fn watch_create(&self, new: NewWatch) -> AppResult<WatchRecord> {
         let name = WatchName::parse(&new.name).map_err(AppError::Invalid)?;
-        dom::check_script(&new.script).map_err(AppError::Invalid)?;
-        let schedule = match (new.every.as_deref(), new.cron.as_deref()) {
-            (Some(every), None) => WatchSchedule::every(every),
-            (None, Some(cron)) => WatchSchedule::cron(cron, new.utc_offset_minutes),
-            _ => Err(
-                "a watch runs either every interval (every) or on a cron schedule (cron)".into(),
-            ),
-        }
-        .map_err(AppError::Invalid)?;
-        if let Some(expiry) = &new.expiry {
-            watch_expiry(expiry).map_err(AppError::Invalid)?;
-        }
-        let timeout = new.timeout_seconds.unwrap_or(dom::TIMEOUT_DEFAULT_SECONDS);
-        dom::check_timeout(timeout).map_err(AppError::Invalid)?;
-        let mut secrets: Vec<String> = Vec::new();
-        for secret in &new.secrets {
-            let secret = secret.trim();
-            yulius_domain::vault::SecretName::parse(secret)
-                .map_err(|e| AppError::Invalid(format!("{secret}: {e}")))?;
-            if !secrets.iter().any(|s| s == secret) {
-                secrets.push(secret.to_owned());
-            }
-        }
-        if secrets.len() > MAX_WATCH_SECRETS {
-            return Err(AppError::Invalid(format!(
-                "a watch names at most {MAX_WATCH_SECRETS} agent secrets"
-            )));
-        }
+        let checked = checked_definition(&new)?;
         let now = self.now();
-        let (every_seconds, cron, offset) = match schedule {
-            WatchSchedule::Every(seconds) => (Some(seconds), None, 0),
-            WatchSchedule::Cron(cron, offset) => (None, Some(cron.as_str().to_owned()), offset),
-        };
         let record = WatchRecord {
             id: random_id(self, "wt_"),
             sandbox_id: new.sandbox,
             name: name.as_str().to_owned(),
             script: new.script,
-            every_seconds,
-            cron,
-            utc_offset_minutes: offset,
-            expiry: new.expiry.map(|e| e.trim().to_owned()),
-            timeout_seconds: timeout,
-            secrets,
+            every_seconds: checked.every_seconds,
+            cron: checked.cron,
+            utc_offset_minutes: checked.utc_offset_minutes,
+            expiry: checked.expiry,
+            timeout_seconds: checked.timeout_seconds,
+            secrets: checked.secrets,
             owner: new.owner,
             created_via: new.created_via.to_owned(),
             created_at: now,
@@ -317,6 +347,7 @@ impl App {
         self.watches
             .cancels()
             .insert(watch.id.clone(), (watch.sandbox_id.clone(), cancel));
+        self.publish_watches(&watch.sandbox_id);
         let bounds = self.config.watches.bounds;
         let result = match self.deps.store.sandbox(&watch.sandbox_id).await {
             Ok(Some(sandbox)) if sandbox.removed_at.is_none() => {
@@ -340,7 +371,26 @@ impl App {
         self.watches.cancels().remove(&watch.id);
         self.watch_record_end(&watch, &run_id, started, &result)
             .await;
+        self.publish_watches(&watch.sandbox_id);
         true
+    }
+
+    /// Tells the project's open Watches pages to read them again (WCH-013).
+    pub(crate) fn publish_watches(&self, sandbox: &SandboxId) {
+        self.events.publish(
+            Some(sandbox.clone()),
+            false,
+            yulius_contracts::events::UiEvent::WatchesUpdated {
+                sandbox_id: sandbox.as_str().to_owned(),
+            },
+        );
+    }
+
+    /// Cancels the going run of watch `id`, if any (it was removed).
+    pub(crate) fn watch_cancel(&self, id: &str, reason: &str) {
+        if let Some((_, cancel)) = self.watches.cancels().get(id) {
+            cancel.send_replace(Some(reason.to_owned()));
+        }
     }
 
     /// Records a run's end and its posts (WCH-005 to WCH-008), then delivers them.

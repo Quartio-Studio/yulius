@@ -42,6 +42,7 @@ mod terminal;
 mod updates;
 mod uploads;
 mod variables;
+mod watches;
 mod workflows;
 
 use axum::Router;
@@ -324,6 +325,20 @@ pub fn public() -> Router<AppState> {
             "/api/sandboxes/{sid}/commands/{id}",
             put(commands::update).delete(commands::delete),
         )
+        // Script watches (SPEC-630 WCH-011).
+        .route(
+            "/api/sandboxes/{sid}/watches",
+            get(watches::list).post(watches::create),
+        )
+        .route(
+            "/api/watches/{id}",
+            get(watches::get)
+                .put(watches::update)
+                .delete(watches::delete),
+        )
+        .route("/api/watches/{id}/run", post(watches::run))
+        .route("/api/watches/{id}/pause", post(watches::pause))
+        .route("/api/watches/{id}/resume", post(watches::resume))
         .route("/api/tasks/{tid}/handoffs", get(handoffs::task))
         .route("/api/tasks/{tid}/handoffs/{hid}", post(handoffs::answer))
         // The personal Telegram channel's bot (SPEC-498 TGC-001).
