@@ -117,6 +117,9 @@ pub struct AppConfig {
     /// How long a call waits for a brokered run before it answers its state
     /// ([`crate::commands_run::RUN_WAIT`], SPEC-626 BRK-014). Tests change it.
     pub command_wait_ms: u64,
+    /// A minute of a brokered command's `approval_minutes` (SPEC-626 BRK-014): 60 000; tests
+    /// shorten it.
+    pub command_minute_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
@@ -196,6 +199,7 @@ impl AppConfig {
             .unwrap_or(240_000),
             command_wait_ms: u64::try_from(crate::commands_run::RUN_WAIT.as_millis())
                 .unwrap_or(240_000),
+            command_minute_ms: 60_000,
             agent_cpus: None,
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),

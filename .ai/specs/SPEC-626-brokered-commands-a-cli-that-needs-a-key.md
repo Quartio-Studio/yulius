@@ -181,7 +181,8 @@ definition says. No answer within the stated time is a no. The owner approved th
   `approval_minutes`). The task is flagged Needs you with the full command line (binary, fixed
   arguments with placeholders unexpanded, then the agent's arguments), the minutes, and how to
   answer. The flag reaches the sidebar's Needs you group and the person's Telegram notices as
-  every flag does. `command_run` waits up to 240 s for the answer and the run, then answers
+  every flag does. The request replaces an open request of the agent's, and one run of a task
+  waits for approval at a time. `command_run` waits up to 240 s for the answer and the run, then answers
   `waiting` or `running` with the run's id. `command_result {id}` waits again, up to 240 s. Only
   the task that started a run reads it.
 - **BRK-015** People who manage the project's secrets (`Action::Configure`) answer, from a browser
@@ -209,8 +210,8 @@ definition says. No answer within the stated time is a no. The owner approved th
 - [x] Bound a run's time and output and blank every stored secret from it
 - [x] command_run and command_result for task agents, audited, and the yulius run CLI
 - [ ] Independent review of the run slice, findings fixed test-first
-- [ ] Ask a person to approve a run in Needs you with the full command line
-- [ ] Approve or reject in the browser or by a Telegram reply; no answer in time is a no
+- [x] Ask a person to approve a run in Needs you with the full command line
+- [x] Approve or reject in the browser or by a Telegram reply; no answer in time is a no
 - [ ] Independent review of the approval slice, findings fixed test-first
 - [ ] Commands section on the Secrets page with approvals, end-to-end tested
 - [ ] Product, architecture, API, operations and security docs and the changes log

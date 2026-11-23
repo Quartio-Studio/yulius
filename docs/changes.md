@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-23
 
+- A brokered command that needs approval waits for a person: its task is in Needs you with the full command line, a person who manages the project's secrets approves or rejects it on the Secrets page's API or by replying `approve` or `reject` to its Telegram notice, and no answer within the command's minutes is a no. [SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md)
 - `yulius run` (brokered commands) works in a task's session: the agent's `yulius` command passes it on, as the CLI test of session commands requires; the dev gate failed on it since #1715.
 - Fork… in a task's menu and on its details page opens a dialog for what the fork should do differently, its model and its subscription, then opens the new task; each task's page links the other ("Fork of #N", "Forked: #M"). [SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md)
 

@@ -2869,3 +2869,80 @@ async fn telegram_needs_you_notification_redacts_generic_credential_shapes() -> 
     );
     Ok(())
 }
+
+/// SPEC-626 BRK-015: a reply `reject` or `approve` to a brokered run's Needs you notice answers
+/// that run as the person who replied, who manages the project's secrets; a reply to the notice
+/// of a run already answered answers nothing else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_to_a_runs_notice_answers_that_run() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    w.h.github.set_perm("alice", "acme/app", perms("admin"));
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let made = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "DEPLOY_KEY", "value": "deploy-key-synthetic-0042"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let made = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/commands",
+        Some(json!({"name": "deploy", "binary": "/usr/bin/true", "secret": "DEPLOY_KEY"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&w.h, "t1", "tok-t1-telegram-0123456789").await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        "tok-t1-telegram-0123456789",
+        "command_run",
+        json!({"name": "deploy", "args": ["status"]}),
+    );
+    let reply = async {
+        w.fake.wait_sent(100, 1).await?;
+        let notice = loop {
+            if let Some(id) = w.fake.sent_id(100, "Needs you") {
+                break id;
+            }
+            w.fake.wait_sent(100, w.fake.sent_to(100).len() + 1).await?;
+        };
+        let text = w.fake.sent_to(100).last().cloned().unwrap_or_default();
+        assert!(
+            text.contains("/usr/bin/true --key-file") || text.contains("/usr/bin/true status"),
+            "{text}"
+        );
+        let before = w.fake.sent_to(100).len();
+        w.fake.raw(
+            100,
+            json!({"text": "Reject", "reply_to_message": {"message_id": notice}}),
+        );
+        let answer = next_reply(&w, 100, before).await?;
+        assert_eq!(answer, "Rejected: task #1's run of deploy runs nothing.");
+        // The same notice answers nothing more, and is no message to the task either.
+        let before = w.fake.sent_to(100).len();
+        w.fake.raw(
+            100,
+            json!({"text": "approve", "reply_to_message": {"message_id": notice}}),
+        );
+        let answer = next_reply(&w, 100, before).await?;
+        assert_eq!(answer, "Not answered: this run is rejected already");
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (ran, replied) = tokio::join!(asked, reply);
+    replied?;
+    let ran = support::tool_text(&ran?);
+    assert!(ran.to_string().contains("rejected"), "{ran}");
+    let details = w.h.store.audit_details("s1", "command.reject", 5).await?;
+    assert_eq!(details.len(), 1, "{details:?}");
+    assert!(details[0].contains("telegram"), "{details:?}");
+    Ok(())
+}

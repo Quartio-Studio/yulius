@@ -147,11 +147,19 @@ impl App {
             .await;
         }
         let approve = dom::Approve::parse(&def.approve).unwrap_or(dom::Approve::Always);
-        if dom::needs_approval(approve, &def.send_flags, &call.args, call.changes) {
-            // Slice 2: approvals arrive with slice 3 (SPEC-626 BRK-014).
+        let ask = dom::needs_approval(approve, &def.send_flags, &call.args, call.changes);
+        // One run of a task waits for a person at a time: its request is the task's Needs you.
+        if ask
+            && let Some(waiting) = self
+                .deps
+                .store
+                .waiting_command_run_of_task(&task.id)
+                .await?
+        {
             return refuse(format!(
-                "this run of {} needs a person's approval, which Yulius does not ask for yet",
-                def.name
+                "run {} of this task waits for a person's approval already: wait for its answer \
+                 (command_result)",
+                waiting.id
             ))
             .await;
         }
@@ -162,6 +170,8 @@ impl App {
             )
             .await;
         let now = self.now();
+        let minutes = i64::from(def.approval_minutes);
+        let minute = i64::try_from(self.config.command_minute_ms).unwrap_or(60_000);
         let run = CommandRunRecord {
             id: self.new_command_run_id(),
             sandbox_id: sandbox.id.clone(),
@@ -173,15 +183,15 @@ impl App {
             args: call.args.clone(),
             line,
             changes: call.changes,
-            state: "running".into(),
+            state: if ask { "waiting" } else { "running" }.into(),
             reason: None,
-            deadline: None,
+            deadline: ask.then(|| now.plus_millis(minutes.saturating_mul(minute))),
             answered_by: None,
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
             created_at: now,
-            started_at: Some(now),
+            started_at: (!ask).then_some(now),
             ended_at: None,
         };
         // Stored and run on a task of its own, so a call cut meanwhile leaves no row without an
@@ -194,7 +204,11 @@ impl App {
             let _ = stored_tx.send(inserted);
             if go {
                 crate::race::reached(crate::race::Point::CommandRunStored, &app.config.data_dir);
-                app.run_command_to_its_end(place, run).await;
+                if ask {
+                    app.ask_command_approval(&place, &run, &def).await;
+                } else {
+                    app.run_command_to_its_end(place, run).await;
+                }
             }
         });
         match stored.await.map_err(AppError::internal)? {
@@ -442,7 +456,7 @@ impl App {
         Err(AppError::Forbidden(format!("command refused: {reason}")))
     }
 
-    async fn audit_command_run(
+    pub(crate) async fn audit_command_run(
         &self,
         sandbox: &SandboxRecord,
         actor: &str,
@@ -471,6 +485,8 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn reconcile_command_runs(&self) -> AppResult<u32> {
+        // A run that waited past its deadline while Yulius was down is a no (BRK-016).
+        self.expire_due_command_runs().await;
         let mut lost = 0;
         for run in self.deps.store.command_runs_in_state("running").await? {
             self.remove_command_run_files(&run.sandbox_id, &run.id)

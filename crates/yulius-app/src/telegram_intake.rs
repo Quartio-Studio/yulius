@@ -161,6 +161,18 @@ impl App {
                 about: about(&record.id),
             });
         }
+        // `approve` or `reject` to a brokered run's notice answers that run (SPEC-626 BRK-015).
+        let word = text.to_lowercase();
+        if matches!(word.as_str(), "approve" | "reject")
+            && let Some(answer) = self
+                .telegram_command_answer(person, &record, sent.asked_at, word == "approve")
+                .await
+        {
+            return Ok(IntakeAnswer {
+                text: self.redact_for_sandbox(&record.sandbox_id, &answer).await,
+                about: about(&record.id),
+            });
+        }
         let caller = ProjectCaller {
             sandbox: record.sandbox_id.clone(),
             user: person.id.clone(),

@@ -2129,16 +2129,32 @@ task's agent, `you_may_run`.
 
 Task agents run one with `command_run {name, args?: [string], changes?: bool}` and follow it with
 `command_result {id}` (a run another task started: not found). Each call waits up to 240 s for
-the run's end and answers `{id, command, state, reason?, exit_code?, stdout?, stderr?}`; `state`
-is `running` until it ends `done` (with its exit code), `timed_out`, `output_limit`, `failed` or
-`lost`. stdout and stderr come back redacted of every agent secret of the project and cut to
+the run's end and answers `{id, command, line, asked_at, state, reason?, approval_until?,
+exit_code?, stdout?, stderr?}` (`line`: the redacted command line); `state` is `waiting` while a
+person decides (until `approval_until`), `running` until it ends `done` (with its exit code),
+`timed_out`, `output_limit`, `failed` or `lost`, or `rejected` or `expired` without running. stdout and stderr come back redacted of every agent secret of the project and cut to
 96 KiB each (`[… N bytes more]`). A refusal is a tool error `command refused: <reason>`, audited
 `command.refused` (task, command, redacted arguments, reason naming an argument by its place,
 never its value); every run is audited `command.run`. At most 4 runs of a project's commands
 run at once (a fifth is refused). `command_result {}` without an id reads the task's newest run. In a task's shell, `yulius run NAME [ARGS…]` does the same and exits with the
 command's code (125 when it was refused or ended without one, 2 for a usage or token error, 3 when
-Yulius could not be reached). Runs that need a person's approval are refused until approvals
-arrive.
+Yulius could not be reached).
+
+A run that needs approval (`always`; `send` with `changes: true` or one of `send_flags`) waits:
+the task gets a Needs you request asked at the run's time (decide: "Approve or reject task #N's
+run of the command …", the full command line, the minutes it waits, a link to the Secrets page),
+which replaces one its agent had open; one run of a task waits at a time.
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/command-runs` | (read) → `{items: [{id, command, task_number, line, changes, state, reason, deadline, answered_by, exit_code, created_at, ended_at, can_answer}]}`: the runs that wait or run, then the 50 newest others (no output) |
+| POST | `/api/sandboxes/{sid}/command-runs/{id}` | `{approve}` → the run: a person with write access (who manages the project's secrets) in a browser session (403 for an API token); approved, it runs at once; 409 when it no longer waits, its time ran out (it ends `expired`) or 4 runs of the project run now; audited `command.approve` / `command.reject` |
+
+A reply `approve` or `reject` to the run's Telegram notice answers that run (the one asked at the
+notice's time) as the person who replied, under the same rules; audited with `"via":
+"telegram"`. No answer by the deadline is a no: the run ends `expired` (audited
+`command.expired`), at its deadline or, after a restart, within a minute. Each change publishes
+`commands.updated`.
 
 ## UI event stream
 

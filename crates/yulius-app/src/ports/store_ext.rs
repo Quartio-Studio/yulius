@@ -998,6 +998,31 @@ pub trait CommandStore: Send + Sync {
     async fn end_command_run(&self, id: &str, from: &str, end: &CommandRunEnd) -> AppResult<bool>;
     /// Every run in `state`, oldest first.
     async fn command_runs_in_state(&self, state: &str) -> AppResult<Vec<CommandRunRecord>>;
+    /// Answers a `waiting` run while its deadline is after `at` (BRK-015, BRK-016): approved, it
+    /// is `running` from `at`, only while fewer than `max_running` runs of its project run;
+    /// rejected, it ends `rejected` at `at`. Records who answered; `false` when nothing changed.
+    async fn answer_command_run(
+        &self,
+        id: &str,
+        approve: bool,
+        by: &str,
+        at: Timestamp,
+        max_running: u32,
+    ) -> AppResult<bool>;
+    /// Ends every `waiting` run whose deadline is at `at` or before as `expired` (BRK-016); the
+    /// runs it ended, as they were.
+    async fn expire_command_runs(&self, at: Timestamp) -> AppResult<Vec<CommandRunRecord>>;
+    /// A project's runs, newest first: every one that waits or runs, and at most `limit` others.
+    async fn command_runs_in(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<CommandRunRecord>>;
+    /// The run of `task` that waits for a person, if one does.
+    async fn waiting_command_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<CommandRunRecord>>;
 }
 
 /// One handoff as stored (SPEC-512 HOF-003..HOF-006).

@@ -345,4 +345,113 @@ impl CommandStore for SqliteStore {
         })
         .await
     }
+
+    async fn answer_command_run(
+        &self,
+        id: &str,
+        approve: bool,
+        by: &str,
+        at: Timestamp,
+        max_running: u32,
+    ) -> AppResult<bool> {
+        let (id, by) = (id.to_owned(), by.to_owned());
+        self.call(move |c| {
+            let changed = if approve {
+                c.execute(
+                    "UPDATE command_runs SET state = 'running', started_at = ?1, \
+                     answered_by = ?2 WHERE id = ?3 AND state = 'waiting' AND deadline > ?1 \
+                     AND (SELECT COUNT(*) FROM command_runs AS other \
+                          WHERE other.sandbox_id = command_runs.sandbox_id \
+                          AND other.state = 'running') < ?4",
+                    params![at.0, by, id, max_running],
+                )
+            } else {
+                c.execute(
+                    "UPDATE command_runs SET state = 'rejected', ended_at = ?1, \
+                     answered_by = ?2, reason = 'a person rejected it', args = '[]' \
+                     WHERE id = ?3 AND state = 'waiting' AND deadline > ?1",
+                    params![at.0, by, id],
+                )
+            }
+            .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn expire_command_runs(&self, at: Timestamp) -> AppResult<Vec<CommandRunRecord>> {
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let due = {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "SELECT {RUN_COLUMNS} FROM command_runs \
+                         WHERE state = 'waiting' AND deadline <= ?1"
+                    ))
+                    .map_err(db)?;
+                stmt.query_map([at.0], run_row)
+                    .map_err(db)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db)?
+            };
+            for run in &due {
+                tx.execute(
+                    "UPDATE command_runs SET state = 'expired', ended_at = ?1, args = '[]', \
+                     reason = 'no answer in time, which is a no' \
+                     WHERE id = ?2 AND state = 'waiting'",
+                    params![at.0, run.id],
+                )
+                .map_err(db)?;
+            }
+            tx.commit().map_err(db)?;
+            Ok(due)
+        })
+        .await
+    }
+
+    async fn command_runs_in(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<CommandRunRecord>> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {RUN_COLUMNS} FROM command_runs WHERE sandbox_id = ?1 \
+                     AND (ended_at IS NULL OR id IN (SELECT id FROM command_runs \
+                     WHERE sandbox_id = ?1 AND ended_at IS NOT NULL \
+                     ORDER BY created_at DESC, id DESC LIMIT ?2)) \
+                     ORDER BY created_at DESC, id DESC"
+                ))
+                .map_err(db)?;
+            let rows = stmt
+                .query_map(params![sandbox, limit], run_row)
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn waiting_command_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<CommandRunRecord>> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                &format!(
+                    "SELECT {RUN_COLUMNS} FROM command_runs WHERE task_id = ?1 \
+                     AND state = 'waiting' ORDER BY created_at DESC LIMIT 1"
+                ),
+                [task],
+                run_row,
+            )
+            .optional()
+            .map_err(db)
+        })
+        .await
+    }
 }
