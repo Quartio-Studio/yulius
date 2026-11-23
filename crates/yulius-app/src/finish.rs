@@ -1680,6 +1680,23 @@ impl App {
         }
     }
 
+    /// Whether `task`'s idle agent goes on by itself: background shells, agents or Monitors it
+    /// left running, or a `yulius wait` (SPEC-631 SWK-001). One fresh look at its processes;
+    /// when that gives no answer, the last probe's count and waits, which keep the task out of
+    /// Done the same way (`AttentionFacts::group`). A busy or ended task does not.
+    pub(crate) async fn agent_goes_on_by_itself(&self, task: &TaskRecord) -> bool {
+        if task.status != TaskStatus::Running || !task.activity.is_some_and(Activity::is_idle) {
+            return false;
+        }
+        match self.background_or_wait_now(&task.id).await {
+            Some(runs) => runs,
+            None => {
+                self.background_shells_of(&task.id).is_some_and(|n| n > 0)
+                    || self.agent_waits_on_yulius(&task.id)
+            }
+        }
+    }
+
     /// Since when the idle task's background shells have been running, when they are.
     pub(crate) fn background_shells_since(&self, task_id: &TaskId) -> Option<i64> {
         let runtime = self.existing_runtime(task_id)?;

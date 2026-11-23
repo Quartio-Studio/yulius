@@ -51,6 +51,12 @@ use crate::task_message::{Sender, Typed};
 const MAX_PENDING: usize = 200;
 /// A task view or browser handoff that is busy yields to the staging queue.
 pub(super) const TASK_VIEW_BUDGET: Duration = Duration::from_millis(750);
+
+/// What a finished task whose background work waits for its staging outcome is told after it
+/// (SPEC-631 SWK-001): that work keeps it from Done.
+const AWAITED_OUTCOME: &str = "This task's work is finished: stop the background command that \
+     waits for this outcome, then answer in one line and end your turn.";
+
 /// How a staging deploy's run note starts: the queue knows its own runs by it.
 const DEPLOY_NOTE: &str = "merge-first staging: request";
 /// How a restore's run note starts, before the part's label.
@@ -1207,7 +1213,9 @@ impl App {
     }
 
     /// Record finished tasks' outcomes silently. Running tasks with work left can also hear
-    /// their own delivery verdict once, subject to the usual terminal and person holds.
+    /// their own delivery verdict once, subject to the usual terminal and person holds, and so
+    /// can a finished task whose idle agent still runs background work, which waits for it
+    /// (SPEC-631 SWK-001): that work would keep it from Done.
     pub async fn tell_staging_outcomes(self: &Arc<Self>) -> usize {
         let Ok(untold) = self.deps.store.untold_staging_requests().await else {
             return 0;
@@ -1218,9 +1226,6 @@ impl App {
             let Some(task_id) = &request.task_id else {
                 continue;
             };
-            let text = self
-                .redact_for_sandbox(&request.sandbox_id, &staging_outcome_text(&request))
-                .await;
             // Chromium startup can hold the browser slot. Leave the outcome for another tick
             // if its handoffs cannot be checked, and read the recipient after this slow lookup.
             let browser = tokio::time::timeout(
@@ -1236,14 +1241,23 @@ impl App {
                 }
                 Err(_) => continue,
             };
+            let finished = task.status == TaskStatus::Running
+                && matches!(self.accepts_machine_notice(task_id).await, Ok(false));
+            // Its own background work waits for this outcome and keeps it from Done.
+            let awaited = finished && self.agent_goes_on_by_itself(&task).await;
             if task.status.is_resting()
                 || task.status == TaskStatus::Parked
-                || (task.status == TaskStatus::Running
-                    && matches!(self.accepts_machine_notice(task_id).await, Ok(false)))
+                || (finished && !awaited)
             {
                 let _ = store.mark_staging_told(&request).await;
                 continue;
             }
+            let mut text = staging_outcome_text(&request);
+            if awaited {
+                text.push(' ');
+                text.push_str(AWAITED_OUTCOME);
+            }
+            let text = self.redact_for_sandbox(&request.sandbox_id, &text).await;
             if !browser.is_ok_and(|requests| !requests.contains(task_id.as_str())) {
                 continue;
             }
@@ -1255,6 +1269,7 @@ impl App {
                 };
                 current.status == task.status
                     && current.activity != Some(Activity::NeedsAttention)
+                    && (!awaited || self.agent_goes_on_by_itself(&current).await)
                     && !self.update_holds_starts()
                     && !self.is_paused(&current).await
                     && matches!(store.pending_hold(task_id).await, Ok(None))
@@ -1274,7 +1289,11 @@ impl App {
                         &task,
                         paste.as_bytes(),
                         Typed::Notice(&attempt.id),
-                        Sender::Yulius,
+                        if awaited {
+                            Sender::YuliusAwaited
+                        } else {
+                            Sender::Yulius
+                        },
                         Some(still_due()),
                     )
                     .await
