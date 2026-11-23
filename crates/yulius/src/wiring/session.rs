@@ -552,6 +552,15 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-637 LPR-004 (review round 1): the real binder can report a port free. Port 0 asks
+    /// the kernel for any free port on each loopback family, so no other loopback user can make
+    /// this fail short of using up the whole ephemeral range.
+    #[test]
+    fn the_real_binder_reports_a_free_loopback_port_idle() {
+        let host = PtySessionHost::new(PathBuf::new());
+        assert!(host.loopback_ports_idle(0..=0));
+    }
+
     /// A fake loopback host for the probe's decision: the addresses whose bind fails, with
     /// their error, and every address the probe asked for, in order.
     fn probe_fake_host(
@@ -561,7 +570,7 @@ mod tests {
         let mut asked = Vec::new();
         let idle = loopback_ports_idle_with(range, |address| {
             asked.push(address);
-            match failing.iter().find(|(failing, _)| *failing == address) {
+            match failing.iter().find(|(held, _)| *held == address) {
                 Some((_, kind)) => Err(std::io::Error::from(*kind)),
                 None => Ok(()),
             }
