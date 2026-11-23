@@ -154,6 +154,9 @@ pub struct SentAbout {
     pub task: yulius_domain::ids::TaskId,
     /// The request the message told of (`needs_you` `at`, ms).
     pub asked_at: Option<i64>,
+    /// The brokered run whose approval request it told of (SPEC-626 BRK-015): a reply answers
+    /// that run and no other.
+    pub command_run: Option<String>,
 }
 
 /// The bot, link codes and linked chats (SPEC-498; migration 0063).

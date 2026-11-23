@@ -181,17 +181,24 @@ definition says. No answer within the stated time is a no. The owner approved th
   `approval_minutes`). The task is flagged Needs you with the full command line (binary, fixed
   arguments with placeholders unexpanded, then the agent's arguments), the minutes, and how to
   answer. The flag reaches the sidebar's Needs you group and the person's Telegram notices as
-  every flag does. `command_run` waits up to 240 s for the answer and the run, then answers
+  every flag does. The request replaces an open request of the agent's, and one run of a task
+  waits for approval at a time. `command_run` waits up to 240 s for the answer and the run, then answers
   `waiting` or `running` with the run's id. `command_result {id}` waits again, up to 240 s. Only
   the task that started a run reads it.
 - **BRK-015** People who manage the project's secrets (`Action::Configure`) answer, from a browser
   session (an API token is refused), with Approve or Reject on the Secrets page's Commands
   section, or by replying `approve` or `reject` to the task's Needs you notice in their linked
-  Telegram chat. The Telegram reply acts only on the run its notice named, while that run
-  waits and the person may answer it; otherwise it goes to the task as a reply does today. An answer is one
-  conditional write from `waiting` that holds only before the deadline. Two answers never both
-  act, and an answer after the deadline is refused. Each answer is audited `command.approve` or
-  `command.reject`, and the flag ends with the last waiting run.
+  Telegram chat. The run's request names its run in its `cause` (`command-run:<id>`, which an
+  agent's `needs_you` cannot write) and the notice keeps the run's id, so a reply answers that run
+  and no other, whatever was asked at the same moment. Any other text replied to it, a reply
+  from a person who may not answer, and one to a run that no longer waits answer nothing and
+  reach no task; each says why. A run whose command line the notice could not show whole (over
+  380 characters) is approved only on the Secrets page; a reply may reject it. An answer is one
+  conditional write from `waiting` that holds only before the deadline (an approval also only
+  while fewer than 4 runs of the project run). Two answers never both act, and an answer after
+  the deadline is refused. Each answer is audited `command.approve` or `command.reject`, and it
+  ends the run's request while that request is still the run's: one the agent opened since
+  stays. One run of a task waits at a time, held in the transaction that stores it.
 - **BRK-016** No answer by the deadline is a no. The run is `expired` and never runs, also across
   a restart: the condition is in the write, and the background tick records expired runs and
   ends their flag.
@@ -209,8 +216,8 @@ definition says. No answer within the stated time is a no. The owner approved th
 - [x] Bound a run's time and output and blank every stored secret from it
 - [x] command_run and command_result for task agents, audited, and the yulius run CLI
 - [ ] Independent review of the run slice, findings fixed test-first
-- [ ] Ask a person to approve a run in Needs you with the full command line
-- [ ] Approve or reject in the browser or by a Telegram reply; no answer in time is a no
+- [x] Ask a person to approve a run in Needs you with the full command line
+- [x] Approve or reject in the browser or by a Telegram reply; no answer in time is a no
 - [ ] Independent review of the approval slice, findings fixed test-first
 - [ ] Commands section on the Secrets page with approvals, end-to-end tested
 - [ ] Product, architecture, API, operations and security docs and the changes log

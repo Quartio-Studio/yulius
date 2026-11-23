@@ -325,6 +325,11 @@ pub fn public() -> Router<AppState> {
             "/api/sandboxes/{sid}/commands/{id}",
             put(commands::update).delete(commands::delete),
         )
+        .route("/api/sandboxes/{sid}/command-runs", get(commands::runs))
+        .route(
+            "/api/sandboxes/{sid}/command-runs/{id}",
+            post(commands::answer),
+        )
         // Script watches (SPEC-630 WCH-011).
         .route(
             "/api/sandboxes/{sid}/watches",
