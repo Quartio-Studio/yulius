@@ -240,6 +240,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0090_task_account_pin.sql"),
     // Schema version 93 (SPEC-630); 0093 is the reserved file number.
     include_str!("migrations/0093_script_watches.sql"),
+    // Schema version 94 (SPEC-626 BRK-015); 0094 is the reserved file number.
+    include_str!("migrations/0094_telegram_sent_command_run.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -585,6 +587,10 @@ mod tests {
             (91, include_str!("migrations/0092_task_forks.sql")),
             (92, include_str!("migrations/0090_task_account_pin.sql")),
             (93, include_str!("migrations/0093_script_watches.sql")),
+            (
+                94,
+                include_str!("migrations/0094_telegram_sent_command_run.sql"),
+            ),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -593,7 +599,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 93, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 94, "a new migration is pinned here too");
     }
 
     #[test]

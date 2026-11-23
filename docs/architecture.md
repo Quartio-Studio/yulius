@@ -3160,7 +3160,7 @@ shell (`crates/yulius/src/run_cli.rs`, through the task token as `yulius tool`).
 audited `command.refused`: another project's or an unknown name, a task outside `tasks`, an
 invisible character, a path (`/` or `~`, `..`, `file:`), an owned flag in any form a parser
 reads (abbreviated, single-dash long, inside a short cluster), a first argument outside the
-subcommands, a secret not set up, and (until approvals) a run that needs one. A run is a row of
+subcommands, a secret not set up, and a second run of a task waiting for approval. A run is a row of
 `command_runs` (`running`, then `done`, `timed_out`, `output_limit`, `failed` or `lost`) and
 runs on its own tokio task, so a cut call leaves nothing half done: the call waits up to 240 s
 (`command_wait_ms`) on `App::command_runs_changed` and answers its state, and `command_result`
@@ -3179,6 +3179,25 @@ before it is stored or returned. At most 4 runs of a project's commands run at o
 records a run it did not see end as `lost` and removes its files (`App::reconcile_command_runs`).
 Every run is audited `command.run` with the redacted command line, outcome, exit code and time.
 
+**Approvals** (`crates/yulius-app/src/commands_approval.rs`). A run that needs a person (`always`,
+or `send` with `changes: true` or a send flag) is stored `waiting` with its deadline
+(`approval_minutes`, a minute being `command_minute_ms`), and its task gets a Needs you request
+asked at the run's own time (`App::ask_command_approval`) with the full command line; it replaces
+an open request of the agent's, and one run of a task waits at a time. A person who manages the
+project's secrets (`Action::Configure`) answers from a browser session
+(`POST /api/sandboxes/{sid}/command-runs/{id}`) or by replying `approve` or `reject` to the run's
+Telegram notice (`telegram_reply` → `App::telegram_command_answer`). The request names its run in
+its `cause` (`command-run:<id>`, which an agent's `needs_you` cannot write), the notifier keeps that
+id with the notice (`telegram_sent.command_run`, migration 0094), and a reply answers that run
+alone; any other reply to it reaches no task, and a line the notice had to cut is approved on the
+page only. The answer is one
+conditional write from `waiting` before the deadline (`answer_command_run`, an approval also only
+while fewer than four runs of the project run); an approved run runs on its own task, and the
+request ends with the answer (`end_needs_you_asked_at`). No answer is a no: a timer per run that
+checks the clock again until the run no longer waits, the background tick and the start record it
+`expired` (`App::expire_due_command_runs`); a late answer fails the write's condition whatever
+recorded the expiry.
+
 ```mermaid
 flowchart LR
   ADM["Administrator who manages the secret (two-factor for a guarded one)"] -->|"define, change, remove (audited command.*)"| DEF[("commands: definition + secret_id")]
@@ -3189,6 +3208,8 @@ flowchart LR
   PH -->|"stdout, stderr, exit code"| RED["redact_for_sandbox, cut 96 KiB"]
   RED --> RUN
   RUN -->|"command_result (waits up to 240 s)"| AG
+  RUN -->|"needs approval: waiting, Needs you at the run's time"| P["Person who manages the project's secrets"]
+  P -->|"Approve / Reject: browser, or a Telegram reply to the notice (before the deadline)"| RUN
 ```
 
 ## Agent secrets in CI jobs
