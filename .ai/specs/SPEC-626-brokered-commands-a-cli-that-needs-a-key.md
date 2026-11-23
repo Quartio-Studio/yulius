@@ -79,7 +79,9 @@ definition says. No answer within the stated time is a no. The owner approved th
   - `slashes`: whether arguments like `owner/repo` pass.
   - `env`: variable name to value.
 
-  Each list is bounded (64 entries, 4096 bytes each) and the stored definition to 16 KiB. Flags
+  Each list is bounded (64 entries, 4096 bytes each) and the stored definition to 16 KiB. A
+  `fixed` entry or env value is not empty, has no space around it and no line break or tab, so it
+  reads and edits as what it is. Flags
   are one or two dashes, then a letter or digit and letters, digits, `_`, `.`, `:` or `-`;
   subcommands are such a word, not starting with a dash. No text of a definition holds a character people
   cannot see. Env names match `[A-Za-z_][A-Za-z0-9_]*` and may not be `PATH`, `HOME`, `TMPDIR`,

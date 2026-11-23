@@ -1125,6 +1125,8 @@ function mountCommands(ctx, sandbox, host, actions) {
       toast(approve ? `Approved: task #${run.task_number}'s run of ${run.command} starts.` : 'Rejected: it runs nothing.', { kind: 'ok' });
     } catch (error) { errorToast(error, 'Couldn’t answer'); } finally {
       answering -= 1;
+      // The answered button is off and its run leaves the list: the keyboard stays here.
+      if (buttons.includes(document.activeElement) || document.activeElement === document.body) runsBox.focus({ preventScroll: true });
       reloadRuns();
     }
   }

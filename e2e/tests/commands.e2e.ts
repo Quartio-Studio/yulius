@@ -131,8 +131,6 @@ test('a reader sees no answer, and a stale edit is refused', async ({ app, brows
   await dialog.getByRole('button', 'Save').click();
   await expect(dialog.getByText(/changed since you opened it/)).toBeVisible();
 
-  await app.open(mock('/s/studio/secrets?section=commands'));
-  await browser.evaluate(() => { (window as unknown as Asking).__yuliusMock.sandboxes.find((s) => s.id === 'sb_studio')!.access = 'read'; });
   await app.open(mock('/s/studio/secrets?section=commands', '&role=member'));
   await browser.evaluate(() => { (window as unknown as Asking).__yuliusMock.sandboxes.find((s) => s.id === 'sb_studio')!.access = 'read'; });
   await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.askRun('/usr/local/bin/deploy --key-file {keyfile} push', 150));
