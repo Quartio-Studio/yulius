@@ -27,6 +27,13 @@ use crate::intake::ChainRecord;
 use crate::model::{TaskOrigin, TaskRecord};
 use crate::supervisor::RunStart;
 
+/// A true Done fact for a live owner also carries the delivery that was checked.
+struct RuleFact {
+    facts: Facts,
+    created: Option<Timestamp>,
+    live_done: Option<(TaskRecord, Option<crate::delivery::DeliveryRecord>)>,
+}
+
 /// Chained tasks waiting in one sandbox at most (the session queue's bound).
 pub const MAX_CHAINED_PER_SANDBOX: usize = 32;
 
@@ -215,7 +222,7 @@ impl App {
                 });
             if ready {
                 for (task, chain) in waiting {
-                    if let Err(err) = self.release_chained(&task, Some(&chain)).await {
+                    if let Err(err) = self.release_chained(&task, Some(&chain), Vec::new()).await {
                         tracing::warn!(task = %task.id, error = %err, "waiting task did not start");
                     }
                 }
@@ -223,8 +230,18 @@ impl App {
             return;
         }
         if self.task_is_done(&before).await {
+            // Read after the check, which can record a merge it observed.
+            let record = store.delivery(&before.id).await;
             for (task, chain) in waiting {
-                if let Err(err) = self.release_chained(&task, Some(&chain)).await {
+                let mut holds = Vec::new();
+                if before.status == TaskStatus::Running {
+                    let Ok(record) = &record else { return };
+                    let Some(hold) = self.hold_live_delivery(&before, record.as_ref()).await else {
+                        return;
+                    };
+                    holds.push(hold);
+                }
+                if let Err(err) = self.release_chained(&task, Some(&chain), holds).await {
                     tracing::warn!(task = %task.id, error = %err, "chained task did not start");
                 }
             }
@@ -345,18 +362,24 @@ impl App {
     /// What a rule can know about task `number` of `sandbox` (a missing task has ended), with
     /// when that task was created: a number freed by deleting the newest task and given to a
     /// later task never answers for a rule written before it.
-    async fn rule_facts(&self, sandbox: &SandboxId, number: u32) -> (Facts, Option<Timestamp>) {
+    async fn rule_facts(&self, sandbox: &SandboxId, number: u32) -> RuleFact {
         // (the caller memoises per pass: this may ask GitHub)
         let Ok(Some(task)) = self.deps.store.task_by_number(sandbox, number).await else {
-            return (
-                Facts {
+            return RuleFact {
+                facts: Facts {
                     ended: true,
                     ..Facts::default()
                 },
-                None,
-            );
+                created: None,
+                live_done: None,
+            };
         };
+        crate::race::reached(
+            crate::race::Point::RuleOwnerRead,
+            std::path::Path::new(task.id.as_str()),
+        );
         // A sandbox's preparation task counts as done once the sandbox is ready (U-08).
+        let mut live_done = None;
         let done = if task.origin == TaskOrigin::Onboarding {
             self.refresh_onboarding(&task.sandbox_id)
                 .await
@@ -364,6 +387,15 @@ impl App {
                     !crate::onboarding::OnboardingState::parse(&state)
                         .is_some_and(crate::onboarding::OnboardingState::blocks_tasks)
                 })
+        } else if task.status == TaskStatus::Running {
+            if self.task_is_done(&task).await
+                && let Ok(record) = self.deps.store.delivery(&task.id).await
+            {
+                live_done = Some((task.clone(), record));
+                true
+            } else {
+                false
+            }
         } else {
             self.task_is_done(&task).await
         };
@@ -375,7 +407,11 @@ impl App {
                 TaskStatus::Closed | TaskStatus::Stopped(_) | TaskStatus::Failed(_)
             ),
         };
-        (facts, Some(task.created_at))
+        RuleFact {
+            facts,
+            created: Some(task.created_at),
+            live_done,
+        }
     }
 
     /// Checks that a new task's rule names tasks of `sandbox` only and returns the first one
@@ -427,7 +463,7 @@ impl App {
             return;
         };
         // One reading of each named task per pass, however many rules name it.
-        let mut known: HashMap<u32, (Facts, Option<Timestamp>)> = HashMap::new();
+        let mut known: HashMap<u32, RuleFact> = HashMap::new();
         for task in tasks
             .into_iter()
             .filter(|t| t.status == TaskStatus::Chained)
@@ -445,7 +481,7 @@ impl App {
         self: &Arc<Self>,
         task: &TaskRecord,
         chain: &ChainRecord,
-        known: &mut HashMap<u32, (Facts, Option<Timestamp>)>,
+        known: &mut HashMap<u32, RuleFact>,
     ) {
         let rule = match Rule::parse(chain.rule.as_deref().unwrap_or_default()) {
             Ok(rule) => rule,
@@ -456,7 +492,8 @@ impl App {
                 return;
             }
         };
-        for number in rule.numbers() {
+        let numbers = rule.numbers();
+        for &number in &numbers {
             if let std::collections::hash_map::Entry::Vacant(slot) = known.entry(number) {
                 slot.insert(self.rule_facts(&task.sandbox_id, number).await);
             }
@@ -467,20 +504,35 @@ impl App {
         };
         // Only tasks that existed when the rule was written (the task was created, or its start
         // changed, SPEC-126 CHS-006) answer for it.
-        let facts: HashMap<u32, Facts> = known
-            .iter()
-            .map(|(n, (facts, created))| {
-                let current = created.is_some_and(|at| at <= chain.created_at);
-                (*n, if current { *facts } else { ended })
-            })
-            .collect();
+        let mut holds = Vec::new();
+        let mut facts = HashMap::new();
+        for number in numbers {
+            let Some(read) = known.get(&number) else {
+                continue;
+            };
+            let mut fact = if read.created.is_some_and(|at| at <= chain.created_at) {
+                read.facts
+            } else {
+                ended
+            };
+            if fact.done
+                && let Some((owner, delivery)) = &read.live_done
+            {
+                match self.hold_live_delivery(owner, delivery.as_ref()).await {
+                    Some(writer) => holds.push(writer),
+                    None => fact.done = false,
+                }
+            }
+            facts.insert(number, fact);
+        }
         match rule.eval(&|n| facts.get(&n).copied().unwrap_or(ended)) {
             Truth::True => {
-                if let Err(err) = self.release_chained(task, Some(chain)).await {
+                if let Err(err) = self.release_chained(task, Some(chain), holds).await {
                     tracing::warn!(task = %task.id, error = %err, "task did not start on its rule");
                 }
             }
             Truth::False => {
+                drop(holds);
                 let reason = format!(
                     "Its start rule `{rule}` can no longer become true. Start this task now or cancel it."
                 );
@@ -539,7 +591,7 @@ impl App {
         self.ensure_agent_account(task.harness.provider()).await?;
         if task.status == TaskStatus::Prepared {
             self.start_prepared_now(&task).await?;
-        } else if !self.release_chained(&task, None).await? {
+        } else if !self.release_chained(&task, None, Vec::new()).await? {
             return Err(AppError::Conflict("task state changed concurrently".into()));
         }
         let task = self
@@ -558,6 +610,7 @@ impl App {
         self: &Arc<Self>,
         task: &TaskRecord,
         evaluated: Option<&ChainRecord>,
+        delivery_holds: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
     ) -> AppResult<bool> {
         let next = task
             .status
@@ -572,6 +625,7 @@ impl App {
                     .await?
             }
         };
+        drop(delivery_holds);
         if !released {
             return Ok(false);
         }

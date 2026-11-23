@@ -893,6 +893,12 @@ impl TaskRuntime {
             .map_or(true, |kept| kept.is_some())
     }
 
+    pub(crate) fn closing_or_settling(&self) -> bool {
+        self.intent.lock().map_or(true, |intent| {
+            matches!(*intent, Some(EndIntent::Close)) || *self.terminal_cleanup.borrow() > 0
+        })
+    }
+
     /// Whether the screen `hub` shows is not what the program drew: its output is withheld
     /// (agent secrets cannot be read) or some was dropped since the last whole screen. A state
     /// that cannot be read counts.
@@ -5726,13 +5732,21 @@ impl App {
     /// # Errors
     /// `Conflict` when the task is not running.
     pub async fn close_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        self.close_task_selected(task_id, None).await
+    }
+
+    pub(crate) async fn close_task_selected(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        achieved: Option<(&TaskRecord, Option<&crate::delivery::DeliveryRecord>)>,
+    ) -> AppResult<()> {
         let task = self
             .deps
             .store
             .task(task_id)
             .await?
             .ok_or(AppError::NotFound)?;
-        if task.status == TaskStatus::Parked {
+        if task.status == TaskStatus::Parked && achieved.is_none() {
             return self.close_parked(&task).await;
         }
         if task.status != TaskStatus::Running {
@@ -5747,9 +5761,22 @@ impl App {
         );
         let closed = self.live_attempt_id(task_id).await;
         let runtime = self.runtime(task_id);
+        let delivery = match achieved {
+            Some((selected, record)) => Some(
+                self.hold_live_delivery(selected, record)
+                    .await
+                    .ok_or_else(|| {
+                        AppError::Conflict(
+                            "The task’s delivery changed before it could close.".into(),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
         if let Ok(mut intent) = runtime.intent.lock() {
             replace_intent(&mut intent, Some(EndIntent::Close), SwitchEnd::Closed);
         }
+        drop(delivery);
         self.arm_escalation(task_id, closed);
         self.end_person_pause(task_id).await;
         request_shutdown(&runtime, None).await;
@@ -6046,13 +6073,21 @@ impl App {
     /// `Conflict` when the task was not closed and is neither resting nor stopping, when its
     /// run's host could not be terminated, or when the run is still there at the bound.
     pub async fn close_task_and_wait(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        self.close_selected_and_wait(task_id, None).await
+    }
+
+    pub(crate) async fn close_selected_and_wait(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        achieved: Option<(&TaskRecord, Option<&crate::delivery::DeliveryRecord>)>,
+    ) -> AppResult<()> {
         // Subscribed before closing, so the update that says the run ended is never missed.
         let mut events = self.events.subscribe();
         let runtime = self.runtime(task_id);
         let mut finalizing = runtime.finalizing.subscribe();
         let bound = Duration::from_millis(self.config.stop_escalation_ms + CLOSE_SETTLE_MS);
         let ended = tokio::time::timeout(bound, async {
-            match self.close_task_now(task_id).await {
+            match self.close_task_selected(task_id, achieved).await {
                 Ok(()) => {}
                 // Not running any more: a task that rests or is being stopped can go once its
                 // run has ended; any other (switching, starting) was not closed.
