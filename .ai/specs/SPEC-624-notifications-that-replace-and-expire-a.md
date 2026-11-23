@@ -467,3 +467,12 @@ All notes were in this PR's own code:
     integer per project.
 - After these fixes, `staging::`, `notices::` and the `yulius-app` tests passed (799).
 
+
+### Review round 5 of PR #1711 (head `99f410979`): approved, two nits fixed within the approval
+
+- `a_green_branch_starts_the_grace_period_again` now runs the new grace period to its end and
+  expects the notice. A 0 can therefore no longer come from a failure that was missed.
+- `limit_reset` gives no known end when a used-up window has no reset time, as
+  `AccountUsage::available_at_for` reads it. Covered in `a_subscription_notice_follows_the_table`,
+  which failed before the fix.
+- `yulius-app`, `notices::` and `staging::` (800) passed; clippy was clean.

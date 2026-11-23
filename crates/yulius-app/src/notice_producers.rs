@@ -75,8 +75,13 @@ pub fn limit_reset(usage: &AccountUsageView) -> Option<Timestamp> {
         .then_some(usage.limit_resets_at.as_deref())
         .flatten()
         .and_then(parse_rfc3339);
-    // Its own limit without an end has none known, whatever a window says (review round 3).
-    if usage.limit_reached && own.is_none() {
+    // Its own limit without an end has none known, whatever a window says (review round 3),
+    // and so has a used-up window without a reset time (round 5).
+    let open = windows
+        .into_iter()
+        .flatten()
+        .any(|w| w.used_percent.is_some_and(|p| p >= 100.0) && w.resets_at.is_none());
+    if (usage.limit_reached && own.is_none()) || open {
         return None;
     }
     own.into_iter().chain(used_up).max()
@@ -426,6 +431,17 @@ mod tests {
             ..AccountUsageView::default()
         };
         assert_eq!(limit_reset(&endless), None);
+        // A window used up without a reset time binds with no known end too (review round 5).
+        let open_window = AccountUsageView {
+            primary: Some(UsageWindowView {
+                used_percent: Some(100.0),
+                resets_at: None,
+                window_minutes: None,
+            }),
+            secondary: window(100.0, "2026-11-22T13:00:00Z"),
+            ..AccountUsageView::default()
+        };
+        assert_eq!(limit_reset(&open_window), None);
         let later = parse_rfc3339("2026-11-22T12:00:00Z").unwrap_or_default();
         assert_eq!(
             account_notice(&view("limited", endless), later).and_then(|n| n.expiry),

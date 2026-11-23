@@ -520,6 +520,12 @@ async fn a_green_branch_starts_the_grace_period_again() -> TestResult {
     crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
     f.h.app.tell_gate_repairs(&sandbox).await?;
     assert_eq!(gate_count().await?, 0, "a new grace period");
+    // ...which, run to its end, tells the new failure: the 0 above was a grace period, not a
+    // failure missed (review round 5 of #1711).
+    for _ in 1..yulius_app::notice_producers::GATE_GRACE_TICKS {
+        f.h.app.tell_gate_repairs(&sandbox).await?;
+    }
+    assert_eq!(gate_count().await?, 1);
     Ok(())
 }
 
