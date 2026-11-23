@@ -896,6 +896,13 @@ impl TaskRuntime {
             .map_or(true, |kept| kept.is_some())
     }
 
+    /// A committed park's run end is being recorded (SPEC-634 PSP-003): the reader took the
+    /// park's intent, so `App::parking` no longer says so, and the task may still read
+    /// Running until it settles. Nothing typed now reaches a session.
+    pub(crate) fn park_end_recording(&self) -> bool {
+        *self.terminal_cleanup.borrow() > 0 && self.park_committed()
+    }
+
     pub(crate) fn closing_or_settling(&self) -> bool {
         self.intent.lock().map_or(true, |intent| {
             matches!(*intent, Some(EndIntent::Close)) || *self.terminal_cleanup.borrow() > 0
@@ -5890,6 +5897,7 @@ impl App {
         if self.background_or_wait_now(task_id).await != Some(false) {
             return Ok(false);
         }
+        crate::race::reached(crate::race::Point::ParkProbed, Path::new(task_id.as_str()));
         let _guard = self.supervisor.launch.lock().await;
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
@@ -9104,6 +9112,29 @@ mod tests {
         }
         runtime.terminal_cleanup.send_replace(1);
         assert!(runtime.closing_or_settling());
+    }
+
+    /// SPEC-634 PSP-003: only a committed park whose run end is being recorded refuses typed
+    /// input as parking; another run's end, or a park not yet ending, does not.
+    #[test]
+    fn only_a_committed_parks_recorded_end_counts_as_park_end_recording()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = super::TaskRuntime::new();
+        assert!(!runtime.park_end_recording());
+        runtime.terminal_cleanup.send_replace(1);
+        assert!(!runtime.park_end_recording(), "a run end without a park");
+        runtime.terminal_cleanup.send_replace(0);
+        *runtime.parked_activity.lock().map_err(|_| "park lock")? = Some((
+            super::AttemptId::parse("parking-run")?,
+            super::Activity::Waiting,
+        ));
+        assert!(
+            !runtime.park_end_recording(),
+            "a park whose run end has not begun"
+        );
+        runtime.terminal_cleanup.send_replace(1);
+        assert!(runtime.park_end_recording());
+        Ok(())
     }
 
     /// SPEC-613 CID-001: the saved Codex size is two big-endian u16s, columns then rows,
