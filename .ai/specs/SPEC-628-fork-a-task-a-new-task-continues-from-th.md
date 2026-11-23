@@ -271,3 +271,10 @@ focus stays in the field and nothing is sent."
 Not tested here: a Codex fork against the real Codex service (the reviewer's run used a local stub
 API); Antigravity, refused by design; the UI against a real server (the e2e runs against the
 page's mock, whose fork route mirrors the server's refusals).
+
+Staging (request `e4654709`, revision `46b67ad`): gate_failed, run `ab04d403`, test (1/2):
+`yulius::bin/yulius tests::the_agent_wrapper_passes_every_session_command` ("run not in [wait,
+tool, security-scan, remove]"). #1715 (brokered commands) added `yulius run` "In a task's session"
+without adding it to the agent's `yulius` shim (`identity::agent_yulius_shim`). The same failure is
+on dev at `7dc264180` (run `72091baf`). Fixed forward here: the shim passes `run` and names it in
+its usage. The test passes, and `identity::tests` (11) passes with a `run` case.
