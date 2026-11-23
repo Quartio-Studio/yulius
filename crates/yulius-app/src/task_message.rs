@@ -834,8 +834,9 @@ impl App {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
         })?;
-        // Its session is ending for a park (SPEC-512 PRK-003): what is typed now is lost.
-        if self.parking(&task.id) {
+        // Its session is ending for a park (SPEC-512 PRK-003): what is typed now is lost. That
+        // holds until the run's end settled the task, after it took the park's intent (SPEC-634).
+        if self.parking(&task.id) || runtime.park_end_recording() {
             return Err(AppError::Conflict(format!(
                 "task #{} is parking its idle session: try again in a few seconds",
                 task.number

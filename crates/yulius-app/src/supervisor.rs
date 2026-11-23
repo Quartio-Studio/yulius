@@ -896,6 +896,13 @@ impl TaskRuntime {
             .map_or(true, |kept| kept.is_some())
     }
 
+    /// A committed park's run end is being recorded (SPEC-634 PSP-003): the reader took the
+    /// park's intent, so `App::parking` no longer says so, and the task may still read
+    /// Running until it settles. Nothing typed now reaches a session.
+    pub(crate) fn park_end_recording(&self) -> bool {
+        *self.terminal_cleanup.borrow() > 0 && self.park_committed()
+    }
+
     pub(crate) fn closing_or_settling(&self) -> bool {
         self.intent.lock().map_or(true, |intent| {
             matches!(*intent, Some(EndIntent::Close)) || *self.terminal_cleanup.borrow() > 0
