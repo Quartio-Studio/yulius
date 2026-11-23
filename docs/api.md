@@ -2129,8 +2129,9 @@ the run's end and answers `{id, command, state, reason?, exit_code?, stdout?, st
 is `running` until it ends `done` (with its exit code), `timed_out`, `output_limit`, `failed` or
 `lost`. stdout and stderr come back redacted of every agent secret of the project and cut to
 96 KiB each (`[… N bytes more]`). A refusal is a tool error `command refused: <reason>`, audited
-`command.refused` (task, command, redacted arguments, reason); every run is audited
-`command.run`. In a task's shell, `yulius run NAME [ARGS…]` does the same and exits with the
+`command.refused` (task, command, redacted arguments, reason naming an argument by its place,
+never its value); every run is audited `command.run`. At most 4 runs of a project's commands
+run at once (a fifth is refused). `command_result {}` without an id reads the task's newest run. In a task's shell, `yulius run NAME [ARGS…]` does the same and exits with the
 command's code (125 when it was refused or ended without one, 2 for a usage or token error, 3 when
 Yulius could not be reached). Runs that need a person's approval are refused until approvals
 arrive.

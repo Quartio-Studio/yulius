@@ -117,23 +117,27 @@ definition says. No answer within the stated time is a no. The owner approved th
   `tasks` is refused. Every refusal is audited `command.refused` with its reason and the
   redacted arguments.
 - **BRK-006** Argument checks, in order, each refusing with its reason:
-  - at most 64 arguments of at most 4096 bytes each, and no control or invisible character
-    (the `unseen` set of SPEC-335, format characters included);
+  - at most 64 arguments of at most 4096 bytes each and 64 KiB in all, and no control or
+    invisible character (the `unseen` set of SPEC-335, format characters included);
   - a path: an argument starting with `~`, holding `=~`, `@~`, `..` or `file:`, and any `/`.
-    With `slashes`, a `/` passes only inside a value like `owner/repo`: not in a short flag
-    (`-f/x`), not after `--flag` without `=`, and not at the value's start, after `=`, `@` or
-    `:`, doubled, or at its end;
-  - a refused flag in every form a parser reads it: `--flag` and `--flag=…`, an abbreviation
-    (`--key-f`, which GNU and Python parsers take), the single-dash long form (`-key-file`,
-    Go's), and for a two-character `-k` any cluster of short flags holding `k` (`-kVALUE`,
-    `-vk`);
+    With `slashes`, a `/` passes only between two letters, digits, `_`, `.` or `-` of a value
+    (`owner/repo`, `--repo=owner/repo`): never in a short flag (`-f/x`), after `--flag` without
+    `=`, or in a value holding another `=`;
+  - a refused flag in every form a parser reads it. A long one, written `--key-file` or Go's
+    `-address`: `--name`, `--name=…`, an abbreviation (`--key-f`, which GNU and Python parsers
+    take) and the one-dash form (`-key-file`, `-address=…`). A two-character `-k`: any cluster
+    of short flags holding `k` (`-kVALUE`, `-vk`);
   - with `subcommands`, the agent's first argument must be one of them, so no flag's value is
     read as the subcommand.
+
+  A refusal names an argument by its place, never by its value: refusals are audited, and an
+  argument may hold one.
 - **BRK-007** `yulius run NAME [ARGS…]` in the sandbox calls `command_run`, and `command_result`
   while the run waits or runs. It prints stdout to stdout and stderr to stderr, and exits with
   the command's code. It exits 125 for a refusal, a rejection or an expired approval, with the
   reason on stderr, and 2 for a usage error. It goes through the task token as `yulius tool`
-  does.
+  does, asking for the run's record. A call cut before it answered says how to read the run
+  that goes on: `command_result` without an id reads the task's newest run.
 
 **Running**
 
@@ -153,8 +157,11 @@ definition says. No answer within the stated time is a no. The owner approved th
   env. The run's files, the key with them, are removed when it ends, whatever the outcome. A
   server that starts removes those of a run it did not see end, and records the run `lost`.
 - **BRK-010** Bounds. The run is killed at its `timeout_seconds`, or once its files pass 16 MiB.
-  Its stdout and stderr go to files and come back to the agent as the first 96 KiB of each,
-  with "[… N bytes more]". Stdin is empty.
+  Its stdout and stderr go to files Yulius makes before the run and reads back through those
+  handles, never by path, so a link or FIFO the run puts there is not followed. Each comes back
+  as its start, up to 96 KiB once written as a JSON string (both fit one MCP answer), with
+  "[… N bytes more]". Stdin is empty. At most 4 runs of a project's commands run at once; a
+  fifth is refused, audited.
 - **BRK-011** What comes back is `{state, exit_code, stdout, stderr, reason?}`. stdout, stderr
   and the stored command line are redacted with `redact_for_sandbox`, so every agent secret the
   project can see shows as `[secret:NAME]`, the command's own key and each of its lines too. A
