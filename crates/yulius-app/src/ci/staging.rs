@@ -706,8 +706,17 @@ impl App {
         }
         request.state = StagingState::Deploying;
         let person = self.staging_person(&request).await?;
+        // The run is the task's (SPEC-631 SWK-004); its owner's access deploys it.
+        let task = match &request.task_id {
+            Some(task) => self.deps.store.task(task).await?,
+            None => None,
+        };
         let started = match &person {
             Some(person) => {
+                let actor = match &task {
+                    Some(task) => CdActor::ForTask(task),
+                    None => CdActor::Person(person),
+                };
                 let note = format!(
                     "{DEPLOY_NOTE} {} ({})",
                     request.id,
@@ -723,7 +732,7 @@ impl App {
                         administrator: false,
                         confirmation: None,
                     },
-                    &CdActor::Person(person),
+                    &actor,
                     CdRequest::DeployRevision {
                         revision: &request.revision,
                         note: &note,

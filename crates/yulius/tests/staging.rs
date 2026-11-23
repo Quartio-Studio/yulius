@@ -2471,6 +2471,40 @@ async fn staging_deploys_only_under_the_owners_write_access() -> TestResult {
     Ok(())
 }
 
+/// SPEC-631 SWK-004 (quartio-v2 #377: CD run 982a24b6 read "requested by MrFishPL" although its
+/// note said "a task's delivery"): the deploy of a task's staging request is that task's CD run,
+/// requested by `task:<n>`, still deployed with its owner's access; the task's `yulius wait`
+/// sees it.
+#[tokio::test]
+async fn a_staging_deploy_is_the_requesting_tasks_cd_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let revision = land(&f, "t1", "one.txt").await?;
+    gate(&f, &revision, RunState::Passed).await?;
+    let asked = ask(&f, "t1").await?;
+    settle(&f).await?;
+    let verified = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(verified.state, StagingState::Verified, "{verified:?}");
+    let run =
+        f.h.store
+            .cd_run(verified.cd_run_id.as_deref().ok_or("its run")?, false)
+            .await?
+            .ok_or("run")?;
+    let task = TaskId::parse("t1")?;
+    let number = f.h.store.task(&task).await?.ok_or("task")?.number;
+    assert_eq!(run.requested_by, format!("task:{number}"));
+    assert_eq!(run.task_id.as_ref(), Some(&task));
+    assert!(
+        run.note
+            .as_deref()
+            .is_some_and(|n| n.contains("a task's delivery")),
+        "{run:?}"
+    );
+    let waits = f.h.app.agent_wait_state(&token("t1"), None).await?;
+    assert_eq!(waits.cd_run.as_deref(), Some(run.id.as_str()));
+    Ok(())
+}
+
 /// SPEC-575 review round 1 of slice 2: a person's cancel of a staging deploy stands. The request
 /// ends `deploy_failed` saying so, and nothing deploys that revision again by itself.
 #[tokio::test]
