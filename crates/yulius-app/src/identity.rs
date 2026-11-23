@@ -855,8 +855,9 @@ mod tests {
         Ok(exe)
     }
 
-    /// SPEC-195 VSC-001, SPEC-451 WRP-001: the agent's `yulius` offers `wait`, `tool`,
-    /// `security-scan` and `remove`, passing their arguments through, and nothing else.
+    /// SPEC-195 VSC-001, SPEC-451 WRP-001, SPEC-626 BRK-007: the agent's `yulius` offers `wait`,
+    /// `tool`, `security-scan`, `remove` and `run`, passing their arguments through, and nothing
+    /// else.
     #[test]
     fn the_agent_yulius_shim_offers_the_session_commands() -> TestResult {
         let exe = fake_exe(r#"echo "ran $*"; exit 3"#)?;
@@ -889,6 +890,10 @@ mod tests {
             (3, "ran tool steps_get {}\n".into())
         );
         assert_eq!(run(&["remove", "a", "b"])?, (3, "ran remove a b\n".into()));
+        assert_eq!(
+            run(&["run", "deploy", "--dry-run"])?,
+            (3, "ran run deploy --dry-run\n".into())
+        );
         let (code, text) = run(&["serve"])?;
         assert_eq!(code, 2);
         for usage in [
@@ -896,6 +901,7 @@ mod tests {
             "yulius tool <name> [<json>]",
             "yulius security-scan [--all]",
             "yulius remove <paths>",
+            "yulius run <name> [args…]",
         ] {
             assert!(text.contains(usage), "{text}");
         }

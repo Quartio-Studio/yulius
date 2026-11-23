@@ -1,6 +1,6 @@
 ---
 yulius-task: 493cd2d9-3bf8-4aa6-85d1-a41a5771227e
-status: in-progress
+status: done
 ---
 
 # SPEC-629. Move idle tasks off a nearly used-up subscription before it runs out
@@ -133,7 +133,7 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - [x] Remove a stale "no room" notice and pin a fork to its chosen subscription
 - [x] Pass the independent review of the follow-up
 - [x] Repair the red staging gate: the agent shim passes `yulius run`
-- [ ] Pass the independent review of the staging repair
+- [x] Pass the independent review of the staging repair
 
 ## Acceptance criteria
 
@@ -252,7 +252,8 @@ left: after a Yulius restart a "stays on" notice can stand until its one-day exp
 `tests::the_agent_wrapper_passes_every_session_command` (crates/yulius/src/main.rs) found the
 session command `yulius run`, which #1715 (SPEC-626 BRK-007) added, missing from the agent's
 `yulius` shim. Yulius asked this task to fix it forward: `agent_yulius_shim` passes `run`, and the
-test that failed on dev passes.
+test that failed on dev passes. Round 6 approved `1cf706eb9`; the shim's own test now also runs
+`yulius run deploy --dry-run` through it.
 
 Not tested here: real Claude Code, Codex or Antigravity subscriptions and their usage readings
 (synthetic usage and the fake agent stand in); the fake agent runs no hooks, so the tests record a
