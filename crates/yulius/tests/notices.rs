@@ -902,3 +902,73 @@ async fn a_subscription_problem_is_one_keyed_notice() -> TestResult {
     );
     Ok(())
 }
+
+/// Review of #1711: a subscription's status written without an `account.updated` (a usage
+/// reading, a refused sign-in) is reconciled by the tick; a removed subscription's notice goes;
+/// a state whose texts posting normalises (a redacted error, repeated spaces) is posted once.
+#[tokio::test]
+async fn subscription_notices_follow_the_stored_state() -> TestResult {
+    use yulius_app::model::{AccountRecord, AccountStatus};
+    use yulius_app::ports::store::AccountStore as _;
+    use yulius_domain::ids::AccountId;
+    let p = people().await?;
+    let id = AccountId::parse("acc2")?;
+    let secret = concat!("ghp_", "Zx9Notice00Account1Fixture2Body34567");
+    p.w.h
+        .store
+        .insert_account(&AccountRecord {
+            id: id.clone(),
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Team  Two".into(),
+            credential: None,
+            status: AccountStatus::Error,
+            usage_json: None,
+            last_error: Some(format!("token {secret} refused")),
+            created_at: p.w.h.app.now(),
+            updated_at: p.w.h.app.now(),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    let ours = |list: Vec<yulius_app::ports::store_ext::NoticeRecord>| {
+        list.into_iter()
+            .filter(|n| n.key.as_str() == "account:acc2")
+            .map(|n| (n.id, n.title, n.detail))
+            .collect::<Vec<_>>()
+    };
+    p.w.h.app.sync_all_account_notices().await;
+    let first = ours(p.w.h.app.notices_for(&p.dave.0, None).await?);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0].1, "Team Two reports an error");
+    assert!(
+        !first[0].2.clone().unwrap_or_default().contains("Zx9Notice"),
+        "{first:?}"
+    );
+    p.w.h.app.sync_all_account_notices().await;
+    assert_eq!(
+        ours(p.w.h.app.notices_for(&p.dave.0, None).await?),
+        first,
+        "the same state, normalised by posting, is no news"
+    );
+
+    // Usable again, written without an event: the tick's reconcile removes the notice.
+    p.w.h
+        .store
+        .set_account_state(&id, AccountStatus::Ok, None, None, p.w.h.app.now())
+        .await?;
+    p.w.h.app.sync_all_account_notices().await;
+    assert!(ours(p.w.h.app.notices_for(&p.dave.0, None).await?).is_empty());
+
+    // A refused sign-in, then the subscription removed: its decision does not stay for good.
+    p.w.h
+        .store
+        .set_account_state(&id, AccountStatus::Relogin, None, None, p.w.h.app.now())
+        .await?;
+    p.w.h.app.sync_all_account_notices().await;
+    assert_eq!(ours(p.w.h.app.notices_for(&p.dave.0, None).await?).len(), 1);
+    p.w.h.store.delete_account(&id).await?;
+    p.w.h.app.sync_all_account_notices().await;
+    assert!(ours(p.w.h.app.notices_for(&p.dave.0, None).await?).is_empty());
+    Ok(())
+}

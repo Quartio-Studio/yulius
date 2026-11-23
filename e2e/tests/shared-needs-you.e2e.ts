@@ -66,4 +66,14 @@ test('one notification per shared problem, also seen from another project (SPEC-
   await touchTask(browser, 'sb_studio', 12, { needs_you: docker(1_000) });
   await touchTask(browser, 'sb_studio', 4, { status: 'running', needs_you: docker(2_000) });
   await expect.poll(() => entries(browser)).toEqual(['needs-you:sb_studio:docker']);
+  // Still asked, though this page has not loaded studio's list: another studio task's news does
+  // not settle it (review of #1711).
+  await touchTask(browser, 'sb_studio', 7, { activity: 'working' });
+  await touchTask(browser, 'sb_three', 1, { activity: 'working' });
+  const state = () => browser.evaluate(() => {
+    const name = Object.keys(localStorage).find((k) => k.startsWith('yulius.notifications.') && k !== 'yulius.notifications.filter') || '';
+    const entry = JSON.parse(localStorage.getItem(name) || '[]').find((e: { key: string }) => e.key === 'needs-you:sb_studio:docker');
+    return entry ? [entry.read, entry.expires] : null;
+  });
+  expect(await state()).toEqual([false, null]);
 });

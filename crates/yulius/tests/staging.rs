@@ -433,6 +433,92 @@ async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResu
     Ok(())
 }
 
+/// SPEC-624 review round 1 of #1711: a project with a working task does not tell its people
+/// "nobody repairs it" while that task is only momentarily unable to take the notice (no
+/// session to type into, a draft, typing); a test name posting changes is posted once.
+#[tokio::test]
+async fn a_momentarily_busy_worker_raises_no_gate_notice() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    let long = format!("suite::a  spaced {}", "x".repeat(300));
+    named_gate(&f, &revision, &[long.as_str()]).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox = sandbox(&f).await?;
+    let gate_ids = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            f.h.app
+                .notices_for(&alice, Some(&sandbox.id))
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str().starts_with("gate:"))
+                .map(|n| n.id)
+                .collect::<Vec<_>>(),
+        )
+    };
+    // Nobody works: one notice, and the next tick keeps it although posting cut its name.
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let first = gate_ids().await?;
+    assert_eq!(first.len(), 1);
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(gate_ids().await?, first, "a normalised name is no news");
+    // A task works in the project but has no session to type into right now: it owns the
+    // repair, so the people's notice goes and does not come back on the next tick.
+    agent(&f, "worker").await?;
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert!(gate_ids().await?.is_empty());
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert!(gate_ids().await?.is_empty(), "no flapping");
+    Ok(())
+}
+
+/// Review of #1711: a red branch with many failing tests gives at most twenty notices and one
+/// that counts the rest, stable across ticks.
+#[tokio::test]
+async fn many_unrepaired_failures_are_bounded_notices() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let f = fixture(&staging_toml()).await?;
+    support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let revision = land(&f, "closed", "closed").await?;
+    let names: Vec<String> = (0..25).map(|n| format!("suite::t{n:02}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    named_gate(&f, &revision, &refs).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox = sandbox(&f).await?;
+    let gate = || async {
+        let mut list: Vec<(String, String)> =
+            f.h.app
+                .notices_for(&alice, Some(&sandbox.id))
+                .await?
+                .into_iter()
+                .filter(|n| n.key.as_str().starts_with("gate:"))
+                .map(|n| (n.id, n.key.to_string()))
+                .collect();
+        list.sort();
+        Ok::<_, Box<dyn std::error::Error>>(list)
+    };
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let first = gate().await?;
+    assert_eq!(first.len(), 21, "{first:?}");
+    assert!(first.iter().any(|(_, key)| key == "gate:more"), "{first:?}");
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(gate().await?, first, "stable across ticks");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_later_candidate_waits_for_the_older_full_gate() -> TestResult {
     let f = fixture(&staging_toml()).await?;

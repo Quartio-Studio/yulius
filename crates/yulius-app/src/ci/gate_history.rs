@@ -402,8 +402,16 @@ impl App {
             self.available_gate_workers(sandbox).await?
         };
         // The project's people are told of what nobody repairs, one keyed notice per failure,
-        // removed once it is repaired or owned (SPEC-624 NTC-010).
-        let unowned: &[GateNotice] = if available.is_empty() { &failures } else { &[] };
+        // removed once it is repaired or owned (SPEC-624 NTC-010). "Nobody" is the stored state:
+        // no task works in the project. A worker only momentarily unable to take a notice (a
+        // draft, typing, no session yet) still owns it, so the notice does not flap (review of
+        // #1711).
+        let unowned: &[GateNotice] =
+            if failures.is_empty() || !store.gate_workers(&sandbox.id).await?.is_empty() {
+                &[]
+            } else {
+                &failures
+            };
         if let Err(err) = self.sync_gate_notices(sandbox, unowned).await {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "gate notices could not be reconciled");
         }

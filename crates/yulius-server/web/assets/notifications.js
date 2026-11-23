@@ -28,6 +28,11 @@ function defaultExpires(kind, at) {
 function expired(entry, now = Date.now()) {
   return typeof entry.expires === 'string' && Date.parse(entry.expires) <= now;
 }
+
+/** Whether `value` is an expiry: null (never) or a time that parses. */
+function isExpiry(value) {
+  return value === null || (typeof value === 'string' && Number.isFinite(Date.parse(value)));
+}
 const KINDS = new Set(['info', 'ok', 'warn', 'error']);
 /** Task tones that notify when a task enters them, and the notification kind. */
 const TASK_TONES = { waiting: 'info', done: 'ok', attention: 'warn', failed: 'error', 'stopped-abnormal': 'error' };
@@ -45,7 +50,8 @@ function sanitize(list) {
     .filter((n) => n && typeof n.id === 'string' && typeof n.title === 'string' && typeof n.at === 'string')
     .map((n) => {
       const kind = KINDS.has(n.kind) ? n.kind : 'info';
-      const expires = n.expires === null || typeof n.expires === 'string' ? n.expires : defaultExpires(kind, n.at);
+      // An unreadable expiry counts as none given (review of #1711).
+      const expires = isExpiry(n.expires) ? n.expires : defaultExpires(kind, n.at);
       return { ...n, kind, expires, route: typeof n.route === 'string' && n.route.startsWith('/') && !n.route.startsWith('//') ? n.route : null };
     })
     .filter((n) => !expired(n))
@@ -60,6 +66,7 @@ export function createNotificationCenter(ctx) {
   writeJson(storageKey, items);
   let seq = 0;
   let expiryTimer = null;
+  let destroyed = false;
   const taskTones = new Map(); // task id → last tone seen this session
   const taskEpisodes = new Map(); // task id → last Needs You episode seen this session
 
@@ -79,15 +86,17 @@ export function createNotificationCenter(ctx) {
     return items.filter((n) => !n.read).length;
   }
 
-  /** Drops expired entries and wakes at the next expiry (a minute at most, so a page whose
-   * clock moved catches up). */
+  /** Drops expired entries and wakes at the next expiry, or within ten seconds (so a page whose
+   * clock moved, or that slept, catches up), while any entry can still expire. */
   function prune() {
     const now = Date.now();
     const kept = items.filter((n) => !expired(n, now));
     if (kept.length !== items.length) { items = kept; save(); }
     clearTimeout(expiryTimer);
-    const next = Math.min(...items.filter((n) => typeof n.expires === 'string').map((n) => Date.parse(n.expires) - now), 60000);
-    expiryTimer = setTimeout(() => render(), Math.max(1000, next));
+    expiryTimer = null;
+    if (destroyed) return;
+    const ends = items.filter((n) => typeof n.expires === 'string').map((n) => Date.parse(n.expires) - now);
+    if (ends.length) expiryTimer = setTimeout(() => render(), Math.min(Math.max(1000, Math.min(...ends)), 10000));
   }
 
   function render() {
@@ -133,8 +142,9 @@ export function createNotificationCenter(ctx) {
     }
     seq += 1;
     const when = at || new Date().toISOString();
-    const entry = { id: `${Date.now().toString(36)}-${seq}`, kind, title, detail, route, key, at: when, read: false, expires: expires === undefined ? defaultExpires(kind, when) : expires, episode, notice };
-    if (expired(entry)) return;
+    const entry = { id: `${Date.now().toString(36)}-${seq}`, kind, title, detail, route, key, at: when, read: false, expires: isExpiry(expires) ? expires : defaultExpires(kind, when), episode, notice };
+    // An expired replacement still removed the entry it replaces (review of #1711).
+    if (expired(entry)) { save(); render(); return; }
     items.unshift(entry);
     if (items.length > MAX_ITEMS) items.length = MAX_ITEMS;
     save();
@@ -333,8 +343,12 @@ export function createNotificationCenter(ctx) {
     // An entry that waited for the person goes a day after the task no longer does, and a
     // shared problem's once no task of its project asks about it (SPEC-624).
     if (!notice) settle((n) => n.key === `task:${task.id}` && n.expires === null);
+    // Only from a loaded task list: an unknown one says nothing about who still asks (review
+    // of #1711).
+    const listed = ctx.store.tasksOf(task.sandbox_id);
     for (const shared of Object.keys(SHARED_CAUSES)) {
-      const asked = (ctx.store.tasksOf(task.sandbox_id) || []).some((t) => t.needs_you && t.needs_you.cause === shared);
+      if (!Array.isArray(listed)) break;
+      const asked = listed.some((t) => t.needs_you && t.needs_you.cause === shared);
       if (!asked) settle((n) => n.key === `needs-you:${task.sandbox_id}:${shared}` && n.expires === null);
     }
     if (sameState || !(info.tone in TASK_TONES) || watching(task.id)) return;
@@ -432,7 +446,21 @@ export function createNotificationCenter(ctx) {
     const kept = items.filter((n) => n.notice !== event.id);
     if (kept.length !== items.length) { items = kept; save(); render(); }
   });
-  if (ctx.api) ctx.api.get('/api/me/notices').then((list) => { if (Array.isArray(list)) list.slice().reverse().forEach(heardNotice); }, () => {});
+  // The server's list is the truth for its notices: one it no longer holds (removed or expired
+  // while no page was open, or while the event stream was down) goes (review of #1711).
+  function readNotices() {
+    if (!ctx.api) return;
+    ctx.api.get('/api/me/notices').then((list) => {
+      if (destroyed || !Array.isArray(list)) return;
+      const held = new Set(list.map((n) => n && n.id));
+      const kept = items.filter((n) => !n.notice || held.has(n.notice));
+      if (kept.length !== items.length) { items = kept; save(); }
+      list.slice().reverse().forEach(heardNotice);
+      render();
+    }, () => {});
+  }
+  readNotices();
+  watch('resync', readNotices);
 
   render();
   return {
@@ -443,6 +471,6 @@ export function createNotificationCenter(ctx) {
     /** Forgets every entry. */
     clear() { items = []; save(); render(); },
     /** Stops watching the store (sign-out): a later shell builds a new center. */
-    destroy() { close(); clearTimeout(expiryTimer); offs.splice(0).forEach((off) => off()); },
+    destroy() { destroyed = true; close(); clearTimeout(expiryTimer); offs.splice(0).forEach((off) => off()); },
   };
 }

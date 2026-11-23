@@ -117,11 +117,12 @@ impl NoticeStore for SqliteStore {
                 let mut stmt = tx
                     .prepare(&format!(
                         "DELETE FROM notices WHERE id IN (SELECT id FROM notices WHERE {SCOPE} \
-                         ORDER BY decision DESC, created_at DESC, id DESC LIMIT -1 OFFSET ?3) \
-                         RETURNING {COLS}"
+                         ORDER BY decision DESC, created_at DESC, id = ?4 DESC, id DESC \
+                         LIMIT -1 OFFSET ?3) RETURNING {COLS}"
                     ))
                     .map_err(db)?;
-                stmt.query_map(params![sandbox, user, keep], from_row)
+                // On a tie of times the notice just stored stays (review of #1711).
+                stmt.query_map(params![sandbox, user, keep, n.id], from_row)
                     .map_err(db)?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(db)?
@@ -580,6 +581,23 @@ mod tests {
                 .live_notices(&u1, &everywhere(), Timestamp(9), 50)
                 .await?),
             ["n3", "decide"]
+        );
+        Ok(())
+    }
+
+    /// Review of #1711: on a tie of times the notice just stored stays and an older one goes.
+    #[tokio::test]
+    async fn the_cap_keeps_the_new_notice_on_a_tie() -> TestResult {
+        let store = store().await?;
+        let u1 = UserId::parse("u1")?;
+        for id in ["zz_older", "aa_newer"] {
+            store.put_notice(&notice(id, Some("s1"), id, 5), 1).await?;
+        }
+        assert_eq!(
+            ids(&store
+                .live_notices(&u1, &everywhere(), Timestamp(9), 50)
+                .await?),
+            ["aa_newer"]
         );
         Ok(())
     }

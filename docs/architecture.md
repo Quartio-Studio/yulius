@@ -3267,17 +3267,23 @@ Notices for people carry a key and an expiry
   (from `serve`) reconciles every subscription, then follows `account.updated`: a problem is
   posted as `account:<id>` for administrators, and removed once the subscription is usable.
   Signing in again is a decision. A usage limit expires at its reset (`limit_reset`). A repeat
-  that says the same is not posted again. The staging tick's `tell_gate_repairs` passes the
-  failures that no worker owns to `sync_gate_notices`, which posts `gate:<test>` (never
-  expiring) and removes the ones no longer failing or now owned. The notifier no longer derives
+  that says the same, compared with the texts as posting stores them (`stored_texts`), is not
+  posted again. The background tick runs `sync_all_account_notices` too: it catches a status
+  written without an event, and removes the notices of deleted subscriptions. The staging
+  tick's `tell_gate_repairs` passes the failures to `sync_gate_notices` while the project has
+  no worker in stored state (`gate_workers`). A worker that is only momentarily unable to take a
+  notice still owns it. The sync posts `gate:<test>` for at most 20 failures and `gate:more` for
+  the rest, none expiring, and removes the ones no longer failing or now owned. The notifier no longer derives
   subscription messages: they reach Telegram as posted notices.
 - **The bell** (`web/assets/notifications.js`). Every entry has a key and an `expires` time:
   its kind's default (`EXPIRES_MS`), or none while it waits for a decision. An answered entry
-  goes a day later. Expired entries are pruned at load, at their time and when the panel opens.
+  goes a day later. Expired entries are pruned at load, when the panel opens, and by a timer
+  within ten seconds of their time.
   History stored before this change gets its kind's default from its own time. Server notices
   join it from `GET /api/me/notices` and `notice.posted` under
-  `notice:<project>:<me or ->:<key>`. `notice.removed` drops them, and Clear dismisses them on
-  the server. A task has one entry, `task:<task id>`.
+  `notice:<project>:<me or ->:<key>`. `notice.removed` drops them. Each load and resync drops
+  those the server no longer lists, and Clear dismisses them on the server. A shared problem's
+  entry is settled only from a loaded task list. A task has one entry, `task:<task id>`.
 - **Digest.** Each person's digest lists up to 20 of their live notices (`DigestView.notices`).
   Its items carry `task:<task id>`, and its Telegram message has the scope `-:digest`, so today's
   digest replaces yesterday's.

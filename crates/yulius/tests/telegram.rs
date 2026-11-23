@@ -879,7 +879,8 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
         })
         .await?;
     subscription(&w, AccountStatus::Relogin).await?;
-    // As the accounts code publishes the change: its notice is posted before any bot is active.
+    // The change as an event (the tick would reconcile it too): its notice is posted before any
+    // bot is active.
     let mut events = w.h.app.events.subscribe();
     account_event(&w, "relogin");
     loop {
@@ -973,7 +974,8 @@ async fn subscription(w: &World, status: AccountStatus) -> TestResult {
     Ok(())
 }
 
-/// Publishes `acc1`'s view with `status`, as the accounts code does after a change.
+/// Publishes `acc1`'s view with `status`, as the accounts code does after an edit or a sign-in
+/// (a status written without one is reconciled by the tick, SPEC-624).
 fn account_event(w: &World, status: &str) {
     use yulius_contracts::api::admin::{AccountUsageView, AccountView};
     use yulius_contracts::events::UiEvent;

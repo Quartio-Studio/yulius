@@ -96,12 +96,23 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - **NTC-010 Yulius's own repeated notices use keys** (table below):
   - A subscription problem is posted as `account:<id>` and removed once the subscription is
     usable again. A usage limit expires at its reset when the reset is known.
-  - An integration failure with no repair worker is posted to the project's people as
-    `gate:<test>`, with the same text as the Status and CI pages. It is removed once the failure
-    is repaired or a worker owns it. `GateNotice` carries its `key`.
+  - An integration failure while no task works in the project is posted to the project's
+    people as `gate:<test>`: the failing test, its first failing revision and the merge that
+    showed it, and a link to the CI page. At most 20 failures get a notice each, and the rest
+    share `gate:more`. It is removed once the failure is repaired or a task works in the project.
+    A worker that is only momentarily unable to take a notice still owns it. `GateNotice`
+    carries its `key`.
+  - A subscription's notice follows its stored state. `account.updated` updates it at once,
+    and the background tick also catches a status written without one, and removes the notice
+    of a subscription that no longer exists. A repeat is compared with the texts as posting
+    stores them, so a redacted or cut text is no news.
+  - The prefixes `gate:` and `account:` belong to these producers, and `watch:` to #614.
+    `App::post_notice` is internal: no person or agent posts through it.
 - **NTC-011 Bell compatibility.** The bell gives every entry a key and an `expires` time.
-  Entries already stored in a browser without `expires` get their kind's default, counted from
-  their own time. Entries already past it are pruned on load.
+  Entries already stored in a browser without `expires`, or with one that cannot be read, get
+  their kind's default, counted from their own time. Entries already past it are pruned on load.
+  The bell removes expired entries itself within ten seconds, panel open or not. On each load
+  and resync it drops server notices the server no longer lists.
 
 ### Kinds, keys and default expiries
 
@@ -189,7 +200,7 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
   through the person tools, the digest's notice section and the expired one left out (AC-1,
   AC-3, AC-8). Telegram replacement with the fake channel, including a failing delete
   (`tests/telegram.rs`, AC-6, AC-7). Subscription limit and gate failure producers (AC-9, AC-10).
-- Chromium e2e (`e2e/tests/notifications.e2e.ts`): server notices, replacement by key, hiding at
+- Chromium e2e (`e2e/tests/notices.e2e.ts`): server notices, replacement by key, hiding at
   expiry with the page's clock, migration of old localStorage entries (AC-7, AC-11).
 - Mutation by hand: undo the replacement statement, the expiry filter and the decision refusal,
   and record which tests failed.
@@ -343,3 +354,51 @@ Not tested here: a real Telegram chat (the fake Bot API stands in, and Telegram'
 delete limit is not exercised), and a desktop operating system's notification tag (Chromium's
 `Notification` is a stand-in).
 
+### Review round 1 of PR #1711 (head `974e24b7c`): request changes, all answered
+
+All findings were in this PR's own code. Each fix has a test, and each test was seen failing
+without its fix:
+- **Gate notices flapped with momentary worker availability (major).** "Nobody repairs it" now
+  means no task works in the project (`gate_workers`). Covered by
+  `staging::a_momentarily_busy_worker_raises_no_gate_notice`, which fails on the worker
+  assertion with the old `available` rule.
+- **The repeat check compared raw texts with stored ones (major).** `stored_texts` is shared by
+  posting and the producers. The same test fails at "a normalised name is no news" with the old
+  check (a two-space, 300-character test name). `subscription_notices_follow_the_stored_state`
+  covers a redacted error and a two-space label.
+- **Status changes without `account.updated` (major).** The tick runs `sync_all_account_notices`,
+  which also removes a deleted subscription's notice.
+  `notices::subscription_notices_follow_the_stored_state` covers this through `set_account_state`
+  and `delete_account`, with no event.
+- **The bell kept notices the server removed (major).** Each load and resync reconciles with
+  `GET /api/me/notices`. `notices.e2e.ts` "a notice the server removed while no page was open"
+  fails without it.
+- **A shared decision was settled from an unloaded list (major).** The bell settles it only
+  from a loaded task list. The extended `shared-needs-you.e2e.ts` "seen from another project"
+  case fails without the guard.
+- **Minor findings:**
+  - Gate notices are bounded: 20, plus `gate:more` (`staging::many_unrepaired_failures_are_bounded_notices`).
+  - The store keeps the new notice on a time tie (`the_cap_keeps_the_new_notice_on_a_tie`).
+  - The expiry timer has its own test, with the panel closed ("an entry goes at its expiry
+    while the panel stays closed"), and fires within 10 s.
+  - An unreadable `expires` counts as none.
+  - An expired replacement saves and renders.
+  - The gate text is aligned in the requirement: revision to 12 characters, and no "run it
+    again" for readers.
+- **Nits:**
+  - Comments and the test-plan file name are corrected.
+  - A late read after `destroy()` arms no timer.
+  - Reserved prefixes, not changed: the spec now says `gate:` and `account:` belong to the
+    producers and that `post_notice` is internal (no person or agent posts through it), so a
+    refusal would only guard Yulius against itself. `sync_gate_notices` owning every
+    project-wide `gate:*` notice is intended.
+- **Not changed:** `mcp_config::probe::tests::silent_stdio_server_times_out_and_is_reaped`
+  failed in the reviewer's run. Its file is outside this change, and it passed in this task's
+  runs of the library crates (1,858 passed).
+- Runs after the round-1 fixes:
+  - `yulius::main`: 2,675 passed at first. 4 `forks::` tests (from dev, task #612) timed out
+    against a stale `fake-agent` build; after `cargo build -p fake-agent` all 7 `forks::` tests
+    passed.
+  - Library crates: 1,874 passed.
+  - Chromium: 1,344 passed, 1 configured skip.
+  - Clippy `-D warnings` clean, and `scripts/dev quick` passed.

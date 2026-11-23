@@ -31,6 +31,9 @@ pub fn account_key(id: &str) -> NoticeKey {
     NoticeKey::lossy("account:", id)
 }
 
+/// Failures a project's people get one notice each for; the rest share one (review of #1711).
+pub const GATE_NOTICES_MAX: usize = 20;
+
 /// The key of an integration failure's notice.
 #[must_use]
 pub fn gate_key(test: &str) -> NoticeKey {
@@ -97,9 +100,15 @@ pub fn account_notice(account: &AccountView, now: Timestamp) -> Option<NewNotice
     })
 }
 
-/// Whether `stored` already says what `wanted` would: the same texts and kind, and for a limit
-/// the same reset. A repeat of it is no news and is not posted again.
-fn says_the_same(stored: &NoticeRecord, wanted: &NewNotice, now: Timestamp) -> bool {
+/// Whether `stored` already says what `wanted` would, whose texts are `texts` as posting stores
+/// them: the same texts and kind, and for a limit the same reset. A repeat of it is no news and
+/// is not posted again.
+fn says_the_same(
+    stored: &NoticeRecord,
+    wanted: &NewNotice,
+    texts: &(String, Option<String>),
+    now: Timestamp,
+) -> bool {
     let same_end = match wanted.expiry {
         Some(Expiry::At(at)) => stored.expires_at == Some(at),
         None | Some(Expiry::Never) => stored.expires_at.is_none(),
@@ -108,8 +117,8 @@ fn says_the_same(stored: &NoticeRecord, wanted: &NewNotice, now: Timestamp) -> b
     stored.tone == wanted.tone
         && stored.decision == wanted.decision
         && stored.link == wanted.link
-        && stored.detail.as_deref().map(str::trim) == wanted.detail.as_deref().map(str::trim)
-        && stored.title.trim() == wanted.title.trim()
+        && stored.title == texts.0
+        && stored.detail == texts.1
         && same_end
 }
 
@@ -138,16 +147,37 @@ impl App {
         });
     }
 
-    async fn sync_all_account_notices(&self) {
+    /// Reconciles every subscription's notice with its stored state, and removes the notices of
+    /// subscriptions that no longer exist. The background tick runs it too: a status written
+    /// without an `account.updated` (a usage reading, a refused sign-in, a removal) is caught
+    /// within a tick (review of #1711).
+    pub async fn sync_all_account_notices(&self) {
         let store = &self.deps.store;
         let (Ok(accounts), Ok(live)) = (store.accounts().await, self.working_attempts().await)
         else {
             tracing::warn!("subscription notices could not be reconciled");
             return;
         };
+        let known: std::collections::HashSet<NoticeKey> = accounts
+            .iter()
+            .map(|a| account_key(a.id.as_str()))
+            .collect();
         for account in accounts {
             self.sync_account_notice(&crate::accounts::account_view(&account, &live))
                 .await;
+        }
+        match store.notices_by_prefix(None, "account:", self.now()).await {
+            Ok(stored) => {
+                for gone in stored
+                    .iter()
+                    .filter(|n| n.user.is_none() && !known.contains(&n.key))
+                {
+                    if let Err(err) = self.remove_notice(None, None, &gone.key).await {
+                        tracing::warn!(error = %err, "a removed subscription's notice stays");
+                    }
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "subscription notices could not be read"),
         }
     }
 
@@ -178,10 +208,14 @@ impl App {
             .store
             .notices_by_prefix(sandbox, wanted.key.as_str(), now)
             .await?;
+        // Compared as posting would store it: redacted, on one line and cut (review of #1711).
+        let texts = self
+            .stored_texts(sandbox, &wanted.title, wanted.detail.as_deref())
+            .await;
         if stored
             .iter()
             .filter(|n| n.key == wanted.key && n.user.is_none())
-            .any(|n| says_the_same(n, &wanted, now))
+            .any(|n| says_the_same(n, &wanted, &texts, now))
         {
             return Ok(());
         }
@@ -200,16 +234,16 @@ impl App {
         failures: &[GateNotice],
     ) -> AppResult<()> {
         let mut wanted = Vec::new();
-        for failure in failures {
+        for failure in failures.iter().take(GATE_NOTICES_MAX) {
             let origin = failure.merge_task.map_or_else(
                 || "an untracked merge".into(),
                 |n| format!("task #{n}'s merge"),
             );
-            let revision: String = failure.revision.chars().take(9).collect();
+            let revision: String = failure.revision.chars().take(12).collect();
             wanted.push(NewNotice {
                 detail: Some(format!(
-                    "It first failed at {revision}, after {origin}. No task works on the repair: \
-                     run it again or start a task from the CI page."
+                    "It first failed at {revision}, after {origin}. No task works on the repair; \
+                     the CI page has the run."
                 )),
                 link: Some(format!("/s/{}/ci", sandbox.slug)),
                 expiry: Some(Expiry::Never),
@@ -219,6 +253,21 @@ impl App {
                     NoticeKind::Failed,
                     NoticeTone::Error,
                     format!("Integration gate: {} fails", failure.test),
+                )
+            });
+        }
+        if failures.len() > GATE_NOTICES_MAX {
+            let more = failures.len() - GATE_NOTICES_MAX;
+            wanted.push(NewNotice {
+                detail: Some("No task works on the repair. The CI page lists them all.".into()),
+                link: Some(format!("/s/{}/ci", sandbox.slug)),
+                expiry: Some(Expiry::Never),
+                ..NewNotice::new(
+                    Some(sandbox.id.clone()),
+                    gate_key("more"),
+                    NoticeKind::Failed,
+                    NoticeTone::Error,
+                    format!("Integration gate: {more} more failing tests"),
                 )
             });
         }

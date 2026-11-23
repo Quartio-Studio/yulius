@@ -182,7 +182,8 @@ impl App {
         if services.active().is_none() {
             return;
         }
-        // Only tasks and subscriptions are told; every other event costs nothing.
+        // Only tasks, takes of control and posted notices (subscription problems among them,
+        // SPEC-624) are told; every other event costs nothing.
         if let UiEvent::TaskRemoved { task_id } = &envelope.event {
             services.notifier.forget(&format!("task:{task_id}"));
             return;
@@ -442,8 +443,8 @@ impl App {
     }
 
     /// Seeds the notifier's memory with what is the case now: every task's reading, its
-    /// sandbox-wide episode and waiting request for control, and every subscription's problem,
-    /// replacing what it held in one step, so only what changes after it is told (TGC-022; review
+    /// sandbox-wide episode and waiting request for control (a subscription's problem is a
+    /// posted notice, told when posted, SPEC-624), replacing what it held in one step, so only what changes after it is told (TGC-022; review
     /// round 1: judging "first seen" by the task's state time dropped a chain blocked later, for
     /// good). Run by the notifier's own task, in order with the events (review round 2).
     async fn seed_notices(&self) {

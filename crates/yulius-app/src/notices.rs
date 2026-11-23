@@ -195,20 +195,9 @@ impl App {
         )
         .map_err(AppError::Invalid)?;
         let sandbox = new.sandbox.as_ref();
-        // Redacted whole, then cut: a cut first could leave a secret's prefix that no longer
-        // matches (review round 1).
-        // One line: a title is a list's bullet in the digest and the chat (review round 2).
-        let title = cut(
-            &one_line(&self.redact_posted_notice(sandbox, new.title.clone()).await),
-            TITLE_MAX,
-        );
-        let detail = match new.detail.as_deref().map(str::trim) {
-            Some(d) if !d.is_empty() => Some(cut(
-                &self.redact_posted_notice(sandbox, d.to_owned()).await,
-                DETAIL_MAX,
-            )),
-            _ => None,
-        };
+        let (title, detail) = self
+            .stored_texts(sandbox, &new.title, new.detail.as_deref())
+            .await;
         let id: String = self
             .deps
             .crypto
@@ -272,6 +261,29 @@ impl App {
                 key: removed.key.to_string(),
             },
         ));
+    }
+
+    /// A notice's title and detail as they are stored: redacted whole, then cut (a cut first
+    /// could leave a secret's prefix that no longer matches, review round 1); the title on one
+    /// line (review round 2). What a producer compares a repeat with (review of #1711).
+    pub(crate) async fn stored_texts(
+        &self,
+        sandbox: Option<&SandboxId>,
+        title: &str,
+        detail: Option<&str>,
+    ) -> (String, Option<String>) {
+        let title = cut(
+            &one_line(&self.redact_posted_notice(sandbox, title.to_owned()).await),
+            TITLE_MAX,
+        );
+        let detail = match detail.map(str::trim) {
+            Some(d) if !d.is_empty() => Some(cut(
+                &self.redact_posted_notice(sandbox, d.to_owned()).await,
+                DETAIL_MAX,
+            )),
+            _ => None,
+        };
+        (title, detail)
     }
 
     /// `text` redacted as `sandbox`'s transcripts are; instance-wide by credential shapes.

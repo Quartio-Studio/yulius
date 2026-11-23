@@ -112,3 +112,30 @@ test('history kept before entries had expiries gets them, and what is already pa
   expect(recent).toBe(24 * 3600 * 1000);
   expect(failure).toBe(7 * 24 * 3600 * 1000);
 });
+
+test('a notice the server removed while no page was open is gone on the next load', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await firstShown(browser.locator('.notif-btn'));
+  await eventsConnected(browser);
+  await post(browser, { id: 'nt_gone', key: 'gate:quick::a', sandbox_id: 'sb_studio', tone: 'error', title: 'Integration gate: quick::a fails' });
+  await expect.poll(() => entries(browser).then((list) => list.length)).toBe(1);
+  // The next page's server holds no notice: repaired while nobody looked.
+  await app.open(mock('/s/studio', '&ambient=0&again=1'));
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.notices.reads)).toBeGreaterThan(0);
+  await expect.poll(() => entries(browser)).toEqual([]);
+  await firstShown(browser.locator('.notif-btn'));
+  expect(await browser.locator('.notif-badge').isHidden()).toBe(true);
+});
+
+test('an entry goes at its expiry while the panel stays closed', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await firstShown(browser.locator('.notif-btn'));
+  await eventsConnected(browser);
+  const in30m = await browser.evaluate(() => new Date(Date.now() + 30 * 60 * 1000).toISOString());
+  await post(browser, { id: 'nt_soon', key: 'watch:nightly', sandbox_id: 'sb_studio', title: 'Nightly build passed', expires_at: in30m });
+  await expect(browser.locator('.notif-badge')).toHaveText('1');
+  await browser.evaluate(() => { const now = Date.now.bind(Date); Date.now = () => now() + 31 * 60 * 1000; });
+  // Nothing is opened: the bell's own timer drops it.
+  await expect.poll(() => entries(browser), { timeout: 15_000 }).toEqual([]);
+  await expect(browser.locator('.notif-badge')).toBeHidden();
+});
