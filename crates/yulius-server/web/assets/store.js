@@ -356,7 +356,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // TaskDetail flattens TaskSummary together with private run data. Publish
   // the public summary on lifecycle changes, including a newly attached account.
   function lifecycleSummary(detail, prior) {
-    const summary = { ...parkedFacts(detail), account_id: detail.account_id };
+    // Fork links are absent when empty (SPEC-628): the detail's, never an older summary's.
+    const summary = { ...parkedFacts(detail), account_id: detail.account_id, forked_from: detail.forked_from, forks: detail.forks };
     for (const key of ['id', 'sandbox_id', 'number', 'title', 'harness', 'harness_choice', 'branch', 'origin',
       'created_by', 'owner', 'control_request', 'control_from', 'owner_asks_first', 'created_at', 'updated_at',
       'state_since', 'working_since', 'account_label', 'mode', 'resumes_at', 'waits_for_account',
