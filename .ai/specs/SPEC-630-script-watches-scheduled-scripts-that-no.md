@@ -1,6 +1,6 @@
 ---
 yulius-task: d09a439b-401f-4a27-8a5f-78b535f91ab9
-status: in-progress
+status: done
 ---
 
 # SPEC-630: Script watches: scheduled scripts that notify a person without an agent turn
@@ -174,11 +174,11 @@ posting to people other than the owner.
 - [x] Review round 1 of the watch core: every finding fixed test-first
 - [x] Independent review round 2 of the watch core, every finding answered
 - [x] Independent review round 3 of the watch core: the dev merge and round 2's notes
-- [ ] People create, edit, run, pause and remove watches over HTTP
-- [ ] The Superagent manages watches through MCP tools, and checks point to watches
-- [ ] The project's Watches page offers Run now, Pause/Resume, Edit and Remove
-- [ ] Product, architecture, API and operations docs describe watches
-- [ ] Independent review of the API, tools and page, every finding answered
+- [x] People create, edit, run, pause and remove watches over HTTP
+- [x] The Superagent manages watches through MCP tools, and checks point to watches
+- [x] The project's Watches page offers Run now, Pause/Resume, Edit and Remove
+- [x] Product, architecture, API and operations docs describe watches
+- [x] Independent review of the API, tools and page, every finding answered
 
 ## Acceptance criteria
 
@@ -480,3 +480,11 @@ failing its test. It left two minors and two nits:
   removes it at once. The test's "writer" case (it recreates its state in a loop) passes with
   this. It also passed once with the run-end removal undone, because the kill usually lands
   before the removal, so it shows the behaviour but cannot force the order.
+
+### Review round 3 of PR #1722 (head `23f29f18c`): approved
+
+Round 3 approved `23f29f18c`, after a merge of `dev` (#1711, #1724) whose resolution it
+checked. Round 2's notes are fixed, and the run-going probe fails its test. It left one nit, kept
+with its reason: the "writer" case does not force the order between the kill and a last write.
+The run-end removal closes that order by construction, and the Evidence above says the case
+cannot prove it. Whole `yulius::main` at this head: 2,751 passed. Library crates: 1,903.
