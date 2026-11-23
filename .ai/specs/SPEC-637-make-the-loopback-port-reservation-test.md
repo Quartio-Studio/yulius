@@ -67,7 +67,9 @@ it is.
   family, makes the probe report the port reserved. It skips IPv6 where the host has no IPv6
   loopback, as before. No retries, no sleeps.
 - LPR-004 `PtySessionHost::loopback_ports_idle` keeps its behaviour; it is the decision function
-  with a binder that binds a `TcpListener` and drops it at once.
+  with a binder that binds a `TcpListener` and drops it at once. A real-socket test holds its
+  free side without a port anyone else can take: `0..=0` asks the kernel for any free port on
+  each family, so it reads idle (review round 1).
 
 ## Plan
 
@@ -121,8 +123,10 @@ Host: this sandbox, `ip_local_port_range` 32768-60999, 128 CPUs. Logs in the wor
   (the 7 probe tests per iteration): alone 200/200 passed, beside the `[::1]` holder 200/200,
   beside the `127.0.0.1` churn 200/200, afterwards 200/200.
 - `scripts/cargo nextest run -p yulius --lib`: 702 tests run, 702 passed.
-- Mutations by hand in `loopback_ports_idle_with` (each restored with `git checkout` and
-  `touch`), failing tests per mutation:
+- Mutations in `loopback_ports_idle_with`, each restored with `git checkout` and `touch`. These
+  five were applied by a small ignored helper (`target/issue-1620/mutate.py`, one exact-string
+  replacement each), not by hand as AGENTS.md asks; the review read their logs. Failing tests
+  per mutation:
   - any IPv6 error counts as free: `another_ipv6_failure_keeps_the_range_reserved`,
     `a_busy_ipv6_port_keeps_the_range_reserved`, `a_loopback_listener_keeps_a_port_reserved`;
   - a missing IPv6 loopback counts as busy: `a_host_without_ipv6_loopback_decides_on_ipv4`;
@@ -135,6 +139,15 @@ Host: this sandbox, `ip_local_port_range` 32768-60999, 128 CPUs. Logs in the wor
   - only the range's first port checked: `a_busy_ipv4_port_keeps_the_range_reserved`,
     `a_busy_ipv6_port_keeps_the_range_reserved`, `a_host_without_ipv6_loopback_decides_on_ipv4`,
     `a_range_free_on_both_loopback_addresses_is_idle`.
-- Not tested: the real binder's release (that it drops its listener) on real sockets, for the
-  reason in ADR-0469; a host without IPv6 loopback on real sockets (this host has `[::1]`; the
-  fake host covers both error kinds).
+- Review round 1 (head 698d34cd2, request changes): after the change, no test held the real
+  probe's free side. The reviewer's mutant, a binder that never succeeds (`.and_then(|_|
+  Err(AddrInUse.into()))`), passed all 702 lib tests. Added
+  `the_real_binder_reports_a_free_loopback_port_idle` (`loopback_ports_idle(0..=0)`). With the
+  mutant applied by hand: 12 session tests run, 11 passed, that one failed. Restored by hand:
+  all pass. The nit (a closure binding that shadowed `failing`) is renamed to `held`.
+- After round 1: `target/issue-1620/repro.sh r1` over the 8 probe tests, 200 iterations each,
+  alone, beside the `[::1]` holder, beside the `127.0.0.1` churn, and afterwards: 200/200
+  passed in all four. `scripts/cargo nextest run -p yulius --lib`: 703 passed.
+- Not tested: on real sockets, that the binder releases a port it bound (a dropped listener
+  frees a port that anyone may take at once; ADR-0469). Also not on real sockets: a host
+  without IPv6 loopback, because this host has `[::1]`; the fake host covers both error kinds.
