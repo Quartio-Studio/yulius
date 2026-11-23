@@ -1,6 +1,6 @@
 ---
 yulius-task: 96eea568-73fb-4b39-8179-d2211f150f51
-status: in-progress
+status: done
 ---
 
 # SPEC-628. Fork a task: a new task continues from the same conversation, separately
@@ -64,7 +64,7 @@ separately. The owner approved this on 22 Nov 2026 after a review of iTermX, who
 - [x] Fork action in the task menu and on the task page, with its dialog
 - [x] Fork origin and forks shown on both task pages
 - [x] End-to-end spec of the Fork dialog and the origin shown on both pages
-- [ ] Product docs and the changes log for the UI; independent review of the UI pull request
+- [x] Product docs and the changes log for the UI; independent review of the UI pull request
 
 ## Acceptance criteria
 
@@ -262,3 +262,12 @@ own code, and 1 pre-existing. Answered:
 - After the fixes: `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main)'` 2671 passed,
   24 skipped; `-p yulius-app -p yulius-server` 749 passed; the fork e2e spec 4 passed; menus,
   ownership, consistency, git and archive 75 passed.
+
+UI review round 2 (Fable 5.2, head `628f488a0`): approve; the round-1 findings are resolved with
+tests. One test-only nit is left: the dialog's 64 KiB byte check has no e2e case. The reviewer
+observed it by probe: "40,000 two-byte characters give the field error "Keep it to 64 KiB.",
+focus stays in the field and nothing is sent."
+
+Not tested here: a Codex fork against the real Codex service (the reviewer's run used a local stub
+API); Antigravity, refused by design; the UI against a real server (the e2e runs against the
+page's mock, whose fork route mirrors the server's refusals).
