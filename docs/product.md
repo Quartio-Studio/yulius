@@ -352,7 +352,9 @@ watching, steering and unblocking.
   holds, not a timer of its session: due, it is typed into the Superagent when it is idle, after
   any restart, and a Superagent that is not running (its person ended it, the machine restarted)
   is started for it
-  ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)).
+  ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)). A check
+  that a script can decide (a date, a URL, a release, a CI number) is a script watch instead
+  (`watch_create`), which costs no turn (SPEC-630).
 - **Global Superagent**: besides the Superagent of each sandbox, every person has one Global
   Superagent, the **All sandboxes** tab of the Superagent panel beside its **This sandbox** tab
   (as Notes shows its notepads; SPEC-428), in every sandbox and on the pages outside one (where
@@ -383,7 +385,7 @@ watching, steering and unblocking.
   says it can be clicked or dragged; a dragged tab stays within the row, giving a little at
   either end; its menu moves it too.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like the Secrets page's tabs —, Secrets, Dashboard — with Overview, Pipeline (stages) and Harnesses tabs —; the Superagent is on the right),
-  then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
+  then "More" for Sessions, Workflows, Skills, Automations, Watches and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Yulius keeps that CLI current by itself: a new Claude Code release
   (npm's `latest` by default) reaches every new or resumed session within about an hour and a
@@ -696,6 +698,19 @@ watching, steering and unblocking.
   Run now starts its task the way the chip shows. Each task runs as the automation creator.
   Only the creator can save changes, toggle the schedule or use Run now. Project writers can
   delete the automation and create a replacement of their own. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
+- **Script watches** (SPEC-630, [ADR-0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md)):
+  a bash script on a schedule (an interval of 1 minute to 7 days, or cron), run by Yulius in the
+  project's sandbox without any agent or subscription, so watching a URL, a release, a CI number
+  or a date costs no tokens. What it prints becomes a notice for its owner (the bell, digest,
+  Telegram), keyed `watch:<name>`, so each post replaces the last: exit 0 with output posts it, no
+  output posts nothing, exit 3 posts and ends the watch, and the third failure in a row posts one
+  warning. Each run is bounded (its timeout, CPU, memory and file size) and gets only the agent
+  secrets it names, through the egress proxy. Posts that could not be stored are retried, and
+  watches survive restarts and updates. The project's Watches page lists them with their state,
+  next and last run and last output, with Run now, Pause/Resume, Edit and Remove; the Superagent
+  and a person's own agent manage them with `watch_create`, `watches_list`, `watch_update`,
+  `watch_run`, `watch_pause` and `watch_remove`. Only a watch's owner edits, runs or resumes it; a project
+  administrator may also pause or remove it.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.

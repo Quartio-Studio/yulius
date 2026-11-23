@@ -1,6 +1,6 @@
 ---
 yulius-task: d09a439b-401f-4a27-8a5f-78b535f91ab9
-status: in-progress
+status: done
 ---
 
 # SPEC-630: Script watches: scheduled scripts that notify a person without an agent turn
@@ -25,10 +25,10 @@ approved this on 22 Nov 2026 after a review of iTermX, a separate tool. Its desi
   wins). It resolves an expiry (`never`, `30m`, `2h`, `3d`, RFC 3339) and publishes
   `notice.posted` to the people it reaches. Their Telegram chats get it through the notifier,
   under their channel choices (`NoticeKind`). `watch:` is reserved for this task, and the
-  spec's table says a watch's output gets "the watch's expiry, else 1 day". The bell gets server
-  notices in SPEC-624's second pull request, which is still open. Until it merges, a watch's
-  notice reaches `GET /api/me/notices`, `notices_list`, the digest and Telegram, and its last
-  output shows on the Watches page.
+  spec's table says a watch's output gets "the watch's expiry, else 1 day". The bell got server
+  notices in SPEC-624's second pull request (#1711, merged before this task's second pull
+  request), so a watch's notice reaches the bell, `GET /api/me/notices`, `notices_list`, the
+  digest and Telegram, and its last output shows on the Watches page.
 - **Automations** (`automations.rs`, SPEC-001 AUT-*) create a *task* on a cron schedule
   (`yulius_domain::cron::Schedule`, with a UTC offset). Their scheduler ticks every 30 s.
 - **Superagent checks** (`superagent_checks.rs`, SPEC-487 CHK-*) type a prompt into a person's
@@ -118,8 +118,7 @@ posting to people other than the owner.
   - expiry the watch's own, else 1 day.
 
   Each post replaces the previous one (NTC-003). It reaches the owner's channels as every notice
-  does (pages, the person tools, the digest, Telegram, and the bell once SPEC-624's second pull
-  request merges).
+  does (the bell and open pages, the person tools, the digest and Telegram).
 - **WCH-007 Three failures, one warning.** The third failure in a row posts one warning keyed
   `watch:<name>:failing` (category `failed`, tone `error`). It says how many runs failed, and
   gives the last reason and the tail of the error output. Later failures post nothing more
@@ -156,7 +155,8 @@ posting to people other than the owner.
   - Run now runs it once at once, also when it is paused or ended, and posts as usual.
   - Each change is audited.
 - **WCH-012 The Superagent manages watches** (second pull request): MCP tools `watch_create`,
-  `watches_list`, `watch_run`, `watch_pause` (and resume) and `watch_remove`, for a person's
+  `watches_list`, `watch_update` (fields left out keep their values), `watch_run`, `watch_pause`
+  (and resume) and `watch_remove`, for a person's
   Superagent, acting as that person.
   - `superagent_check_set`'s description says to use a watch when a script can decide the check.
   - The docs show how to move "#479 merge-queue targets" onto a watch.
@@ -174,11 +174,11 @@ posting to people other than the owner.
 - [x] Review round 1 of the watch core: every finding fixed test-first
 - [x] Independent review round 2 of the watch core, every finding answered
 - [x] Independent review round 3 of the watch core: the dev merge and round 2's notes
-- [ ] People create, edit, run, pause and remove watches over HTTP
-- [ ] The Superagent manages watches through MCP tools, and checks point to watches
-- [ ] The project's Watches page offers Run now, Pause/Resume, Edit and Remove
-- [ ] Product, architecture, API and operations docs describe watches
-- [ ] Independent review of the API, tools and page, every finding answered
+- [x] People create, edit, run, pause and remove watches over HTTP
+- [x] The Superagent manages watches through MCP tools, and checks point to watches
+- [x] The project's Watches page offers Run now, Pause/Resume, Edit and Remove
+- [x] Product, architecture, API and operations docs describe watches
+- [x] Independent review of the API, tools and page, every finding answered
 
 ## Acceptance criteria
 
@@ -202,7 +202,23 @@ posting to people other than the owner.
 - **AC-7** (WCH-002, WCH-004) A contained run's plan uses the sandbox root, the holder join in
   CI's group and the watch home as its writable path. A run granted `API_KEY` gets its placeholder
   and the proxy variables, never the value.
-- **AC-8** (WCH-011, WCH-012, WCH-013) is listed with the second pull request's tests.
+- **AC-8** (WCH-011) Over HTTP:
+  - a reader lists but creates nothing;
+  - a writer creates and owns a watch, and a taken name is a 409;
+  - only the owner edits (a new name is a 422), runs now and resumes;
+  - a project administrator pauses and removes;
+  - a removal removes the watch's notices;
+  - each change is audited.
+- **AC-9** (WCH-012) Through the person tools (remote MCP): `watch_create`, `watches_list`,
+  `watch_update`, `watch_run`, `watch_pause` (and resume) and `watch_remove` work for an operate
+  token; a read token lists but creates nothing. The Superagent is served the six tools, with
+  `watches_list` pre-allowed.
+- **AC-10** (WCH-013) The Watches page (Chromium e2e, mock):
+  - it shows each watch's state, schedule, failure streak and allowed buttons;
+  - Run now shows the new result;
+  - Resume, New watch, Edit (with the name fixed and the server's refusal said in the dialog) and
+    Remove after a confirmation all work;
+  - no axe violations.
 
 ## Test plan
 
@@ -222,6 +238,22 @@ posting to people other than the owner.
   - the contained plan through a recording process host, and the secret placeholders (AC-7).
 - Mutation by hand: undo the replacement key, the failure threshold, the pending retry, the
   `ulimit` lines and the lost-run recovery, and record which tests fail.
+
+## Moving "#479 merge-queue targets" onto a watch
+
+The owner's check lives in their Superagent's `superagent-checks.json` on the production
+instance, which no repository change reaches. Once this is deployed, their Superagent does it
+with two calls in the project of #479 (described in the pull request too):
+
+```text
+watch_create {"name": "merge-queue-targets", "every": "1d", "expiry": "never",
+  "script": "[ \"$(date -u +%F)\" \\< 2026-11-24 ] && exit 0\necho \"#479: the merge-queue targets are due today; check them\"\nexit 3"}
+superagent_check_delete {"name": "#479 merge-queue targets"}
+```
+
+Until 2026-11-24 the script prints nothing and costs nothing. On that day it posts the reminder
+once and ends the watch (exit 3). `the_person_tools_manage_watches` runs the same shape of
+script through the tools.
 
 ## Decisions
 
@@ -297,8 +329,8 @@ posting to people other than the owner.
   not passed.
 - Not tested here: a real bubblewrap run joined to a real holder. The contained plan is checked
   through a recording process host with a fake holder, as the CD tests check theirs, and the
-  bounds are proven on the host. Also not tested: the bell showing a watch's notice, which waits
-  for SPEC-624's second pull request.
+  bounds are proven on the host. Also not tested: the bell showing a watch's notice in a browser:
+  the bell shows server notices since #1711, whose own e2e tests cover posted notices.
 
 ### Review round 1 of PR #1713 (head `cc8825af8`): request changes, all answered
 
@@ -374,3 +406,85 @@ round 3, each with its test seen failing first or with its fix undone:
 Round 3 approved `1367256ac` with no blocker, major or minor findings. Its one nit was
 documentation: `ulimit -c 0` stops core files, but a piped core handler on the host is still
 called. The operations doc, this Evidence and the test's name now say so.
+
+### Second pull request: managing watches (steps 10 to 13)
+
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^watches::/)'`: all
+  watch tests pass, including `people_manage_watches_over_http` (AC-8) and
+  `the_person_tools_manage_watches` (AC-9).
+- The Cockpit's served tools (`cockpit::a_cockpit_manages_the_project_for_its_owner`), the
+  person tools' order test, the harness's pre-allowed list
+  (`a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`) and the UI
+  contract (`ui_contract::*`: every UI call and mock route is a server route) pass with the new
+  tools and routes.
+- e2e (Chromium, mock): `npx e2e run tests/watches.e2e.ts` passes (AC-10, with axe), as do
+  `tests/navigation.e2e.ts` (the Watches link under More) and `tests/automations.e2e.ts`.
+- Not tested here: the page against a real server in a browser (the e2e suite runs on the mock,
+  whose routes the UI contract test checks against the server's).
+
+### Review round 1 of PR #1722 (head `98cf1457d`): request changes, all answered
+
+All findings were in this pull request's own code. Each fix's test was seen failing with the fix
+undone by hand:
+- **The rights test could not fail on writer versus administrator (major).**
+  `people_manage_watches_over_http` now has a writer who is not the owner (dave). Their `PUT`,
+  `run`, `pause`, `resume` and `DELETE` are each an exact 403, and their view has no rights. The
+  administrator's `run` is a 403, and the reader's refusals are exact 403s. With the reviewer's
+  probe (`Administer` read as `Configure`), the test fails.
+- **Minor findings:**
+  - A removed watch's state directory goes with it, through the isolation's mapped removal when
+    there is one (`remove_watch_files`).
+  - Run now takes a permit of the instance's run bound or is refused with 409: it never queues
+    presses. A run already going is a 409 too.
+  - An edit writes the schedule's anchor only when the schedule changed (`update_watch(…, since,
+    …)` with `COALESCE`), so an unchanged one keeps it and an edit cannot undo a racing resume.
+  - `watch_update` keeps every field it is not given: script, schedule, offset, expiry, timeout
+    and secrets (`watch_update_keeps_what_it_is_not_given`). Without `keep("secrets", …)` it
+    fails.
+  - The page reloads quietly on `watches.updated` and keeps the folds its reader opened (e2e:
+    an open "Last output" shows the next run's output).
+  - The e2e test clicks Pause and sees Paused and Resume.
+  - `removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule` covers the state
+    removal, both 409s, the permit, an edit to a cron whose slot passed (no run until tomorrow)
+    and a no-op resume. Each of those fixes undone fails it.
+- **Nits:**
+  - A run whose watch was removed between its claim and its cancel entry does not run. A post
+    that lands after its watch's removal removes its notice again.
+  - Resuming an active watch changes nothing.
+  - `watch_project` and `watch_seen` no longer repeat `require_for`'s checks.
+  - `watch_input` takes the stored record instead of a skip list.
+  - `paused` must be a boolean.
+  - `product.md` and WCH-012 list `watch_update`.
+  - The day's list in `changes.md` is whole.
+- **Kept as they are, with the reason:**
+  - `watch.run` is audited when the person presses Run now, which is what the audit records.
+  - REST calls with a token are `created_via: ui`, as automations made over the API are.
+  - The `superagent.tool` entry names the tool, as for every person tool; the `watch.*` entry
+    beside it names the watch.
+- Whole `yulius::main` binary: 2,738 passed. Library crates: 1,901 passed. Clippy
+  `--workspace -D warnings` and `scripts/dev quick` are clean. `npx e2e run tests/watches.e2e.ts`
+  passed.
+
+### Review round 2 of PR #1722 (head `b5b8abd30`): approved; its notes fixed after it
+
+Round 2 approved `b5b8abd30`, with the reviewer's probe on the owner-or-administrator rule
+failing its test. It left two minors and two nits:
+- The Run-now `again` assertion now checks "a run of this watch is going". With that refusal
+  switched off, the test fails.
+- `docs/api.md` says that Run now's 409 also covers a full instance, that resuming an active
+  watch changes nothing, that a removal frees the state files, and that `watch_update` keeps the
+  fields it is not given.
+- The edit no longer computes a `since` the store ignores.
+- The state directory of a watch removed while it runs is removed again when its cancelled run
+  ends, so files written between the cancel and the kill do not stay. The removal itself still
+  removes it at once. The test's "writer" case (it recreates its state in a loop) passes with
+  this. It also passed once with the run-end removal undone, because the kill usually lands
+  before the removal, so it shows the behaviour but cannot force the order.
+
+### Review round 3 of PR #1722 (head `23f29f18c`): approved
+
+Round 3 approved `23f29f18c`, after a merge of `dev` (#1711, #1724) whose resolution it
+checked. Round 2's notes are fixed, and the run-going probe fails its test. It left one nit, kept
+with its reason: the "writer" case does not force the order between the kill and a last write.
+The run-end removal closes that order by construction, and the Evidence above says the case
+cannot prove it. Whole `yulius::main` at this head: 2,751 passed. Library crates: 1,903.

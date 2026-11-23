@@ -79,6 +79,6 @@ design was read as a reference, and none of its code is used. Builds on
   watch, and an agent turn is spent only when the script says something.
 - Scripts run with what the sandbox has installed and its network, and with only the secrets
   they name.
-- A watch's posts reach the person wherever notices reach them. In the bell, that is once
-  SPEC-624's second pull request makes it show server notices.
+- A watch's posts reach the person wherever notices reach them: the bell, the digest, Telegram
+  and the person tools.
 - The bounds are instance defaults: 120 s CPU, 1 GiB data and 1 MiB per file.

@@ -995,3 +995,746 @@ async fn a_removed_projects_lost_run_is_recovered_and_runs_write_no_core() -> Te
     );
     Ok(())
 }
+
+async fn http(
+    w: &World,
+    method: Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+    who: &Creds,
+) -> Result<support::Resp, Error> {
+    call(&w.h.router, method, path, body, who).await
+}
+
+/// WCH-011: people list, create, edit, run, pause, resume and remove watches over HTTP, each by
+/// their rights, and each change is audited.
+#[tokio::test]
+async fn people_manage_watches_over_http() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+    let w = world().await?;
+    let bob = seed_github_user(&w.h, "u-bob", "bob").await?;
+    let carol = seed_github_user(&w.h, "u-carol", "carol").await?;
+    w.h.github.set_perm("bob", "acme/app", perms("read"));
+    w.h.github.set_perm("carol", "acme/app", perms("admin"));
+    // A writer who is not its owner (review round 1): none of its changes are theirs.
+    let dave = seed_github_user(&w.h, "u-dave", "dave").await?;
+    w.h.github.set_perm("dave", "acme/app", perms("write"));
+    let body = serde_json::json!({
+        "name": "release", "script": "echo v1", "every": "1h", "expiry": "2h", "secrets": ["API_KEY"]
+    });
+
+    let refused = http(
+        &w,
+        Method::POST,
+        "/api/sandboxes/s1/watches",
+        Some(body.clone()),
+        &bob,
+    )
+    .await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::FORBIDDEN,
+        "a reader creates none: {}",
+        refused.body
+    );
+    let made = http(
+        &w,
+        Method::POST,
+        "/api/sandboxes/s1/watches",
+        Some(body.clone()),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let id = made.body["id"].as_str().ok_or("id")?.to_owned();
+    assert_eq!(made.body["owner"], "alice");
+    assert_eq!(made.body["every"], "1h");
+    assert_eq!(made.body["state"], "active");
+    assert_eq!(
+        (
+            made.body["can_edit"].as_bool(),
+            made.body["can_remove"].as_bool()
+        ),
+        (Some(true), Some(true))
+    );
+    let again = http(
+        &w,
+        Method::POST,
+        "/api/sandboxes/s1/watches",
+        Some(body),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+
+    let listed = http(&w, Method::GET, "/api/sandboxes/s1/watches", None, &bob).await?;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    assert_eq!(listed.body[0]["name"], "release");
+    assert_eq!(
+        (
+            listed.body[0]["can_edit"].as_bool(),
+            listed.body[0]["can_remove"].as_bool()
+        ),
+        (Some(false), Some(false))
+    );
+    let by_admin = http(&w, Method::GET, &format!("/api/watches/{id}"), None, &carol).await?;
+    assert_eq!(
+        (
+            by_admin.body["can_edit"].as_bool(),
+            by_admin.body["can_remove"].as_bool()
+        ),
+        (Some(false), Some(true))
+    );
+
+    // Only the owner edits; a name never changes.
+    let edit =
+        serde_json::json!({"script": "echo v2", "cron": "0 9 * * *", "utc_offset_minutes": 60});
+    let other = http(
+        &w,
+        Method::PUT,
+        &format!("/api/watches/{id}"),
+        Some(edit.clone()),
+        &carol,
+    )
+    .await?;
+    assert_eq!(other.status, StatusCode::FORBIDDEN, "{}", other.body);
+    let renamed = http(
+        &w,
+        Method::PUT,
+        &format!("/api/watches/{id}"),
+        Some(serde_json::json!({"name": "other", "script": "echo", "every": "1h"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        renamed.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        renamed.body
+    );
+    let edited = http(
+        &w,
+        Method::PUT,
+        &format!("/api/watches/{id}"),
+        Some(edit),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.body);
+    assert_eq!(
+        (edited.body["script"].as_str(), edited.body["cron"].as_str()),
+        (Some("echo v2"), Some("0 9 * * *"))
+    );
+    assert_eq!(edited.body["every"], serde_json::Value::Null);
+
+    // Another writer, and the administrator for Run now, are refused, and see why.
+    let as_dave = http(&w, Method::GET, &format!("/api/watches/{id}"), None, &dave).await?;
+    assert_eq!(
+        (
+            as_dave.body["can_edit"].as_bool(),
+            as_dave.body["can_remove"].as_bool()
+        ),
+        (Some(false), Some(false))
+    );
+    let edit_body = serde_json::json!({"script": "echo dave", "every": "1h"});
+    for (method, path, body) in [
+        (Method::PUT, format!("/api/watches/{id}"), Some(edit_body)),
+        (Method::POST, format!("/api/watches/{id}/run"), None),
+        (Method::POST, format!("/api/watches/{id}/pause"), None),
+        (Method::POST, format!("/api/watches/{id}/resume"), None),
+        (Method::DELETE, format!("/api/watches/{id}"), None),
+    ] {
+        let refused = http(&w, method.clone(), &path, body, &dave).await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "dave {method} {path}: {}",
+            refused.body
+        );
+    }
+    let carol_runs = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/run"),
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(
+        carol_runs.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        carol_runs.body
+    );
+
+    // Run now: its owner only; it posts as a scheduled run does.
+    let bob_runs = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/run"),
+        None,
+        &bob,
+    )
+    .await?;
+    assert_eq!(bob_runs.status, StatusCode::FORBIDDEN, "{}", bob_runs.body);
+    let ran = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/run"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(ran.status, StatusCode::ACCEPTED, "{}", ran.body);
+    until("the run ended", || async {
+        Ok(w.watch(&id).await?.state.runs == 1)
+    })
+    .await?;
+    assert_eq!(
+        keys(&w.notices().await?),
+        [("watch:release", "release: v2")]
+    );
+
+    // An administrator pauses; only the owner resumes.
+    let paused = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/pause"),
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(
+        (paused.status, paused.body["state"].as_str()),
+        (StatusCode::OK, Some("paused"))
+    );
+    w.advance(48 * 60 * MINUTE);
+    assert_eq!(w.tick().await?, 0, "paused");
+    let not_carol = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/resume"),
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(not_carol.status, StatusCode::FORBIDDEN);
+    let resumed = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{id}/resume"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(resumed.body["state"], "active");
+    assert!(resumed.body["next_run_at"].is_string());
+
+    // Removal: its notices go with it.
+    let bob_removes = http(
+        &w,
+        Method::DELETE,
+        &format!("/api/watches/{id}"),
+        None,
+        &bob,
+    )
+    .await?;
+    assert_eq!(
+        bob_removes.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        bob_removes.body
+    );
+    let removed = http(
+        &w,
+        Method::DELETE,
+        &format!("/api/watches/{id}"),
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    assert!(w.notices().await?.is_empty(), "its notices are removed");
+    let gone = http(
+        &w,
+        Method::GET,
+        &format!("/api/watches/{id}"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+
+    for action in [
+        "watch.create",
+        "watch.update",
+        "watch.run",
+        "watch.pause",
+        "watch.resume",
+        "watch.remove",
+    ] {
+        let entries = w.h.store.audit_details("s1", action, 5).await?;
+        assert!(
+            entries.iter().any(|e| e.contains("release")),
+            "{action}: {entries:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A remote tool's `(is_error, text, record)` for the person of `creds`.
+async fn tool(
+    w: &World,
+    creds: &Creds,
+    name: &str,
+    args: serde_json::Value,
+) -> Result<(bool, String, serde_json::Value), Error> {
+    let r = http(
+        w,
+        Method::POST,
+        "/mcp",
+        Some(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": args, "_meta": {"yulius/structured": true}}}),
+        ),
+        creds,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{name}: {}", r.body);
+    let result = &r.body["result"];
+    Ok((
+        result["isError"] == true,
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        result["structuredContent"].clone(),
+    ))
+}
+
+async fn token(w: &World, scope: &str) -> Result<Creds, Error> {
+    use yulius_app::ports::store::SessionStore as _;
+    // Tokens are made in the browser: alice's cookie session, as the web UI has it.
+    let (cookie, csrf) = (format!("browser-{scope}"), format!("csrf-{scope}"));
+    let now = w.h.app.now();
+    w.h.store
+        .insert_web_session(&yulius_app::model::WebSessionRecord {
+            id_hash: w.h.app.deps.crypto.sha256_hex(cookie.as_bytes()),
+            user_id: UserId::parse("u-alice")?,
+            csrf_token: csrf.clone(),
+            created_at: now,
+            expires_at: now.plus_millis(86_400_000),
+            revoked_at: None,
+        })
+        .await?;
+    let browser = Creds {
+        cookie: Some(cookie),
+        csrf: Some(csrf),
+        bearer: None,
+        oauth: None,
+    };
+    let made = http(
+        w,
+        Method::POST,
+        "/api/me/tokens",
+        Some(serde_json::json!({"label": scope, "scope": scope})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    Ok(Creds {
+        bearer: made.body["token"].as_str().map(str::to_owned),
+        ..Creds::default()
+    })
+}
+
+/// WCH-012: the person tools (the Superagent's, and a person's own agent's over the remote MCP)
+/// create, list, update, run, pause, resume and remove watches; a read-only token only lists.
+#[tokio::test]
+async fn the_person_tools_manage_watches() -> TestResult {
+    let w = world().await?;
+    let agent = token(&w, "operate").await?;
+    let reader = token(&w, "read").await?;
+    let project = "acme/app";
+    let (error, text, made) = tool(
+        &w,
+        &agent,
+        "watch_create",
+        serde_json::json!({"project": project, "name": "due-date", "every": "1d",
+            "script": "[ \"$(date -u +%F)\" \\< 2026-11-24 ] && exit 0; echo 'due'; exit 3"}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    assert_eq!(made["created_via"], "agent");
+    assert_eq!(made["owner"], "alice");
+    let (error, text, _) = tool(
+        &w,
+        &reader,
+        "watch_create",
+        serde_json::json!({"project": project, "name": "nope", "every": "1d", "script": "echo"}),
+    )
+    .await?;
+    assert!(error, "a read token creates none: {text}");
+
+    let (_, _, listed) = tool(
+        &w,
+        &reader,
+        "watches_list",
+        serde_json::json!({"project": project}),
+    )
+    .await?;
+    assert_eq!(listed["watches"][0]["name"], "due-date", "{listed}");
+
+    let (error, text, updated) = tool(
+        &w,
+        &agent,
+        "watch_update",
+        serde_json::json!({"project": project, "watch": "due-date", "every": "12h", "script": "echo 'merge-queue targets are due'; exit 3"}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    assert_eq!(updated["every"], "12h");
+
+    let (error, text, _) = tool(
+        &w,
+        &agent,
+        "watch_run",
+        serde_json::json!({"project": project, "watch": "due-date"}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    let id = made["id"].as_str().ok_or("id")?.to_owned();
+    until("the run ended", || async {
+        Ok(w.watch(&id).await?.state.runs == 1)
+    })
+    .await?;
+    let ended = w.watch(&id).await?;
+    assert!(ended.ended_reason.is_some(), "exit 3 ends it");
+    assert_eq!(
+        keys(&w.notices().await?),
+        [("watch:due-date", "due-date: merge-queue targets are due")]
+    );
+
+    let (_, _, resumed) = tool(
+        &w,
+        &agent,
+        "watch_pause",
+        serde_json::json!({"project": project, "watch": "due-date", "paused": false}),
+    )
+    .await?;
+    assert_eq!(resumed["state"], "active");
+    let (_, _, paused) = tool(
+        &w,
+        &agent,
+        "watch_pause",
+        serde_json::json!({"project": project, "watch": "due-date"}),
+    )
+    .await?;
+    assert_eq!(paused["state"], "paused");
+    let (error, text, _) = tool(
+        &w,
+        &agent,
+        "watch_remove",
+        serde_json::json!({"project": project, "watch": id}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    assert!(w.h.store.watch(&id).await?.is_none());
+    let (error, text, _) = tool(
+        &w,
+        &agent,
+        "watch_run",
+        serde_json::json!({"project": project, "watch": "due-date"}),
+    )
+    .await?;
+    assert!(error && text.contains("no watch"), "{text}");
+    Ok(())
+}
+
+/// Review round 1 of PR #1722: a removal frees the watch's state; Run now is refused while the
+/// watch runs or while the instance's runs are all taken; an edit's new schedule counts from now
+/// and an unchanged one keeps its anchor; resuming an active watch changes nothing.
+#[tokio::test]
+async fn removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule() -> TestResult {
+    let w = world_with(None, |c| c.watches.max_runs = 1, false).await?;
+    let body = |script: &str| serde_json::json!({"script": script, "every": "1h"});
+
+    // Removal frees its state directory.
+    let mut stateful = new_watch("stateful", "echo kept > \"$YULIUS_WATCH_STATE/file\"")?;
+    stateful.every = Some("1h".into());
+    let stateful = w.h.app.watch_create(stateful).await?;
+    w.run(&stateful.id).await?;
+    let state =
+        w.h.app
+            .config
+            .data_dir
+            .join("watches/s1/state")
+            .join(&stateful.id);
+    assert!(state.join("file").exists());
+    let removed = http(
+        &w,
+        Method::DELETE,
+        &format!("/api/watches/{}", stateful.id),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    assert!(!state.exists(), "its state goes with it");
+
+    // Run now: one run of a watch, and none past the instance's bound.
+    let hold = w.h.app.watch_create(new_watch("hold", "echo $$ > \"$YULIUS_WATCH_STATE/pid\"; while [ ! -e \"$YULIUS_WATCH_STATE/go\" ]; do sleep 0.05; done")?).await?;
+    let other =
+        w.h.app
+            .watch_create(new_watch("other", "echo other")?)
+            .await?;
+    let first = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{}/run", hold.id),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(first.status, StatusCode::ACCEPTED, "{}", first.body);
+    let hold_state =
+        w.h.app
+            .config
+            .data_dir
+            .join("watches/s1/state")
+            .join(&hold.id);
+    until("the held run started", || {
+        let pid = hold_state.join("pid");
+        async move { Ok(pid.exists()) }
+    })
+    .await?;
+    let again = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{}/run", hold.id),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+    // Refused because a run of it goes, before the instance's bound (review round 2).
+    assert!(
+        again
+            .body
+            .to_string()
+            .contains("a run of this watch is going"),
+        "{}",
+        again.body
+    );
+    let full = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{}/run", other.id),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        full.status,
+        StatusCode::CONFLICT,
+        "the instance's one run is taken: {}",
+        full.body
+    );
+    std::fs::write(hold_state.join("go"), "")?;
+    until("the held run ended", || async {
+        Ok(w.watch(&hold.id).await?.state.runs == 1)
+    })
+    .await?;
+    until("its permit is free", || async {
+        let r = http(
+            &w,
+            Method::POST,
+            &format!("/api/watches/{}/run", other.id),
+            None,
+            &w.alice,
+        )
+        .await?;
+        Ok(r.status == StatusCode::ACCEPTED)
+    })
+    .await?;
+    until("the other run ended", || async {
+        Ok(w.watch(&other.id).await?.state.runs == 1)
+    })
+    .await?;
+
+    for done in [&hold.id, &other.id] {
+        let removed = http(
+            &w,
+            Method::DELETE,
+            &format!("/api/watches/{done}"),
+            None,
+            &w.alice,
+        )
+        .await?;
+        assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    }
+
+    // An edit to a cron whose slot already passed today waits for tomorrow's slot.
+    let edited = w.h.app.watch_create(new_watch("edited", "echo e")?).await?;
+    assert_eq!(w.tick().await?, 1, "the new interval watch runs at once");
+    w.advance(90 * MINUTE); // 09:30
+    let unchanged = http(
+        &w,
+        Method::PUT,
+        &format!("/api/watches/{}", edited.id),
+        Some(body("echo e2")),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(unchanged.status, StatusCode::OK, "{}", unchanged.body);
+    assert_eq!(
+        w.watch(&edited.id).await?.since,
+        edited.since,
+        "an unchanged schedule keeps its anchor"
+    );
+    let to_cron = serde_json::json!({"script": "echo e3", "cron": "0 9 * * *"});
+    let changed = http(
+        &w,
+        Method::PUT,
+        &format!("/api/watches/{}", edited.id),
+        Some(to_cron),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(
+        w.tick().await?,
+        0,
+        "09:00 passed before the change: tomorrow"
+    );
+
+    // A watch removed while it runs: its state goes once its cancelled run ended, also when the
+    // run wrote it again after the removal (review round 2).
+    let writer = w
+        .h
+        .app
+        .watch_create(new_watch(
+            "writer",
+            "while :; do mkdir -p \"$YULIUS_WATCH_STATE\"; echo x > \"$YULIUS_WATCH_STATE/late\"; sleep 0.05; done",
+        )?)
+        .await?;
+    let writer_state =
+        w.h.app
+            .config
+            .data_dir
+            .join("watches/s1/state")
+            .join(&writer.id);
+    let started = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{}/run", writer.id),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.body);
+    until("the writer runs", || {
+        let late = writer_state.join("late");
+        async move { Ok(late.exists()) }
+    })
+    .await?;
+    let removed = http(
+        &w,
+        Method::DELETE,
+        &format!("/api/watches/{}", writer.id),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    until("its state is gone after its run ended", || {
+        let state = writer_state.clone();
+        async move { Ok(!state.exists()) }
+    })
+    .await?;
+
+    // Resuming an active watch changes nothing.
+    let before = w.watch(&edited.id).await?;
+    let resumed = http(
+        &w,
+        Method::POST,
+        &format!("/api/watches/{}/resume", edited.id),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(resumed.status, StatusCode::OK, "{}", resumed.body);
+    let after = w.watch(&edited.id).await?;
+    assert_eq!(
+        (after.since, after.state.last_started_at),
+        (before.since, before.state.last_started_at)
+    );
+    Ok(())
+}
+
+/// Review round 1 of PR #1722: `watch_update` keeps what the call leaves out, and `paused` must be
+/// a boolean.
+#[tokio::test]
+async fn watch_update_keeps_what_it_is_not_given() -> TestResult {
+    let w = world().await?;
+    let agent = token(&w, "operate").await?;
+    let project = "acme/app";
+    let (error, text, _) = tool(
+        &w,
+        &agent,
+        "watch_create",
+        serde_json::json!({"project": project, "name": "kept", "cron": "0 9 * * *", "utc_offset_minutes": 60,
+            "expiry": "never", "timeout_seconds": 60, "secrets": ["API_KEY"], "script": "echo one"}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    let (error, text, updated) = tool(
+        &w,
+        &agent,
+        "watch_update",
+        serde_json::json!({"project": project, "watch": "kept", "script": "echo two"}),
+    )
+    .await?;
+    assert!(!error, "{text}");
+    assert_eq!(updated["script"], "echo two");
+    assert_eq!(
+        (
+            &updated["cron"],
+            &updated["utc_offset_minutes"],
+            &updated["expiry"],
+            &updated["timeout_seconds"],
+            &updated["secrets"]
+        ),
+        (
+            &serde_json::json!("0 9 * * *"),
+            &serde_json::json!(60),
+            &serde_json::json!("never"),
+            &serde_json::json!(60),
+            &serde_json::json!(["API_KEY"])
+        )
+    );
+    let (_, _, switched) = tool(
+        &w,
+        &agent,
+        "watch_update",
+        serde_json::json!({"project": project, "watch": "kept", "every": "2h"}),
+    )
+    .await?;
+    assert_eq!(
+        (&switched["every"], &switched["cron"], &switched["script"]),
+        (
+            &serde_json::json!("2h"),
+            &serde_json::Value::Null,
+            &serde_json::json!("echo two")
+        )
+    );
+    let (error, text, _) = tool(
+        &w,
+        &agent,
+        "watch_pause",
+        serde_json::json!({"project": project, "watch": "kept", "paused": "false"}),
+    )
+    .await?;
+    assert!(error && text.contains("paused"), "{text}");
+    Ok(())
+}
