@@ -48,16 +48,25 @@ fn archive_keeps_the_owner_when_a_replacement_arm_arrives_at_close() -> TestResu
             session_hash: None,
             token: None,
         };
+        // The watch observes the moved base, so only the arm below can keep the session.
+        let told = app.watch_prs(&WatchBounds::default()).await;
         let file = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
         let arm = replacement_request(&owner)?;
+        let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = Arc::clone(&reached);
         yulius_app::race::on(
             super::Point::CloseDecided,
             Path::new(id.as_str()),
             move || {
                 assert!(std::fs::write(&file, &arm).is_ok());
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
             },
         );
         let closed = app.archive_task(&ctx, id.as_str(), true).await;
+        assert!(
+            reached.load(std::sync::atomic::Ordering::SeqCst),
+            "the archive decided to close: {closed:?} {told:?}"
+        );
         assert!(
             matches!(closed, Err(yulius_app::error::AppError::Conflict(_))),
             "{closed:?}"

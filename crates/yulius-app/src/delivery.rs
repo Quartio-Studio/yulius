@@ -5248,14 +5248,7 @@ impl App {
             return false;
         }
         if task.activity == Some(Activity::Done) {
-            // A recorded integration failure or a new arm keeps an achieved goal live (SPEC-558).
-            let Ok(record) = self.deps.store.delivery(&task.id).await else {
-                return false;
-            };
-            return self
-                .hold_live_delivery(task, record.as_ref())
-                .await
-                .is_some();
+            return true;
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.
@@ -5364,28 +5357,17 @@ impl App {
         if parked {
             return self.parked_predecessor_done(task).await.unwrap_or(false);
         }
+        if running && task.activity == Some(Activity::Done) {
+            return true;
+        }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.
         let Ok(record) = self.deps.store.delivery(&task.id).await else {
             return false;
         };
-        let done = (running && task.activity == Some(Activity::Done))
-            || self.done_by_delivery(task, record.as_ref()).await;
-        if !done || !running {
-            return done;
-        }
-        // A live owner is Done only while its delivery verifies as settled (SPEC-621 FIN-003).
-        // The check above can record a merge it observed: hold what is stored now.
-        let Ok(now) = self.deps.store.delivery(&task.id).await else {
-            return false;
-        };
-        self.hold_live_delivery(task, now.as_ref()).await.is_some()
-    }
-
-    async fn done_by_delivery(&self, task: &TaskRecord, record: Option<&DeliveryRecord>) -> bool {
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
-        if self.pr_news_due_of(task, record, false).await {
+        if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
         // A pull request makes a task Done only when no work it declared is left: its plan is
@@ -5420,7 +5402,7 @@ impl App {
         {
             Ok(observed) => match observed.pr_state() {
                 // Merged on GitHub before the record says so: its news is as due as then.
-                PrState::Merged => !self.pr_news_due_of(task, Some(record), true).await,
+                PrState::Merged => !self.pr_news_due_of(task, Some(&record), true).await,
                 PrState::Open => {
                     let Some(pull) = observed.pr.as_ref() else {
                         return false;
