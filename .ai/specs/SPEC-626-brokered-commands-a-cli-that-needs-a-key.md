@@ -219,10 +219,10 @@ definition says. No answer within the stated time is a no. The owner approved th
 - [x] Run a command in the production holder with a temporary key file and a fresh home
 - [x] Bound a run's time and output and blank every stored secret from it
 - [x] command_run and command_result for task agents, audited, and the yulius run CLI
-- [ ] Independent review of the run slice, findings fixed test-first
+- [x] Independent review of the run slice, findings fixed test-first
 - [x] Ask a person to approve a run in Needs you with the full command line
 - [x] Approve or reject in the browser or by a Telegram reply; no answer in time is a no
-- [ ] Independent review of the approval slice, findings fixed test-first
+- [x] Independent review of the approval slice, findings fixed test-first
 - [x] Commands section on the Secrets page with approvals, end-to-end tested
 - [x] Product, architecture, API, operations and security docs and the changes log
 - [x] Independent security-minded review of the page and docs slice, findings fixed
