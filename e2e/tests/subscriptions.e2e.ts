@@ -919,7 +919,8 @@ test('an unknown cost reads as unknown, never as $0 (unit, in the page)', async 
   expect(text).toContain('last 24 h: —');
   expect(text).not.toContain('$0.00');
   expect(text).not.toContain('Ultrafast');
-  expect(text).toContain('Separate Codex subagent sessions excluded');
+  // SPEC-619: Codex subagents count in their run's metrics.
+  expect(text).not.toContain('subagent');
 });
 
 test('the weekly estimate identifies the Ultrafast scenario and omitted runs', async ({ app, browser }) => {
@@ -932,7 +933,7 @@ test('the weekly estimate identifies the Ultrafast scenario and omitted runs', a
     return capacityPanel({ subscriptions: 1, tokens }).textContent;
   });
   expect(text).toContain('≈ $25.00 if eligible Codex runs used Ultrafast');
-  expect(text).toContain('Separate Codex subagent sessions excluded');
+  expect(text).not.toContain('subagent');
   expect(text).toContain('2 runs without a model price');
   expect(text).toContain('1 run without usage');
 });

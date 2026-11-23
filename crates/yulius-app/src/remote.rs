@@ -90,6 +90,14 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("attachments_trash", Reach::Project, Action::Work),
     ("sessions_search", Reach::Project, Action::View),
     ("session_read", Reach::Project, Action::View),
+    ("notices_list", Reach::Project, Action::View),
+    ("notice_dismiss", Reach::Project, Action::View),
+    ("watches_list", Reach::Project, Action::View),
+    ("watch_create", Reach::Project, Action::Configure),
+    ("watch_update", Reach::Project, Action::Configure),
+    ("watch_run", Reach::Project, Action::Configure),
+    ("watch_pause", Reach::Project, Action::Configure),
+    ("watch_remove", Reach::Project, Action::Configure),
     ("ci_runs", Reach::Project, Action::View),
     ("ci_run", Reach::Project, Action::View),
     ("ci_rerun", Reach::Project, Action::Work),
@@ -344,13 +352,23 @@ pub(crate) fn project_descriptors(names: &[&str]) -> Vec<ToolDescriptor> {
         .collect()
 }
 
+/// Whether a token of `scope` may call `name`, which needs `action` on its project: a tool that
+/// changes something, the person's own state included, needs more than a read token (RMT-011,
+/// SPEC-624).
+fn scope_may_call(scope: TokenScope, name: &str, action: Action) -> bool {
+    scope.allows(action)
+        && (!crate::person_tools::changes(name, action) || scope.allows(Action::Work))
+}
+
 /// The tools a token of `scope` is served by `tools/list` (RMT-011).
 #[must_use]
 pub fn remote_tool_descriptors(scope: TokenScope) -> Vec<ToolDescriptor> {
     // The Superagent's tools the remote MCP serves as they are, with `project` added.
     let shared = project_descriptors(&[PROJECT_TOOLS, &["task_message"]].concat());
     let mut tools: Vec<ToolDescriptor> = own_descriptors().into_iter().chain(shared).collect();
-    tools.retain(|t| remote_tool(&t.name).is_some_and(|(_, action)| scope.allows(action)));
+    tools.retain(|t| {
+        remote_tool(&t.name).is_some_and(|(_, action)| scope_may_call(scope, &t.name, action))
+    });
     tools.sort_by_key(|t| {
         REMOTE_TOOLS
             .iter()
@@ -480,7 +498,8 @@ impl App {
         let Some((reach, action)) = remote_tool(name).filter(|_| caller.serves(name)) else {
             return text_result(format!("unknown tool: {name}"), true);
         };
-        if !caller.scope.allows(action) {
+        let changes = crate::person_tools::changes(name, action);
+        if !scope_may_call(caller.scope, name, action) {
             self.audit_remote(caller, name, None, false).await;
             return text_result(
                 format!(
@@ -492,7 +511,7 @@ impl App {
         match reach {
             Reach::Instance => {
                 let outcome = self.remote_instance_tool(caller, name, &args).await;
-                if action != Action::View {
+                if changes {
                     self.audit_remote(caller, name, None, outcome.is_ok()).await;
                 }
                 match outcome {
@@ -511,7 +530,7 @@ impl App {
                 let found = match self.remote_project(&args).await {
                     Ok(found) => found,
                     Err(err) => {
-                        if action != Action::View {
+                        if changes {
                             self.audit_remote(caller, name, None, false).await;
                         }
                         return text_result(err.public_message(), true);
@@ -522,7 +541,7 @@ impl App {
                     Err(err) => {
                         // A refused change is audited too; a project the person cannot see is
                         // not found, and its entry names the token, not the project.
-                        if action != Action::View {
+                        if changes {
                             let visible = !matches!(err, AppError::NotFound);
                             self.audit_remote(caller, name, visible.then_some(&found.id), false)
                                 .await;
@@ -558,7 +577,7 @@ impl App {
                 };
                 // The spawned change tools audit themselves (they outlive their caller); the
                 // browser's reading tools change nothing.
-                if action != Action::View
+                if changes
                     && !SPAWNED_TOOLS.contains(&name)
                     && !crate::browser::READING_TOOLS.contains(&name)
                 {
@@ -969,6 +988,12 @@ mod tests {
             assert_eq!(
                 remote_tool(&t.name).map(|(_, a)| a),
                 Some(Action::View),
+                "{}",
+                t.name
+            );
+            // A tool that changes the person's own state is not served either (SPEC-624).
+            assert!(
+                !crate::person_tools::changes(&t.name, Action::View),
                 "{}",
                 t.name
             );

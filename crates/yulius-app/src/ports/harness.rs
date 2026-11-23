@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use yulius_domain::harness::Harness;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, LimitScope, TokenUsage};
+use yulius_domain::usage::{AccountUsage, LimitScope, ModelTokens, TokenUsage};
 
 use crate::error::AppResult;
 use crate::model::Secret;
@@ -31,7 +31,18 @@ pub enum SessionMode {
         /// The run continues the turn a usage limit cut (SPEC-034): the transcript steps back
         /// over the limit and the agent redoes the lost turn by itself; no prompt is sent.
         continue_interrupted: bool,
+        /// Continue a copy of the session under a new id instead: a forked task's first launch
+        /// (SPEC-628 FRK-006). The original session is never written.
+        fork: Option<SessionFork>,
     },
+}
+
+/// A forked resume (SPEC-628 FRK-006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFork {
+    /// The new session's id where the harness lets Yulius name it (Claude Code); `None`: the CLI
+    /// names it (Codex) and Yulius learns it from the hook or rollout.
+    pub session_id: Option<String>,
 }
 
 /// An MCP server to attach.
@@ -321,6 +332,9 @@ pub struct UsageSnapshot {
     /// Active agent time (ms): the union of the turns' spans, a turn in progress up to the
     /// newest line (MET-001). `None` before the first turn.
     pub active_ms: Option<u64>,
+    /// The parts of `tokens` that another model than `model` answered: a Codex subagent's
+    /// (SPEC-619 CSA-4).
+    pub parts: Vec<ModelTokens>,
 }
 
 /// Which lines of a session transcript a watch reads (SPEC-087 MET-002).

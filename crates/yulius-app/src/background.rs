@@ -68,6 +68,8 @@ impl App {
         self.begin_cross_restore();
         // The Superagents' checks, read before anything can save them (SPEC-487 CHK-002).
         self.restore_superagent_checks();
+        // Script watches (SPEC-630): runs a restart interrupted are recorded, then the scheduler.
+        self.start_watch_scheduler();
         let checks = Arc::clone(self);
         tokio::spawn(async move {
             // A Superagent that is not running is started for a due check (CHK-004).
@@ -112,6 +114,8 @@ impl App {
             app.drain_queue().await;
             // Paused tasks (also those paused before a restart) resume from here.
             app.start_capacity_loop();
+            // Idle tasks leave a subscription past its harness's rebalance threshold (SPEC-629).
+            app.start_rebalance_loop();
             let mut tick = tokio::time::interval(TICK);
             tick.tick().await;
             let started = tokio::time::Instant::now();
@@ -142,6 +146,12 @@ impl App {
                         digest.digest_tick().await;
                     });
                 }
+                // Brokered runs no person answered in time are a no (SPEC-626 BRK-016).
+                app.expire_due_command_runs().await;
+                // Expired notices (SPEC-624 NTC-004): reads already leave them out.
+                app.prune_notices_now().await;
+                // Subscription notices follow statuses written without an event (SPEC-624).
+                app.sync_all_account_notices().await;
                 // Expired and consumed CLI device grants (#169).
                 if let Err(err) = app.purge_device_grants().await {
                     tracing::warn!(error = %err, "device grants could not be purged");

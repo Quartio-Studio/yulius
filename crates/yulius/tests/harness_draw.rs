@@ -3,7 +3,8 @@
 //! among `claude`, `codex` and `antigravity` whose subscriptions have non-exhausted capacity,
 //! giving every eligible harness equal weight regardless of how many subscriptions it has; a
 //! running task agent's unadorned `task_create` / `automation_create` keeps the calling task's
-//! harness while explicit `auto` draws and a Superagent defaults to Codex; automations default to `auto` (drawn per run) and
+//! harness while explicit `auto` draws and a Superagent defaults to Claude Code (SPEC-620);
+//! automations default to `auto` (drawn per run) and
 //! preserve their stored harness on partial updates.
 
 use std::collections::BTreeSet;
@@ -529,9 +530,11 @@ async fn agent_of(h: &Harness, title: &str) -> Result<(String, String), Error> {
 
 /// RHM-004 (AC-3): a running task's `task_create` and `automation_create` without `harness` or
 /// `model` keep the calling task's harness (`chosen`); explicit `auto` draws (`random`) or stores
-/// `"auto"`. A Superagent defaults to Codex for tasks and to `auto` for automations.
+/// `"auto"`. A Superagent defaults to Claude Code for tasks (SPEC-620 CDM-001) and to `auto` for
+/// automations.
 #[tokio::test]
-async fn agent_follow_ups_inherit_the_parent_and_superagent_tasks_default_to_codex() -> TestResult {
+async fn agent_follow_ups_inherit_the_parent_and_superagent_tasks_default_to_claude() -> TestResult
+{
     let (h, alice) = world().await?;
     uneven_all_available(&h).await?;
     support::seed_task_of(
@@ -601,15 +604,9 @@ async fn agent_follow_ups_inherit_the_parent_and_superagent_tasks_default_to_cod
         );
     }
 
-    // The Superagent chooses Codex even with other providers available.
-    let superagent = yulius_app::coordination::ProjectCaller {
-        sandbox: SandboxId::parse("s1")?,
-        user: UserId::parse("u-alice")?,
-        task: None,
-        channel: yulius_app::coordination::Channel::Superagent,
-        actor: "cockpit:alice".into(),
-        detail: json!({"via": "superagent"}),
-    };
+    // The Superagent chooses Claude Code even with other providers available, with no model or
+    // effort of its own: it runs Opus 5.5 at high.
+    let superagent = superagent()?;
     h.app
         .tool_task_create(
             &superagent,
@@ -618,8 +615,14 @@ async fn agent_follow_ups_inherit_the_parent_and_superagent_tasks_default_to_cod
         .await?;
     assert_eq!(
         agent_of(&h, "Superagent default").await?,
-        pair("codex", "chosen")
+        pair("claude", "chosen")
     );
+    let tasks = h.store.tasks(&SandboxId::parse("s1")?, false).await?;
+    let default = tasks
+        .iter()
+        .find(|t| t.title == "Superagent default")
+        .ok_or("no task")?;
+    assert_eq!((&default.model, &default.effort), (&None, &None));
     let explicit = h
         .app
         .tool_task_create(
@@ -645,6 +648,46 @@ async fn agent_follow_ups_inherit_the_parent_and_superagent_tasks_default_to_cod
     assert_eq!(
         automation_agent(&h, &alice, "Superagent auto").await?,
         json!("auto")
+    );
+    Ok(())
+}
+
+/// The sandbox Superagent of alice in `s1`: a caller without a task.
+fn superagent() -> Result<yulius_app::coordination::ProjectCaller, Error> {
+    Ok(yulius_app::coordination::ProjectCaller {
+        sandbox: SandboxId::parse("s1")?,
+        user: UserId::parse("u-alice")?,
+        task: None,
+        channel: yulius_app::coordination::Channel::Superagent,
+        actor: "cockpit:alice".into(),
+        detail: json!({"via": "superagent"}),
+    })
+}
+
+/// SPEC-620 CDM-001: the Superagent's default stays Claude Code while only Codex and Antigravity
+/// can run: the start is refused naming Claude, and no task is made on another agent.
+#[tokio::test]
+async fn a_superagent_default_without_a_claude_account_is_refused_naming_claude() -> TestResult {
+    let (h, _alice) = world().await?;
+    available(&h, "a-codex-1", Provider::OpenAi).await?;
+    available(&h, "a-google-1", Provider::Google).await?;
+    let refused = h
+        .app
+        .tool_task_create(&superagent()?, &json!({"prompt": "From Superagent"}))
+        .await
+        .err()
+        .ok_or("the default start is refused")?;
+    assert!(
+        refused
+            .to_string()
+            .contains("Connect a Claude account first"),
+        "{refused}"
+    );
+    assert!(
+        h.store
+            .tasks(&SandboxId::parse("s1")?, false)
+            .await?
+            .is_empty()
     );
     Ok(())
 }

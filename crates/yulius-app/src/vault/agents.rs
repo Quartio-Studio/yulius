@@ -7,14 +7,15 @@
 
 use yulius_contracts::api::secrets::{
     AgentSecretInput, AgentSecretPatch, AgentSecretView, CopyRequestView, ReauthStatus,
-    RevealRequest, SecretReveal,
+    RevealRequest, SecretReveal, SecretRuleView,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
 use yulius_domain::vault::dotenv::{flattened_key, key_block};
 use yulius_domain::vault::hosts::{HostPattern, parse_hosts};
+use yulius_domain::vault::rules::parse_rules;
 use yulius_domain::vault::{
-    Injection, ROTATE_AFTER_MS, SecretName, check_agent_value, placeholder,
+    Injection, ROTATE_AFTER_MS, SecretName, SecretRule, check_agent_value, placeholder,
 };
 
 use super::team::{pick, reveal_request, shown};
@@ -74,6 +75,8 @@ pub(super) struct Meta {
     pub(super) name: SecretName,
     pub(super) hosts: Vec<String>,
     pub(super) injection: Injection,
+    /// Method and path rules (SPEC-627): a person's, set only on the Secrets page or the API.
+    pub(super) rules: Vec<SecretRule>,
 }
 
 /// An agent secret to store ([`App::insert_agent_secret`]).
@@ -123,7 +126,28 @@ fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) 
         name,
         hosts: hosts.iter().map(ToString::to_string).collect(),
         injection,
+        rules: Vec::new(),
     })
+}
+
+/// Validated rules of a create or edit (MPR-001): 422 naming the bad one.
+fn rules_of(views: &[SecretRuleView]) -> AppResult<Vec<SecretRule>> {
+    let pairs: Vec<(Vec<String>, String)> = views
+        .iter()
+        .map(|r| (r.methods.clone(), r.path.clone()))
+        .collect();
+    parse_rules(&pairs).map_err(invalid)
+}
+
+/// How rules are shown (MPR-007).
+pub(super) fn rule_views(rules: &[SecretRule]) -> Vec<SecretRuleView> {
+    rules
+        .iter()
+        .map(|r| SecretRuleView {
+            methods: r.methods().to_vec(),
+            path: r.path().to_owned(),
+        })
+        .collect()
 }
 
 impl App {
@@ -132,7 +156,7 @@ impl App {
     /// bound to, `.env` files, or wherever agents bind it themselves (SPEC-483 V5, ADR-0317).
     /// Sending a value to a server of one's choice reads it, so it needs what a reveal needs.
     /// Nothing is asked for a secret agents set up: they bind its hosts without a person.
-    pub(super) async fn fresh_to_widen(
+    pub(crate) async fn fresh_to_widen(
         &self,
         ctx: &AuthContext,
         record: &VaultSecretRecord,
@@ -151,7 +175,7 @@ impl App {
     }
 
     /// Whether `ctx` may change, delete, reveal and answer for a secret of `scope` (MAN-001..003).
-    pub(super) async fn require_manage_agent(
+    pub(crate) async fn require_manage_agent(
         &self,
         ctx: &AuthContext,
         scope: &AgentScope,
@@ -216,6 +240,7 @@ impl App {
             shadowed_by: here.shadowed_by.map(Into::into),
             hosts: record.hosts.clone(),
             requested_hosts: record.requested_hosts.clone(),
+            rules: rule_views(&record.rules),
             requested_by: record.requested_by.clone(),
             env_files: record.env_files.as_str().into(),
             env_requested_by: record.env_requested_by.clone(),
@@ -413,12 +438,13 @@ impl App {
                     .into(),
             ));
         }
-        let meta = meta(
+        let mut meta = meta(
             &input.name,
             &input.hosts,
             input.injection.as_deref(),
             input.header_name.as_deref(),
         )?;
+        meta.rules = rules_of(input.rules.as_deref().unwrap_or_default())?;
         check_agent_value(&input.value).map_err(invalid)?;
         let payload = AgentPayload {
             username: username(input.username.as_deref())?,
@@ -495,6 +521,7 @@ impl App {
             name: new.meta.name.to_string(),
             description: new.description.clone(),
             hosts: new.meta.hosts.clone(),
+            rules: new.meta.rules.clone(),
             injection: new.meta.injection.kind().into(),
             header_name: match &new.meta.injection {
                 Injection::Header(name) => Some(name.clone()),
@@ -682,6 +709,11 @@ impl App {
         }
         if patch.injection.is_some() || patch.header_name.is_some() {
             changed.push("injection");
+        }
+        // A person's rules (MPR-006): they send the value to no new server, so no unlock.
+        if let Some(rules) = &patch.rules {
+            record.rules = rules_of(rules)?;
+            changed.push("rules");
         }
         if let Some(text) = &patch.description {
             record.description = description(Some(text))?;

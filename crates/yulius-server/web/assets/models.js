@@ -4,7 +4,8 @@
 // Claude Code's `--model` and a level to `--effort`; choosing "Random" sends no model and no agent,
 // so the server draws uniformly across Claude Code (on Yulius's default, Opus 5.5 at high effort;
 // SPEC-023, SPEC-462, SPEC-493), Codex and Antigravity among those with non-exhausted
-// subscriptions (SPEC-520 RHM-001/006). The browser starts on Codex default (SPEC-587).
+// subscriptions (SPEC-520 RHM-001/006). The browser starts on Opus 5.5, the first model listed and
+// Claude Code's default (SPEC-620; Codex default before, SPEC-587).
 // Choosing Codex default sends `harness: codex` and no model: the server runs GPT-6.2 Astra, at
 // high effort unless one is chosen (SPEC-607). An explicit Codex model sends its id. Choosing a
 // Gemini model sends `harness: antigravity` and the model; Antigravity's default is Gemini 4
@@ -89,6 +90,12 @@ export const FALLBACK_MODEL = 'claude-opus-5-5';
  */
 export const REVIEW_MODEL = 'claude-fable-5-2';
 
+/**
+ * The model of a new task in a browser with no saved choice: the first Anthropic model, which a
+ * test keeps equal to the server's `DEFAULT_CLAUDE_MODEL`, Opus 5.5 (SPEC-620).
+ */
+export const DEFAULT_MODEL = PROVIDERS[0].models[0].id;
+
 /** The model a task of `model` falls back to, or null: a Fable model's is [`FALLBACK_MODEL`]. */
 export function fallbackOf(model) {
   return String(model || '').toLowerCase().includes('fable') ? FALLBACK_MODEL : null;
@@ -148,9 +155,10 @@ function effortLevels(modelId) {
 
 /** A browser's new-task picks, shared by Settings and the composer. */
 export function modelPreferences() {
-  // Choosing Random saves JSON null. An absent or unreadable key returns undefined.
+  // Choosing Random saves JSON null. An absent or unreadable key returns undefined, and it or a
+  // model no longer offered starts on the default, Opus 5.5 (SPEC-620 CDM-003).
   const savedModel = readJson(MODEL_PREF_KEY, undefined);
-  const model = savedModel === null ? null : findModel(savedModel)?.model.id ?? 'codex';
+  const model = savedModel === null ? null : findModel(savedModel)?.model.id ?? DEFAULT_MODEL;
   const saved = readJson(EFFORT_PREF_KEY, null);
   return {
     model,

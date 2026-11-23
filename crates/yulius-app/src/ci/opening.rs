@@ -186,7 +186,7 @@ impl App {
         let runs = self
             .deps
             .store
-            .ci_planning_runs(&sandbox.id, PLAN_RUNS)
+            .ci_planning_runs(&sandbox.id, PLAN_RUNS, None)
             .await?;
         let facts = ordinary_run_facts(&runs, view.problem.is_none());
         crate::race::reached(crate::race::Point::CiSyncPlanned, &repo);

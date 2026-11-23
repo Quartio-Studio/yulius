@@ -15,7 +15,7 @@ import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startN
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
-import { relLong, dateTime, whenLabel } from './format.js';
+import { relLong, dateTime, whenLabel, shortSha } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href, refreshRoute } from './router.js';
 import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, modelPreferences } from './models.js';
@@ -1042,6 +1042,7 @@ export function mountTaskView(ctx, sandbox, task) {
       h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null,
         needsBrief ? h('span', { class: 'strip-reset strip-needs-reason' }, ` · ${needsBrief.replaceAll('`', '')}`) : null,
         info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells, info.shellsSince)}`) : null,
+        current.staging_outcome ? h('span', { class: 'strip-reset', title: current.staging_outcome }, ` · ${current.staging_outcome}`) : null,
         current.status === 'queued' && current.queue_reason ? h('span', { class: 'strip-reset' }, ` · ${current.queue_reason}`) : null));
     // The chain shows on both tasks (TSK-012): what this task runs after, what runs after it.
     const slug = encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug);
@@ -1052,6 +1053,10 @@ export function mountTaskView(ctx, sandbox, task) {
       ? chainLink(current.after, `When ${current.after.rule}`, `Starts by itself when ${current.after.rule}`)
       : chainLink(current.after, `After #${current.after.number}`, current.after.title ? `Runs after #${current.after.number} ${current.after.title}` : `#${current.after.number} was deleted`)) : null;
     const next = (current.next || []).map((link) => chainLink(link, `Then #${link.number}`, `#${link.number} ${link.title || ''} runs after this task`));
+    // A fork shows on both tasks too (SPEC-628 FRK-008): where it came from, and its forks.
+    const origin = current.forked_from;
+    const forkedFrom = origin ? chainLink(origin, `Fork of #${origin.number}`, `Continues #${origin.number} ${origin.title} from commit ${shortSha(origin.commit)}${origin.task_id ? '' : ' (deleted since)'}`) : null;
+    const forks = (current.forks || []).map((link) => chainLink(link, `Forked: #${link.number}`, `#${link.number} ${link.title} continues this conversation from commit ${shortSha(link.commit)}`));
     // How the task runs: "Auto → Goal · Feature" when Auto chose it (TSK-015), else Goal.
     const auto = autoChoiceLabel(current);
     const supertask = current.supertask
@@ -1073,6 +1078,8 @@ export function mountTaskView(ctx, sandbox, task) {
         : current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       after,
       next,
+      forkedFrom,
+      forks,
       // Last, so it gives way first: Task details and the Tasks list name it too.
       account);
     fitStrip();
@@ -1188,8 +1195,9 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
-      current = { ...current, ...next, account_id: next.account_id, needs_you_notice: next.needs_you_notice, staging_wait: next.staging_wait,
-        parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr };
+      current = { ...current, ...next, account_id: next.account_id, needs_you_notice: next.needs_you_notice, staging_wait: next.staging_wait, staging_outcome: next.staging_outcome,
+        parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr, forked_from: next.forked_from, forks: next.forks,
+        candidate_pending: next.candidate_pending };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
       // else queued changes the request: read it again too.
@@ -1230,7 +1238,9 @@ export function mountTaskView(ctx, sandbox, task) {
 function pickSummary(detail) {
   const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'account_email', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request', 'control_from'];
   // The server omits the subscription ID when a task is no longer attached.
-  const out = { account_id: detail.account_id, staging_wait: detail.staging_wait };
+  // Fork links too, absent when empty, so a deleted fork or source leaves no stale chip (SPEC-628).
+  const out = { account_id: detail.account_id, staging_wait: detail.staging_wait, staging_outcome: detail.staging_outcome,
+    forked_from: detail.forked_from, forks: detail.forks, candidate_pending: detail.candidate_pending };
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
 }

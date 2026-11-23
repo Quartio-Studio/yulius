@@ -195,8 +195,8 @@ export function statusInfo(task) {
       const shells = backgroundShells(task);
       if (shells) return stillWorking(shells, task.background_shells_since);
       // Its merge is armed: Yulius merges it and tells the agent, an achieved goal's too
-      // (SPEC-487 CHN-001).
-      return task.merge_armed === true ? { ...WAITING_ON_YULIUS } : { ...DONE };
+      // (SPEC-487 CHN-001). Nor while its integration failure is not cleared (SPEC-621 FIN-004).
+      return task.merge_armed === true || task.candidate_pending === true ? { ...WAITING_ON_YULIUS } : { ...DONE };
     }
     if (activity === 'waiting') {
       // Background shells keep the agent going: it wakes by itself when they report, so the next
@@ -262,7 +262,7 @@ export function statusInfo(task) {
 
 /** A parked task as the idle running task it was, with no live overlay (SPEC-512 PRK-004). */
 function asIdleRun(task) {
-  return { ...task, status: 'running', background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
+  return { ...task, status: 'running', staging_wait: null, background_shells: 0, yulius_wait: false, merge_armed: false, candidate_pending: false, pause: null };
 }
 
 // Keep the more specific reason already shown for a person's decision or failing PR.
@@ -405,10 +405,8 @@ export function taskInfo(task, actionRequests, pr) {
   // A parked task is shown where it was, as its idle run would be, marked parked (SPEC-512 PRK-004).
   if (task.status === 'parked') {
     const shown = parkedWorkStatus(task, taskInfo(asIdleRun(task), actionRequests, pr));
-    // Staging wakes a parked agent. Other work that would keep a running agent busy (its checks, a
-    // conflict it is told of, a CI run to run again) is a person's now, never Working (review
-    // round 1 of SPEC-512 part 1; the server's `parked_group`).
-    const waits = shown.group === 'working' && !shown.staging ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
+    // A parked task requires a person's action to resume.
+    const waits = shown.group === 'working' ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
     const merged = { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
     if (merged.group === 'needs' && task.needs_you_notice) {
       merged.notice = task.needs_you_notice;
@@ -464,6 +462,9 @@ function taskInfoOf(task, actionRequests, pr) {
   // yulius-domain).
   const finished = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
   if (finished && info.staging) return { ...info, pr };
+  // Yulius settles an achieved goal's integration failure first, whatever its checks say, as
+  // `AttentionFacts::group` does (SPEC-621 FIN-004).
+  if (finished && task.activity === 'done' && task.candidate_pending === true) return { ...info, pr };
   if (pr && finished && (pr.state === 'open' || pr.state === 'merged')) {
     if (pr.state === 'open' && pr.checks === 'failure') {
       // Failing checks are the person's only once the agent stopped. While its background work

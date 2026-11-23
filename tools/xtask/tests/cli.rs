@@ -311,9 +311,44 @@ fn the_checkers_tests_run_beside_the_build() -> std::io::Result<()> {
 fn both_shards_list_quarantine_and_run_using_the_archive() -> std::io::Result<()> {
     let stubs = Stubs::new("archive")?;
     let record = stubs.dir.join("archive-calls");
+    std::fs::write(
+        stubs.dir.join("cargo"),
+        r#"#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["XT_RECORD"], "a") as record:
+    print("cargo", *args, file=record)
+directory = Path(args[args.index("--extract-to") + 1])
+mode = directory.stat().st_mode & 0o777
+assert mode == 0o700, f"expected private extraction directory, got {mode:o}"
+target = directory / "target"
+if args[1] == "list":
+    target.mkdir()
+else:
+    assert target.is_dir(), "run must use the populated listing directory"
+    assert "--extract-overwrite" in args, "nextest refuses a populated target without overwrite"
+"#,
+    )?;
     for index in 1..=2 {
         std::fs::write(&record, "")?;
-        let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        let scratch = stubs.dir.join(format!("disk-{index}"));
+        std::fs::create_dir(&scratch)?;
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "umask 022; exec \"$@\"",
+            "sh",
+            env!("CARGO_BIN_EXE_xtask"),
+        ]);
+        cmd.env_remove("YULIUS_BUILD_SCRATCH")
+            .env("YULIUS_CI_CACHE", &scratch);
+        if index == 1 {
+            cmd.env("YULIUS_BUILD_SCRATCH", &scratch)
+                .env("YULIUS_CI_CACHE", stubs.dir.join("unused-cache"));
+        }
+        let out = cmd
             .args(["test", "--archive-file", "test build.tar.zst"])
             .env("CARGO", stubs.dir.join("cargo"))
             .env("PYTHON", stubs.dir.join("python"))
@@ -333,6 +368,20 @@ fn both_shards_list_quarantine_and_run_using_the_archive() -> std::io::Result<()
                 "-E not (test(=flaky_test)) --partition hash:{index}/2"
             )),
             "{calls}"
+        );
+        for call in calls
+            .lines()
+            .filter(|call| call.starts_with("cargo nextest "))
+        {
+            assert!(
+                call.contains(&format!("--extract-to {}/", scratch.display())),
+                "archive extraction would fall back to the job's bounded /tmp: {call}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&scratch)?.count(),
+            0,
+            "the extracted binaries should be reclaimed"
         );
         assert!(!calls.contains("--workspace --all-features"), "{calls}");
         assert_eq!(

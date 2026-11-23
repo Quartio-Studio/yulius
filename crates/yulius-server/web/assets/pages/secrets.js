@@ -3,12 +3,13 @@
 // (defined once by administrators, switched on per project) and Personal (yours alone, switched on
 // per project, only for tasks you start) — and Team secrets: a title, a value and notes shared by
 // people; and Variables (SPEC-275): a project's non-secret values, shown in plain and in every task
-// run's environment. Agents use their secrets through Yulius' proxy and browser filling and never see them. People read a value only after
+// run's environment; and Commands (SPEC-626): CLIs that need a key file, run outside the agents'
+// sandbox, and their runs waiting for approval. Agents use their secrets through Yulius' proxy and browser filling and never see them. People read a value only after
 // entering their own two-factor code (set up once, mandatory; it unlocks the vault for 10
 // minutes), and every reveal is audited.
 
 import { enc } from '../api.js';
-import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, setChildren, iconButton, emptyState, openModal, field, invalid, toggle } from '../dom.js';
+import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, setChildren, iconButton, emptyState, openModal, field, invalid, toggle, keepFocus } from '../dom.js';
 import { replaceQuietly } from '../router.js';
 import { allows } from '../status.js';
 import { relLong } from '../format.js';
@@ -402,6 +403,7 @@ const ACTIONS = {
   'vault.agent.hosts_cleared': 'removed the hosts of production secret',
   'vault.agent.delete': 'deleted agent secret',
   'vault.agent.use': 'used',
+  'vault.agent.refused': 'was refused use of',
   'vault.agent.fill': 'typed',
   'vault.agent.redacted': 'had redacted',
   'vault.agent.request': 'asked for hosts of',
@@ -494,6 +496,13 @@ function agentForm(ctx, secret, scope = 'sandbox') {
     form.hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret.hosts.join(', '), placeholder: 'api.example.com', autocomplete: 'off' });
     parts.push(field('Hosts', form.hosts, 'The only destinations it is sent to or typed into, comma-separated (*.example.com for subdomains). Agents ask for them; empty sends it nowhere.'));
   }
+  // Method and path rules (SPEC-627), set after adding, as hosts are; a production secret goes
+  // through no proxy.
+  if (secret && !secret.cd_prod) {
+    form.rules = h('textarea', { class: 'textarea mono', rows: 2, 'aria-label': 'Rules', placeholder: 'GET, HEAD /repos/*' });
+    form.rules.value = rulesText(secret.rules || []);
+    parts.push(field('Rules', form.rules, 'Optional: only these requests get it. One rule per line: methods, then a path where * matches anything (also /). Other requests that would use it are refused. Empty: any request to its hosts. Hosts agents ask for then wait for you, and allowing .env copies would give their code the value itself.'));
+  }
   if (secret && secret.injection !== 'none') {
     form.injection = h('select', { class: 'select' },
       h('option', { value: 'bearer' }, 'Authorization: Bearer <value>'),
@@ -527,6 +536,12 @@ function agentForm(ctx, secret, scope = 'sandbox') {
         out.expect_hosts = secret.hosts;
       }
     }
+    if (form.rules) {
+      // Sent only when changed, so an edit keeps rules the dialog did not touch.
+      const parsed = parseRules(form.rules.value);
+      if (parsed.error) out.rules_error = parsed.error;
+      else if (rulesText(parsed.rules) !== rulesText(secret.rules || [])) out.rules = parsed.rules;
+    }
     if (form.injection) {
       out.injection = form.injection.value;
       out.header_name = out.injection === 'header' ? form.header.value.trim() : null;
@@ -536,6 +551,23 @@ function agentForm(ctx, secret, scope = 'sandbox') {
     return out;
   };
   return form;
+}
+
+/** Rules as the form shows them: `GET, HEAD /repos/*`, one per line. */
+function rulesText(rules) {
+  return rules.map((r) => `${r.methods.join(', ')} ${r.path}`).join('\n');
+}
+
+/** The form's rules: each line's methods (comma or space separated) and its path (from the first /). */
+function parseRules(text) {
+  const rules = [];
+  for (const line of text.split('\n').map((l) => l.trim()).filter(Boolean)) {
+    const at = line.indexOf('/');
+    const methods = (at < 0 ? '' : line.slice(0, at)).split(/[\s,]+/).filter(Boolean).map((m) => m.toUpperCase());
+    if (!methods.length) return { error: `“${line}”: write the methods, then a path starting with /, e.g. GET /v1/*.` };
+    rules.push({ methods, path: line.slice(at) });
+  }
+  return { rules };
 }
 
 /** A host as people read it: a wildcard says it covers any subdomain. */
@@ -618,7 +650,9 @@ const ALLOW_SETTLE_MS = 1000;
 function agentHosts(ctx, secret, act, changed) {
   const parts = [];
   if (secret.hosts.length) parts.push(h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))));
-  else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, secret.auto_allow ? 'Not sent anywhere yet: agents bind its hosts when they need them.' : 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
+  else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, secret.auto_allow && !(secret.rules || []).length ? 'Not sent anywhere yet: agents bind its hosts when they need them.' : 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
+  // Its rules (SPEC-627), beside the hosts they apply to.
+  if ((secret.rules || []).length) parts.push(h('div', { class: 'chips', role: 'group', 'aria-label': 'Rules' }, secret.rules.map((r) => iconBadge('shield', `${r.methods.join(', ')} ${r.path}`, '', 'Only requests matching a rule get it'))));
   if (secret.requested_hosts.length) {
     // The answer names the hosts shown here: the server refuses it if an agent asked for more
     // meanwhile, so nothing is allowed unseen (SPEC-121).
@@ -896,6 +930,7 @@ function mountAgents(ctx, sandbox, host, actions, scope = 'sandbox') {
         if (!secret && !values.value) return invalid(form.value, 'Enter the value.');
         if (values.value && [...values.value].length < 8) return invalid(form.value, 'At least 8 characters: shorter values cannot be recognised and hidden.');
         if (values.injection === 'header' && !values.header_name) return invalid(form.header, 'Name the header.');
+        if (values.rules_error) return invalid(form.rules, values.rules_error);
         if (values.injection === 'basic' && !secret.has_username && !values.username) return invalid(form.username, 'Basic credentials need a user name.');
         // A new host of a secret allowed use by use, or letting agents set it up, needs the
         // two-factor code (ADR-0317); closing its dialog keeps the form open.
@@ -999,10 +1034,248 @@ function mountVariables(ctx, sandbox, host, actions) {
   return () => offs.forEach((off) => off());
 }
 
+/**
+ * The Commands tab (SPEC-626): a project's brokered commands — CLIs that need an agent secret as a
+ * key file and run outside the agents' sandbox — and their runs. Administrators add, edit and
+ * remove commands; people who manage the project's secrets approve or reject a run that waits.
+ */
+function mountCommands(ctx, sandbox, host, actions) {
+  if (!sandbox) {
+    setChildren(actions);
+    setChildren(host, emptyState({ iconName: 'terminal', title: 'Open a sandbox', text: 'Commands belong to a project. Open one to see and add them.' }));
+    return () => {};
+  }
+  // Focusable, so the keyboard lands here when the run it was on leaves the list.
+  const runsBox = h('div', { class: 'stack', tabindex: '-1' });
+  const list = h('div');
+  let canEdit = allows(sandbox.access, 'admin');
+  const addTitle = 'Add command';
+  setChildren(actions, createButton(addTitle, () => edit(null), { disabled: !canEdit, title: canEdit ? null : 'Requires admin access' }));
+  setChildren(host,
+    h('p', { class: 'muted small' }, `CLIs of ${sandbox.name} that need a key file — a deploy tool, a cloud SDK with a service-account key, a signing tool. Agents run one by name with \`yulius run NAME ARGS\`; it runs outside their sandbox with its agent secret as a temporary file they never see, and its output comes back with every agent secret of the project blanked out (as stored, encoded or line by line).`),
+    runsBox,
+    list);
+
+  const MODES = { always: 'Asks a person every run', send: 'Asks when a run changes something', never: 'Runs without asking' };
+
+  function commandCard(command) {
+    // Quoted as a run's line is (an empty or spaced argument reads as what it is).
+    const line = [command.binary, ...(command.fixed || [])].map(shellWord).join(' ');
+    const chips = [
+      badge(MODES[command.approve] || command.approve, command.approve === 'never' ? '' : 'accent'),
+      command.secret_ready ? badge(command.secret, 'ok') : badge(`${command.secret} not set up`, 'warn'),
+    ];
+    if ((command.tasks || []).length) chips.push(badge(`tasks ${command.tasks.map((n) => `#${n}`).join(', ')}`));
+    return itemCard({
+      iconName: 'terminal',
+      title: h('span', { class: 'mono' }, command.name),
+      description: command.description || h('span', { class: 'muted' }, 'No description'),
+      extra: h('div', { class: 'stack-tight' },
+        h('code', { class: 'mono command-line' }, line),
+        h('div', { class: 'chips' }, chips),
+        (command.subcommands || []).length ? h('span', { class: 'muted small' }, `Subcommands: ${command.subcommands.join(', ')}`) : null,
+        (command.refuse || []).length ? h('span', { class: 'muted small' }, `${BRAND.name} sets: ${command.refuse.join(', ')}`) : null,
+        h('span', { class: 'muted small' }, `changed ${relLong(command.updated_at)} by ${command.updated_by}`)),
+      controls: [
+        smallButton('Edit', `Edit ${command.name}`, () => edit(command), { disabled: !command.can_edit, title: command.can_edit ? `Edit ${command.name}` : 'Requires admin access' }),
+        iconButton('trash', `Delete ${command.name}`, () => remove(command), { class: 'btn-quiet-danger', disabled: !command.can_edit }),
+      ],
+    });
+  }
+
+  // A run's buttons answer that run only (review of slice 4): they carry its id as their focus
+  // key, so a list drawn again never hands their focus to another run's; and while the waiting
+  // runs just changed under the pointer or keyboard they stay off for a moment, as Allow does
+  // (ALLOW_SETTLE_MS), so a click or Enter meant for one run never answers another.
+  let shownWaiting = null;
+  let settling = false;
+  let settleTimer = null;
+  let answering = 0;
+
+  function runRow(run) {
+    const waiting = run.state === 'waiting';
+    const buttons = waiting && run.can_answer ? [
+      smallButton('Approve', `Approve task #${run.task_number}'s run of ${run.command}`, () => answer(run, true, buttons), { class: 'btn-primary' }),
+      smallButton('Reject', `Reject task #${run.task_number}'s run of ${run.command}`, () => answer(run, false, buttons)),
+    ] : [];
+    buttons.forEach((b, i) => {
+      b.setAttribute('data-focus-key', `run:${run.id}:${i === 0 ? 'approve' : 'reject'}`);
+      if (settling) b.setAttribute('aria-disabled', 'true');
+    });
+    const state = waiting ? `waits until ${new Date(run.deadline).toLocaleTimeString()}` : run.state.replace('_', ' ');
+    return itemCard({
+      iconName: waiting ? 'clock' : 'terminal',
+      title: h('span', null, `Task #${run.task_number} · `, h('span', { class: 'mono' }, run.command)),
+      description: h('code', { class: 'mono command-line', 'data-run-line': run.id }, run.line),
+      extra: h('div', { class: 'chips' },
+        badge(state, waiting ? 'warn' : run.state === 'done' ? 'ok' : ''),
+        run.changes ? badge('says it changes something', 'accent') : null,
+        run.answered_by ? badge(`answered by ${run.answered_by}`) : null,
+        run.exit_code !== null && run.exit_code !== undefined ? badge(`exit ${run.exit_code}`, run.exit_code === 0 ? 'ok' : '') : null),
+      controls: buttons,
+    });
+  }
+
+  async function answer(run, approve, buttons) {
+    if (settling || answering) return;
+    answering += 1;
+    buttons.forEach((b) => { b.disabled = true; });
+    try {
+      await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/command-runs/${enc(run.id)}`, { approve });
+      toast(approve ? `Approved: task #${run.task_number}'s run of ${run.command} starts.` : 'Rejected: it runs nothing.', { kind: 'ok' });
+    } catch (error) { errorToast(error, 'Couldn’t answer'); } finally {
+      answering -= 1;
+      // The answered button is off and its run leaves the list: the keyboard stays here.
+      if (buttons.includes(document.activeElement) || document.activeElement === document.body) runsBox.focus({ preventScroll: true });
+      reloadRuns();
+    }
+  }
+
+  function renderRuns(data) {
+    const runs = data.items || [];
+    const waiting = runs.filter((r) => r.state === 'waiting');
+    const others = runs.filter((r) => r.state !== 'waiting').slice(0, 10);
+    const ids = waiting.map((r) => r.id).join(' ');
+    if (shownWaiting !== null && ids !== shownWaiting && waiting.length) {
+      settling = true;
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settling = false;
+        runsBox.querySelectorAll('[data-focus-key^="run:"]').forEach((b) => b.removeAttribute('aria-disabled'));
+      }, ALLOW_SETTLE_MS);
+    }
+    shownWaiting = ids;
+    if (runs.length === 0) return h('div');
+    return h('div', { class: 'stack' },
+      waiting.length ? h('h2', { class: 'wf-section-title' }, `Waiting for approval (${waiting.length})`) : null,
+      waiting.length ? h('div', { class: 'item-list' }, waiting.map(runRow)) : null,
+      settling ? h('span', { class: 'muted small' }, 'The runs waiting changed while this page was open.') : null,
+      others.length ? h('h2', { class: 'wf-section-title' }, 'Recent runs') : null,
+      others.length ? h('div', { class: 'item-list' }, others.map(runRow)) : null);
+  }
+
+  let runsGeneration = 0;
+  /** Reads the runs again, keeping focus on the same run's control (or the list), never another's. */
+  async function reloadRuns() {
+    runsGeneration += 1;
+    const mine = runsGeneration;
+    try {
+      const data = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/command-runs`);
+      if (mine !== runsGeneration || answering) return;
+      keepFocus(runsBox, () => setChildren(runsBox, renderRuns(data)), runsBox);
+    } catch (error) {
+      if (mine === runsGeneration && shownWaiting === null) setChildren(runsBox, h('p', { class: 'muted small' }, `Couldn’t load the runs: ${error.message || String(error)}`));
+    }
+  }
+
+  function render(data) {
+    canEdit = data.can_edit;
+    const commands = data.items || [];
+    if (commands.length === 0) {
+      return emptyState({ iconName: 'terminal', title: 'No commands yet', text: 'Add a CLI agents may run with an agent secret of this project as its key file.', action: canEdit ? createButton(addTitle, () => edit(null)) : null });
+    }
+    return h('div', { class: 'stack' }, h('h2', { class: 'wf-section-title' }, 'Commands'), h('div', { class: 'item-list' }, commands.map(commandCard)));
+  }
+
+  const reload = loader(list, 'the commands', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/commands`), render, { shape: 'items' });
+  reloadRuns();
+  const follow = () => { reload({ quiet: true }); if (!answering) reloadRuns(); };
+  const offs = [
+    ctx.store.on('commands', (event) => { if (!event.sandbox_id || event.sandbox_id === sandbox.id) follow(); }),
+    ctx.store.on('secrets', (event) => { if (!event.sandbox_id || event.sandbox_id === sandbox.id) reload({ quiet: true }); }),
+    ctx.store.on('resync', follow),
+  ];
+
+  const lines = (text) => text.split('\n').map((s) => s.trim()).filter(Boolean);
+
+  function edit(command) {
+    const input = (label, value, placeholder, attrs = {}) => h('input', { class: ['input', attrs.mono && 'mono'], 'aria-label': label, value: value ?? '', placeholder, autocomplete: 'off' });
+    const area = (label, value, placeholder) => h('textarea', { class: 'input mono', 'aria-label': label, rows: 3, placeholder }, value ?? '');
+    const name = input('Name', command?.name, 'deploy', { mono: true });
+    const description = input('Description', command?.description, 'Deploys the app with its service account');
+    const binary = input('Binary', command?.binary, '/usr/local/bin/deploy', { mono: true });
+    const secret = input('Secret', command?.secret, 'DEPLOY_KEY', { mono: true });
+    const fixed = area('Fixed arguments', (command?.fixed || []).join('\n'), '--key-file\n{keyfile}');
+    const subcommands = input('Subcommands', (command?.subcommands || []).join(', '), 'status, push', { mono: true });
+    const refuse = input(`Flags ${BRAND.name} sets`, (command?.refuse || []).join(', '), '--key-file, -k', { mono: true });
+    const approve = h('select', { class: 'input', 'aria-label': 'Approval' }, Object.entries(MODES).map(([value, label]) => h('option', { value, selected: (command?.approve || 'always') === value }, label)));
+    const sendFlags = input('Send flags', (command?.send_flags || []).join(', '), '--send', { mono: true });
+    const minutes = input('Approval minutes', command?.approval_minutes ?? 10, '10');
+    const timeout = input('Time limit (seconds)', command?.timeout_seconds ?? 600, '600');
+    const tasks = input('Tasks', (command?.tasks || []).join(', '), 'every task');
+    const env = area('Environment', Object.entries(command?.env || {}).map(([k, v]) => `${k}=${v}`).join('\n'), 'GOOGLE_APPLICATION_CREDENTIALS={keyfile}');
+    let slashed = Boolean(command?.slashes);
+    const slashes = toggle({ checked: slashed, label: 'owner/repo arguments pass', onChange: (on) => { slashed = on; } });
+    const csv = (el) => el.value.split(',').map((s) => s.trim()).filter(Boolean);
+    openModal({ title: command ? `Edit ${command.name}` : addTitle, body: h('div', { class: 'stack' },
+      field('Name', name, 'Agents run it as yulius run NAME.'),
+      field('Description', description, 'What it does, for people and agents.'),
+      field('Binary', binary, `The host’s own program, an absolute path. Not in /tmp, /home or ${BRAND.name}’s data.`),
+      field('Secret', secret, 'An agent secret of this project (or a global one): its runs get it as a file.'),
+      field('Fixed arguments', fixed, 'One per line, before the agent’s. {keyfile} is the key file, {home} the run’s home.'),
+      field('Subcommands', subcommands, 'The agent’s first argument must be one of them. Empty: any.'),
+      field(`Flags ${BRAND.name} sets`, refuse, 'Refused from the agent in every form.'),
+      field('Approval', approve, 'Who decides before a run.'),
+      field('Send flags', sendFlags, 'With “asks when a run changes something”: the flags that make it change something.'),
+      field('Approval minutes', minutes, 'No answer in time is a no.'),
+      field('Time limit (seconds)', timeout, 'A run is stopped at it.'),
+      field('Tasks', tasks, 'Task numbers that may run it. Empty: every task.'),
+      field('Environment', env, 'NAME=value per line. {secret} is the key itself, in the environment only. Other values are no secret: everyone who views the project reads them, and the audit keeps them.'),
+      field('owner/repo arguments pass', slashes, 'A / only between letters or digits of a value; never a path.'),
+    ), actions: [
+      { label: 'Cancel', value: false },
+      { label: command ? 'Save' : 'Add', kind: 'primary', submit: true, run: async () => {
+        const whole = (el, text) => (/^\d+$/.test(text.trim()) ? Number(text.trim()) : invalid(el, 'A whole number.'));
+        const taskNumbers = csv(tasks).map((n) => n.replace(/^#/, ''));
+        if (taskNumbers.some((n) => !/^\d+$/.test(n))) return invalid(tasks, 'Task numbers, like 12, 15.');
+        const approvalMinutes = whole(minutes, minutes.value);
+        if (approvalMinutes === false || approvalMinutes === undefined) return false;
+        const timeoutSeconds = whole(timeout, timeout.value);
+        if (timeoutSeconds === false || timeoutSeconds === undefined) return false;
+        const vars = {};
+        for (const line of lines(env.value)) {
+          const at = line.indexOf('=');
+          if (at < 1) return invalid(env, 'Write each variable as NAME=value.');
+          vars[line.slice(0, at)] = line.slice(at + 1);
+        }
+        const body = {
+          name: name.value.trim(), description: description.value.trim(), binary: binary.value.trim(), secret: secret.value.trim(),
+          fixed: lines(fixed.value), subcommands: csv(subcommands), refuse: csv(refuse), approve: approve.value, send_flags: csv(sendFlags),
+          approval_minutes: approvalMinutes, timeout_seconds: timeoutSeconds, tasks: taskNumbers.map(Number), env: vars, slashes: slashed,
+        };
+        const saved = await withReauth(ctx, () => (command
+          ? ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/commands/${enc(command.id)}?version=${command.version}`, body)
+          : ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/commands`, body)));
+        if (saved === null) return false;
+        toast(command ? 'Saved.' : `${body.name} added. Agents may run it.`, { kind: 'ok' });
+        reload();
+        return true;
+      } },
+    ] });
+  }
+
+  async function remove(command) {
+    if (!(await confirmDialog({ title: `Delete ${command.name}?`, message: 'Agents can no longer run it.', confirmLabel: 'Delete', danger: true }))) return;
+    try {
+      await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}/commands/${enc(command.id)}`);
+      toast('Deleted.', { kind: 'ok' });
+      reload();
+    } catch (error) { errorToast(error, 'Couldn’t delete'); }
+  }
+
+  return () => { clearTimeout(settleTimer); offs.forEach((off) => off()); };
+}
+
+/** A word of a command line as a person reads it: bare when plain, else single-quoted (as the server's `command_line`). */
+function shellWord(word) {
+  return word !== '' && /^[A-Za-z0-9\-_./=:@,+%{}]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
+}
+
 /** The tabs of the Secrets page (SPEC-245 WUI-001): `section` in the address, `agents` being Project. */
 const SECTIONS = [
   { value: 'agents', label: 'Project', icon: 'folder', scope: 'sandbox' },
   { value: 'variables', label: 'Variables', icon: 'gear', variables: true },
+  { value: 'commands', label: 'Commands', icon: 'terminal', commands: true },
   { value: 'global', label: 'Global', icon: 'globe', scope: 'instance' },
   { value: 'personal', label: 'Personal', icon: 'user', scope: 'personal' },
   { value: 'team', label: 'Team secrets', icon: 'users' },
@@ -1045,6 +1318,7 @@ export function mountSecretsPage(ctx, sandbox, route) {
     unmount = () => {};
     const section = SECTIONS.find((o) => o.value === current);
     if (section.variables) unmount = mountVariables(ctx, sandbox, host, frame.actions);
+    else if (section.commands) unmount = mountCommands(ctx, sandbox, host, frame.actions);
     else if (section.scope) unmount = mountAgents(ctx, sandbox, host, frame.actions, section.scope);
     else mountTeam(ctx, sandbox, host, frame.actions);
   }

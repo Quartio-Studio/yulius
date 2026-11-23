@@ -377,24 +377,6 @@ pub trait TaskStore: Send + Sync {
         requested: Option<&AccountId>,
         at: Timestamp,
     ) -> AppResult<Option<crate::capacity::ContinuationAdmission>>;
-    /// Starts the parked owner only while its observed attempt, PR, queue decision
-    /// and absence of a human request still hold in the same transaction.
-    async fn claim_parked_candidate(
-        &self,
-        selected: &TaskRecord,
-        claim: crate::pr_watch::ParkedCandidateClaim,
-        account: &AccountId,
-        at: Timestamp,
-    ) -> AppResult<Option<crate::capacity::ContinuationAdmission>>;
-    /// Ends an unspawned candidate resume and restores its park together. A newer
-    /// task state (including a person's Stop) is preserved when settling the attempt.
-    async fn settle_unspawned_candidate(
-        &self,
-        task: &TaskId,
-        attempt: &AttemptId,
-        activity: Option<Activity>,
-        at: Timestamp,
-    ) -> AppResult<bool>;
     /// Queues the task `id`, which must read `expected`, and keeps how it is to start, in one
     /// step (SPEC-483 QST-001): [`Self::transition_task`] to `queued` and the start. `false`,
     /// and nothing changed, when the task no longer reads `expected`.
@@ -436,6 +418,10 @@ pub trait TaskStore: Send + Sync {
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
     /// TIM-002). The task's other times stay.
     async fn set_working_since(&self, task: &TaskId, since: Option<Timestamp>) -> AppResult<()>;
+    /// The subscription a person chose for `task` (SPEC-629 RBL-005); `None` without one.
+    async fn task_pin(&self, task: &TaskId) -> AppResult<Option<AccountId>>;
+    /// Pins `task` to `account`, or ends its pin with `None` (SPEC-629 RBL-005).
+    async fn set_task_pin(&self, task: &TaskId, account: Option<&AccountId>) -> AppResult<()>;
     /// Records the start or end of `task`'s working stretch like [`TaskStore::set_working_since`],
     /// only while the running task still reads `from`: that activity (or none) and those times
     /// (SPEC-315 FWS-001); whether it did.

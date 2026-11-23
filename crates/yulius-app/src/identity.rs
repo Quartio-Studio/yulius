@@ -109,7 +109,8 @@ exec "$real" "$@"
 /// The `yulius` command of agent runs (SPEC-011): `yulius wait`, which blocks until the checks
 /// at the agent's head finish, its delivery moves or an armed merge is decided, `yulius tool`,
 /// a Yulius tool called from the shell (SPEC-432), `yulius security-scan`, Vidoc's scan of the
-/// repository (SPEC-195), and `yulius remove`, for the task's own files (SPEC-192). Every
+/// repository (SPEC-195), `yulius remove`, for the task's own files (SPEC-192), and `yulius run`,
+/// a brokered command of the project (SPEC-626). Every
 /// subcommand documented "In a task's session" must be in its `case` (SPEC-451).
 #[must_use]
 pub fn agent_yulius_shim(exe: &Path) -> String {
@@ -118,10 +119,11 @@ pub fn agent_yulius_shim(exe: &Path) -> String {
         r#"#!/bin/sh
 # Yulius agent commands: `yulius wait [--minutes N]` (start it with run_in_background),
 # `yulius tool <name> [<json>]` (a Yulius tool from the shell), `yulius security-scan [--all]`
-# (Vidoc's scan of this repository) and `yulius remove <paths>` (this task's own files).
+# (Vidoc's scan of this repository), `yulius remove <paths>` (this task's own files) and
+# `yulius run <command> [<args>]` (a brokered command of the project, outside the sandbox).
 case "${{1:-}}" in
-  wait|tool|security-scan|remove) exec '{exe}' "$@" ;;
-  *) echo "In a task's session yulius offers: yulius wait [--minutes N], yulius tool <name> [<json>], yulius security-scan [--all], yulius remove <paths>" >&2; exit 2 ;;
+  wait|tool|security-scan|remove|run) exec '{exe}' "$@" ;;
+  *) echo "In a task's session yulius offers: yulius wait [--minutes N], yulius tool <name> [<json>], yulius security-scan [--all], yulius remove <paths>, yulius run <command> [<args>]" >&2; exit 2 ;;
 esac
 "#
     )
@@ -887,6 +889,10 @@ mod tests {
             (3, "ran tool steps_get {}\n".into())
         );
         assert_eq!(run(&["remove", "a", "b"])?, (3, "ran remove a b\n".into()));
+        assert_eq!(
+            run(&["run", "deploy-cli", "status", "--json"])?,
+            (3, "ran run deploy-cli status --json\n".into())
+        );
         let (code, text) = run(&["serve"])?;
         assert_eq!(code, 2);
         for usage in [
@@ -894,6 +900,7 @@ mod tests {
             "yulius tool <name> [<json>]",
             "yulius security-scan [--all]",
             "yulius remove <paths>",
+            "yulius run <command> [<args>]",
         ] {
             assert!(text.contains(usage), "{text}");
         }

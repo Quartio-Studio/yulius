@@ -397,6 +397,12 @@ pub trait IntakeStore: Send + Sync {
     async fn chain(&self, task: &TaskId) -> AppResult<Option<crate::intake::ChainRecord>>;
     /// Tasks chained after `task`, oldest first.
     async fn chain_successors(&self, task: &TaskId) -> AppResult<Vec<crate::intake::ChainRecord>>;
+    /// Records where the fork `fork.task_id` came from (SPEC-628 FRK-004).
+    async fn insert_fork(&self, fork: &crate::intake::ForkRecord) -> AppResult<()>;
+    /// Where a task came from, when it is a fork.
+    async fn fork_of(&self, task: &TaskId) -> AppResult<Option<crate::intake::ForkRecord>>;
+    /// The forks of `task`, oldest first.
+    async fn forks_from(&self, task: &TaskId) -> AppResult<Vec<crate::intake::ForkRecord>>;
     /// Sets or clears why a chained task needs a person.
     async fn set_chain_blocked(&self, task: &TaskId, reason: Option<&str>) -> AppResult<()>;
     /// Sets the time a prepared task starts by itself, or clears it (SPEC-105).
@@ -535,6 +541,35 @@ pub trait UpdateStore: Send + Sync {
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
 #[async_trait]
 pub trait CiStore: Send + Sync {
+    /// Gate attempts in the supplied revision order, newest admission first within a revision.
+    async fn integration_verdicts(
+        &self,
+        sandbox: &SandboxId,
+        branch: &str,
+        revisions: &[String],
+        read: crate::ci::GateRead,
+    ) -> AppResult<Vec<crate::ci::GateVerdict>>;
+    /// Whether this running task still accepts machine-generated input.
+    async fn accepts_machine_notice(&self, task: &TaskId, unfinished_goal: bool)
+    -> AppResult<bool>;
+    /// Running project workers whose persisted work and hold state allow an assignment.
+    async fn gate_workers(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
+    /// Select or retain the project's repair owner and return workers yet to hear the assignment.
+    async fn reconcile_gate_repair(
+        &self,
+        sandbox: &SandboxId,
+        detail: &str,
+        available: &[TaskId],
+    ) -> AppResult<Vec<crate::ci::RepairRecipient>>;
+    /// Confirm the recipient and assignment immediately before typing, or acknowledge delivery.
+    async fn gate_repair_due(
+        &self,
+        recipient: &crate::ci::RepairRecipient,
+        detail: &str,
+        acknowledge: bool,
+    ) -> AppResult<bool>;
+    /// Whether a recorded integration failure could require first-parent comparison.
+    async fn has_gate_failure(&self, sandbox: &SandboxId, branch: &str) -> AppResult<bool>;
     /// PRs occupying this sandbox's CI places, in admission order, including shared commits.
     async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>>;
     /// Atomically replaces that bounded window.
@@ -547,6 +582,12 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<()>;
     /// One run.
     async fn ci_run(&self, id: &str) -> AppResult<Option<crate::ci::CiRunRecord>>;
+    /// Retained integration run metadata for reading or retrying its exact revision after log expiry.
+    async fn archived_gate_run(
+        &self,
+        sandbox: &SandboxId,
+        id: &str,
+    ) -> AppResult<Option<crate::ci::CiRunRecord>>;
     /// The jobs of a run in order; outputs only when `with_output`.
     async fn ci_jobs(&self, run: &str, with_output: bool)
     -> AppResult<Vec<crate::ci::CiJobRecord>>;
@@ -562,12 +603,14 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         commits: &[String],
     ) -> AppResult<Vec<String>>;
-    /// Bounded scheduler history, most recently admitted first. A new run may
-    /// inherit an older queue position from the head it superseded.
+    /// Recent admissions plus full integration and candidate runs at the current integration head.
+    /// Retained configuration refusals invalidate earlier verdicts there.
+    /// A new run may inherit an older queue position from the head it superseded.
     async fn ci_planning_runs(
         &self,
         sandbox: &SandboxId,
         limit: u32,
+        integration_head: Option<&yulius_domain::ci::Target>,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Runs of a sandbox for one commit, newest first.
     async fn ci_runs_for_sha(
@@ -821,6 +864,341 @@ pub trait CdStore: Send + Sync {
     ) -> AppResult<Vec<yulius_domain::rollback::ReleaseRecord>>;
 }
 
+/// A project's brokered command as stored (SPEC-626 BRK-001): the definition is one JSON
+/// document ([`yulius_contracts::api::commands::CommandDefinition`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRecord {
+    /// Its id.
+    pub id: String,
+    /// Its project.
+    pub sandbox_id: SandboxId,
+    /// Its name, unique in the project.
+    pub name: String,
+    /// The definition, as JSON.
+    pub definition: String,
+    /// The agent secret it was saved with (BRK-003): its runs get no other.
+    pub secret_id: String,
+    /// Who created it (user id).
+    pub created_by: String,
+    /// When.
+    pub created_at: Timestamp,
+    /// Who changed it last (user id).
+    pub updated_by: String,
+    /// When.
+    pub updated_at: Timestamp,
+}
+
+/// A script watch as stored (SPEC-630 WCH-001): its definition and its state between runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRecord {
+    /// Its id (`wt_…`).
+    pub id: String,
+    /// Its project.
+    pub sandbox_id: SandboxId,
+    /// Its name, unique in the project.
+    pub name: String,
+    /// The bash script.
+    pub script: String,
+    /// An interval in seconds; `None` for a cron watch.
+    pub every_seconds: Option<i64>,
+    /// A cron expression; `None` for an interval watch.
+    pub cron: Option<String>,
+    /// The cron expression's UTC offset, minutes.
+    pub utc_offset_minutes: i32,
+    /// Its notices' expiry as given (SPEC-624 NTC-002); `None`: a day.
+    pub expiry: Option<String>,
+    /// A run's timeout, seconds.
+    pub timeout_seconds: u32,
+    /// Agent secret names its runs get through the egress proxy (WCH-004).
+    pub secrets: Vec<String>,
+    /// Its owner, who gets its notices.
+    pub owner: UserId,
+    /// `ui` or `agent`.
+    pub created_via: String,
+    /// When created.
+    pub created_at: Timestamp,
+    /// When its definition changed last.
+    pub updated_at: Timestamp,
+    /// Paused by a person.
+    pub paused: bool,
+    /// When it was created or last resumed: where its schedule counts from.
+    pub since: Timestamp,
+    /// Why it ended (exit 3), if it did.
+    pub ended_reason: Option<String>,
+    /// When it ended.
+    pub ended_at: Option<Timestamp>,
+    /// The state its runs leave.
+    pub state: WatchState,
+}
+
+/// What a watch's runs leave on it (WCH-005, WCH-007, WCH-010).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WatchState {
+    /// The run going now: its id and when it started (a restart finds it here).
+    pub running: Option<(String, Timestamp)>,
+    /// When its last run started.
+    pub last_started_at: Option<Timestamp>,
+    /// When its last run ended.
+    pub last_ended_at: Option<Timestamp>,
+    /// Its last run's exit code, when it exited.
+    pub last_exit: Option<i32>,
+    /// Why its last run failed, if it did.
+    pub last_failure: Option<String>,
+    /// What its last run printed (cut).
+    pub last_output: Option<String>,
+    /// The tail of its last run's error output.
+    pub last_errors: Option<String>,
+    /// Failures in a row.
+    pub failures: u32,
+    /// The warning was posted for this streak.
+    pub warned: bool,
+    /// Runs so far.
+    pub runs: u32,
+    /// Posts so far.
+    pub posts: u32,
+    /// When it last posted.
+    pub last_posted_at: Option<Timestamp>,
+}
+
+/// A post a watch could not store yet (WCH-008): the newest per notice key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchPending {
+    /// Its watch.
+    pub watch_id: String,
+    /// Its notice key.
+    pub key: String,
+    /// The notice as JSON; `None`: remove the notice of `key`.
+    pub body: Option<String>,
+    /// When it was queued.
+    pub queued_at: Timestamp,
+}
+
+/// How a run's end changes its watch, in one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRunEnd {
+    /// The state after the run (`running` cleared).
+    pub state: WatchState,
+    /// It ended the watch, with this reason (exit 3).
+    pub ended: Option<String>,
+    /// Posts to keep as pending, replacing those of their keys.
+    pub pending: Vec<WatchPending>,
+}
+
+/// Script watches (SPEC-630, migration 0093).
+#[async_trait]
+pub trait WatchStore: Send + Sync {
+    /// Every watch of every project not removed (the scheduler's view; a project has at most
+    /// 20).
+    async fn all_watches(&self) -> AppResult<Vec<WatchRecord>>;
+    /// A project's watches, by name.
+    async fn watches_in(&self, sandbox: &SandboxId) -> AppResult<Vec<WatchRecord>>;
+    /// One watch by id.
+    async fn watch(&self, id: &str) -> AppResult<Option<WatchRecord>>;
+    /// Stores a new watch, unless its project has `max` already.
+    ///
+    /// # Errors
+    /// `Conflict` when the project has a watch of that name, or `max` watches.
+    async fn insert_watch(&self, watch: &WatchRecord, max: usize) -> AppResult<()>;
+    /// Replaces a watch's definition (script, schedule, expiry, timeout, secrets, `updated_at`;
+    /// its name is its notices' key and never changes) and, when given, its schedule's anchor
+    /// `since` (a new schedule), only while it was last changed at `read_at`; `false` when it
+    /// changed meanwhile or is gone.
+    async fn update_watch(
+        &self,
+        watch: &WatchRecord,
+        since: Option<Timestamp>,
+        read_at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Pauses or resumes a watch; a resume also ends its end and counts its schedule from `at`.
+    /// `false` when it is gone.
+    async fn set_watch_paused(&self, id: &str, paused: bool, at: Timestamp) -> AppResult<bool>;
+    /// Removes a watch and its pending posts; `false` when it was gone.
+    async fn delete_watch(&self, id: &str) -> AppResult<bool>;
+    /// Records that run `run_id` of a watch started at `at`, only when none is going, its project
+    /// is not removed and, unless `forced` (Run now), it is neither paused nor ended, and answers
+    /// the record as claimed, in one transaction; `None` otherwise, or when the watch is gone.
+    async fn watch_run_started(
+        &self,
+        id: &str,
+        run_id: &str,
+        at: Timestamp,
+        forced: bool,
+    ) -> AppResult<Option<WatchRecord>>;
+    /// Every watch with a run going, removed projects' too (a start recovers them all).
+    async fn watches_running(&self) -> AppResult<Vec<WatchRecord>>;
+    /// Makes a watch due again from `at` (its last start forgotten), only while it is neither
+    /// paused, ended nor running; `false` otherwise.
+    async fn watch_due_again(&self, id: &str, at: Timestamp) -> AppResult<bool>;
+    /// Records the end of run `run_id`: its state, its end of the watch and its pending posts, in
+    /// one transaction; `false` (nothing written) when that run is not the watch's going run.
+    async fn watch_run_ended(&self, id: &str, run_id: &str, end: &WatchRunEnd) -> AppResult<bool>;
+    /// Every pending post, oldest first.
+    async fn watch_pending(&self) -> AppResult<Vec<WatchPending>>;
+    /// Keeps `pending`, replacing the pending post of its watch and key.
+    async fn put_watch_pending(&self, pending: &WatchPending) -> AppResult<()>;
+    /// Drops a pending post once it was stored, only while it is the one queued at `queued_at`
+    /// (a newer one of the same key stays).
+    async fn drop_watch_pending(
+        &self,
+        watch_id: &str,
+        key: &str,
+        queued_at: Timestamp,
+    ) -> AppResult<()>;
+    /// Counts a post on its watch.
+    async fn watch_posted(&self, id: &str, at: Timestamp) -> AppResult<()>;
+}
+
+/// One run of a brokered command as stored (SPEC-626 BRK-005..BRK-016). Its command line and
+/// output are redacted before they are stored; its arguments are the agent's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRunRecord {
+    /// Its id.
+    pub id: String,
+    /// Its project.
+    pub sandbox_id: SandboxId,
+    /// The command's id and name when it was asked.
+    pub command_id: String,
+    /// The command's name.
+    pub command: String,
+    /// The definition's version it was asked against: a run approved after a change of it does
+    /// not run.
+    pub command_updated_at: Timestamp,
+    /// The task that asked, and its number.
+    pub task_id: TaskId,
+    /// Its number.
+    pub task_number: u32,
+    /// The agent's arguments.
+    pub args: Vec<String>,
+    /// The full command line shown to people (redacted).
+    pub line: String,
+    /// The agent said it changes something.
+    pub changes: bool,
+    /// `waiting`, `approved`, `running`, `done`, `timed_out`, `output_limit`, `failed`,
+    /// `rejected`, `expired` or `lost`.
+    pub state: String,
+    /// Why it ended as it did.
+    pub reason: Option<String>,
+    /// When a waiting run's approval ends.
+    pub deadline: Option<Timestamp>,
+    /// Who answered it (login).
+    pub answered_by: Option<String>,
+    /// The command's exit code.
+    pub exit_code: Option<i32>,
+    /// Its stdout, redacted and cut.
+    pub stdout: String,
+    /// Its stderr, redacted and cut.
+    pub stderr: String,
+    /// When it was asked.
+    pub created_at: Timestamp,
+    /// When it started.
+    pub started_at: Option<Timestamp>,
+    /// When it ended.
+    pub ended_at: Option<Timestamp>,
+}
+
+/// How a run ended (SPEC-626 BRK-011).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRunEnd {
+    /// The final state.
+    pub state: String,
+    /// Why.
+    pub reason: Option<String>,
+    /// The exit code.
+    pub exit_code: Option<i32>,
+    /// stdout, redacted and cut.
+    pub stdout: String,
+    /// stderr, redacted and cut.
+    pub stderr: String,
+    /// When.
+    pub at: Timestamp,
+}
+
+/// What storing a new run did (SPEC-626).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunInsert {
+    /// It is stored.
+    Stored,
+    /// Nothing: the project runs `max_running` runs already (a `running` run).
+    Busy,
+    /// Nothing: a run of the task waits for a person already (a `waiting` run).
+    TaskWaits,
+}
+
+/// Brokered commands (SPEC-626, migration 0089).
+#[async_trait]
+pub trait CommandStore: Send + Sync {
+    /// A project's commands, by name.
+    async fn commands_in(&self, sandbox: &SandboxId) -> AppResult<Vec<CommandRecord>>;
+    /// One command of a project by its id.
+    async fn command(&self, sandbox: &SandboxId, id: &str) -> AppResult<Option<CommandRecord>>;
+    /// One command of a project by its name.
+    async fn command_named(
+        &self,
+        sandbox: &SandboxId,
+        name: &str,
+    ) -> AppResult<Option<CommandRecord>>;
+    /// Stores a new command.
+    ///
+    /// # Errors
+    /// `Conflict` when the project has a command of that name.
+    async fn insert_command(&self, command: &CommandRecord) -> AppResult<()>;
+    /// Replaces a command's name and definition only while it was last changed at `read_at`;
+    /// `false` when it changed meanwhile or is gone.
+    ///
+    /// # Errors
+    /// `Conflict` when the new name is another command's.
+    async fn update_command(&self, command: &CommandRecord, read_at: Timestamp) -> AppResult<bool>;
+    /// Removes a command; `false` when it was gone.
+    async fn delete_command(&self, sandbox: &SandboxId, id: &str) -> AppResult<bool>;
+    /// Stores a new run, in one transaction with its checks: a `running` one while fewer than
+    /// `max_running` runs of its project run, a `waiting` one while no run of its task waits.
+    /// Keeps only the newest 200 ended runs of its project.
+    async fn insert_command_run(
+        &self,
+        run: &CommandRunRecord,
+        max_running: u32,
+    ) -> AppResult<RunInsert>;
+    /// The newest run `task` started.
+    async fn latest_command_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<CommandRunRecord>>;
+    /// One run.
+    async fn command_run(&self, id: &str) -> AppResult<Option<CommandRunRecord>>;
+    /// Marks a run `running` (started at `at`) only while it is `from`; `false` when it was not.
+    async fn start_command_run(&self, id: &str, from: &str, at: Timestamp) -> AppResult<bool>;
+    /// Records a run's end only while it is `from`, and drops its raw arguments (its redacted
+    /// command line stays); `false` when it was not.
+    async fn end_command_run(&self, id: &str, from: &str, end: &CommandRunEnd) -> AppResult<bool>;
+    /// Every run in `state`, oldest first.
+    async fn command_runs_in_state(&self, state: &str) -> AppResult<Vec<CommandRunRecord>>;
+    /// Answers a `waiting` run while its deadline is after `at` (BRK-015, BRK-016): approved, it
+    /// is `running` from `at`, only while fewer than `max_running` runs of its project run;
+    /// rejected, it ends `rejected` at `at`. Records who answered; `false` when nothing changed.
+    async fn answer_command_run(
+        &self,
+        id: &str,
+        approve: bool,
+        by: &str,
+        at: Timestamp,
+        max_running: u32,
+    ) -> AppResult<bool>;
+    /// Ends every `waiting` run whose deadline is at `at` or before as `expired` (BRK-016); the
+    /// runs it ended, as they were.
+    async fn expire_command_runs(&self, at: Timestamp) -> AppResult<Vec<CommandRunRecord>>;
+    /// A project's runs, newest first: every one that waits or runs, and at most `limit` others.
+    async fn command_runs_in(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<CommandRunRecord>>;
+    /// The run of `task` that waits for a person, if one does.
+    async fn waiting_command_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<CommandRunRecord>>;
+}
+
 /// One handoff as stored (SPEC-512 HOF-003..HOF-006).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandoffRecord {
@@ -924,6 +1302,20 @@ pub struct StagingRequestRecord {
     pub updated_at: Timestamp,
 }
 
+impl StagingRequestRecord {
+    /// Human-readable receipt shared by task pages, lists and MCP.
+    pub fn outcome_label(&self) -> Option<String> {
+        (!self.state.is_pending() || self.state == yulius_domain::staging::StagingState::Inherited)
+            .then(|| {
+                format!(
+                    "Staging {} · {}",
+                    self.state.as_str().replace('_', " "),
+                    self.note.as_deref().unwrap_or(&self.revision)
+                )
+            })
+    }
+}
+
 /// What a staging request's move also records; `None` keeps the stored value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StagingChange {
@@ -963,6 +1355,8 @@ pub trait StagingStore: Send + Sync {
     async fn insert_staging_request(&self, request: &StagingRequestRecord) -> AppResult<bool>;
     /// One request.
     async fn staging_request(&self, id: &str) -> AppResult<Option<StagingRequestRecord>>;
+    /// Latest request for display, regardless of whether a session heard the outcome.
+    async fn latest_task_staging(&self, task: &TaskId) -> AppResult<Option<StagingRequestRecord>>;
     /// Latest staging request whose result still needs to reach this task.
     async fn task_staging_wait(
         &self,
@@ -1094,6 +1488,112 @@ pub trait DigestStore: Send + Sync {
     async fn latest_digest(&self, user: &UserId) -> AppResult<Option<StoredDigest>>;
 }
 
+/// A stored notice for people (SPEC-624, migration 0091).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoticeRecord {
+    /// Its id (`nt_<hex>`); a replacement has a new one.
+    pub id: String,
+    /// Its project; `None`: instance-wide.
+    pub sandbox: Option<SandboxId>,
+    /// Its one recipient; `None`: everyone the project (or `admin_only`) lets see it.
+    pub user: Option<UserId>,
+    /// Only instance administrators see it.
+    pub admin_only: bool,
+    /// Its key: newest wins per project, recipient and key (NTC-003).
+    pub key: yulius_domain::notice::NoticeKey,
+    /// Which of a person's channel choices it falls under.
+    pub category: yulius_domain::notify::NoticeKind,
+    /// How it reads.
+    pub tone: yulius_domain::notice::NoticeTone,
+    /// One line.
+    pub title: String,
+    /// More, if any.
+    pub detail: Option<String>,
+    /// A path in Yulius (`/…`) it leads to, if any.
+    pub link: Option<String>,
+    /// It waits for a person's decision: never expires (NTC-005).
+    pub decision: bool,
+    /// When it was posted.
+    pub created_at: Timestamp,
+    /// When it expires; `None`: never.
+    pub expires_at: Option<Timestamp>,
+}
+
+/// What storing a notice displaced (SPEC-624): the notice it replaced, and the ones the cap
+/// dropped, oldest of those that wait for no decision first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PutNotice {
+    /// The notice with the same project, recipient and key, if any.
+    pub replaced: Option<NoticeRecord>,
+    /// The notices the scope's cap dropped.
+    pub dropped: Vec<NoticeRecord>,
+}
+
+/// Where a reader's notices may come from (SPEC-624 NTC-004), applied before the read's limit:
+/// the projects they see, the instance-wide ones and the administrators' ones.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NoticeReach {
+    /// The projects whose notices they may see.
+    pub sandboxes: Vec<SandboxId>,
+    /// Whether instance-wide notices reach them (a playground guest's do not).
+    pub instance_wide: bool,
+    /// Whether `admin_only` notices reach them.
+    pub admin: bool,
+}
+
+/// Notices for people (SPEC-624): newest per project, recipient and key, hidden once expired,
+/// dismissed per person, pruned; and the bot's last message per key in each chat.
+#[async_trait]
+pub trait NoticeStore: Send + Sync {
+    /// Stores `notice`, replacing (and clearing the dismissals of) the one with its project,
+    /// recipient and key in the same transaction. Its project and recipient keep `keep`
+    /// notices: decisions first, then the newest.
+    async fn put_notice(&self, notice: &NoticeRecord, keep: usize) -> AppResult<PutNotice>;
+    /// Removes the notice with this project, recipient and key; the one removed.
+    async fn remove_notice(
+        &self,
+        sandbox: Option<&SandboxId>,
+        user: Option<&UserId>,
+        key: &yulius_domain::notice::NoticeKey,
+    ) -> AppResult<Option<NoticeRecord>>;
+    /// One notice, expired or not.
+    async fn notice(&self, id: &str) -> AppResult<Option<NoticeRecord>>;
+    /// The notices addressed to `user` or to nobody in particular, within `reach`, live at `now`
+    /// and not dismissed by `user`, newest first, at most `limit`.
+    async fn live_notices(
+        &self,
+        user: &UserId,
+        reach: &NoticeReach,
+        now: Timestamp,
+        limit: usize,
+    ) -> AppResult<Vec<NoticeRecord>>;
+    /// The projects that hold live notices addressed to `user` or to nobody in particular: the
+    /// only ones whose visibility a read must decide.
+    async fn notice_sandboxes(&self, user: &UserId, now: Timestamp) -> AppResult<Vec<SandboxId>>;
+    /// Live notices of one project (or instance-wide ones) whose key starts with `prefix`, for
+    /// every recipient: what a producer reconciles.
+    async fn notices_by_prefix(
+        &self,
+        sandbox: Option<&SandboxId>,
+        prefix: &str,
+        now: Timestamp,
+    ) -> AppResult<Vec<NoticeRecord>>;
+    /// Records that `user` dismissed notice `id`; `false` when there is no such notice.
+    async fn dismiss_notice(&self, id: &str, user: &UserId, at: Timestamp) -> AppResult<bool>;
+    /// Deletes the notices expired at `now`, and the bot's remembered messages too old to be
+    /// deleted any more; how many notices went.
+    async fn prune_notices(&self, now: Timestamp) -> AppResult<u64>;
+    /// Remembers `message` as the bot's message for `scope` in `chat`; the earlier one, which
+    /// the new one replaces (NTC-007).
+    async fn swap_keyed_message(
+        &self,
+        chat: &str,
+        scope: &str,
+        message: &str,
+        at: Timestamp,
+    ) -> AppResult<Option<String>>;
+}
+
 /// One timestamped Needs You system or agent message recorded in a task's history (SPEC-578).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaitMessageRecord {
@@ -1133,6 +1633,14 @@ pub trait NeedsYouStore: Send + Sync {
         task: &TaskId,
         request: Option<&crate::needs_you::NeedsYouRecord>,
         at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Records a system request only for this live attempt and only while the
+    /// task has no open request. Returns whether the request was inserted.
+    async fn ask_for_live_attempt(
+        &self,
+        task: &TaskId,
+        attempt: &yulius_domain::ids::AttemptId,
+        request: &crate::needs_you::NeedsYouRecord,
     ) -> AppResult<bool>;
     /// Ends the request at `at` only while it still asks `action`, in one step: a request made
     /// meanwhile stays. `true` when it ended one.
@@ -1284,7 +1792,10 @@ pub trait ExtensionStores:
     + CdStore
     + NeedsYouStore
     + DigestStore
+    + NoticeStore
     + HandoffStore
+    + CommandStore
+    + WatchStore
     + StagingStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
@@ -1312,7 +1823,10 @@ impl<T> ExtensionStores for T where
         + CdStore
         + NeedsYouStore
         + DigestStore
+        + NoticeStore
         + HandoffStore
+        + CommandStore
+        + WatchStore
         + StagingStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore

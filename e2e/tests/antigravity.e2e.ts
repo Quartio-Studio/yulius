@@ -270,7 +270,7 @@ test('a task started on Random draws across available harnesses, and says so', a
     // [claude, codex, antigravity]: roll 1 picks codex, roll 2 picks antigravity.
     m.harnessRolls.push(1, 2);
   });
-  await firstShown(screen.getByRole('button', 'Model: Codex default'));
+  await firstShown(screen.getByRole('button', 'Model: Opus 5.5'));
   await screen.getByRole('button', /^Model:/).click();
   await screen.getByRole('menuitemradio', /^Random/).click();
   await screen.getByRole('button', /^Model:/).click();

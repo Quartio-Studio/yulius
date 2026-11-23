@@ -177,15 +177,18 @@ impl<'a> SessionInput<'a> {
 
 struct ActiveRun {
     attempt_id: AttemptId,
-    codex_submit_hold: Option<CodexSubmitHold>,
+    codex_input: Option<CodexInput>,
     writer: Box<dyn RunWriter>,
 }
 
 /// A Codex paste can remain in the composer if no Enter followed it. The run
 /// directory records the pending paste before it goes to the PTY.
-struct CodexSubmitHold {
+struct CodexInput {
     marker: PathBuf,
     state: CodexPaste,
+    /// Size to recover if the server disappears during the temporary resize. Once
+    /// a run has used a probe, deliberate viewer resizes supersede its saved size.
+    repaint_size: Option<(u16, u16)>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -195,7 +198,7 @@ enum CodexPaste {
     Recovering,
 }
 
-impl CodexSubmitHold {
+impl CodexInput {
     fn load(run_dir: &str) -> Self {
         let marker = Path::new(run_dir).join("codex-submit-held");
         let state = if marker.try_exists().unwrap_or(true) {
@@ -203,7 +206,61 @@ impl CodexSubmitHold {
         } else {
             CodexPaste::Idle
         };
-        Self { marker, state }
+        let repaint_size = Self::read_repaint_size(&marker.with_file_name("codex-repaint-size"));
+        Self {
+            marker,
+            state,
+            repaint_size,
+        }
+    }
+
+    fn read_repaint_size(path: &Path) -> Option<(u16, u16)> {
+        use std::io::Read as _;
+        let mut file = std::fs::File::open(path).ok()?;
+        let mut bytes = [0; 4];
+        if file.metadata().ok()?.len() != 4 {
+            return None;
+        }
+        file.read_exact(&mut bytes).ok()?;
+        let [c1, c2, r1, r2] = bytes;
+        let size = (u16::from_be_bytes([c1, c2]), u16::from_be_bytes([r1, r2]));
+        let dimensions =
+            yulius_contracts::ptyhost::MIN_DIMENSION..=yulius_contracts::ptyhost::MAX_DIMENSION;
+        (dimensions.contains(&size.0) && dimensions.contains(&size.1)).then_some(size)
+    }
+
+    fn remember_size(&mut self, size: (u16, u16)) -> AppResult<()> {
+        if self.repaint_size == Some(size) {
+            return Ok(());
+        }
+        let path = self.marker.with_file_name("codex-repaint-size");
+        let temporary = path.with_extension("tmp");
+        let [c1, c2] = size.0.to_be_bytes();
+        let [r1, r2] = size.1.to_be_bytes();
+        write_private_file(&temporary, &[c1, c2, r1, r2])
+            .and_then(|()| std::fs::rename(temporary, path))
+            .map_err(|err| {
+                tracing::warn!(error = %err, "could not preserve Codex terminal geometry");
+                AppError::Conflict(CODEX_UNREADABLE.into())
+            })?;
+        self.repaint_size = Some(size);
+        Ok(())
+    }
+
+    /// A viewer's resize is authoritative (SPEC-623 FIN-002): it keeps a probed run's saved
+    /// size current, and a record it cannot save is dropped rather than refusing the resize,
+    /// so a reattachment keeps the host's (the viewer's) size instead of a stale one.
+    fn follow_viewer(&mut self, size: (u16, u16)) {
+        if self.repaint_size.is_none() || self.remember_size(size).is_ok() {
+            return;
+        }
+        self.repaint_size = None;
+        let path = self.marker.with_file_name("codex-repaint-size");
+        if let Err(err) = std::fs::remove_file(&path)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(error = %err, "could not drop the stale Codex terminal geometry");
+        }
     }
 
     fn record(&mut self) -> AppResult<()> {
@@ -286,6 +343,9 @@ pub struct TaskRuntime {
     pub last_input_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
     pub proactive_switch: AtomicBool,
+    /// The subscription past its rebalance threshold this idle task stays on because no other
+    /// has room, and when that episode was told (SPEC-629 RBL-007): told once per episode.
+    pub(crate) rebalance_no_room: Mutex<Option<(AccountId, Timestamp)>>,
     /// A review round's reviewer a usage limit cut off, not yet resumed: a relaunch tells the
     /// session to resume it (SPEC-493 RLM-002).
     pub(crate) cut_off_reviewer: tokio::sync::Mutex<Option<crate::review::CutOffReviewer>>,
@@ -316,6 +376,7 @@ pub struct TaskRuntime {
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
+    pub(crate) candidate_observation: Mutex<crate::pr_watch::CandidateObservation>,
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
@@ -421,7 +482,7 @@ pub struct TaskRuntime {
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
     pub(crate) armed: Mutex<crate::agent_wait::ArmedSlot>,
     /// Orders durable singleton decisions with an operator or agent changing its arm.
-    pub(crate) arm_writer: tokio::sync::Mutex<()>,
+    pub(crate) arm_writer: Arc<tokio::sync::RwLock<()>>,
     /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
     /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
     pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
@@ -616,21 +677,28 @@ impl Drop for Finalizing<'_> {
 /// (the agent keeps working on its current subscription meanwhile).
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
+/// A write that found the run's writer taken by another one: nothing was written.
+pub(crate) const SESSION_WRITER_BUSY: &str = "the session writer is busy";
+/// Said on every path that found the screen unreadable; only Yulius's messages repaint first.
+pub(crate) const CODEX_UNREADABLE: &str = "Codex's terminal could not confirm a safe input screen";
+pub(crate) const CODEX_PICKER: &str = "Codex's rate-limit model picker is open. Choose Keep current model or dismiss the picker in the terminal.";
+
 impl TaskRuntime {
     /// The paste needs immediate writer access. Its Enter can wait, but both belong to the
     /// attempt that the watcher observed. A switch attaches a new writer to this runtime.
-    pub(crate) async fn write_notice(
+    pub(crate) async fn write_observed(
         &self,
         attempt: &AttemptId,
         now: Timestamp,
         input: SessionInput<'_>,
+        immediate_paste: bool,
     ) -> AppResult<()> {
         let mut run = match input {
-            SessionInput::Paste(_) | SessionInput::ContinuePaste(_) => self
+            SessionInput::Paste(_) | SessionInput::ContinuePaste(_) if immediate_paste => self
                 .run
                 .try_lock()
-                .map_err(|_| AppError::Conflict("the session writer is busy".into()))?,
-            SessionInput::Submit | SessionInput::Viewer(_) => self.run.lock().await,
+                .map_err(|_| AppError::Conflict(SESSION_WRITER_BUSY.into()))?,
+            _ => self.run.lock().await,
         };
         let run = run
             .as_mut()
@@ -651,7 +719,7 @@ impl TaskRuntime {
         if let SessionInput::Viewer(bytes) = input {
             return run.writer.input(bytes).await;
         }
-        if let Some(hold) = &mut run.codex_submit_hold {
+        if let Some(hold) = &mut run.codex_input {
             if let Err(err) = self.check_codex_input_screen(&run.attempt_id) {
                 if matches!(input, SessionInput::Submit) && hold.state == CodexPaste::InFlight {
                     hold.state = CodexPaste::Recovering;
@@ -682,7 +750,7 @@ impl TaskRuntime {
         }
         self.last_input_ms.store(now.0, Ordering::SeqCst);
         let written = run.writer.input(input.bytes()).await;
-        if let Some(hold) = &mut run.codex_submit_hold
+        if let Some(hold) = &mut run.codex_input
             && hold.state == CodexPaste::InFlight
         {
             if written.is_err() {
@@ -695,29 +763,114 @@ impl TaskRuntime {
         written
     }
 
-    fn check_codex_input_screen(&self, attempt: &AttemptId) -> AppResult<()> {
-        if self.screen_withheld()
-            || !self
-                .screen_of
-                .lock()
-                .is_ok_and(|shown| shown.as_ref() == Some(attempt))
-        {
+    /// Runs `write` on the hub only while it shows the screen of `run`, under the lock an
+    /// attach takes to switch the screen to its run: output, snapshots and reattachments of a
+    /// replaced run never reach its replacement's screen (SPEC-614, #1624).
+    pub(crate) fn on_screen_of(&self, run: &AttemptId, write: impl FnOnce(&Hub)) {
+        let shown = self
+            .screen_of
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if shown.as_ref() == Some(run) {
+            write(&self.hub);
+        }
+    }
+
+    /// Makes the hub show `run`'s screen (SPEC-301 LRS-001): `restore` resets it under the lock
+    /// [`Self::on_screen_of`] checks, so nothing of the previous run is drawn after it.
+    fn show_screen_of(&self, run: &AttemptId, restore: impl FnOnce(&Hub)) {
+        let mut shown = self
+            .screen_of
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        restore(&self.hub);
+        *shown = Some(run.clone());
+    }
+
+    pub(crate) fn screen_attempt(&self) -> Option<AttemptId> {
+        self.screen_of.lock().ok()?.clone()
+    }
+
+    /// Only the live, redacted screen of the observed attempt can admit input.
+    pub(crate) fn codex_input_screen(&self, attempt: &AttemptId) -> AppResult<Option<bool>> {
+        if self.screen_withheld() || self.screen_attempt().as_ref() != Some(attempt) {
             return Err(AppError::Conflict(
                 "the live Codex screen is unavailable".into(),
             ));
         }
-        match self.hub.codex_rate_limit_picker_shown() {
+        Ok(self.hub.codex_rate_limit_picker_shown())
+    }
+
+    pub(crate) fn codex_ready_for_retry(&self, attempt: &AttemptId) -> bool {
+        matches!(self.codex_input_screen(attempt), Ok(Some(false)))
+            && self.run.try_lock().is_ok_and(|slot| {
+                slot.as_ref().is_some_and(|run| {
+                    run.attempt_id == *attempt
+                        && run.codex_input.as_ref().is_some_and(|hold| {
+                            hold.state == CodexPaste::Idle
+                                || self.hub.prompt_box_shown_empty(Harness::Codex)
+                        })
+                })
+            })
+    }
+
+    fn check_codex_input_screen(&self, attempt: &AttemptId) -> AppResult<()> {
+        match self.codex_input_screen(attempt)? {
             Some(false) => Ok(()),
-            Some(true) => Err(AppError::Conflict(
-                "Codex's rate-limit model picker is open. Choose Keep current model \
-                 or dismiss the picker in the terminal."
-                    .into(),
-            )),
-            None => Err(AppError::Conflict(
-                "the Codex terminal is waiting for a visible input cursor before it can take this message"
-                    .into(),
-            )),
+            Some(true) => Err(AppError::Conflict(CODEX_PICKER.into())),
+            None => Err(AppError::Conflict(CODEX_UNREADABLE.into())),
         }
+    }
+
+    /// A cancelled send may stop waiting, but the resize pair still restores the
+    /// viewer's geometry. The worker owns only the repaint, never the message.
+    pub(crate) async fn repaint_codex_input(
+        self: &Arc<Self>,
+        attempt: &AttemptId,
+    ) -> AppResult<()> {
+        if self.codex_input_screen(attempt)?.is_some() {
+            return Ok(());
+        }
+        let rt = Arc::clone(self);
+        let attempt = attempt.clone();
+        tokio::spawn(async move {
+            let mut slot = rt
+                .run
+                .try_lock()
+                .map_err(|_| AppError::Conflict(SESSION_WRITER_BUSY.into()))?;
+            let run = slot
+                .as_mut()
+                .filter(|run| run.attempt_id == attempt)
+                .ok_or_else(|| {
+                    AppError::Conflict("the observed session is no longer attached".into())
+                })?;
+            if rt.codex_input_screen(&attempt)?.is_some() {
+                return Ok(());
+            }
+            let (cols, rows) = rt.hub.size();
+            let input = run
+                .codex_input
+                .as_mut()
+                .ok_or_else(|| AppError::Conflict("the observed session is not Codex".into()))?;
+            input.remember_size((cols, rows))?;
+            let other = if cols < 1000 { cols + 1 } else { cols - 1 };
+            for width in [other, cols] {
+                let watch = rt.hub.watch();
+                let since = rt.hub.output_seq();
+                rt.hub.resize(width, rows);
+                if let Err(err) = run.writer.resize(width, rows).await {
+                    rt.hub.resize(cols, rows);
+                    tracing::warn!(%attempt, error = %err, "Codex repaint resize failed");
+                    return Err(AppError::Conflict(CODEX_UNREADABLE.into()));
+                }
+                rt.hub
+                    .settle(watch, since, Duration::from_millis(750))
+                    .await;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(AppError::internal)?
     }
 
     /// Consumes the reader's request only for the attempt whose end was recorded.
@@ -741,6 +894,12 @@ impl TaskRuntime {
         self.parked_activity
             .lock()
             .map_or(true, |kept| kept.is_some())
+    }
+
+    pub(crate) fn closing_or_settling(&self) -> bool {
+        self.intent.lock().map_or(true, |intent| {
+            matches!(*intent, Some(EndIntent::Close)) || *self.terminal_cleanup.borrow() > 0
+        })
     }
 
     /// Whether the screen `hub` shows is not what the program drew: its output is withheld
@@ -889,6 +1048,7 @@ impl TaskRuntime {
             watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
+            rebalance_no_room: Mutex::new(None),
             cut_off_reviewer: tokio::sync::Mutex::new(None),
             reviewer_move: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
@@ -901,6 +1061,7 @@ impl TaskRuntime {
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
+            candidate_observation: Mutex::default(),
             typed_at_ms: AtomicI64::new(0),
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
@@ -929,7 +1090,7 @@ impl TaskRuntime {
             typing_message: AtomicBool::new(false),
             spawned_ms: AtomicI64::new(0),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
-            arm_writer: tokio::sync::Mutex::new(()),
+            arm_writer: Arc::default(),
             push_problem: Mutex::new(None),
             repair_checked_head: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
@@ -1129,7 +1290,7 @@ impl RunStart {
 
     /// This start for `account`, as the queue keeps it for a task whose start has to wait
     /// (SPEC-483 QST-001).
-    fn kept(&self, account: Option<&AccountId>) -> QueuedStart {
+    pub(crate) fn kept(&self, account: Option<&AccountId>) -> QueuedStart {
         let kind = match self {
             Self::Fresh { .. } => QueuedStartKind::Fresh,
             Self::Resume { .. } => QueuedStartKind::Resume,
@@ -1169,12 +1330,7 @@ enum StartCondition<'a> {
     OwnerContinue(&'a TaskRecord),
     Any,
     Status(TaskStatus),
-    Parked(&'a TaskRecord, Option<&'a crate::pr_watch::ParkedNotice>),
-}
-
-enum LaunchAdmission {
-    Owner(crate::capacity::ContinuationAdmission),
-    Candidate(crate::capacity::ContinuationAdmission),
+    Parked(Option<AttemptId>),
 }
 
 /// Which task state the requested switch may take over.
@@ -1182,7 +1338,10 @@ pub(crate) enum SwitchCondition<'a> {
     Any,
     Status(TaskStatus),
     Paused(&'a PauseRecord),
-    IdleCodex {
+    /// An idle session moved with nothing typed (a Codex move, SPEC-611; a rebalance move,
+    /// SPEC-629): claimed only while its activity, update time and live attempt are still the
+    /// ones read.
+    Idle {
         from: (Activity, Timestamp),
         attempt: AttemptId,
     },
@@ -1780,6 +1939,7 @@ pub(crate) fn metrics_of(snapshot: UsageSnapshot) -> MetricsRecord {
         cache_write: snapshot.tokens.cache_write,
         turns: u32::try_from(snapshot.turns).ok().filter(|t| *t > 0),
         active_ms: snapshot.active_ms.filter(|ms| *ms > 0),
+        parts: snapshot.parts,
     }
 }
 
@@ -2242,6 +2402,9 @@ impl App {
         // A chained task starts where its predecessor ended, until that is merged (TSK-012).
         let base = if let Some(branch) = self.chain_base(task).await {
             branch
+        } else if let Some(commit) = self.fork_base(task).await? {
+            // A fork starts at the source's commit it recorded (SPEC-628 FRK-005).
+            commit
         } else if self
             .deps
             .git
@@ -2397,16 +2560,7 @@ impl App {
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             let resume = matches!(start, RunStart::Resume { .. } | RunStart::GoalResume { .. });
-            let notice = match condition {
-                StartCondition::Parked(_, notice) => notice,
-                _ => None,
-            };
-            let decision = notice.and_then(|notice| {
-                notice
-                    .decision(self.config.ci.enabled)
-                    .map(|claim| (notice, claim))
-            });
-            let settled = if matches!(condition, StartCondition::Parked(..)) {
+            let settled = if matches!(condition, StartCondition::Parked(_)) {
                 self.wait_for_terminal_cleanup(task_id, true).await?;
                 crate::race::reached(
                     crate::race::Point::ParkedResumePrepared,
@@ -2438,33 +2592,7 @@ impl App {
                 crate::race::Point::StartPreflightFinished,
                 Path::new(task_id.as_str()),
             );
-            let guard = if let StartCondition::Parked(selected, Some(notice)) = condition
-                && decision.is_some()
-            {
-                // Finish preparing the old run before the final hosted read. Both lock
-                // acquisitions are immediate: a busy launcher leaves the verdict unheard.
-                {
-                    let Ok(_guard) = self.supervisor.launch.try_lock() else {
-                        return Ok(false);
-                    };
-                    let Some(current) = self.deps.store.task(task_id).await? else {
-                        return Ok(false);
-                    };
-                    if !current.matches_continuation(selected) {
-                        return Ok(false);
-                    }
-                    self.prepare_start_claim(task_id).await?;
-                }
-                if !self.parked_notice_inputs(selected, notice).await {
-                    return Ok(false);
-                }
-                let Ok(guard) = self.supervisor.launch.try_lock() else {
-                    return Ok(false);
-                };
-                guard
-            } else {
-                self.supervisor.launch.lock().await
-            };
+            let guard = self.supervisor.launch.lock().await;
             let task = self
                 .deps
                 .store
@@ -2500,9 +2628,9 @@ impl App {
                     }
                 }
                 StartCondition::Status(status) if *status != task.status => return Ok(false),
-                StartCondition::Parked(selected, _) => {
+                StartCondition::Parked(expected) => {
                     if task.status != TaskStatus::Parked
-                        || task.resume_attempt_id != selected.resume_attempt_id
+                        || task.resume_attempt_id.as_ref() != expected.as_ref()
                     {
                         return Ok(false);
                     }
@@ -2541,18 +2669,13 @@ impl App {
             // A pending supertask of the project, or the running work a supertask waits for,
             // keeps a new run queued (SPEC-071); a live run is never held.
             let held = !task.status.is_live() && self.held_by_supertask(&task).await?;
-            let live = self.sessions_in_use().await?;
+            let (working, mut cleared) = self.working_capacity().await?;
+            let live = u32::try_from(working.len()).unwrap_or(u32::MAX);
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
             let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
-            if full && decision.is_some() {
-                return Ok(false);
-            }
-            if decision.is_none()
-                && let Some(notice) = notice
-                && !self.parked_notice_current(&task, notice).await
-            {
-                return Ok(false);
+            if full {
+                cleared.clear();
             }
             if full && task.status != TaskStatus::Switching {
                 let queued = self
@@ -2609,7 +2732,14 @@ impl App {
                 },
                 _ => (start, account),
             };
+            // This start reserves the free slot under the launch lock. Completed owners
+            // can accept a replacement merge once the reservation has been made.
+            crate::race::reached(
+                crate::race::Point::CandidateCapacityCleared,
+                Path::new(task.id.as_str()),
+            );
             let launching = Launching::start(&self.supervisor.launching, &task.id);
+            drop(cleared);
             let admission = if owner_continue {
                 self.prepare_start_claim(&task.id).await?;
                 let Some(admitted) = self
@@ -2619,33 +2749,7 @@ impl App {
                     return Ok(false);
                 };
                 self.publish_task(&task.id).await;
-                Some(LaunchAdmission::Owner(admitted))
-            } else if let Some((notice, claim)) = decision {
-                let Some(placed) = self.choose_account(&task, None).await? else {
-                    return Ok(false);
-                };
-                let runtime = self.runtime(&task.id);
-                let Ok(writer) = runtime.arm_writer.try_lock() else {
-                    return Ok(false);
-                };
-                if !self.parked_notice_current(&task, notice).await {
-                    return Ok(false);
-                }
-                crate::race::reached(
-                    crate::race::Point::ParkedCandidateClaimReady,
-                    Path::new(task.id.as_str()),
-                );
-                let Some(admitted) = self
-                    .deps
-                    .store
-                    .claim_parked_candidate(&task, claim, &placed.account.id, self.now())
-                    .await?
-                else {
-                    return Ok(false);
-                };
-                drop(writer);
-                self.publish_task(&task.id).await;
-                Some(LaunchAdmission::Candidate(admitted))
+                Some(admitted)
             } else {
                 None
             };
@@ -2764,14 +2868,9 @@ impl App {
         requested: Option<AccountId>,
         rest: Option<IdleRest>,
         pause_outcome: &'static str,
-        admission: Option<LaunchAdmission>,
+        admission: Option<crate::capacity::ContinuationAdmission>,
     ) -> AppResult<bool> {
         let store = &self.deps.store;
-        let candidate_wake = matches!(admission, Some(LaunchAdmission::Candidate(_)));
-        let admission = admission.map(|accepted| match accepted {
-            LaunchAdmission::Owner(placement) | LaunchAdmission::Candidate(placement) => placement,
-        });
-        let parked_activity = task.activity;
         let relaunch = start.clone();
         let sandbox = store
             .sandbox(&task.sandbox_id)
@@ -2819,6 +2918,8 @@ impl App {
         let mut task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
+        // A fork's first launch continues a copy of its source's session (SPEC-628 FRK-006).
+        let fork = self.fork_to_launch(&task, &worktree).await?;
         let harness = task.harness;
         let placement = if let Some(crate::capacity::ContinuationAdmission::Named {
             account,
@@ -2975,77 +3076,92 @@ impl App {
             }
         };
         let told = !unfinished.is_empty() || reviewer.is_some();
-        let (mode, launch_kind) = match (&start, &previous) {
-            (RunStart::Resume { .. } | RunStart::GoalResume { .. }, Some(prev)) => (
+        let (mode, launch_kind) = match (&start, &previous, &fork) {
+            // Its opening message is the first turn; a goal is set after it, as on a resume, and
+            // the transcript is read from the run's start, past the source's copied history.
+            (_, None, Some(fork)) => (
                 SessionMode::Resume {
-                    session_id: prev.session_id.clone(),
-                    prompt: resumes(start.prompt()),
+                    session_id: fork.source_session_id.clone(),
+                    prompt: Some(crate::forks::fork_opening(&task, fork)),
                     continue_interrupted: false,
+                    fork: Some(self.fork_session(harness)),
                 },
                 LaunchKind::Resume,
             ),
-            (RunStart::AfterLimit, Some(prev)) => (
-                SessionMode::Resume {
-                    session_id: prev.session_id.clone(),
-                    prompt: told.then(|| resumes(None)).flatten(),
-                    continue_interrupted: !told,
-                },
-                LaunchKind::Resume,
-            ),
-            // Without a recorded session there is nothing to resume: the task starts afresh.
-            (
-                RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
-                None,
-            )
-            | (RunStart::Fresh { .. } | RunStart::GoalFresh { .. }, _) => {
-                let prompt = start.prompt().map(str::to_owned);
-                // In goal mode the task starts with its `/goal` as the launch prompt: the whole
-                // request, each attached file at its place, and the definition of done in one
-                // first message, with nothing typed (SPEC-011, SPEC-117, SPEC-212). Otherwise the
-                // request is the first message: images are pasted into it and other files
-                // mentioned, so Claude Code attaches them natively (SPEC-025, SPEC-030).
-                use yulius_domain::request::{Opening, Request};
-                let prompt = match prompt {
-                    Some(prompt) => Some(prompt),
-                    None if first_message_only && task.mode == TaskMode::Goal => {
-                        match self.write_task_request(&sandbox, &task, &home).await {
-                            Ok(goal) => Some(goal.launch),
-                            Err(err) => {
-                                tracing::error!(task = %task.id, error = %err, "could not write the task request");
-                                Some(Request::parse(&task.prompt).first_message())
+            (start, previous, _) => match (start, previous) {
+                (RunStart::Resume { .. } | RunStart::GoalResume { .. }, Some(prev)) => (
+                    SessionMode::Resume {
+                        session_id: prev.session_id.clone(),
+                        prompt: resumes(start.prompt()),
+                        continue_interrupted: false,
+                        fork: None,
+                    },
+                    LaunchKind::Resume,
+                ),
+                (RunStart::AfterLimit, Some(prev)) => (
+                    SessionMode::Resume {
+                        session_id: prev.session_id.clone(),
+                        prompt: told.then(|| resumes(None)).flatten(),
+                        continue_interrupted: !told,
+                        fork: None,
+                    },
+                    LaunchKind::Resume,
+                ),
+                // Without a recorded session there is nothing to resume: the task starts afresh.
+                (
+                    RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
+                    None,
+                )
+                | (RunStart::Fresh { .. } | RunStart::GoalFresh { .. }, _) => {
+                    let prompt = start.prompt().map(str::to_owned);
+                    // In goal mode the task starts with its `/goal` as the launch prompt: the whole
+                    // request, each attached file at its place, and the definition of done in one
+                    // first message, with nothing typed (SPEC-011, SPEC-117, SPEC-212). Otherwise the
+                    // request is the first message: images are pasted into it and other files
+                    // mentioned, so Claude Code attaches them natively (SPEC-025, SPEC-030).
+                    use yulius_domain::request::{Opening, Request};
+                    let prompt = match prompt {
+                        Some(prompt) => Some(prompt),
+                        None if first_message_only && task.mode == TaskMode::Goal => {
+                            match self.write_task_request(&sandbox, &task, &home).await {
+                                Ok(goal) => Some(goal.launch),
+                                Err(err) => {
+                                    tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                                    Some(Request::parse(&task.prompt).first_message())
+                                }
                             }
                         }
-                    }
-                    // Codex attaches no pasted image: each file is mentioned where it sits.
-                    None if first_message_only => {
-                        Some(Request::parse(&task.prompt).first_message())
-                    }
-                    None if goal_mode => {
-                        match self.write_task_request(&sandbox, &task, &home).await {
-                            Ok(goal) => Some(format!("{GOAL_COMMAND}{}", goal.launch)),
-                            Err(err) => {
-                                tracing::error!(task = %task.id, error = %err, "could not write the task request");
-                                request_unwritten = true;
+                        // Codex attaches no pasted image: each file is mentioned where it sits.
+                        None if first_message_only => {
+                            Some(Request::parse(&task.prompt).first_message())
+                        }
+                        None if goal_mode => {
+                            match self.write_task_request(&sandbox, &task, &home).await {
+                                Ok(goal) => Some(format!("{GOAL_COMMAND}{}", goal.launch)),
+                                Err(err) => {
+                                    tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                                    request_unwritten = true;
+                                    None
+                                }
+                            }
+                        }
+                        None => match Request::parse(&task.prompt).opening() {
+                            Opening::Prompt(prompt) => Some(prompt),
+                            Opening::Typed { pastes } => {
+                                typed_opening = Some(pastes);
                                 None
                             }
-                        }
-                    }
-                    None => match Request::parse(&task.prompt).opening() {
-                        Opening::Prompt(prompt) => Some(prompt),
-                        Opening::Typed { pastes } => {
-                            typed_opening = Some(pastes);
-                            None
-                        }
-                    },
-                };
-                (
-                    SessionMode::New {
-                        session_id: Some(self.deps.crypto.new_id()),
-                        prompt,
-                    },
-                    LaunchKind::New,
-                )
-            }
+                        },
+                    };
+                    (
+                        SessionMode::New {
+                            session_id: Some(self.deps.crypto.new_id()),
+                            prompt,
+                        },
+                        LaunchKind::New,
+                    )
+                }
+            },
         };
         if task.mode == TaskMode::Goal {
             *self
@@ -3095,11 +3211,14 @@ impl App {
         // also when the run opens with the prompt that resumes its workflows (SPEC-486); a Codex
         // rollout has no step-back (SPEC-503).
         let stepped_back = match (&start, &mode) {
-            (RunStart::AfterLimit, SessionMode::Resume { session_id, .. })
-                if !first_message_only =>
-            {
-                Some(session_id.clone())
-            }
+            (
+                RunStart::AfterLimit,
+                SessionMode::Resume {
+                    session_id,
+                    fork: None,
+                    ..
+                },
+            ) if !first_message_only => Some(session_id.clone()),
             _ => None,
         };
         let attempt_id =
@@ -3352,18 +3471,14 @@ impl App {
         };
         store.insert_attempt(&attempt).await?;
         crate::race::reached(crate::race::Point::RunRecorded, Path::new(task.id.as_str()));
+        // A pin ends once the task runs on another subscription, however it was placed there
+        // (SPEC-629 RBL-005); a person's move pins the new one after this.
+        if matches!(store.task_pin(&task.id).await, Ok(Some(pin)) if pin != account.id) {
+            self.pin_task(&task.id, None).await;
+        }
         // Removed since it was chosen (SPEC-447 MOV-003): the removal looked for runs on it before
         // this one was recorded, so this launch never starts on it and chooses again.
         if store.account(&account.id).await?.is_none() {
-            if candidate_wake {
-                if store
-                    .settle_unspawned_candidate(&task.id, &attempt_id, parked_activity, self.now())
-                    .await?
-                {
-                    self.publish_task(&task.id).await;
-                }
-                return Ok(false);
-            }
             let update = AttemptUpdate {
                 ended_at: Some(self.now()),
                 exit_reason: Some("account_removed".into()),
@@ -4636,9 +4751,11 @@ impl App {
         // can type into it (F 2026-10-13: input right after the banner was refused as "not
         // running" on a fast machine).
         let codex = attempt.harness == Harness::Codex;
+        let codex_input = codex.then(|| CodexInput::load(&attempt.run_dir));
+        let repaint_size = codex_input.as_ref().and_then(|input| input.repaint_size);
         *runtime.run.lock().await = Some(ActiveRun {
             attempt_id: attempt.id.clone(),
-            codex_submit_hold: codex.then(|| CodexSubmitHold::load(&attempt.run_dir)),
+            codex_input,
             writer: attached.writer,
         });
         runtime.retain_park_for_attached_run(&attempt.id);
@@ -4667,21 +4784,22 @@ impl App {
         let (cols, rows) = runtime
             .hub
             .controller_size()
+            .or(repaint_size)
             .unwrap_or((welcome.cols, welcome.rows));
-        runtime.hub.restore(
-            welcome.seq,
-            &screen,
-            cols,
-            rows,
-            crate::hub::ScreenUpdate::Host {
-                rendered: welcome.rendered_at((cols, rows)),
-            },
-        );
         // The hub shows this run from now on (SPEC-301 LRS-001).
-        if let Ok(mut shown) = runtime.screen_of.lock() {
-            *shown = Some(attempt.id.clone());
-        }
-        if (cols, rows) != (welcome.cols, welcome.rows)
+        runtime.show_screen_of(&attempt.id, |hub| {
+            hub.restore(
+                welcome.seq,
+                &screen,
+                cols,
+                rows,
+                crate::hub::ScreenUpdate::Host {
+                    rendered: welcome.rendered_at((cols, rows)),
+                },
+            );
+        });
+        if ((cols, rows) != (welcome.cols, welcome.rows)
+            || repaint_size.is_some_and(|size| size != (cols, rows)))
             && let Err(err) = self.resize_run(task_id, cols, rows).await
         {
             tracing::debug!(task = %task_id, error = %err, "viewer size after attach failed");
@@ -4696,13 +4814,14 @@ impl App {
             loop {
                 match reader.next().await {
                     Ok(Some(RunEvent::Output { seq, bytes })) => {
-                        app.terminal_output(&scrub, &tid, &sandbox, seq, &bytes)
+                        app.terminal_output(&scrub, (&tid, &aid), &sandbox, seq, &bytes)
                             .await;
                     }
                     Ok(Some(RunEvent::Snapshot { seq, bytes })) => {
                         let (cols, rows) = app.runtime(&tid).hub.size();
                         let screen = app.terminal_snapshot(&scrub, &sandbox, &bytes).await;
-                        app.runtime(&tid).hub.reset(seq, &screen, cols, rows);
+                        app.runtime(&tid)
+                            .on_screen_of(&aid, |hub| hub.reset(seq, &screen, cols, rows));
                     }
                     Ok(Some(RunEvent::Exit(exit))) => {
                         crate::race::reached(
@@ -4728,7 +4847,7 @@ impl App {
                                 .attempt(&aid)
                                 .await
                                 .map(|a| a.map(|a| a.run_dir))
-                                && let Ok(again) = app
+                                && let Ok(mut again) = app
                                     .deps
                                     .session_host
                                     .attach(Path::new(&run_dir), &token)
@@ -4744,25 +4863,38 @@ impl App {
                                         .await;
                                     let rt = app.runtime(&tid);
                                     let mut run = rt.run.lock().await;
-                                    let codex_submit_hold = run
+                                    // The host may have disconnected at the temporary
+                                    // repaint width. The writer lock covers the whole probe,
+                                    // so the hub now holds its restored (or latest viewer) size.
+                                    let host_size = (again.welcome.cols, again.welcome.rows);
+                                    let size = if codex { rt.hub.size() } else { host_size };
+                                    if size != host_size
+                                        && let Err(err) = again.writer.resize(size.0, size.1).await
+                                    {
+                                        tracing::warn!(attempt = %aid, error = %err, "could not restore PTY size on reconnect");
+                                        continue;
+                                    }
+                                    let codex_input = run
                                         .as_mut()
                                         .filter(|run| run.attempt_id == aid)
-                                        .and_then(|run| run.codex_submit_hold.take())
-                                        .or_else(|| codex.then(|| CodexSubmitHold::load(&run_dir)));
+                                        .and_then(|run| run.codex_input.take())
+                                        .or_else(|| codex.then(|| CodexInput::load(&run_dir)));
                                     *run = Some(ActiveRun {
                                         attempt_id: aid.clone(),
-                                        codex_submit_hold,
+                                        codex_input,
                                         writer: again.writer,
                                     });
-                                    rt.hub.restore(
-                                        again.welcome.seq,
-                                        &screen,
-                                        again.welcome.cols,
-                                        again.welcome.rows,
-                                        crate::hub::ScreenUpdate::Host {
-                                            rendered: again.welcome.rendered,
-                                        },
-                                    );
+                                    rt.on_screen_of(&aid, |hub| {
+                                        hub.restore(
+                                            again.welcome.seq,
+                                            &screen,
+                                            size.0,
+                                            size.1,
+                                            crate::hub::ScreenUpdate::Host {
+                                                rendered: again.welcome.rendered_at(size),
+                                            },
+                                        );
+                                    });
                                     reader = again.reader;
                                     continue;
                                 }
@@ -5494,18 +5626,38 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn working_attempts(&self) -> AppResult<Vec<AttemptRecord>> {
+        Ok(self.working_capacity().await?.0)
+    }
+
+    /// Collect idle owners first, then validate their deliveries together. Later rows
+    /// can take long enough for a previously idle owner's replacement arm to arrive.
+    async fn working_capacity(
+        &self,
+    ) -> AppResult<(
+        Vec<AttemptRecord>,
+        Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
+    )> {
         let store = &self.deps.store;
-        let mut working = Vec::new();
+        let mut rows = Vec::new();
         for attempt in store.live_attempts().await? {
-            let done = match store.task(&attempt.task_id).await? {
-                Some(task) => self.task_is_done_locally(&task).await,
-                None => false,
+            let completion = match store.task(&attempt.task_id).await? {
+                Some(task) => self.local_completion(task).await,
+                None => None,
             };
-            if !done {
+            rows.push((attempt, completion));
+        }
+        let mut working = Vec::new();
+        let mut cleared = Vec::new();
+        for (attempt, completion) in rows {
+            if let Some((task, record)) = completion
+                && let Some(guard) = self.hold_live_delivery(&task, record.as_ref()).await
+            {
+                cleared.push(guard);
+            } else {
                 working.push(attempt);
             }
         }
-        Ok(working)
+        Ok((working, cleared))
     }
 
     /// Starts queued tasks while capacity allows, supertasks first, then FIFO (SPEC-071 SUP-004);
@@ -5615,6 +5767,14 @@ impl App {
     /// # Errors
     /// `Conflict` when the task is not running.
     pub async fn close_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        self.close_task_selected(task_id, None).await
+    }
+
+    pub(crate) async fn close_task_selected(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        achieved: Option<(&TaskRecord, Option<&crate::delivery::DeliveryRecord>)>,
+    ) -> AppResult<()> {
         let task = self
             .deps
             .store
@@ -5636,9 +5796,24 @@ impl App {
         );
         let closed = self.live_attempt_id(task_id).await;
         let runtime = self.runtime(task_id);
+        let delivery = match achieved {
+            Some((selected, record)) => Some(
+                self.hold_live_delivery(selected, record)
+                    .await
+                    .ok_or_else(|| {
+                        AppError::Conflict(
+                            "The task’s delivery is still being verified or has just changed; \
+                             try again shortly, or stop the task first."
+                                .into(),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
         if let Ok(mut intent) = runtime.intent.lock() {
             replace_intent(&mut intent, Some(EndIntent::Close), SwitchEnd::Closed);
         }
+        drop(delivery);
         self.arm_escalation(task_id, closed);
         self.end_person_pause(task_id).await;
         request_shutdown(&runtime, None).await;
@@ -5680,6 +5855,20 @@ impl App {
         self: &Arc<Self>,
         task_id: &TaskId,
         rule: crate::parking::ParkRule,
+    ) -> AppResult<bool> {
+        self.park_task_because(task_id, rule, None).await
+    }
+
+    /// [`Self::park_task_now`]; the parked screen's notice says `because` instead of how long
+    /// the session was idle (a rebalance off a nearly used-up subscription, SPEC-629 RBL-006).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn park_task_because(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        rule: crate::parking::ParkRule,
+        because: Option<&str>,
     ) -> AppResult<bool> {
         let Some(candidate) = self.deps.store.task(task_id).await? else {
             return Ok(false);
@@ -5738,7 +5927,7 @@ impl App {
             return Ok(false);
         };
         // A queue decision or replacement request must finish on one side of the park.
-        let Ok(arm_writer) = runtime.arm_writer.try_lock() else {
+        let Ok(arm_writer) = runtime.arm_writer.try_write() else {
             return Ok(false);
         };
         if crate::sandboxes::plan_open(&self.deps.store.steps(task_id).await?)
@@ -5765,8 +5954,13 @@ impl App {
             {
                 return Ok(false);
             }
-            crate::parking::save_parked_screen(&runtime.hub, Path::new(&run.run_dir), quiet_ms)
-                .map_err(AppError::internal)?;
+            crate::parking::save_parked_screen(
+                &runtime.hub,
+                Path::new(&run.run_dir),
+                quiet_ms,
+                because,
+            )
+            .map_err(AppError::internal)?;
             *intent = Some(EndIntent::Park);
             // Under the intent's lock: the run's end that takes the intent finds it.
             if let Ok(mut kept) = runtime.parked_activity.lock() {
@@ -5900,15 +6094,6 @@ impl App {
         task: &TaskRecord,
         prompt: Option<String>,
     ) -> AppResult<bool> {
-        self.resume_parked_with_notice(task, prompt, None).await
-    }
-
-    pub(crate) async fn resume_parked_with_notice(
-        self: &Arc<Self>,
-        task: &TaskRecord,
-        prompt: Option<String>,
-        notice: Option<&crate::pr_watch::ParkedNotice>,
-    ) -> AppResult<bool> {
         if task.status != TaskStatus::Parked {
             return Ok(false);
         }
@@ -5922,11 +6107,13 @@ impl App {
                 activity,
                 goal_unfinished,
             });
+        // A pinned task resumes on its pin while the pin can take it (SPEC-629 RBL-005).
+        let pinned = self.pinned_start(task).await;
         self.start_run_if(
             &task.id,
             RunStart::Resume { prompt },
-            None,
-            StartCondition::Parked(task, notice),
+            pinned,
+            StartCondition::Parked(task.resume_attempt_id.clone()),
             rest,
             None,
         )
@@ -5944,18 +6131,30 @@ impl App {
     /// `Conflict` when the task was not closed and is neither resting nor stopping, when its
     /// run's host could not be terminated, or when the run is still there at the bound.
     pub async fn close_task_and_wait(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        self.close_selected_and_wait(task_id, None).await
+    }
+
+    pub(crate) async fn close_selected_and_wait(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        achieved: Option<(&TaskRecord, Option<&crate::delivery::DeliveryRecord>)>,
+    ) -> AppResult<()> {
         // Subscribed before closing, so the update that says the run ended is never missed.
         let mut events = self.events.subscribe();
         let runtime = self.runtime(task_id);
         let mut finalizing = runtime.finalizing.subscribe();
         let bound = Duration::from_millis(self.config.stop_escalation_ms + CLOSE_SETTLE_MS);
         let ended = tokio::time::timeout(bound, async {
-            match self.close_task_now(task_id).await {
+            match self.close_task_selected(task_id, achieved).await {
                 Ok(()) => {}
                 // Not running any more: a task that rests or is being stopped can go once its
                 // run has ended; any other (switching, starting) was not closed.
-                Err(AppError::Conflict(_)) => {
+                Err(AppError::Conflict(why)) => {
                     let status = self.deps.store.task(task_id).await?.map(|t| t.status);
+                    // Still running: the owner's delivery could not be held; say so.
+                    if achieved.is_some() && status == Some(TaskStatus::Running) {
+                        return Err(AppError::Conflict(why));
+                    }
                     // Archive and delete both close this way: the message names neither.
                     if status.is_some_and(|s| !s.is_resting() && s != TaskStatus::Stopping) {
                         return Err(AppError::Conflict(
@@ -6324,7 +6523,7 @@ impl App {
             SwitchCondition::Any => (None, None),
             SwitchCondition::Status(status) => (Some(*status), None),
             SwitchCondition::Paused(pause) => (Some(TaskStatus::WaitingCapacity), Some(*pause)),
-            SwitchCondition::IdleCodex { .. } => (Some(TaskStatus::Running), None),
+            SwitchCondition::Idle { .. } => (Some(TaskStatus::Running), None),
         };
         if expected.is_some_and(|status| status != task.status) {
             return Err(AppError::Conflict(format!(
@@ -6333,8 +6532,8 @@ impl App {
             )));
         }
         let attempt = store.live_attempt(task_id).await?;
-        let idle_codex = match &condition {
-            SwitchCondition::IdleCodex { from, attempt } => Some((*from, attempt)),
+        let idle_claim = match &condition {
+            SwitchCondition::Idle { from, attempt } => Some((*from, attempt)),
             _ if task.harness == Harness::Codex
                 && task.status == TaskStatus::Running
                 && matches!(start, RunStart::Resume { prompt: None }) =>
@@ -6396,7 +6595,7 @@ impl App {
         // A saved start has no live run to switch out. Keep its pause until the launch lock
         // claims that exact pause, even if Stop and Continue created a new one during preflight.
         if pause.is_none() {
-            let claimed = if let Some((from, attempt)) = idle_codex {
+            let claimed = if let Some((from, attempt)) = idle_claim {
                 let runtime = self.runtime(task_id);
                 let _order = runtime.turn_order.lock().await;
                 store
@@ -7017,8 +7216,11 @@ impl App {
     pub async fn resize_run(&self, task_id: &TaskId, cols: u16, rows: u16) -> AppResult<()> {
         let (cols, rows) = (cols.clamp(10, 1000), rows.clamp(5, 1000));
         let runtime = self.runtime(task_id);
-        runtime.hub.resize(cols, rows);
         let mut run = runtime.run.lock().await;
+        if let Some(input) = run.as_mut().and_then(|run| run.codex_input.as_mut()) {
+            input.follow_viewer((cols, rows));
+        }
+        runtime.hub.resize(cols, rows);
         crate::race::reached(
             crate::race::Point::TerminalResizeOwnsWriter,
             Path::new(task_id.as_str()),
@@ -8887,6 +9089,71 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-621 FIN-003: from its Close intent until its run's end has settled, a session
+    /// refuses a new merge arm.
+    #[test]
+    fn a_close_intent_or_a_settling_run_counts_as_closing() {
+        let runtime = super::TaskRuntime::new();
+        assert!(!runtime.closing_or_settling());
+        if let Ok(mut intent) = runtime.intent.lock() {
+            *intent = Some(super::EndIntent::Close);
+        }
+        assert!(runtime.closing_or_settling());
+        if let Ok(mut intent) = runtime.intent.lock() {
+            *intent = None;
+        }
+        runtime.terminal_cleanup.send_replace(1);
+        assert!(runtime.closing_or_settling());
+    }
+
+    /// SPEC-613 CID-001: the saved Codex size is two big-endian u16s, columns then rows,
+    /// within the host's dimensions; anything else is no record.
+    #[test]
+    fn the_codex_size_record_round_trips_and_rejects_malformed_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let run = dir.path().to_str().ok_or("path")?;
+        let record = dir.path().join("codex-repaint-size");
+        let mut input = super::CodexInput::load(run);
+        assert_eq!(input.repaint_size, None, "an older run has no record");
+        input.remember_size((120, 40))?;
+        assert_eq!(std::fs::read(&record)?, [0, 120, 0, 40]);
+        assert_eq!(super::CodexInput::load(run).repaint_size, Some((120, 40)));
+        let max = yulius_contracts::ptyhost::MAX_DIMENSION;
+        for bytes in [
+            vec![0, 120, 0],
+            vec![0, 120, 0, 40, 0],
+            vec![0, 0, 0, 40],
+            [(max + 1).to_be_bytes(), 40u16.to_be_bytes()].concat(),
+        ] {
+            std::fs::write(&record, &bytes)?;
+            assert_eq!(super::CodexInput::load(run).repaint_size, None, "{bytes:?}");
+        }
+        Ok(())
+    }
+
+    /// SPEC-623 FIN-002: a viewer's size updates a probed run's record, a run never probed
+    /// keeps none, and a record that cannot be saved is dropped.
+    #[test]
+    fn a_viewer_size_follows_the_codex_record_or_drops_it() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let run = dir.path().to_str().ok_or("path")?;
+        let record = dir.path().join("codex-repaint-size");
+        let mut input = super::CodexInput::load(run);
+        input.follow_viewer((90, 30));
+        assert!(!record.exists(), "no probe, no record");
+        input.remember_size((120, 40))?;
+        input.follow_viewer((100, 30));
+        assert_eq!(std::fs::read(&record)?, [0, 100, 0, 30]);
+        // The temporary file's name is taken, so the record can no longer be replaced.
+        std::fs::create_dir(record.with_extension("tmp"))?;
+        input.follow_viewer((80, 24));
+        assert_eq!(input.repaint_size, None);
+        assert!(!record.exists(), "the stale record is dropped");
+        Ok(())
+    }
+
     /// SPEC-505 AGY-003: a contained Antigravity run binds the `.gemini` of its run's own home,
     /// in the server's run directory, over the sandbox home's.
     #[test]
@@ -9335,6 +9602,7 @@ mod tests {
             session_id: "s".into(),
             prompt: prompt.map(str::to_owned),
             continue_interrupted: false,
+            fork: None,
         };
         assert!(sets_goal(&new(Some(
             "/goal Everything requested in /t/1.md is done."
@@ -9438,6 +9706,32 @@ mod tests {
         assert!(runtime.park_committed());
         runtime.retain_park_for_attached_run(&replacement);
         assert!(!runtime.park_committed());
+        Ok(())
+    }
+
+    /// SPEC-614 TRO-001, TRO-003: the hub takes a run's writes only while it shows that run, and
+    /// an attach resets the hub while it holds the lock those writes check.
+    #[test]
+    fn the_hub_takes_writes_only_of_the_run_it_shows() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = super::TaskRuntime::new();
+        let old = super::AttemptId::parse("old-run")?;
+        let new = super::AttemptId::parse("new-run")?;
+        let wrote = |run: &super::AttemptId| {
+            let mut wrote = false;
+            runtime.on_screen_of(run, |_| wrote = true);
+            wrote
+        };
+        assert!(!wrote(&old), "no run's screen is shown yet");
+        runtime.show_screen_of(&old, |hub| hub.output(1, b"old"));
+        assert!(wrote(&old));
+        assert!(!wrote(&new));
+        let mut locked = false;
+        runtime.show_screen_of(&new, |_| {
+            locked = runtime.screen_of.try_lock().is_err();
+        });
+        assert!(locked, "the reset runs under the lock the writes check");
+        assert!(!wrote(&old), "the replaced run writes nothing");
+        assert!(wrote(&new));
         Ok(())
     }
 

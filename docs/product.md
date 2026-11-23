@@ -22,9 +22,10 @@ window. An idle Codex task moved to another subscription keeps Waiting or Done.
 
 Codex tasks keep their selected model when Yulius sends a message near a subscription limit.
 New and resumed sessions hide the rate-limit model switch reminder. A visible reminder holds
-automated messages until the picker is dismissed. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
+automated messages until the picker is dismissed. If an idle terminal is unreadable, Yulius asks it to repaint. After a two-second probe, a still-unreadable terminal raises Needs you. An undelivered PR notice or wake after an outage stays pending until the screen is readable. [SPEC-613](../.ai/specs/SPEC-613-an-idle-codex-session-takes-messages-aft.md) [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
 
-Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
+Tasks created by the CLI or either Superagent run Claude Code on Opus 5.5 at High effort when harness and model are omitted. [SPEC-620](../.ai/specs/SPEC-620-make-opus-and-claude-default-model.md)
+A task started with a Telegram message runs Claude Code on Opus 5.5 too.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
 A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
 Codex defaults to Ultrafast for models that support it. A Codex
@@ -63,7 +64,7 @@ agent it names (`F 2026-11-19 Random harness`,
 superseding the no-draw part of [SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md)
 / [ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)).
 
-The composer and Settings start on Codex default in a browser without a saved model. A saved Random choice or specific model takes precedence. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)
+The composer and Settings start on Opus 5.5 (Claude Code) in a browser without a saved model. A saved Random choice or specific model, Codex default included, takes precedence. [SPEC-620](../.ai/specs/SPEC-620-make-opus-and-claude-default-model.md)
 
 The composer and Settings offer individual Codex and Gemini models grouped by provider. Each model
 shows its supported effort levels. Choosing a model that cannot use the saved effort restores the
@@ -327,7 +328,11 @@ watching, steering and unblocking.
   prompt box, it does (the text goes to the agent with the message); nobody else's message
   does. It sees which tasks wait for the person and why without anything pasted to it (what
   a task's agent asked, why a task is flagged, a prompt Yulius held, who paused it; `tasks_list`
-  shows the same to a task's agent, without a held prompt's words), reads the end of a
+  shows the same to a task's agent, without a held prompt's words; `task_get` also gives a task's
+  agent a neighbour's owner, pull request and delivery stage, claimed paths, what it waits for and
+  its agent's last words (never its screen, where a held prompt shows), read-only, so tasks look before overlapping work instead of asking a
+  person to relay a status; a task that holds its owner's personal secrets shows other people's
+  tasks only its shape, ADR-0460), reads the end of a
   session in one call, passes the person's answer on, dismisses a request they call settled
   and decides a held prompt as its card does. It says where a task's merge stands and why a
   pull request that passed has not merged yet, lists the project's merge queue and merge
@@ -347,7 +352,9 @@ watching, steering and unblocking.
   holds, not a timer of its session: due, it is typed into the Superagent when it is idle, after
   any restart, and a Superagent that is not running (its person ended it, the machine restarted)
   is started for it
-  ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)).
+  ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)). A check
+  that a script can decide (a date, a URL, a release, a CI number) is a script watch instead
+  (`watch_create`), which costs no turn (SPEC-630).
 - **Global Superagent**: besides the Superagent of each sandbox, every person has one Global
   Superagent, the **All sandboxes** tab of the Superagent panel beside its **This sandbox** tab
   (as Notes shows its notepads; SPEC-428), in every sandbox and on the pages outside one (where
@@ -378,7 +385,7 @@ watching, steering and unblocking.
   says it can be clicked or dragged; a dragged tab stays within the row, giving a little at
   either end; its menu moves it too.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like the Secrets page's tabs —, Secrets, Dashboard — with Overview, Pipeline (stages) and Harnesses tabs —; the Superagent is on the right),
-  then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
+  then "More" for Sessions, Workflows, Skills, Automations, Watches and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Yulius keeps that CLI current by itself: a new Claude Code release
   (npm's `latest` by default) reaches every new or resumed session within about an hour and a
@@ -393,6 +400,12 @@ watching, steering and unblocking.
   counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
   review round, and their named review subagents populate the same delivery history and Review
   card. Antigravity tasks request Gemini 4 Neon (High).
+  Fork… (in a task's menu and on its details page, and the `task_fork` tool) starts a new task
+  from another task's conversation and committed work: on the same agent, on a branch and
+  worktree of its own with a copy of its plan, and with an optional message saying what to do
+  differently, a model and a subscription. The task forked goes on untouched, and each task's page
+  links the other ("Fork of #N", "Forked: #M"). Claude Code and Codex tasks can be forked;
+  Antigravity tasks cannot, and Fork… says why (SPEC-628).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another
@@ -474,7 +487,16 @@ watching, steering and unblocking.
 - **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
   Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
-  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why.
+  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
+  subscription past its harness's rebalance threshold (95 % of a 5-hour, weekly or model's
+  weekly window by default) gets no new task while another has room, and every 2 minutes its
+  idle tasks (the turn ended, also while waiting for a person) move to the subscription with the
+  most room, in the same session with nothing typed (an idle goal session, whose goal a restart
+  would type again, is parked instead and resumes elsewhere); a task mid-turn waits for its
+  turn's end, and one its person put on that subscription with "Run on…" or "Continue on…" stays
+  (SPEC-629). Each move is told once in the task's terminal, its info and one notice for its
+  person (the task's latest move, park or wait replaces its earlier one), as is a task that
+  stays because nothing has room.
   If a person has already signed it in again, the new sign-in stays available. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
   under Needs you. A subscription out of a model's usage credits (Fable runs on a weekly
@@ -615,9 +637,12 @@ watching, steering and unblocking.
     - Pull requests merge on the quick checks. The full suite (`after_merge` jobs) runs once on
       the merged revision.
     - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
-      verifies that tested revision in revision order, once per task. The task shows the full-suite
-      or staging wait and resumes on the outcome, including a failed gate.
-    - A failing candidate leaves staging on its last verified release and tells the task.
+      verifies that tested revision in revision order, once per task. A running task with an unfinished step shows the full-suite
+      or staging wait. Finished tasks keep the outcome on their delivery. Later deliveries
+      record inherited failures and complete when staging serves the verified fix.
+    - Working tasks hear the failing tests and their introducing merges. One worker takes the repair.
+      With no worker available, project CI and Status name the tests and their introducing merges.
+      Writers can rerun the affected revision or start a task in the project.
     - A person can deploy the revision staging verified while the next dev revision is being checked. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
   - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
   - New projects with such a target are bootstrapped this way, and onboarded ones get one task
@@ -673,6 +698,19 @@ watching, steering and unblocking.
   Run now starts its task the way the chip shows. Each task runs as the automation creator.
   Only the creator can save changes, toggle the schedule or use Run now. Project writers can
   delete the automation and create a replacement of their own. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
+- **Script watches** (SPEC-630, [ADR-0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md)):
+  a bash script on a schedule (an interval of 1 minute to 7 days, or cron), run by Yulius in the
+  project's sandbox without any agent or subscription, so watching a URL, a release, a CI number
+  or a date costs no tokens. What it prints becomes a notice for its owner (the bell, digest,
+  Telegram), keyed `watch:<name>`, so each post replaces the last: exit 0 with output posts it, no
+  output posts nothing, exit 3 posts and ends the watch, and the third failure in a row posts one
+  warning. Each run is bounded (its timeout, CPU, memory and file size) and gets only the agent
+  secrets it names, through the egress proxy. Posts that could not be stored are retried, and
+  watches survive restarts and updates. The project's Watches page lists them with their state,
+  next and last run and last output, with Run now, Pause/Resume, Edit and Remove; the Superagent
+  and a person's own agent manage them with `watch_create`, `watches_list`, `watch_update`,
+  `watch_run`, `watch_pause` and `watch_remove`. Only a watch's owner edits, runs or resumes it; a project
+  administrator may also pause or remove it.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
@@ -702,6 +740,20 @@ watching, steering and unblocking.
   meanwhile is told "Yulius is back; continue" (SPEC-358). An agent removes the files its task created
   with `yulius remove` (SPEC-192). A contained Claude reviewer whose scratch cleanup uses
   a variable or names a root-level scratch file receives a checked retry directly. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)
+- **Brokered commands**: a CLI that needs a key file (a deploy tool, a cloud SDK with a
+  service-account key, a signing tool) runs outside the agents' sandbox. A project's
+  administrators define it on the Secrets page's Commands tab: the host's binary, the agent secret
+  it gets as a temporary file, fixed arguments with `{keyfile}`, the subcommands agents may use,
+  the flags Yulius sets itself, env, which tasks may run it and whether a person approves each run,
+  only runs that change something, or none; saving one asks for the secret's manager and, for a
+  secret allowed use by use, their two-factor code. An agent runs it with `yulius run NAME ARGS`
+  (or `command_run`): Yulius runs it in the project's production holder in a fresh home, bounded in
+  time and output, and returns its exit code and output with every agent secret blanked out.
+  Arguments that name a path or a flag Yulius sets are refused. A run that needs approval puts its
+  task in Needs you with the full command line; people who manage the project's secrets approve or
+  reject it on the page or by replying to its Telegram notice, and no answer in time is a no. Every
+  run, refusal and answer is audited. [SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
+  [ADR-0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md)
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
@@ -719,7 +771,12 @@ watching, steering and unblocking.
   is added with a name, a value and a description: agents find the service's host and bind it
   themselves, and production deploys get the secret, unless the person turns "Let agents set it up"
   off when adding it; then a person allows each host with one click and production separately
-  (SPEC-121, SPEC-216). Team secrets belong to the sandbox they were added in, or are team-wide when
+  (SPEC-121, SPEC-216). In Edit, a manager can limit it to certain requests, such as
+  `GET /repos/*`: the proxy then puts it only into requests that match, and refuses any other
+  request that would use it with a message the agent reads, audited, so a token given for
+  reading cannot write or delete while agents cannot learn it: hosts they ask for it wait for a
+  person, and its `.env` copies stay off (SPEC-627,
+  [ADR-0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)). Team secrets belong to the sandbox they were added in, or are team-wide when
   the person picks that; team secrets from before were copied into each sandbox (SPEC-216). Agent
   secrets ("keys and logins agents use without seeing them") are on three tabs (SPEC-245):
   **Project** (this project's), **Global** (defined once by instance administrators, who switch each
@@ -766,6 +823,17 @@ watching, steering and unblocking.
   (SPEC-458). A task session whose Yulius tools Claude
   Code dropped is reconnected by Yulius, and an agent can call any Yulius tool from its shell with
   `yulius tool` (SPEC-432).
+- **Notices that replace and expire** (SPEC-624, ADR-0462): every notice Yulius raises for a
+  person has a key and an expiry, in the bell, Telegram, the digest and the Status and CI pages.
+  A newer notice with the same key replaces the older one for that person and project, so a
+  task has one entry however often its state or its pull request's CI changes. A subscription
+  problem is one notice per subscription, and an integration failure nobody repairs is one per
+  test. In Telegram, the bot deletes its earlier message about the same thing. A notice goes
+  away by itself at its expiry: a day for reports, three days for good news and the digest,
+  seven for failures. One that waits for a person's decision never expires, and goes a day
+  after it is answered. Expired notices are hidden everywhere, then pruned, and a browser's
+  earlier history gets the same expiries. Script watches (#614) post their output this way,
+  keyed `watch:<name>`.
 - **Notifications on a person's phone** (SPEC-498, ADR-0351, part 1 of #1107): an instance
   administrator sets one Telegram bot for the instance in Settings → Administration (checked with
   Telegram, stored encrypted, never shown again). Each person links their own chat in Settings →

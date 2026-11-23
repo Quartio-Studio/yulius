@@ -21,7 +21,7 @@ type Asking = {
     withdrawSuperagentRequest: (source: string, id: string) => void;
     amendSuperagentRequest: (source: string, id: string, prompt: string) => void;
     askBrowserSignIn: () => boolean;
-    tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string; harness: string; harness_choice: string; model: string; effort: string; effort_default: boolean }[];
+    tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string; harness: string; harness_choice: string; model: string; model_default: boolean; effort: string; effort_default: boolean }[];
   };
 };
 
@@ -67,12 +67,13 @@ test('a request shows in full above the Superagent and Create task starts it in 
   await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
 });
 
-test('approved tasks inherit the Codex defaults and honor explicit settings', async ({ app, browser, screen }) => {
+// SPEC-620 CDM-001: with neither agent nor model, an approved task runs Claude Code on Opus 5.5.
+test('approved tasks inherit the Claude Code defaults and honor explicit settings', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
   await openSuperagent(browser, screen);
   for (const [choice, expected] of [
-    [{}, { harness: 'codex', harness_choice: 'chosen', model: 'gpt-6.2-astra', effort: 'high', effort_default: true }],
-    [{ effort: 'high' }, { harness: 'codex', model: 'gpt-6.2-astra', effort: 'high', effort_default: false }],
+    [{}, { harness: 'claude', harness_choice: 'chosen', model: 'claude-opus-5-5', model_default: true, effort: 'high', effort_default: true }],
+    [{ effort: 'xhigh' }, { harness: 'claude', model: 'claude-opus-5-5', effort: 'xhigh', effort_default: false }],
     [{ harness: 'codex', model: 'codex' }, { harness: 'codex', model: 'codex', effort: 'high', effort_default: true }],
     [{ model: 'gemini-4-neon' }, { harness: 'antigravity', harness_choice: 'chosen', model: 'gemini-4-neon' }],
     [{ harness: 'auto' }, { harness_choice: 'random' }],

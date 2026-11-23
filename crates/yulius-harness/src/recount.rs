@@ -10,6 +10,7 @@ use std::path::Path;
 
 use yulius_domain::time::Timestamp;
 
+use crate::codex_children::CodexChildren;
 use crate::observe::{Observed, UsageAccumulator};
 use crate::subagents::{LinesSince, SubagentTails};
 use crate::tail::{DEFAULT_MAX_LINE_BYTES, TranscriptTail};
@@ -30,23 +31,36 @@ pub fn count_run(
     count_with(transcript, since, until, claude::observe_versioned, true)
 }
 
-/// [`count_run`] for a Codex rollout (SPEC-503): its own lines only, Codex keeps no sub-agent
-/// transcripts beside it.
+/// [`count_run`] for a Codex rollout (SPEC-503), with the responses its session's subagents'
+/// rollouts hold over the same window (SPEC-619), as the live watch counts them.
 ///
 /// # Errors
-/// I/O errors reading the rollout.
+/// I/O errors reading the rollout, listing the sessions folders or reading a subagent's rollout
+/// (the count would be partial).
 pub fn count_codex_run(
     rollout: &Path,
     since: Option<Timestamp>,
     until: Option<Timestamp>,
 ) -> io::Result<Option<UsageAccumulator>> {
-    count_with(
+    let Some(mut acc) = count_with(
         rollout,
         since,
         until,
         |line| (codex::observe_line(line), None),
         false,
-    )
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut children = CodexChildren::between(rollout, since, until);
+    loop {
+        for observed in children.poll()? {
+            acc.observe_child(&observed);
+        }
+        if children.at_end() {
+            return Ok(Some(acc));
+        }
+    }
 }
 
 /// [`count_run`] for an Antigravity transcript (SPEC-505 AGY-004): its own lines only; the CLI
@@ -181,6 +195,89 @@ mod tests {
             (to_the_end.usage().output, to_the_end.turns()),
             (Some(1_399), 2),
             "without an end the terminal's turn would count"
+        );
+        Ok(())
+    }
+
+    /// SPEC-619 AC-1, AC-2: a Codex run counts its session's subagents and their nested
+    /// children once each, in the window that holds each response, keeping its own model and
+    /// storing the other models' parts; another session in the folder does not count.
+    #[test]
+    fn a_codex_run_counts_its_subagents_once_by_model() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::codex_children::tests::Rollout;
+        use yulius_domain::usage::{ModelTokens, TokenUsage};
+        const ROOT: &str = "01a1f882-35c2-7413-b525-14d9ee43e464";
+        let child = "01a1f900-0000-7000-8000-000000000001";
+        let grandchild = "01a1f900-0000-7000-8000-000000000002";
+        let dir = tempfile::tempdir()?;
+        let day = "2026/11/21";
+        let root = Rollout::new(dir.path(), day, "2026-11-21T09:00:00.000Z", ROOT, None)
+            .model("2026-11-21T09:00:01.000Z", "gpt-6.2-sol")
+            .response("2026-11-21T09:00:02.000Z", "resp_root", 100, 1)
+            .response("2026-11-21T10:30:00.000Z", "resp_root_2", 100, 10)
+            .write()?;
+        Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:01:00.000Z",
+            child,
+            Some(ROOT),
+        )
+        .model("2026-11-21T09:01:01.000Z", "gpt-6.2-astra")
+        .response("2026-11-21T09:01:02.000Z", "resp_child", 20, 2)
+        .response("2026-11-21T09:01:02.000Z", "resp_child", 20, 2)
+        .response("2026-11-21T10:31:00.000Z", "resp_child_2", 20, 20)
+        .write()?;
+        Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:02:00.000Z",
+            grandchild,
+            Some(child),
+        )
+        .model("2026-11-21T09:02:01.000Z", "gpt-6.2-sol")
+        .response("2026-11-21T09:02:02.000Z", "resp_grandchild", 3, 3)
+        .write()?;
+        let other = "01a1f700-0000-7000-8000-000000000004";
+        Rollout::new(dir.path(), day, "2026-11-21T09:00:00.000Z", other, None)
+            .session(other)
+            .response("2026-11-21T09:00:05.000Z", "resp_other", 1_000, 1_000)
+            .write()?;
+        let tokens = |input: u64, output: u64| TokenUsage {
+            input: Some(input),
+            output: Some(output),
+            cache_read: Some(input),
+            cache_write: Some(0),
+        };
+
+        let whole = count_codex_run(&root, None, None)?.ok_or("rollout")?;
+        assert_eq!(
+            whole.usage(),
+            tokens(100 + 100 + 20 + 20 + 3, 1 + 10 + 2 + 20 + 3)
+        );
+        assert_eq!(whole.model(), Some("gpt-6.2-sol"), "the run's own thread's");
+        assert_eq!(
+            whole.model_parts(),
+            vec![ModelTokens {
+                model: "gpt-6.2-astra".into(),
+                usage: tokens(40, 22),
+            }],
+            "the grandchild ran the session's model"
+        );
+
+        // Resumed at 10:00, on another subscription: each response counts in its own run.
+        let resumed = at("2026-11-21T10:00:00Z");
+        let first = count_codex_run(&root, None, Some(resumed))?.ok_or("rollout")?;
+        assert_eq!(first.usage(), tokens(100 + 20 + 3, 1 + 2 + 3));
+        let second = count_codex_run(&root, Some(resumed), None)?.ok_or("rollout")?;
+        assert_eq!(second.usage(), tokens(100 + 20, 10 + 20));
+        assert_eq!(
+            second.model_parts(),
+            vec![ModelTokens {
+                model: "gpt-6.2-astra".into(),
+                usage: tokens(20, 20),
+            }],
+            "the child's model line is before the resumed run's window"
         );
         Ok(())
     }

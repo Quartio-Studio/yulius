@@ -113,9 +113,29 @@ pub struct CiRun {
     pub status: String,
 }
 
+/// A failed integration gate with no available task to repair it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateNotice {
+    /// Its notice key (`gate:<test>`, SPEC-624): the bell's and the chat's notice of it.
+    #[serde(default)]
+    pub key: String,
+    /// Number of the task whose merge first showed this failure.
+    #[serde(default)]
+    pub merge_task: Option<u32>,
+    /// Revision that first showed the failure.
+    pub revision: String,
+    /// Run to inspect or run again.
+    pub run_id: String,
+    /// Failed test, or job when its test names are unavailable.
+    pub test: String,
+}
+
 /// `GET /api/sandboxes/{sid}/ci`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CiOverview {
+    /// Open integration failures for the project’s people.
+    #[serde(default)]
+    pub gate_notices: Vec<GateNotice>,
     /// The gate in force, if any.
     pub gate: Option<CiGate>,
     /// Why the integration branch's own configuration is not in force (for example an invalid

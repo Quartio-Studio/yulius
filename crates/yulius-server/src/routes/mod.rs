@@ -8,6 +8,7 @@ mod automations;
 mod browser;
 mod cd;
 mod ci;
+mod commands;
 mod delivery;
 mod digest;
 mod events;
@@ -24,6 +25,7 @@ mod mcp;
 mod mcp_servers;
 mod migration;
 mod notes;
+mod notices;
 mod previews;
 mod projects;
 mod sandboxes;
@@ -40,6 +42,7 @@ mod terminal;
 mod updates;
 mod uploads;
 mod variables;
+mod watches;
 mod workflows;
 
 use axum::Router;
@@ -135,6 +138,7 @@ pub fn public() -> Router<AppState> {
             post(tasks::intake_proposal),
         )
         .route("/api/tasks/{tid}/continue", post(tasks::resume))
+        .route("/api/tasks/{tid}/fork", post(tasks::fork))
         .route("/api/tasks/{tid}/switch", post(tasks::switch))
         .route("/api/archived-tasks", get(tasks::archived))
         .route("/api/tasks/{tid}", get(tasks::detail).delete(tasks::delete))
@@ -298,6 +302,12 @@ pub fn public() -> Router<AppState> {
             get(digest::setting).put(digest::set_setting),
         )
         .route("/api/me/digest", get(digest::mine))
+        // A person's notices: keyed, expiring (SPEC-624).
+        .route("/api/me/notices", get(notices::mine))
+        .route(
+            "/api/me/notices/{id}",
+            axum::routing::delete(notices::dismiss),
+        )
         // Tasks hand work to another sandbox (SPEC-512 HOF-001..HOF-005).
         .route(
             "/api/admin/handoffs",
@@ -307,6 +317,33 @@ pub fn public() -> Router<AppState> {
             "/api/sandboxes/{sid}/handoffs",
             get(handoffs::sandbox).put(handoffs::set_sandbox),
         )
+        .route(
+            "/api/sandboxes/{sid}/commands",
+            get(commands::list).post(commands::create),
+        )
+        .route(
+            "/api/sandboxes/{sid}/commands/{id}",
+            put(commands::update).delete(commands::delete),
+        )
+        .route("/api/sandboxes/{sid}/command-runs", get(commands::runs))
+        .route(
+            "/api/sandboxes/{sid}/command-runs/{id}",
+            post(commands::answer),
+        )
+        // Script watches (SPEC-630 WCH-011).
+        .route(
+            "/api/sandboxes/{sid}/watches",
+            get(watches::list).post(watches::create),
+        )
+        .route(
+            "/api/watches/{id}",
+            get(watches::get)
+                .put(watches::update)
+                .delete(watches::delete),
+        )
+        .route("/api/watches/{id}/run", post(watches::run))
+        .route("/api/watches/{id}/pause", post(watches::pause))
+        .route("/api/watches/{id}/resume", post(watches::resume))
         .route("/api/tasks/{tid}/handoffs", get(handoffs::task))
         .route("/api/tasks/{tid}/handoffs/{hid}", post(handoffs::answer))
         // The personal Telegram channel's bot (SPEC-498 TGC-001).

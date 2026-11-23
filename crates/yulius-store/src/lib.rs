@@ -12,6 +12,7 @@ mod automations;
 mod capacity;
 mod cd;
 mod ci;
+mod commands;
 mod coordination;
 pub mod crypto;
 mod delivery;
@@ -24,6 +25,7 @@ mod intake;
 mod mcp;
 mod needs_you;
 mod notes;
+mod notices;
 mod sandboxes;
 mod session_docs;
 mod sessions;
@@ -36,6 +38,7 @@ mod updates;
 mod users;
 mod variables;
 mod vault;
+mod watches;
 mod workflows;
 
 use std::path::Path;
@@ -223,6 +226,22 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0085_ci_pull_window.sql"),
     // Schema 85 follows the shipped review and CI-window migrations.
     include_str!("migrations/0083_terminal_pulls.sql"),
+    include_str!("migrations/0086_inherited_staging.sql"),
+    include_str!("migrations/0087_metrics_model_parts.sql"),
+    // Schema version 88 (SPEC-626 BRK-001); 0089 is the reserved file number.
+    include_str!("migrations/0089_brokered_commands.sql"),
+    // Schema version 89 (SPEC-624); 0091 is the reserved file number.
+    include_str!("migrations/0091_keyed_expiring_notices.sql"),
+    // Schema version 90 (SPEC-627 MPR-001); 0088 is the reserved file number.
+    include_str!("migrations/0088_agent_secret_rules.sql"),
+    // Schema version 91 (SPEC-628); 0092 is the reserved file number.
+    include_str!("migrations/0092_task_forks.sql"),
+    // Schema version 92 (SPEC-629); 0090 is the reserved file number.
+    include_str!("migrations/0090_task_account_pin.sql"),
+    // Schema version 93 (SPEC-630); 0093 is the reserved file number.
+    include_str!("migrations/0093_script_watches.sql"),
+    // Schema version 94 (SPEC-626 BRK-015); 0094 is the reserved file number.
+    include_str!("migrations/0094_telegram_sent_command_run.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -557,6 +576,21 @@ mod tests {
             ),
             (84, include_str!("migrations/0085_ci_pull_window.sql")),
             (85, include_str!("migrations/0083_terminal_pulls.sql")),
+            (86, include_str!("migrations/0086_inherited_staging.sql")),
+            (87, include_str!("migrations/0087_metrics_model_parts.sql")),
+            (88, include_str!("migrations/0089_brokered_commands.sql")),
+            (
+                89,
+                include_str!("migrations/0091_keyed_expiring_notices.sql"),
+            ),
+            (90, include_str!("migrations/0088_agent_secret_rules.sql")),
+            (91, include_str!("migrations/0092_task_forks.sql")),
+            (92, include_str!("migrations/0090_task_account_pin.sql")),
+            (93, include_str!("migrations/0093_script_watches.sql")),
+            (
+                94,
+                include_str!("migrations/0094_telegram_sent_command_run.sql"),
+            ),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -565,7 +599,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 85, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 94, "a new migration is pinned here too");
     }
 
     #[test]
@@ -618,6 +652,59 @@ mod tests {
         assert!(older.merged && older.merge_commit_sha.is_none());
         assert_eq!(older.title, "Pull request #42");
         assert!(older.head.is_empty() && older.head_sha.is_empty());
+        Ok(())
+    }
+
+    /// SPEC-624 AC-12: a store from before keyed notices keeps its digests and Telegram rows,
+    /// and its new notice tables start empty and take a notice.
+    #[test]
+    fn keyed_notices_upgrade_keeps_digests_and_sent_messages()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let at = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("CREATE TABLE notices"))
+            .ok_or("the notices migration is listed")?;
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..at] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", i64::try_from(at)?)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1);
+             INSERT INTO digests (id, user_id, created_at, body) VALUES ('dg_1', 'u', 5, '{}');
+             INSERT INTO telegram_sent (chat_id, message_id, task_id, asked_at, sent_at)
+             VALUES ('42', '7', 't', NULL, 6);",
+        )?;
+        prepare(&mut conn)?;
+        let kept: (i64, i64) = conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM digests), (SELECT COUNT(*) FROM telegram_sent)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(kept, (1, 1));
+        let empty: i64 = conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM notices) + (SELECT COUNT(*) FROM notice_dismissals) \
+             + (SELECT COUNT(*) FROM telegram_keyed)",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(empty, 0);
+        conn.execute_batch(
+            "INSERT INTO notices (id, sandbox_id, notice_key, category, tone, title, created_at)
+             VALUES ('nt_1', 's', 'gate:a', 'failed', 'error', 'Red', 7);",
+        )?;
+        assert!(
+            conn.execute_batch(
+                "INSERT INTO notices (id, sandbox_id, notice_key, category, tone, title, created_at)
+                 VALUES ('nt_2', 's', 'gate:a', 'failed', 'error', 'Red again', 8);",
+            )
+            .is_err(),
+            "one notice per project, recipient and key"
+        );
         Ok(())
     }
 
@@ -1076,6 +1163,94 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-619 CSA-4, CSA-7: the upgrade queues the Codex runs of the last week for one more
+    /// recount, also one recounted before; the parts of a run's tokens other models answered
+    /// are stored and read back with its figures.
+    #[tokio::test]
+    async fn codex_runs_of_the_last_week_are_recounted_and_parts_are_kept()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::MetricsRecord;
+        use yulius_app::ports::store::TaskStore as _;
+        use yulius_app::ports::store_ext::CapacityStore as _;
+        use yulius_domain::ids::{AttemptId, TaskId};
+        use yulius_domain::time::Timestamp;
+        use yulius_domain::usage::{ModelTokens, TokenUsage};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v86.db");
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis(),
+        )?;
+        let day = 86_400_000;
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..86] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 86)?;
+            conn.execute_batch(&format!(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{{}}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'codex', 'closed', 'ui', 'u1', 1, 1);
+                 INSERT INTO attempts (id, task_id, seq, harness, launch_kind, state, run_dir, token_hash, host_token, started_at, ended_at) VALUES
+                   ('recent', 't1', 3, 'codex', 'resume', 'exited', '/r/3', 'h3', x'00', {r0}, {r1}),
+                   ('old', 't1', 1, 'codex', 'new', 'exited', '/r/1', 'h1', x'00', {o0}, {o1}),
+                   ('claude', 't1', 2, 'claude', 'new', 'exited', '/r/2', 'h2', x'00', {r0}, {r1}),
+                   ('live', 't1', 4, 'codex', 'resume', 'live', '/r/4', 'h4', x'00', {r1}, NULL);
+                 INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) VALUES
+                   ('recent', 't1', 'gpt-6.2-sol', 5, 50, 0, 0, 1, 0, 200);
+                 INSERT INTO metrics_recounts (attempt_id, task_id, outcome, done_at) VALUES ('recent', 't1', 'recomputed', 9);",
+                r0 = now - 2 * day,
+                r1 = now - day,
+                o0 = now - 10 * day,
+                o1 = now - 9 * day,
+            ))?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let queued = store.queued_metrics_recounts().await?;
+        assert_eq!(queued, vec![AttemptId::parse("recent")?]);
+        let (outcome, before, _, done) = recount_row(&path, "recent")?;
+        assert_eq!((outcome, done), (None, None));
+        assert!(before.is_some_and(|b| b.contains("gpt-6.2-sol")));
+
+        let parts = vec![ModelTokens {
+            model: "gpt-6.2-astra".into(),
+            usage: TokenUsage {
+                input: Some(3),
+                output: Some(30),
+                cache_read: Some(0),
+                cache_write: None,
+            },
+        }];
+        let metrics = MetricsRecord {
+            model: Some("gpt-6.2-sol".into()),
+            input_tokens: Some(8),
+            output_tokens: Some(80),
+            parts: parts.clone(),
+            ..MetricsRecord::default()
+        };
+        let (attempt, task) = (AttemptId::parse("recent")?, TaskId::parse("t1")?);
+        store
+            .put_metrics(&attempt, &task, &metrics, Timestamp(now))
+            .await?;
+        assert_eq!(store.task_metrics(&task).await?, vec![metrics.clone()]);
+        let runs = store.token_runs(Timestamp(now - 3 * day)).await?;
+        let stored: Vec<_> = runs.iter().filter_map(|r| r.metrics.as_ref()).collect();
+        assert_eq!(stored, vec![&metrics]);
+        // A count with no parts clears them.
+        let plain = MetricsRecord {
+            parts: Vec::new(),
+            ..metrics
+        };
+        store
+            .put_metrics(&attempt, &task, &plain, Timestamp(now))
+            .await?;
+        assert_eq!(store.task_metrics(&task).await?, vec![plain]);
+        Ok(())
+    }
+
     /// A recount's outcome, figures before and after, and when.
     type RecountRow = (Option<String>, Option<String>, Option<String>, Option<i64>);
 
@@ -1176,6 +1351,7 @@ mod tests {
             cache_write: Some(1),
             turns: Some(3),
             active_ms: Some(220_200),
+            parts: Vec::new(),
         };
         assert!(
             store

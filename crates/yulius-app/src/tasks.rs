@@ -206,6 +206,7 @@ impl App {
             None => (None, None),
         };
         let (after, next) = self.chain_links(task).await;
+        let (forked_from, forks) = self.fork_links(task).await;
         let times = store.task_times(&task.id).await?;
         let not_started =
             task.status == TaskStatus::Closed && !store.has_attempts(&task.id).await?;
@@ -248,6 +249,7 @@ impl App {
                 && !facts.goal_unfinished
                 && self.pr_ci_progressing(task).await);
         Ok(TaskSummary {
+            candidate_pending: facts.candidate_pending,
             github_display_paused: false,
             parked_pr: None,
             parked_needs_you: None,
@@ -303,6 +305,8 @@ impl App {
                     .is_ok_and(|a| a != crate::account_gate::AgentAccounts::Usable),
             after,
             next,
+            forked_from,
+            forks,
             held_prompt: self.held_prompt_view(&task.id).await,
             // An ended task waits for nobody (ADR-0111).
             needs_you: if task.status.is_resting() {
@@ -325,6 +329,10 @@ impl App {
                 .background_shells_since(&task.id)
                 .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms))),
             yulius_wait,
+            staging_outcome: store
+                .latest_task_staging(&task.id)
+                .await?
+                .and_then(|r| r.outcome_label()),
             staging_wait: facts
                 .staging_wait
                 .map(|state| state.task_wait_label().to_owned()),
@@ -999,13 +1007,21 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task_to(ctx, id, TaskAction::Tidy).await?;
         // Done, or answered (SPEC-429 ANS-007): what the sidebar shows under Done.
-        let done = task.status == TaskStatus::Running
-            && (self.task_is_done(&task).await || self.shows_done(&task).await);
-        if archive && done && task.origin == TaskOrigin::Onboarding {
-            // Its run's end decides whether onboarding is over, which the check below reads.
-            self.close_task_and_wait(&task.id).await?;
-        } else if archive && (done || task.status == TaskStatus::Parked) {
-            // A parked task is closed at once: it has no session to end (SPEC-512 PRK-001).
+        if archive && task.status == TaskStatus::Running {
+            if !(self.task_is_done(&task).await || self.shows_done(&task).await) {
+                return Err(AppError::Conflict(
+                    "stop the task before archiving it".into(),
+                ));
+            }
+            // Read after the checks, which can record a merge they observed.
+            let record = self.deps.store.delivery(&task.id).await?;
+            let achieved = Some((&task, record.as_ref()));
+            if task.origin == TaskOrigin::Onboarding {
+                self.close_selected_and_wait(&task.id, achieved).await?;
+            } else {
+                self.close_task_selected(&task.id, achieved).await?;
+            }
+        } else if archive && task.status == TaskStatus::Parked {
             self.close_task_now(&task.id).await?;
         } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(
@@ -1080,7 +1096,10 @@ impl App {
         if task.status == TaskStatus::Running
             && (self.task_is_done(&task).await || self.shows_done(&task).await)
         {
-            self.close_task_and_wait(&task.id).await?;
+            // Read after the checks, which can record a merge they observed.
+            let record = self.deps.store.delivery(&task.id).await?;
+            self.close_selected_and_wait(&task.id, Some((&task, record.as_ref())))
+                .await?;
             task = self
                 .deps
                 .store
@@ -1125,8 +1144,13 @@ impl App {
         // Tasks waiting for this one need a person now (TSK-012).
         self.block_successors_deleted(&task).await;
         let deleted_in = task.sandbox_id.clone();
+        let fork_neighbours = self.fork_neighbours(&task.id).await;
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
+        }
+        // Its source and its forks no longer link to it (SPEC-628 FRK-008).
+        for neighbour in &fork_neighbours {
+            self.publish_task(neighbour).await;
         }
         // A start rule naming the deleted task now sees it as ended (SPEC-017), and a deleted
         // supertask no longer holds its project (SPEC-071).

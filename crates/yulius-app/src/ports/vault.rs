@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
+use yulius_domain::vault::SecretRule;
 
 use crate::error::AppResult;
 use crate::ports::Envelope;
@@ -56,6 +57,8 @@ pub struct VaultSecretRecord {
     pub description: String,
     /// Agent: host bindings as entered (normalized).
     pub hosts: Vec<String>,
+    /// Agent: method and path rules (SPEC-627); empty: any request to its hosts.
+    pub rules: Vec<SecretRule>,
     /// Agent: injection kind.
     pub injection: String,
     /// Agent: header of the `header` injection.
@@ -317,7 +320,8 @@ pub trait VaultStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Binds the hosts an agent asked for of a secret it sets up itself (SPEC-216 SSA-002):
     /// `hosts` replace its bindings and `requested` its waiting request, only while they still
-    /// are `bound` and `waiting` and the secret still has `auto_allow`; `false` otherwise.
+    /// are `bound` and `waiting` and the secret still has `auto_allow` and no rules (SPEC-627);
+    /// `false` otherwise.
     async fn vault_auto_bind(
         &self,
         id: &str,

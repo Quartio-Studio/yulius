@@ -234,6 +234,7 @@ function seed(params) {
     // digest (`digest=1` starts with one). `__yuliusMock.sendDigest()` makes a new one and sends
     // `digest.ready`, as the server's daily run does.
     digest: { setting: { enabled: false, at: '18:00', park_idle_hours: null }, latest: params.get('digest') ? mockDigest('dg_mock_1') : null },
+    notices: { list: [], reads: 0, dismissed: [] },
     // Handoffs between sandboxes (SPEC-512 part 5): `handoff=1` seeds a request on #12 and a
     // provenance on #11.
     handoffs: mockHandoffs(params.get('handoff'), params.get('handoff') === 'long'),
@@ -380,6 +381,12 @@ function seed(params) {
     // A shipped automation an agent created by name (SPEC-042 OPS-010): a default all the same (SPEC-197).
     { id: 'aut_3', sandbox: 'sb_studio', owner_id: db.me.user.id, owner_login: db.me.user.login, name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
+  // Script watches (SPEC-630): one active with output, one ended, one another person's that failed.
+  db.watches = [
+    { id: 'wt_1', sandbox_id: 'sb_studio', name: 'release-check', script: 'curl -fsS https://example.com/version\necho "v2.1 is out"', every: '1h', cron: null, utc_offset_minutes: 0, expiry: '1d', timeout_seconds: 300, secrets: [], owner_id: db.me.user.id, owner: db.me.user.login, created_via: 'agent', created_at: iso(3 * DAY), state: 'active', ended_reason: null, next_run_at: isoIn(40 * MIN), last_started_at: iso(20 * MIN), last_ended_at: iso(20 * MIN), last_exit: 0, last_failure: null, last_output: 'v2.1 is out', last_errors: null, failures: 0, runs: 71, posts: 2, pending_posts: 0, can_edit: true, can_remove: true },
+    { id: 'wt_2', sandbox_id: 'sb_studio', name: 'merge-queue-targets', script: '[ "$(date -u +%F)" \\< 2026-11-24 ] && exit 0\necho "#479: merge-queue targets are due"; exit 3', every: '1d', cron: null, utc_offset_minutes: 0, expiry: 'never', timeout_seconds: 60, secrets: [], owner_id: db.me.user.id, owner: db.me.user.login, created_via: 'agent', created_at: iso(5 * DAY), state: 'ended', ended_reason: 'the script said it is done (exit 3)', next_run_at: null, last_started_at: iso(2 * HOUR), last_ended_at: iso(2 * HOUR), last_exit: 3, last_failure: null, last_output: '#479: merge-queue targets are due', last_errors: null, failures: 0, runs: 5, posts: 1, pending_posts: 0, can_edit: true, can_remove: true },
+    { id: 'wt_3', sandbox_id: 'sb_studio', name: 'staging-health', script: 'curl -fsS https://staging.example.com/health', every: null, cron: '*/30 * * * *', utc_offset_minutes: 60, expiry: null, timeout_seconds: 30, secrets: ['STAGING_TOKEN'], owner_id: 'u_other', owner: 'kamil', created_via: 'ui', created_at: iso(DAY), state: 'active', ended_reason: null, next_run_at: isoIn(10 * MIN), last_started_at: iso(20 * MIN), last_ended_at: iso(20 * MIN), last_exit: 7, last_failure: 'exit 7', last_output: null, last_errors: 'curl: (7) Failed to connect to staging.example.com', failures: 3, runs: 40, posts: 0, pending_posts: 0, can_edit: false, can_remove: true },
+  ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', audience: 'team', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
     { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', audience: 'team', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true, origin: 'person' },
@@ -392,7 +399,7 @@ function seed(params) {
     { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true, two_factor: 'pending' },
   ];
   db.runs = []; // EnvironmentRun records, newest last
-  db.ci = seedCi();
+  db.ci = seedCi(params);
   db.cd = seedCd();
   const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
   db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
@@ -541,6 +548,7 @@ function summary(task) {
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     ...(task.status === 'parked' && typeof task.parked_needs_you === 'boolean' ? { parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr } : {}),
+    ...(task.staging_outcome ? { staging_outcome: task.staging_outcome } : {}),
     ...(task.staging_wait ? { staging_wait: task.staging_wait } : {}),
     ...(task.needs_you_notice ? { needs_you_notice: { ...task.needs_you_notice } } : {}),
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
@@ -553,6 +561,9 @@ function summary(task) {
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
     after: task.afterLink ? { ...task.afterLink } : null,
     next: (task.nextLinks || []).map((link) => ({ ...link })),
+    // Forks (SPEC-628 FRK-008): where this one came from, and its forks.
+    ...(task.forkedFrom ? { forked_from: { ...task.forkedFrom } } : {}),
+    ...(task.forkLinks && task.forkLinks.length ? { forks: task.forkLinks.map((link) => ({ ...link })) } : {}),
     held_prompt: task.heldPrompt ? { ...task.heldPrompt } : null,
     ...(task.mode ? { mode: task.mode } : {}),
     // How Auto chose the mode and workflow (TSK-015).
@@ -570,6 +581,8 @@ function summary(task) {
     // The idle agent waits in `yulius wait` (SPEC-085 STT-002).
     yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
     merge_armed: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.merge_armed === true,
+    // An achieved goal's integration failure not cleared yet (SPEC-621 FIN-004): absent when false, as the server sends it.
+    ...(task.status === 'running' && task.activity === 'done' && task.candidate_pending === true ? { candidate_pending: true } : {}),
     // Claude Code last recorded the goal as set, not met or failed (SPEC-429).
     goal_unfinished: idleRun && task.goal_unfinished === true,
     // Its spec says its work is not finished (SPEC-491 DON-004).
@@ -1380,7 +1393,8 @@ const GUEST_PAGES = ['attachments', 'browser', 'ci', 'files', 'git', 'intake', '
 /** The server's `guest_may_reach` (crates/yulius-server/src/auth.rs). */
 function guestMayReach(method, path) {
   path = path.replace(/\/$/, '');
-  if (['/api/me', '/api/me/notes', '/api/me/digest', '/api/auth/logout', '/api/events', '/api/archived-tasks', '/api/previews/authorize'].includes(path)) return true;
+  if (['/api/me', '/api/me/notes', '/api/me/digest', '/api/me/notices', '/api/auth/logout', '/api/events', '/api/archived-tasks', '/api/previews/authorize'].includes(path)) return true;
+  if (method === 'DELETE' && /^\/api\/me\/notices\/[^/]+$/.test(path)) return true;
   if (path === '/api/sandboxes') return method === 'GET';
   if (/^\/api\/(tasks|sessions|shells)\/.+/.test(path)) return true;
   const match = /^\/api\/sandboxes\/([^/]+)(?:\/([^/]+))?/.exec(path);
@@ -1507,10 +1521,13 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   const archived = query.get('archived') === 'true';
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
-/** The effective model and effort, retaining each omitted task setting (SPEC-561). */
+/**
+ * The effective model and effort, retaining each omitted task setting (SPEC-561): each agent's
+ * default, Opus 5.5 at high for Claude Code (SPEC-493, SPEC-462).
+ */
 function taskModelSettings(harness, options = {}) {
-  const model = options.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4');
-  const effort = options.effort || (harness === 'claude' ? 'default' : DEFAULT_EFFORT);
+  const model = options.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-5-5');
+  const effort = options.effort || DEFAULT_EFFORT;
   return { model, model_default: !options.model, effort, effort_default: !options.effort };
 }
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
@@ -1915,6 +1932,46 @@ const continueHandler = ({ db, p, body }) => {
   return summary(task);
 };
 route('POST', `/api/tasks/${ID}/continue`, continueHandler);
+// Fork (SPEC-628 FRK-001): a new task of the same harness continues a copy of this one's
+// conversation from its branch's head; refused as the server refuses.
+route('POST', `/api/tasks/${ID}/fork`, ({ db, p, body }) => {
+  const source = taskOf(db, p[0]);
+  need(sandboxOf(db, source.sandbox_id), 'write');
+  if (source.harness === 'antigravity') fail(422, 'invalid', 'Antigravity cannot fork a conversation at launch: its /fork works only inside a running session');
+  if (['queued', 'chained', 'prepared'].includes(source.status) || (source.status === 'closed' && source.neverRan)) fail(422, 'invalid', `#${source.number} has no conversation to fork yet: start it first`);
+  const message = body && typeof body.message === 'string' ? body.message.trim() : '';
+  if (new TextEncoder().encode(message).length > 65536) fail(422, 'invalid', 'the message must be at most 64 KiB');
+  if (body && body.model) {
+    const owner = harnessForModelPrefix(body.model);
+    if (owner && owner !== source.harness) fail(422, 'invalid', `Choose ${agentOfHarness(owner).cli} for this model. This task uses ${agentOfHarness(source.harness).cli}.`);
+  }
+  const account = db.accounts.find((a) => body && a.id === body.account_id);
+  if (body && body.account_id && !account) fail(429, 'capacity', 'That subscription no longer exists.');
+  if (account && (account.provider || 'anthropic') !== providerOfTask(source)) fail(429, 'capacity', `${account.label} is not ${aName(agentOfProvider(providerOfTask(source)))} subscription, so it cannot take the fork.`);
+  // A test makes the server refuse for a reason the page cannot know (`refuseFork`).
+  if (db.refuseFork) fail(422, 'invalid', db.refuseFork);
+  db.lastFork = { task: source.id, ...body };
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === source.sandbox_id).map((t) => t.number)) + 1;
+  const id = `tsk_${source.sandbox_id.slice(3)}_${number}`;
+  const title = (body && body.title) || `Fork of #${source.number}: ${source.title}`.slice(0, 120);
+  const commit = source.headSha || '9f3c2a1b7d4e5f60718293a4b5c6d7e8f9012345';
+  const task = {
+    id, sandbox_id: source.sandbox_id, number, title, harness: source.harness, harness_choice: 'chosen', status: 'queued', activity: null,
+    branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
+    origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    archived: false, account_label: null, prompt: source.prompt, mode: source.mode || 'goal', delivery: null,
+    stepsList: (source.stepsList || []).map((step, i) => ({ ...step, id: `${id}-s${i + 1}` })),
+    ...taskModelSettings(source.harness, { model: body && body.model, effort: body && body.effort }),
+    forkedFrom: { task_id: source.id, number: source.number, title: source.title, branch: source.branch, commit, session_id: `${source.id}-session`, forked_at: new Date().toISOString() },
+  };
+  source.forkLinks = [...(source.forkLinks || []), { task_id: id, number, title, status: 'queued', commit }];
+  db.tasks.push(task);
+  recount(db);
+  emit(db, { type: 'task.updated', task: summary(source) });
+  later(() => touch(db, task, { status: 'starting' }), 700);
+  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: account ? account.label : `${kindOf(providerOfTask(task))} #1` }), 1800);
+  return json(200, summary(task));
+});
 route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -1944,6 +2001,15 @@ route('DELETE', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.tasks = db.tasks.filter((t) => t.id !== task.id);
   recount(db);
   emit(db, { type: 'task.removed', task_id: task.id });
+  // Its source and forks no longer link to it, as the server publishes them (SPEC-628 FRK-008).
+  for (const other of db.tasks) {
+    const forkedFrom = other.forkedFrom && other.forkedFrom.task_id === task.id;
+    const forked = (other.forkLinks || []).some((link) => link.task_id === task.id);
+    if (!forkedFrom && !forked) continue;
+    if (forkedFrom) other.forkedFrom = { ...other.forkedFrom, task_id: null };
+    if (forked) other.forkLinks = other.forkLinks.filter((link) => link.task_id !== task.id);
+    emit(db, { type: 'task.updated', task: summary(other) });
+  }
   return json(204);
 });
 route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {
@@ -2265,12 +2331,17 @@ function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, skipJob 
   };
 }
 
-function seedCi() {
+function seedCi(params) {
   const studioGate = { source: 'yulius_toml', jobs: CI_JOBS.map(({ name, command, matrix }) => ({ name, command, matrix })) };
   return {
     sb_studio: {
       gate: studioGate, gate_problem: null, status_access: null, actions_workflows: [],
+      gate_notices: params.get('gate_notice') === '1' ? [
+        { revision: '7713224a587f', run_id: 'ci_gate', merge_task: 12, test: 'delivery::gate' },
+        { revision: 'ef02b192abba', run_id: 'ci_gate', merge_task: 15, test: 'queue::serve' },
+      ] : [],
       runs: [
+        ...(params.get('gate_notice') === '1' ? [ciRun('ci_gate', 'branch/quartio', 'ef02b192abba', 'failed', 3, { failJob: 'test (2/2)' })] : []),
         ciRun('ci_s4', 'branch/quartio', '9f3c2a1b7e4d', 'running', 1),
         // SPEC-162: a passed run whose "test (2/2)" exited with the skip code.
         ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22, { skipJob: 'test (2/2)' }),
@@ -2294,7 +2365,10 @@ function seedCi() {
     },
     sb_three: {
       gate: { source: 'profile', jobs: [{ name: 'gate', command: 'make ci', matrix: null }] }, gate_problem: null, status_access: null, actions_workflows: [],
-      runs: [ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'passed', 180)],
+      gate_notices: params.get('gate_notice') === 'reader' ? [{ key: 'gate:store::retry', revision: '77aa01bc3d4e', run_id: 'ci_t1', merge_task: null, test: 'store::retry' }] : [],
+      runs: [params.get('gate_notice') === 'reader'
+        ? ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'failed', 180, { failJob: 'test (1/2)' })
+        : ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'passed', 180)],
       hygiene: { scanned_at: null, notes: [], items: [] },
     },
   };
@@ -2330,7 +2404,7 @@ function ciOverview(db, sid) {
   const ci = ciOf(db, sid);
   return {
     gate: clone(ci.gate), gate_problem: ci.gate_problem, gate_fallback: ci.gate_fallback || null, runs: ci.runs.map((r) => ciSummary(progressCi(r, db.ciRunMs))),
-    can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
+    gate_notices: ci.gate_notices || [], can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
   };
 }
 
@@ -3288,6 +3362,64 @@ route('GET', `/api/automations/${ID}/runs`, ({ db, p }) => {
   return [0, 1, 2, 3, 4].map((i) => ({ scheduled_for: iso((i + 1) * DAY - 10 * HOUR), state: i === 2 ? 'skipped_previous_active' : i === 4 ? 'failed' : 'task_created', task_id: i === 2 || i === 4 ? null : 'tsk_studio_8', error: i === 4 ? 'the task could not be created: capacity reached' : null }));
 });
 
+// ------------------------------------------------------------------ script watches (SPEC-630)
+const watchOf = (db, id) => {
+  const w = db.watches.find((x) => x.id === id);
+  if (!w) fail(404, 'not_found', 'not found');
+  return w;
+};
+const watchesChanged = (db, sandbox) => emit(db, { type: 'watches.updated', sandbox_id: sandbox });
+function watchDefinition(body) {
+  if (!body.script || !String(body.script).trim()) fail(422, 'invalid', 'a watch needs a script');
+  if (Boolean(body.every) === Boolean(body.cron)) fail(422, 'invalid', 'a watch runs either every interval (every) or on a cron schedule (cron)');
+  if (body.every && !/^\d+[smhd]$/.test(body.every)) fail(422, 'invalid', 'an interval is a number and s, m, h or d, like 15m, from 1 minute to 7 days');
+  return { script: body.script, every: body.every || null, cron: body.cron || null, utc_offset_minutes: Number(body.utc_offset_minutes) || 0, expiry: body.expiry || null, timeout_seconds: body.timeout_seconds || 300, secrets: body.secrets || [] };
+}
+route('GET', `/api/sandboxes/${ID}/watches`, ({ db, p }) => db.watches.filter((w) => w.sandbox_id === p[0]));
+route('POST', `/api/sandboxes/${ID}/watches`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(body.name || '')) fail(422, 'invalid', 'a watch\'s name is 1 to 40 lowercase letters, digits and dashes, starting with a letter or a digit, like disk-report');
+  if (db.watches.some((w) => w.sandbox_id === p[0] && w.name === body.name)) fail(409, 'conflict', 'this project already has a watch of that name');
+  db.nextId += 1;
+  const w = { id: `wt_${db.nextId}`, sandbox_id: p[0], name: body.name, ...watchDefinition(body), owner_id: db.me.user.id, owner: db.me.user.login, created_via: 'ui', created_at: new Date().toISOString(), state: 'active', ended_reason: null, next_run_at: isoIn(MIN), last_started_at: null, last_ended_at: null, last_exit: null, last_failure: null, last_output: null, last_errors: null, failures: 0, runs: 0, posts: 0, pending_posts: 0, can_edit: true, can_remove: true };
+  db.watches.push(w);
+  watchesChanged(db, p[0]);
+  return json(201, w);
+});
+route('PUT', `/api/watches/${ID}`, ({ db, p, body }) => {
+  const w = watchOf(db, p[0]);
+  if (!w.can_edit) fail(403, 'forbidden', 'only its owner changes a watch');
+  if (body.name && body.name !== w.name) fail(422, 'invalid', 'a watch\'s name is the key of its notices and does not change: remove it and create one with the new name');
+  Object.assign(w, watchDefinition(body));
+  watchesChanged(db, w.sandbox_id);
+  return w;
+});
+route('DELETE', `/api/watches/${ID}`, ({ db, p }) => {
+  const w = watchOf(db, p[0]);
+  if (!w.can_remove) fail(403, 'forbidden', 'only its owner or a project administrator removes a watch');
+  db.watches = db.watches.filter((x) => x.id !== w.id);
+  watchesChanged(db, w.sandbox_id);
+  return json(204);
+});
+// Run now: the mock's run ends at once, exit 0, and posts its last line.
+route('POST', `/api/watches/${ID}/run`, ({ db, p }) => {
+  const w = watchOf(db, p[0]);
+  if (!w.can_edit) fail(403, 'forbidden', 'only its owner runs a watch now');
+  const now = new Date().toISOString();
+  Object.assign(w, { last_started_at: now, last_ended_at: now, last_exit: 0, last_failure: null, failures: 0, runs: w.runs + 1, posts: w.posts + 1, last_output: `ran now (${w.runs + 1})` });
+  watchesChanged(db, w.sandbox_id);
+  return json(202, w);
+});
+function watchPaused(db, id, paused) {
+  const w = watchOf(db, id);
+  if (paused ? !(w.can_edit || w.can_remove) : !w.can_edit) fail(403, 'forbidden', paused ? 'only its owner or a project administrator pauses a watch' : 'only its owner resumes a watch');
+  Object.assign(w, paused ? { state: 'paused', next_run_at: null } : { state: 'active', ended_reason: null, next_run_at: isoIn(w.every === '1d' ? DAY : HOUR) });
+  watchesChanged(db, w.sandbox_id);
+  return w;
+}
+route('POST', `/api/watches/${ID}/pause`, ({ db, p }) => watchPaused(db, p[0], true));
+route('POST', `/api/watches/${ID}/resume`, ({ db, p }) => watchPaused(db, p[0], false));
+
 // ------------------------------------------------------------------ secrets vault (VLT-001..009, SPEC-040)
 // Synthetic values only. Reveals need a two-factor code within 10 minutes (the mock accepts the
 // code below); setting two-factor up needs a sign-in or confirmation within 10 minutes (the mock
@@ -3361,7 +3493,7 @@ function agentShadow(db, s, sandbox) {
 function agentView(db, s, sandbox) {
   const admin = Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
   const manage = s.scope === 'instance' ? admin : s.scope === 'personal' ? s.owner === db.me.user.login : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), interpreter_name: manage && INTERPRETER_SETTINGS.has(s.name), can_manage: manage, ...copyRequestOf(s, sandbox, manage) };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, rules: s.rules || [], requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), interpreter_name: manage && INTERPRETER_SETTINGS.has(s.name), can_manage: manage, ...copyRequestOf(s, sandbox, manage) };
 }
 
 /** The copy of a production secret an agent of `sandbox` asked for (SPEC-440), as the list shows it. */
@@ -3465,6 +3597,111 @@ function validateAgent(body, creating, currentName) {
   if (body.value !== undefined && flattenedKey(body.value)) fail(422, 'invalid', "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n");
 }
 
+// ---- Brokered commands (SPEC-626): a project's commands and their runs, as the server answers.
+function commandsOf(db) {
+  if (!db.commands) {
+    db.commands = [{
+      id: 'cmd_deploy', sandbox: 'sb_studio', name: 'deploy', description: 'Deploys the studio with its service account', binary: '/usr/local/bin/deploy', secret: 'STRIPE_KEY',
+      tasks: [], approve: 'send', send_flags: ['--send'], approval_minutes: 10, timeout_seconds: 600, fixed: ['--key-file', '{keyfile}'], subcommands: ['status', 'push'],
+      refuse: ['--key-file', '-k'], slashes: false, env: {}, created_by: 'mkarp', created_at: iso(DAY), updated_by: 'mkarp', updated_at: iso(DAY), version: 1,
+    }];
+    db.commandRuns = [
+      { id: 'run_waiting', sandbox: 'sb_studio', command: 'deploy', task_number: 111, line: '/usr/local/bin/deploy --key-file {keyfile} push --send', changes: false, state: 'waiting', reason: null, deadline: new Date(Date.now() + 9 * 60 * 1000).toISOString(), answered_by: null, exit_code: null, created_at: iso(60 * 1000), ended_at: null },
+      { id: 'run_done', sandbox: 'sb_studio', command: 'deploy', task_number: 107, line: '/usr/local/bin/deploy --key-file {keyfile} status', changes: false, state: 'done', reason: null, deadline: null, answered_by: null, exit_code: 0, created_at: iso(HOUR), ended_at: iso(HOUR) },
+    ];
+  }
+  return db.commands;
+}
+
+const COMMAND_FIELDS = ['name', 'description', 'binary', 'secret', 'tasks', 'approve', 'send_flags', 'approval_minutes', 'timeout_seconds', 'fixed', 'subcommands', 'refuse', 'slashes', 'env'];
+
+function commandView(db, command, sandbox) {
+  const secret = vaultOf(db).agent.find((s) => s.name === command.secret && (s.sandbox === sandbox.id || (s.scope === 'instance' && (s.on || []).includes(sandbox.id))) && !s.cd_prod);
+  const out = { id: command.id, secret_ready: Boolean(secret), can_edit: sandbox.access === 'admin' };
+  for (const key of COMMAND_FIELDS) out[key] = command[key];
+  return { ...out, created_by: command.created_by, created_at: command.created_at, updated_by: command.updated_by, updated_at: command.updated_at, version: command.version };
+}
+
+function validateCommand(body) {
+  for (const key of Object.keys(body)) if (!COMMAND_FIELDS.includes(key)) fail(422, 'invalid', `unknown field \`${key}\``);
+  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(body.name || '')) fail(422, 'invalid', "a command's name is 1 to 40 lowercase letters, digits and dashes, not starting with a dash");
+  if (!/^\/[\x21-\x7e]+$/.test(body.binary || '') || /(^|\/)\.\.?(\/|$)/.test(body.binary)) fail(422, 'invalid', 'the binary is an absolute path, like /usr/local/bin/deploy');
+  if (/^\/(tmp|home|root|proc|sys|dev|run)\//.test(body.binary)) fail(422, 'invalid', "the binary is the host's own program");
+  if (!['always', 'send', 'never'].includes(body.approve || 'always')) fail(422, 'invalid', 'approve is always, send or never');
+  if ((body.approve === 'send') && !(body.send_flags || []).length) fail(422, 'invalid', 'approve send needs the flags that make the command change something (send_flags)');
+}
+
+function saveCommand(db, sandbox, body, existing) {
+  validateCommand(body);
+  const command = existing || { id: `cmd_${Math.random().toString(16).slice(2, 8)}`, sandbox: sandbox.id, created_by: 'mkarp', created_at: new Date().toISOString(), version: 0 };
+  const defaults = { description: '', tasks: [], approve: 'always', send_flags: [], approval_minutes: 10, timeout_seconds: 600, fixed: [], subcommands: [], refuse: [], slashes: false, env: {} };
+  for (const key of COMMAND_FIELDS) command[key] = body[key] ?? defaults[key];
+  command.updated_by = 'mkarp';
+  command.updated_at = new Date().toISOString();
+  command.version += 1;
+  if (!existing) commandsOf(db).push(command);
+  audit(db, existing ? 'command.update' : 'command.define', command.id, command.name);
+  emit(db, { type: 'commands.updated', sandbox_id: sandbox.id });
+  return commandView(db, command, sandbox);
+}
+
+function commandOf(db, sandbox, id) {
+  const command = commandsOf(db).find((c) => c.id === id && c.sandbox === sandbox.id);
+  if (!command) fail(404, 'not_found', 'not found');
+  return command;
+}
+
+function requireAdmin(sandbox) {
+  if (sandbox.access !== 'admin') fail(403, 'forbidden', 'this action needs admin access on GitHub');
+}
+
+route('GET', `/api/sandboxes/${ID}/commands`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  return { items: commandsOf(db).filter((c) => c.sandbox === sandbox.id).sort((a, b) => a.name.localeCompare(b.name)).map((c) => commandView(db, c, sandbox)), can_edit: sandbox.access === 'admin' };
+});
+route('POST', `/api/sandboxes/${ID}/commands`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  requireAdmin(sandbox);
+  if (commandsOf(db).some((c) => c.sandbox === sandbox.id && c.name === body.name)) fail(409, 'conflict', 'this project already has a command of that name');
+  return saveCommand(db, sandbox, body, null);
+});
+route('PUT', `/api/sandboxes/${ID}/commands/${ID}`, ({ db, p, body, query }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  requireAdmin(sandbox);
+  const command = commandOf(db, sandbox, p[1]);
+  const version = query && query.get ? query.get('version') : null;
+  if (version && Number(version) !== command.version) fail(409, 'conflict', 'the command changed since you opened it: reload and edit again');
+  return saveCommand(db, sandbox, body, command);
+});
+route('DELETE', `/api/sandboxes/${ID}/commands/${ID}`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  requireAdmin(sandbox);
+  const command = commandOf(db, sandbox, p[1]);
+  db.commands = commandsOf(db).filter((c) => c !== command);
+  audit(db, 'command.remove', command.id, command.name);
+  emit(db, { type: 'commands.updated', sandbox_id: sandbox.id });
+  return null;
+});
+route('GET', `/api/sandboxes/${ID}/command-runs`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  commandsOf(db);
+  const answers = sandbox.access === 'admin' || sandbox.access === 'write';
+  return { items: db.commandRuns.filter((r) => r.sandbox === sandbox.id).map((r) => ({ ...r, can_answer: answers && r.state === 'waiting' })) };
+});
+route('POST', `/api/sandboxes/${ID}/command-runs/${ID}`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  commandsOf(db);
+  const run = db.commandRuns.find((r) => r.id === p[1] && r.sandbox === sandbox.id);
+  if (!run) fail(404, 'not_found', 'not found');
+  if (run.state !== 'waiting') fail(409, 'conflict', `this run is ${run.state} already`);
+  run.state = body.approve ? 'running' : 'rejected';
+  run.answered_by = 'mkarp';
+  if (!body.approve) run.ended_at = new Date().toISOString();
+  audit(db, body.approve ? 'command.approve' : 'command.reject', run.id, run.line);
+  emit(db, { type: 'commands.updated', sandbox_id: sandbox.id });
+  return { ...run, can_answer: false };
+});
+
 route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.filter((s) => !s.sandbox).map(teamView));
 route('POST', '/api/team-secrets', ({ db, body }) => createTeam(db, body, null));
 route('GET', `/api/sandboxes/${ID}/team-secrets`, ({ db, p }) => {
@@ -3548,7 +3785,7 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
   const me = db.me.user.login;
   const sameScope = (s) => s.scope === scope && (scope === 'sandbox' ? s.sandbox === sandbox.id : scope === 'personal' ? s.owner === me : true);
   if (vaultOf(db).agent.some((s) => s.name === body.name && sameScope(s))) fail(409, 'conflict', `an agent secret named ${body.name} already exists in this scope`);
-  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, owner: scope === 'personal' ? me : undefined, on: scope === 'sandbox' ? undefined : [sandbox.id], name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null, auto_allow: body.auto_allow !== false };
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, owner: scope === 'personal' ? me : undefined, on: scope === 'sandbox' ? undefined : [sandbox.id], name: body.name, description: body.description || '', hosts: body.hosts || [], rules: body.rules || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null, auto_allow: body.auto_allow !== false };
   vaultOf(db).agent.push(secret);
   audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ') || 'no hosts yet'}`);
   return json(201, agentView(db, secret, sandbox));
@@ -3572,7 +3809,7 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   const widens = (body.auto_allow === true && !secret.auto_allow) || (body.hosts || []).some((host) => !bound.includes(hostOf(host)));
   const refused = widens && needFreshToWiden(db, secret);
   if (refused) return refused;
-  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'auto_allow']) if (body[key] !== undefined) secret[key] = body[key];
+  for (const key of ['name', 'description', 'hosts', 'rules', 'injection', 'header_name', 'username', 'value', 'auto_allow']) if (body[key] !== undefined) secret[key] = body[key];
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.agent.update', secret.id, secret.name);
   return agentView(db, secret, sandbox);
@@ -3969,7 +4206,8 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const opts = request.view.options || {};
   const prepared = opts.prepared === true;
   const model = opts.model?.trim();
-  const named = opts.harness?.trim() || (model ? undefined : 'codex');
+  // With neither agent nor model, Claude Code (SPEC-620 CDM-001).
+  const named = opts.harness?.trim() || (model ? undefined : 'claude');
   const drawn = named === 'auto' && !model;
   const harness = drawn ? drawHarness(db) : chosenHarness(named, model);
   const task = {
@@ -4760,10 +4998,10 @@ route('GET', '/api/analytics/tasks', ({ db, query }) => {
   return rows;
 });
 route('GET', '/api/status/github-reset', ({ db }) => db.githubReset);
-route('GET', '/api/status', ({ db }) => {
+route('GET', '/api/status', async ({ db }) => {
   const wobble = (Date.now() / 1000) % 60;
   const admin = db.me.user.is_instance_admin || db.me.user.is_superadmin;
-  return {
+  const view = {
     github_budget: db.githubBudget || { limit: 5000, remaining: 3700, used: 1300, unattributed_minimum: 169, resets_at: Math.floor(Date.now() / 1000) + 900,
       attempts: { display: 1200, ci_statuses: 48, merges: 56, staging: 100, imports: 3, other: 74 }, not_modified: 350, display_paused: false },
     github_reset_at_ms: db.githubReset,
@@ -4771,12 +5009,19 @@ route('GET', '/api/status', ({ db }) => {
     vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: db.sessionLimit, queued: db.tasks.filter((t) => t.status === 'queued').length + db.sessionQueue },
     // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
-    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
+    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, gate_notices: db.ci[s.id]?.gate_notices || [], live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
       ? { label: a.label, ...(a.email ? { email: a.email } : {}), provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
       : { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id })),
     contained: db.me.instance.contained,
   };
+  if (!db.holdNextStatus) return view;
+  db.holdNextStatus = false;
+  const response = json(200, view);
+  await new Promise((resolve) => { db.releaseStatus = resolve; });
+  const text = response.text.bind(response);
+  response.text = async () => { const body = await text(); db.statusReadTaken = true; return body; };
+  return response;
 });
 // ------------------------------------------------------------------ instance updates (ADR-18)
 
@@ -5811,6 +6056,20 @@ route('POST', `/api/tasks/${ID}/handoffs/${ID}`, ({ db, p, body }) => {
   }
   db.handoffAnswers = (db.handoffAnswers || 0) + 1;
   return entry;
+});
+
+// A person's notices (SPEC-624): keyed, expiring; `reads` counts the page's reads of them.
+route('GET', '/api/me/notices', ({ db }) => {
+  db.notices.reads += 1;
+  const now = Date.now();
+  return db.notices.list.filter((n) => !n.dismissed && (!n.expires_at || Date.parse(n.expires_at) > now));
+});
+route('DELETE', `/api/me/notices/${ID}`, ({ db, p }) => {
+  const notice = db.notices.list.find((n) => n.id === p[0]);
+  if (!notice) fail(404, 'not_found', 'not found');
+  notice.dismissed = true;
+  db.notices.dismissed.push(p[0]);
+  return json(204);
 });
 
 // `reads` counts the page's reads of it, so a test knows the bell has read it.
@@ -7419,6 +7678,18 @@ function startAmbient(db) {
 export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
+  // A notice posted as the server does (SPEC-624): newest wins per project and key.
+  db.postNotice = (notice) => {
+    const full = { sandbox_id: null, category: 'needs_you', tone: 'info', detail: null, link: null, decision: false, personal: false, created_at: new Date(Date.now()).toISOString(), expires_at: null, ...notice };
+    db.notices.list = db.notices.list.filter((n) => !(n.key === full.key && n.sandbox_id === full.sandbox_id && n.personal === full.personal));
+    db.notices.list.push(full);
+    emit(db, { type: 'notice.posted', notice: full });
+  };
+  db.removeNotice = (id) => {
+    const notice = db.notices.list.find((n) => n.id === id);
+    db.notices.list = db.notices.list.filter((n) => n.id !== id);
+    if (notice) emit(db, { type: 'notice.removed', id, sandbox_id: notice.sandbox_id, key: notice.key });
+  };
   db.sendDigest = (id = `dg_mock_${Date.now()}`) => {
     db.digest.latest = mockDigest(id);
     emit(db, { type: 'digest.ready', digest: db.digest.latest });
@@ -7557,6 +7828,19 @@ export function createMockTransport(params) {
     db.announceSecrets(secret.sandbox);
   };
   db.announceSecrets = (sandboxId) => emit(db, { type: 'secrets.updated', sandbox_id: sandboxId });
+  // SPEC-626: run `id` waits no more (its time ran out), as the server says.
+  db.expireRun = (id) => {
+    const run = db.commandRuns.find((r) => r.id === id);
+    run.state = 'expired';
+    run.ended_at = new Date().toISOString();
+    emit(db, { type: 'commands.updated', sandbox_id: 'sb_studio' });
+  };
+  // SPEC-626: an agent of task `task` asks to run `deploy` with `line`, which waits for approval.
+  db.askRun = (line, task) => {
+    commandsOf(db);
+    db.commandRuns.unshift({ id: `run_${db.commandRuns.length}`, sandbox: 'sb_studio', command: 'deploy', task_number: task, line, changes: true, state: 'waiting', reason: null, deadline: new Date(Date.now() + 600000).toISOString(), answered_by: null, exit_code: null, created_at: new Date().toISOString(), ended_at: null });
+    emit(db, { type: 'commands.updated', sandbox_id: 'sb_studio' });
+  };
   db.updateHolds = [];
   db.updateReads = () => db.updateHolds.length;
   db.updateReadsTaken = 0;

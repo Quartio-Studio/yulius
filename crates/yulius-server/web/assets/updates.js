@@ -187,11 +187,12 @@ export function createUpdateBanner(ctx) {
     if (!view || !superadmin() || !ctx.notifications) return;
     const available = view.available;
     if (available) {
-      ctx.notifications.add({ kind: 'info', title: 'Update available', detail: available.summary, route: INSTANCE_ROUTE, key: `update:${available.commit}`, once: true });
+      // A newer update replaces the older one's entry (SPEC-624).
+      ctx.notifications.add({ kind: 'info', title: 'Update available', detail: available.summary, route: INSTANCE_ROUTE, key: 'update', episode: available.commit, once: true, expires: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() });
     }
     const run = view.run;
     if (run && (run.state === 'failed' || run.state === 'rolled_back')) {
-      ctx.notifications.add({ kind: 'error', title: run.state === 'rolled_back' ? 'The update was rolled back' : 'The update failed', detail: run.error || null, route: INSTANCE_ROUTE, key: `update-run:${run.id}`, once: true });
+      ctx.notifications.add({ kind: 'error', title: run.state === 'rolled_back' ? 'The update was rolled back' : 'The update failed', detail: run.error || null, route: INSTANCE_ROUTE, key: `update-run:${run.id}`, once: true, expires: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString() });
     }
   }
 

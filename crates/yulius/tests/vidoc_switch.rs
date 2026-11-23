@@ -116,6 +116,7 @@ async fn toward_vidoc(
         return Ok(TowardVidoc::Tunneled);
     }
     let request = EgressRequest {
+        method: "GET".into(),
         host: VIDOC_HOST.into(),
         port: 443,
         path_and_query: "/v1/messages".into(),

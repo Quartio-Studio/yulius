@@ -1,6 +1,6 @@
 ---
 yulius-task: 09d643c4-9df9-4abe-9c9c-d0cfe7fdf205
-status: in-progress
+status: done
 ---
 
 # SPEC-558 Parked terminals and unfinished Codex goals
@@ -68,10 +68,13 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify the current model and subscription before accepting a named Continue
 - [x] Order parking and replacement merge requests through run settlement
 - [x] Deliver the recorded integration failure once to an already parked owner
-- [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
-- [ ] Render verified live integration status in the terminal, sidebar and Task Info
-- [ ] Deliver bounded Codex goal continuation to dev
-- [ ] Recover screens from tasks parked before the upgrade
+- [x] Hold the original owner’s session slot while its open delivery cannot be verified
+- [x] Unpack CI test shards on disk within the one-GiB temporary-filesystem cap
+- [x] Restore the reviewed session-capacity slice after the CI repair
+- [x] Verify live owners when constructing and releasing dependent tasks or closing their sessions
+- [x] Render verified live integration status in the terminal, sidebar and Task Info
+- [x] Deliver bounded Codex goal continuation to dev
+- [x] Recover screens from tasks parked before the upgrade
 
 The owner supplied the ordering of #325. On November 20 UTC the last answer at 04:22:19 reported pending CI, review and mutation checks on `f86cbd49f`. Ordinary PR #1461 CI failed at 04:30:56. The digest parked the waiting session at 04:52:52. It resumed at 10:30:20 and resubmitted at 10:36:52. The process was absent for 337.46 minutes. Step 10 covers this ordering, including a lagging GitHub status, a newer local commit during the parking decision, and a published head that exists only in another clone.
 
@@ -92,7 +95,9 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-An automatic continuation for a parked PR owner verifies the recorded integration decision before launching. A human decision or unavailable capacity leaves the original session parked. The next watcher pass checks the PR again before delivering a prompt.
+A live owner with a completed goal and a recorded failed single-PR candidate occupies a session slot until the PR watcher verifies that the hosted PR closed or its candidate inputs changed. The same holds its dependents and its close: a chain, a start rule (including `after_all_tasks`), archive, delete and a removed subscription's close count such an owner Done only while they hold its delivery read guard, taken after the Done check, until the successor is released or the Close intent is recorded; arming a merge is refused while the session closes (SPEC-621). Capacity reads stay local. A launch holds the owners’ delivery read guards until it reserves the slot. The watcher retries on its next pass when a launch holds the guard.
+
+SPEC-612 supersedes the automatic continuation delivered by this spec. The parked PR owner retains its recorded integration decision and a person can resume its original session.
 
 Parking and a replacement merge request share the task’s merge writer at admission. If the writer is busy or a merge is armed, the idle pass leaves the session live. Once the park commits, a new merge request checks the committed run and durable task state before it can arm. Stop, close, or loss can settle that same run and release its park marker. Final admission checks the attached attempt while holding the end-intent lock. An exit reader already settling the run takes precedence over an earlier idle observation.
 
@@ -100,7 +105,7 @@ A named Continue checks the current model and the requested subscription when Yu
 
 An owner can stop a task while its previous run is still finishing a park. Continue waits for that run's terminal cleanup before entering the queue or starting again. A settlement timeout or a refusal because the previous run is still live leaves the archive and outstanding question available for retry. The owner can also archive or close a replacement turn during admission. The start or queue claim checks the original attempt, archive and status together with the change that accepts the continuation. A remote restart keeps its first selection through the permission check. A goal resume waits for terminal cleanup under the same bound. Direct resume, including onboarding, carries the resting selection through acquisition of the launch lock. A replacement attempt must settle under its own admission check. Answering the question records the timestamp of acceptance.
 
-Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
+Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. A failing PR continues the goal only from local evidence: its own Yulius CI run failed at the worktree's head after the watch told the agent; a lookup that cannot finish continues nothing ([ADR-0464](../../docs/decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md), superseding the earlier rule that it asks the agent to verify its checks). Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
 
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
@@ -125,6 +130,20 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- Fresh independent review approved the restored capacity change at `34f3953575115212da39fcc6ed659d51785c35bf`. All 2,593 tests in the main integration binary passed in `faf5bbbf-02ee-4372-bc43-4646bf5abce3`, including the full agent-hook and delivery modules. The candidate fixtures exercised a real PTY and SQLite with simulated GitHub events. Scoped Clippy and repository quick checks passed. Vidoc was disabled.
+- PR #1679 delivered the independent CI repair at `8855f295b` after train run `ef126991-55f1-49dc-95d9-149239145159` passed. Merged-revision CI `3bd678c0-0d1c-4120-8b4b-695bfc6dcd9c` passed both real test shards and e2e under the host limit. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/8855f295bb920bab9e0e632c02b65b2ca0676182)
+- In run `51de5931-74ec-42ba-9793-12dca4f3b115` the queued peer saw a free session for an unreadable open delivery and again for a missing PR number. Restoring the capacity checks held the live owner’s slot in both cases. Run `928d10ec-890d-4db7-b3e5-c2d55719e169` passed all 70 candidate tests, including a reopened PR during reservation, a replacement merge on an earlier owner, verified external closure and a parked task that waits for a person.
+- Hand checks on the saved capacity change. Replacing the guarded final PR read with a raw lookup let a peer see a free session in `5cbff53b-d244-4a9b-8cc4-29c5828892d9`. Removing the guard before the initial refresh let two extra hosted reads overtake reservation in `09b5c791-ca32-4bf6-9014-ba1f3ce4d2ee`. Both guards are present in the restored live watcher.
+- The isolated CI repair precedes delivery of the reviewed session-capacity change preserved at `5f216ef4e`. The user's host report traced the gate failure on both protected branches to the installed 1 GiB run tmpfs at `aabf37091`; the same error ended main run `c51054f9-4e67-440e-abd7-8d0b3ba35e05`.
+- The cold tools-cache test reproduced Cargo’s default temporary target for a registry install. Removing the explicit disk target by hand reproduced it again. The restored bootstrap reclaims the target after an install failure on both the job scratch and the tools-cache fallback.
+
+- PR #1679 run `a4cf8907-9726-44f9-ad63-575d039ded21` failed before executing shard 2. Nextest exhausted `/tmp` while unpacking the 45-binary archive for the quarantine listing. The shard regression failed on the default extraction path before the fix. Both nextest commands now unpack in a private directory on disk. [Test build contract](../../docs/decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
+
+- Hand check of the shard repair. Removing the extraction arguments reproduced the missing disk path in the quarantine listing. Restored code passed all nine xtask CLI tests. In a separate container with a 1,073,741,824-byte tmpfs, the full 45-binary archive reproduced the CI failure unpacking `yulius_contracts`. On job disk it unpacked to 2,286,202,018 bytes, listed the tests and ran all 316 selected shard-2 domain tests in `0cf9f7e2-e045-43dd-9ce9-b3a50740c72f`. The CLI regression checks cleanup after both shard commands.
+- Independent review found that the Unix cache fallback inherited mode 0755 under umask 022. The revised CLI test observed 0755 in the child and failed. After setting mode 0700 at creation, removing only the overwrite argument failed on the target populated by the quarantine listing. Restoring it passed all nine CLI tests and scoped Clippy.
+- Gate audit. Cargo targets, CI archives, tool and browser caches, and the npm installation use disk. PR run `eb097f6c-a01f-45d9-b8ea-a6810cee4fd0` passed lint, macOS, docs, dependencies and file contracts under the new host. Quality failed three compiler-cache fixture assertions assigned to task #596. The same three failed in run `ab6e79a8-a058-4ee2-8a70-bdab455e8b4e` on `353ede197`. After integrating #1678 at `ff4ed8b89`, all three passed with the pinned Rust toolchain, a C linker and a 1 GiB tmpfs. Vidoc was disabled.
+- The capped Chromium probe ran all 100 test files. Its sampled peak was 272,314,368 bytes and it reported no filesystem-space error. It finished with 1,243 passed, 82 failed and one skipped. Browser assertions and timeouts keep that run from counting as a green gate. The CI repair changes no browser assets or browser tests. Independent review approved `1947d7b6e737c8020571bb6877e42afc2bc3590f`.
 
 - Independent review approved `71b6f42ba1cf5293f1cc5f8625775b2ce06e4659`. Run `3c27def5-99f4-4252-bc2d-8dd7faeb942d` passed all 211 parking, PR-watch and Codex tests. The agent echoed the recorded diagnosis in its original provider session and the next watcher pass started no second attempt. Clippy passed for all targets of `yulius-app`, `yulius-store` and `yulius` with all features and warnings denied. The complete hook and delivery modules passed 241 of 258 tests in `2781ac61-a2f5-4545-8c1d-977daab1faf5`; the 17 failures matched the dev control exactly. Vidoc was disabled. The terminal tests used a synthetic agent and a real PTY.
 - Hand check of the final claim. Removing the ordinary-run comparison and splitting the exit from park restoration reproduced both failures in `3377e959-72cb-4d13-9c4b-517f2b6053d1`. The reviewed source was restored.
@@ -607,6 +626,11 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 - Repeating the five missed blocker mutations with the strengthened branch-change fixture reported `5 mutants tested in 4m: 5 caught`. The final nextest scope passed all 106 parking, PR-watch and eligibility tests. Repository contracts and Rust formatting passed. Vidoc was disabled. The historical Quartio page and board require a platform release to check live. This delivery used synthetic PRs and real local Git repositories.
 
 ## Delivery slices
+
+All 53 steps are on dev (22 to 23 November 2026, task #605 / SPEC-621): pre-upgrade screens #1697, bounded Codex goal continuation on its own red Yulius CI #1700 and #1709 (ADR-0464), live-owner verification for dependents and closes #1720, live integration status in the views #1723. The CI tmpfs repair #1679 is on dev; main (`aabf37091`) predates it, so main's failed run `21d8a791-8380-4290-899a-b4243928c5fa` (`No space left on device` extracting `tests.tar.zst` into `/tmp`) needs the next promotion, not a rerun.
+
+Task #605 (SPEC-621) took over steps 50 to 53 on 22 November. It delivered the pre-upgrade screen recovery from #540's prepared patch: the cockpit `task_screen` fixture reproduced the #517 exit block on dev and passes with it.
+PR #1616 had meanwhile delivered bounded goal continuation for open steps and unfinished specs to every harness, so #540's goal patch was not ported. The #325 fixture showed what was left: with steps 6 and 7 finished, a Codex goal whose pull request was red ended its turn. The Stop gate now continues it when its own latest Yulius CI run failed at the worktree's head ([ADR-0464](../../docs/decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)). That supersedes this spec's earlier decision to continue when the Stop lookup cannot finish: an action may not rest on a display read (ADR-0447).
 
 PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. PR #1539 shared that verification across parked HTTP task-list rows and Home. PR #1542 delivered verified MCP rows. Subsequent deliveries through PR #1560 updated the page, sidebar, terminal and Task Info. Remaining work covers shared-head CI, failed integration candidates, bounded Codex goals and pre-upgrade screens.
 

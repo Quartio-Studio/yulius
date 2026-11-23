@@ -14,6 +14,7 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
+use yulius_domain::usage::{ModelTokens, TokenUsage};
 
 use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
 
@@ -218,21 +219,75 @@ pub(crate) fn metrics_from_row(row: &Row<'_>) -> rusqlite::Result<MetricsRecord>
         cache_write: opt_u64(row.get("cache_write")?),
         turns: row.get::<_, Option<i64>>("turns")?.map(to_u32),
         active_ms: opt_u64(row.get("active_ms")?),
+        parts: parts_from_json(row.get("model_parts")?)?,
     })
+}
+
+/// The `model_parts` column (SPEC-619 CSA-4): `NULL` for none.
+pub(crate) fn parts_json(parts: &[ModelTokens]) -> Option<String> {
+    parts_value(parts).map(|parts| parts.to_string())
+}
+
+fn parts_value(parts: &[ModelTokens]) -> Option<serde_json::Value> {
+    (!parts.is_empty()).then(|| {
+        serde_json::Value::Array(
+            parts
+                .iter()
+                .map(|part| {
+                    serde_json::json!({
+                        "model": part.model,
+                        "input_tokens": part.usage.input,
+                        "output_tokens": part.usage.output,
+                        "cache_read": part.usage.cache_read,
+                        "cache_write": part.usage.cache_write,
+                    })
+                })
+                .collect(),
+        )
+    })
+}
+
+fn parts_from_json(text: Option<String>) -> rusqlite::Result<Vec<ModelTokens>> {
+    let Some(text) = text else {
+        return Ok(Vec::new());
+    };
+    let bad = || bad_column("model_parts", &text);
+    let serde_json::Value::Array(items) = serde_json::from_str(&text).map_err(|_| bad())? else {
+        return Err(bad());
+    };
+    items
+        .iter()
+        .map(|item| {
+            let tokens = |key: &str| item.get(key).and_then(serde_json::Value::as_u64);
+            Ok(ModelTokens {
+                model: item
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(bad)?
+                    .to_owned(),
+                usage: TokenUsage {
+                    input: tokens("input_tokens"),
+                    output: tokens("output_tokens"),
+                    cache_read: tokens("cache_read"),
+                    cache_write: tokens("cache_write"),
+                },
+            })
+        })
+        .collect()
 }
 
 /// An attempt's stored figures as JSON, `None` without a row (SPEC-091 RCT-004).
 fn stored_metrics_json(c: &rusqlite::Connection, attempt: &str) -> AppResult<Option<String>> {
     let row = c
         .query_row(
-            "SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms FROM metrics WHERE attempt_id = ?1",
+            "SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, model_parts FROM metrics WHERE attempt_id = ?1",
             [attempt],
             metrics_from_row,
         )
         .optional()
         .map_err(db)?;
     Ok(row.map(|m| {
-        serde_json::json!({
+        let mut figures = serde_json::json!({
             "model": m.model,
             "input_tokens": m.input_tokens,
             "output_tokens": m.output_tokens,
@@ -240,8 +295,11 @@ fn stored_metrics_json(c: &rusqlite::Connection, attempt: &str) -> AppResult<Opt
             "cache_write": m.cache_write,
             "turns": m.turns,
             "active_ms": m.active_ms,
-        })
-        .to_string()
+        });
+        if let Some(parts) = parts_value(&m.parts) {
+            figures["model_parts"] = parts;
+        }
+        figures.to_string()
     }))
 }
 
@@ -482,107 +540,6 @@ impl TaskStore for SqliteStore {
         .await
     }
 
-    async fn claim_parked_candidate(
-        &self,
-        selected: &TaskRecord,
-        claim: yulius_app::pr_watch::ParkedCandidateClaim,
-        account: &AccountId,
-        at: Timestamp,
-    ) -> AppResult<Option<yulius_app::capacity::ContinuationAdmission>> {
-        let account = account.clone();
-        let id = selected.id.to_string();
-        let attempt = selected.resume_attempt_id.clone();
-        let branch = selected.branch.clone();
-        let sandbox = selected.sandbox_id.clone();
-        self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let eligible: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM tasks t JOIN delivery d ON d.task_id = t.id
-                 WHERE t.id = ?1 AND t.status = 'parked' AND t.archived_at IS NULL
-                 AND t.needs_you IS NULL AND t.activity IS NOT 'needs_attention'
-                 AND d.stage = 'pr_open' AND d.pr_number = ?2 AND t.branch = ?3
-                 AND (SELECT id FROM attempts WHERE task_id = t.id ORDER BY seq DESC LIMIT 1) = ?4
-                 AND NOT EXISTS (SELECT 1 FROM capacity_pauses WHERE task_id = t.id AND ended_at IS NULL)
-                 AND NOT EXISTS (SELECT 1 FROM prompt_holds WHERE task_id = t.id AND state = 'pending'))",
-                params![id, to_i64(claim.pr), branch, attempt.as_ref().map(AttemptId::as_str)], |row| row.get(0)
-            ).map_err(db)?;
-            if !eligible || crate::spans::latest_merge_wait(&tx, &id)?.as_ref() != Some(&claim.decision) {
-                return Ok(None);
-            }
-            if let Some((head, observed)) = &claim.ordinary {
-                let runs = crate::ci::runs_for_exact_head(&tx, sandbox.as_str(), head)?;
-                if yulius_app::ci::run_for_pull_head(&runs, claim.pr) != observed.as_ref() {
-                    return Ok(None);
-                }
-            }
-            let current = tx.query_row(
-                &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
-                [&id], task_from_row,
-            ).map_err(db)?;
-            // The pool selected this subscription. Accept it only for the model
-            // and account limits in the same snapshot as the launch claim.
-            let placement = match yulius_app::capacity::ContinuationAdmission::named(
-                &current, crate::accounts::list_accounts(&tx)?, &account, at,
-            ) {
-                Ok(placement) => placement,
-                Err(AppError::Capacity(_)) => return Ok(None),
-                Err(error) => return Err(error),
-            };
-            let started = transition(&tx, &id, Some(TaskStatus::Parked), TaskStatus::Starting, None, at, None)?;
-            tx.commit().map_err(db)?;
-            Ok(started.then_some(placement))
-        }).await
-    }
-
-    async fn settle_unspawned_candidate(
-        &self,
-        task: &TaskId,
-        attempt: &AttemptId,
-        activity: Option<Activity>,
-        at: Timestamp,
-    ) -> AppResult<bool> {
-        let task = task.to_string();
-        let attempt = attempt.to_string();
-        self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let ended = tx
-                .execute(
-                    "UPDATE attempts SET state='exited', ended_at=?3, exit_reason='account_removed'
-                 WHERE task_id=?1 AND id=?2 AND state='spawning'",
-                    params![task, attempt, at.0],
-                )
-                .map_err(db)?;
-            if ended == 0 {
-                return Ok(false);
-            }
-            let latest: String = tx
-                .query_row(
-                    "SELECT id FROM attempts WHERE task_id=?1 ORDER BY seq DESC LIMIT 1",
-                    [&task],
-                    |r| r.get(0),
-                )
-                .map_err(db)?;
-            let parked = latest == attempt
-                && transition(
-                    &tx,
-                    &task,
-                    Some(TaskStatus::Starting),
-                    TaskStatus::Parked,
-                    activity,
-                    at,
-                    None,
-                )?;
-            tx.commit().map_err(db)?;
-            #[cfg(feature = "test-support")]
-            yulius_app::race::reached(
-                yulius_app::race::Point::TerminalOutcomeRecorded,
-                std::path::Path::new(&attempt),
-            );
-            Ok(parked)
-        })
-        .await
-    }
-
     async fn queue_task(
         &self,
         id: &TaskId,
@@ -807,6 +764,8 @@ impl TaskStore for SqliteStore {
                 "DELETE FROM task_chains WHERE task_id = ?1",
                 "DELETE FROM task_schedules WHERE task_id = ?1",
                 "UPDATE task_chains SET after_task_id = NULL WHERE after_task_id = ?1",
+                "DELETE FROM task_forks WHERE task_id = ?1",
+                "UPDATE task_forks SET source_task_id = NULL WHERE source_task_id = ?1",
                 "DELETE FROM prompt_holds WHERE task_id = ?1",
                 "UPDATE prompt_holds SET new_task_id = NULL WHERE new_task_id = ?1",
                 "DELETE FROM task_auto_choices WHERE task_id = ?1",
@@ -850,6 +809,36 @@ impl TaskStore for SqliteStore {
             c.execute(
                 "UPDATE tasks SET working_since = ?1 WHERE id = ?2",
                 params![since.map(|t| t.0), id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn task_pin(&self, task: &TaskId) -> AppResult<Option<AccountId>> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            let pin: Option<Option<String>> = c
+                .query_row(
+                    "SELECT pinned_account_id FROM tasks WHERE id = ?1",
+                    [id.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(pin.flatten().and_then(|text| AccountId::parse(&text).ok()))
+        })
+        .await
+    }
+
+    async fn set_task_pin(&self, task: &TaskId, account: Option<&AccountId>) -> AppResult<()> {
+        let id = task.as_str().to_owned();
+        let account = account.map(|a| a.as_str().to_owned());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE tasks SET pinned_account_id = ?1 WHERE id = ?2",
+                params![account, id],
             )
             .map_err(db)?;
             Ok(())
@@ -1682,10 +1671,11 @@ impl TaskStore for SqliteStore {
         );
         self.call(move |c| {
             c.execute(
-                "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(attempt_id) DO UPDATE SET model = excluded.model, \
+                "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at, model_parts) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(attempt_id) DO UPDATE SET model = excluded.model, \
                  input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cache_read = excluded.cache_read, \
-                 cache_write = excluded.cache_write, turns = excluded.turns, active_ms = excluded.active_ms, updated_at = excluded.updated_at",
+                 cache_write = excluded.cache_write, turns = excluded.turns, active_ms = excluded.active_ms, updated_at = excluded.updated_at, \
+                 model_parts = excluded.model_parts",
                 params![
                     a,
                     t,
@@ -1696,7 +1686,8 @@ impl TaskStore for SqliteStore {
                     m.cache_write.map(to_i64),
                     m.turns.map(i64::from),
                     m.active_ms.map(to_i64),
-                    at.0
+                    at.0,
+                    parts_json(&m.parts)
                 ],
             )
             .map_err(db)?;
@@ -1709,7 +1700,7 @@ impl TaskStore for SqliteStore {
         let t = task.as_str().to_owned();
         self.call(move |c| {
             let mut stmt = c
-                .prepare("SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms FROM metrics WHERE task_id = ?1")
+                .prepare("SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, model_parts FROM metrics WHERE task_id = ?1")
                 .map_err(db)?;
             let rows = stmt.query_map([t], metrics_from_row).map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
@@ -1855,10 +1846,11 @@ impl TaskStore for SqliteStore {
             };
             if let Some(m) = m {
                 tx.execute(
-                    "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(attempt_id) DO UPDATE SET model = COALESCE(excluded.model, metrics.model), \
+                    "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at, model_parts) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(attempt_id) DO UPDATE SET model = COALESCE(excluded.model, metrics.model), \
                      input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cache_read = excluded.cache_read, \
-                     cache_write = excluded.cache_write, turns = excluded.turns, active_ms = excluded.active_ms, updated_at = excluded.updated_at",
+                     cache_write = excluded.cache_write, turns = excluded.turns, active_ms = excluded.active_ms, updated_at = excluded.updated_at, \
+                     model_parts = excluded.model_parts",
                     params![
                         a,
                         task,
@@ -1869,7 +1861,8 @@ impl TaskStore for SqliteStore {
                         m.cache_write.map(to_i64),
                         m.turns.map(i64::from),
                         m.active_ms.map(to_i64),
-                        at.0
+                        at.0,
+                        parts_json(&m.parts)
                     ],
                 )
                 .map_err(db)?;

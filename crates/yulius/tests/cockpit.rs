@@ -1748,10 +1748,13 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "ci_rerun",
             "ci_run",
             "ci_runs",
+            "commands_list",
             "docker_restart",
             "instance",
             "instance_update",
             "merge_queue",
+            "notice_dismiss",
+            "notices_list",
             "onboarding_start",
             "person_ask",
             "promote",
@@ -1784,6 +1787,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_delete",
             "task_delivery",
             "task_edit",
+            "task_fork",
             "task_get",
             "task_held_prompt",
             "task_merge",
@@ -1805,6 +1809,12 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "variable_delete",
             "variables_list",
             "variables_set",
+            "watch_create",
+            "watch_pause",
+            "watch_remove",
+            "watch_run",
+            "watch_update",
+            "watches_list",
             "workflows_list",
         ]
     );
@@ -1820,8 +1830,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         assert!(refused.to_string().contains("unknown tool"), "{refused}");
     }
 
-    // A task for alice (MGT-001, MGT-007).
-    crate::codex::connect_codex(&f.h.app).await?;
+    // A task for alice (MGT-001, MGT-007), on Claude Code by default (SPEC-620).
     let (created, is_error) = cockpit_tool(
         &f,
         &token,
@@ -1838,7 +1847,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             .await?
             .ok_or("task")?;
     assert_eq!(task.created_by, alice);
-    assert_eq!(task.harness, yulius_domain::harness::Harness::Codex);
+    assert_eq!(task.harness, yulius_domain::harness::Harness::ClaudeCode);
     assert_eq!(f.h.app.task_summary(&task).await?.harness_choice, "chosen");
     assert_eq!(task.origin, TaskOrigin::Agent);
     let (listed, is_error) = cockpit_tool(&f, &token, "tasks_list", json!({})).await?;
@@ -3635,6 +3644,14 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "yulius-secret-APIFY_KEY"
     );
     assert!(listed["secrets"][0]["adds"].is_string(), "{listed}");
+    // Its method and path rules (SPEC-627 MPR-007): none here, and how they work.
+    assert_eq!(listed["secrets"][0]["rules"], json!([]), "{listed}");
+    assert!(
+        listed["how_to_use"]
+            .to_string()
+            .contains("outside its rules"),
+        "{listed}"
+    );
     let raw = listed.to_string();
     for hidden in [SECRET_VALUE, "OTHER_KEY", "other_synthetic_value_4471"] {
         assert!(!raw.contains(hidden), "{hidden} in {raw}");
@@ -4247,6 +4264,7 @@ fn egress_request(
     headers: &[(&str, &str)],
 ) -> yulius_app::ports::egress::EgressRequest {
     yulius_app::ports::egress::EgressRequest {
+        method: "GET".into(),
         host: host.into(),
         port: 443,
         path_and_query: "/v1/deploys".into(),
@@ -5182,7 +5200,7 @@ async fn wait_for_count(f: &Fixture, count: usize) -> TestResult {
 #[tokio::test]
 async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout() -> TestResult {
     use yulius_app::ports::store::TaskStore as _;
-    use yulius_domain::task::TaskStatus;
+    use yulius_domain::task::{Activity, TaskStatus};
     let f = fixture().await?;
     cockpit_id(&f, &f.alice).await?;
     let alice = yulius_domain::ids::UserId::parse("u-alice")?;
@@ -5226,7 +5244,7 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
             id: yulius_domain::ids::AttemptId::parse("a-crash-1")?,
             task_id: task.id.clone(),
             seq: 1,
-            harness: yulius_domain::harness::Harness::ClaudeCode,
+            harness: yulius_domain::harness::Harness::Codex,
             account_id: None,
             provider_session_id: None,
             launch_kind: yulius_app::model::LaunchKind::New,
@@ -5265,6 +5283,38 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
     )
     .await?;
     assert_eq!(one["screen"], "warning: retry with fewer jobs", "{one}");
+    // A pre-SPEC-558 parked attempt has just final-screen. Preserve recoverable
+    // rows and remove only the trailing Codex shutdown instructions.
+    f.h.store
+        .transition_task(
+            &task.id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            yulius_domain::time::Timestamp(f.h.app.now().0 - 2_100_000),
+        )
+        .await?;
+    f.h.store
+        .transition_task(
+            &task.id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    std::fs::write(run_dir.join("final-screen"), b"100 24\nReviewed and merged.\r\nToken usage: total=389,557\r\nTo continue this session, run:\r\n  codex resume synthetic-rollout\r\nOr run codex resume and select the task")?;
+    let (legacy, error) =
+        cockpit_tool(&f, &token, "task_screen", json!({"number": task.number})).await?;
+    assert!(!error);
+    let text = legacy["screen"].as_str().ok_or("parked screen")?;
+    assert!(text.starts_with("Reviewed and merged."), "{text}");
+    assert!(
+        !text.contains("codex resume") && !text.contains("Token usage"),
+        "{text}"
+    );
+    assert_eq!(text.matches("Yulius parked").count(), 1, "{text}");
+    assert!(text.contains("35 min 0 s idle"), "{text}");
     let (refused, is_error) =
         cockpit_tool(&f, &token, "task_screen", json!({"number": 999})).await?;
     assert!(is_error, "{refused}");
@@ -8382,5 +8432,110 @@ async fn interpreter_value_requests_only_rotate_existing_secrets_of_the_requeste
     .await?;
     assert_eq!(answer.body["stored"], "updated", "{}", answer.body);
     assert!(!tokio::time::timeout(WAIT, rotate).await??.1);
+    Ok(())
+}
+
+/// SPEC-626 BRK-004, AC-2 (review round 1): the Superagent lists its project's brokered commands
+/// as defined, without a value, and is not told whether a task may run one.
+#[tokio::test]
+async fn the_superagent_lists_its_projects_brokered_commands() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    add_apify_key(&f).await?;
+    // Stored as an administrator's definition (the fixture's alice only writes).
+    {
+        use yulius_app::ports::store_ext::{CommandRecord, CommandStore as _};
+        use yulius_app::ports::vault::VaultStore as _;
+        let secret =
+            f.h.store
+                .vault_agent_in(&sid())
+                .await?
+                .into_iter()
+                .find(|r| r.name == "APIFY_KEY")
+                .ok_or("secret")?;
+        let definition = json!({
+            "name": "scrape",
+            "binary": "/usr/local/bin/scrape",
+            "secret": "APIFY_KEY",
+            "fixed": ["--token-file", "{keyfile}"],
+            "approve": "never",
+        });
+        let definition: yulius_contracts::api::commands::CommandDefinition =
+            serde_json::from_value(definition)?;
+        let now = f.h.app.now();
+        f.h.store
+            .insert_command(&CommandRecord {
+                id: "cmd-scrape".into(),
+                sandbox_id: sid(),
+                name: "scrape".into(),
+                definition: serde_json::to_string(&definition)?,
+                secret_id: secret.id,
+                created_by: "u-alice".into(),
+                created_at: now,
+                updated_by: "u-alice".into(),
+                updated_at: now,
+            })
+            .await?;
+    }
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let (listed, is_error) = cockpit_tool(&f, &token, "commands_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    let listed = match listed {
+        Value::String(text) => serde_json::from_str(&text)?,
+        other => other,
+    };
+    assert_eq!(listed["commands"][0]["name"], "scrape", "{listed}");
+    assert_eq!(
+        listed["commands"][0]["fixed"],
+        json!(["--token-file", "{keyfile}"])
+    );
+    assert_eq!(listed["commands"][0]["secret_ready"], true);
+    assert_eq!(listed["commands"][0]["you_may_run"], Value::Null);
+    assert!(!listed.to_string().contains(SECRET_VALUE), "{listed}");
+    Ok(())
+}
+
+/// SPEC-624 (review round 2): the Superagent reads its person's notices without an audit entry,
+/// and a dismissal through it is audited as a change.
+#[tokio::test]
+async fn the_superagents_notice_dismissal_is_audited() -> TestResult {
+    use yulius_app::notices::NewNotice;
+    use yulius_app::ports::store::AuditStore as _;
+    use yulius_domain::notice::{NoticeKey, NoticeTone};
+    use yulius_domain::notify::NoticeKind;
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let posted =
+        f.h.app
+            .post_notice(NewNotice::new(
+                Some(sid()),
+                NoticeKey::parse("gate:quick::a")?,
+                NoticeKind::Failed,
+                NoticeTone::Error,
+                "quick::a fails",
+            ))
+            .await?;
+    let (listed, is_error) = cockpit_tool(&f, &token, "notices_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    assert_eq!(listed["notices"][0]["id"], json!(posted.id), "{listed}");
+    let (dismissed, is_error) =
+        cockpit_tool(&f, &token, "notice_dismiss", json!({"id": posted.id})).await?;
+    assert!(!is_error, "{dismissed}");
+    let audited: Vec<Value> =
+        f.h.store
+            .audit_details("s1", "superagent.tool", 50)
+            .await?
+            .iter()
+            .filter_map(|detail| serde_json::from_str(detail).ok())
+            .collect();
+    let tools: Vec<&str> = audited.iter().filter_map(|d| d["tool"].as_str()).collect();
+    assert_eq!(tools, ["notice_dismiss"], "{audited:?}");
     Ok(())
 }

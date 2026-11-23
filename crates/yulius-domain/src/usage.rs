@@ -552,6 +552,16 @@ impl TokenUsage {
     }
 }
 
+/// The part of a run's tokens that another model than the run's own answered: a Codex
+/// subagent's responses (SPEC-619 CSA-4). The run's totals include it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelTokens {
+    /// The model that answered.
+    pub model: String,
+    /// Its tokens.
+    pub usage: TokenUsage,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

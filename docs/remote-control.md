@@ -237,9 +237,8 @@ the Secrets page's Variables tab, or `yulius vars`.
 
 ## 5. Day-to-day
 
-`yulius task create` defaults to Codex with GPT-6.2 Astra at High effort. On ChatGPT Pro
-500 the task uses Ultrafast. To select another provider or request a random draw, use
-`yulius remote call task_create` with a model or harness.
+`yulius task create` defaults to Claude Code with Opus 5.5 at High effort. To select another
+provider or request a random draw, use `yulius remote call task_create` with a model or harness.
 
 | Ask your agent | Tool | CLI |
 | --- | --- | --- |

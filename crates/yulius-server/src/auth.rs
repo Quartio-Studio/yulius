@@ -154,12 +154,21 @@ pub fn guest_may_reach(method: &Method, path: &str) -> bool {
         "/api/me"
         | "/api/me/notes"
         | "/api/me/digest"
+        | "/api/me/notices"
         | "/api/auth/logout"
         | "/api/events"
         | "/api/archived-tasks"
         | "/api/previews/authorize" => return true,
         "/api/sandboxes" => return *method == Method::GET,
         _ => {}
+    }
+    // A guest dismisses the notices of their playground (SPEC-624).
+    if *method == Method::DELETE
+        && path
+            .strip_prefix("/api/me/notices/")
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return true;
     }
     if ["/api/tasks/", "/api/sessions/", "/api/shells/"]
         .iter()
@@ -260,6 +269,7 @@ mod tests {
         for path in [
             "/api/me",
             "/api/me/notes",
+            "/api/me/notices",
             "/api/events",
             "/api/archived-tasks",
             "/api/previews/authorize",
@@ -280,6 +290,10 @@ mod tests {
             assert!(get(path), "{path}");
         }
         assert!(guest_may_reach(&Method::POST, "/api/auth/logout"));
+        // A guest hears of their playground's notices and dismisses them (SPEC-624).
+        assert!(guest_may_reach(&Method::DELETE, "/api/me/notices/nt_1"));
+        assert!(!guest_may_reach(&Method::DELETE, "/api/me/notices/nt_1/x"));
+        assert!(!guest_may_reach(&Method::POST, "/api/me/notices/nt_1"));
         assert!(guest_may_reach(&Method::POST, "/api/sandboxes/p1/tasks"));
         for path in [
             "/api/sandboxes/p1/agent-secrets",

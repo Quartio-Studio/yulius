@@ -4,14 +4,15 @@
 //! quarantined at once with an issue in the project's repository, and every later job of the
 //! project is told it in its environment ([`yulius_domain::ci::flaky`]). The quarantine ends when
 //! its issue is closed (looked at hourly), and its failures are forgotten with it. A failing test
-//! is never run again until it passes: nothing here runs anything.
+//! is never run again until it passes: nothing here runs anything. A pull request's failure whose
+//! block names a file that pull request changed is not kept (SPEC-618, ADR-0453).
 
 use std::collections::HashMap;
 
-use yulius_domain::ci::failures::{failed_test_names, omitted_tests};
+use yulius_domain::ci::failures::{failed_test_blocks, omitted_tests};
 use yulius_domain::ci::flaky::{
-    FLAKY_WINDOW_MS, QUARANTINE_ENV, QUARANTINE_NEXTEST_ENV, TestFailure, is_flaky, nextest_filter,
-    quarantinable,
+    FLAKY_WINDOW_MS, QUARANTINE_ENV, QUARANTINE_NEXTEST_ENV, TestFailure, is_flaky,
+    named_changed_file, nextest_filter, quarantinable,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
@@ -42,7 +43,9 @@ pub struct Noted {
 impl App {
     /// After job `job` of `run` failed with its failing tests' blocks `failures` kept: keeps its
     /// failing tests and quarantines those that are flaky, filing an issue for each (SPEC-497
-    /// OFC-002). Returns the lines for the job's output and whether a test was quarantined.
+    /// OFC-002). A pull request's failing test whose block names a file that pull request changed
+    /// failed for the change itself: it is not kept, so it makes no test flaky (SPEC-618
+    /// FOC-001). Returns the lines for the job's output and whether a test was quarantined.
     #[doc(hidden)]
     pub async fn ci_note_failing_tests(
         &self,
@@ -52,13 +55,37 @@ impl App {
         failures: &str,
     ) -> Noted {
         let mut noted = Noted::default();
-        let tests = failed_test_names(failures);
+        let blocks = failed_test_blocks(failures);
+        if blocks.is_empty() {
+            return noted;
+        }
+        let failing = blocks.len();
+        let reference = run.reference.key();
+        let changed = if reference.starts_with("pr/") {
+            self.ci_changed_paths(sandbox, &run.reference, &run.sha)
+                .await
+        } else {
+            None
+        };
+        let mut tests = Vec::with_capacity(failing);
+        for (test, block) in blocks {
+            match changed
+                .as_deref()
+                .and_then(|changed| named_changed_file(&block, changed))
+            {
+                Some(file) if quarantinable(&test) => noted.lines.push(format!(
+                    "[yulius] `{test}` names `{file}`, which this change touched: its failure is \
+                     taken as the change's own and makes no test flaky (SPEC-618)"
+                )),
+                Some(_) => {}
+                None => tests.push(test),
+            }
+        }
         if tests.is_empty() {
             return noted;
         }
         let store = &self.deps.store;
         let now = self.now();
-        let reference = run.reference.key();
         if let Err(err) = store
             .record_test_failures(
                 &sandbox.id,
@@ -74,8 +101,7 @@ impl App {
             return noted;
         }
         // Only a pull request's failure makes a test flaky: a branch's is the branch's.
-        if !reference.starts_with("pr/")
-            || tests.len() + omitted_tests(failures) > MAX_TESTS_LOOKED_AT
+        if !reference.starts_with("pr/") || failing + omitted_tests(failures) > MAX_TESTS_LOOKED_AT
         {
             return noted;
         }

@@ -15,7 +15,7 @@ const openedNumber = () => Number(location.hash.match(/\/t\/(\d+)$/)?.[1]);
 
 /** Prepares a task "When I decide" from New task and opens its view; resolves to its number. */
 async function preparedTask(app: { open: (url: string) => Promise<unknown> }, browser: Browser, screen: any): Promise<number> {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^When I decide/).click();
@@ -75,7 +75,7 @@ test('a prepared task changes to run after a task, back to When I decide, then t
 });
 
 test('a chained task changes to When I decide; someone else sees no start chip (AC-CHS-8)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();

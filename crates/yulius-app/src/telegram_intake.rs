@@ -59,6 +59,7 @@ fn about(task: &TaskId) -> Option<SentAbout> {
     Some(SentAbout {
         task: task.clone(),
         asked_at: None,
+        command_run: None,
     })
 }
 
@@ -152,12 +153,23 @@ impl App {
             return Ok("That task is gone.".into());
         };
         let text = message.text.trim();
-        if text.is_empty() {
+        if text.is_empty() && sent.command_run.is_none() {
             return Ok(IntakeAnswer {
                 text: format!(
                     "A reply to #{} reaches it as text: write what to tell it.",
                     record.number
                 ),
+                about: about(&record.id),
+            });
+        }
+        // A reply to a brokered run's notice answers that run, and nothing else (SPEC-626
+        // BRK-015).
+        if let Some(run) = &sent.command_run {
+            let answer = self
+                .telegram_command_answer(person, &record, run, text)
+                .await;
+            return Ok(IntakeAnswer {
+                text: self.redact_for_sandbox(&record.sandbox_id, &answer).await,
                 about: about(&record.id),
             });
         }
@@ -365,9 +377,12 @@ impl App {
                 prompt.push_str(&format!("\n- {path}"));
             }
         }
+        // A message names no agent: Claude Code on its defaults, Opus 5.5 at high (SPEC-620).
         let req = CreateTask {
             prompt,
-            harness: String::new(),
+            harness: yulius_domain::harness::Harness::ClaudeCode
+                .as_str()
+                .to_owned(),
             workflow_id: None,
             model: None,
             effort: None,

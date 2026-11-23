@@ -85,8 +85,16 @@ enum StopGate {
     /// Claude’s first native goal record has yet to reach the transcript watcher.
     NativeGoal,
     /// Observe the current plan and budget together after the live probes and before acting.
-    Declared,
+    Declared(StopPull),
     Continue(String),
+}
+
+/// What a Codex goal's own pull request leaves to do at Stop (SPEC-558 PKR-003): its Yulius
+/// CI run at the head the agent is on failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopPull {
+    Settled,
+    Failing(u64),
 }
 
 /// Joins a repository-relative path, refusing absolute paths and `..` components.
@@ -908,22 +916,26 @@ impl App {
             .filter(|t| t.status == TaskStatus::Closed && t.id != task.id && t.closed_at.is_some())
             .collect();
         recent.sort_by_key(|t| std::cmp::Reverse(t.closed_at));
-        let recent_changes = recent
-            .into_iter()
-            .take(MAX_RECENT_CHANGES)
-            .map(|t| RecentChange {
-                title: t.title.clone(),
-                summary: t
-                    .prompt
+        let mut recent_changes = Vec::new();
+        for t in recent.into_iter().take(MAX_RECENT_CHANGES) {
+            // A personal task's request stays with tasks holding the same secrets (SPEC-625).
+            let summary = if self.withholds_text(task, t).await? {
+                String::new()
+            } else {
+                t.prompt
                     .lines()
                     .next()
                     .unwrap_or_default()
                     .chars()
                     .take(300)
-                    .collect(),
+                    .collect()
+            };
+            recent_changes.push(RecentChange {
+                title: t.title.clone(),
+                summary,
                 at: t.closed_at.unwrap_or(t.updated_at),
-            })
-            .collect();
+            });
+        }
         let parallel_tasks = all
             .iter()
             // A parked task's work goes on when it resumes (SPEC-512 PRK-001).
@@ -1193,10 +1205,12 @@ impl App {
         // confirmed work owns a wake. An unavailable probe can safely continue this same
         // turn; the separate rotation decision still requires proof before moving a run.
         let budget = std::time::Duration::from_millis(750);
-        let (background, delivery, browser) = tokio::join!(
+        let (background, delivery, browser, pull) = tokio::join!(
             tokio::time::timeout(budget, self.background_or_wait_now(&task.id)),
             tokio::time::timeout(budget, self.pr_news_due(task)),
-            tokio::time::timeout(budget, self.browser_tab_requests(&task.sandbox_id))
+            tokio::time::timeout(budget, self.browser_tab_requests(&task.sandbox_id)),
+            // Local reads only; a slow store or Git ends this turn as on a settled PR.
+            tokio::time::timeout(budget, self.stop_pull(task))
         );
         Ok(
             if matches!(background, Ok(Some(true)))
@@ -1205,9 +1219,76 @@ impl App {
             {
                 StopGate::Handoff
             } else {
-                StopGate::Declared
+                StopGate::Declared(pull.unwrap_or(StopPull::Settled))
             },
         )
+    }
+
+    /// A Codex goal has no native goal check: its own pull request failing Yulius CI at the
+    /// head its worktree is on is work left (SPEC-558 PKR-003). The evidence is local: an
+    /// action never rests on a display read of GitHub (ADR-0447), and a head the agent has
+    /// moved past, pushed or not, is not charged to the retry budget.
+    async fn stop_pull(&self, task: &TaskRecord) -> StopPull {
+        if task.harness != Harness::Codex || task.mode != TaskMode::Goal {
+            return StopPull::Settled;
+        }
+        let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
+            return StopPull::Settled;
+        };
+        let (yulius_domain::delivery::DeliveryStage::PrOpen, Some(pr), Some(worktree)) = (
+            &record.stage,
+            record.pr_number,
+            task.worktree_path.as_deref(),
+        ) else {
+            return StopPull::Settled;
+        };
+        let Ok(Some(head)) = self
+            .deps
+            .git
+            .resolve_commit(Path::new(worktree), "HEAD")
+            .await
+        else {
+            return StopPull::Settled;
+        };
+        // The newest run of this pull request at this commit, however busy the sandbox is.
+        let Ok(runs) = self
+            .deps
+            .store
+            .ci_runs_for_sha(&task.sandbox_id, &head.to_ascii_lowercase())
+            .await
+        else {
+            return StopPull::Settled;
+        };
+        let reference = yulius_domain::ci::CiRef::PullRequest(pr);
+        let Some(run) = runs.into_iter().find(|run| run.reference == reference) else {
+            return StopPull::Settled;
+        };
+        // Untold, the failure is the watch's to paste in first (SPEC-578). A newer run of the
+        // pull request, or a pushed head past this commit, supersedes it as the watch says.
+        if run.state != yulius_domain::ci::RunState::Failed
+            || !self.run_failure_told(&task.id, pr, &run.id)
+        {
+            return StopPull::Settled;
+        }
+        // The watch's window of recent runs: a newer run of the pull request in it supersedes
+        // this one; an unreadable window continues nothing.
+        let Ok(recent) = self
+            .deps
+            .store
+            .ci_runs(&task.sandbox_id, crate::pr_watch::RUNS_READ)
+            .await
+        else {
+            return StopPull::Settled;
+        };
+        let newer = recent
+            .iter()
+            .find(|newest| newest.reference == reference)
+            .is_some_and(|newest| newest.id != run.id);
+        if newer || self.run_superseded_by_pushed_head(task, &run.sha).await {
+            StopPull::Settled
+        } else {
+            StopPull::Failing(pr)
+        }
     }
 
     async fn turn_handoff_pending(&self, task: &TaskRecord) -> AppResult<bool> {
@@ -1225,6 +1306,7 @@ impl App {
         &self,
         task: &TaskRecord,
         run_dir: Option<&Path>,
+        pull: StopPull,
     ) -> AppResult<StopGate> {
         if self.turn_handoff_pending(task).await? {
             return Ok(StopGate::Handoff);
@@ -1256,7 +1338,12 @@ impl App {
                 "{GOAL_CONTINUATION}The spec still declares unfinished work. Check its acceptance criteria, complete any remaining work and record the evidence."
             )
         } else {
-            return Ok(StopGate::Pass);
+            match pull {
+                StopPull::Settled => return Ok(StopGate::Pass),
+                StopPull::Failing(pr) => format!(
+                    "{GOAL_CONTINUATION}Yulius CI failed on pull request #{pr} at this head. Read the failure (ci_status), repair it on this branch and commit the fix."
+                ),
+            }
         };
 
         Ok(StopGate::Continue(reason))
@@ -1278,13 +1365,13 @@ impl App {
         if task.gate_blocks >= MAX_GATE_BLOCKS {
             return None;
         }
-        let gate = if matches!(gate, StopGate::Declared) {
+        let gate = if let StopGate::Declared(pull) = gate {
             let run = if task.follows_goal() {
                 self.deps.store.live_attempt(&task.id).await.ok()?
             } else {
                 None
             };
-            self.declared_stop_work(&task, run.as_ref().map(|run| Path::new(&run.run_dir)))
+            self.declared_stop_work(&task, run.as_ref().map(|run| Path::new(&run.run_dir)), pull)
                 .await
                 .ok()?
         } else {
@@ -1292,7 +1379,9 @@ impl App {
         };
         match gate {
             StopGate::Continue(reason) => Some(reason),
-            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared => None,
+            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared(_) => {
+                None
+            }
         }
     }
 
@@ -1494,7 +1583,7 @@ impl App {
         let version = if matches!(decision.0, Decision::Stay)
             && move_reviewer.is_none()
             && !self.keeps_own_goal(task)
-            && ((matches!(gate, StopGate::Continue(_) | StopGate::Declared)
+            && ((matches!(gate, StopGate::Continue(_) | StopGate::Declared(_))
                 && (task.mode == TaskMode::Goal || task.gate_blocks < MAX_GATE_BLOCKS))
                 || (task.mode == TaskMode::Goal && self.goal_is_open(&task.id)))
         {
@@ -1507,7 +1596,7 @@ impl App {
         // Plan writers reset the budget under this lock. Keep it from the final local
         // read through issuing the continuation or recording exhaustion.
         let runtime = self.runtime(&task.id);
-        let declared = matches!(gate, StopGate::Declared);
+        let declared = matches!(gate, StopGate::Declared(_));
         let _work = if declared {
             Some(runtime.steps_lock.lock().await)
         } else {
@@ -1518,8 +1607,8 @@ impl App {
         }
         let current_task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         task = &current_task;
-        let gate = if declared {
-            self.declared_stop_work(task, Some(Path::new(&ctx.attempt.run_dir)))
+        let gate = if let StopGate::Declared(pull) = gate {
+            self.declared_stop_work(task, Some(Path::new(&ctx.attempt.run_dir)), pull)
                 .await?
         } else {
             gate
@@ -1531,7 +1620,9 @@ impl App {
         let pending_goal = matches!(gate, StopGate::NativeGoal);
         let mut reason = match gate {
             StopGate::Continue(reason) => Some(reason),
-            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared => None,
+            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared(_) => {
+                None
+            }
         };
         if task.mode == TaskMode::Goal
             && let Some(reason) = &reason

@@ -48,8 +48,12 @@ use crate::vault::reach::Holder;
 /// Longest message, in bytes after cleaning.
 pub const MAX_MESSAGE_BYTES: usize = MAX_PROMPT_BYTES;
 
-/// The wait between the pasted text and its Enter, so the TUI sees typed text and then a submit
-/// (as for the goal and `/compact`).
+/// The owner action specific to a held Codex screen.
+const CODEX_NOTICE_ACTION: &str = "Inspect the Codex terminal. Dismiss any model picker and check for unsent text. If the prompt stays unreadable, stop and continue the session. Check delivery of the pending instruction.";
+const CODEX_AUTOMATIC_ACTION: &str = "Inspect the Codex terminal and dismiss any picker. Check for unsent text. If this automatic instruction still needs to run after its retries end, resend it from the prompt.";
+const CODEX_MESSAGE_ACTION: &str = "Inspect the Codex terminal. Dismiss any model picker, check the composer for unsent text, and retry the message. If the prompt stays unreadable, stop and continue the session.";
+
+/// Time between the paste and its separate Enter.
 const SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
 /// The text as it is typed: line breaks as LF, every other control character but tab removed
@@ -62,6 +66,14 @@ pub fn clean_message(text: &str) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+fn pasted_notice(paste: &[u8]) -> std::borrow::Cow<'_, str> {
+    let text = paste
+        .strip_prefix(b"\x1b[200~")
+        .and_then(|text| text.strip_suffix(b"\x1b[201~"))
+        .unwrap_or_default();
+    String::from_utf8_lossy(text)
 }
 
 /// `prefix` and the logins `who` as `@a, @b` (SPEC-512 ANS-002); empty for nobody.
@@ -142,6 +154,10 @@ pub fn answer_prompt(login: &str, owner: &str, mine: bool, text: &str) -> String
     };
     format!("Answer from {login} to what you asked with needs_you{whose}:\n\n{text}")
 }
+
+/// How the session's writer answered a message that reached it
+/// ([`App::type_into_session_written`]).
+pub(crate) type Written = AppResult<()>;
 
 /// What Yulius types into a session ([`App::type_into_session`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -735,6 +751,45 @@ impl App {
             .await
     }
 
+    /// A native goal can remain unfinished in a session launched in either mode.
+    pub(crate) async fn accepts_machine_notice(&self, task: &TaskId) -> AppResult<bool> {
+        self.deps
+            .store
+            .accepts_machine_notice(task, self.goal_unfinished(task))
+            .await
+    }
+
+    pub(crate) fn check_session_input_ready(
+        &self,
+        task: &TaskRecord,
+        runtime: &TaskRuntime,
+    ) -> AppResult<()> {
+        // Before Claude Code's session starts, typed input is lost or left unsubmitted, and a
+        // trust dialog only a person answers (SPEC-117 ONE-005) may show or be about to: a paste
+        // and an Enter would answer it with its default. Without a SessionStart (a CLI without
+        // the hook; a reattached run's is read from its marker), the run is taken as started
+        // half the goal-ready timeout after its spawn, as the goal typist does
+        // (`wait_input_ready`).
+        if !runtime.session_started.load(Ordering::SeqCst) {
+            if trust_prompt_shown(&runtime.hub.screen_text()) {
+                return Err(AppError::Conflict(format!(
+                    "task #{} waits for a person to answer Claude Code's folder-trust question \
+                     in its terminal; tell the person, then try again",
+                    task.number
+                )));
+            }
+            let ready_ms = i64::try_from(self.config.goal_ready_ms / 2).unwrap_or(i64::MAX);
+            let spawned = runtime.spawned_ms.load(Ordering::SeqCst);
+            if self.now().0.saturating_sub(spawned) < ready_ms {
+                return Err(AppError::Conflict(format!(
+                    "task #{} is still starting its session: try again in a minute",
+                    task.number
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// A machine notification verifies its recipient and decision after draft lookup. It defers if the draft lock
     /// is busy, so neither a hosted read under the lock nor a later wait can stale that decision.
     pub(crate) async fn type_into_session_if(
@@ -745,6 +800,24 @@ impl App {
         from: Sender,
         admit: Option<impl std::future::Future<Output = bool>>,
     ) -> AppResult<()> {
+        self.type_into_session_written(task, paste, what, from, admit)
+            .await
+            .and_then(|written| written)
+    }
+
+    /// [`Self::type_into_session_if`] telling apart where a refusal came from: the outer
+    /// error holds the message before anything is written (a person's possible draft or key,
+    /// a starting session, a busy writer, SPEC-480), the inner one is the session's writer
+    /// refusing it or failing (a Codex screen or paste record, a lost connection). Only the
+    /// inner kind is a delivery problem (SPEC-623, review round 1).
+    pub(crate) async fn type_into_session_written(
+        &self,
+        task: &TaskRecord,
+        paste: &[u8],
+        what: Typed<'_>,
+        from: Sender,
+        admit: Option<impl std::future::Future<Output = bool>>,
+    ) -> AppResult<Written> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
         })?;
@@ -761,6 +834,22 @@ impl App {
                 task.number
             )));
         }
+        let codex_attempt = if task.harness == Harness::Codex {
+            Some(match what {
+                Typed::Notice(attempt) => attempt.clone(),
+                _ => runtime.screen_attempt().ok_or_else(|| {
+                    AppError::Conflict("the live Codex screen is unavailable".into())
+                })?,
+            })
+        } else {
+            None
+        };
+        // A resize can take time. Revalidate the notification, draft and screen
+        // after it, immediately before the paste.
+        let repaint = match &codex_attempt {
+            Some(attempt) => runtime.repaint_codex_input(attempt).await,
+            None => Ok(()),
+        };
         // A keystroke that may have left a draft can be released by the exact empty-box
         // picture. Resolve the recovery mark before judging the screen and key together.
         let attempt = if from != Sender::OwnerPastDraft
@@ -781,6 +870,11 @@ impl App {
         // For a screen-based release, serialize the final decision, paste, Enter and mark
         // cleanup with viewer keys and submit hooks (SPEC-537). A key arriving during
         // the lookup above participates in this decision.
+        if matches!(from, Sender::Yulius | Sender::YuliusLastTry)
+            && !self.accepts_machine_notice(&task.id).await?
+        {
+            return Err(AppError::Conflict("the task finished its work".into()));
+        }
         let guarded = admit.is_some();
         if let Some(admit) = admit
             && !admit.await
@@ -812,29 +906,7 @@ impl App {
                 task.number
             )));
         }
-        // Before Claude Code's session starts, typed input is lost or left unsubmitted, and a
-        // trust dialog only a person answers (SPEC-117 ONE-005) may show or be about to: a paste
-        // and an Enter would answer it with its default. Without a SessionStart (a CLI without
-        // the hook; a reattached run's is read from its marker), the run is taken as started
-        // half the goal-ready timeout after its spawn, as the goal typist does
-        // (`wait_input_ready`).
-        if !runtime.session_started.load(Ordering::SeqCst) {
-            if trust_prompt_shown(&runtime.hub.screen_text()) {
-                return Err(AppError::Conflict(format!(
-                    "task #{} waits for a person to answer Claude Code's folder-trust question \
-                     in its terminal; tell the person, then try again",
-                    task.number
-                )));
-            }
-            let ready_ms = i64::try_from(self.config.goal_ready_ms / 2).unwrap_or(i64::MAX);
-            let spawned = runtime.spawned_ms.load(Ordering::SeqCst);
-            if self.now().0.saturating_sub(spawned) < ready_ms {
-                return Err(AppError::Conflict(format!(
-                    "task #{} is still starting its session: try again in a minute",
-                    task.number
-                )));
-            }
-        }
+        self.check_session_input_ready(task, &runtime)?;
         let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
         let emptied = runtime.empty_time_for_typing();
         let held = yulius_domain::intake::box_held(self.now().0, typed, emptied);
@@ -929,20 +1001,40 @@ impl App {
                 .message_typed_ms
                 .store(self.now().0, Ordering::SeqCst);
         }
-        let pasted = match what {
-            Typed::Notice(attempt) => {
+        let observed = match what {
+            Typed::Notice(attempt) => Some(attempt),
+            _ => codex_attempt.as_ref(),
+        };
+        if let Some(attempt) = &codex_attempt
+            && matches!(from, Sender::Yulius | Sender::YuliusLastTry)
+            && !matches!(what, Typed::Notice(_))
+        {
+            self.settle_codex_input_hold(task, attempt, Some(&pasted_notice(paste)))
+                .await;
+        }
+        let write = async |input| {
+            if let Some(attempt) = observed {
                 runtime
-                    .write_notice(attempt, self.now(), SessionInput::Paste(paste))
+                    .write_observed(attempt, self.now(), input, matches!(what, Typed::Notice(_)))
                     .await
+            } else {
+                self.send_session_input(&task.id, input).await
             }
-            Typed::Prompt | Typed::Command => {
-                self.send_session_input(&task.id, SessionInput::Paste(paste))
-                    .await
-            }
+        };
+        let pasted = match repaint {
+            Ok(()) => write(SessionInput::Paste(paste)).await,
+            Err(err) => Err(err),
         };
         if let Err(err) = pasted {
             runtime.message_typed_ms.store(before, Ordering::SeqCst);
-            return Err(err);
+            // Another write holds the writer: nothing was refused, the next pass tries again.
+            if matches!(&err, AppError::Conflict(why) if why == crate::supervisor::SESSION_WRITER_BUSY)
+            {
+                return Err(err);
+            }
+            self.report_codex_input_hold(task, codex_attempt.as_ref(), from, what, paste, &err)
+                .await?;
+            return Ok(Err(err));
         }
         if matches!(what, Typed::Notice(_)) {
             crate::race::reached(
@@ -968,28 +1060,27 @@ impl App {
             runtime.sent_past_draft.store(true, Ordering::SeqCst);
         }
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
-        let submitted = match what {
-            Typed::Notice(attempt) => {
-                runtime
-                    .write_notice(attempt, self.now(), SessionInput::Submit)
-                    .await
-            }
-            Typed::Prompt | Typed::Command => {
-                self.send_session_input(&task.id, SessionInput::Submit)
-                    .await
-            }
+        let repaint = match &codex_attempt {
+            Some(attempt) => runtime.repaint_codex_input(attempt).await,
+            None => Ok(()),
         };
-        submitted.map_err(|err| {
+        let submitted = match repaint {
+            Ok(()) => write(SessionInput::Submit).await,
+            Err(err) => Err(err),
+        };
+        if let Err(err) = submitted {
             if past_draft {
                 runtime.sent_past_draft.store(false, Ordering::SeqCst);
             }
-            AppError::Conflict(format!(
+            self.report_codex_input_hold(task, codex_attempt.as_ref(), from, what, paste, &err)
+                .await?;
+            return Ok(Err(AppError::Conflict(format!(
                 "the message was pasted into task #{}'s session but not submitted ({}): it may \
                  still be in its prompt box, so look before sending it again",
                 task.number,
                 err.public_message()
-            ))
-        })?;
+            ))));
+        }
         // The task's owner can send the new instruction through a tool as well as by
         // typing in its terminal. A failed send, a command and a machine wake spend
         // none of the goal's restored budget.
@@ -1022,10 +1113,133 @@ impl App {
         if released.is_some() {
             self.settle_draft_flag(&task.id).await;
         }
+        Ok(Ok(()))
+    }
+
+    /// Publish the owed machine notice or a text-free description of a private message.
+    async fn report_codex_input_hold(
+        &self,
+        task: &TaskRecord,
+        attempt: Option<&AttemptId>,
+        from: Sender,
+        what: Typed<'_>,
+        paste: &[u8],
+        err: &AppError,
+    ) -> AppResult<()> {
+        use crate::supervisor::{CODEX_PICKER, CODEX_UNREADABLE};
+        let Some(attempt) = attempt else {
+            return Ok(());
+        };
+        let AppError::Conflict(problem) = err else {
+            return Ok(());
+        };
+        let machine = matches!(from, Sender::Yulius | Sender::YuliusLastTry);
+        if problem != CODEX_UNREADABLE && !(problem == CODEX_PICKER && machine) {
+            return Ok(());
+        }
+        let happened = if machine {
+            pasted_notice(paste)
+        } else {
+            "A message could not be submitted to Codex.".into()
+        };
+        // Each sender's request names who acts on it: a retried PR notice and an automatic
+        // prompt are released by their own next send once the screen is readable
+        // ([`Self::settle_codex_input_hold`]); a person's message waits for them to resend it.
+        let action = match (machine, what) {
+            (true, Typed::Notice(_)) => CODEX_NOTICE_ACTION,
+            (true, Typed::Prompt | Typed::Command) => CODEX_AUTOMATIC_ACTION,
+            (false, _) => CODEX_MESSAGE_ACTION,
+        };
+        self.ask_for_blocked_input(task, attempt, &happened, problem, action)
+            .await
+    }
+
+    pub(crate) async fn ask_for_blocked_input(
+        &self,
+        task: &TaskRecord,
+        attempt: &AttemptId,
+        happened: &str,
+        problem: &str,
+        action: &str,
+    ) -> AppResult<()> {
+        let happened = self.redact_notice_text(&task.sandbox_id, happened).await;
+        let problem = self.redact_notice_text(&task.sandbox_id, problem).await;
+        let now = self.now();
+        let (_, link) = self.task_page_link(task).await;
+        let request = crate::needs_you::NeedsYouRecord {
+            action: action.into(),
+            happened: crate::attention::shown_line(&happened, crate::needs_you::MAX_HAPPENED_CHARS),
+            problem: crate::attention::shown_line(&problem, crate::needs_you::MAX_PROBLEM_CHARS),
+            link: Some(link),
+            decision: false,
+            cause: None,
+            named: Default::default(),
+            at: now.0,
+        };
+        if self
+            .deps
+            .store
+            .ask_for_live_attempt(&task.id, attempt, &request)
+            .await?
+        {
+            self.publish_task(&task.id).await;
+            if let Err(err) = self
+                .deps
+                .store
+                .audit(
+                    now,
+                    "system",
+                    "task.needs_you.input_blocked",
+                    Some(task.id.as_str()),
+                    request.problem.as_deref(),
+                )
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "auditing the blocked-input Needs You failed");
+            }
+        }
         Ok(())
     }
 
-    /// Flags a waiting automatic message, with one terminal notice per last key or, for a
+    /// Release the request belonging to this retry. A private send and an
+    /// automatic prompt whose retry window ended stay actionable for the owner.
+    pub(crate) async fn settle_codex_input_hold(
+        &self,
+        task: &TaskRecord,
+        attempt: &AttemptId,
+        prompt: Option<&str>,
+    ) {
+        if task.harness != Harness::Codex {
+            return;
+        }
+        let Ok(Some(request)) = self.deps.store.task_needs_you(&task.id).await else {
+            return;
+        };
+        let matches = match prompt {
+            None => request.action == CODEX_NOTICE_ACTION,
+            Some(text) if request.action == CODEX_AUTOMATIC_ACTION => {
+                let text = self.redact_notice_text(&task.sandbox_id, text).await;
+                request.happened
+                    == crate::attention::shown_line(&text, crate::needs_you::MAX_HAPPENED_CHARS)
+            }
+            Some(_) => false,
+        };
+        if matches
+            && self
+                .existing_runtime(&task.id)
+                .is_some_and(|rt| rt.codex_ready_for_retry(attempt))
+            && self
+                .deps
+                .store
+                .end_task_needs_you_at(&task.id, request.at, self.now())
+                .await
+                == Ok(true)
+        {
+            self.publish_task(&task.id).await;
+        }
+    }
+
+    /// Flags a waiting automatic message durably, with one terminal notice per draft or, for a
     /// visible restore, per last submit. A later pass restores a flag that the turn settled.
     async fn tell_of_held_message(
         &self,

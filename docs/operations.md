@@ -172,9 +172,9 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
 # A failed integration candidate keeps the author live while its PR head and tested base match.
-# If that decision arrives after parking, its failing job reaches the same task as its next prompt.
-# A pending human decision keeps the task parked. When capacity returns, the watcher checks
-# the PR and integration base again before starting the session.
+# A live author with a completed goal still uses a session slot while its recorded
+# integration failure applies or the open delivery cannot be verified.
+# After parking, the delivery shows the verdict. A person can message or resume the task.
 # A change to the saved merge decision during verification also keeps the session live.
 # A failed single-PR merge candidate names its source run, failing job and a redacted
 # excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
@@ -249,6 +249,12 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you
 # for the ordered page of tasks that currently need attention.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
+# Percent of a window binding a task's model past which a subscription of that harness gets no
+# new task while another has room, and its idle tasks move to the one with the most room every 2
+# minutes (SPEC-629): 50 to 98, default 95; 98 turns it off (the pool's own pause threshold).
+#Environment=YULIUS_REBALANCE_PERCENT_CLAUDE_CODE=95
+#Environment=YULIUS_REBALANCE_PERCENT_CODEX=95
+#Environment=YULIUS_REBALANCE_PERCENT_ANTIGRAVITY=95
 # A server older than parking cannot read the status `parked`: before rolling back past it,
 # resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task
 # parks meanwhile.
@@ -861,6 +867,23 @@ stay private to the sandbox. Two sandboxes can both use 3000 inside.
 
 **Without the prerequisites** (`yulius doctor` lists what is missing), contained runs keep the
 previous containment: read-only host system, the host's network, no limits.
+
+### Subscription rebalance
+
+Every 2 minutes Yulius moves idle tasks off a subscription past its harness's rebalance threshold
+(`YULIUS_REBALANCE_PERCENT_CLAUDE_CODE`, `_CODEX`, `_ANTIGRAVITY`; 95 by default, 50 to 98) to the
+subscription with the most room, and new tasks keep off such a subscription while another has room
+([SPEC-629](../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md)). A task mid-turn,
+paused, with background work or a draft waits for a later pass; a task a person put on a
+subscription with "Run on…" or "Continue on…" stays there until the pool must move it at a limit.
+An idle goal session of Claude Code or Antigravity is not restarted (its goal would be typed
+again): with parking on (`YULIUS_PARK_AFTER_MINUTES` above 0) it is parked once quiet for a
+minute and resumes on a subscription with room when written to; with parking off it stays.
+Each move is a subscription switch with the reason `rebalance: …` in the task's info and a notice
+for the task's owner (`rebalance:<task id>`; in Telegram under "Subscription problems"); the journal
+logs each pass that moved or parked a task (`rebalance pass`, at info) and, at debug, each task it
+kept with why (`rebalance: the idle task stays for now`). Set a harness's variable to 98 to turn it off: no
+pass moves or parks its tasks, and the pool moves them only at 98 % and at a limit, as before.
 
 ### Resource limits
 
@@ -1696,6 +1719,9 @@ involved.
   the integration branch (a chained one) count as one. Closing the issue ends the quarantine within
   an hour and forgets the test's failures
   ([ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
+  A pull request's failure whose output names a file that pull request changed is taken as the
+  change's own and does not count; the job's output says so
+  ([ADR-0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
 - `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
   budget its disk too. A run takes the free lane whose checkouts last built what it builds on: a
@@ -1729,6 +1755,33 @@ after start) Yulius removes each sandbox's safe stale branches and worktrees its
 branches with no merged pull request, such as a release branch, which stay for a person) and lists
 the rest on its CI/CD page (CI tab, Repository hygiene card), with what the last cleanup removed and kept (SPEC-269, ADR-0199). People clean
 up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.cleanup`.
+
+### Script watches on this machine
+
+Script watches ([SPEC-630](../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
+[decision 0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md))
+run on the same machine as the server, through the process host, in each sandbox's containment
+and CI's resource group. Nothing needs setting up.
+
+- **Where they live.** Definitions and state are in the database (`watches`, `watch_pending`), so
+  they come along with a backup or a move. Each project's watch files are under
+  `<data>/watches/<sandbox>/`: `home` (the scripts' `HOME`), `state/<watch>` (kept between runs)
+  and `runs/<run>` (one run's output, removed when it ends). A run's process host directory is
+  `<data>/runs/watch-<run>`.
+- **Bounds.** Each run gets 120 s of CPU time (then 2 s more before it is killed), a 1 GiB data
+  segment, 1 MiB per file it writes, and its watch's timeout (5 minutes by default, 1 hour at
+  most). A project's watch files may use 1 GiB in all; while they are over it, its watches' runs are stopped within about 5 s, until a script or a person frees room. Runs write no core file (`ulimit -c 0`); where the host's core pattern is a pipe (apport), the kernel still hands a crashed run's dump to that handler.
+  When a project is removed, its watches stop and their files are listed among its leftovers. At most 4 runs go at once on the
+  instance, and a project has at most 20 watches.
+- **Restarts and updates.** A run cut off by a restart is recorded as a lost failure when the
+  server starts, its process host is ended, and the watch runs again. Posts that could not be
+  stored are retried every 15 s.
+- **Secrets.** A watch gets only the agent secrets it names, as placeholders that the egress proxy
+  replaces. The proxy's audit actor for its runs is `ci:watch:<name>`.
+- **Managing.** The project's Watches page (under More) lists them, with Run now, Pause/Resume,
+  Edit and Remove; changes are audited as `watch.create`, `watch.update`, `watch.run`,
+  `watch.pause`, `watch.resume` and `watch.remove`. A failing watch shows "Failing" there, and
+  its owner gets one notice `watch:<name>:failing`.
 
 ### CD on this machine
 
@@ -1866,8 +1919,11 @@ merged revision of `dev`.
   once its full suite passed. The rollback drill follows by itself.
 - **A person cannot deploy the head from the CD page.** A person can still roll staging back
   there.
-- **A red `dev` never reaches staging.** The request ends `gate_failed`, its task fixes forward,
-  and no promotion happens meanwhile.
+- A red `dev` leaves staging on the verified release. A new failure records `gate_failed`.
+  An inherited failure records its original revision and task. One working task owns the repair.
+  If none is working, project CI and Status list each test with its introducing revision and task.
+  A writer can rerun the latest affected revision or start a repair task from either view.
+  Staging serves the inherited requests when it verifies the fix.
 - **Production is promoted only from what staging verified**, by a person (ADR-0425).
 
 **The update helper stays off there.** `yulius-update.path` is disabled: "Update now" would
@@ -2550,6 +2606,15 @@ fingerprints, the message says why (SPEC-353): **Yulius no longer accepts this s
 run ended (its `scrub.json` is then not read), so continue the task (or open the Superagent again)
 to start a fresh run; **Yulius could not be reached** while the server is up, with no usable
 `scrub.json`, usually means the sandbox's connections to it are used up (next section).
+
+
+Brokered commands (SPEC-626) are managed on each project's Secrets page, Commands tab, and through
+`GET/POST /api/sandboxes/{sid}/commands` (docs/api.md). A run's files live under
+`<data>/cd/<sid>/runs/cmd-<run>` only while it runs; the 200 newest ended runs of a project are kept
+in the database with their redacted output. A run that waits for approval survives a restart and
+expires at its deadline; one that ran when the server stopped is recorded `lost` at the next start.
+Audit actions: `command.define`, `command.update`, `command.remove`, `command.refused`,
+`command.ask`, `command.approve`, `command.reject`, `command.expired`, `command.run`.
 
 ### Leftover agent processes
 
@@ -3346,7 +3411,37 @@ up. Queued tasks start when capacity allows.
   `master.key`), with re-authenticated, audited reveals (ADR-20).
 - Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and
   every channel an agent reads is redacted. Remaining threats (a bound host echoing a credential
-  in another form, misuse on its hosts, weak values): SPEC-002 ADR-20.
+  in another form, misuse on its hosts, weak values): SPEC-002 ADR-20. Misuse on its hosts is
+  narrowed by method and path rules: for a token agents only read with, set `GET` rules on the
+  Secrets page (Edit), and the proxy refuses any other request that would use it (403, audited
+  `vault.agent.refused`; [ADR-0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)).
+  Hosts agents ask for such a secret then wait for you; do not allow it into `.env` files, which
+  give code the value itself. Rules cannot tell request bodies apart (a GraphQL mutation is a
+  `POST /graphql` like a query).
+- Brokered commands (SPEC-626, ADR-0459) give a CLI an agent secret as a key file outside the
+  agents' sandbox. What to know when you define one:
+  - It runs in the project's production holder on the host's read-only `/usr`, `/etc` and `/opt`
+    (no Docker; without sandbox isolation, in the containment production CD runs get there): install
+    the binary on the host, not in a sandbox. It shares that holder's network with production CD
+    runs.
+  - The command decides what the key can do. Keep `subcommands` to what agents need, put every flag
+    that names a key, a config file or a server in `refuse`, and use `approve: always` (or `send`
+    with the CLI's own flag for changing things) for anything that deploys or signs.
+  - Output is redacted of every agent secret the project can see, as stored, encoded and line by
+    line. A CLI that prints the key transformed (`openssl rsa -text`, a hex dump) is not caught:
+    do not define such subcommands.
+  - Arguments may hold any printable character, so a look-alike letter can make an argument read
+    like another. An argument with a character outside plain ASCII shows single-quoted in the
+    line: that is the cue to read it closely on the Secrets page, where it is exact, before
+    approving a run that changes something. A line Telegram cannot show exactly (over 380
+    characters, or with a backtick) is approved on the page only.
+  - An approval by a Telegram reply needs only the person's linked chat, no two-factor code per
+    run: unlink a chat you no longer hold (`/stop`). For a command whose runs need a closer look
+    than a phone gives, answer on the Secrets page and treat a Telegram notice as the prompt to
+    go and look.
+  - Env values are not secret (people who view the project read them); the key goes into env only
+    as `{secret}`. At most 4 runs of a project's commands run at once; each run's files, its key
+    with them, are removed when it ends and at the next start after a crash.
 - Agents receive per-run task tokens (MCP, hooks) and, through the credential helper and `gh`,
   their task creator's GitHub token (8 h, capped by that person's access within the App's
   installation; an agent could read it and act as them there until it expires), or without one a

@@ -83,10 +83,10 @@ For an explicit restart of stopped Codex work, the supervisor carries a continua
 
 The generated Codex configuration hides the rate-limit model switch reminder. If a live terminal
 shows the picker or its resized alternate grid has yet to repaint, the terminal writer holds
-automated pastes and submits. The PR watch can deliver
+automated pastes and submits. For an indeterminate screen, the supervisor saves the viewer size in the run directory, requests a redraw at a temporary width and restores the saved size under the same writer lock. If the server restarts during that probe, reattachment restores the saved size. Later viewer resizes update it, and drop it when it cannot be saved. The PR watch can deliver
 its pending notice after the picker closes. The run directory records the paste before it is sent.
 A successful Enter clears the record. After an interrupted submission or server reattachment,
-a confirmed empty composer clears it.
+a confirmed empty composer clears it. An inconclusive probe opens Needs you on the observed live attempt. A pending PR notice or automatic prompt (the wake after an outage) releases its own request at its next send once the screen is readable; a person's message keeps its request until they resend it. [Decision 0451](decisions/0451-repaint-an-unreadable-codex-terminal-before-typing.md)
 [Decision 0443](decisions/0443-hold-codex-input-at-the-rate-limit-model-picker.md)
 
 ```mermaid
@@ -103,6 +103,8 @@ flowchart LR
 
 The capacity estimator reads the model and four token classes stored per attempt. It uses Standard GPT-6 prices for Codex and reports a weekly Ultrafast scenario for eligible models. The attempt totals lack per-response speed settings and cover the task session. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
 
+A Codex run's totals include the responses of its session's subagents, which Codex writes to rollouts of their own in the sandbox's shared sessions folder. The watch and the recount find them by `parent_thread_id`, count each response once in the run whose window holds it, and store the parts other models answered (`metrics.model_parts`), which the estimator prices at their own models. [Decision 0455](decisions/0455-count-codex-subagents-under-their-sessions-run-by-model.md)
+
 A Codex subscription signs in with `codex login --device-auth` in the login terminal (the
 provided CLI, its `CODEX_HOME` in the sign-in's own folder with credentials kept in a file),
 takes an OpenAI API key, or takes the `auth.json` of a ChatGPT sign-in made elsewhere; each is
@@ -112,7 +114,7 @@ or Codex) and then its way in, a Codex card imports a new `auth.json`, the compo
 groups explicit model IDs by provider. Each Codex or Gemini choice sends its harness and model,
 and the Codex default choice sends its harness alone. Settings and the composer share the model's
 supported effort levels and browser preferences. A missing or unusable model preference selects
-Codex default, while a saved JSON null selects Random. [Decision 0426](decisions/0426-the-new-task-composer-defaults-to-codex.md)
+Opus 5.5, Claude Code's default, while a saved JSON null selects Random. [Decision 0457](decisions/0457-new-tasks-default-to-claude-code-on-opus-5-5.md)
 An automation chooses the agent of the tasks it
 creates. See [ADR-0372](decisions/0372-model-pickers-use-provider-reasoning-levels.md).
 
@@ -128,11 +130,11 @@ draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the harn
 non-exhausted subscription for their default model (falling back to healthy `Usable` pools when
 every connected pool is temporarily limited, else `ClaudeCode`), recorded in `task_harness_draws`
 (`harness_choice: random`). With harness and model omitted, the shared `task_create` tool
-selects the parent task's harness for a follow-up and Codex for the CLI or either Superagent,
-including approved cross-sandbox requests. Codex then inherits its model, effort and tier as
-described above. Explicit `auto` still draws. An automation created by a task inherits its
+selects the parent task's harness for a follow-up and Claude Code for the CLI or either
+Superagent, including approved cross-sandbox requests. Claude Code then inherits Opus 5.5 at high
+effort. Explicit `auto` still draws. An automation created by a task inherits its
 parent's harness by default. Other automations default to a draw on each run.
-[Decision 0422](decisions/0422-cli-and-superagent-task-creation-defaults-to-codex.md)
+[Decision 0457](decisions/0457-new-tasks-default-to-claude-code-on-opus-5-5.md)
 
 An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
 [decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))
@@ -582,6 +584,7 @@ blocks; `yulius_browser::policy`, written by `yulius host setup`;
 The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
 A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
 Before each start the manager removes the profile's Chrome lock entries (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) unless a running process of this host holds the lock, so a profile carried from another host starts. This happens before the display starts (`yulius_browser::profile`). [ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)
+A browser slot keeps whatever it could not stop: a browser, a display, or the Xvfb of a display that failed to start and then survived SIGKILL (`StrandedXvfb`, with its cookie). Every later start, restart, idle reap and shutdown stops it again first. While it survives they fail with its error, so the sandbox never gets a second X server. [SPEC-616](../.ai/specs/SPEC-616-keep-ownership-of-xvfb-when-display-star.md)
 
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
 extensions unloaded, so a later policy reload can take effect without a native administrator
@@ -1031,7 +1034,7 @@ sequenceDiagram
 
 ## Moving a task off its subscription
 
-A task leaves its subscription for three reasons besides the pool's own rotation
+A task leaves its subscription for four reasons besides the pool's own rotation
 ([SPEC-447](../.ai/specs/SPEC-447-subscriptions-switch-by-hand-delete-one.md),
 [decision 0288](decisions/0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)):
 a person chooses another from the task (`POST /api/tasks/{tid}/switch`), a person removes the
@@ -1043,11 +1046,39 @@ the launch pauses the task. A removal deletes the row first, so `choose_account`
 stored accounts, can never pick it again, then ends every run on it. `App::tell_left` writes the
 one-line notice and, with nothing usable left, the task's Needs you, which `end_pause` ends.
 
+The fourth is the rebalance pass ([SPEC-629](../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md),
+[decision 0461](decisions/0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md),
+`rebalance.rs`): every 2 minutes (`start_rebalance_loop`, the first pass 3 minutes after start)
+`App::rebalance_now` looks at the running tasks whose activity is idle (`waiting`, `done`) and
+whose live run is on a subscription past its harness's rebalance threshold
+(`AppConfig::rebalance`, `YULIUS_REBALANCE_PERCENT_<HARNESS>`, carried as
+`RotationInput::rebalance`). `rebalance::idle_move` names the best candidate below the threshold
+(placement ranks every candidate past it after every one below it, `rotation::past_rebalance`)
+or says nothing has room. A task running on its pin (`tasks.pinned_account_id`, written by a
+person's `switch` or `continue` with an `account_id`, cleared by one without and by the
+subscription's removal) is not moved, and a parked task resumes on its pin while it can take it
+(`App::pinned_start`). Before a move, `agent_cli::kept_idle` asks the facts a restart for a newer
+Claude Code asks (a keystroke, a draft, a person's pause, an update, background work, Claude
+Code's queue, an unread prompt, a limit it waits at, a first message still due). Only a session
+that reopens at its prompt (prompt mode, or Codex, with no unfinished workflow or cut-off
+reviewer) is moved: `switch_from` with `RunStart::Resume { prompt: None }` and
+`SwitchCondition::Idle`, which claims the activity, update time and run the pass read, with the
+reason `rebalance: <subscription> <how full it is>`. Another idle session (a goal session, whose
+goal a restart types again) goes to `park_task_now` with `ParkRule::Rebalance`, the grace
+period's rule with a one-minute quiet time. A move that leaves the task running on the target
+writes one terminal line and posts the task's owner a notice keyed `rebalance:<task id>`
+(SPEC-624; also for a park or a wait without room), which replaces the task's earlier one. A task with nowhere to go is told once per
+episode (`TaskRuntime::rebalance_no_room`, in memory). Every launch on another subscription than
+the pin ends the pin.
+
 ```mermaid
 flowchart LR
   P["Person: Run #N on…"] -->|"switch_task (Trigger::Manual, < 100 %)"| M["move_task"]
   D["Person: Remove"] -->|"delete row, close Done sessions"| M
   R["Claude refuses (AccessLost)"] -->|"rotate the interrupted task"| M
+  B["Rebalance pass (every 2 min)"] -->|"reopens idle: switch_from, SwitchCondition::Idle"| RUN
+  B -->|"goal session: park_task_now"| PK["Parked; resume placed elsewhere"]
+  B -->|"nothing below the threshold"| N["Told once: terminal, notice rebalance:task"]
   R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]
@@ -1611,7 +1642,9 @@ with no candidate under test, whose agent is idle). It fetches the clone,
 then decides the armed merges in arm order. An armed merge lives with the run that armed it
 (`TaskStatus::keeps_an_armed_merge`): while the task runs, its run is only held (no capacity,
 a subscription switch) or it waits in the queue to start again, it stays armed, also across a
-restart; once the run ended (the task was closed, stopped or failed) the next pass ends it and
+restart (a saved arm not later than the task's latest recorded merge wait was decided already and
+is dropped, [decision 0452](decisions/0452-a-recorded-merge-wait-consumes-every-earlier-saved-arm.md));
+once the run ended (the task was closed, stopped or failed) the next pass ends it and
 says so (a pull request merged meanwhile is said to be merged), and Yulius leaves the pull
 request as it is:
 
@@ -2161,6 +2194,7 @@ possible draft or keystroke within the grace period, and is not an onboarding ta
 A task keeps its session while its plan has an open step, its spec is unfinished, or its goal still needs work. Both grace and digest parking recheck these facts before stopping the session, including when a person has been asked.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
+A run parked before that snapshot existed has only its final screen. When the task is parked or a recorded park transition ended with that run, the readers show the final screen with one parking notice (with the idle time when the transition records it) and, for Codex, drop a trailing exit block of token usage, `codex resume <id>` and its selection hint. A `codex resume` line that is part of the answer stays. [SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md)
 Parked admission waits outside the launch lock for in-flight terminal cleanup, up to the stop escalation bound. The observer that records the attempt’s terminal outcome saves the final screen. A late exit reader leaves the replacement run alone. Successor and onboarding checks may continue after terminal cleanup finishes.
 [Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
 
@@ -2169,7 +2203,7 @@ If the server restarted between writing the attempt’s ID and writing its sessi
 resume path recovers the ID from the parked attempt. If capacity holds a resume, an unreadable
 rollout history leaves its pause and prompt in place for the next capacity round.
 
-The PR watcher can resume a parked owner for a failed single-PR integration candidate. It reuses the live watcher’s saved decision. After preparing the launch, the watcher releases the launch lock to check the published head, integration base and ordinary CI. Under the merge writer, SQLite binds the start to the parked attempt, PR and recorded decision. The transaction also checks ordinary CI for that head, checks for a human request and validates the subscription against the task’s current model. If the launch slot or subscription is busy, the next watch verifies the failure again. If the subscription disappears before spawn, ending the unspawned attempt and restoring the park commit together. A restarted server can retry with the original screen and goal.
+A parked PR owner keeps its recorded integration verdict on its delivery. A person can resume the session with its original conversation, screen and goal, including after an earlier attempt lost its subscription before spawn.
 
 Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, including when a bulk operation, Telegram reply or remote restart first resolves the target. Under the launch lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt.
 
@@ -2189,12 +2223,8 @@ status so it shows the calm parked banner (distinct from a crash or operator sto
 the exact saved provider session and worktree through `start_run` with `RunStart::Resume` on
 `task_message`, `Resume`, `Reply` (`POST /api/tasks/{tid}/continue` with optional `prompt`), or
 ordinary owner terminal input; bare interrupts/scroll, non-owners, and operator-stopped/crashed
-tasks never auto-wake. `pr_watch` also wakes parked tasks once per actionable PR/CI event (failed
-or errored CI, green unarmed CI, conflict, failed repair publication, or merge with open work),
-never while CI is still running or a human decision (`needs_you`, `NeedsAttention`, held prompt,
-browser request) is open
-([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
-[decision 0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)); at the limit the
+tasks never auto-wake. PR and staging outcomes remain on their delivery. Only a person
+resumes a parked task ([ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)); at the limit the
 resume waits `queued` with its prompt. A queued task's summary carries `queue_reason` (the session
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
@@ -2207,6 +2237,20 @@ the recorded PR and current open PRs on the task branch through the same lookup 
 for parking. A waiting successor requires settled checks.
 An externally opened replacement can hold the successor after the recorded delivery merged.
 Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
+A live owner with an achieved goal keeps its session slot if its open delivery cannot
+be read or its recorded single-PR failure still applies. The PR watcher can establish
+that the PR closed, its ownership changed, or its head or integration base moved.
+Capacity accounting can use that observation for two watch intervals. A new decision,
+an unsuccessful read or a restart requires fresh verification. Before reserving a slot,
+a launch rechecks the owners it would omit and holds their delivery read guards through
+the reservation. A concurrent watcher retries on its next pass.
+The same check decides whether a live owner is Done for its dependents and its close
+([SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md) FIN-003):
+a start rule for all outstanding tasks includes an owner it cannot clear locally, a chain or
+compound Done rule holds each live owner's delivery read guard until the successor is
+released, and archive, tidy and a removed subscription's close hold it until the Close
+intent is recorded, so an arm that arrives meanwhile keeps the session.
+The views say the same: such an owner's summary carries `candidate_pending`, its group is Working ("Waiting for checks or merge") in the list, Home, the tools, the terminal and Task Info, read from the watch's last answered observation of that failed decision (kept while a re-read is in flight or fails, without the capacity check's expiry), and the PR watch publishes the task whenever that answer changes. The answer lives in memory: after a restart such an owner reads pending until the watch's first pass answers again.
 An explicit `#N merged` rule follows the recorded merge.
 
 The individual HTTP task detail verifies both recorded and branch PRs.
@@ -2243,7 +2287,7 @@ tick.
 ```mermaid
 stateDiagram-v2
   running --> parked: idle past the grace period, nothing goes on (session ended)
-  parked --> starting: task_message, Resume/Reply, owner terminal input, or actionable PR/CI wake (same session)
+  parked --> starting: task_message, Resume/Reply, owner terminal input, (same session)
   parked --> queued: resume at the session limit
   parked --> closed: archive or close
   parked --> stopped_cancelled: Stop
@@ -2318,6 +2362,38 @@ flowchart LR
     W -->|PUT start: Start now / Supertask| Q[queued]
     C -->|evaluation of the same chain| Q
     X[queued, running, ended] -->|PUT start| N[409: keeps its start]
+```
+
+### Forked tasks
+
+Fork (`yulius-app/src/forks.rs`, `POST /api/tasks/{tid}/fork`, `task_fork`,
+[SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md),
+[decision 0463](decisions/0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md)) creates a
+task of the same project and harness that continues a copy of another task's conversation. The
+source is only read. Its id, number, title, branch, the branch's commit and its latest session
+become a `task_forks` row (migration 0092). For Claude Code, the transcript's complete lines and
+side files are copied to `<data>/transcripts/<fork id>/`. The fork's steps are a copy of the
+source's. The fork is inserted `prepared`, which the queue never starts; once the row, the copy
+and the steps are written, one store step moves it to `queued` with its start and the
+subscription the person named (`queued_start`), so a queue wait keeps that choice. Its stage
+timeline therefore starts with a `prepared` span of a few milliseconds.
+`ensure_worktree` starts the fork's branch at the recorded commit. While the fork has no session
+of its own, `launch_attempt` places the stored copy in the fork worktree's project folder, with
+`cwd` rewritten, and launches `SessionMode::Resume { fork }`. For Claude Code that is
+`--resume <source> --fork-session --session-id <new>`; for Codex, `codex fork <source>`. The
+Antigravity CLI cannot fork at launch, so its tasks are refused. The opening message names the
+fork, its branch and spec and the source's commit, then the person's message. Later launches
+resume the fork's own session. A fork publishes its source's summary, and deleting a task
+publishes its source and its forks, so each page's links stay current.
+
+```mermaid
+flowchart LR
+    S[source task: branch head, latest session, transcript] -->|read only| F[fork_task: task_forks row, stored copy, copied steps]
+    F --> T[new task queued]
+    T --> W[ensure_worktree: new branch at the recorded commit]
+    W --> P[place the copy in the fork worktree's project folder, cwd rewritten]
+    P --> L[Resume with fork: claude --resume src --fork-session --session-id new / codex fork src]
+    L --> O[the fork's own session in its lineage]
 ```
 
 ## Remote control
@@ -2803,6 +2879,33 @@ read, not measured anew: `task_screen` takes a task's live hub screen, or render
 `analytics_tasks` and `analytics_summary`; `checkout` the git port's `ahead_behind` of the sandbox
 repository's `HEAD` against `origin/<integration branch>`, without a fetch.
 
+A task's agent reads its neighbours the same way, read-only
+([decision 0460](decisions/0460-a-task-reads-its-neighbours-status-and-never-steers-them.md),
+SPEC-625, `peer_status.rs`): `task_get` adds to the brief the owner's login, the delivery record's
+stage and PR with `merge_is_armed`, the task's `active_claims`, `waits_for` (fixed sentences built
+from the brief and `task_attention_facts`) and `last_words` (`last_agent_words`, the digest's
+read of the transcript's last assistant message); a person's own callers also get the last 20
+lines of the screen `task_screen_of` reads for `task_screen`, a task's agent never (a held prompt
+and a person's draft show there). `require_reader` checks that the owner is enabled and that
+`settled_access_level` allows `Action::View` before a task's `tasks_list` or `task_get`, and
+refuses when the access cannot be settled. `withholds_from` compares `Holder::of_task` of the reader and
+the peer and asks `reaches_owners_personal`: a peer holding its owner's personal secrets or MCP
+servers loses its free text (`withhold`) in `task_get` and `tasks_list` rows, and
+`session_read`/`sessions_search` refuse or skip its transcripts for that reader; the scope tools,
+the tidy tools' briefs and the briefing's recent changes (`withholds_text`) leave out its notes,
+step and request.
+
+```mermaid
+flowchart LR
+  reader["task agent (task token)"] -->|task_get / tasks_list| view["require_reader: owner may view"]
+  view --> brief["brief + add_peer_status: owner, delivery, claims, waits_for, last_words"]
+  brief -.->|person callers only| screen["screen: task_screen_of"]
+  brief --> hold{"withholds_from: peer holds another person's personal secrets?"}
+  hold -->|no| full["full answer"]
+  hold -->|yes| shape["withhold: shape only, withheld says why"]
+```
+
+A check that a script can decide is a script watch instead ([Script watches](#script-watches)).
 A Superagent's standing jobs are scheduled checks held by Yulius
 ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
 `superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`
@@ -2873,6 +2976,39 @@ the team secrets (none had a sandbox) in `vault_scope_pending`; at the next star
 serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets have their own scopes (below).
+
+### Method and path rules
+
+Since SPEC-627 ([decision 0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md))
+a person who manages an agent secret can limit it to requests: `vault_secrets.rules` holds 0–32
+rules, each 1–16 HTTP methods and a path pattern (`*` matching any characters, `/` included;
+schema version 90, `[]` = any request). The domain parses and matches them
+(`yulius-domain` `vault/rules.rs`: the pattern is split on `*` and its pieces found in order, linear
+in the path); the egress policy applies them (`yulius-app` `vault/rules.rs`, called from
+`egress_apply` in `vault/runtime.rs`), so they hold for agent runs, CI jobs and Superagents alike.
+The proxy passes each request's method in `EgressRequest::method`.
+
+```mermaid
+flowchart TD
+  R["request to a bound host<br/>(intercepted HTTP/1.1 or absolute http://)"] --> U{"uses a secret with rules?<br/>placeholder, X-Yulius-Secret,<br/>or its injected header"}
+  U -->|no| F["forwarded as before"]
+  U -->|yes| M{"method and path (sent and outgoing) match a rule,<br/>no dot segment, backslash, ; # or encoded dot/NUL/%,<br/>no method or path override?"}
+  M -->|yes| F
+  M -->|"no (another secret's rules allow the header)"| O["that secret's header instead"] --> F
+  M -->|no| X["403 naming request, host, secret and rules;<br/>nothing sent"] --> A["audit vault.agent.refused<br/>once per run, secret, method, path;<br/>20 per run and secret, then one more"]
+```
+
+The path is matched as the agent sent it and as it goes out (another secret's value replaced in,
+which could otherwise add `..`, `?` or `#`), query left out, no decoding, so spellings the proxy's
+own client or a server could normalise to another resource are refused instead of decoded. A
+run's different refusals of a secret are audited up to 20 (`REFUSALS_LISTED`), then once as "not
+listed" (`VaultState::refusals`). Hosts agents ask for a secret with rules wait for a person even
+with `auto_allow` (`vault/requests.rs`): a server of the agent's own would get the value. Rules
+are set in the Secrets page's Edit dialog or with `rules` in the create and edit bodies; an edit
+is a compare-and-set on the rules it read (`vault_update`), and a row whose stored rules no longer
+parse fails to load rather than becoming unlimited. `secrets_list` shows them to agents. gRPC
+(HTTP/2) to a bound host is not proxied at all (the interception speaks HTTP/1.1), so rules cover
+every request that can carry a value.
 
 ### Copies of production secrets
 
@@ -2999,6 +3135,87 @@ sequenceDiagram
     X-->>A: placeholder replaced by the value, response redacted
 ```
 
+## Brokered commands
+
+A CLI that needs a key file (a deploy tool, a cloud SDK with a service-account JSON, a signing
+tool) runs outside the agent's sandbox
+([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
+[decision 0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md),
+`crates/yulius-app/src/commands.rs`, `commands_run.rs`, `ci/brokered.rs`, rules in
+`yulius_domain::commands`).
+
+**Definitions.** A project's administrators define a command next to its secrets (`commands`,
+migration 0089, one JSON definition per row, names unique in the project): its binary on the
+host's system (never in `/tmp`, `/home`, `/proc` and the like or Yulius's data directory), the
+agent secret its runs get as a file, the tasks that may run it, its approval, fixed arguments and
+env with `{keyfile}`, `{home}` and, in env only, `{secret}`, allowed subcommands, flags Yulius
+owns and a time limit. Saving one decides which program gets the secret's value, so the person
+must manage that secret (a global one: an instance administrator) and, for a secret allowed use by
+use, have unlocked the vault with a fresh two-factor code in a browser session
+(`App::bind_command_secret`, ADR-0317). The row keeps the secret's id (`secret_id`):
+`App::command_secret` gives a run that secret only while its NAME still resolves to it (project
+before global, never personal) and it is no production secret. Agents and the Superagent list
+commands with `commands_list`.
+
+**Runs.** A task's agent calls `command_run {name, args, changes}` or `yulius run NAME ARGS` in a
+shell (`crates/yulius/src/run_cli.rs`, through the task token as `yulius tool`). Refusals are
+audited `command.refused`: another project's or an unknown name, a task outside `tasks`, an
+invisible character, a path (`/` or `~`, `..`, `file:`), an owned flag in any form a parser
+reads (abbreviated, single-dash long, inside a short cluster), a first argument outside the
+subcommands, a secret not set up, and a second run of a task waiting for approval. A run is a row of
+`command_runs` (`running`, then `done`, `timed_out`, `output_limit`, `failed` or `lost`) and
+runs on its own tokio task, so a cut call leaves nothing half done: the call waits up to 240 s
+(`command_wait_ms`) on `App::command_runs_changed` and answers its state, and `command_result`
+waits again. At its start the command is read again and runs only as it was asked. The process
+host runs it through `ci_watch` in the project's production holder (`cd_containment` for the
+production stage, without its Docker directory): the host's read-only system, its own folder
+`<data>/cd/<sid>/runs/cmd-<run>/work` with a fresh `home` (the working directory), `tmp` and the
+key at `key/<random>/key` (0600, rebuilt as a key file from a stored key block), an environment of
+`HOME`, `PATH`, `LANG`, `TERM`, `TMPDIR` and the definition's env (`{secret}` only through the
+process environment), stdin empty and stdout and stderr in two files. It is stopped at its time
+limit or once its files pass 16 MiB. Yulius makes `out` and `err` (`O_NOFOLLOW`) before the run
+and reads them back through those handles, so a link or FIFO the run puts at their paths is never
+followed. Each stream is redacted with `redact_for_sandbox` and then cut to 96 KiB of JSON
+before it is stored or returned. At most 4 runs of a project's commands run at once
+(`MAX_RUNNING`, counted and stored in one transaction by the run's own task). Its files go when it ends, and a starting server
+records a run it did not see end as `lost` and removes its files (`App::reconcile_command_runs`).
+Every run is audited `command.run` with the redacted command line, outcome, exit code and time.
+
+The Secrets page's Commands tab (`mountCommands` in `web/assets/pages/secrets.js`) lists a project's commands and runs, edits them for administrators and answers waiting runs, reloading on `commands.updated`.
+
+**Approvals** (`crates/yulius-app/src/commands_approval.rs`). A run that needs a person (`always`,
+or `send` with `changes: true` or a send flag) is stored `waiting` with its deadline
+(`approval_minutes`, a minute being `command_minute_ms`), and its task gets a Needs you request
+asked at the run's own time (`App::ask_command_approval`) with the full command line; it replaces
+an open request of the agent's, and one run of a task waits at a time. A person who manages the
+project's secrets (`Action::Configure`) answers from a browser session
+(`POST /api/sandboxes/{sid}/command-runs/{id}`) or by replying `approve` or `reject` to the run's
+Telegram notice (`telegram_reply` → `App::telegram_command_answer`). The request names its run in
+its `cause` (`command-run:<id>`, which an agent's `needs_you` cannot write), the notifier keeps that
+id with the notice (`telegram_sent.command_run`, migration 0094), and a reply answers that run
+alone; any other reply to it reaches no task, and a line the notice cannot show exactly (cut, or with a
+backtick) is approved on the page only. The answer is one
+conditional write from `waiting` before the deadline (`answer_command_run`, an approval also only
+while fewer than four runs of the project run); an approved run runs on its own task, and the
+request ends with the answer (`end_needs_you_asked_at`). No answer is a no: a timer per run that
+checks the clock again until the run no longer waits, the background tick and the start record it
+`expired` (`App::expire_due_command_runs`); a late answer fails the write's condition whatever
+recorded the expiry.
+
+```mermaid
+flowchart LR
+  ADM["Administrator who manages the secret (two-factor for a guarded one)"] -->|"define, change, remove (audited command.*)"| DEF[("commands: definition + secret_id")]
+  DEF --> L["commands_list: task agents, the Superagent"]
+  AG["Task agent: command_run / yulius run"] -->|"checks: project, task, arguments, secret"| RUN[("command_runs")]
+  RUN -->|"tokio task: ci_watch"| PH["Production holder sid.prod: host's read-only system, fresh home, key file 0600, no Docker"]
+  V[("vault: secret_id")] -.->|"key file, {secret} env"| PH
+  PH -->|"stdout, stderr, exit code"| RED["redact_for_sandbox, cut 96 KiB"]
+  RED --> RUN
+  RUN -->|"command_result (waits up to 240 s)"| AG
+  RUN -->|"needs approval: waiting, Needs you at the run's time"| P["Person who manages the project's secrets"]
+  P -->|"Approve / Reject: browser, or a Telegram reply to the notice (before the deadline)"| RUN
+```
+
 ## Agent secrets in CI jobs
 
 A CI job runs a pull request's code, so it gets an agent secret only the way an agent does, and
@@ -3107,6 +3324,142 @@ sequenceDiagram
   Y->>Y: envelope_reaches(person) · choices · redact · throttle
   Y->>T: sendMessage(chat, text with /s/{slug}/t/{n})
   T-->>C: notification
+```
+
+## Notices: a key and an expiry
+
+Notices for people carry a key and an expiry
+([SPEC-624](../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md),
+[decision 0462](decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md)).
+
+- **Posting.** `App::post_notice` (`crates/yulius-app/src/notices.rs`) takes a `NewNotice`: a
+  project or none, an optional recipient, `admin_only`, a `NoticeKey`
+  (`yulius_domain::notice`), a category (the Telegram choice), a tone, texts, a link, `decision`
+  and an optional `Expiry`. It resolves the expiry (`notice_expiry`: a decision never expires
+  and refuses an expiry), redacts the texts as the project's transcripts are, then puts the
+  title on one line and cuts both, and stores the notice. Keys of the derived notices (`task:`,
+  `control:`, `needs-you:`, `digest`) are refused. `NoticeStore::put_notice` (migration 0091,
+  `notices`) deletes the notice with the same project, recipient and key, and its dismissals,
+  inserts the new one and keeps 200 per scope, decisions first and then the newest, all in one
+  transaction. Posts and removals run one at a time (`POSTING`). The notice is then published as
+  `notice.posted` in an envelope with its project, recipient and `admin_only`. Pages hear
+  `notice.removed` for each notice the cap drops, and for a replaced notice whose `admin_only`
+  changed. A post that the cap would drop at once (its scope holds 200 decisions) is refused.
+- **Reading.** `App::notices_for` reads the live, undismissed notices addressed to the person or
+  to nobody in particular. The store applies the reader's reach before its limit: the projects
+  holding such notices that they can see, instance-wide notices unless they are a guest, and
+  `admin_only` ones for administrators. The read then keeps those whose envelope reaches them
+  (`envelope_reaches`, the event stream's rule). `GET /api/me/notices`, the person tools `notices_list` and
+  `notice_dismiss`, and the digest use it. The background tick deletes expired notices
+  (`prune_notices_now`). A producer removes a notice by its scope and key (`notice.removed`).
+- **Telegram.** The notifier turns `notice.posted` into a message and gives task-state, control,
+  shared-cause and subscription messages a scope (`<project or ->:<recipient or ->:<key>`; a
+  task's key is `task:<task id>`; posted keys may not use the derived prefixes). After the send queue sends a scoped message, `swap_keyed_message`
+  (`telegram_keyed`) returns the bot's earlier message for that scope in the chat, and the bot
+  deletes it (`NotificationChannel::delete`, Telegram's `deleteMessage`). A refused delete leaves
+  the old message in the chat. `telegram_keyed` rows go with their chat's link, like
+  `telegram_sent`, and the tick forgets rows older than 48 hours.
+- **Yulius's own notices** (`crates/yulius-app/src/notice_producers.rs`). `start_notice_producers`
+  (from `serve`) reconciles every subscription, then follows `account.updated`: a problem is
+  posted as `account:<id>` for administrators, and removed once the subscription is usable.
+  Signing in again is a decision. A usage limit expires at its reset (`limit_reset`), and none
+  is posted once that reset has passed. An error, or a limit without a known reset, lasts until
+  the subscription is usable. The tick and the event loop read the stored subscription under one
+  lock (`ACCOUNT_SYNC`). A repeat
+  that says the same, compared with the texts as posting stores them (`stored_texts`), is not
+  posted again. The background tick runs `sync_all_account_notices` too: it catches a status
+  written without an event, and removes the notices of deleted subscriptions. The staging
+  tick's `tell_gate_repairs` passes the failures to `sync_gate_notices` while the project has
+  no worker in stored state (`gate_workers`), or while its workers have all been unable to take
+  the repair for `GATE_GRACE_TICKS` ticks in a row (`App::gate_unavailable_ticks`; a green
+  branch or an able worker resets it). Within that period a notice already told stays and no
+  new one is posted, so neither a busy worker nor a restart retells it. The sync posts `gate:<test>`
+  for at most 20 failures and `gates:more` for the rest, none expiring, and removes the ones no
+  longer failing or now owned. The notifier no longer derives
+  subscription messages: they reach Telegram as posted notices.
+- **The bell** (`web/assets/notifications.js`). Every entry has a key and an `expires` time:
+  its kind's default (`EXPIRES_MS`), or none while it waits for a decision. An answered entry
+  goes a day later. Expired entries are pruned at load, when the panel opens, and by a timer
+  within ten seconds of their time.
+  History stored before this change gets its kind's default from its own time. Server notices
+  join it from `GET /api/me/notices` and `notice.posted` under
+  `notice:<project>:<me or ->:<key>`. `notice.removed` drops them. Each load and resync drops
+  those the server no longer lists, keeping what the event stream said while that read was under
+  way, and a newer read supersedes an older one's answer. Clear dismisses them on the server. A shared problem's
+  entry is settled only from a loaded task list. A task has one entry, `task:<task id>`.
+- **Digest.** Each person's digest lists up to 20 of their live notices (`DigestView.notices`).
+  Its items carry `task:<task id>`, and its Telegram message has the scope `-:digest`, so today's
+  digest replaces yesterday's.
+
+```mermaid
+flowchart LR
+  S["account.updated · staging tick"] --> PR["notice producers"]
+  PR -->|"account:&lt;id&gt; · gate:&lt;test&gt;"| A
+  P["producer or script watch"] -->|"NewNotice: key, expiry"| A["App::post_notice"]
+  A -->|"replace by project, recipient, key"| DB[("notices")]
+  A -->|"notice.posted (envelope)"| BUS["event bus"]
+  BUS --> WEB["open pages: the bell"]
+  BUS --> N["notifier"] -->|"scoped message"| Q["send queue"]
+  Q -->|"send, then delete the earlier one"| TG["Telegram chat"]
+  DB -->|"live, undismissed, visible"| R["GET /api/me/notices · notices_list · digest"]
+  T["tick"] -->|"delete expired"| DB
+```
+
+## Script watches
+
+A watch is a project's bash script on a schedule, run by Yulius without an agent, whose output
+becomes a notice for its owner
+([SPEC-630](../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
+[decision 0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md)).
+
+- **Record.** `watches` (migration 0093) holds the definition (name, script, `every_seconds` or
+  `cron` with its UTC offset, notice expiry, timeout, secret names, owner) and the state its runs
+  leave (the going run's id, last run, failures in a row, whether the warning was posted).
+  `watch_pending` holds the posts not stored yet, newest per notice key. The domain rules (names,
+  schedules, bounds, the outcome of a run's end) are in `yulius_domain::watch`.
+- **Scheduler.** `App::watch_tick` (`crates/yulius-app/src/watches.rs`) runs every 15 s from
+  `start_watch_scheduler`. It delivers pending posts, then starts each due watch, at most 4 runs
+  at once on the instance. `watch_run_started` claims a run in the store (one per watch), and
+  `watch_run_ended` records its end only for that run. The claim also refuses a removed
+  project's watch, and a paused or ended one unless it is Run now. Due watches start longest
+  overdue first, and a project's removal cancels its going runs (`watch_cancel_project`). At a start, `watch_startup` records a run
+  the previous process left going as lost, ends its process host and makes the watch due again.
+- **Run.** `App::watch_execute` (`crates/yulius-app/src/ci/watch_run.rs`) builds a `LaunchPlan`
+  like a CI job's and follows it with `ci_watch`. Its containment is bubblewrap on the sandbox
+  root, joined to the sandbox's holder in CI's group (`ci_join`). Its writable paths are
+  `<data>/watches/<sandbox>/home` (`HOME`), `state/<watch>` (`YULIUS_WATCH_STATE`) and
+  `runs/<run>`, whose output files are read through handles opened before the start. A fixed
+  wrapper sets `ulimit -t` (soft, then hard 2 s later), `-d` and `-f` as hard limits and runs the
+  script as its own `bash -c --` argument, with no core files. While the project's watch files
+  are over 1 GiB, a run is stopped. The process host enforces the timeout. Named agent secrets get placeholders and an
+  egress credential (`ci_egress_open`, run `watch:<name>`).
+- **Managing.** `crates/yulius-app/src/watch_api.rs` serves the Watches page
+  (`web/assets/pages/watches.js`), the HTTP routes (`routes/watches.rs`) and the person tools
+  `watches_list`, `watch_create`, `watch_update`, `watch_run`, `watch_pause` and `watch_remove`
+  (`person_tools.rs`: the Superagent and, over the remote MCP, a person's own agent). Readers of
+  the project list; a writer creates and owns; the owner edits, runs now and resumes; the owner or
+  a project administrator pauses and removes, which cancels a going run and removes the watch's
+  notices. Each change and each run's start and end publish `watches.updated`.
+  `superagent_check_set`'s description sends checks a script can decide to `watch_create`.
+- **Posts.** `yulius_domain::watch::outcome` decides a run's end:
+  - exit 0 with output posts, and exit 3 posts and ends the watch;
+  - other ends are failures, and the third in a row warns once;
+  - a success removes the warning.
+
+  The posts go to `watch_pending` in the run's transaction (an outbox). `watch_deliver` then
+  posts them as notices for the owner, keyed `watch:<name>` and `watch:<name>:failing`, and
+  drops each only once it is stored.
+
+```mermaid
+flowchart LR
+  P["Watches page · HTTP · person tools"] -->|"watch_api"| DB
+  S["watch_tick (15 s)"] -->|"due, claimed"| R["watch_execute"]
+  R -->|"LaunchPlan: ulimits, bash -c script"| H["process host"]
+  H -->|"bubblewrap + holder join (CI group)"| SB["sandbox"]
+  SB -->|"stdout, stderr, exit"| O["outcome: post, warn, end"]
+  O -->|"state + pending, one transaction"| DB[("watches, watch_pending")]
+  DB -->|"watch_deliver"| N["App::post_notice (watch:name)"]
+  N --> CH["owner's pages, digest, Telegram"]
 ```
 
 ## Vidoc: the instance key and the security scan
@@ -3275,6 +3628,13 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - **Candidate gate.** The integration branch's run of that exact commit, or a
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
+  Inventory includes retained full integration and candidate runs and configuration refusals at the current integration head after unrelated PR runs fill its planning window. An active staging candidate defers admission of a new integration suite.
+- When a test fails, first-parent gate evidence identifies its origin. Candidate runs are queued
+  one at a time. The queue records inherited tests and completes those requests in revision
+  order once a verified deployment contains them. One available worker owns the red branch.
+  Other workers receive the assignee's number. When no worker is available, CI and Status show
+  each unresolved test and its introducing merge. Writers can retry the latest affected run
+  or start a task in that project. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).
@@ -3290,11 +3650,11 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - **Failure.** A failed deploy is restored: each part's current kept release is redeployed and
   verified once (`CdRequest::Restore`, a rollback run).
 - **Told and shown.**
-  - An idle task with an untold staging request shows which part of delivery it awaits. The
-    staging queue wakes a running or parked agent when that request is decided. Each stage change
+  - A running task with an unfinished step shows which part of staging it awaits. The queue
+    delivers its verdict to that session. Finished tasks show the receipt on their page and in lists. Each stage change
     updates the task view. If the summary exceeds its budget, sandbox viewers receive a resync.
     [ADR-0437](decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
-  - `tell_staging_outcomes` types each task's outcome into its session once.
+  - `tell_staging_outcomes` sends delivery outcomes to working sessions once.
   - `delivery_status` tells a merged task its request is due, then where it stands
     (`staging_note`).
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
@@ -3962,7 +4322,9 @@ their copy state. Pausing preserves the first unwritten byte in each direction. 
 the copy resumes any pending write-half shutdown before marking that half closed.
 [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected descriptors
-and private copy state for one successor. Its two-minute deadline includes the time spent
+and private copy state for one successor. The departing server starts it from its own running
+image (`/proc/self/exe`), so a removed or half-written install path cannot stop the handoff
+([ADR-0456](decisions/0456-the-tunnel-custodian-runs-the-departing-servers-own-image.md)). Its two-minute deadline includes the time spent
 receiving and returning the batch. Each timed pair also retains its original monotonic
 deadline. The helper releases expired pairs while a successor receives the remaining live
 records. A timed pair can carry its original kernel socket identities. The sender supplies
@@ -4043,7 +4405,7 @@ hands on alone leaves one end later
 flowchart LR
     prompt["prompt / wake-up\n(hook, user line)"] --> working
     stop["clean Stop hook"] -->|"turn may settle"| idle["waiting / done"]
-    stop -->|"goal has actionable plan or spec work, within retry bound"| working
+    stop -->|"goal has actionable plan or spec work, or a Codex goal's own red CI run, within retry bound"| working
     turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
     launch["transcript: monitor started,\nagent launched (until it ends)"] --> bg
     idle --> bg
@@ -4056,6 +4418,7 @@ flowchart LR
 ```
 
 A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
+A Codex goal has no native evaluator, so its own red pull request counts as declared work too: a Stop with the plan and spec finished continues the goal under the same retry bound when the newest Yulius CI run of its open pull request at the commit its worktree is on failed, the PR watcher has already pasted that failure (SPEC-578), and neither a newer run of the pull request nor a pushed head past that commit superseded it. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
 
 A `needs_attention` flag keeps its reason with the task
 ([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),
@@ -4180,6 +4543,14 @@ flowchart LR
     lost -->|"writes (hub with output, showing this run)"| screen
     screen -.->|"no live run: the terminal shows it"| view["task terminal"]
 ```
+
+The hub shows one run's screen at a time: `TaskRuntime::screen_of` names it, set by the run's
+attach together with the hub's reset and kept after the run ends until the next attach. Each run's
+reader writes its output, released redaction tails, snapshots and reattachments through
+`TaskRuntime::on_screen_of`, which writes only while the hub shows that run, under the lock the
+attach takes. Output of a replaced run that arrives late is dropped
+([ADR-0454](decisions/0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md),
+[SPEC-614](../.ai/specs/SPEC-614-a-delayed-terminal-output-chunk-must-not.md)).
 
 ## Run metrics
 
@@ -4346,8 +4717,11 @@ The dispatcher keeps each lane's last run (`CiState::lane_runs`); a run takes th
 checkouts last built what it builds on (`preferred_lanes`: a candidate's members' own runs, a pull
 request's previous run), and each job's output names it
 ([decision 0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
-A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit); one
-that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
+A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit), except
+a pull request's failure whose block names a file that pull request changed
+(`failed_test_blocks`, `named_changed_file`, `App::ci_changed_paths`): that failure is the change's
+own ([decision 0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
+One that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
 all on the integration branch (`GitPort::merge_bases`), while the integration branch did not fail it
 (`yulius_domain::ci::flaky`), is quarantined with an issue filed through the GitHub port, one at
 a time (`ci_quarantine`, `App::ci_note_failing_tests`). Every later job of the sandbox gets the list in

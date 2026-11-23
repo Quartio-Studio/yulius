@@ -61,6 +61,9 @@ pub struct AppConfig {
     pub person_freeze_pass_ms: u64,
     /// Wait between two resumes of tasks paused for lack of subscription capacity (ROT-010).
     pub resume_stagger_ms: u64,
+    /// The rebalance threshold of each harness (SPEC-629 RBL-001,
+    /// `YULIUS_REBALANCE_PERCENT_<HARNESS>`).
+    pub rebalance: yulius_domain::rebalance::Thresholds,
     /// How long a stopped or closed run gets to exit (interrupt, TERM, kill) before its host is
     /// terminated (SPEC-065 END-008).
     pub stop_escalation_ms: u64,
@@ -111,6 +114,12 @@ pub struct AppConfig {
     /// person's answer ([`crate::cross_sandbox::CROSS_REQUEST_WAIT`], SPEC-335 XSR-003). Tests
     /// shorten it.
     pub cross_request_wait_ms: u64,
+    /// How long a call waits for a brokered run before it answers its state
+    /// ([`crate::commands_run::RUN_WAIT`], SPEC-626 BRK-014). Tests change it.
+    pub command_wait_ms: u64,
+    /// A minute of a brokered command's `approval_minutes` (SPEC-626 BRK-014): 60 000; tests
+    /// shorten it.
+    pub command_minute_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
@@ -127,6 +136,8 @@ pub struct AppConfig {
     pub upload_max_bytes: u64,
     /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21).
     pub ci: crate::ci::CiSettings,
+    /// Script watches (SPEC-630 WCH-003, WCH-009).
+    pub watches: crate::watches::WatchSettings,
     /// The TLS reverse proxy's shared secret (`YULIUS_PROXY_SECRET_FILE`, SPEC-001 ACC-013): a
     /// request carrying it is keyed on the client address the proxy passes; `None` keys every
     /// request on its TCP peer. Formatting never shows it.
@@ -163,6 +174,7 @@ impl AppConfig {
             events_heartbeat_ms: 20_000,
             person_freeze_pass_ms: 2_000,
             resume_stagger_ms: crate::capacity::RESUME_STAGGER_MS,
+            rebalance: yulius_domain::rebalance::Thresholds::default(),
             stop_escalation_ms: u64::try_from(
                 yulius_domain::task::STOP_INTERRUPT_GRACE_MS
                     + yulius_domain::task::STOP_TERM_GRACE_MS
@@ -187,6 +199,9 @@ impl AppConfig {
                 crate::cross_sandbox::CROSS_REQUEST_WAIT.as_millis(),
             )
             .unwrap_or(240_000),
+            command_wait_ms: u64::try_from(crate::commands_run::RUN_WAIT.as_millis())
+                .unwrap_or(240_000),
+            command_minute_ms: 60_000,
             agent_cpus: None,
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),
@@ -205,6 +220,7 @@ impl AppConfig {
             stray_reap_after_ms: crate::finish::STRAY_REAP_AFTER_MS,
             upload_max_bytes: crate::uploads::DEFAULT_UPLOAD_MAX_BYTES,
             ci: crate::ci::CiSettings::default(),
+            watches: crate::watches::WatchSettings::default(),
             proxy_secret: None,
             github_webhook_secret: None,
         }
@@ -309,6 +325,12 @@ pub struct App {
     pub(crate) vidoc: OnceLock<crate::vidoc_key::VidocServices>,
     /// The personal notification channel (SPEC-498); unset means the channel is off.
     pub(crate) channel: OnceLock<crate::telegram::ChannelServices>,
+    /// Set once Yulius's own notice producers run (SPEC-624 NTC-010).
+    pub(crate) notice_producers: OnceLock<()>,
+    /// Per project: staging ticks in a row with a red branch and no worker able to take its
+    /// repair (SPEC-624, `GATE_GRACE_TICKS`).
+    pub(crate) gate_unavailable_ticks:
+        std::sync::Mutex<std::collections::HashMap<yulius_domain::ids::SandboxId, u32>>,
     /// Serializes writes of sandbox profiles, so the Vidoc switch and a profile update never undo
     /// each other (SPEC-338 VOF-001).
     pub(crate) profile_writes: tokio::sync::Mutex<()>,
@@ -318,6 +340,9 @@ pub struct App {
     pub(crate) move_helper: OnceLock<Arc<dyn crate::ports::migration::MoveHelper>>,
     /// One ask for a move at a time: what it finds and what it writes belong together.
     pub(crate) move_asks: tokio::sync::Mutex<()>,
+    /// Woken whenever a brokered run changes state: calls waiting on one read it again
+    /// (SPEC-626 BRK-014).
+    pub(crate) command_runs_changed: tokio::sync::Notify,
     /// Rolls queued for the next harness draws ([`App::queue_harness_rolls`], tests); empty:
     /// each draw uses unbiased rejection sampling over random bytes (SPEC-520 RHM-001).
     pub(crate) harness_rolls: Mutex<std::collections::VecDeque<u8>>,
@@ -351,6 +376,8 @@ pub struct App {
     pub(crate) cross_requests: crate::cross_sandbox::CrossRequests,
     /// The Superagents' scheduled checks (SPEC-487 CHK-001).
     pub(crate) superagent_checks: crate::superagent_checks::SuperagentChecks,
+    /// Script watches' scheduler state (SPEC-630).
+    pub(crate) watches: crate::watches::WatchRuntime,
     /// Missing abilities reported in the last hour (SPEC-487 ABL-004).
     pub(crate) ability_reports: crate::ability_reports::AbilityReports,
     /// What each queued task a supertask holds waits for, as last published (SPEC-071).
@@ -402,6 +429,7 @@ impl App {
         let events = EventBus::new(1024);
         let connection_health = crate::connection_health::connection_health(events.clone());
         let limits = crate::limits::LimitState::new(&config);
+        let watch_runs = config.watches.max_runs;
         Arc::new_cyclic(|app| Self {
             instance_tag,
             limits,
@@ -436,10 +464,13 @@ impl App {
             intake: OnceLock::new(),
             vidoc: OnceLock::new(),
             channel: OnceLock::new(),
+            notice_producers: OnceLock::new(),
+            gate_unavailable_ticks: std::sync::Mutex::default(),
             profile_writes: tokio::sync::Mutex::new(()),
             updates: crate::updates::UpdateState::default(),
             move_helper: OnceLock::new(),
             move_asks: tokio::sync::Mutex::new(()),
+            command_runs_changed: tokio::sync::Notify::new(),
             harness_rolls: Mutex::default(),
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),
@@ -454,6 +485,7 @@ impl App {
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             cross_requests: crate::cross_sandbox::CrossRequests::default(),
             superagent_checks: crate::superagent_checks::SuperagentChecks::default(),
+            watches: crate::watches::WatchRuntime::new(watch_runs),
             ability_reports: crate::ability_reports::AbilityReports::default(),
             supertask_holds: crate::supertask::Holds::default(),
             docker_smoke: crate::sandbox_docker::SmokeState::default(),

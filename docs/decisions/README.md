@@ -508,21 +508,37 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0448 -->
 - [0449](0449-use-codex-quota-headroom-and-preserve-idle-moves.md) Automatic Codex placement prefers the most remaining quota in the tightest binding window. A moved idle Codex task keeps its activity when the replacement opens without a turn.
 <!-- ADR 0449 -->
+- [0450](0450-attribute-integration-test-failures-in-first-parent-order.md) Attribute integration test failures in first-parent order.
 <!-- ADR 0450 -->
+- [0451](0451-repaint-an-unreadable-codex-terminal-before-typing.md) Repaint an unreadable Codex terminal before typing.
 <!-- ADR 0451 -->
+- [0452](0452-a-recorded-merge-wait-consumes-every-earlier-saved-arm.md) A recorded merge wait consumes every earlier saved arm.
 <!-- ADR 0452 -->
+- [0453](0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md): a pull request's failing test whose kept block names a file that pull request changed (whole, after a `/`, or as a printed relative path of two components or more) is its change's own and is not recorded, so it makes no test flaky; the job's output says so; rejected: moving fixture_hygiene to a script, a never-quarantine list, the test's own file only, a rerun (SPEC-618, #1545)
 <!-- ADR 0453 -->
+- [0454](0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md) Terminal output, released tails and snapshots reach a task's hub only while it shows the run that printed them.
 <!-- ADR 0454 -->
+- [0455](0455-count-codex-subagents-under-their-sessions-run-by-model.md). A Codex run counts its session's subagents' responses once, in the run whose window holds them, and prices them at the model that answered; amends 0440's one model per run.
 <!-- ADR 0455 -->
+- [0456](0456-the-tunnel-custodian-runs-the-departing-servers-own-image.md): The tunnel custodian runs the departing server's own image.
 <!-- ADR 0456 -->
+- [0457](0457-new-tasks-default-to-claude-code-on-opus-5-5.md): New tasks default to Claude Code on Opus 5.5 when nothing is chosen; supersedes 0422 and 0426.
 <!-- ADR 0457 -->
+- [0458](0458-an-agent-secret-can-be-limited-to-methods-and-paths.md): An agent secret can be limited to HTTP methods and path patterns; a request that would use it outside them is refused with 403 and audited, never forwarded without the value (SPEC-627, #611).
 <!-- ADR 0458 -->
+- [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md): Brokered commands run in the production holder with a temporary key file; amends SPEC-002 ADR-20
 <!-- ADR 0459 -->
+- [0460](0460-a-task-reads-its-neighbours-status-and-never-steers-them.md): A task reads its neighbours' status (owner, PR and stage, claims, waits, last words) read-only and never steers them; a personal task shows other people's tasks only its shape.
 <!-- ADR 0460 -->
+- [0461](0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md): a subscription past its harness's rebalance threshold (default 95 %) gets no new task while another has room, and idle, unpinned tasks on it move to the one with the most room; a person's choice pins a task (SPEC-629)
 <!-- ADR 0461 -->
+- [0462](0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md): Notices carry a key and an expiry, and the newest per key wins
 <!-- ADR 0462 -->
+- [0463](0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md): a fork continues a stored copy of its source's Claude Code session (`--resume --fork-session --session-id`) or Codex's own `fork`, from the source branch's recorded commit; Antigravity is refused (SPEC-628)
 <!-- ADR 0463 -->
+- [0464](0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md): A Codex goal whose plan is finished continues on its own red Yulius CI run at its current head; extends 0428.
 <!-- ADR 0464 -->
+- [0465](0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md): Script watches run in the sandbox without an agent and post keyed notices
 <!-- ADR 0465 -->
 <!-- ADR 0466 -->
 <!-- ADR 0467 -->
@@ -555,3 +571,35 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0494 -->
 <!-- ADR 0495 -->
 <!-- ADR 0496 -->
+<!-- ADR 0497 -->
+<!-- ADR 0498 -->
+<!-- ADR 0499 -->
+<!-- ADR 0500 -->
+<!-- ADR 0501 -->
+<!-- ADR 0502 -->
+<!-- ADR 0503 -->
+<!-- ADR 0504 -->
+<!-- ADR 0505 -->
+<!-- ADR 0506 -->
+<!-- ADR 0507 -->
+<!-- ADR 0508 -->
+<!-- ADR 0509 -->
+<!-- ADR 0510 -->
+<!-- ADR 0511 -->
+<!-- ADR 0512 -->
+<!-- ADR 0513 -->
+<!-- ADR 0514 -->
+<!-- ADR 0515 -->
+<!-- ADR 0516 -->
+<!-- ADR 0517 -->
+<!-- ADR 0518 -->
+<!-- ADR 0519 -->
+<!-- ADR 0520 -->
+<!-- ADR 0521 -->
+<!-- ADR 0522 -->
+<!-- ADR 0523 -->
+<!-- ADR 0524 -->
+<!-- ADR 0525 -->
+<!-- ADR 0526 -->
+<!-- ADR 0527 -->
+<!-- ADR 0528 -->

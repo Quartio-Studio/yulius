@@ -533,6 +533,8 @@ pub async fn collect(replies: Vec<tokio::sync::oneshot::Receiver<Pair>>) -> io::
 
 /// Send a batch to a helper that survives this process. On success the helper has bound its
 /// single-consumer listener and holds all the sockets. An empty batch starts no helper.
+/// `executable` runs `sandbox-host hold-tunnels`. A server passes its own running image, so
+/// the helper speaks its protocol whatever is installed at its path (ADR-0456).
 ///
 /// # Errors
 /// Fails on invalid capacity, directory permissions, failure to start or missing acknowledgement.
@@ -554,6 +556,8 @@ pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> i
     let (mut stream, child_socket) = UnixStream::pair()?;
     let stdin = OwnedFd::from(child_socket.into_std()?);
     let mut child = tokio::process::Command::new(executable)
+        // Command lines (`ps -ef`) name Yulius when the image is /proc/self/exe; comm stays `exe`.
+        .arg0("yulius")
         .arg("sandbox-host")
         .arg("hold-tunnels")
         .arg("--directory")

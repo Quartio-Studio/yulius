@@ -4312,17 +4312,10 @@ impl App {
         else {
             return Ok(true);
         };
-        if pull.merged || pull.from_fork {
-            return Ok(true);
-        }
-        if pull.head.is_empty() || pull.head_sha.is_empty() || pull.base.is_empty() {
-            return Ok(false);
-        }
         let sandbox = self.dlv_sandbox_of(task).await?;
-        let same_owner = task.branch.as_deref() == Some(&pull.head)
-            && pull.base == delivery_profile(&sandbox).integration_branch
-            && pull.head_sha == decision.head;
-        Ok(!same_owner || (!pull.base_sha.is_empty() && pull.base_sha != decision.singleton.base))
+        Ok(self
+            .candidate_pull_signal(task, &sandbox, &decision, pull)
+            .is_none())
     }
 
     async fn parking_checkout_matches(
@@ -5241,8 +5234,7 @@ impl App {
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
-    /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
-    /// session limit counts tasks by it (SES-101), many times a minute.
+    /// shell runs, and the goal is achieved or no declared work is left with the change merged.
     pub(crate) async fn task_is_done_locally(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
         if task.status != TaskStatus::Running
@@ -5268,6 +5260,66 @@ impl App {
             return false;
         }
         matches!(record, Some(record) if past_merge(&record.stage))
+    }
+
+    /// Read the task-local part of capacity eligibility. Its delivery is rechecked
+    /// after the other live attempts have been read and before releasing the slot.
+    pub(crate) async fn local_completion(
+        &self,
+        task: TaskRecord,
+    ) -> Option<(TaskRecord, Option<DeliveryRecord>)> {
+        use yulius_domain::task::{Activity, TaskStatus};
+        if task.status != TaskStatus::Running
+            || !task.activity.is_some_and(Activity::is_idle)
+            || self.background_shells_of(&task.id).unwrap_or(0) > 0
+            || self.delivery_will_wake_task(&task.id).await
+        {
+            return None;
+        }
+        crate::race::reached(
+            crate::race::Point::CandidateCapacityRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        let record = self.deps.store.delivery(&task.id).await.ok()?;
+        if task.activity != Some(Activity::Done)
+            && (!record.as_ref().is_some_and(|r| past_merge(&r.stage))
+                || self.pr_news_due_of(&task, record.as_ref(), false).await
+                || self.work_left(&task.id).await)
+        {
+            return None;
+        }
+        Some((task, record))
+    }
+
+    /// Keep the checked delivery stable until the capacity reservation is made.
+    pub(crate) async fn hold_live_delivery(
+        &self,
+        task: &TaskRecord,
+        record: Option<&DeliveryRecord>,
+    ) -> Option<tokio::sync::OwnedRwLockReadGuard<()>> {
+        let writer = self
+            .runtime(&task.id)
+            .arm_writer
+            .clone()
+            .try_read_owned()
+            .ok()?;
+        let store = &self.deps.store;
+        if self
+            .local_candidate_blocks(task, record)
+            .await
+            .unwrap_or(true)
+            || self.delivery_will_wake_task(&task.id).await
+            || store.delivery(&task.id).await.ok()?.as_ref() != record
+        {
+            return None;
+        }
+        let now = store.task(&task.id).await.ok()??;
+        (now.status == task.status
+            && now.activity == task.activity
+            && now.archived_at == task.archived_at
+            && now.branch == task.branch
+            && now.worktree_path == task.worktree_path)
+            .then_some(writer)
     }
 
     /// Whether work the task declared is left (SPEC-491 DON-004): steps of its plan not

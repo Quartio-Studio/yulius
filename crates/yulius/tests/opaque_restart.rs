@@ -60,10 +60,27 @@ impl InternalPort {
 }
 
 async fn start(data: &Path, port: &InternalPort, route: Route) -> Result<Child, Error> {
+    start_from(Path::new(env!("CARGO_BIN_EXE_yulius")), data, port, route).await
+}
+
+const LOG: &str = "fixture-serve.log";
+const PREVIOUS_LOG: &str = "fixture-serve.previous.log";
+
+// The departing generation's log stays beside the successor's, for the handoff warnings.
+async fn start_from(
+    exe: &Path,
+    data: &Path,
+    port: &InternalPort,
+    route: Route,
+) -> Result<Child, Error> {
     let internal = port.address;
-    let log_path = data.join("fixture-serve.log");
+    let log_path = data.join(LOG);
+    match std::fs::rename(&log_path, data.join(PREVIOUS_LOG)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
     let log = std::fs::File::create(&log_path)?;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_yulius"))
+    let mut child = Command::new(exe)
         .args(["serve", "--bind", "127.0.0.1:0", "--internal-bind"])
         .arg(internal.to_string())
         .args(route.service_args())
@@ -77,7 +94,8 @@ async fn start(data: &Path, port: &InternalPort, route: Route) -> Result<Child, 
         .stdout(log.try_clone()?)
         .stderr(log)
         .kill_on_drop(true)
-        .spawn()?;
+        .spawn()
+        .map_err(|error| format!("starting the server from {}: {error}", exe.display()))?;
     let health = format!("http://{internal}/internal/healthz");
     let _ = rustls::crypto::ring::default_provider().install_default();
     let http = reqwest::Client::builder().no_proxy().build()?;
@@ -96,6 +114,51 @@ async fn start(data: &Path, port: &InternalPort, route: Route) -> Result<Child, 
             return Ok(child);
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+// Each server's lines about opaque tunnel handoff, adoption and restore, oldest first.
+fn handoff_warnings(data: &Path) -> String {
+    let lines: Vec<String> = [PREVIOUS_LOG, LOG]
+        .iter()
+        .filter_map(|name| std::fs::read_to_string(data.join(name)).ok())
+        .flat_map(|log| {
+            log.lines()
+                .filter(|line| line.contains("opaque tunnel"))
+                .map(|line| {
+                    // Strip the formatter's colour escapes.
+                    let mut plain = String::new();
+                    let mut chars = line.chars();
+                    while let Some(c) = chars.next() {
+                        if c == '\u{1b}' {
+                            chars.by_ref().find(|c| c.is_ascii_alphabetic());
+                        } else {
+                            plain.push(c);
+                        }
+                    }
+                    plain
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if lines.is_empty() {
+        "none".into()
+    } else {
+        lines.join(" | ")
+    }
+}
+
+// Name the read that failed and what both server generations said about the handoff.
+fn failed_read<'a>(
+    data: &'a Path,
+    read: &'static str,
+) -> impl FnOnce(std::io::Error) -> Error + 'a {
+    move |error| {
+        format!(
+            "{read}: {error}; handoff warnings: {}",
+            handoff_warnings(data)
+        )
+        .into()
     }
 }
 
@@ -596,18 +659,20 @@ async fn check_restart(route: Route) -> Result<(), Error> {
         peer.write_all(b"DOWN").await?;
         let mut next = start(dir.path(), &port, route).await?;
         assert_ne!(next.id(), first_pid);
-        let queued = client.read_u32().await.map_err(|e| format!("original client reading downtime marker: {e}"))?;
+        let queued = client.read_u32().await.map_err(failed_read(dir.path(), "original client reading downtime marker"))?;
         assert_eq!(queued.to_be_bytes(), *b"DOWN");
         client.get_mut().write_all(b"NEXT").await?;
         client.get_mut().shutdown().await?;
         let mut received = vec![0; early.len()];
-        peer.read_exact(&mut received).await?;
+        peer.read_exact(&mut received).await.map_err(failed_read(dir.path(), "destination reading early bytes"))?;
         assert_eq!(received, early, "all early payload bytes arrived once, in order");
-        assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
+        let next_marker = peer.read_u32().await.map_err(failed_read(dir.path(), "destination reading NEXT"))?;
+        assert_eq!(next_marker.to_be_bytes(), *b"NEXT");
         assert_eq!(peer.read(&mut [0]).await?, 0);
         peer.write_all(b"LAST").await?;
         peer.shutdown().await?;
-        assert_eq!(client.read_u32().await?.to_be_bytes(), *b"LAST");
+        let last = client.read_u32().await.map_err(failed_read(dir.path(), "original client reading LAST"))?;
+        assert_eq!(last.to_be_bytes(), *b"LAST");
         assert_eq!(client.read(&mut [0]).await?, 0);
         stop(&mut next).await?;
         if let Some(mut helper) = helper {
@@ -619,16 +684,22 @@ async fn check_restart(route: Route) -> Result<(), Error> {
 
 #[tokio::test]
 async fn an_invalid_handoff_directory_reports_the_kind_and_still_serves() -> Result<(), Error> {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("tunnel-handoff"), b"synthetic fixture")?;
         let port = InternalPort::reserve()?;
         let mut server = start(dir.path(), &port, Route::Direct).await?;
         stop(&mut server).await?;
-        let warnings = std::fs::read_to_string(dir.path().join("fixture-serve.log"))?;
-        assert!(
-            warnings.contains("cannot adopt opaque tunnels")
-                && warnings.contains("PermissionDenied")
+        let mut next = start(dir.path(), &port, Route::Direct).await?;
+        stop(&mut next).await?;
+        // A failed restart read reports both generations' warnings as plain text.
+        let warnings = handoff_warnings(dir.path());
+        assert_eq!(
+            warnings
+                .matches("cannot adopt opaque tunnels kind=PermissionDenied")
+                .count(),
+            2,
+            "{warnings}"
         );
         Ok(())
     })
@@ -703,10 +774,85 @@ async fn check_reset_during_restart(route: Route) -> Result<(), Error> {
         drop(resetting);
         peer.write_all(b"DOWN").await?;
         let mut next = start(dir.path(), &port, route).await?;
-        assert_eq!(client.read_u32().await?.to_be_bytes(), *b"DOWN");
+        let down = client.read_u32().await.map_err(failed_read(
+            dir.path(),
+            "surviving client reading DOWN after the restart",
+        ))?;
+        assert_eq!(down.to_be_bytes(), *b"DOWN");
         client.get_mut().write_all(b"NEXT").await?;
-        assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
-        assert_eq!(ended.read(&mut [0]).await?, 0);
+        let next_marker = peer.read_u32().await.map_err(failed_read(
+            dir.path(),
+            "surviving destination reading NEXT after the restart",
+        ))?;
+        assert_eq!(next_marker.to_be_bytes(), *b"NEXT");
+        let end = ended.read(&mut [0]).await.map_err(failed_read(
+            dir.path(),
+            "reset tunnel's client reading its end",
+        ))?;
+        assert_eq!(end, 0, "the reset destination's client tunnel ends");
+        stop(&mut next).await
+    })
+    .await?
+}
+
+// An update, package upgrade or rebuild can remove or rewrite the file at the server's install
+// path while the old server is still running. The tunnel handoff must not depend on that file.
+#[tokio::test]
+async fn a_removed_install_path_still_hands_the_tunnel_to_the_next_server() -> Result<(), Error> {
+    check_install_path_change(false).await
+}
+
+// A copying build cache writes a new file at the path, which cannot run until it is closed.
+#[tokio::test]
+async fn an_install_path_being_rewritten_still_hands_the_tunnel_to_the_next_server()
+-> Result<(), Error> {
+    check_install_path_change(true).await
+}
+
+async fn check_install_path_change(rewriting: bool) -> Result<(), Error> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let built = Path::new(env!("CARGO_BIN_EXE_yulius"));
+        // A hard link needs the binary's own filesystem.
+        let install = tempfile::tempdir_in(built.parent().ok_or("binary directory")?)?;
+        let exe = install.path().join("yulius");
+        std::fs::hard_link(built, &exe)?;
+        let listener = TcpListener::bind((fixture_ip()?, 0)).await?;
+        let target = listener.local_addr()?;
+        let port = InternalPort::reserve()?;
+        let dir = tempfile::tempdir()?;
+        let mut first = start_from(&exe, dir.path(), &port, Route::Direct).await?;
+        seed(dir.path())?;
+        let (mut client, mut peer) = open_tunnel(port.address, target, &listener).await?;
+        drop(listener);
+        std::fs::remove_file(&exe)?;
+        let partial = if rewriting {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o700)
+                .open(&exe)?;
+            file.write_all(b"\x7fELF")?;
+            Some(file)
+        } else {
+            None
+        };
+        stop(&mut first).await?;
+        drop(partial);
+        peer.write_all(b"DOWN").await?;
+        let mut next = start(dir.path(), &port, Route::Direct).await?;
+        let down = client.read_u32().await.map_err(failed_read(
+            dir.path(),
+            "client reading DOWN after the restart",
+        ))?;
+        assert_eq!(down.to_be_bytes(), *b"DOWN");
+        client.get_mut().write_all(b"NEXT").await?;
+        let next_marker = peer.read_u32().await.map_err(failed_read(
+            dir.path(),
+            "destination reading NEXT after the restart",
+        ))?;
+        assert_eq!(next_marker.to_be_bytes(), *b"NEXT");
         stop(&mut next).await
     })
     .await?
@@ -753,9 +899,17 @@ async fn an_unfinished_http_download_cannot_delay_opaque_handoff_or_shutdown() -
             .map_err(|_| "unfinished HTTP download kept the old service running")??;
         peer.write_all(b"DOWN").await?;
         let mut next = start(dir.path(), &port, Route::Direct).await?;
-        assert_eq!(client.read_u32().await?.to_be_bytes(), *b"DOWN");
+        let down = client.read_u32().await.map_err(failed_read(
+            dir.path(),
+            "tunnel client reading DOWN after the restart",
+        ))?;
+        assert_eq!(down.to_be_bytes(), *b"DOWN");
         client.get_mut().write_all(b"NEXT").await?;
-        assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
+        let next_marker = peer.read_u32().await.map_err(failed_read(
+            dir.path(),
+            "tunnel destination reading NEXT after the restart",
+        ))?;
+        assert_eq!(next_marker.to_be_bytes(), *b"NEXT");
         stop(&mut next).await
     })
     .await?
@@ -797,13 +951,25 @@ async fn check_final_fin(route: Route) -> Result<(), Error> {
         sender.get_mut().shutdown().await?;
         let mut next = start(dir.path(), &port, route).await?;
         let mut delivered = Vec::new();
-        client.read_to_end(&mut delivered).await?;
+        client
+            .read_to_end(&mut delivered)
+            .await
+            .map_err(failed_read(
+                dir.path(),
+                "half-closed client reading the final reply",
+            ))?;
         assert_eq!(
             delivered, b"last reply",
             "destination bytes preceding its final FIN"
         );
         delivered.clear();
-        recipient.read_to_end(&mut delivered).await?;
+        recipient
+            .read_to_end(&mut delivered)
+            .await
+            .map_err(failed_read(
+                dir.path(),
+                "half-closed destination reading the final request",
+            ))?;
         assert_eq!(
             delivered, b"last request",
             "client bytes preceding its final FIN"

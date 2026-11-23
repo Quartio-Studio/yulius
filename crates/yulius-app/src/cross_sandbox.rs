@@ -63,7 +63,7 @@ pub const MAX_QUESTION_BYTES: usize = 4096;
 struct CrossTaskArgs {
     sandbox: String,
     prompt: String,
-    /// The task's agent (SPEC-505, SPEC-520 RHM-004); the default is Codex when no model implies one (SPEC-583).
+    /// The task's agent (SPEC-505, SPEC-520 RHM-004); the default is Claude Code when no model implies one (SPEC-620).
     harness: Option<String>,
     title: Option<String>,
     workflow: Option<String>,
@@ -480,7 +480,7 @@ impl Drop for Ends<'_> {
 /// marks and overrides, zero-width ones, the soft hyphen, the Arabic, Syriac, Kaithi and
 /// Egyptian format characters), Unicode tag characters (which carry
 /// hidden ASCII), variation selectors, fillers that draw as blanks, private-use and noncharacters.
-fn unseen(c: char) -> bool {
+pub(crate) fn unseen(c: char) -> bool {
     if matches!(c, '\n' | '\t' | '\r') {
         return false;
     }

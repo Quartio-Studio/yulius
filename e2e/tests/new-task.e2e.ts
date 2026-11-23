@@ -10,7 +10,7 @@ type Holding = Window & { __yuliusMock: { holdCreate?: Promise<void> }; __releas
 // Markdown lists, ⌘/Ctrl+Enter or the ↑ button starts, and mode and workflow default to Auto.
 
 test('the new-task shortcut opens the composer; Enter adds a line and ⌘/Ctrl+Enter starts', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/12', '&codex=1'));
+  await app.open(mock('/s/studio/t/12'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
 
   await browser.keyboard.press('ControlOrMeta+Shift+O');
@@ -95,7 +95,7 @@ test('lists continue on Enter, end on an empty item, indent with Tab; ⌘/Ctrl+B
 });
 
 test('Auto is the default; a question runs as a prompt and picked values win', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   await expect(screen.getByRole('button', 'Mode: Auto mode')).toBeVisible();
   await expect(screen.getByRole('button', 'Workflow: Auto workflow')).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');

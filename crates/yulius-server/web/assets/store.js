@@ -283,7 +283,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     return {
       status: task.status, archived: task.archived, activity: task.activity, steps: task.steps, spec_unfinished: task.spec_unfinished,
       goal_unfinished: task.goal_unfinished, held_prompt: task.held_prompt,
-      needs_you: task.needs_you, needs_you_notice: task.needs_you_notice, staging_wait: task.staging_wait,
+      needs_you: task.needs_you, needs_you_notice: task.needs_you_notice, staging_wait: task.staging_wait, staging_outcome: task.staging_outcome,
       parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr,
     };
   }
@@ -356,7 +356,10 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // TaskDetail flattens TaskSummary together with private run data. Publish
   // the public summary on lifecycle changes, including a newly attached account.
   function lifecycleSummary(detail, prior) {
-    const summary = { ...parkedFacts(detail), account_id: detail.account_id };
+    // Fork links are absent when empty (SPEC-628): the detail's, never an older summary's.
+    // Absent when false (SPEC-621 FIN-004): the detail's, never an older summary's.
+    const summary = { ...parkedFacts(detail), account_id: detail.account_id, forked_from: detail.forked_from, forks: detail.forks,
+      candidate_pending: detail.candidate_pending };
     for (const key of ['id', 'sandbox_id', 'number', 'title', 'harness', 'harness_choice', 'branch', 'origin',
       'created_by', 'owner', 'control_request', 'control_from', 'owner_asks_first', 'created_at', 'updated_at',
       'state_since', 'working_since', 'account_label', 'mode', 'resumes_at', 'waits_for_account',
@@ -569,7 +572,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       case 'update.updated': emit('update', event); break;
       case 'disk.updated': emit('disk', event); break;
       case 'digest.ready': emit('digest', event.digest); break;
+      case 'notice.posted': emit('notice', event.notice); break;
+      case 'notice.removed': emit('notice-removed', event); break;
       case 'handoffs.updated': emit('handoffs', event.task_id); break;
+      case 'commands.updated': emit('commands', event); break;
+      case 'watches.updated': emit('watches', event); break;
       case 'connections.updated': emit('connections', event); break;
       case 'note.updated': emit('note', event); break;
       case 'note.presence': emit('note-presence', event); break;

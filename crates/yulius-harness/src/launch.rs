@@ -142,7 +142,18 @@ pub enum LaunchMode {
         /// ([`RESUME_INTERRUPTED_TURN_ENV`]); the prompt is not sent. The caller steps the
         /// transcript back over a usage limit first ([`crate::step_back`]).
         continue_interrupted: bool,
+        /// Continue a copy of the session under a new id instead (SPEC-628 FRK-006): Claude Code
+        /// `--fork-session`, Codex `fork`; the Antigravity CLI cannot.
+        fork: Option<ForkSession>,
     },
+}
+
+/// A forked resume (SPEC-628): the session continues as a copy, and the original is untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkSession {
+    /// The new session's id where the CLI lets Yulius name it (Claude Code `--session-id`);
+    /// `None` lets the CLI name it (Codex), learnt from its hook or rollout.
+    pub session_id: Option<String>,
 }
 
 /// Claude Code 2.1.292 continues an interrupted turn on `--resume` when this is set: an
@@ -352,6 +363,9 @@ pub enum LaunchError {
     /// Two MCP servers share a name, or a server uses the reserved name.
     #[error("duplicate or reserved MCP server name {0:?}")]
     DuplicateMcpServer(String),
+    /// The harness's CLI cannot fork a session at launch (SPEC-628 FRK-003).
+    #[error("{0} cannot fork a session at launch")]
+    ForkUnsupported(Harness),
 }
 
 fn utf8<'a>(path: &'a Path, field: &'static str) -> Result<&'a str, LaunchError> {
@@ -421,8 +435,16 @@ fn validate(request: &LaunchRequest) -> Result<(), LaunchError> {
     let (session_id, prompt) = match &request.mode {
         LaunchMode::New { session_id, prompt } => (session_id.as_deref(), prompt.as_deref()),
         LaunchMode::Resume {
-            session_id, prompt, ..
-        } => (Some(session_id.as_str()), prompt.as_deref()),
+            session_id,
+            prompt,
+            fork,
+            ..
+        } => {
+            if let Some(id) = fork.as_ref().and_then(|f| f.session_id.as_deref()) {
+                check(valid_session_id(id), "session_id")?;
+            }
+            (Some(session_id.as_str()), prompt.as_deref())
+        }
     };
     if let Some(id) = session_id {
         check(valid_session_id(id), "session_id")?;
@@ -723,11 +745,31 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             session_id,
             prompt,
             continue_interrupted,
+            fork: None,
         } => {
             argv.extend(["--resume".into(), session_id.clone()]);
             // Claude Code continues the cut turn itself: nothing is sent.
             let prompt = prompt.as_deref().filter(|_| !continue_interrupted);
             (Some(session_id.clone()), prompt, *continue_interrupted)
+        }
+        // A fork continues a copy of the session under the id Yulius names, so the lineage holds
+        // the fork's session from the spawn (SPEC-628 FRK-006; `--session-id` with `--resume`
+        // needs `--fork-session`, Claude Code 2.1.330).
+        LaunchMode::Resume {
+            session_id,
+            prompt,
+            fork: Some(fork),
+            ..
+        } => {
+            argv.extend([
+                "--resume".into(),
+                session_id.clone(),
+                "--fork-session".into(),
+            ]);
+            if let Some(id) = &fork.session_id {
+                argv.extend(["--session-id".into(), id.clone()]);
+            }
+            (fork.session_id.clone(), prompt.as_deref(), false)
         }
     };
     // `--mcp-config` takes several values; a following option ends the list, so it is never
@@ -971,10 +1013,21 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     argv.push("--dangerously-bypass-hook-trust".into());
     let (session_id, prompt) = match &request.mode {
         LaunchMode::New { prompt, .. } => (None, prompt.clone()),
+        // `codex fork <id>` writes a new rollout under an id of its own (SPEC-628 FRK-006).
+        LaunchMode::Resume {
+            session_id,
+            prompt,
+            fork: Some(_),
+            ..
+        } => {
+            argv.extend(["fork".into(), session_id.clone()]);
+            (None, prompt.clone())
+        }
         LaunchMode::Resume {
             session_id,
             prompt,
             continue_interrupted,
+            fork: None,
         } => {
             argv.extend(["resume".into(), session_id.clone()]);
             let prompt = if *continue_interrupted {
@@ -1156,10 +1209,15 @@ fn plan_antigravity(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> 
     }
     let (session_id, prompt) = match &request.mode {
         LaunchMode::New { prompt, .. } => (None, prompt.clone()),
+        // Its `/fork` works only inside a running session (1.5.12): no launch forks.
+        LaunchMode::Resume { fork: Some(_), .. } => {
+            return Err(LaunchError::ForkUnsupported(Harness::Antigravity));
+        }
         LaunchMode::Resume {
             session_id,
             prompt,
             continue_interrupted,
+            fork: None,
         } => {
             argv.extend(["--conversation".into(), session_id.clone()]);
             let prompt = if *continue_interrupted {
@@ -1298,7 +1356,7 @@ pub const COCKPIT_TOKEN_ENV: &str = "YULIUS_COCKPIT_TOKEN";
 /// The Yulius tools a Cockpit may call without asking: they only read (`secret_verify` writes
 /// nothing but its audit entry, SPEC-178 VAU-003; `task_delivery` is the task page's reading,
 /// which may store the delivery stage it finds on GitHub, as opening that page does).
-pub const COCKPIT_READ_ONLY_TOOLS: [&str; 27] = [
+pub const COCKPIT_READ_ONLY_TOOLS: [&str; 30] = [
     "tasks_list",
     "task_get",
     "automations_list",
@@ -1306,6 +1364,8 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 27] = [
     "sessions_search",
     "session_read",
     "secrets_list",
+    "commands_list",
+    "watches_list",
     "secret_verify",
     "sandboxes_list",
     "sandbox_task_get",
@@ -1320,6 +1380,7 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 27] = [
     "merge_queue",
     "subscriptions",
     "instance",
+    "notices_list",
     "ci_runs",
     "ci_run",
     "cd_status",

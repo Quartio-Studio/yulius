@@ -1068,7 +1068,7 @@ impl App {
                         &runtime.sandbox,
                         seq,
                         &bytes,
-                        move |seq, out| {
+                        move |seq, out, _tail| {
                             shell.hub.output(seq, out);
                         },
                     )

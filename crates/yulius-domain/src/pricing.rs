@@ -9,6 +9,7 @@
 //! 2026-11-21. An unknown model has no price.
 
 use crate::time::Timestamp;
+use crate::usage::{ModelTokens, TokenUsage};
 
 /// One model's list price in USD per million tokens.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,9 +142,126 @@ pub fn cost_usd(
         + part(cache_write, price.cache_write)
 }
 
+/// What a run would cost on the API: at Standard prices, and the extra if its eligible tokens had
+/// used Ultrafast at `now`'s rate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RunCost {
+    /// At Standard prices.
+    pub standard: f64,
+    /// The extra for Ultrafast; zero when no part of it is eligible.
+    pub ultrafast_premium: f64,
+}
+
+/// What a run whose own thread ran `model` would cost, its `totals` including `parts` that
+/// other models answered (SPEC-619 CSA-4): each part at its model's price, the rest at `model`'s.
+/// `None` when a part with tokens has no price, or the rest has none and has tokens or the run
+/// has no parts (a run of an unpriced model costs what nobody knows, also with zero tokens).
+#[must_use]
+pub fn run_cost(
+    model: Option<&str>,
+    totals: TokenUsage,
+    parts: &[ModelTokens],
+    now: Timestamp,
+) -> Option<RunCost> {
+    fn less(total: Option<u64>, part: Option<u64>) -> Option<u64> {
+        total.map(|t| t.saturating_sub(part.unwrap_or(0)))
+    }
+    let rest = parts.iter().fold(totals, |rest, part| TokenUsage {
+        input: less(rest.input, part.usage.input),
+        output: less(rest.output, part.usage.output),
+        cache_read: less(rest.cache_read, part.usage.cache_read),
+        cache_write: less(rest.cache_write, part.usage.cache_write),
+    });
+    let mut cost = RunCost {
+        standard: 0.0,
+        ultrafast_premium: 0.0,
+    };
+    let rest_counts = parts.is_empty();
+    for (index, (model, usage)) in std::iter::once((model, rest))
+        .chain(
+            parts
+                .iter()
+                .map(|part| (Some(part.model.as_str()), part.usage)),
+        )
+        .enumerate()
+    {
+        let spent = [
+            usage.input,
+            usage.output,
+            usage.cache_read,
+            usage.cache_write,
+        ]
+        .iter()
+        .any(|tokens| tokens.is_some_and(|t| t > 0));
+        if !spent && !(index == 0 && rest_counts) {
+            continue;
+        }
+        let (price, tier) = model.and_then(model_prices)?;
+        let standard = cost_usd(
+            price,
+            usage.input,
+            usage.output,
+            usage.cache_read,
+            usage.cache_write,
+        );
+        cost.standard += standard;
+        if let Some(tier) = tier {
+            cost.ultrafast_premium += standard * (tier.multiplier(now) - 1.0);
+        }
+    }
+    Some(cost)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn million(model: &str, each: u64) -> ModelTokens {
+        ModelTokens {
+            model: model.into(),
+            usage: TokenUsage {
+                input: Some(each * 1_000_000),
+                output: Some(each * 1_000_000),
+                cache_read: Some(each * 1_000_000),
+                cache_write: Some(each * 1_000_000),
+            },
+        }
+    }
+
+    /// SPEC-619 AC-4: a Codex subagent's tokens are priced at its own model, the rest of the
+    /// run at the run's; an unpriced part leaves the run unpriced.
+    #[test]
+    fn a_runs_parts_are_priced_at_their_own_models() {
+        let now = Timestamp(1_795_000_000_000);
+        let totals = million("gpt-6.2-sol", 2).usage;
+        let astra = [million("gpt-6.2-astra", 1)];
+        let cost = run_cost(Some("gpt-6.2-sol"), totals, &astra, now);
+        // 14.60 for the rest at Sol, 58.40 for the subagent at Astra; tripled for Ultrafast.
+        assert!(
+            cost.is_some_and(|c| close(c.standard, 73.0) && close(c.ultrafast_premium, 146.0)),
+            "{cost:?}"
+        );
+        let alone = run_cost(Some("gpt-6.2-sol"), totals, &[], now);
+        assert!(alone.is_some_and(|c| close(c.standard, 29.2)), "{alone:?}");
+        assert_eq!(
+            run_cost(Some("gpt-6.2-sol"), totals, &[million("mystery", 1)], now),
+            None
+        );
+        let luna = run_cost(Some("gpt-6-luna"), million("x", 1).usage, &[], now);
+        assert!(luna.is_some_and(|c| c.ultrafast_premium == 0.0), "{luna:?}");
+        // A run of an unpriced model without parts stays unpriced, also with zero tokens.
+        let zero = TokenUsage {
+            input: Some(0),
+            output: Some(0),
+            cache_read: Some(0),
+            cache_write: Some(0),
+        };
+        assert_eq!(run_cost(Some("mystery"), zero, &[], now), None);
+        assert!(run_cost(Some("gpt-6.2-sol"), zero, &[], now).is_some_and(|c| c.standard == 0.0));
+        // Only subagents spent: the run's own unknown model costs nothing.
+        let only = run_cost(None, million("x", 1).usage, &astra, now);
+        assert!(only.is_some_and(|c| close(c.standard, 58.4)), "{only:?}");
+    }
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9

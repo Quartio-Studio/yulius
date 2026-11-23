@@ -47,6 +47,7 @@ const STAGING_STATE = {
   deploying: { label: 'deploying', tone: 'warn' },
   verified: { label: 'verified on staging', tone: 'ok' },
   included: { label: 'in a verified deploy', tone: 'ok' },
+  inherited: { label: 'waiting for a fix', tone: 'warn' },
   gate_failed: { label: 'full gate failed', tone: 'danger' },
   deploy_failed: { label: 'deploy failed', tone: 'danger' },
   superseded: { label: 'superseded', tone: '' },

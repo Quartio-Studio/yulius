@@ -342,7 +342,7 @@ impl Hub {
     ) {
         let deadline = tokio::time::Instant::now() + limit;
         let mut redrawn = self.output_seq() > since;
-        loop {
+        while tokio::time::Instant::now() < deadline {
             let until = if redrawn {
                 (tokio::time::Instant::now() + SETTLE_QUIET).min(deadline)
             } else {
@@ -730,6 +730,41 @@ mod tests {
         hub.resize(30, 6);
         assert!(matches!(sub.rx.try_recv(), Ok(HubFrame::State)));
         assert_eq!(hub.size(), (30, 6));
+    }
+
+    /// SPEC-623 review round 1: a program that never pauses its output costs the limit, no
+    /// more, so the repaint probe's bound holds under continuous output.
+    #[tokio::test]
+    async fn settle_ends_at_its_limit_under_continuous_output() {
+        let hub = Arc::new(Hub::new(20, 5));
+        let since = hub.output_seq();
+        let watch = hub.watch();
+        let drawer = Arc::clone(&hub);
+        // Bursts keep a backlog on the watch, so a frame is always ready.
+        let flood = tokio::spawn(async move {
+            let mut seq = 0;
+            loop {
+                for _ in 0..64 {
+                    seq += 1;
+                    drawer.output(seq, b"x");
+                }
+                tokio::time::sleep(SETTLE_QUIET / 4).await;
+            }
+        });
+        let started = tokio::time::Instant::now();
+        let settled = tokio::time::timeout(
+            Duration::from_secs(5),
+            hub.settle(watch, since, Duration::from_millis(300)),
+        )
+        .await;
+        let waited = started.elapsed();
+        assert!(settled.is_ok(), "settle outlived its limit: {waited:?}");
+        flood.abort();
+        assert!(waited >= Duration::from_millis(300), "{waited:?}");
+        assert!(
+            waited < Duration::from_millis(300) + SETTLE_QUIET * 4,
+            "{waited:?}"
+        );
     }
 
     /// The first screen after a resize waits for the program's redraw, then for a pause, and

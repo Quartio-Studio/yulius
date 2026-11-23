@@ -130,7 +130,7 @@ impl App {
         })
     }
 
-    pub(super) async fn login_of_id(&self, id: &str) -> String {
+    pub(crate) async fn login_of_id(&self, id: &str) -> String {
         match yulius_domain::ids::UserId::parse(id) {
             Ok(user) => self.login_of(&user).await,
             Err(_) => "unknown".into(),
@@ -251,6 +251,7 @@ impl App {
             name: title(&input.title)?,
             description: String::new(),
             hosts: Vec::new(),
+            rules: Vec::new(),
             injection: "none".into(),
             header_name: None,
             fields: payload.fields(),

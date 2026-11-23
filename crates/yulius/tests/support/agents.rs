@@ -290,11 +290,17 @@ impl HarnessPort for FakeAgentHarness {
         }
         let _ = std::fs::write(launch.run_dir.join("fake-launch.txt"), settings);
         // A resume continues the same session (and transcript), like `claude --resume <id>`.
-        let resumed = match &launch.mode {
+        // A fork (SPEC-628) starts a new session holding a copy of the one it names.
+        let (resumed, forked) = match &launch.mode {
+            yulius_app::ports::harness::SessionMode::Resume {
+                session_id,
+                fork: Some(_),
+                ..
+            } => (None, Some(session_id.clone())),
             yulius_app::ports::harness::SessionMode::Resume { session_id, .. } => {
-                Some(session_id.clone())
+                (Some(session_id.clone()), None)
             }
-            yulius_app::ports::harness::SessionMode::New { .. } => None,
+            yulius_app::ports::harness::SessionMode::New { .. } => (None, None),
         };
         let resumed_session = resumed.is_some();
         let codex = launch.harness == Harness::Codex;
@@ -355,6 +361,14 @@ impl HarnessPort for FakeAgentHarness {
                 "--transcript-kind".into(),
                 "claude".into(),
             ]);
+            // Claude Code reads the forked session where `--resume` finds it: the fork
+            // worktree's project folder.
+            if let Some(source) = &forked {
+                let from =
+                    self.inner
+                        .claude_transcript(&launch.sandbox_home, &launch.worktree, source);
+                argv.extend(["--fork-from".into(), from.to_string_lossy().into_owned()]);
+            }
         }
         if let Some(n) = self.options.limit_after {
             argv.extend(["--limit-after".into(), n.to_string()]);
@@ -520,7 +534,9 @@ impl HarnessPort for FakeAgentHarness {
             prompt: Some(prompt),
             ..
         } = &launch.mode
-            && (self.options.resume_prompts || prompt.contains("resumeFromRunId"))
+            && (self.options.resume_prompts
+                || prompt.contains("resumeFromRunId")
+                || forked.is_some())
         {
             argv.extend(["--prompt".into(), prompt.clone()]);
         }

@@ -12,6 +12,7 @@ import { limitInEffect, limitsNow, modelWindow, needsSignIn, placingModel, usedU
 import { BRAND } from './brand.js';
 import { agentOfHarness } from './agents.js';
 import { createMarkdownEditor } from './mdeditor.js';
+import { PROVIDERS } from './models.js';
 import { openAttachment } from './filedrop.js';
 import { inlineCount } from './promptparts.js';
 import { FILE_MARK, FILE_MARK_END, placeFiles, withoutMarks } from './promptinput.js';
@@ -48,6 +49,7 @@ export function openTaskMenu(ctx, anchor, task) {
       ? { label: 'Resume', onSelect: () => resumeTask(ctx, task) }
       : { label: 'Pause', disabled: !can.pause, title: can.pause ? 'Stops the agent where it is, until you resume it' : (task.pause && task.pause.by === 'update' && !owner && write ? `Paused for a ${BRAND.name} update: it continues by itself` : write && !owner ? 'Only a running task can be paused' : why), onSelect: () => pauseTask(ctx, task) },
     { label: task.status === 'parked' ? 'Resume' : 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
+    { label: 'Fork…', disabled: Boolean(forkWhy(task, write)), title: forkWhy(task, write) || 'A new task continues a copy of this conversation from its last commit; this one goes on', onSelect: () => openForkDialog(ctx, task) },
     { label: 'See the original prompt', onSelect: () => openPromptDialog(ctx, task) },
     { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
     { label: 'Feedback…', disabled: !can.feedback, onSelect: () => openFeedbackDialog(ctx, task) },
@@ -64,6 +66,67 @@ export function openTaskMenu(ctx, anchor, task) {
       : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (write && !(guest && owner) ? 'Still running: stop the task before archiving it' : whyTidy), onSelect: () => archiveTask(ctx, task) },
     { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (!write || (guest && owner) ? whyTidy : task.status === 'stopping' ? 'Stopping…' : 'Still running: stop the task before deleting it'), onSelect: () => deleteTask(ctx, task) },
   ], { align: anchor instanceof Element ? 'end' : 'start' });
+}
+
+// ---------------------------------------------------------------- fork (SPEC-628)
+
+/**
+ * Why a task cannot be forked from here, or null (FRK-009): forking needs work access to the
+ * project, a task whose agent's CLI forks at launch and a conversation to continue. The server
+ * checks the same and says so.
+ */
+export function forkWhy(task, write) {
+  if (!write) return 'Requires write access';
+  if (task.harness === 'antigravity') return 'Antigravity cannot fork a conversation';
+  if (['queued', 'chained', 'prepared'].includes(task.status) || task.not_started) return 'Not started yet: no conversation to fork';
+  return null;
+}
+
+/**
+ * Fork… (SPEC-628 FRK-009): what the new task should do differently, and optionally its model and
+ * subscription (the defaults otherwise, as for a new task). It opens the new task.
+ */
+export async function openForkDialog(ctx, task) {
+  const agent = agentOfHarness(task.harness);
+  const provider = PROVIDERS.find((p) => p.harness === task.harness);
+  const message = h('textarea', { class: 'textarea', rows: 5, placeholder: 'For example: try a hand-written parser instead (optional)' });
+  const model = h('select', { class: 'select' },
+    h('option', { value: '' }, 'Default (as for a new task)'),
+    ...(provider ? provider.models.filter((m) => !m.harnessOnly) : []).map((m) => h('option', { value: m.id }, m.name)));
+  const account = h('select', { class: 'select' }, h('option', { value: '' }, 'The pool chooses'));
+  ctx.api.get('/api/status').then((status) => {
+    for (const a of (status.accounts || []).filter((a) => a.id && a.provider === agent.provider)) {
+      account.append(h('option', { value: a.id }, a.label));
+    }
+  }).catch(() => {});
+  return openModal({
+    title: `Fork #${task.number}`,
+    className: 'fork-dialog',
+    body: h('div', { class: 'stack' },
+      h('p', { class: 'muted' }, `A new ${agent.cli} task continues a copy of this conversation from the last commit of ${task.branch ? `“${task.branch}”` : 'its branch'}, on a branch of its own with a copy of the plan. #${task.number} goes on untouched. Uncommitted changes stay behind. The new task is yours, and so is its copy of the conversation.`),
+      field('What should it do differently?', message, 'Its first message. Left empty, it continues from where the conversation stopped.'),
+      field('Model', model),
+      field('Subscription', account)),
+    actions: [
+      { label: 'Cancel', value: false },
+      { label: 'Fork', kind: 'primary', run: async () => {
+        const body = {};
+        const text = message.value.trim();
+        // The server counts bytes (64 KiB), not characters.
+        if (new TextEncoder().encode(text).length > 65536) { invalid(message, 'Keep it to 64 KiB.'); return false; }
+        if (text) body.message = text;
+        if (model.value) body.model = model.value;
+        if (account.value) body.account_id = account.value;
+        // A refusal throws: the dialog says why, in place (openModal).
+        const fork = await ctx.api.post(`/api/tasks/${enc(task.id)}/fork`, body);
+        if (fork && fork.id) ctx.store.upsertTask(fork);
+        const sandbox = ctx.store.sandboxById(fork.sandbox_id);
+        toast(`#${fork.number} continues #${task.number}'s conversation.`, { kind: 'ok' });
+        if (sandbox) ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${fork.number}`);
+        return true;
+      } },
+    ],
+  });
 }
 
 // Every API path is a literal at its call site so tests/ui_contract.rs can check it

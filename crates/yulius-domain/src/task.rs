@@ -462,7 +462,7 @@ pub struct AttentionFacts {
     /// Yulius has news of its pull request for it (an armed merge, a merge not said yet;
     /// SPEC-487 CHN-001): it goes on by itself when Yulius has news (SPEC-085 STT-002).
     pub yulius_wait: bool,
-    /// A durable staging request whose outcome Yulius will deliver, including to a parked agent.
+    /// A durable staging request whose outcome a running agent with work left will receive.
     pub staging_wait: Option<crate::staging::StagingState>,
     /// Its pull request, when one is known.
     pub pull: Option<PullSignal>,
@@ -474,6 +474,9 @@ pub struct AttentionFacts {
     pub awaits_start_onboarding: bool,
     /// The idle agent's merge is armed: Yulius merges it and tells the agent (SPEC-487 CHN-001).
     pub merge_armed: bool,
+    /// The idle agent's achieved goal still has a recorded integration failure the PR watch has
+    /// not cleared: Yulius re-checks it and tells the agent (SPEC-621 FIN-004).
+    pub candidate_pending: bool,
 }
 
 /// A task's group in the web UI's sidebar (SPEC-001 UI-050). Home's cards and the sandbox tabs
@@ -514,6 +517,7 @@ impl AttentionFacts {
             paused: false,
             awaits_start_onboarding: false,
             merge_armed: false,
+            candidate_pending: false,
         }
     }
 
@@ -534,7 +538,8 @@ impl AttentionFacts {
     /// you, and so does "Your turn", an idle agent with declared work left or an unfinished goal (unless
     /// the agent's background shells still run or it waits in `yulius wait`: it goes on by itself);
     /// an idle agent with neither answered and is Done ("Answered", SPEC-429), as is an achieved
-    /// goal; a queued, chained or prepared task is Queued (a chain whose predecessor ended
+    /// goal unless its merge is armed, a staging outcome is due or its integration failure is
+    /// pending; a queued, chained or prepared task is Queued (a chain whose predecessor ended
     /// otherwise needs you), and the rest is Working.
     #[must_use]
     pub fn group(&self) -> TaskGroup {
@@ -558,8 +563,9 @@ impl AttentionFacts {
         }
         let finished =
             self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
-        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
-        if finished && (self.merge_armed || self.staging_wait.is_some()) {
+        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001), or
+        // settles its achieved goal's integration failure first (SPEC-621 FIN-004).
+        if finished && (self.merge_armed || self.candidate_pending || self.staging_wait.is_some()) {
             return G::Working;
         }
         // The idle agent goes on by itself: its background work wakes it, or Yulius does.
@@ -623,8 +629,7 @@ impl AttentionFacts {
     /// Local work or an owner decision already determines this parked task's group.
     #[must_use]
     pub fn parked_has_local_work_or_request(&self) -> bool {
-        self.staging_wait.is_some()
-            || self.plan_open
+        self.plan_open
             || self.spec_unfinished
             || self.goal_unfinished
             || self.held_prompt
@@ -632,18 +637,11 @@ impl AttentionFacts {
     }
 
     /// The group of a parked task (SPEC-512 PRK-004): the group of the idle run it was, with no
-    /// live overlay (shells, `yulius wait`, an armed merge, a pause), except for staging, which can wake the agent.
+    /// live overlay (shells, `yulius wait`, an armed merge, a pause, or staging input).
     /// Other work that would keep a running agent busy (its checks running, a
     /// conflict its pull request watch tells it of, a CI run to run again, a first turn) waits
     /// for a person, who resumes it.
     fn parked_group(&self) -> TaskGroup {
-        if self.staging_wait.is_some()
-            && self.activity.is_some_and(Activity::is_idle)
-            && !self.held_prompt
-            && !self.browser_request
-        {
-            return TaskGroup::Working;
-        }
         if self.parked_has_local_work_or_request()
             || self
                 .pull
@@ -657,7 +655,9 @@ impl AttentionFacts {
             status: TaskStatus::Running,
             background_shells: false,
             yulius_wait: false,
+            staging_wait: None,
             merge_armed: false,
+            candidate_pending: false,
             paused: false,
             ..*self
         }
@@ -1493,6 +1493,21 @@ mod tests {
                 assert_eq!(armed.group(), G::Working, "{activity:?} {pull:?}");
             }
         }
+        // SPEC-621 FIN-004: an achieved goal whose integration failure is not cleared yet is
+        // Yulius's to settle, not Done; a parked task has no session to settle it in.
+        for pull in [None, Some(P::Tested), Some(P::Merged), Some(P::Failing)] {
+            let pending = AttentionFacts {
+                candidate_pending: true,
+                pull,
+                ..running(Some(A::Done))
+            };
+            assert_eq!(pending.group(), G::Working, "{pull:?}");
+        }
+        let parked = AttentionFacts {
+            candidate_pending: true,
+            ..AttentionFacts::new(TaskStatus::Parked, Some(A::Done))
+        };
+        assert_eq!(parked.group(), G::Done);
 
         // After a finished turn the pull request speaks (#35, #139).
         let with = |activity, pull, plan_open| AttentionFacts {

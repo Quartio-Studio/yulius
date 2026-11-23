@@ -249,6 +249,17 @@ pub async fn resume(
     Ok(Json(app.continue_task(&ctx, &tid, &req).await?))
 }
 
+/// `POST /api/tasks/{tid}/fork` (SPEC-628 FRK-001).
+pub async fn fork(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+    body: Option<Json<yulius_contracts::api::tasks::ForkTask>>,
+) -> ApiResult<Json<TaskSummary>> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    Ok(Json(app.fork_task(&ctx, &tid, &req).await?))
+}
+
 pub async fn switch(
     State(app): State<AppState>,
     Auth(ctx): Auth,

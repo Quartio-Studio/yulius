@@ -356,7 +356,7 @@ impl App {
     ) -> AppResult<bool> {
         self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
-        let _writer = runtime.arm_writer.lock().await;
+        let _writer = runtime.arm_writer.write().await;
         crate::race::reached(
             crate::race::Point::ArmWriteStarted,
             std::path::Path::new(task.id.as_str()),
@@ -374,6 +374,13 @@ impl App {
             .task(&task.id)
             .await?
             .ok_or(crate::error::AppError::NotFound)?;
+        if current.status == yulius_domain::task::TaskStatus::Running
+            && runtime.closing_or_settling()
+        {
+            return Err(crate::error::AppError::Conflict(
+                "The session is closing. Resume it before arming the merge.".into(),
+            ));
+        }
         if !current.status.keeps_an_armed_merge() {
             return Err(crate::error::AppError::Conflict(format!(
                 "The task is {}. Resume it before arming the merge.",
@@ -498,7 +505,7 @@ impl App {
     pub(crate) async fn settle_armed(&self, task: &TaskRecord, landed: Option<(&str, String)>) {
         self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
-        let _writer = runtime.arm_writer.lock().await;
+        let _writer = runtime.arm_writer.write().await;
         if let Err(err) = self.reconcile_arm_change(&task.id, &runtime).await {
             tracing::warn!(task = %task.id, error = %err, "retaining the saved merge arm until its decision can be reconciled");
             return;
@@ -584,7 +591,7 @@ impl App {
                 continue;
             };
             let runtime = self.runtime(&task_id);
-            let _writer = runtime.arm_writer.lock().await;
+            let _writer = runtime.arm_writer.write().await;
             // Every activation, including restoration, has a generation. The writer
             // keeps this snapshot from displacing any decision made in this process.
             if lock_slot(&runtime).generation != 0 {
@@ -606,25 +613,30 @@ impl App {
                     continue;
                 }
             };
-            if let (Some(span), Some(receipt)) = (last, receipt) {
-                // A reviewed move to a new head keeps its activation stamp.
-                if span.started_at.0 >= entry.armed_at {
-                    self.save_armed(&task_id, None);
-                    lock_slot(&runtime).last_armed_at = span.started_at.0;
-                    continue;
-                }
-                if receipt.superseded_at.is_none()
-                    && !matches!(
-                        self.deps
-                            .store
-                            .retire_singleton(&task_id, &span, self.now())
-                            .await,
-                        Ok(true)
-                    )
-                {
-                    complete = false;
-                    continue;
-                }
+            // Only a final decision records a merge wait, stamped with the activation it
+            // decided, and every later activation is stamped after it: an entry not later than
+            // the verdict is a leftover whose clear failed, of the ordinary queue as of a
+            // singleton (SPEC-615 CMA-001). A reviewed move to a new head keeps its stamp.
+            if let Some(span) = &last
+                && span.started_at.0 >= entry.armed_at
+            {
+                self.save_armed(&task_id, None);
+                lock_slot(&runtime).last_armed_at = span.started_at.0;
+                continue;
+            }
+            // An older singleton decision gives way to this later activation.
+            if let (Some(span), Some(receipt)) = (last, receipt)
+                && receipt.superseded_at.is_none()
+                && !matches!(
+                    self.deps
+                        .store
+                        .retire_singleton(&task_id, &span, self.now())
+                        .await,
+                    Ok(true)
+                )
+            {
+                complete = false;
+                continue;
             }
             let Ok(record) = self.deps.store.task(&task_id).await else {
                 complete = false;
@@ -900,7 +912,7 @@ impl App {
         decision: &crate::merge_train::SingletonDecision,
     ) -> bool {
         let runtime = self.runtime(task);
-        let _writer = runtime.arm_writer.lock().await;
+        let _writer = runtime.arm_writer.write().await;
         if lock_slot(&runtime).generation != deciding.generation {
             lock_slot(&runtime).finish(deciding, Verdict::Keep(deciding.merge.clone()));
             return true;
@@ -1022,7 +1034,7 @@ impl App {
             // reads as armed for `yulius wait` until the decision ends, in one step (WAI-003).
             let runtime = self.runtime(&task.id);
             if lock_slot(&runtime).retirement_pending.is_some() {
-                let _writer = runtime.arm_writer.lock().await;
+                let _writer = runtime.arm_writer.write().await;
                 if self.finish_retirement(&task.id, &runtime).await.is_err() {
                     continue;
                 }

@@ -33,13 +33,18 @@
 //! Restart: runs recorded as running lose their executor; their hosts are terminated and they
 //! go back to the queue (a run is repeatable).
 
+pub(crate) mod brokered;
 pub mod cd;
 mod disk_wait;
 mod environment;
 mod exec;
+mod watch_run;
+pub(crate) use watch_run::WatchRunOutput;
 mod findings;
 mod flaky;
+mod gate_history;
 pub use flaky::Noted;
+pub use gate_history::{GateJob, GateRead, GateVerdict, RepairRecipient};
 pub mod hygiene;
 mod opening;
 pub use opening::PullOpening;
@@ -282,7 +287,8 @@ pub fn run_for_pull_head(runs: &[CiRunRecord], pr: u64) -> Option<&CiRunRecord> 
 
 /// Test names retained by a cancelled sibling of a failed job (SPEC-566).
 /// The reason is written by the CI runner; other cancellation causes carry no observation.
-pub(crate) fn sibling_failure_names(reason: Option<&str>, kept: &str) -> Vec<String> {
+#[must_use]
+pub fn sibling_failure_names(reason: Option<&str>, kept: &str) -> Vec<String> {
     match reason
         .and_then(|why| why.strip_prefix("stopped early: job "))
         .and_then(|why| why.strip_suffix(" failed"))
@@ -534,7 +540,7 @@ pub const LAST_VALID_NOTE: &str = "judged by the integration branch's last valid
 
 /// How a run refused for the integration branch's invalid `yulius.toml` begins its reason: it
 /// is queued again once that file is valid (SPEC-504 CFG-002).
-const DEV_INVALID_PREFIX: &str = "yulius.toml is invalid on ";
+pub const DEV_INVALID_PREFIX: &str = "yulius.toml is invalid on ";
 
 /// The job of a run refused for its `yulius.toml` (SPEC-504 CFG-002).
 pub const CONFIG_JOB: &str = "yulius.toml";
@@ -1722,10 +1728,14 @@ impl App {
                 ));
             }
         }
+        let integration_head = targets.iter().find_map(|(target, _)| {
+            matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
+                .then_some(target)
+        });
         let runs = self
             .deps
             .store
-            .ci_planning_runs(&sandbox.id, PLAN_RUNS)
+            .ci_planning_runs(&sandbox.id, PLAN_RUNS, integration_head)
             .await?;
         let facts = ordinary_run_facts(&runs, view.problem.is_none());
         let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
@@ -1759,6 +1769,23 @@ impl App {
             }
         }
         for target in plan.queue {
+            if matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
+            {
+                let cancelled = facts.iter().any(|run| {
+                    run.sha == target.sha
+                        && matches!(run.reference, CiRef::Candidate(_))
+                        && run.state == RunState::Cancelled
+                });
+                if cancelled
+                    || self.deps.store.active_ci_runs().await?.iter().any(|r| {
+                        r.sandbox_id == sandbox.id && matches!(r.reference, CiRef::Candidate(_))
+                    })
+                {
+                    // An active candidate owns the slot. A cancelled candidate at this head
+                    // stays stopped until a person asks for a rerun.
+                    continue;
+                }
+            }
             if let Some((_, gate)) = targets.iter().find(|(t, _)| *t == target) {
                 // A branch commit whose tree a run already passed (a squash merge of an
                 // up-to-date pull request) reuses that result instead of running again: every
@@ -2368,11 +2395,15 @@ impl App {
     }
 
     async fn ci_run_of(&self, sandbox: &SandboxRecord, run_id: &str) -> AppResult<CiRunRecord> {
-        self.deps
-            .store
-            .ci_run(run_id)
+        let store = &self.deps.store;
+        if let Some(run) = store.ci_run(run_id).await? {
+            return (run.sandbox_id == sandbox.id)
+                .then_some(run)
+                .ok_or(AppError::NotFound);
+        }
+        store
+            .archived_gate_run(&sandbox.id, run_id)
             .await?
-            .filter(|run| run.sandbox_id == sandbox.id)
             .ok_or(AppError::NotFound)
     }
 
@@ -2403,6 +2434,7 @@ impl App {
                 )
             });
         Ok(CiOverview {
+            gate_notices: self.project_gate_notices(&sandbox).await?,
             gate: view.gate.as_ref().map(gate_view),
             gate_problem: view.problem,
             gate_fallback: view.fallback,

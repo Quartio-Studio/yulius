@@ -45,6 +45,14 @@ architecture, decisions, earlier specs, recent changes), the parallel and previo
 search earlier sessions for how the area was built. Extend what exists; never build a second
 version of it.
 
+Look at the neighbours before work that may overlap theirs: in Yulius `tasks_list`, then
+`task_get` on each task near your change, shows its plan with notes, its pull request and
+delivery stage, its claimed paths, what it waits for and its screen. If one already does the
+work, extend its result after it merges or take a different slice; if one touches the same files,
+wait for its pull request or claim disjoint paths. Never raise a Needs you asking a person to
+relay a status you can read there. The view is read-only: tasks never message or steer each
+other, and only a person, through their Superagent, writes to a task.
+
 ## 1. Spec (features and fixes)
 
 Use `om-spec-writing`. The Plan is steps of **similar effort**, each a slice that leaves the
@@ -163,13 +171,13 @@ With a merge-first staging target (a dev-stage `[cd.<name>]` with `merge_first =
   your sandbox.
 - Once your whole delivery merged (every pull request of the task), ask for staging once (in
   Yulius: `cd_deploy` of that environment).
-- After asking, your task is done: do not keep the session waiting for the staging run, and open no
-  pull request only to record its result (the task's delivery evidence holds it; instance policy of
-  2026-11-21). Yulius tells the task when the gate, the deploy or the verification of its revision
-  fails: only then fix it forward.
-- Yulius runs the full gate on exactly your merged revision, then deploys and verifies it in
-  revision order. A failing gate leaves staging on its last verified release and tells you which
-  check failed: fix it forward with a new pull request, merge it and ask again.
+- After asking, your task is done: do not keep the session waiting for the staging run.
+  Yulius records the staging outcome on your delivery. If a finished
+  task receives a typed outcome, answer in one line and change nothing. Only a person reopens its work.
+- A task still at work repairs a red integration branch before it delivers when nobody else has
+  the repair. Yulius names one working task to repair it and tells the other workers who has it.
+  Leave an assigned repair to its owner. If nobody is working, project CI and Status offer a
+  person a rerun or a new task. Staging verifies the fix and serves the inherited requests.
 - Production is promoted only from the revision staging verified.
 
 A merge deploys nothing by itself. CD (deployment) is its own mechanism, like CI: the project's `[cd.dev]`
@@ -220,8 +228,8 @@ to the changes log.
 | Fresh | the branch is up to date with the integration branch | `delivery_merge` |
 
 What we leave out on purpose: human approvals, paid GitHub rulesets and Actions minutes, module
-locks (claim paths and talk to the other task instead), and metrics dashboards.
+locks (claim paths and read the other task's status instead), and metrics dashboards.
 
-Parallel tasks claim the paths they change (`scope_claim`). On an overlap both tasks are told: wait for the other's pull request to merge and merge the integration branch before editing those files, or agree who changes what by a note on the claim.
+Parallel tasks claim the paths they change (`scope_claim`). On an overlap both tasks are told: wait for the other's pull request to merge and merge the integration branch before editing those files, or agree who changes what by a note on the claim. The other's status (`task_get`: its plan, pull request, claims and screen) says where it stands.
 
 Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).

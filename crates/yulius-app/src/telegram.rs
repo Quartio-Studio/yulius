@@ -100,6 +100,9 @@ pub(crate) struct Outgoing {
     pub(crate) chat: String,
     pub(crate) text: String,
     pub(crate) about: Option<crate::ports::notify::SentAbout>,
+    /// A keyed notice's scope (SPEC-624 NTC-007): once sent, it replaces the bot's earlier
+    /// message with this scope in the chat.
+    pub(crate) scope: Option<String>,
 }
 
 /// A linked chat's message for intake, and the link it came through.
@@ -328,10 +331,28 @@ impl App {
         text: String,
         about: Option<crate::ports::notify::SentAbout>,
     ) {
+        self.enqueue_keyed(chat, text, about, None);
+    }
+
+    /// [`App::enqueue_about`] for a keyed notice (SPEC-624 NTC-007): once sent, the bot's earlier
+    /// message with `scope` in the chat is deleted, best effort.
+    pub(crate) fn enqueue_keyed(
+        &self,
+        chat: String,
+        text: String,
+        about: Option<crate::ports::notify::SentAbout>,
+        scope: Option<String>,
+    ) {
         let Some(outbox) = self.channel.get().and_then(|s| s.outbox.get()) else {
             return;
         };
-        if outbox.try_send(Outgoing { chat, text, about }).is_err() {
+        let message = Outgoing {
+            chat,
+            text,
+            about,
+            scope,
+        };
+        if outbox.try_send(message).is_err() {
             tracing::warn!("a Telegram notification was dropped: the send queue is full");
         }
     }
@@ -358,12 +379,41 @@ impl App {
                     {
                         tracing::warn!(error = %err, "a sent Telegram message was not remembered");
                     }
+                    if let Some(scope) = &message.scope {
+                        self.replace_keyed(&bot, &message.chat, scope, &id).await;
+                    }
                 }
                 Ok(None) => {}
                 Err(err) => {
                     tracing::warn!(error = err.as_str(), "a Telegram message could not be sent");
                 }
             }
+        }
+    }
+
+    /// Remembers `id` as the bot's message for `scope` in `chat` and deletes the one it replaces
+    /// (SPEC-624 NTC-007). A delete the service refuses (an old message) leaves it in the chat.
+    async fn replace_keyed(&self, bot: &ActiveBot, chat: &str, scope: &str, id: &str) {
+        let earlier = match self
+            .deps
+            .store
+            .swap_keyed_message(chat, scope, id, self.now())
+            .await
+        {
+            Ok(earlier) => earlier,
+            Err(err) => {
+                tracing::warn!(error = %err, "a keyed Telegram message was not remembered");
+                return;
+            }
+        };
+        let Some(earlier) = earlier else {
+            return;
+        };
+        let deleted = tokio::time::timeout(CALL_DEADLINE, bot.channel.delete(chat, &earlier))
+            .await
+            .unwrap_or(Err(ChannelError::Unavailable));
+        if let Err(err) = deleted {
+            tracing::debug!(error = err.as_str(), "a replaced Telegram message stays");
         }
     }
 

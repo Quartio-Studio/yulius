@@ -44,6 +44,14 @@ pub enum Point {
     ParkedResumeWaitsForReader,
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
     ParkedStatusRead,
+    /// Local capacity is about to read the achieved owner’s delivery, keyed by task ID.
+    CandidateCapacityRead,
+    /// The free capacity has been verified, before the launch reserves its slot.
+    CandidateCapacityCleared,
+    /// A compound start rule is reading a named predecessor. Keyed by task ID.
+    RuleOwnerRead,
+    /// The watch started a hosted re-read of the owner's failed candidate. Keyed by task ID.
+    CandidateObservationRead,
     /// A queued row reads session capacity to explain its wait. Keyed by task ID.
     QueuedRowCapacity,
     /// The capacity worker selected a saved start and has not yet claimed the task.
@@ -54,8 +62,6 @@ pub enum Point {
     CapacityStaleCleanup,
     /// A start is about to claim its observed task state. Keyed by task ID.
     StartClaimReady,
-    /// The parked PR watcher has prepared its observation for the store's launch claim.
-    ParkedCandidateClaimReady,
     /// The supervisor released the launch lock after the attempted claim. Keyed by task ID.
     StartLockReleased,
     /// An idle running row reads its pending PR news. Keyed by task ID.
@@ -194,9 +200,17 @@ pub enum Point {
     /// viewer's; a stop that came while it launched has not asked it to end yet. The path is the
     /// task id.
     RunAttached,
+    /// A held tail of a task terminal's output is about to be shown, its quiet time over
+    /// (SPEC-614, #1624). The path is the attempt id of the run that printed it.
+    TerminalTailReady,
+    /// A held tail's release is over, shown or dropped (SPEC-614). The path is the attempt id.
+    TerminalTailDone,
     /// The leftovers view (SPEC-329's CI, #923): the kept sandboxes' store rows were read; the
     /// scan's state is not read yet. The path is the data directory.
     LeftoversView,
+    /// A brokered run's row is stored (SPEC-626), before its command is read again and run. The
+    /// path is the data directory.
+    CommandRunStored,
     /// `files_roots` (SPEC-340): the sandbox repository was found; its `.git/HEAD` is not opened
     /// yet. The path is the repository's.
     RootsHead,
@@ -326,6 +340,9 @@ pub enum Point {
     /// A refresh holds the launch lock; nothing of the home is read yet (SPEC-507 SKR-005). The
     /// path is the sandbox directory. Reached on a blocking thread.
     SkillsRefreshLocked,
+    /// A fork's task exists; its record, transcript copy and plan are not written yet (SPEC-628
+    /// FRK-001). The path is the sandbox directory.
+    ForkInserted,
 }
 
 #[cfg(feature = "test-support")]
