@@ -3,7 +3,8 @@
 // (defined once by administrators, switched on per project) and Personal (yours alone, switched on
 // per project, only for tasks you start) — and Team secrets: a title, a value and notes shared by
 // people; and Variables (SPEC-275): a project's non-secret values, shown in plain and in every task
-// run's environment. Agents use their secrets through Yulius' proxy and browser filling and never see them. People read a value only after
+// run's environment; and Commands (SPEC-626): CLIs that need a key file, run outside the agents'
+// sandbox, and their runs waiting for approval. Agents use their secrets through Yulius' proxy and browser filling and never see them. People read a value only after
 // entering their own two-factor code (set up once, mandatory; it unlocks the vault for 10
 // minutes), and every reveal is audited.
 
@@ -1033,10 +1034,189 @@ function mountVariables(ctx, sandbox, host, actions) {
   return () => offs.forEach((off) => off());
 }
 
+/**
+ * The Commands tab (SPEC-626): a project's brokered commands — CLIs that need an agent secret as a
+ * key file and run outside the agents' sandbox — and their runs. Administrators add, edit and
+ * remove commands; people who manage the project's secrets approve or reject a run that waits.
+ */
+function mountCommands(ctx, sandbox, host, actions) {
+  if (!sandbox) {
+    setChildren(actions);
+    setChildren(host, emptyState({ iconName: 'terminal', title: 'Open a sandbox', text: 'Commands belong to a project. Open one to see and add them.' }));
+    return () => {};
+  }
+  const runsBox = h('div', { class: 'stack' });
+  const list = h('div');
+  let canEdit = allows(sandbox.access, 'admin');
+  const addTitle = 'Add command';
+  setChildren(actions, createButton(addTitle, () => edit(null), { disabled: !canEdit, title: canEdit ? null : 'Requires admin access' }));
+  setChildren(host,
+    h('p', { class: 'muted small' }, `CLIs of ${sandbox.name} that need a key file — a deploy tool, a cloud SDK with a service-account key, a signing tool. Agents run one by name with \`yulius run NAME ARGS\`; it runs outside their sandbox with its agent secret as a temporary file they never see, and its output comes back with every secret blanked out.`),
+    runsBox,
+    list);
+
+  const MODES = { always: 'Asks a person every run', send: 'Asks when a run changes something', never: 'Runs without asking' };
+
+  function commandCard(command) {
+    const line = [command.binary, ...(command.fixed || [])].join(' ');
+    const chips = [
+      badge(MODES[command.approve] || command.approve, command.approve === 'never' ? '' : 'accent'),
+      command.secret_ready ? badge(command.secret, 'ok') : badge(`${command.secret} not set up`, 'warn'),
+    ];
+    if ((command.tasks || []).length) chips.push(badge(`tasks ${command.tasks.map((n) => `#${n}`).join(', ')}`));
+    return itemCard({
+      iconName: 'terminal',
+      title: h('span', { class: 'mono' }, command.name),
+      description: command.description || h('span', { class: 'muted' }, 'No description'),
+      extra: h('div', { class: 'stack-tight' },
+        h('code', { class: 'mono command-line' }, line),
+        h('div', { class: 'chips' }, chips),
+        (command.subcommands || []).length ? h('span', { class: 'muted small' }, `Subcommands: ${command.subcommands.join(', ')}`) : null,
+        (command.refuse || []).length ? h('span', { class: 'muted small' }, `${BRAND.name} sets: ${command.refuse.join(', ')}`) : null,
+        h('span', { class: 'muted small' }, `changed ${relLong(command.updated_at)} by ${command.updated_by}`)),
+      controls: [
+        smallButton('Edit', `Edit ${command.name}`, () => edit(command), { disabled: !command.can_edit, title: command.can_edit ? `Edit ${command.name}` : 'Requires admin access' }),
+        iconButton('trash', `Delete ${command.name}`, () => remove(command), { class: 'btn-quiet-danger', disabled: !command.can_edit }),
+      ],
+    });
+  }
+
+  function runRow(run) {
+    const waiting = run.state === 'waiting';
+    const controls = waiting && run.can_answer ? [
+      smallButton('Approve', `Approve task #${run.task_number}'s run of ${run.command}`, () => answer(run, true), { class: 'btn-primary' }),
+      smallButton('Reject', `Reject task #${run.task_number}'s run of ${run.command}`, () => answer(run, false)),
+    ] : [];
+    const state = waiting ? `waits until ${new Date(run.deadline).toLocaleTimeString()}` : run.state.replace('_', ' ');
+    return itemCard({
+      iconName: waiting ? 'clock' : 'terminal',
+      title: h('span', null, `Task #${run.task_number} · `, h('span', { class: 'mono' }, run.command)),
+      description: h('code', { class: 'mono command-line', 'data-run-line': run.id }, run.line),
+      extra: h('div', { class: 'chips' },
+        badge(state, waiting ? 'warn' : run.state === 'done' ? 'ok' : ''),
+        run.changes ? badge('says it changes something', 'accent') : null,
+        run.answered_by ? badge(`answered by ${run.answered_by}`) : null,
+        run.exit_code !== null && run.exit_code !== undefined ? badge(`exit ${run.exit_code}`, run.exit_code === 0 ? 'ok' : '') : null),
+      controls,
+    });
+  }
+
+  async function answer(run, approve) {
+    try {
+      await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/command-runs/${enc(run.id)}`, { approve });
+      toast(approve ? `Approved: task #${run.task_number}'s run of ${run.command} starts.` : 'Rejected: it runs nothing.', { kind: 'ok' });
+    } catch (error) { errorToast(error, 'Couldn’t answer'); }
+    reloadRuns();
+  }
+
+  function renderRuns(data) {
+    const runs = data.items || [];
+    const waiting = runs.filter((r) => r.state === 'waiting');
+    const others = runs.filter((r) => r.state !== 'waiting').slice(0, 10);
+    if (runs.length === 0) return h('div');
+    return h('div', { class: 'stack' },
+      waiting.length ? h('h2', { class: 'wf-section-title' }, `Waiting for approval (${waiting.length})`) : null,
+      waiting.length ? h('div', { class: 'item-list' }, waiting.map(runRow)) : null,
+      others.length ? h('h2', { class: 'wf-section-title' }, 'Recent runs') : null,
+      others.length ? h('div', { class: 'item-list' }, others.map(runRow)) : null);
+  }
+
+  function render(data) {
+    canEdit = data.can_edit;
+    const commands = data.items || [];
+    if (commands.length === 0) {
+      return emptyState({ iconName: 'terminal', title: 'No commands yet', text: 'Add a CLI agents may run with an agent secret of this project as its key file.', action: canEdit ? createButton(addTitle, () => edit(null)) : null });
+    }
+    return h('div', { class: 'stack' }, h('h2', { class: 'wf-section-title' }, 'Commands'), h('div', { class: 'item-list' }, commands.map(commandCard)));
+  }
+
+  const reload = loader(list, 'the commands', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/commands`), render, { shape: 'items' });
+  const reloadRuns = loader(runsBox, 'the runs', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/command-runs`), renderRuns, { shape: 'items' });
+  const follow = () => { reload({ quiet: true }); reloadRuns({ quiet: true }); };
+  const offs = [
+    ctx.store.on('commands', (event) => { if (!event.sandbox_id || event.sandbox_id === sandbox.id) follow(); }),
+    ctx.store.on('secrets', (event) => { if (!event.sandbox_id || event.sandbox_id === sandbox.id) reload({ quiet: true }); }),
+    ctx.store.on('resync', follow),
+  ];
+
+  const lines = (text) => text.split('\n').map((s) => s.trim()).filter(Boolean);
+
+  function edit(command) {
+    const input = (label, value, placeholder, attrs = {}) => h('input', { class: ['input', attrs.mono && 'mono'], 'aria-label': label, value: value ?? '', placeholder, autocomplete: 'off' });
+    const area = (label, value, placeholder) => h('textarea', { class: 'input mono', 'aria-label': label, rows: 3, placeholder }, value ?? '');
+    const name = input('Name', command?.name, 'deploy', { mono: true });
+    const description = input('Description', command?.description, 'Deploys the app with its service account');
+    const binary = input('Binary', command?.binary, '/usr/local/bin/deploy', { mono: true });
+    const secret = input('Secret', command?.secret, 'DEPLOY_KEY', { mono: true });
+    const fixed = area('Fixed arguments', (command?.fixed || []).join('\n'), '--key-file\n{keyfile}');
+    const subcommands = input('Subcommands', (command?.subcommands || []).join(', '), 'status, push', { mono: true });
+    const refuse = input(`Flags ${BRAND.name} sets`, (command?.refuse || []).join(', '), '--key-file, -k', { mono: true });
+    const approve = h('select', { class: 'input', 'aria-label': 'Approval' }, Object.entries(MODES).map(([value, label]) => h('option', { value, selected: (command?.approve || 'always') === value }, label)));
+    const sendFlags = input('Send flags', (command?.send_flags || []).join(', '), '--send', { mono: true });
+    const minutes = input('Approval minutes', command?.approval_minutes ?? 10, '10');
+    const timeout = input('Time limit (seconds)', command?.timeout_seconds ?? 600, '600');
+    const tasks = input('Tasks', (command?.tasks || []).join(', '), 'every task');
+    const env = area('Environment', Object.entries(command?.env || {}).map(([k, v]) => `${k}=${v}`).join('\n'), 'GOOGLE_APPLICATION_CREDENTIALS={keyfile}');
+    let slashed = Boolean(command?.slashes);
+    const slashes = toggle({ checked: slashed, label: 'owner/repo arguments pass', onChange: (on) => { slashed = on; } });
+    const csv = (el) => el.value.split(',').map((s) => s.trim()).filter(Boolean);
+    openModal({ title: command ? `Edit ${command.name}` : addTitle, body: h('div', { class: 'stack' },
+      field('Name', name, 'Agents run it as yulius run NAME.'),
+      field('Description', description, 'What it does, for people and agents.'),
+      field('Binary', binary, `The host’s own program, an absolute path. Not in /tmp, /home or ${BRAND.name}’s data.`),
+      field('Secret', secret, 'An agent secret of this project (or a global one): its runs get it as a file.'),
+      field('Fixed arguments', fixed, 'One per line, before the agent’s. {keyfile} is the key file, {home} the run’s home.'),
+      field('Subcommands', subcommands, 'The agent’s first argument must be one of them. Empty: any.'),
+      field(`Flags ${BRAND.name} sets`, refuse, 'Refused from the agent in every form.'),
+      field('Approval', approve, 'Who decides before a run.'),
+      field('Send flags', sendFlags, 'With “asks when a run changes something”: the flags that make it change something.'),
+      field('Approval minutes', minutes, 'No answer in time is a no.'),
+      field('Time limit (seconds)', timeout, 'A run is stopped at it.'),
+      field('Tasks', tasks, 'Task numbers that may run it. Empty: every task.'),
+      field('Environment', env, 'NAME=value per line. {secret} is the key itself, in the environment only.'),
+      field('owner/repo arguments pass', slashes, 'A / only between letters or digits of a value; never a path.'),
+    ), actions: [
+      { label: 'Cancel', value: false },
+      { label: command ? 'Save' : 'Add', kind: 'primary', submit: true, run: async () => {
+        const vars = {};
+        for (const line of lines(env.value)) {
+          const at = line.indexOf('=');
+          if (at < 1) return invalid(env, 'Write each variable as NAME=value.');
+          vars[line.slice(0, at)] = line.slice(at + 1);
+        }
+        const body = {
+          name: name.value.trim(), description: description.value.trim(), binary: binary.value.trim(), secret: secret.value.trim(),
+          fixed: lines(fixed.value), subcommands: csv(subcommands), refuse: csv(refuse), approve: approve.value, send_flags: csv(sendFlags),
+          approval_minutes: Number(minutes.value), timeout_seconds: Number(timeout.value), tasks: csv(tasks).map(Number), env: vars, slashes: slashed,
+        };
+        const saved = await withReauth(ctx, () => (command
+          ? ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/commands/${enc(command.id)}?version=${command.version}`, body)
+          : ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/commands`, body)));
+        if (saved === null) return false;
+        toast(command ? 'Saved.' : `${body.name} added. Agents may run it.`, { kind: 'ok' });
+        reload();
+        return true;
+      } },
+    ] });
+  }
+
+  async function remove(command) {
+    if (!(await confirmDialog({ title: `Delete ${command.name}?`, message: 'Agents can no longer run it.', confirmLabel: 'Delete', danger: true }))) return;
+    try {
+      await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}/commands/${enc(command.id)}`);
+      toast('Deleted.', { kind: 'ok' });
+      reload();
+    } catch (error) { errorToast(error, 'Couldn’t delete'); }
+  }
+
+  return () => offs.forEach((off) => off());
+}
+
 /** The tabs of the Secrets page (SPEC-245 WUI-001): `section` in the address, `agents` being Project. */
 const SECTIONS = [
   { value: 'agents', label: 'Project', icon: 'folder', scope: 'sandbox' },
   { value: 'variables', label: 'Variables', icon: 'gear', variables: true },
+  { value: 'commands', label: 'Commands', icon: 'terminal', commands: true },
   { value: 'global', label: 'Global', icon: 'globe', scope: 'instance' },
   { value: 'personal', label: 'Personal', icon: 'user', scope: 'personal' },
   { value: 'team', label: 'Team secrets', icon: 'users' },
@@ -1079,6 +1259,7 @@ export function mountSecretsPage(ctx, sandbox, route) {
     unmount = () => {};
     const section = SECTIONS.find((o) => o.value === current);
     if (section.variables) unmount = mountVariables(ctx, sandbox, host, frame.actions);
+    else if (section.commands) unmount = mountCommands(ctx, sandbox, host, frame.actions);
     else if (section.scope) unmount = mountAgents(ctx, sandbox, host, frame.actions, section.scope);
     else mountTeam(ctx, sandbox, host, frame.actions);
   }

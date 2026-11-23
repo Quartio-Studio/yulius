@@ -2945,7 +2945,7 @@ async fn a_reply_to_a_runs_notice_answers_that_run() -> TestResult {
     assert!(ran.to_string().contains("rejected"), "{ran}");
 
     // A newer run of the task, asked while the harness's clock stands still: a reply to the first
-    // run's notice never answers it, as a task's runs never share a request time.
+    // run's notice never answers it, as each notice names its own run.
     let asked = support::mcp_tool(
         &w.h,
         "tok-t1-telegram-0123456789",
@@ -3088,6 +3088,49 @@ async fn a_runs_notice_takes_only_an_answer_its_reader_may_give() -> TestResult 
         audits(&w, "t1", "task.messaged").await?.is_empty(),
         "no reply reached the task"
     );
+
+    // A line holding a backtick, which a notice drops (review round 2 of slice 3): approved on
+    // the Secrets page only, as a cut line is.
+    let asked = support::mcp_tool(
+        &w.h,
+        "tok-t1-telegram-0123456789",
+        "command_run",
+        json!({"name": "deploy", "args": ["--ref=v1.2`.0"]}),
+    );
+    let replies = async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let tid = TaskId::parse("t1")?;
+        while w.h.store.task_needs_you(&tid).await?.is_none() {
+            assert!(tokio::time::Instant::now() < deadline, "it never waited");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let notice = loop {
+            let id = notice_to(&w, 100).await?;
+            if w.fake
+                .sent_to(100)
+                .iter()
+                .rev()
+                .find(|t| t.starts_with("Needs you"))
+                .is_some_and(|t| t.contains("v1.2"))
+            {
+                break id;
+            }
+            w.fake.wait_sent(100, w.fake.sent_to(100).len() + 1).await?;
+        };
+        assert!(
+            reply_to(&w, 100, notice, "approve")
+                .await?
+                .contains("could not show the whole command line")
+        );
+        assert_eq!(
+            reply_to(&w, 100, notice, "reject").await?,
+            "Rejected: task #1's run of deploy runs nothing."
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (ran, replied) = tokio::join!(asked, replies);
+    replied?;
+    assert!(support::tool_text(&ran?).to_string().contains("rejected"));
 
     // A short line, approved by reply: it runs (this harness has no process host, so it fails).
     let asked = support::mcp_tool(
