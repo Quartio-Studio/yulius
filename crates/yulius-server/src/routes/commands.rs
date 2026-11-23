@@ -8,7 +8,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_app::vault::Revealed;
-use yulius_contracts::api::commands::{CommandDefinition, CommandList, CommandView};
+use yulius_contracts::api::commands::{
+    AnswerCommandRun, CommandDefinition, CommandList, CommandRunList, CommandRunView, CommandView,
+};
 
 use super::secrets::reauth_required;
 use crate::AppState;
@@ -72,4 +74,25 @@ pub async fn delete(
 ) -> ApiResult<StatusCode> {
     app.delete_command(&ctx, &sid, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/sandboxes/{sid}/command-runs`.
+pub async fn runs(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<CommandRunList>> {
+    Ok(Json(app.command_runs(&ctx, &sid).await?))
+}
+
+/// `POST /api/sandboxes/{sid}/command-runs/{id}`.
+pub async fn answer(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, id)): Path<(String, String)>,
+    Json(req): Json<AnswerCommandRun>,
+) -> ApiResult<Json<CommandRunView>> {
+    Ok(Json(
+        app.answer_command_run(&ctx, &sid, &id, req.approve).await?,
+    ))
 }

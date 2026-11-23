@@ -95,3 +95,52 @@ pub struct CommandList {
     /// Whether the viewer may add one.
     pub can_edit: bool,
 }
+
+/// One run of a project's command, as its people see it (SPEC-626 BRK-014, BRK-015). Its output
+/// stays with the task that ran it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandRunView {
+    /// Its id.
+    pub id: String,
+    /// The command's name.
+    pub command: String,
+    /// The task that asked, by number.
+    pub task_number: u32,
+    /// The full command line, placeholders unexpanded, redacted.
+    pub line: String,
+    /// The agent said it changes something.
+    pub changes: bool,
+    /// `waiting`, `running`, `done`, `timed_out`, `output_limit`, `failed`, `rejected`,
+    /// `expired` or `lost`.
+    pub state: String,
+    /// Why it ended as it did.
+    pub reason: Option<String>,
+    /// Until when a waiting run waits (RFC 3339).
+    pub deadline: Option<String>,
+    /// Who answered it (login).
+    pub answered_by: Option<String>,
+    /// Its exit code.
+    pub exit_code: Option<i32>,
+    /// When it was asked (RFC 3339).
+    pub created_at: String,
+    /// When it ended (RFC 3339).
+    pub ended_at: Option<String>,
+    /// Whether the viewer may answer it now (it waits; they manage the project's secrets, in a
+    /// browser session).
+    pub can_answer: bool,
+}
+
+/// `GET /api/sandboxes/{sid}/command-runs`: the runs that wait or run, then the newest others.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandRunList {
+    /// Newest first.
+    pub items: Vec<CommandRunView>,
+}
+
+/// `POST /api/sandboxes/{sid}/command-runs/{id}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnswerCommandRun {
+    /// Approve (`true`) or reject.
+    pub approve: bool,
+}

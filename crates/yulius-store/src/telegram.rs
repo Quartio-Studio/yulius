@@ -337,12 +337,14 @@ impl ChatLinkStore for SqliteStore {
     ) -> AppResult<()> {
         let (chat, message) = (chat.to_owned(), message.to_owned());
         let (task, asked_at) = (about.task.as_str().to_owned(), about.asked_at);
+        let run = about.command_run.clone();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             tx.execute(
                 "INSERT OR REPLACE INTO telegram_sent \
-                 (chat_id, message_id, task_id, asked_at, sent_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![chat, message, task, asked_at, at.0],
+                 (chat_id, message_id, task_id, asked_at, sent_at, command_run) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![chat, message, task, asked_at, at.0, run],
             )
             .map_err(db)?;
             tx.execute(
@@ -360,19 +362,23 @@ impl ChatLinkStore for SqliteStore {
     async fn sent_about(&self, chat: &str, message: &str) -> AppResult<Option<SentAbout>> {
         let (chat, message) = (chat.to_owned(), message.to_owned());
         self.call(move |c| {
-            let row: Option<(String, Option<i64>)> = c
+            let row: Option<(String, Option<i64>, Option<String>)> = c
                 .query_row(
-                    "SELECT task_id, asked_at FROM telegram_sent \
+                    "SELECT task_id, asked_at, command_run FROM telegram_sent \
                      WHERE chat_id = ?1 AND message_id = ?2",
                     params![chat, message],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()
                 .map_err(db)?;
-            Ok(row.and_then(|(id, asked_at)| {
+            Ok(row.and_then(|(id, asked_at, command_run)| {
                 yulius_domain::ids::TaskId::parse(&id)
                     .ok()
-                    .map(|task| SentAbout { task, asked_at })
+                    .map(|task| SentAbout {
+                        task,
+                        asked_at,
+                        command_run,
+                    })
             }))
         })
         .await
@@ -522,6 +528,7 @@ mod tests {
         let about = |n: i64| SentAbout {
             task: task.clone(),
             asked_at: Some(n),
+            command_run: None,
         };
         assert!(
             !store.set_chat_intake(&anna, true, Some("s1")).await?,
