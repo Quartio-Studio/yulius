@@ -1,11 +1,11 @@
 ---
 yulius-task: 1be160e2-e214-43f5-8c56-57c9463c183f
-status: in-progress
+status: done
 ---
 
 # SPEC-644: Menus opened inside a modal dialog show above it and work
 
-Status: in-progress
+Status: done
 Date: 2026-11-24
 Owner: Yulius task #628
 Scope authorization: task #628: "Solve GitHub issue #1735 in one pull request into `dev` whose
@@ -63,8 +63,8 @@ open. Menus outside dialogs keep their placement and behaviour.
 - [x] Menus opened in a modal dialog mount in it and close with it
 - [x] Menu specs outside dialogs pass; decision record, docs and changes entry
 - [x] Independent review in a fresh session, every finding answered
-- [ ] Integration gate repair: the xclipboard paste owner test reads the release after a round trip
-- [ ] Review notes: a point menu gives the keyboard back, topmost of two modals tested, comments and ADR wording
+- [x] Integration gate repair: the xclipboard paste owner test reads the release after a round trip
+- [x] Review notes: a point menu gives the keyboard back, topmost of two modals tested, comments and ADR wording
 
 ## Acceptance criteria
 
@@ -95,3 +95,35 @@ open. Menus outside dialogs keep their placement and behaviour.
 - **Escape.** The menu's capture-phase keydown handler already calls `preventDefault()` and
   `stopPropagation()` on Escape. A prevented Escape keydown starts no close request, so the
   dialog's `cancel` does not fire; the test holds it.
+
+## Evidence
+
+- Regression test, red on dev's `dom.js` (commit 1eeea9c6e):
+  `npx e2e run tests/subscriptions.e2e.ts --grep '#1735'` fails with "`<div class="xterm-screen">…
+  from <dialog open class="modal modal-full" aria-label="Sign in · Claude #9">… subtree intercepts
+  pointer events: getByRole("menuitem", name: /^Paste/)`", the issue's message.
+- With the fix (912ac4517) it passes. Removing the `closeMenu()` line in `openModal`'s `close()`
+  fails it ("expected true to be false": Escape still taken by the removed menu).
+- `subscriptions`, `menus`, `terminal`, `editor` and `filedrop` e2e specs: 166/166 passed at
+  912ac4517.
+- Review round 1 (yulius-reviewer, Fable 5.2) approved d8594d2cc: 1373-test e2e suite passed,
+  the new test failed against dev's `dom.js`, and its own checks covered placement, Escape,
+  backdrop, nested modals, resize and phone. Its notes and how they were answered:
+  - Own code: no test of the topmost of two modals. Added "a menu and a toast opened over two
+    modal dialogs…"; `.pop()` changed to `.shift()` in `topModal()` fails it.
+  - Own code: `topModal()` sat under the toast region's doc comment. It was moved.
+  - Pre-existing, newly reachable in the dialog: Escape and Tab on a point menu left the keyboard
+    on the page. Fixed test-first (MDM-005): the Escape and Tab checks fail at d8594d2cc and pass
+    at 1d87e3f60.
+  - Nit: ADR-0473 now says only an `openModal` dialog closes its menu.
+- Full e2e suite at 1d87e3f60: 103 files passed, 1 skipped; 1373 tests passed, 1 skipped.
+- Integration gate repair (b89e04f9d):
+  `scripts/cargo nextest run -p yulius-browser -E 'test(the_paste_owner_answers_only_its_text_and_lets_it_go)' --stress-count N`.
+  - Before the repair: 158 of 159 passed, then the CI failure "the held paste was not let go"
+    (`native.rs:279`).
+  - After the repair: 2000/2000 passed.
+  - `scripts/cargo nextest run -p yulius-browser --lib`: 82/82.
+- `scripts/dev docs` and `python3 scripts/check_repository.py` passed. Yulius CI run 075223fb
+  passed at d8594d2cc.
+- Not tested here: Firefox and Safari. That Escape in a menu starts no dialog `cancel` there too
+  rests on the HTML rule for a prevented keydown, not on a run.
