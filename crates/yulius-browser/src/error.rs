@@ -135,6 +135,9 @@ pub enum BrowserError {
     /// taking input; it was not delivered. Moves never do (they are coalesced).
     #[error("the sandbox browser is not taking input right now; that input was not delivered")]
     InputBacklog,
+    /// A viewer's paste did not reach the page (SPEC-639).
+    #[error("the paste did not reach the page: {0}")]
+    PasteFailed(String),
     /// A restart was requested while the manager was already working on this sandbox's slot.
     #[error("the sandbox browser is busy starting or stopping; try again once it is ready")]
     BrowserBusy,
@@ -221,6 +224,7 @@ impl BrowserError {
                 ViewerErrorCode::Capacity
             }
             Self::InputLocked => ViewerErrorCode::InputLocked,
+            Self::PasteFailed(_) => ViewerErrorCode::PasteFailed,
             Self::InputLockedUntilRestart => ViewerErrorCode::InputLockedUntilRestart,
             Self::InvalidInput(_)
             | Self::ToolParams(_)

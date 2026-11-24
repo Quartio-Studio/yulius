@@ -39,8 +39,8 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, warn};
 
-use crate::display::DisplayInput;
-use crate::keys::{SHIFT_KEYCODES, us_char};
+use crate::display::{DisplayInput, PasteOutcome};
+use crate::keys::{SHIFT_KEYCODES, SHORTCUT_KEYCODES, us_char};
 
 /// What the X thread is asked to do.
 #[derive(Debug)]
@@ -49,6 +49,12 @@ pub(crate) enum XCommand {
     /// Arm a clipboard transfer and deliver the primary press as one command.
     CopyPress(tokio::sync::oneshot::Sender<u32>),
     AcceptCopy(u32, tokio::sync::oneshot::Sender<String>),
+    /// A viewer's paste: own the CLIPBOARD with the text and press Shift+Insert (type the text when
+    /// the CLIPBOARD cannot be taken); the sender hears how it ended.
+    Paste(
+        zeroize::Zeroizing<String>,
+        tokio::sync::oneshot::Sender<crate::display::PasteOutcome>,
+    ),
     /// Apply the move slot if it still belongs to this generation (a wake-up for moves).
     Motion(u64),
     /// Answer once the server has processed every earlier request (a round trip).
@@ -172,6 +178,8 @@ const SCRATCH_KEYCODES: usize = 32;
 /// The Return and Tab keycodes (evdev).
 const RETURN_KEYCODE: u8 = 36;
 const TAB_KEYCODE: u8 = 23;
+/// The Insert keycode (evdev): Shift+Insert is the paste key.
+const INSERT_KEYCODE: u8 = 118;
 
 /// The X keysym of a character: Latin-1 keysyms equal the code point, every other character
 /// uses the Unicode keysym range.
@@ -250,6 +258,16 @@ impl XController {
     /// # Errors
     /// When XTest is missing or the root window cannot be watched.
     pub(crate) fn start(conn: RustConnection, size: (u16, u16)) -> Result<Self, String> {
+        Self::start_with(conn, size, true)
+    }
+
+    /// [`Self::start`]; without `paste_owner` pastes are typed (as when the CLIPBOARD cannot
+    /// be taken).
+    pub(crate) fn start_with(
+        conn: RustConnection,
+        size: (u16, u16),
+        paste_owner: bool,
+    ) -> Result<Self, String> {
         let root = conn
             .setup()
             .roots
@@ -277,8 +295,12 @@ impl XController {
         });
         let (keysyms_per_keycode, scratch) = spare_keycodes(&conn);
         let clipboard = crate::xclipboard::Clipboard::new(&conn);
+        let owner = paste_owner
+            .then(|| crate::xclipboard::Owner::new(&conn, root))
+            .flatten();
         let mut state = XState {
             clipboard,
+            owner,
             keysyms_per_keycode,
             scratch,
             typed: HashMap::new(),
@@ -346,6 +368,8 @@ impl XController {
 
 struct XState {
     clipboard: Option<crate::xclipboard::Clipboard>,
+    /// The CLIPBOARD of viewers' pastes (`None`: pastes are typed).
+    owner: Option<crate::xclipboard::Owner>,
     conn: RustConnection,
     root: Window,
     /// The screen's current size.
@@ -432,6 +456,9 @@ impl XState {
             if let Some(clipboard) = &mut self.clipboard {
                 clipboard.expire(&self.conn);
             }
+            if let Some(owner) = &mut self.owner {
+                owner.expire(&self.conn);
+            }
             if self.conn.flush().is_err() {
                 return;
             }
@@ -462,6 +489,7 @@ impl XState {
                     clipboard.accept(&self.conn, offer, result);
                 }
             }
+            XCommand::Paste(text, outcome) => self.paste(&text, outcome),
             XCommand::CopyPress(result) => {
                 if let Some(clipboard) = &mut self.clipboard {
                     clipboard.start(&self.conn, self.root, result);
@@ -480,6 +508,90 @@ impl XState {
                 if self.conn.sync().is_ok() {
                     let _ = done.send(());
                 }
+            }
+        }
+    }
+
+    /// A viewer's paste: the text becomes the CLIPBOARD and Shift+Insert is pressed
+    /// ([`Self::press_paste`]); without the CLIPBOARD the text is typed, without the modifiers
+    /// the viewer holds (they would make shortcuts of it).
+    fn paste(&mut self, text: &str, outcome: tokio::sync::oneshot::Sender<PasteOutcome>) {
+        // A paste is a new write: a pending offer of the page's copy must not offer it back.
+        if let Some(clipboard) = &mut self.clipboard {
+            clipboard.cancel(&self.conn);
+        }
+        self.await_quiet_clipboard();
+        let outcome = match &mut self.owner {
+            Some(owner) => match owner.take(&self.conn, text, outcome) {
+                Ok(()) => {
+                    self.press_paste();
+                    return;
+                }
+                Err(outcome) => outcome,
+            },
+            None => outcome,
+        };
+        let held = self.lift_shortcut_keys();
+        for c in text.chars().filter(|c| *c != '\r') {
+            self.type_char(c);
+        }
+        self.press_again(&held);
+        let _ = outcome.send(PasteOutcome::Typed);
+    }
+
+    /// Presses Shift+Insert: Chrome's paste key, and the one terminals leave to the browser
+    /// (xterm.js makes Ctrl+V the ^V character and cancels the paste). The viewer's held
+    /// Ctrl/Alt/Meta are lifted around it (Ctrl+Insert is Copy), its Shift is used as it is.
+    fn press_paste(&mut self) {
+        let held = self.lift_shortcut_keys();
+        let shift = self.keys.iter().any(|k| SHIFT_KEYCODES.contains(k));
+        if !shift {
+            self.fake(xproto::KEY_PRESS_EVENT, SHIFT_KEYCODES[0], 0, 0);
+        }
+        self.tap(INSERT_KEYCODE);
+        if !shift {
+            self.fake(xproto::KEY_RELEASE_EVENT, SHIFT_KEYCODES[0], 0, 0);
+        }
+        self.press_again(&held);
+    }
+
+    /// Releases the Ctrl, Alt and Meta keys the viewer holds (they would make a shortcut of what
+    /// is pressed next); [`Self::press_again`] presses them again.
+    fn lift_shortcut_keys(&self) -> Vec<u8> {
+        let held: Vec<u8> = self
+            .keys
+            .iter()
+            .copied()
+            .filter(|keycode| SHORTCUT_KEYCODES.contains(keycode))
+            .collect();
+        for keycode in &held {
+            self.fake(xproto::KEY_RELEASE_EVENT, *keycode, 0, 0);
+        }
+        held
+    }
+
+    fn press_again(&self, held: &[u8]) {
+        for keycode in held {
+            self.fake(xproto::KEY_PRESS_EVENT, *keycode, 0, 0);
+        }
+    }
+
+    /// Answers the display's events while a client still reads the previous paste (see
+    /// `PASTE_QUIET`), at most `PASTE_QUIET_MAX`, so a newer paste neither changes the
+    /// CLIPBOARD under Chrome's reads nor leaves one unanswered. The input behind it waits in
+    /// order meanwhile.
+    fn await_quiet_clipboard(&mut self) {
+        let until = Instant::now() + crate::xclipboard::PASTE_QUIET_MAX;
+        while Instant::now() < until && self.owner.as_ref().is_some_and(|o| o.reading()) {
+            match self.conn.poll_for_event() {
+                Ok(Some(event)) => self.on_event(&event),
+                Ok(None) => {
+                    if self.conn.flush().is_err() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(_) => return,
             }
         }
     }
@@ -651,6 +763,9 @@ impl XState {
     fn on_event(&mut self, event: &Event) {
         if let Some(clipboard) = &mut self.clipboard {
             clipboard.on_event(&self.conn, event);
+        }
+        if let Some(owner) = &mut self.owner {
+            owner.on_event(&self.conn, event);
         }
         match event {
             Event::MapNotify(map) if map.event == self.root && !map.override_redirect => {
@@ -857,7 +972,7 @@ mod tests {
                     while let Some(command) = next.take() {
                         match command {
                             XCommand::Input(input) => apply(input),
-                            XCommand::AcceptCopy(_, _) => {}
+                            XCommand::AcceptCopy(_, _) | XCommand::Paste(_, _) => {}
                             XCommand::CopyPress(_) => apply(DisplayInput::Button {
                                 button: 1,
                                 press: true,

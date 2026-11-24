@@ -44,6 +44,11 @@ const MAC_EDIT_KEYS = new Set(['a', 'c', 'x', 'z', 'y', 'f', 'g', 'b', 'i', 'u',
 /** The user's own browser shortcuts, never sent to the page. */
 const OWN_SHORTCUTS = new Set(['r', 'w', 't', 'q', 'l', 'n', 'tab', '[', ']']);
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
+/** One paste at most, as the server takes it (SPEC-639). */
+const PASTE_MAX_CHARS = 32000;
+/** Shift+Insert, the other paste key outside macOS: the user's browser pastes their clipboard. */
+const isPasteKey = (event) => !IS_MAC && event.key === 'Insert' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
+const PASTE_MAX_BYTES = 32 * 1024;
 
 /** Decode a video frame: u8 4, u8 flags (bit 0 keyframe), u64 big-endian µs, access unit. */
 export function parseVideoFrame(buffer) {
@@ -482,6 +487,26 @@ export function createStreamView(ctx, sandbox, hooks) {
     for (let i = 0; i < value.length; i += 8000) send({ type: 'key', tab_id: watched, event: 'char', text: value.slice(i, i + 8000) });
   }
 
+  /** The user's paste, whole: the sandbox page gets a real paste (SPEC-639). Never cut and
+   *  never dropped without a word: too long or not connected is said here, a paste the page did
+   *  not take comes back as `paste_failed`. */
+  function paste(value) {
+    if (!value) return;
+    if (!watched) { toast('Open a tab in the browser first, then paste again.', { kind: 'warn' }); return; }
+    const bytes = new TextEncoder().encode(value).length;
+    if (value.length > PASTE_MAX_CHARS) {
+      toast(`Nothing was pasted: the text has ${value.length.toLocaleString('en')} characters and the sandbox browser takes at most 32,000 at once.`, { kind: 'warn' });
+      return;
+    }
+    if (bytes > PASTE_MAX_BYTES) {
+      toast(`Nothing was pasted: the text is ${Math.ceil(bytes / 1024)} KiB and the sandbox browser takes at most 32 KiB at once.`, { kind: 'warn' });
+      return;
+    }
+    if (!send({ type: 'paste', tab_id: watched, text: value })) {
+      toast('Nothing was pasted: the browser is not connected. Paste again once it is.', { kind: 'warn' });
+    }
+  }
+
   /** ⌘ on macOS: editing shortcuts become Ctrl+key, ⌘ arrows become Home/End. */
   function macCommand(event) {
     const lower = event.key.toLowerCase();
@@ -514,6 +539,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     const command = IS_MAC ? event.metaKey : event.ctrlKey;
     if (command && OWN_SHORTCUTS.has(lower)) return; // the user's own browser
     if (command && lower === 'v') return; // the paste event sends the user's clipboard
+    if (isPasteKey(event)) return; // so does Shift+Insert (it would paste the sandbox's own)
     if (IS_MAC && event.metaKey) {
       if (event.key !== 'Meta' && macCommand(event)) event.preventDefault();
       return;
@@ -534,6 +560,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     if (IS_MAC && (event.metaKey || event.key === 'Meta')) return;
     const lower = event.key.toLowerCase();
     if ((IS_MAC ? event.metaKey : event.ctrlKey) && (OWN_SHORTCUTS.has(lower) || lower === 'v')) return;
+    if (isPasteKey(event) && !held.has(event.code || event.key)) return; // its down stayed here
     key('up', event.key, event.code, modifiers(event));
   });
   keys.addEventListener('compositionend', (event) => {
@@ -562,8 +589,7 @@ export function createStreamView(ctx, sandbox, hooks) {
   });
   keys.addEventListener('paste', (event) => {
     event.preventDefault();
-    const value = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
-    text(value.slice(0, 32000));
+    paste(event.clipboardData ? event.clipboardData.getData('text/plain') : '');
   });
   // Keys held when the page loses the keyboard would stay down on the server.
   keys.addEventListener('blur', releaseKeys);

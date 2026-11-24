@@ -212,6 +212,110 @@ const bpStrip = '[role="tablist"][aria-label="Browser tabs"]';
 // SPEC-483 E1 (ADR-0318): on a host whose browser policy is not in force the sandbox browser
 // shows, but refuses clicks and keys (they would reach Chrome's own file dialogs on the host).
 // The viewer is told why and what an administrator runs, once, not at every key.
+// SPEC-639: a paste in the panel goes to the sandbox page whole, as one `paste` message (the
+// server makes it a real paste there); too long, not taken or not connected is said, never lost.
+test('a paste in the browser panel is sent whole and a lost one is said', async ({ app, browser, screen }) => {
+  type Pasting = Window & { __yuliusMock: { browserPasteUnread?: boolean; browsers: Map<string, { pastes?: string[] }> } };
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await expect
+    .poll(() => browser.evaluate(() => ((document.querySelector('.bp-canvas') as HTMLCanvasElement | null)?.width ?? 0) > 10), { timeout: 15000 })
+    .toBe(true);
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  const paste = (text: string) => browser.evaluate((value: string) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', value);
+    const target = document.activeElement as HTMLElement;
+    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    return target.className;
+  }, text);
+  const pastes = () => browser.evaluate(() => (window as unknown as Pasting).__yuliusMock.browsers.get('sb_studio')?.pastes ?? []);
+  const code = 'sk-ant-oauth-'.padEnd(100, 'x');
+  const long = 'ab\n'.repeat(1667).slice(0, 5000);
+  expect(await paste(code)).toContain('bp-keys');
+  await paste(long);
+  await expect.poll(pastes).toEqual([code, long]);
+
+  // Over 32,000 characters or 32 KiB is not cut: nothing is sent, and the panel says why.
+  await paste('x'.repeat(32001));
+  await expect(browser.locator('.toast:has-text("Nothing was pasted: the text has 32,001 characters")')).toBeVisible();
+  await paste('€'.repeat(12000));
+  await expect(browser.locator('.toast:has-text("Nothing was pasted: the text is 36 KiB")')).toBeVisible();
+  expect(await pastes()).toHaveLength(2);
+  // A paste the page did not take comes back, and the panel says so.
+  await browser.evaluate(() => { (window as unknown as Pasting).__yuliusMock.browserPasteUnread = true; });
+  await paste('lost code');
+  await expect(browser.locator('.toast:has-text("the page did not take it")')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  // With no tab to paste into the panel says what to do.
+  type Tabbed = { browsers: Map<string, { tabs: unknown[]; saved?: unknown[]; sendTabs(): void }> };
+  await browser.evaluate(() => {
+    const session = (window as unknown as { __yuliusMock: Tabbed }).__yuliusMock.browsers.get('sb_studio')!;
+    session.saved = session.tabs;
+    session.tabs = [];
+    session.sendTabs();
+  });
+  await expect(screen.getByRole('tab', /^Checkout/)).toBeHidden();
+  await browser.evaluate(() => {
+    const data = new DataTransfer();
+    data.setData('text/plain', 'nowhere');
+    document.querySelector('.bp-keys')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(browser.locator('.toast:has-text("Open a tab in the browser first")')).toBeVisible();
+  await browser.evaluate(() => {
+    const session = (window as unknown as { __yuliusMock: Tabbed }).__yuliusMock.browsers.get('sb_studio')!;
+    session.tabs = session.saved!;
+    session.sendTabs();
+  });
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  // The person's own Shift+Insert is their browser's paste (with their clipboard), never an
+  // Insert key that would paste the sandbox's clipboard.
+  await browser.evaluate(() => {
+    type Sent = { browsers: Map<string, { viewers: Map<{ send(message: string): void }, string> }> };
+    const session = (window as unknown as { __yuliusMock: Sent }).__yuliusMock.browsers.get('sb_studio')!;
+    const keys: string[] = [];
+    (window as unknown as { sentKeys: string[] }).sentKeys = keys;
+    for (const socket of session.viewers.keys()) {
+      const send = socket.send.bind(socket);
+      socket.send = (message: string) => {
+        const request = JSON.parse(message);
+        if (request.type === 'key') keys.push(`${request.event} ${request.key}`);
+        send(message);
+      };
+    }
+  });
+  await browser.keyboard.press('Shift+Insert');
+  await browser.keyboard.press('q');
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { sentKeys: string[] }).sentKeys)).toContain('down q');
+  const sentKeys = () => browser.evaluate(() => (window as unknown as { sentKeys: string[] }).sentKeys);
+  expect((await sentKeys()).filter((k) => k.endsWith('Insert'))).toEqual([]);
+  // An Insert pressed before Shift was sent, and so is its release: it never stays held there.
+  await browser.evaluate(() => {
+    const keys = document.querySelector('.bp-keys')!;
+    const press = (type: string, key: string, code: string, shiftKey: boolean) =>
+      keys.dispatchEvent(new KeyboardEvent(type, { key, code, shiftKey, bubbles: true, cancelable: true }));
+    press('keydown', 'Insert', 'Insert', false);
+    press('keydown', 'Shift', 'ShiftLeft', true);
+    press('keyup', 'Insert', 'Insert', true);
+    press('keyup', 'Shift', 'ShiftLeft', false);
+  });
+  await expect.poll(async () => (await sentKeys()).filter((k) => k.endsWith('Insert'))).toEqual(['down Insert', 'up Insert']);
+  // A connection that died unnoticed sends nothing, and the panel says so (the mock got all
+  // that was sent before: the keys typed above reached it).
+  await expect.poll(() => browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.browsers.get('sb_studio')?.typed.get('tab-app') ?? '')).toContain('q');
+  const before = (await pastes()).length;
+  await browser.evaluate(() => {
+    type Viewers = { browsers: Map<string, { viewers: Map<{ readyState: number }, string> }> };
+    const session = (window as unknown as { __yuliusMock: Viewers }).__yuliusMock.browsers.get('sb_studio')!;
+    for (const socket of session.viewers.keys()) socket.readyState = 3;
+  });
+  await paste('offline code');
+  await expect(browser.locator('.toast:has-text("the browser is not connected")')).toBeVisible();
+  expect(await pastes()).toHaveLength(before);
+});
+
 test('a sandbox browser without the host policy says once that clicks and keys are off', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&browser=locked'));
   await screen.getByRole('button', /^Show tools/).click();
