@@ -918,8 +918,17 @@ if (typeof document !== 'undefined') {
   }, true);
 }
 
-/** How often the keyboard moved to another control so far; two reads differ once it moved. */
-export function keyboardMoveCount() { return keyboardMoves; }
+/**
+ * How often the keyboard moved to another control so far; two reads differ once it moved. Read
+ * while the control focused last has already left the page and the keyboard is on the page (the
+ * prompt that opened a task, gone with the composer), the next focus counts: nothing is being
+ * re-rendered in its place any more (SPEC-641).
+ */
+export function keyboardMoveCount() {
+  const active = document.activeElement;
+  if (lastFocused && !lastFocused.isConnected && (!active || active === document.body)) lastFocused = null;
+  return keyboardMoves;
+}
 
 const REGIONS = ['.tabrow', '.sidebar', '#main', '.panel:not([hidden])', '.rail:not([hidden])'];
 const FOCUSABLE = 'a[href], summary, button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
