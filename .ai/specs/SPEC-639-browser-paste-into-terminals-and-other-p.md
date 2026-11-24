@@ -1,6 +1,6 @@
 ---
 yulius-task: 124bb01c-015c-4ba2-9229-4e806da3baa2
-status: in-progress
+status: done
 ---
 
 # SPEC-639. A paste in the Browser panel reaches the page as a real paste
@@ -69,7 +69,7 @@ and Ctrl+V / ⌘V on the Browser panel did nothing. Agents' browser tools fail t
 - [x] Type an agent's browser_type text as real key presses
 - [x] Prove 100 and 5 000 character pastes into real Chrome pages through the viewer path
 - [x] Record the decision and keep the docs true
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -124,9 +124,9 @@ and Ctrl+V / ⌘V on the Browser panel did nothing. Agents' browser tools fail t
 - Without a display (development hosts only) a paste is typed inside the viewer's connection
   loop before the next message; that keeps it in order with the keys, which go the same CDP way.
   At the measured rate a 32 KiB paste holds that loop about 10 s there.
-- A newer paste waits, answering X events, while the page may still read the previous one (a
-  paste not asked for within 200 ms of its key is taken as unread, review round 2) and until it
-  asked nothing for 100 ms: Chrome reads
+- A newer paste waits, answering X events, while the page may still read the previous one (up
+  to 1 s for a busy page; only 200 ms once a paste was replaced unread, review rounds 2 and 3)
+  and until it asked nothing for 100 ms: Chrome reads
   one paste several times, and a CLIPBOARD replaced between those reads (or a read left
   unanswered by a sleeping thread) gave the first of two quick pastes empty text after Chrome's
   one-second timeout (traced with `xtrace`).
@@ -231,6 +231,17 @@ and Ctrl+V / ⌘V on the Browser panel did nothing. Agents' browser tools fail t
     is open at that same instant: kept. The window is the time of one X request, and the cost
     is a missed copy offer, which the person gets again by clicking Copy once more.
   - The 64 KiB `browser_type` answer held: the reviewer measured 5 000 characters in 1.7 s.
+- **Review round 3** (Opus 5.5) approved `6f83de344` with three minors and a nit, fixed after
+  the approval (16 product lines):
+  - Minor, the 200 ms grace was shorter than a busy page takes to ask (measured 188–356 ms):
+    an unfetched paste holds a newer one up to 1 s again, and only 200 ms once a paste was
+    replaced unread. A busy-page scenario (the client asks 350 ms after the key) in
+    `a_newer_paste_waits_until_the_page_stopped_reading_the_one_before` failed with the grace
+    always 200 ms; `unread_pastes_hold_the_input_after_them_only_briefly` still passes.
+  - Minor, an Insert pressed before Shift stayed held in the sandbox: its keyup is now sent when
+    its keydown was; the e2e check failed (timed out) with the round-2 filter.
+  - Minor, the e2e test lost its "sends nothing" count: restored, after waiting for the keys
+    before it to reach the mock. Nit: the doubled blank line removed.
 - Rerun at this head: live real-Chrome test passed (294 ms; `browser_type` 5 000 characters
   1.38 s); browser crate 155 of 158 (the three environmental `manager` tests above);
   `browser::`, `superagent_browser::`, `browser_network::` 48 passed; `tests/browser.e2e.ts` 8

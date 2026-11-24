@@ -35,10 +35,12 @@ What Chrome 158 does, traced on Xvfb with `xtrace`:
 - Delivery is judged by a client fetching the text within 3 s. A paste whose text nobody fetched
   is answered `paste_failed`, and the panel says so. Nothing is typed instead, since typed keys
   outside a field would trigger the page's shortcuts.
-- A newer paste replaces the CLIPBOARD only once the page asked nothing for 100 ms (at most
-  1 s), and a paste nobody asked for holds it only 200 ms after its paste key (Chrome asks
-  within milliseconds), so repeated pastes into a page that takes none do not hold the input
-  a second each. This also covers a paste from another viewer. The X thread
+- A newer paste replaces the CLIPBOARD only once the page asked nothing for 100 ms, and while
+  a paste nobody asked for yet may still be read (at most 1 s in all). Chrome asks when the
+  page's main thread handles the key: 27 ms on an idle page, up to 360 ms on a busy one
+  (measured in review round 3). Once a paste was replaced unread, the next unread one holds a
+  newer paste only 200 ms, so repeated pastes into a page that takes none do not hold the
+  input a second each. This also covers a paste from another viewer. The X thread
   keeps answering events while it waits, and the viewer's connection does not wait for a
   paste's outcome: the paste is queued in order with that viewer's keys, and `paste_failed`
   arrives when it is known.
