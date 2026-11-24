@@ -1,11 +1,11 @@
 ---
 yulius-task: 58d32986-54df-4a2b-8030-be560a652c54
-status: in-progress
+status: done
 ---
 
 # SPEC-641: A terminal shown late leaves the keyboard on the control the person moved to
 
-Status: in-progress
+Status: done
 Date: 2026-11-24
 Owner: Yulius task #625 (started by task #616's open-issues run; no issue may be created)
 Scope authorization: task #625: "make the e2e test `tests/browser.e2e.ts › expired clipboard
@@ -56,11 +56,11 @@ while a task's terminal was still loading.
 ## Plan
 
 - [x] Reproduce the focus loss deterministically by holding the terminal's first screen
-- [ ] Regression check: the clipboard focus test holds the terminal and fails without the fix
-- [ ] Deferred terminal focus no longer takes the keyboard from a control the person moved to
-- [ ] Terminal, queued-messages and browser e2e specs pass repeatedly; full e2e suite passes
-- [ ] Decision record, architecture note and changes entry
-- [ ] Independent review approves the head
+- [x] Regression check: the clipboard focus test holds the terminal and fails without the fix
+- [x] Deferred terminal focus no longer takes the keyboard from a control the person moved to
+- [x] Terminal, queued-messages and browser e2e specs pass repeatedly; full e2e suite passes
+- [x] Decision record, architecture note and changes entry
+- [x] Independent review approves the head
 
 ## Acceptance criteria
 
@@ -89,3 +89,23 @@ while a task's terminal was still loading.
   Recorded as [ADR-0472](../../docs/decisions/0472-a-terminal-shown-late-leaves-the-keyboard-where-the-person-moved-it.md).
 - **No architecture change.** The fix is one rule inside `terminal-core.js`; `docs/architecture.md`
   does not describe deferred terminal focus, so it stays as it is.
+
+## Evidence
+
+- Root cause probes (`target/run625/zprobe.e2e.ts.txt`, not committed): firing the mock's sign-in
+  request (`askBrowserSignIn`) before the offer, between offer and focus, or after the focus kept
+  the focus (5 load points, all passed). Holding the task terminal's first screen until after the
+  focus reproduced the CI signature; the `focusout` stack was
+  `reveal (terminal-core.js:303) → Dl.focus → yn.focus` (xterm).
+- Regression check without the fix (commit dba6ca199, dev's `terminal-core.js`):
+  `npx e2e run tests/browser.e2e.ts:133` failed: `expect.toBeFocused … default states (1 match)
+  x38 -> at 3967ms no node (0 matches) x10`, as in CI run be25f19b (x39, 4056 ms).
+- With the fix (34f1b1dc4): the same test passed (1.89 s).
+  `npx e2e run tests/terminal.e2e.ts tests/queued-messages.e2e.ts tests/editor.e2e.ts
+  tests/browser.e2e.ts`: 4 files, 96 tests passed.
+- `npx e2e run tests/browser.e2e.ts` five times in a row: 7 passed each time.
+- Whole suite `npx e2e run`: 103 files passed, 1 skipped; 1363 tests passed, 1 skipped
+  (`agent.e2e.ts`, needs a model key); 3 m 29 s.
+- `scripts/dev security`: "Security scan disabled: Vidoc is turned off in Yulius, for this project
+  or the whole instance; nothing was scanned." (exit 0, unrun).
+- Not tested: real hosts' screen readers; the rule is checked in headless Chromium with the mock.
