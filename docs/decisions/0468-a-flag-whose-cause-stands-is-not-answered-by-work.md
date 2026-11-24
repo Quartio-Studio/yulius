@@ -27,9 +27,12 @@ clears `end_failed`), or the run ends and the task changes status. Once somethin
 the flag (a capacity pause and its release, another matter's flag that stood first so this one
 was never raised), the session's activity rules again, as before. A later run of the task is not
 affected: the check is against the live run's id, and a record whose run is over is dropped. The
-check and the write share one per-task lock (`end_gate`) with the record of the failure, so a
-write either lands before the flag is raised or sees the failure; the lock is released before the
-flag is raised and holds nothing but store calls.
+check and the write share one per-task lock (`end_gate`) with the record of the failure, which
+also marks the flag pending until it is raised: a write either lands before the failure is
+recorded, or sees it and leaves the task as it is while the flag is being raised. The lock is
+released before the flag is raised (whose path takes the attention lock, which some writers hold
+before the gate) and holds nothing but store calls. The flag is known by its wording, so a second
+failure of the same run, in other words, still holds the session's writes.
 
 ## Alternatives
 
