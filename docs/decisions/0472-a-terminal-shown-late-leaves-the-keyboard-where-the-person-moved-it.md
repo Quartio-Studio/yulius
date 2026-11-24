@@ -30,6 +30,11 @@ A control focused after its predecessor left the page is a re-render, so it is n
 Re-focusing the same control (after a window switch) is not a move either, and neither is focus
 entering a terminal's own input: which terminal has the keyboard follows their requests.
 
+A control that leaves the page with nothing re-created in its place must not hide the next move.
+The control that opened a task view often goes with its page: the composer's prompt, Go to task, a
+chain chip, a toast's "Open #N". So reading the count forgets a control that has already left the
+page while the keyboard is on the page, and the person's next focus counts.
+
 A terminal focus request stores the count. The lazy wrapper in `terminal.js` stores it when the
 request comes before the terminal's code has loaded. At the reveal, the deferred focus lands only
 if the count is unchanged or the keyboard is on the page itself. The WUI-102 order and the SPEC-052
@@ -52,16 +57,16 @@ before.
 ## Consequences
 
 Opening a task by a link or button and waiting still gives its terminal the keyboard, also when
-that control is repainted meanwhile. A Shell tab chosen while its terminal loads gets the keyboard
-when it shows. Focusing a toast action, a tool button or Show tools before a slow terminal shows now
+that control is repainted meanwhile, and a fork opened from a menu gets it when its dialog closes.
+A Shell tab chosen while its terminal loads gets the keyboard when it shows. Focusing a toast action, a tool button or Show tools before a slow terminal shows now
 leaves the keyboard there; the person clicks the terminal or presses its shortcut to type there.
 
 A request made after the person's move, because the view opened later, still takes the keyboard as
 the terminal asked for last.
 
-One gap remains: the focused control is re-rendered away to the page body, and the person then
-focuses another control before the terminal shows. That move follows a control that left the page,
-so it is not counted, and the terminal takes the keyboard as before.
+One gap remains: the focused control leaves the page after the request, with nothing focused in its
+place, and the person then focuses another control before the terminal shows. That move follows a
+control that left the page, so it is not counted, and the terminal takes the keyboard as on dev.
 
 The clipboard tests hold the terminal's first screen (`__yuliusHoldTerminal`) or its code (a held
 `terminal-core.js` request), so they no longer depend on host speed.

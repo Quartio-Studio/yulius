@@ -52,13 +52,22 @@ while a task's terminal was still loading.
   plus a request made before `terminal-core.js` loaded: the wrapper in `terminal.js` replays
   `view.focus()` when the core arrives, so the snapshot was taken too late. A key on the focused
   Shell tab can close the terminal (`closableTabKeys`), so the first two were real regressions.
+- **Review round 2 (6e96aedb3).** The counted moves held for round 1's cases. Round 2 found:
+  - The clipboard test's "first screen" variant checked `.term-pending`, which exists only once
+    the core has loaded, so a late core could fail it.
+  - No test held the terminal-input exclusion (WUI-102, #323).
+  - The first move after the control that opened the view left the page was not counted. That
+    control leaves with its page for the composer's prompt (Ctrl+Enter), Go to task, a chain chip
+    or a toast's "Open #N". A new task from the composer is the commonest slow terminal, and there
+    the terminal still took the keyboard from Show tools.
 
 ## Requirements
 
 | ID | Requirement | Verification |
 | --- | --- | --- |
 | TFK-001 | A terminal focus request made before the terminal showed does not land when the keyboard moved to another control since the request (not the page itself), also when the request came before the terminal's code loaded. | `browser.e2e.ts` "expired clipboard actions preserve focus…" (first screen late) and "the clipboard action keeps the focus when the terminal code loads after it" |
-| TFK-002 | A control that a re-render re-created and focused again (its predecessor left the page) is not a move: the terminal still takes the keyboard. Focus moving into a terminal's own input is not a move either. | `terminals.e2e.ts` "a Shell tab chosen while its terminal still loads…", `terminal.e2e.ts` "a task terminal shown late takes the keyboard from its sandbox tab repainted meanwhile" |
+| TFK-002 | A control that a re-render re-created and focused again (its predecessor left the page) is not a move: the terminal still takes the keyboard. Focus moving into a terminal's own input is not a move either. | `terminals.e2e.ts` "a Shell tab chosen while its terminal still loads…", `terminal.e2e.ts` "a task terminal shown late takes the keyboard from its sandbox tab repainted meanwhile", `queued-messages.e2e.ts` "the Shell asked for last takes the keyboard from the task terminal that took it from the page", `fork.e2e.ts` "a fork from the sidebar row menu gets the keyboard…" |
+| TFK-005 | When the control that opened the task view left with its page and the keyboard is on the page at the request, the person's next focus counts as a move. | `terminal.e2e.ts` "a task opened from the composer / from Go to task leaves the keyboard on the control focused before its terminal shows" |
 | TFK-003 | The WUI-102 and SPEC-052 rules stay: the keyboard on the page body takes the deferred focus; a later request of another terminal wins; typing in a text field holds it back. A request made after the person's move (the view opening later) still takes the keyboard, as the terminal asked for last. | `queued-messages.e2e.ts`, `terminals.e2e.ts`, full e2e suite |
 | TFK-004 | The clipboard tests order the terminal explicitly (held, focus, released, then waited for with `terminalShown`), so they no longer depend on host speed. | the same tests, run repeatedly |
 
@@ -72,6 +81,8 @@ while a task's terminal was still loading.
 - [x] Independent review round 1 (requested changes)
 - [x] Round 1 answered: keyboard moves counted, re-rendered tabs and a late terminal core covered by tests
 - [x] Round 2 review of the reworked rule
+- [x] Round 2 answered: the first move after the opener left counts; WUI-102 terminal input, composer, Go to task and fork tests
+- [x] Round 3 review
 
 ## Acceptance criteria
 
@@ -101,9 +112,12 @@ while a task's terminal was still loading.
   tab strip) by hand (a missed site is the same regression); count only moves after a pointer or key
   event (the e2e harness and assistive tools focus without one); hold back only inside toasts and
   dialogs (menus and rail buttons lose it the same way).
-  Known gap: if the focused control is re-rendered away to the page body and the person then
-  focuses something else before the terminal shows, that move is not counted and the terminal takes
-  the keyboard, as on dev.
+  A request reads the count with a control that already left the page forgotten when the keyboard
+  is on the page (round 2): the opener of a task gone with the composer or the details page, so the
+  person's next focus counts.
+  Known gap: if the focused control leaves the page after the request (re-rendered away to the
+  page body, with nothing focused in its place) and the person then focuses something else before
+  the terminal shows, that move is not counted and the terminal takes the keyboard, as on dev.
   Recorded as [ADR-0472](../../docs/decisions/0472-a-terminal-shown-late-leaves-the-keyboard-where-the-person-moved-it.md).
 - **A request after the person's move still wins.** Round 1's cold-load probe (focus "Show tools"
   as soon as it shows) logged the move before the task view's request (`request view=false
@@ -148,4 +162,14 @@ while a task's terminal was still loading.
   probe ends there too, because its focus came before the view's request (logged order:
   `focusin tools-toggle moves=1`, then `request view=false moves=1`). The sidebar-menu fork probe
   failed on its own selector (`.task-kebab` not found), not on focus.
+- Round 2 tests (commit caeb715d2) at 6e96aedb3's rule: "a task opened from the composer…" and
+  "a task opened from Go to task…" failed (`toBeFocused`, default states: the terminal took the
+  keyboard). The WUI-102 test passed there and failed with the terminal-input clause removed from
+  `dom.js` (`toBeFocused`, default states). The sidebar-menu fork test passes before and after: it
+  guards that a dialog's return of the keyboard is no move.
+- With the round 2 fix (f7fc217f1): browser, terminals, terminal, queued-messages, editor and fork
+  specs: 6 files, 122 tests passed.
+  The eight focus tests (both clipboard variants, the Shell, sandbox tab, WUI-102, composer, Go to
+  task and fork tests) passed five runs in a row. Whole suite `npx e2e run`: 103 files passed,
+  1 skipped; 1370 tests passed, 1 skipped (`agent.e2e.ts`); 3 m 28 s.
 - Not tested: real hosts' screen readers; the rule is checked in headless Chromium with the mock.
