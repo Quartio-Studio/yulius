@@ -554,6 +554,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0471 -->
 - [0472](0472-a-terminal-shown-late-leaves-the-keyboard-where-the-person-moved-it.md): A terminal focus request made before the terminal showed lands at the reveal only if the person did not move the keyboard since (a page-wide count in `dom.js`; a control re-created by a re-render is not a move) or it is on the page; refines SPEC-056 WUI-102 and SPEC-052 (SPEC-641)
 <!-- ADR 0472 -->
+- [0473](0473-a-menu-opened-over-a-modal-dialog-is-mounted-in-it.md): A menu opened while a modal dialog is open is mounted in the topmost one (as the toasts are) and closes with it; not a top-layer popover, which a modal dialog leaves inert (SPEC-644, #1735)
 <!-- ADR 0473 -->
 <!-- ADR 0474 -->
 <!-- ADR 0475 -->
