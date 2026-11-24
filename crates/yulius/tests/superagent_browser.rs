@@ -231,13 +231,7 @@ async fn the_sandbox_superagent_drives_its_sandboxs_browser() -> TestResult {
         .await?;
         assert_eq!(filled["isError"], false, "{filled}");
         assert!(!filled.to_string().contains(VALUE), "{filled}");
-        let typed: Vec<String> = b
-            .fake
-            .calls_for("Input.insertText")
-            .iter()
-            .filter_map(|c| c.params["text"].as_str().map(str::to_owned))
-            .collect();
-        assert_eq!(typed.last().map(String::as_str), Some(VALUE));
+        assert_eq!(b.fake.field_value("#password").as_deref(), Some(VALUE));
         let fills = audited(f, "vault.agent.fill").await?;
         assert_eq!(fills.len(), 1, "{fills:?}");
         assert_eq!(fills[0]["actor"], "cockpit:alice", "{fills:?}");
@@ -248,7 +242,7 @@ async fn the_sandbox_superagent_drives_its_sandboxs_browser() -> TestResult {
             json!({"tab_id": tab, "url": "https://evil.example/login"}),
         )
         .await?;
-        let before = b.fake.calls_for("Input.insertText").len();
+        let before = b.fake.calls_for("Input.dispatchKeyEvent").len();
         let refused = mcp_tool(
             &f.h,
             &token,
@@ -257,7 +251,7 @@ async fn the_sandbox_superagent_drives_its_sandboxs_browser() -> TestResult {
         )
         .await?;
         assert_eq!(refused["isError"], true, "{refused}");
-        assert_eq!(b.fake.calls_for("Input.insertText").len(), before);
+        assert_eq!(b.fake.calls_for("Input.dispatchKeyEvent").len(), before);
 
         // Its hand-over gives the link and notifies viewers, flagging no task.
         let mut events = f.h.app.events.subscribe();

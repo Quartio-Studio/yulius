@@ -658,13 +658,16 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
         assert_eq!(filled["isError"], false, "{filled}");
         assert!(!filled.to_string().contains(VALUE), "the result holds no value");
         assert_eq!(tool_text(&filled)["filled"], true);
-        let typed: Vec<String> = f
-            .fake
-            .calls_for("Input.insertText")
-            .iter()
-            .filter_map(|c| c.params["text"].as_str().map(str::to_owned))
-            .collect();
-        assert_eq!(typed.last().map(String::as_str), Some(VALUE), "typed into the page");
+        // Typed as real key presses (SPEC-648).
+        assert_eq!(
+            f.fake.field_value("#password").as_deref(),
+            Some(VALUE),
+            "typed into the page"
+        );
+        assert!(
+            f.fake.calls_for("Input.insertText").is_empty(),
+            "keys, not insertion"
+        );
         let user = mcp_tool(
             &f.h,
             TOKEN,
@@ -695,7 +698,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
             json!({"tab_id": tab, "url": "https://evil.example/login"}),
         )
         .await?;
-        let before = f.fake.calls_for("Input.insertText").len();
+        let before = f.fake.calls_for("Input.dispatchKeyEvent").len();
         let refused = mcp_tool(
             &f.h,
             TOKEN,
@@ -709,7 +712,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
                 .as_str()
                 .is_some_and(|t| t.contains("may only be typed into pages of docs.example"))
         );
-        assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+        assert_eq!(f.fake.calls_for("Input.dispatchKeyEvent").len(), before);
 
         // SPEC-483 E3: the tab went on to another site and Yulius has not heard of it yet (it
         // still lists the bound host's page). The page is asked where the typing begins:
@@ -742,7 +745,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
             }),
             "{moved}"
         );
-        assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+        assert_eq!(f.fake.calls_for("Input.dispatchKeyEvent").len(), before);
 
         // The page goes on to another site by itself while the secret is typed: the tool says
         // where it went instead of `filled`, without the value, and the secret's activity
@@ -755,7 +758,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
         )
         .await?;
         f.fake.navigate_to_during_nth(
-            "Input.insertText",
+            "Input.dispatchKeyEvent",
             before + 1,
             "https://evil.example/collect",
         );
@@ -790,7 +793,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
             })
         });
         assert!(recorded, "{}", activity.body);
-        let before = f.fake.calls_for("Input.insertText").len();
+        let before = f.fake.calls_for("Input.dispatchKeyEvent").len();
         mcp_tool(
             &f.h,
             TOKEN,
@@ -822,7 +825,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
                 .is_some_and(|t| t.contains("secret_request_hosts")),
             "{refused}"
         );
-        assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+        assert_eq!(f.fake.calls_for("Input.dispatchKeyEvent").len(), before);
         let unknown = mcp_tool(
             &f.h,
             TOKEN,
@@ -883,7 +886,7 @@ async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_le
                 json!({"tab_id": tab, "secret": "DOCS_LOGIN", "field": field}),
             )
         };
-        let typed = || f.fake.calls_for("Input.insertText").len();
+        let typed = || f.fake.calls_for("Input.dispatchKeyEvent").len();
         let before = typed();
         // Events arrive in order: once a title set after an announcement is listed, Yulius
         // heard the announcement.
@@ -964,13 +967,7 @@ async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_le
             let filled = fill(field).await?;
             assert_ne!(filled["isError"], true, "{field}: {filled}");
         }
-        let texts: Vec<String> = f
-            .fake
-            .calls_for("Input.insertText")
-            .iter()
-            .filter_map(|c| c.params["text"].as_str().map(str::to_owned))
-            .collect();
-        assert_eq!(texts[before..], [VALUE.to_owned(), USER.to_owned()]);
+        assert_eq!(f.fake.key_text_from(before), format!("{VALUE}{USER}"));
 
         // The focus went into another site's frame while the user name was typed: said, and
         // kept in the secret's activity, as for the secret itself.
@@ -1290,7 +1287,7 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
             .as_str()
             .ok_or("tab id")?
             .to_owned();
-        let before = f.fake.calls_for("Input.insertText").len();
+        let before = f.fake.calls_for("Input.dispatchKeyEvent").len();
         let refused = mcp_tool(
             &f.h,
             TOKEN,
@@ -1306,7 +1303,7 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
             "{refused}"
         );
         assert!(!refused.to_string().contains(VALUE));
-        assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+        assert_eq!(f.fake.calls_for("Input.dispatchKeyEvent").len(), before);
         Ok(())
     })
     .await
