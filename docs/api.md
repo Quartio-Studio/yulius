@@ -2339,7 +2339,8 @@ task; other hooks answer as usual.
   ones are not listed. `secret_request_hosts` for a secret with rules waits for a person even
   with `auto_allow`.
 - MCP: `secrets_list` (each secret's `rules: [{methods, path}]`), `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
-  selector?}` and `secret_request_hosts {secret, hosts, reason?}` (stores a request a person
+  selector?}` (typed as real key presses, so terminals take it; a text with a tab or another
+  control character is refused, SPEC-648) and `secret_request_hosts {secret, hosts, reason?}` (stores a request a person
   allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing,
   unless the secret has `auto_allow`: then the hosts are bound at once, answered as `bound`,
   audited `vault.agent.auto_allow`, SPEC-216),

@@ -9,6 +9,7 @@
 //! - an image loads and a canvas animates in the video;
 //! - the agent's click reaches viewers as its cursor; `navigator.webdriver` is false;
 //! - Yulius refuses to open itself (BRW-008);
+//! - an agent secret typed with `browser_fill_secret` fills an xterm.js terminal (SPEC-648);
 //! - a contained process (the agents' and users' bubblewrap) reaches no display: no socket, no
 //!   cookie, no abstract socket, no TCP; another sandbox's cookie does not open a display.
 //!
@@ -822,6 +823,115 @@ async fn pastes(live: &Live) -> TestResult {
     while let Some(message) = viewer.step(quiet).await? {
         assert_ne!(message["type"], "error", "{message}");
     }
+    Ok(())
+}
+
+/// SPEC-648 AC-4 (#1740): an agent's `browser_fill_secret` fills an xterm.js terminal (a CLI
+/// sign-in prompt): the user name and the secret arrive as the terminal's data, typed as real
+/// key presses, and screenshots of the tab are refused from then on, as the terminal's focus is
+/// no password field (a canvas or WebGL renderer would draw where no probe reads). xterm.js drops inserted text (`Input.insertText`)
+/// while it has seen a key go down and not up, here a key a person holds in the viewer (as Ctrl
+/// is held for Ctrl+V, SPEC-639); key presses arrive in that state too.
+#[tokio::test]
+#[ignore = "needs Linux with Xvfb, ffmpeg and Chrome (YULIUS_LIVE_DISPLAY=1)"]
+async fn an_agent_secret_fills_an_xterm_terminal() -> TestResult {
+    let Some(chrome) = live_chrome() else {
+        return Ok(());
+    };
+    let live = live(&chrome).await?;
+    let result = secret_into_terminal(&live).await;
+    live.h.app.stop_workspace_services().await;
+    result
+}
+
+async fn secret_into_terminal(live: &Live) -> TestResult {
+    const VALUE: &str = "term-pass-7731-xyz";
+    const USER: &str = "alice-term";
+    // A secret binds to host names only; Chrome resolves `*.localhost` to the loopback.
+    let host = format!("fixture.localhost:{}", live.site.port());
+    let created = support::call(
+        &live.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "TERM_LOGIN", "description": "CLI sign-in",
+            "hosts": [host], "injection": "basic", "username": USER, "value": VALUE})),
+        &live.writer,
+    )
+    .await?;
+    assert_eq!(
+        created.status,
+        axum::http::StatusCode::CREATED,
+        "{}",
+        created.body
+    );
+    let mut viewer = Viewer::connect(live, "s1").await?;
+    let (tab, cdp, _) = open_page(live, &mut viewer, "/").await?;
+    let url = format!("http://{host}/xterm");
+    viewer
+        .send(json!({"type": "navigate", "tab_id": tab, "url": url}))
+        .await?;
+    until(&cdp, &url, "the terminal", "window.ready === true").await?;
+    focus_page(&mut viewer, &tab, &cdp, &url, 200.0, 100.0).await?;
+    let shot = mcp_tool(&live.h, TOKEN, "browser_screenshot", json!({"tab_id": tab})).await?;
+    assert_eq!(
+        shot["content"][0]["type"], "image",
+        "before the secret: {shot}"
+    );
+    // A person holds Shift in the viewer: the terminal saw it go down, not up.
+    eval(
+        &cdp,
+        &url,
+        "window.__held = false, document.querySelector('.xterm-helper-textarea').addEventListener('keydown', (e) => { if (e.key === 'Shift') window.__held = true; }, true), true",
+    )
+    .await?;
+    viewer.send(json!({"type": "key", "tab_id": tab, "event": "down", "key": "Shift", "code": "ShiftLeft", "modifiers": 0})).await?;
+    until(
+        &cdp,
+        &url,
+        "the held key in the terminal",
+        "window.__held === true",
+    )
+    .await?;
+
+    let fill = |field: &'static str| {
+        mcp_tool(
+            &live.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "TERM_LOGIN", "field": field}),
+        )
+    };
+    let user = fill("username").await?;
+    assert_eq!(user["isError"], false, "{user}");
+    until(
+        &cdp,
+        &url,
+        "the user name in the terminal",
+        &format!("window.data === {}", json!(USER)),
+    )
+    .await?;
+    let filled = fill("value").await?;
+    assert_eq!(filled["isError"], false, "{filled}");
+    assert!(!filled.to_string().contains(VALUE), "{filled}");
+    let expected = format!("{USER}{VALUE}");
+    until(
+        &cdp,
+        &url,
+        "the secret in the terminal",
+        &format!("window.data === {}", json!(expected)),
+    )
+    .await?;
+
+    // The terminal is no password field: the tab may show the secret.
+    let refused = mcp_tool(&live.h, TOKEN, "browser_screenshot", json!({"tab_id": tab})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        tool_text(&refused)
+            .as_str()
+            .is_some_and(|t| t.contains("may show an agent secret")),
+        "{refused}"
+    );
+    assert!(!refused.to_string().contains(VALUE), "{refused}");
     Ok(())
 }
 
