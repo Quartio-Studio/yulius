@@ -425,7 +425,9 @@ impl App {
     }
 
     /// How many plain-text submit hooks went on in this run, including scheduled hand-overs.
-    pub(crate) fn prompts_passed(&self, task_id: &TaskId) -> u64 {
+    /// Public for tests, which wait for a late submit's answer.
+    #[must_use]
+    pub fn prompts_passed(&self, task_id: &TaskId) -> u64 {
         self.runtime(task_id).prompts_passed.load(Ordering::SeqCst)
     }
 

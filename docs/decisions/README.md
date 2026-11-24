@@ -544,9 +544,11 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0466 -->
 - [0467](0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md): A reviewer's report ends its round when its hooks missed it
 <!-- ADR 0467 -->
+- [0468](0468-a-flag-whose-cause-stands-is-not-answered-by-work.md): A "could not end this session" flag is not answered by the session's work; narrows 0306
 <!-- ADR 0468 -->
 - [0469](0469-a-test-of-a-host-wide-resource-asserts-only-what-it-holds.md): A test of a host-wide resource asserts only what it holds
 <!-- ADR 0469 -->
+- [0470](0470-wall-clock-stamps-are-read-on-yuliuss-clock.md): Wall-clock stamps (a hook's send time, a transcript line's recorded time) are read on Yulius's clock (`Clock::of_wall`, identity in production); a shifted test clock maps a stamp with its shift at that instant; refines 0234 and 0299 (SPEC-636, #1615)
 <!-- ADR 0470 -->
 - [0471](0471-a-viewer-paste-becomes-the-displays-clipboard-and-a-real-paste-key.md): A viewer paste becomes the display's CLIPBOARD and a real paste key
 <!-- ADR 0471 -->

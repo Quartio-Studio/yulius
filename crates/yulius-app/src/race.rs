@@ -236,6 +236,20 @@ pub enum Point {
     /// A Stop hook (SPEC-453) found its turn ended cleanly; it has not taken the turn lock to
     /// remember when, or settled the turn, yet. The path is the task id.
     StopClean,
+    /// A clean turn's end was settled (`settle_clean_turn`): its activity is written, or kept
+    /// for a flag that still stands. The path is the task id.
+    TurnSettled,
+    /// The person interrupted a turn (`turn_interrupted`): its activity is written, or kept for
+    /// a flag that still stands. The path is the task id.
+    TurnInterruptSettled,
+    /// `run_stays_live` recorded that the run's host could not be terminated (`end_failed`) and
+    /// let the activity gate go; its flag is not raised yet. The path is the task id.
+    EndFailedRecorded,
+    /// `run_stays_live` raised (or tried to raise) the run's flag. The path is the task id.
+    EndFailedFlagged,
+    /// A session activity write looked at the failure recorded for the live run, under the
+    /// activity gate, and decided; it has not written yet. The path is the task id.
+    SessionActivityChecked,
     /// A verdict or timeout found its Stop and is about to claim the turn for settlement.
     GoalVerdictReady,
     /// The watcher read a native goal record. The path identifies its attempt.
@@ -349,6 +363,13 @@ pub enum Point {
     /// A finished task's staging outcome is to be typed because its background work runs; its
     /// admission has not looked again yet (SPEC-631 SWK-001). Keyed by the task id.
     AwaitedOutcomeDecided,
+    /// A hook reached `hook_event`; nothing of it is read yet, not even the time (SPEC-636). The
+    /// path is the hook's session id joined with its event, so a test holds one hook of one run
+    /// as a loaded server does after its client gave up.
+    HookArrived,
+    /// The transcript watcher read a prompt's record (`Observation::UserTurn`); its last-Stop
+    /// check has not run, nor taken the turn order (SPEC-636). The path is the task id.
+    UserTurnRead,
 }
 
 #[cfg(feature = "test-support")]

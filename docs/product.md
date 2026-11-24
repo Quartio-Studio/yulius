@@ -737,7 +737,9 @@ watching, steering and unblocking.
   whole session from its first message, which Claude Code no longer shows after a compaction
   (SPEC-326). A wheel gesture on a full-screen task with mouse reporting off leaves the prompt alone
   (SPEC-529). In a Codex terminal, right-click and choose Paste to insert clipboard text in the draft
-  (SPEC-582). Messages are
+  (SPEC-582). A terminal's menu Paste and Ctrl+V on macOS take a screenshot copied outside Yulius as
+  the browser's own paste does: uploaded, its path typed; a clipboard with nothing to paste says so
+  (SPEC-638). Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`. A Yulius restart is invisible to a session:
   its Yulius tools and `yulius wait` hold on until Yulius is back, and a task that went idle
