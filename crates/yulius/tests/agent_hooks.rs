@@ -6908,8 +6908,115 @@ async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestR
     Ok(())
 }
 
+/// Another test of this process (#1644): its own runtime on its own thread, as libtest runs a
+/// second test beside a parked-read case, with its own fixture whose main task is also `t-main`.
+/// Each [`Neighbour::read`] is one parked `task_get` of that task, which reaches
+/// `ParkedStatusRead` with the same key as the case's hook.
+struct Neighbour {
+    asks: Option<std::sync::mpsc::Sender<tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Neighbour {
+    fn start() -> Self {
+        let (asks, inbox) =
+            std::sync::mpsc::channel::<tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>();
+        let thread = std::thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(async move {
+                let ready = owner_observed_external_pr()
+                    .await
+                    .map_err(|e| format!("neighbour fixture: {e}"));
+                while let Ok(reply) = inbox.recv() {
+                    let answer = match &ready {
+                        Ok((f, owner)) => {
+                            let caller =
+                                crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+                            f.h.app
+                                .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+                                .await
+                                .map_err(|e| format!("neighbour read: {e}"))
+                        }
+                        Err(e) => Err(e.clone()),
+                    };
+                    let _ = reply.send(answer);
+                }
+            });
+        });
+        Self {
+            asks: Some(asks),
+            thread: Some(thread),
+        }
+    }
+
+    /// One parked read of the neighbour's own `t-main`, to its end.
+    async fn read(&self) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.asks
+            .as_ref()
+            .ok_or("neighbour gone")?
+            .send(reply)
+            .map_err(|_| "neighbour gone")?;
+        Ok(answer.await.map_err(|_| "neighbour gone")??)
+    }
+}
+
+impl Drop for Neighbour {
+    fn drop(&mut self) {
+        drop(self.asks.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Waits on the hook's `at` in the background; the handle ends once the server reached it. With
+/// a `neighbour`, its parked read of its own `t-main` runs first, while the hook is armed and
+/// before this case reads: that read reaching this case's hook is the #1644 steal, an error.
+async fn armed_beside(
+    neighbour: Option<&Neighbour>,
+    at: std::sync::mpsc::Receiver<()>,
+) -> Result<
+    tokio::task::JoinHandle<Result<(), std::sync::mpsc::RecvTimeoutError>>,
+    Box<dyn std::error::Error>,
+> {
+    let mut reached =
+        tokio::task::spawn_blocking(move || at.recv_timeout(std::time::Duration::from_secs(60)));
+    if let Some(neighbour) = neighbour {
+        tokio::select! {
+            read = neighbour.read() => {
+                read?;
+            }
+            _ = &mut reached => {
+                return Err("another test's parked read of its own t-main took this test's pause hook".into());
+            }
+        }
+    }
+    Ok(reached)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parked_mcp_explains_a_hold_dismissed_during_the_read() -> TestResult {
+    hold_dismissed_during_the_read(None).await
+}
+
+#[test]
+fn a_neighbours_parked_read_leaves_the_dismissed_hold_case_its_pause_hook() -> TestResult {
+    let neighbour = Neighbour::start();
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?
+        .block_on(hold_dismissed_during_the_read(Some(&neighbour)))
+}
+
+async fn hold_dismissed_during_the_read(neighbour: Option<&Neighbour>) -> TestResult {
     use yulius_app::intake::{HoldRecord, hold_state};
     let (f, owner) = owner_observed_external_pr().await?;
     let store = &f.h.app.deps.store;
@@ -6934,8 +7041,11 @@ async fn parked_mcp_explains_a_hold_dismissed_during_the_read() -> TestResult {
     let args = json!({"task_id":f.task.as_str()});
     let (at, resume) =
         support::hold_point(yulius_app::race::Point::ParkedStatusRead, f.task.as_str());
+    let reached = armed_beside(neighbour, at).await?;
     let read = tokio::spawn(async move { app.tool_task_get(&caller, &args).await });
-    support::point_reached(at).await?;
+    reached
+        .await?
+        .map_err(|_| "the server never reached the pause point")?;
     assert!(
         store
             .resolve_hold(
@@ -7270,6 +7380,20 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn parked_mcp_reads_classify_the_plan_they_return_and_honor_a_new_decision() -> TestResult {
+    plan_and_decision_read_during_the_hold(None).await
+}
+
+#[test]
+fn a_neighbours_parked_read_leaves_the_plan_and_decision_case_its_pause_hook() -> TestResult {
+    let neighbour = Neighbour::start();
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(3)
+        .enable_all()
+        .build()?
+        .block_on(plan_and_decision_read_during_the_hold(Some(&neighbour)))
+}
+
+async fn plan_and_decision_read_during_the_hold(neighbour: Option<&Neighbour>) -> TestResult {
     for (tool, decision) in [
         ("task_get", false),
         ("all", false),
@@ -7308,6 +7432,7 @@ async fn parked_mcp_reads_classify_the_plan_they_return_and_honor_a_new_decision
         let id = f.task.clone();
         let (at, resume) =
             support::hold_point(yulius_app::race::Point::ParkedStatusRead, id.as_str());
+        let reached = armed_beside(neighbour, at).await?;
         let mut read = tokio::spawn(async move {
             if tool == "task_get" {
                 app.tool_task_get(&caller, &json!({"task_id":id.as_str()}))
@@ -7323,7 +7448,7 @@ async fn parked_mcp_reads_classify_the_plan_they_return_and_honor_a_new_decision
         });
         tokio::select! {
             result = &mut read => return Err(format!("MCP returned without parked verification: {:?}", result??).into()),
-            reached = support::point_reached(at) => reached?,
+            reached = reached => reached?.map_err(|_| "the server never reached the pause point")?,
         };
         f.h.app
             .tool_steps_set(&ctx, &json!({"steps":["Verify the repair"]}))
