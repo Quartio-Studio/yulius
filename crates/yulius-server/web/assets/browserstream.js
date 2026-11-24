@@ -492,7 +492,11 @@ export function createStreamView(ctx, sandbox, hooks) {
     if (!value) return;
     if (!watched) { toast('Open a tab in the browser first, then paste again.', { kind: 'warn' }); return; }
     const bytes = new TextEncoder().encode(value).length;
-    if (value.length > PASTE_MAX_CHARS || bytes > PASTE_MAX_BYTES) {
+    if (value.length > PASTE_MAX_CHARS) {
+      toast(`Nothing was pasted: the text has ${value.length.toLocaleString('en')} characters and the sandbox browser takes at most 32,000 at once.`, { kind: 'warn' });
+      return;
+    }
+    if (bytes > PASTE_MAX_BYTES) {
       toast(`Nothing was pasted: the text is ${Math.ceil(bytes / 1024)} KiB and the sandbox browser takes at most 32 KiB at once.`, { kind: 'warn' });
       return;
     }

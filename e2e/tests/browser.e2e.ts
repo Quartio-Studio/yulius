@@ -201,15 +201,47 @@ test('a paste in the browser panel is sent whole and a lost one is said', async 
   await paste(long);
   await expect.poll(pastes).toEqual([code, long]);
 
-  // Over 32 KiB is not cut: nothing is sent, and the panel says why.
-  await paste('x'.repeat(40 * 1024));
-  await expect(browser.locator('.toast:has-text("Nothing was pasted: the text is 40 KiB")')).toBeVisible();
+  // Over 32,000 characters or 32 KiB is not cut: nothing is sent, and the panel says why.
+  await paste('x'.repeat(32001));
+  await expect(browser.locator('.toast:has-text("Nothing was pasted: the text has 32,001 characters")')).toBeVisible();
+  await paste('€'.repeat(12000));
+  await expect(browser.locator('.toast:has-text("Nothing was pasted: the text is 36 KiB")')).toBeVisible();
   expect(await pastes()).toHaveLength(2);
   // A paste the page did not take comes back, and the panel says so.
   await browser.evaluate(() => { (window as unknown as Pasting).__yuliusMock.browserPasteUnread = true; });
   await paste('lost code');
   await expect(browser.locator('.toast:has-text("the page did not take it")')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
+  // With no tab to paste into the panel says what to do.
+  type Tabbed = { browsers: Map<string, { tabs: unknown[]; saved?: unknown[]; sendTabs(): void }> };
+  await browser.evaluate(() => {
+    const session = (window as unknown as { __yuliusMock: Tabbed }).__yuliusMock.browsers.get('sb_studio')!;
+    session.saved = session.tabs;
+    session.tabs = [];
+    session.sendTabs();
+  });
+  await expect(screen.getByRole('tab', /^Checkout/)).toBeHidden();
+  await browser.evaluate(() => {
+    const data = new DataTransfer();
+    data.setData('text/plain', 'nowhere');
+    document.querySelector('.bp-keys')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(browser.locator('.toast:has-text("Open a tab in the browser first")')).toBeVisible();
+  await browser.evaluate(() => {
+    const session = (window as unknown as { __yuliusMock: Tabbed }).__yuliusMock.browsers.get('sb_studio')!;
+    session.tabs = session.saved!;
+    session.sendTabs();
+  });
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  // A connection that died unnoticed sends nothing, and the panel says so.
+  await browser.evaluate(() => {
+    type Viewers = { browsers: Map<string, { viewers: Map<{ readyState: number }, string> }> };
+    const session = (window as unknown as { __yuliusMock: Viewers }).__yuliusMock.browsers.get('sb_studio')!;
+    for (const socket of session.viewers.keys()) socket.readyState = 3;
+  });
+  await paste('offline code');
+  await expect(browser.locator('.toast:has-text("the browser is not connected")')).toBeVisible();
+  expect(await pastes()).toHaveLength(3);
 });
 
 test('a sandbox browser without the host policy says once that clicks and keys are off', async ({ app, browser, screen }) => {
