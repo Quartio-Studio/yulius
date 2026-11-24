@@ -77,11 +77,11 @@ design), so the fix is in the fixture.
 
 ## Plan
 
-- [ ] Root cause: probe each await of the park pass and the case's setup and cleanup
-- [ ] Regression check: a stalled pass overruns the old 30 s wait and names no case or stage
-- [ ] Fix: the park wait bounds each pass and names case and stage; each case's setup and cleanup are bounded
-- [ ] Four cases under held CPU load and every parking test in full
-- [ ] Spec evidence, changes entry and issue comment
+- [x] Root cause: probe each await of the park pass and the case's setup and cleanup
+- [x] Regression check: a stalled pass overruns the old 30 s wait and names no case or stage
+- [x] Fix: the park wait bounds each pass and names case and stage; each case's setup and cleanup are bounded
+- [x] Four cases under held CPU load and every parking test in full
+- [x] Spec evidence, changes entry and issue comment
 - [ ] Independent review in a fresh session, findings answered
 
 ## Acceptance criteria
@@ -107,3 +107,30 @@ design), so the fix is in the fixture.
   from tests that pause at the same points.
 - Four tests instead of one loop: each case gets its own nextest budget and name; the loop shared
   one 120 s budget across four sequential restarts.
+
+## Evidence
+
+- Baseline (dev `90ec692d2`), alone: the old four-case test passed in 18.5 s.
+- Probes (temporary, reverted; diff kept in the ignored `target/630/probe.diff`): see the table in
+  Root cause. Each held await kept the old `parked()` past its 30 s bound and failed with only
+  "timed out waiting for the task to park".
+- Regression checks, commit `0aaa49c2e`, on the old helpers:
+  - `a_park_pass_held_in_its_pr_reads_fails_at_the_bound_and_names_the_stage`: FAIL,
+    "the park wait outlived its 2s bound by 18 s" (the wait did not return while the branch list
+    read was held).
+  - `a_stalled_case_fails_at_its_bound_naming_the_case_and_phase`: FAIL after 90 s,
+    "a stalled case did not fail within its bounds".
+- With the fix (commit `05a6b6ad7`) both pass in about 4.5 s. Their messages:
+  - "timed out waiting for the task to park within 2s: a pass was still running at the deadline
+    after 1 pass(es); last stage reached: verifying the task's pull requests (GitHub reads, local
+    Git checks) (1.2ms into the wait); task Some(Running), Some(Waiting)"
+  - "stalled case, the check: did not finish within 2s", and the task was stopped (`Stopping`:
+    its run's end is recorded by a reader on the case's runtime, shut down by then).
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^parking::/)'`:
+  170 passed.
+- Held CPU load (`target/630/loaded.sh`): the four PR-condition tests pinned with `taskset -c 0-3`
+  beside 12 busy loops pinned to the same CPUs (about a 25 % share), `--stress-count 5
+  --retries 0`: 20 of 20 passed, 4.0–4.8 s each (about 2.6 s each unloaded).
+- `scripts/dev lint` and `scripts/dev quick`: passed.
+- Not reproduced: which await was slow in run `2f5c9b57` cannot be told from what that run kept;
+  the fixture now names it if it happens again.
