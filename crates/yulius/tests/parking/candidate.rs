@@ -305,7 +305,25 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
         assert_eq!(changed, 1);
         assert!(app.task_summary(&owner).await?.candidate_pending);
         let mut events = app.events.subscribe();
-        let second = app.watch_prs(&WatchBounds::default()).await;
+        // The session's own watcher publishes on its own clock (its shell probe, its
+        // transcript): a whole round of it while the pass reads the pull request says nothing
+        // new, so the pass's one publish is all the views hear (SPEC-640 FLK-002).
+        let (reading, release) =
+            super::pause_watch_or_queue(super::Point::CandidateObservationRead, &id);
+        let pass = {
+            let app = app.clone();
+            tokio::spawn(async move { app.watch_prs(&WatchBounds::default()).await })
+        };
+        tokio::time::timeout(Duration::from_secs(10), reading.notified()).await?;
+        let rounds = app.runtime(&id).transcript_rounds();
+        super::wait_for("a watcher round during the pass", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { app.runtime(&id).transcript_rounds() >= rounds + 2 }
+        })
+        .await?;
+        release.notify_one();
+        let second = pass.await?;
         assert_eq!(task_updates(&mut events), vec![true], "{second:?}");
         Ok(())
     })
