@@ -1,6 +1,6 @@
 ---
 yulius-task: 45580b8c-2545-4998-ac4b-733917801244
-status: in-progress
+status: done
 ---
 
 # SPEC-640: Repair the integration gate: flaky parking::candidate::a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done
@@ -71,7 +71,7 @@ before the first probe. The replay's publish reports a real activity change too.
 - [x] Reproduce the double publish and find its root cause
 - [x] Regression check: a watcher round during the held pass adds no publish (fails before the fix)
 - [x] Fix: the restored owner's watcher finishes its first round before the test body; parking tests in full and under stress
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
