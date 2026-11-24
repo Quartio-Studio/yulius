@@ -88,3 +88,21 @@ fn a_hook_whose_runtime_shut_down_runs_on_the_next_one() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_hook_whose_multi_thread_runtime_shut_down_runs_on_the_next_one() -> TestResult {
+    let key = "pause-points-restart-multi-thread";
+    let first = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let ran = first.block_on(async { hook(key) });
+    // The `task_done.rs` restarts: a multi-thread server runtime shut down with a timeout.
+    first.shutdown_timeout(std::time::Duration::from_secs(5));
+    runtime()?.block_on(async { reached(Point::ParkedStatusRead, Path::new(key)) });
+    assert!(
+        ran.load(Ordering::SeqCst),
+        "the shut-down workers dropped the hook's owner"
+    );
+    Ok(())
+}

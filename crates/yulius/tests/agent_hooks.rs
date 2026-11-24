@@ -6944,10 +6944,26 @@ impl Neighbour {
                                 &owner.user.id,
                                 "admin",
                             );
+                            // Its own hook proves the read reached the point the case holds.
+                            let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            let seen = Arc::clone(&reached);
+                            yulius_app::race::on(
+                                yulius_app::race::Point::ParkedStatusRead,
+                                Path::new(f.task.as_str()),
+                                move || seen.store(true, Ordering::SeqCst),
+                            );
                             f.h.app
                                 .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
                                 .await
                                 .map_err(|e| format!("neighbour read: {e}"))
+                                .and_then(|row| {
+                                    if reached.load(Ordering::SeqCst) {
+                                        Ok(row)
+                                    } else {
+                                        Err("the neighbour's read never reached ParkedStatusRead"
+                                            .to_owned())
+                                    }
+                                })
                         }
                         Err(e) => Err(e.clone()),
                     };

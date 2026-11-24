@@ -61,7 +61,7 @@ tests expect (step 4 proves both cases with a neighbour beside them).
 - [ ] Regression test: a neighbour runtime's parked read of its own t-main
 - [ ] Pause hooks scoped to the registering runtime
 - [ ] Both parked MCP cases proven beside a neighbour read
-- [ ] Full integration binary and yulius-app tests under libtest threads
+- [ ] Full suite under nextest, touched modules under libtest threads
 - [ ] ADR, architecture, changes and spec evidence
 - [ ] Independent review approved
 
@@ -72,20 +72,21 @@ tests expect (step 4 proves both cases with a neighbour beside them).
 - With a neighbour runtime reading its own parked `t-main` while the hook is armed, the hold
   case shows the dismissed hold's wait reason and the plan case shows 0 steps (and the owner's
   new decision).
-- The `yulius::main` binary passes under libtest with several threads, and under nextest;
-  `yulius-app`'s own tests pass.
+- The `yulius` and `yulius-app` tests pass under nextest (the gate's runner), and the touched
+  modules (`agent_hooks::`, `review_rounds::`, `needs_you_messages::`, `pause_points::`) pass
+  under libtest with 8 threads in one process.
 
 ## Test plan
 
-- `race.rs` unit test: a hook registered in runtime A is not run by a point reached in runtime B
+- `pause_points.rs` (the integration binary, which has `test-support`): a hook registered in runtime A is not run by a point reached in runtime B
   with the same key, and is run by A; a hook registered outside a runtime runs anywhere; a
-  hook whose runtime shut down runs on the next one.
+  hook whose runtime shut down (current-thread and multi-thread) runs on the next one.
 - `agent_hooks.rs`: a sync test runs each parked MCP case on its own runtime with a neighbour
   fixture on a second runtime (own thread, as libtest runs another test). The neighbour does its
   parked read after the hook is armed and before the case's read starts; the case fails at once
   if its hook is reached by the neighbour, else goes on and asserts its MCP state.
-- Libtest run of `agent_hooks::` and `needs_you_messages::` with `--test-threads=8`, the whole
-  binary with nextest.
+- Libtest run of `agent_hooks::`, `review_rounds::`, `needs_you_messages::` and `pause_points::`
+  with `--test-threads=8`, the whole binary with nextest.
 
 ## Decisions
 

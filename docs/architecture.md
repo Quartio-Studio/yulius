@@ -1967,8 +1967,9 @@ in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken 
 [decision 0213](decisions/0213-a-snapshot-import-checks-out-in-a-server-private-folder.md)).
 Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature). While the tokio runtime that registered a hook
-lives, only a point reached on it runs the hook, so running tests sharing a process never take
-each other's hooks ([decision 0474](decisions/0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md)).
+lives, only a point reached on it runs the hook, so running tests sharing a process do not take
+each other's hooks through a repeated task id; hooks registered or reached outside a runtime, and
+those of a runtime that shut down, still match by point and key alone ([decision 0474](decisions/0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md)).
 
 Git itself, which the server runs in those folders as the service user, is confined by the
 kernel: every command of the Git adapter is started through `yulius git-confined`
