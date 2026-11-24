@@ -556,7 +556,13 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
   // Escape and Tab give the keyboard back to the anchor, or for a point (a right-click) to where it was.
   const returnTo = anchor instanceof HTMLElement ? anchor : document.activeElement;
-  const giveBack = () => { if (returnTo instanceof HTMLElement && returnTo !== document.body && returnTo.isConnected) returnTo.focus(); };
+  // In editable text the caret comes back too (the block editor's slash menu).
+  const caret = returnTo instanceof HTMLElement && returnTo.isContentEditable && getSelection().rangeCount ? getSelection().getRangeAt(0).cloneRange() : null;
+  const giveBack = () => {
+    if (!(returnTo instanceof HTMLElement) || returnTo === document.body || !returnTo.isConnected) return;
+    returnTo.focus();
+    if (caret) getSelection().setBaseAndExtent(caret.startContainer, caret.startOffset, caret.endContainer, caret.endOffset);
+  };
   const button = anchor instanceof HTMLElement && anchor.hasAttribute('aria-haspopup') ? anchor : null;
   if (button) button.setAttribute('aria-expanded', 'true');
   // The panel floats and holds the list of items, which scrolls when the window is too short. The

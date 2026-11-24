@@ -1,11 +1,11 @@
 ---
 yulius-task: 1be160e2-e214-43f5-8c56-57c9463c183f
-status: in-progress
+status: done
 ---
 
 # SPEC-644: Menus opened inside a modal dialog show above it and work
 
-Status: in-progress
+Status: done
 Date: 2026-11-24
 Owner: Yulius task #628
 Scope authorization: task #628: "Solve GitHub issue #1735 in one pull request into `dev` whose
@@ -54,7 +54,7 @@ open. Menus outside dialogs keep their placement and behaviour.
 | MDM-001 | A menu opened while a modal dialog is open is mounted in the topmost open modal dialog, so it is above the dialog, clickable and focusable; its place on screen is the same as outside a dialog. | `subscriptions.e2e.ts` "the sign-in terminal’s right-click menu shows above its dialog…", "a menu and a toast opened over two modal dialogs…" |
 | MDM-002 | Its keyboard behaviour is the menu's: the first usable item takes the focus, arrows move it, Enter picks; Escape closes only the menu, not the dialog. | the same test |
 | MDM-003 | A dialog that closes while its menu is open closes the menu too (no key handler is left behind). | the same test |
-| MDM-005 | Escape and Tab on a menu opened at a point (no anchor element) give the keyboard back to the element that had it when the menu opened (review round 1; on dev it went to the page, also outside dialogs). | `subscriptions.e2e.ts` "the sign-in terminal’s right-click menu…" (Escape, Tab) |
+| MDM-005 | Escape and Tab on a menu opened at a point (no anchor element) give the keyboard back to the element that had it when the menu opened (review round 1; on dev it went to the page, also outside dialogs). | `subscriptions.e2e.ts` "the sign-in terminal’s right-click menu…" (Escape, Tab), `menus.e2e.ts` "Escape on the Markdown slash menu gives the keyboard back at the caret" |
 | MDM-004 | Menus opened without a modal dialog are still mounted in `<body>` and placed as before. | `menus.e2e.ts`, `terminal.e2e.ts`, `editor.e2e.ts`, `filedrop.e2e.ts` unchanged and passing |
 
 ## Plan
@@ -65,7 +65,7 @@ open. Menus outside dialogs keep their placement and behaviour.
 - [x] Independent review in a fresh session, every finding answered
 - [x] Integration gate repair: the xclipboard paste owner test reads the release after a round trip
 - [x] Review notes: a point menu gives the keyboard back, topmost of two modals tested, comments and ADR wording
-- [ ] Review round 2 of the notes and the gate repair, every finding answered
+- [x] Review round 2 of the notes and the gate repair, every finding answered
 
 ## Acceptance criteria
 
@@ -126,5 +126,15 @@ open. Menus outside dialogs keep their placement and behaviour.
   - `scripts/cargo nextest run -p yulius-browser --lib`: 82/82.
 - `scripts/dev docs` and `python3 scripts/check_repository.py` passed. Yulius CI run 075223fb
   passed at d8594d2cc.
+- Review round 2 (yulius-reviewer, Fable 5.2) approved 09f9b5c56. It confirmed the xclipboard
+  diagnosis and that the repair is complete (300/300 stress runs, 82/82 lib tests), and checked
+  every point-menu caller. 265/265 e2e passed. Its notes and how they were answered:
+  - Minor, own code: Escape on the block editor's slash menu put the caret at the block's start
+    (`/`, Escape, `x` read `x/`). Fixed test-first: the caret is restored in editable text. The new
+    `menus.e2e.ts` test fails without the fix and passes with it.
+  - Nits: the `e2e/README.md` rows now name the new tests. `gone` in the two-modals test is held by
+    `escapeFree`, as the reviewer noted; no change.
+- After the round 2 fix: `menus`, `subscriptions`, `editor`, `terminal` and `notes` e2e specs
+  passed, 189/189.
 - Not tested here: Firefox and Safari. That Escape in a menu starts no dialog `cancel` there too
   rests on the HTML rule for a prevented keydown, not on a run.
