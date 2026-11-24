@@ -49,6 +49,9 @@ tests expect (step 4 proves both cases with a neighbour beside them).
 - PAU-002: a hook registered outside any runtime, or a point reached outside any runtime (a
   plain thread), matches by point and key as before, so sync tests and points reached on
   `std::thread`s keep working.
+- PAU-004: a hook whose runtime shut down matches by point and key as before, so a test that
+  restarts its server on a new runtime (`task_done.rs`) meets the hooks it registered before the
+  restart.
 - PAU-003: both parked MCP cases keep their expected MCP state while another runtime of the
   process does a parked read of its own `t-main` between the hook's registration and the read.
 
@@ -75,7 +78,8 @@ tests expect (step 4 proves both cases with a neighbour beside them).
 ## Test plan
 
 - `race.rs` unit test: a hook registered in runtime A is not run by a point reached in runtime B
-  with the same key, and is run by A; a hook registered outside a runtime runs anywhere.
+  with the same key, and is run by A; a hook registered outside a runtime runs anywhere; a
+  hook whose runtime shut down runs on the next one.
 - `agent_hooks.rs`: a sync test runs each parked MCP case on its own runtime with a neighbour
   fixture on a second runtime (own thread, as libtest runs another test). The neighbour does its
   parked read after the hook is armed and before the case's read starts; the case fails at once
@@ -92,3 +96,8 @@ tests expect (step 4 proves both cases with a neighbour beside them).
   Recorded in ADR-0474.
 - No runtime on either side keeps today's matching, so nothing that pauses a plain thread
   breaks.
+- A shut-down runtime releases its hooks to key-only matching (found by the full run: the
+  strict rule left `task_done::a_worker_asking_during_reattachment_keeps_its_flag`'s hook
+  unrun after its restart). Liveness is a token held by a never-ending task on the runtime,
+  dropped at its shutdown; no test keeps a hook's runtime alive while reaching it on another,
+  except the neighbour tests on purpose.

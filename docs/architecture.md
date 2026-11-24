@@ -1966,9 +1966,9 @@ in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken 
 `project_change` works in `<data>/changes`, and `extract_snapshot` refuses a linked root ([SPEC-296](../.ai/specs/SPEC-296-snapshot-import-reserves-its-worktree-pa.md),
 [decision 0213](decisions/0213-a-snapshot-import-checks-out-in-a-server-private-folder.md)).
 Races are tested at pause points
-(`yulius_app::race`, only with the `test-support` feature). A hook runs only for a point reached
-on the tokio runtime that registered it, so tests sharing a process never take each other's
-hooks ([decision 0474](decisions/0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md)).
+(`yulius_app::race`, only with the `test-support` feature). While the tokio runtime that registered a hook
+lives, only a point reached on it runs the hook, so running tests sharing a process never take
+each other's hooks ([decision 0474](decisions/0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md)).
 
 Git itself, which the server runs in those folders as the service user, is confined by the
 kernel: every command of the Git adapter is started through `yulius git-confined`
