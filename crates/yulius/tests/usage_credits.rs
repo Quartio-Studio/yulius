@@ -2858,3 +2858,104 @@ async fn refused_moves(app: &App, id: &TaskId) -> usize {
         switches.iter().filter(|s| s.outcome == "refused").count()
     })
 }
+
+/// Appends a background reviewer's completed `<task-notification>` (the shape Claude Code
+/// writes, SPEC-633) with `verdict` as its result's last line, stamped now; returns its time.
+fn append_reviewer_notice(
+    transcript: &Path,
+    tag: &str,
+    verdict: &str,
+) -> Result<Timestamp, Box<dyn std::error::Error>> {
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    let at = format!(
+        "{}.{:03}Z",
+        rfc3339(Timestamp(now)).trim_end_matches('Z'),
+        now.rem_euclid(1000)
+    );
+    let text = std::fs::read_to_string(transcript)?;
+    let last: Value = serde_json::from_str(text.lines().last().ok_or("an empty transcript")?)?;
+    let session = last["sessionId"].as_str().ok_or("a session id")?.to_owned();
+    let parent = last["uuid"].as_str().ok_or("a uuid")?.to_owned();
+    let notice = format!(
+        "<task-notification>\n<task-id>ab61345c6b2894101</task-id>\n<tool-use-id>toolu_01PV</tool-use-id>\n<output-file>/tmp/tasks/ab61345c6b2894101.output</output-file>\n<status>completed</status>\n<summary>Agent \"Independent review\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own.</note>\n<result># Review\n\n{verdict}</result>\n<usage><subagent_tokens>1</subagent_tokens></usage>\n</task-notification>"
+    );
+    let line = json!({"parentUuid": parent, "isSidechain": false, "promptId": tag, "type": "user",
+        "uuid": format!("{tag}-0"), "sessionId": session, "timestamp": at,
+        "message": {"role": "user", "content": notice},
+        "origin": {"kind": "task-notification", "producer": "session-task"},
+        "promptSource": "system", "queueSkipAttachments": true});
+    let mut file = std::fs::OpenOptions::new().append(true).open(transcript)?;
+    writeln!(file, "{line}")?;
+    Ok(Timestamp(now))
+}
+
+/// SPEC-633 RRE-002 (#1726, review round 1): Yulius was down while a background reviewer
+/// reported, so its `SubagentStop` was lost and only the transcript kept the report. The
+/// reattached run's watcher reads it while it catches up and ends the round with its verdict at
+/// the notice's time.
+#[test]
+fn a_report_written_while_yulius_was_down_ends_its_round_at_the_replay() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = FakeAgentOptions {
+        transcript: true,
+        ..FakeAgentOptions::default()
+    };
+    let probe = Arc::new(ScriptedUsage::default());
+    let first = runtime()?;
+    let (id, transcript) = first.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
+        let (id, _user, transcript) = first_turn(&app, &data, Some("claude-opus-5-5")).await?;
+        app.deps
+            .store
+            .insert_review_round(&yulius_app::model::ReviewRoundRecord {
+                id: "round-1".into(),
+                task_id: id.clone(),
+                round: 1,
+                head: None,
+                agent: "yulius-reviewer".into(),
+                model: "claude-fable-5-2".into(),
+                reason: "round".into(),
+                subagent_id: Some("ab61345c6b2894101".into()),
+                model_answered: None,
+                started_at: Timestamp(app.now().0 - 60_000),
+                ended_at: None,
+                verdict: None,
+                cut_off: false,
+                pr_number: None,
+                merged_at: None,
+            })
+            .await?;
+        Ok::<_, Box<dyn std::error::Error>>((id, transcript))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    // Yulius is down: the reviewer reports, its SubagentStop is lost, the transcript keeps it.
+    let reported = append_reviewer_notice(&transcript, "down", "Verdict: approve")?;
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_with(&data, &fake, probe, agent)?;
+        app.reconcile().await?;
+        let ended = wait_for("the replayed report", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .review_rounds(&id, true)
+                .await
+                .is_ok_and(|r| r[0].ended_at.is_some())
+        })
+        .await;
+        let rounds = app.deps.store.review_rounds(&id, true).await?;
+        stop(&app, &id).await?;
+        ended?;
+        assert_eq!(rounds[0].ended_at, Some(reported));
+        assert_eq!(rounds[0].verdict.as_deref(), Some("approve"));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

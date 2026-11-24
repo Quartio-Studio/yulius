@@ -542,6 +542,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0465 -->
 - [0466](0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md): A finished task whose background work waits hears its staging outcome; narrows 0450
 <!-- ADR 0466 -->
+- [0467](0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md): A reviewer's report ends its round when its hooks missed it
 <!-- ADR 0467 -->
 - [0468](0468-a-flag-whose-cause-stands-is-not-answered-by-work.md): A "could not end this session" flag is not answered by the session's work; narrows 0306
 <!-- ADR 0468 -->
