@@ -66,9 +66,9 @@ while a task's terminal was still loading.
 | ID | Requirement | Verification |
 | --- | --- | --- |
 | TFK-001 | A terminal focus request made before the terminal showed does not land when the keyboard moved to another control since the request (not the page itself), also when the request came before the terminal's code loaded. | `browser.e2e.ts` "expired clipboard actions preserve focus…" (first screen late) and "the clipboard action keeps the focus when the terminal code loads after it" |
-| TFK-002 | A control that a re-render re-created and focused again (its predecessor left the page) is not a move: the terminal still takes the keyboard. Focus moving into a terminal's own input is not a move either. | `terminals.e2e.ts` "a Shell tab chosen while its terminal still loads…", `terminal.e2e.ts` "a task terminal shown late takes the keyboard from its sandbox tab repainted meanwhile", `queued-messages.e2e.ts` "the Shell asked for last takes the keyboard from the task terminal that took it from the page", `fork.e2e.ts` "a fork from the sidebar row menu gets the keyboard…" |
+| TFK-002 | A control that a re-render re-created and focused again (its predecessor left the page) is not a move: the terminal still takes the keyboard. Focus moving into a terminal's own input is not a move either. | `terminals.e2e.ts` "a Shell tab chosen while its terminal still loads…", `terminal.e2e.ts` "a task terminal shown late takes the keyboard from its sandbox tab repainted meanwhile", `queued-messages.e2e.ts` "the Shell asked for last takes the keyboard from the task terminal that took it from the page" |
 | TFK-005 | When the control that opened the task view left with its page and the keyboard is on the page at the request, the person's next focus counts as a move. | `terminal.e2e.ts` "a task opened from the composer / from Go to task leaves the keyboard on the control focused before its terminal shows" |
-| TFK-003 | The WUI-102 and SPEC-052 rules stay: the keyboard on the page body takes the deferred focus; a later request of another terminal wins; typing in a text field holds it back. A request made after the person's move (the view opening later) still takes the keyboard, as the terminal asked for last. | `queued-messages.e2e.ts`, `terminals.e2e.ts`, full e2e suite |
+| TFK-003 | The WUI-102 and SPEC-052 rules stay: the keyboard on the page body takes the deferred focus; a later request of another terminal wins; typing in a text field holds it back. A request made after the person's move (the view opening later) still takes the keyboard, as the terminal asked for last. | `queued-messages.e2e.ts`, `terminals.e2e.ts`, `fork.e2e.ts` "a fork from the sidebar row menu gets the keyboard…" (the keyboard is on the page when the fork's view asks), full e2e suite |
 | TFK-004 | The clipboard tests order the terminal explicitly (held, focus, released, then waited for with `terminalShown`), so they no longer depend on host speed. | the same tests, run repeatedly |
 
 ## Plan
@@ -166,10 +166,15 @@ while a task's terminal was still loading.
   "a task opened from Go to task…" failed (`toBeFocused`, default states: the terminal took the
   keyboard). The WUI-102 test passed there and failed with the terminal-input clause removed from
   `dom.js` (`toBeFocused`, default states). The sidebar-menu fork test passes before and after: it
-  guards that a dialog's return of the keyboard is no move.
+  guards that a fork's view, asking while the keyboard is on the page, takes it when it shows.
 - With the round 2 fix (f7fc217f1): browser, terminals, terminal, queued-messages, editor and fork
   specs: 6 files, 122 tests passed.
   The eight focus tests (both clipboard variants, the Shell, sandbox tab, WUI-102, composer, Go to
   task and fork tests) passed five runs in a row. Whole suite `npx e2e run`: 103 files passed,
   1 skipped; 1370 tests passed, 1 skipped (`agent.e2e.ts`); 3 m 28 s.
+- Review round 3 (6795f80d2, Opus 5.5) approved. It undid each part of the fix in turn, and a test
+  failed for each. It reported one minor finding, the fork test's wording (fixed here), and one nit:
+  the reset in `keyboardMoveCount()` does not treat `documentElement` as the page, though
+  `keyboardOnPage()` does. That nit is left: Chromium never focuses `documentElement` on an HTML
+  page.
 - Not tested: real hosts' screen readers; the rule is checked in headless Chromium with the mock.

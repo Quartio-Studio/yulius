@@ -35,8 +35,9 @@ test('Fork… in the task menu forks the task with a message and opens the fork;
   await expect(browser.locator('.stepstrip a.chain-chip:has-text("Forked: #")')).toBeVisible();
 });
 
-// SPEC-641 (review round 2): the fork opens while its dialog closes; the dialog's return of the
-// keyboard is not the person moving on, so the fork's terminal, shown late, takes it.
+// SPEC-641 (review round 2): the fork's view asks for the keyboard while it is on the page (the
+// Fork button was disabled while its request ran, the menu button is hidden again), so the fork's
+// terminal, shown late, takes it.
 test('a fork from the sidebar row menu gets the keyboard in its terminal when it shows', async ({ app, browser, screen }) => {
   type Holds = { __yuliusHoldTerminal?: Promise<void>; __releaseTerminal?: () => void };
   await app.open(mock('/s/studio/t/12', '&ambient=0'));
