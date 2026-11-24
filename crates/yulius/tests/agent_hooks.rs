@@ -6913,14 +6913,17 @@ async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestR
 /// Each [`Neighbour::read`] is one parked `task_get` of that task, which reaches
 /// `ParkedStatusRead` with the same key as the case's hook.
 struct Neighbour {
-    asks: Option<std::sync::mpsc::Sender<tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>,
+    asks: Option<
+        std::sync::mpsc::Sender<tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>,
+    >,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Neighbour {
     fn start() -> Self {
-        let (asks, inbox) =
-            std::sync::mpsc::channel::<tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>();
+        let (asks, inbox) = std::sync::mpsc::channel::<
+            tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+        >();
         let thread = std::thread::spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -6936,8 +6939,11 @@ impl Neighbour {
                 while let Ok(reply) = inbox.recv() {
                     let answer = match &ready {
                         Ok((f, owner)) => {
-                            let caller =
-                                crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+                            let caller = crate::task_message::superagent(
+                                &f.sandbox,
+                                &owner.user.id,
+                                "admin",
+                            );
                             f.h.app
                                 .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
                                 .await

@@ -378,33 +378,53 @@ pub enum Point {
 #[cfg(feature = "test-support")]
 type Hook = Box<dyn FnOnce() + Send>;
 
+/// A registered hook: its point, the path it is for, the tokio runtime that registered it (if
+/// any) and what it runs.
 #[cfg(feature = "test-support")]
-static HOOKS: std::sync::Mutex<Vec<(Point, std::path::PathBuf, Hook)>> =
-    std::sync::Mutex::new(Vec::new());
+type Registered = (Point, std::path::PathBuf, Option<tokio::runtime::Id>, Hook);
 
-/// Runs `hook` once, the next time the server reaches `point` for a path below `below` (so tests
-/// running in parallel threads do not take each other's hooks).
+#[cfg(feature = "test-support")]
+static HOOKS: std::sync::Mutex<Vec<Registered>> = std::sync::Mutex::new(Vec::new());
+
+/// The tokio runtime of the calling thread (a worker or its blocking pool), if any.
+#[cfg(feature = "test-support")]
+fn current_runtime() -> Option<tokio::runtime::Id> {
+    tokio::runtime::Handle::try_current()
+        .ok()
+        .map(|handle| handle.id())
+}
+
+/// Runs `hook` once, the next time the server reaches `point` for a path below `below`. Each
+/// `#[tokio::test]` has its own runtime, and a hook registered inside one runs only for a point
+/// reached on that runtime, so tests of one process do not take each other's hooks even when
+/// their keys are the same task id (#1644, ADR-0474). A hook registered outside a runtime, or a
+/// point reached outside one, matches by point and path alone.
 #[cfg(feature = "test-support")]
 pub fn on(point: Point, below: &Path, hook: impl FnOnce() + Send + 'static) {
     let below = std::fs::canonicalize(below).unwrap_or_else(|_| below.to_path_buf());
     HOOKS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((point, below, Box::new(hook)));
+        .push((point, below, current_runtime(), Box::new(hook)));
 }
 
 /// The server reached `point` for `path`: runs the hook registered for it, if any.
 pub fn reached(point: Point, path: &Path) {
     #[cfg(feature = "test-support")]
     {
+        let here = current_runtime();
         let hook = {
             let mut hooks = HOOKS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             hooks
                 .iter()
-                .position(|(at, below, _)| *at == point && path.starts_with(below))
-                .map(|index| hooks.remove(index).2)
+                .position(|(at, below, runtime, _)| {
+                    *at == point
+                        && path.starts_with(below)
+                        && (runtime.is_none() || here.is_none() || *runtime == here)
+                })
+                .map(|index| hooks.remove(index).3)
         };
         if let Some(hook) = hook {
             hook();
