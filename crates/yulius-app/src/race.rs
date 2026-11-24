@@ -378,33 +378,80 @@ pub enum Point {
 #[cfg(feature = "test-support")]
 type Hook = Box<dyn FnOnce() + Send>;
 
+/// The tokio runtime a hook was registered on, while that runtime lives.
 #[cfg(feature = "test-support")]
-static HOOKS: std::sync::Mutex<Vec<(Point, std::path::PathBuf, Hook)>> =
-    std::sync::Mutex::new(Vec::new());
+struct Owner {
+    runtime: tokio::runtime::Id,
+    /// Held by a task of that runtime that never ends, so it is gone once the runtime shut down.
+    alive: std::sync::Weak<()>,
+}
 
-/// Runs `hook` once, the next time the server reaches `point` for a path below `below` (so tests
-/// running in parallel threads do not take each other's hooks).
+#[cfg(feature = "test-support")]
+impl Owner {
+    /// The calling thread's runtime (a worker or its blocking pool), if any.
+    fn current() -> Option<Self> {
+        let handle = tokio::runtime::Handle::try_current().ok()?;
+        let token = std::sync::Arc::new(());
+        let alive = std::sync::Arc::downgrade(&token);
+        handle.spawn(async move {
+            let _token = token;
+            std::future::pending::<()>().await;
+        });
+        Some(Self {
+            runtime: handle.id(),
+            alive,
+        })
+    }
+
+    /// Whether a point reached on `here` may run this owner's hook: on its own runtime, outside
+    /// any runtime, or anywhere once its runtime shut down.
+    fn admits(&self, here: Option<tokio::runtime::Id>) -> bool {
+        here.is_none_or(|here| here == self.runtime) || self.alive.strong_count() == 0
+    }
+}
+
+/// A registered hook: its point, the path it is for, its owner and what it runs.
+#[cfg(feature = "test-support")]
+type Registered = (Point, std::path::PathBuf, Option<Owner>, Hook);
+
+#[cfg(feature = "test-support")]
+static HOOKS: std::sync::Mutex<Vec<Registered>> = std::sync::Mutex::new(Vec::new());
+
+/// Runs `hook` once, the next time the server reaches `point` for a path below `below`. Each
+/// `#[tokio::test]` has its own runtime, and while the runtime that registered a hook lives, only
+/// a point reached on it runs the hook, so tests of one process do not take each other's hooks
+/// even when their keys are the same task id (#1644, ADR-0474). A hook registered outside a
+/// runtime, a point reached outside one, and a hook whose runtime shut down (a test that restarts
+/// its server on a new runtime) match by point and path alone.
 #[cfg(feature = "test-support")]
 pub fn on(point: Point, below: &Path, hook: impl FnOnce() + Send + 'static) {
     let below = std::fs::canonicalize(below).unwrap_or_else(|_| below.to_path_buf());
+    let owner = Owner::current();
     HOOKS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((point, below, Box::new(hook)));
+        .push((point, below, owner, Box::new(hook)));
 }
 
 /// The server reached `point` for `path`: runs the hook registered for it, if any.
 pub fn reached(point: Point, path: &Path) {
     #[cfg(feature = "test-support")]
     {
+        let here = tokio::runtime::Handle::try_current()
+            .ok()
+            .map(|handle| handle.id());
         let hook = {
             let mut hooks = HOOKS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             hooks
                 .iter()
-                .position(|(at, below, _)| *at == point && path.starts_with(below))
-                .map(|index| hooks.remove(index).2)
+                .position(|(at, below, owner, _)| {
+                    *at == point
+                        && path.starts_with(below)
+                        && owner.as_ref().is_none_or(|owner| owner.admits(here))
+                })
+                .map(|index| hooks.remove(index).3)
         };
         if let Some(hook) = hook {
             hook();
