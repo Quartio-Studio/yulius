@@ -300,6 +300,16 @@ impl BrowserSession for Session {
         }
     }
 
+    async fn paste(
+        &self,
+        tab: &TabId,
+        text: &str,
+    ) -> Result<futures::future::BoxFuture<'static, Result<(), BrowserFailure>>, BrowserFailure>
+    {
+        let delivery = self.0.start_paste(tab, text).await.map_err(failure)?;
+        Ok(Box::pin(async move { delivery.await.map_err(failure) }))
+    }
+
     async fn accept_page_copy(&self, offer: u32) -> Option<String> {
         self.0.accept_page_copy(offer).await
     }

@@ -36,6 +36,10 @@ use crate::url_policy::{UrlDenyList, UrlRefused, normalize_url};
 use crate::video::{VideoSubscription, VideoUnavailable};
 use crate::wheel::{WheelDispatcher, WheelEvent};
 
+/// How a started paste ends ([`BrowserInstance::start_paste`]): `Ok` once the page took it.
+pub type PasteDelivery =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BrowserError>> + Send>>;
+
 /// How [`BrowserInstance::type_lines`] puts a line into the page.
 #[derive(Debug, Clone, Copy)]
 enum Typing {
@@ -1332,6 +1336,17 @@ fn check_coordinate(name: &str, value: f64) -> Result<(), BrowserError> {
         Err(BrowserError::InvalidInput(format!(
             "{name} must be a finite number within ±{COORDINATE_LIMIT}"
         )))
+    }
+}
+
+/// A paste that went wrong on the way is a failed paste for the viewer (who is told), unless the
+/// input locks refused it (they have their own notice).
+fn paste_failed(error: BrowserError) -> BrowserError {
+    match error {
+        BrowserError::PasteFailed(_)
+        | BrowserError::InputLocked
+        | BrowserError::InputLockedUntilRestart => error,
+        other => BrowserError::PasteFailed(other.to_string()),
     }
 }
 
@@ -2951,46 +2966,56 @@ impl BrowserInstance {
     }
 
     /// A viewer's paste (SPEC-639): on a display the text becomes the display's CLIPBOARD and
-    /// Shift+Insert (the paste key) is pressed, in order with the viewer's other keys, so the page gets a real paste
-    /// (typed as key presses when the CLIPBOARD cannot be taken); without a display it is typed
-    /// as key presses through CDP. Never through `Input.insertText`, which terminals ignore.
+    /// Shift+Insert (the paste key) is pressed, in order with the viewer's other keys, so the
+    /// page gets a real paste (typed as key presses when the CLIPBOARD cannot be taken); without
+    /// a display it is typed as key presses through CDP. Never through `Input.insertText`,
+    /// which terminals ignore. Returns once the paste is in order with the input before it; the
+    /// returned [`PasteDelivery`] says how it ended (the page fetched the text, or not within
+    /// the paste window), so the caller need not wait for that to take the next input.
     ///
     /// # Errors
     /// [`BrowserError::InvalidInput`] for text over 32 KiB; the input locks;
-    /// [`BrowserError::PasteFailed`] when the page did not take the paste or it could not be
-    /// delivered.
-    pub async fn dispatch_paste(&self, tab: &TabId, text: &str) -> Result<(), BrowserError> {
+    /// [`BrowserError::PasteFailed`] when it could not be delivered (also from the delivery,
+    /// when the page did not take it).
+    pub async fn start_paste(
+        &self,
+        tab: &TabId,
+        text: &str,
+    ) -> Result<PasteDelivery, BrowserError> {
         self.touch();
         check_len("text", Some(text), KEY_TEXT_MAX_BYTES)?;
         if text.is_empty() {
-            return Ok(());
+            return Ok(Box::pin(async { Ok(()) }));
         }
-        let delivered = if let Some(display) = &self.display {
-            if !self.viewer_input_allowed().await {
-                return Err(self.input_locked());
-            }
-            match display.paste(Zeroizing::new(text.to_owned())).await {
+        let Some(display) = &self.display else {
+            let session = self.session(tab).await.map_err(paste_failed)?;
+            let _input = self.input_lock.lock().await;
+            self.type_keys(&session, text).await.map_err(paste_failed)?;
+            return Ok(Box::pin(async { Ok(()) }));
+        };
+        if !self.viewer_input_allowed().await {
+            return Err(self.input_locked());
+        }
+        let outcome = display
+            .queue_paste(Zeroizing::new(text.to_owned()))
+            .map_err(paste_failed)?;
+        Ok(Box::pin(async move {
+            match outcome.await {
                 Ok(PasteOutcome::Read | PasteOutcome::Typed) => Ok(()),
                 Ok(PasteOutcome::Unread) => Err(BrowserError::PasteFailed(
                     "the page did not take it. Click where the text goes and paste again".into(),
                 )),
-                Err(error) => Err(error),
+                Err(error) => Err(paste_failed(error)),
             }
-        } else {
-            match self.session(tab).await {
-                Ok(session) => {
-                    let _input = self.input_lock.lock().await;
-                    self.type_keys(&session, text).await
-                }
-                Err(error) => Err(error),
-            }
-        };
-        delivered.map_err(|error| match error {
-            BrowserError::PasteFailed(_)
-            | BrowserError::InputLocked
-            | BrowserError::InputLockedUntilRestart => error,
-            other => BrowserError::PasteFailed(other.to_string()),
-        })
+        }))
+    }
+
+    /// [`Self::start_paste`] and its delivery.
+    ///
+    /// # Errors
+    /// As [`Self::start_paste`].
+    pub async fn dispatch_paste(&self, tab: &TabId, text: &str) -> Result<(), BrowserError> {
+        self.start_paste(tab, text).await?.await
     }
 
     /// Types `text` as real key presses through CDP, so pages that read key events (terminals)

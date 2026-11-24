@@ -290,6 +290,14 @@ pub trait BrowserSession: Send + Sync {
         &self,
         message: ViewerClientMsg,
     ) -> Result<Option<tokio::sync::oneshot::Receiver<u32>>, BrowserFailure>;
+    /// Starts a viewer's paste in order with its other input (SPEC-639); the returned future
+    /// says how it ended (an error when the page did not take it), so the viewer's connection
+    /// takes its next messages meanwhile.
+    async fn paste(
+        &self,
+        tab: &TabId,
+        text: &str,
+    ) -> Result<futures::future::BoxFuture<'static, Result<(), BrowserFailure>>, BrowserFailure>;
     /// Reads the display's offered text following this viewer's explicit acceptance.
     async fn accept_page_copy(&self, offer: u32) -> Option<String>;
     /// Subscribes to a tab's JPEG screencast (the fallback view).

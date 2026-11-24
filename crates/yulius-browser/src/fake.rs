@@ -1551,6 +1551,7 @@ struct FakeDisplayInner {
     offered_copy: Mutex<(u32, Option<String>)>,
     pastes: Mutex<Vec<(usize, String)>>,
     paste_unread: AtomicBool,
+    paste_held: watch::Sender<bool>,
     encoders: Mutex<Vec<(u32, u32)>>,
     tiers: Mutex<Vec<Tier>>,
     running: AtomicUsize,
@@ -1603,6 +1604,7 @@ impl FakeDisplay {
                 offered_copy: Mutex::new((0, None)),
                 pastes: Mutex::new(Vec::new()),
                 paste_unread: AtomicBool::new(false),
+                paste_held: watch::channel(false).0,
                 encoders: Mutex::new(Vec::new()),
                 tiers: Mutex::new(Vec::new()),
                 running: AtomicUsize::new(0),
@@ -1662,16 +1664,28 @@ impl FakeDisplay {
         self.inner.paste_unread.store(unread, Ordering::SeqCst);
     }
 
-    pub(crate) fn paste(&self, text: &str) -> crate::display::PasteOutcome {
+    /// Holds the outcome of the pastes that follow until released (`false`): the page is slow
+    /// to read them.
+    pub fn hold_pastes(&self, held: bool) {
+        self.inner.paste_held.send_replace(held);
+    }
+
+    pub(crate) fn paste(&self, text: &str) -> crate::display::PasteWait {
         lock(&self.inner.offered_copy).1 = None;
         let before = lock(&self.inner.inputs).len();
         lock(&self.inner.pastes).push((before, text.to_owned()));
         self.inner.inputs_seen.send_modify(|n| *n += 1);
-        if self.inner.paste_unread.load(Ordering::SeqCst) {
+        let outcome = if self.inner.paste_unread.load(Ordering::SeqCst) {
             crate::display::PasteOutcome::Unread
         } else {
             crate::display::PasteOutcome::Read
-        }
+        };
+        let mut held = self.inner.paste_held.subscribe();
+        Box::pin(async move {
+            // A dropped sender (the display went away) ends the hold.
+            let _ = held.wait_for(|held| !*held).await;
+            Ok(outcome)
+        })
     }
 
     /// Makes the next primary press imitate a webpage that writes text to the display.

@@ -2304,6 +2304,44 @@ async fn a_viewer_paste_is_a_real_paste_on_the_display_in_order_with_keys() -> T
     .await
 }
 
+/// SPEC-639 PST-004 (review round 1): while a paste is on its way to the page the viewer's
+/// connection goes on (other answers arrive), and the outcome comes when the page did not take
+/// it.
+#[tokio::test]
+async fn a_paste_on_its_way_does_not_hold_up_the_viewers_connection() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        display.hold_pastes(true);
+        display.set_paste_unread(true);
+        send(
+            &mut socket,
+            json!({"type": "paste", "tab_id": tab, "text": "slow"}),
+        )
+        .await?;
+        f.fake.set_selection("copied meanwhile");
+        send(&mut socket, json!({"type": "copy", "tab_id": tab})).await?;
+        let answer = wait_json(&mut socket, |m| {
+            m["type"] == "clipboard" || m["type"] == "error"
+        })
+        .await?;
+        assert_eq!(
+            answer["type"], "clipboard",
+            "the paste held up the connection: {answer}"
+        );
+        assert_eq!(display.pastes().len(), 1);
+        display.hold_pastes(false);
+        let failed = wait_json(&mut socket, |m| m["type"] == "error").await?;
+        assert_eq!(failed["code"], "paste_failed", "{failed}");
+        Ok(())
+    })
+    .await
+}
+
 /// SPEC-639 PST-003: without a display a paste is typed as key presses through CDP (each
 /// character a key down with its text and a key up, a line break Enter), never inserted.
 #[tokio::test]

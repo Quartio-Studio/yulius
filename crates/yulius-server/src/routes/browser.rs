@@ -705,6 +705,10 @@ async fn pump(
         return;
     }
     let mut page_copy: Option<(TabId, String, tokio::sync::oneshot::Receiver<u32>)> = None;
+    // Pastes on their way to the page: each ends within the paste window (SPEC-639).
+    let mut pastes: futures::stream::FuturesUnordered<
+        futures::future::BoxFuture<'static, Result<(), yulius_app::ports::browser::BrowserFailure>>,
+    > = futures::stream::FuturesUnordered::new();
     let mut offered_copy = None;
     let mut budget = InputBudget::new();
     let mut recheck = tokio::time::interval(RECHECK);
@@ -713,6 +717,12 @@ async fn pump(
     reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            Some(delivered) = pastes.next(), if !pastes.is_empty() => {
+                if let Err(failure) = delivered {
+                    let error = ViewerServerMsg::Error { code: failure.viewer_code(), message: failure.message };
+                    if !out.json(&error).await { return; }
+                }
+            }
             offer = async {
                 match &mut page_copy {
                     Some((_, _, copy)) => copy.await.ok(),
@@ -895,7 +905,22 @@ async fn pump(
                             Err(failure) => Err((failure.viewer_code(), failure.message)),
                         }
                     }
-                    Ok(message @ (ViewerClientMsg::Mouse { .. } | ViewerClientMsg::Key { .. } | ViewerClientMsg::Paste { .. })) => {
+                    // A paste is queued in order with the input before it; how it ended arrives
+                    // in `pastes` while this connection goes on (SPEC-639).
+                    Ok(ViewerClientMsg::Paste { tab_id, text }) => {
+                        if budget.take(Instant::now(), false) {
+                            match session.paste(&tab_id, &text).await {
+                                Ok(delivery) => {
+                                    pastes.push(delivery);
+                                    Ok(())
+                                }
+                                Err(failure) => Err((failure.viewer_code(), failure.message)),
+                            }
+                        } else {
+                            Err((ViewerErrorCode::Invalid, "input arrives too fast; slow down".into()))
+                        }
+                    }
+                    Ok(message @ (ViewerClientMsg::Mouse { .. } | ViewerClientMsg::Key { .. })) => {
                         let silent = droppable(&message);
                         if budget.take(Instant::now(), silent) {
                             let page = match &message {

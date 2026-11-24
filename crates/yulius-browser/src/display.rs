@@ -81,6 +81,10 @@ pub enum DisplayInput {
     },
 }
 
+/// How a queued paste ends ([`VirtualDisplay::queue_paste`]).
+pub(crate) type PasteWait =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<PasteOutcome, BrowserError>> + Send>>;
+
 /// How a paste ended on the display (SPEC-639).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PasteOutcome {
@@ -828,32 +832,46 @@ impl VirtualDisplay {
         }
     }
 
-    /// Pastes `text` as a person's paste: it becomes the display's CLIPBOARD and Shift+Insert is
+    /// Queues `text` as a person's paste: it becomes the display's CLIPBOARD and Shift+Insert is
     /// pressed, in order with the input queued before and after it; typed as key presses when
-    /// the CLIPBOARD cannot be taken. Waits until a client asked for the text, at most the
-    /// paste window.
+    /// the CLIPBOARD cannot be taken. The returned future says how it ended, once a client
+    /// fetched the text or at most the paste window after it (and the wait for the page to stop
+    /// reading the paste before).
     ///
     /// # Errors
     /// When the input queue is full or the display stopped.
-    pub(crate) async fn paste(
+    pub(crate) fn queue_paste(
         &self,
         text: zeroize::Zeroizing<String>,
-    ) -> Result<PasteOutcome, BrowserError> {
+    ) -> Result<PasteWait, BrowserError> {
         match &self.backend {
             Backend::Xvfb { x, .. } => {
                 let (outcome, answer) = tokio::sync::oneshot::channel();
                 x.queue(xserver::XCommand::Paste(text, outcome))
                     .map_err(input_error)?;
-                let bound = crate::xclipboard::PASTE_WINDOW + Duration::from_secs(1);
-                match tokio::time::timeout(bound, answer).await {
-                    Ok(Ok(outcome)) => Ok(outcome),
-                    Ok(Err(_)) => Err(display_error("the display stopped")),
-                    Err(_) => Ok(PasteOutcome::Unread),
-                }
+                let bound = crate::xclipboard::PASTE_QUIET_MAX
+                    + crate::xclipboard::PASTE_WINDOW
+                    + Duration::from_secs(1);
+                Ok(Box::pin(async move {
+                    match tokio::time::timeout(bound, answer).await {
+                        Ok(Ok(outcome)) => Ok(outcome),
+                        Ok(Err(_)) => Err(display_error("the display stopped")),
+                        Err(_) => Ok(PasteOutcome::Unread),
+                    }
+                }))
             }
             #[cfg(feature = "fake")]
             Backend::Fake(fake) => Ok(fake.paste(&text)),
         }
+    }
+
+    /// [`Self::queue_paste`] and its outcome.
+    #[cfg(test)]
+    pub(crate) async fn paste(
+        &self,
+        text: zeroize::Zeroizing<String>,
+    ) -> Result<PasteOutcome, BrowserError> {
+        self.queue_paste(text)?.await
     }
 
     /// Queues a primary press together with a one-shot recipient for a fresh clipboard write.
