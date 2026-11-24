@@ -555,6 +555,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0472](0472-a-terminal-shown-late-leaves-the-keyboard-where-the-person-moved-it.md): A terminal focus request made before the terminal showed lands at the reveal only if the person did not move the keyboard since (a page-wide count in `dom.js`; a control re-created by a re-render is not a move) or it is on the page; refines SPEC-056 WUI-102 and SPEC-052 (SPEC-641)
 <!-- ADR 0472 -->
 <!-- ADR 0473 -->
+- [0474](0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md): A test pause hook (`yulius_app::race`) runs only for a point reached on the tokio runtime that registered it; outside a runtime it matches by point and key as before (SPEC-645, #1644)
 <!-- ADR 0474 -->
 <!-- ADR 0475 -->
 <!-- ADR 0476 -->
