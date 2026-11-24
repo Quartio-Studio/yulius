@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-24
 
-- A screenshot copied outside Yulius pastes into a terminal from its right-click menu's Paste and with Ctrl+V on macOS (#1734): the paste that reads the clipboard itself took only text, so an image sent nothing. It now reads the clipboard's items: text pastes as before and wins over an image, an image is uploaded and its path typed as the browser's own paste does, and a clipboard with nothing to paste (a file copied in a file manager) says to use the paste key. The Browser panel's paste is task #623's. [SPEC-638](../.ai/specs/SPEC-638-i-can-t-paste-things-to-the-sandbox-if-t.md)
+- A screenshot copied outside Yulius pastes into a terminal from its right-click menu's Paste and with Ctrl+V on macOS (#1734): the paste that reads the clipboard itself took only text, so an image sent nothing. It now reads the clipboard's items: text pastes as before and wins over an image, which is then not even read, an image (PNG first) is uploaded and its path typed as the browser's own paste does, and a clipboard with nothing to paste (in Chrome on Linux, a file copied in a file manager) says to use the paste key, which uploads copied files. The Browser panel's paste is task #623's. [SPEC-638](../.ai/specs/SPEC-638-i-can-t-paste-things-to-the-sandbox-if-t.md)
 
 ## 2026-11-23
 

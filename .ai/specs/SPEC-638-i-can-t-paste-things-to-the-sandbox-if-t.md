@@ -50,14 +50,16 @@ claims its files, so it is not part of this change.
   Ctrl+V and Ctrl+Shift+V on macOS) reads the clipboard's items. An image item, with no text
   beside it, goes through the same upload as a pasted image: it is stored as an attachment named
   `pasted-<stamp>.<ext>`, and its path is typed into the terminal once, as a bracketed paste when
-  the program asked for one.
+  the program asked for one. An item offering PNG among other image types is taken as PNG.
 - **PST-002** Text keeps priority, as in the browser's own paste: when the clipboard holds text,
-  that text is pasted and the image is not uploaded. A browser without `clipboard.read()` keeps the
-  `readText()` paste. A refused read keeps its notice naming the paste key.
+  that text is pasted, and the image beside it is neither read nor uploaded, so a picture that
+  cannot be read loses no text. A browser without `clipboard.read()` keeps the `readText()` paste.
+  A refused read keeps its notice naming the paste key.
 - **PST-003** The terminal never ignores a paste without saying so. A clipboard holding nothing the
-  read can deliver (a file copied in a file manager, which browsers hand only to their own paste)
-  shows a notice that names the paste key. So does a terminal without a file drop, such as a login
-  terminal, when the clipboard holds only an image.
+  read can deliver shows a notice that names the paste key. In Chrome on Linux this covers a file
+  copied in a file manager, which the browser hands only to its own paste. A terminal without a
+  file drop, such as the sign-in terminal, shows "This terminal takes text only" when the clipboard
+  holds only an image.
 
 ## Plan
 
@@ -72,8 +74,9 @@ claims its files, so it is not part of this change.
   `…/attachments/tasks/tsk_studio_12/pasted-<stamp>.png ` once, and the upload status says
   `Added pasted-<stamp>.png`.
 - **AC-2 (PST-002)** With text and an image on the clipboard, the menu Paste types the text and
-  uploads nothing. The Codex right-click still pastes multiline text once, bracketed. A refused
-  read still names the paste key.
+  reads only `text/plain`, even when the picture cannot be read. A later image-only paste types
+  exactly one path after the text. Without `read()`, `readText()` text is typed. The Codex
+  right-click still pastes multiline text once, bracketed. A refused read still names the paste key.
 - **AC-3 (PST-003)** An empty clipboard read shows a notice naming the paste key and sends nothing.
 - **AC-4** The real-Chrome probe from the Context table, run again on the fixed code, gets the
   image's path for Shift+right-click → Paste and for macOS Ctrl+V.
@@ -83,7 +86,7 @@ claims its files, so it is not part of this change.
 - e2e (`filedrop.e2e.ts`): stubs `navigator.clipboard.read()` with the items an outside copy
   gives (an image only, text and an image, nothing) and drives the menu's Paste. It fails on the
   current code, which types nothing for the image.
-- e2e (`terminal.e2e.ts`): the Codex right-click test stubs `read()` as well as `readText()`.
+- e2e (`terminal.e2e.ts`): the Codex right-click test stubs `read()`.
 - Real-Chrome probe on Xvfb (`xclip` owner, `xdotool` input), Linux and a macOS platform
   override, as evidence.
 - `scripts/dev quick`, the touched e2e files, Yulius CI.
@@ -133,3 +136,33 @@ claims its files, so it is not part of this change.
 - Found on the way, outside this change: the sign-in terminal's right-click menu opens beneath
   its modal dialog ([#1735](https://github.com/Quartio-Studio/yulius/issues/1735), already on
   `dev`).
+
+### Review round 1
+
+- The reviewer (Fable 5.2) found no product defect at `064108145`. It requested changes for two
+  test gaps, each shown by a probe that survived:
+  - With the `return` after the text paste removed, the image was uploaded as well, and 15 of 15
+    tests still passed.
+  - With the drop's `event.preventDefault()` removed, the terminal said "This terminal takes text
+    only" while it uploaded, and 15 of 15 tests still passed.
+- It also found one robustness gap: the picture was read even when its text won, so a picture
+  that failed to read lost the text. It added an untested `readText()` fallback, `image/png`
+  preference, and spec and docs wording.
+- Test first (`2b04b9dc8`): the text step comes before the image step, and the image step keeps
+  the input. The test asserts that only `text/plain` was read and checks the notice once after the
+  drop took the image. It covers PNG over `image/svg+xml` listed first, and a browser without
+  `read()`. On the round-0 code it failed with `expected "" to match /^(\[200~)?cell text…/`,
+  because the failed picture read lost the text.
+- Fix (`30cd8e27a`): `readClipboard` returns image readers, and `pasteFromClipboard` pastes text
+  first and reads images only when there is no text. It prefers `image/png`.
+- `filedrop.e2e.ts` and `terminal.e2e.ts` pass, 48 of 48.
+- The reviewer's two probes now fail:
+  - Without the `return`, the test reports `expected ["text/plain","image/png"] to equal
+    ["text/plain"]`.
+  - Without the cancel, it reports `expected "This terminal takes text only" not to match /text
+    only/`.
+- Real Chrome on Xvfb, on this code:
+  - Menu Paste with an `xclip` image typed `…/pasted-20261124-010656.png `, and with text typed
+    `menu words`.
+  - macOS Ctrl+V (platform override) typed `mac words`, and with an image typed
+    `…/pasted-20261124-010712.png `.
