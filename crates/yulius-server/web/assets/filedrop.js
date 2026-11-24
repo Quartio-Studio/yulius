@@ -1,7 +1,8 @@
 // Dropped and pasted files (SPEC-001 EDT-006, UI-048; F 2026-10-10). Files or folders dropped on
 // the editor's explorer go into the folder under the pointer, files dropped on the editor into
 // the open file's folder (text files then open); files dropped on a terminal — or an image
-// pasted into it — are uploaded as attachments and their paths typed into it as a paste, the way
+// pasted into it, also one its menu's Paste or Ctrl+V on macOS reads from the clipboard (SPEC-638)
+// — are uploaded as attachments and their paths typed into it as a paste, the way
 // a local terminal hands a dragged file to Claude Code. Uploads stream one file per request
 // (docs/api.md), one after another, with progress; an existing file is replaced only after
 // asking. Phones have no drag and drop: the explorer's upload button picks files instead.
@@ -463,6 +464,10 @@ function pastedName(file) {
   return `pasted-${stamp}.${ext}`;
 }
 
+/** Pasted files with a clipboard image's own name (`image.png`, or none) given a dated one. */
+const withPastedNames = (files) => files.map((file) => (
+  /^image\.\w+$/.test(file.name) || !file.name ? new File([file], pastedName(file), { type: file.type }) : file));
+
 /** The files of a paste that carries no text of its own (an image, a copied file). */
 function pastedFiles(data) {
   if (!data) return [];
@@ -470,7 +475,7 @@ function pastedFiles(data) {
   if (!files.length) return [];
   const text = (data.getData('text/plain') || '').trim();
   if (text && !files.some((file) => file.name === text)) return [];
-  return files.map((file) => (/^image\.\w+$/.test(file.name) || !file.name ? new File([file], pastedName(file), { type: file.type }) : file));
+  return withPastedNames(files);
 }
 
 /**
@@ -632,12 +637,8 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
     onOver,
     onDrop: (event, carried) => enqueue(carried, keep(event)),
   });
-  // Images and copied files pasted into the terminal; text pastes are left to the terminal.
-  zone.addEventListener('paste', (event) => {
-    const files = pastedFiles(event.clipboardData);
-    if (!files.length) return;
-    event.preventDefault();
-    event.stopPropagation();
+  /** Pasted files: uploaded and inserted where the user types, or refused with why. */
+  const takePasted = (files) => {
     if (readOnly()) {
       place();
       status.begin('');
@@ -646,6 +647,22 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
       return;
     }
     enqueue({ entries: [], files }, keep(null));
+  };
+  // Images and copied files pasted into the terminal; text pastes are left to the terminal.
+  zone.addEventListener('paste', (event) => {
+    const files = pastedFiles(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    takePasted(files);
   }, true);
+  // Images a terminal read from the clipboard itself (its menu's Paste, Ctrl+V on macOS; SPEC-638):
+  // cancelling the event tells the terminal they were taken.
+  zone.addEventListener('terminal-paste-files', (event) => {
+    const files = event.detail && Array.isArray(event.detail.files) ? event.detail.files : [];
+    if (!files.length) return;
+    event.preventDefault();
+    takePasted(withPastedNames(files));
+  });
   return { status };
 }

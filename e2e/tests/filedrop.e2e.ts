@@ -213,6 +213,34 @@ test('an image copied outside pastes into the task terminal from the menu; text 
   await menuPaste();
   await expect(browser.locator('.taskview .term-notice')).toHaveText(/no text or image.*(Ctrl\+V|⌘V)/);
   expect(await typedIntoTask(browser)).toBe('');
+  // The same when the browser answers that nothing on the clipboard is readable (DataError).
+  await browser.evaluate(() => {
+    document.querySelector('.taskview .term-notice')!.textContent = '';
+    navigator.clipboard.read = async () => { throw new DOMException('No valid data on clipboard.', 'DataError'); };
+  });
+  await menuPaste();
+  await expect(browser.locator('.taskview .term-notice')).toHaveText(/no text or image.*(Ctrl\+V|⌘V)/);
+  expect(await typedIntoTask(browser)).toBe('');
+});
+
+test('a terminal whose files nobody takes says it takes text only (SPEC-638)', async ({ app, browser, screen }) => {
+  // A terminal without a file drop (the sign-in terminal) leaves the read images untaken. Here the
+  // task terminal's drop never hears them: the event is stopped before it reaches the drop.
+  await app.open(mock('/s/studio/t/12'));
+  await expect(taskTerminal(browser)).toHaveText(/Welcome to Claude Code/);
+  await browser.evaluate(() => {
+    window.addEventListener('terminal-paste-files', (event) => event.stopPropagation(), true);
+    const png = Uint8Array.from(atob('iVBORw0KGgo='), (c) => c.charCodeAt(0));
+    navigator.clipboard.read = async () => [new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })];
+    const line = [...document.querySelectorAll('.taskview-term .xterm-rows > div')].find((d) => (d.textContent || '').trim())!;
+    const box = line.getBoundingClientRect();
+    const key = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? 'altKey' : 'shiftKey';
+    line.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 40, clientY: box.top + box.height / 2, [key]: true }));
+  });
+  await screen.getByRole('menuitem', /^Paste/).click();
+  await expect(browser.locator('.taskview .term-notice')).toHaveText('This terminal takes text only');
+  expect(await typedIntoTask(browser)).toBe('');
+  await expect(browser.locator('.taskview-term .upload-text')).toHaveCount(0);
 });
 
 test('a read-only terminal refuses dropped files', async ({ app, browser }) => {

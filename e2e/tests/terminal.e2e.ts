@@ -460,6 +460,7 @@ test('Codex right-click pastes from the viewer’s clipboard', async ({ app, bro
   expect(point).not.toBeNull();
   const sent = await recordInput(browser);
   await browser.evaluate(() => {
+    navigator.clipboard.read = async () => [new ClipboardItem({ 'text/plain': new Blob(['first line\nsecond line'], { type: 'text/plain' }) })];
     navigator.clipboard.readText = async () => 'first line\nsecond line';
   });
 
@@ -479,6 +480,7 @@ test('Codex right-click pastes from the viewer’s clipboard', async ({ app, bro
   await expect.poll(async () => (await sent()).slice(before)).toEqual(pasted);
 
   await browser.evaluate(() => {
+    navigator.clipboard.read = async () => { throw new DOMException('Denied', 'NotAllowedError'); };
     navigator.clipboard.readText = async () => { throw new DOMException('Denied', 'NotAllowedError'); };
   });
   await grid.secondaryTap();

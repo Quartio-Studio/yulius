@@ -16,11 +16,12 @@
 //
 // Copy and paste work as in a desktop terminal (termkeys.js): ⌘C/⌘V on macOS, Ctrl+C copies a
 // selection (and sends ^C without one), Ctrl+V pastes (bracketed when the program asked for it),
-// Ctrl+Shift+C/V and a right-click menu with Copy and Paste. A program that has the mouse selects
-// a plain drag itself and copies it with OSC 52 (Claude Code does): the write reaches the
-// clipboard for a viewer who just used this terminal, and when the browser refuses it the copy key
-// copies it (SPEC-158, ADR-0130). Paths of existing files are links to the built-in editor
-// (termlinks.js).
+// Ctrl+Shift+C/V and a right-click menu with Copy and Paste; a paste that reads the clipboard
+// itself (the menu, Ctrl+V on macOS) takes an image too, as the file drop does (SPEC-638). A
+// program that has the mouse selects a plain drag itself and copies it with OSC 52 (Claude Code
+// does): the write reaches the clipboard for a viewer who just used this terminal, and when the
+// browser refuses it the copy key copies it (SPEC-158, ADR-0130). Paths of existing files are
+// links to the built-in editor (termlinks.js).
 //
 // It appears once, at its final size and font (F 2026-10-09): the grid is fitted before the
 // socket opens and the size travels with the connection (`?cols=&rows=`), so the server's first
@@ -418,18 +419,48 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     navigator.clipboard.writeText(text).then(() => { programCopy = ''; showNotice('Copied'); }, refused);
     return true;
   });
-  /** Pastes the clipboard's text where no paste key exists (Ctrl+V on macOS, the menu). */
+  /**
+   * The clipboard's text, else its images as files (a screenshot copied outside Yulius, SPEC-638),
+   * as the browser's own paste offers them. `read()` is called at once, inside the key's or the
+   * click's gesture (Safari asks for that), and one permission covers both kinds.
+   */
+  async function readClipboard() {
+    if (!navigator.clipboard.read) return { text: await navigator.clipboard.readText(), files: [] };
+    let text = '';
+    const files = [];
+    for (const item of await navigator.clipboard.read()) {
+      const image = item.types.find((type) => type.startsWith('image/'));
+      if (item.types.includes('text/plain')) text += await (await item.getType('text/plain')).text();
+      else if (image) files.push(new File([await item.getType(image)], `image.${image.slice(6).replace(/[^a-z0-9]/gi, '') || 'png'}`, { type: image }));
+    }
+    return { text, files };
+  }
+  /** Pastes the clipboard where no paste key exists (Ctrl+V on macOS, the menu). */
   async function pasteFromClipboard() {
     if (!state.can_write) { showNotice(readOnlyText()); return; }
-    let text = '';
+    const pasteKey = IS_MAC ? '⌘V' : 'Ctrl+V';
+    let read = { text: '', files: [] };
     try {
-      text = await navigator.clipboard.readText();
-    } catch {
-      showNotice(`The browser did not share the clipboard; paste with ${IS_MAC ? '⌘V' : 'Ctrl+V'}`);
+      read = await readClipboard();
+    } catch (error) {
+      // DataError: nothing the clipboard API can deliver (said below); anything else is a refusal.
+      if (!error || error.name !== 'DataError') {
+        showNotice(`The browser did not share the clipboard; paste with ${pasteKey}`);
+        return;
+      }
+    }
+    if (destroyed) return;
+    // Text wins, as in the browser's paste (an office app copies a picture of the text beside it).
+    // xterm wraps it in bracketed-paste markers when the program asked for them, then sends it.
+    if (read.text) { term.paste(read.text); return; }
+    if (read.files.length) {
+      // The terminal's file drop uploads them and types their paths, as for a pasted image (filedrop.js).
+      const offer = new CustomEvent('terminal-paste-files', { bubbles: true, cancelable: true, detail: { files: read.files } });
+      if (el.dispatchEvent(offer)) showNotice('This terminal takes text only');
       return;
     }
-    // xterm wraps it in bracketed-paste markers when the program asked for them, then sends it.
-    if (text && !destroyed) term.paste(text);
+    // A file copied in a file manager reaches only the browser's own paste.
+    showNotice(`The clipboard has no text or image to paste here; paste files with ${pasteKey}`);
   }
   term.attachCustomKeyEventHandler((event) => {
     const action = clipboardKeyAction(event, { mac: IS_MAC, selection: term.hasSelection() });
