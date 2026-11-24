@@ -243,6 +243,45 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             }
         }
         assert_eq!(published, Some(false), "{told:?}");
+        // The pass told the owner about its green head, and the fake agent answers with a turn
+        // that the session watcher reads on its own clock: once it was read, the owner is at
+        // rest again, and what follows hears the watch alone (SPEC-640 FLK-002).
+        if told.iter().any(|(task, _)| task == &id) {
+            super::wait_for(
+                "the owner's answer to the notice",
+                Duration::from_secs(30),
+                || {
+                    let app = app.clone();
+                    let id = id.clone();
+                    async move {
+                        app.deps
+                            .store
+                            .task(&id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|t| t.activity)
+                            == Some(Activity::Working)
+                    }
+                },
+            )
+            .await?;
+            let rounds = app.runtime(&id).transcript_rounds();
+            super::wait_for(
+                "the answer read to its end",
+                Duration::from_secs(30),
+                || {
+                    let app = app.clone();
+                    let id = id.clone();
+                    async move { app.runtime(&id).transcript_rounds() >= rounds + 2 }
+                },
+            )
+            .await?;
+            app.deps
+                .store
+                .set_activity(&id, Some(Activity::Done), app.now())
+                .await?;
+        }
         let summary = app.task_summary(&owner).await?;
         assert!(!summary.candidate_pending, "{summary:?} {told:?}");
         let value = serde_json::to_value(&summary)?;
@@ -316,15 +355,23 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
         };
         tokio::time::timeout(Duration::from_secs(10), reading.notified()).await?;
         let rounds = app.runtime(&id).transcript_rounds();
-        super::wait_for("a watcher round during the pass", Duration::from_secs(30), || {
-            let app = app.clone();
-            let id = id.clone();
-            async move { app.runtime(&id).transcript_rounds() >= rounds + 2 }
-        })
+        super::wait_for(
+            "a watcher round during the pass",
+            Duration::from_secs(30),
+            || {
+                let app = app.clone();
+                let id = id.clone();
+                async move { app.runtime(&id).transcript_rounds() >= rounds + 2 }
+            },
+        )
         .await?;
         release.notify_one();
         let second = pass.await?;
-        assert_eq!(task_updates(&mut events), vec![true], "{second:?}");
+        // The pass ends by telling the owner about the failure: the owner's answer may already
+        // be heard after the watch's one publish, never before it.
+        let seen = task_updates(&mut events);
+        assert_eq!(seen.first(), Some(&true), "{seen:?} {second:?}");
+        assert!(!seen[1..].contains(&true), "{seen:?} {second:?}");
         Ok(())
     })
 }
@@ -2453,6 +2500,16 @@ async fn restore_owner(
             .id,
         *original
     );
+    // The reattached session's watcher starts its first round a second later: it probes the
+    // idle shells (unknown until then) and replays the transcript to its end, publishing and
+    // settling the activity on its own clock. A test sees the owner after that round, not
+    // racing it (SPEC-640 FLK-001).
+    super::wait_for(
+        "the reattached transcript replay",
+        Duration::from_secs(30),
+        || async { cold.runtime(id).transcript_rounds() >= 2 },
+    )
+    .await?;
     remote.set_checks(head, ChecksState::Success);
     let bounds = WatchBounds::default();
     ask(&cold, id).await?;
