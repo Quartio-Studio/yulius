@@ -7956,11 +7956,13 @@ impl App {
                 .iter()
                 .any(|o| matches!(o, Observation::TurnComplete { .. }));
             if catching_up {
-                // What a review round's reviewer ran on and whether a limit cut it off are facts
-                // to note however late (SPEC-493 REV-004): noting one again changes nothing.
+                // What a review round's reviewer ran on, whether a limit cut it off and its report
+                // are facts to note however late (SPEC-493 REV-004): noting one again changes
+                // nothing. A report written while Yulius was down is only here (SPEC-633 RRE-002).
                 for observation in &observations {
                     if let Observation::SubagentAnswered { .. }
-                    | Observation::SubagentCutOff { .. } = observation
+                    | Observation::SubagentCutOff { .. }
+                    | Observation::SubagentReported { .. } = observation
                     {
                         self.on_observation(
                             &task_id,

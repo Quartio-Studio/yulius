@@ -882,14 +882,16 @@ impl App {
         let store = &self.deps.store;
         let verdict = verdict.map(Verdict::as_str);
         // A start that came before its round (a `PreToolUse` that outlasted the hook client)
-        // linked nothing: the report ends the round it left unlinked (SPEC-633 RRE-001).
+        // linked nothing: the report ends the round it left unlinked. That hook's answer was
+        // lost too, so the reviewer ran as asked, which the round then names (SPEC-633 RRE-001).
         let ended = match store
             .end_review_round(&ctx.task.id, id, at, verdict, None)
             .await
         {
             Ok(false) => {
+                let ran = (agent, reviewer_model(agent).unwrap_or_default());
                 store
-                    .end_unlinked_review_round(&ctx.task.id, agent, id, at, verdict)
+                    .end_unlinked_review_round(&ctx.task.id, ran, id, at, verdict)
                     .await
             }
             other => other,

@@ -658,28 +658,31 @@ impl CoordinationStore for SqliteStore {
     async fn end_unlinked_review_round(
         &self,
         task: &TaskId,
-        agent: &str,
+        (agent, model): (&str, &str),
         subagent: &str,
         at: Timestamp,
         verdict: Option<&str>,
     ) -> AppResult<bool> {
-        let (t, a, s) = (
+        let (t, a, m, s) = (
             task.as_str().to_owned(),
             agent.to_owned(),
+            model.to_owned(),
             subagent.to_owned(),
         );
         let v = verdict.map(str::to_owned);
         self.call(move |c| {
             let n = c
                 .execute(
-                    "UPDATE review_rounds SET subagent_id = ?1, ended_at = ?2, verdict = ?3 \
+                    "UPDATE review_rounds SET subagent_id = ?1, ended_at = ?2, verdict = ?3, \
+                     reason = CASE WHEN agent = ?5 THEN reason ELSE 'round' END, \
+                     agent = ?5, model = ?6 \
                      WHERE rowid = (SELECT rowid FROM review_rounds WHERE task_id = ?4 \
-                         AND agent = ?5 AND subagent_id IS NULL AND merged_at IS NULL \
+                         AND subagent_id IS NULL AND merged_at IS NULL \
                          AND ended_at IS NULL AND started_at <= ?2 \
                          ORDER BY started_at DESC, rowid DESC LIMIT 1) \
                      AND NOT EXISTS (SELECT 1 FROM review_rounds \
                          WHERE task_id = ?4 AND subagent_id = ?1)",
-                    params![s, at.0, v, t, a],
+                    params![s, at.0, v, t, a, m],
                 )
                 .map_err(db)?;
             Ok(n > 0)
