@@ -461,7 +461,6 @@ test('Codex right-click pastes from the viewer’s clipboard', async ({ app, bro
   const sent = await recordInput(browser);
   await browser.evaluate(() => {
     navigator.clipboard.read = async () => [new ClipboardItem({ 'text/plain': new Blob(['first line\nsecond line'], { type: 'text/plain' }) })];
-    navigator.clipboard.readText = async () => 'first line\nsecond line';
   });
 
   // A primary click still reaches the program in its requested mouse encoding.
@@ -481,7 +480,6 @@ test('Codex right-click pastes from the viewer’s clipboard', async ({ app, bro
 
   await browser.evaluate(() => {
     navigator.clipboard.read = async () => { throw new DOMException('Denied', 'NotAllowedError'); };
-    navigator.clipboard.readText = async () => { throw new DOMException('Denied', 'NotAllowedError'); };
   });
   await grid.secondaryTap();
   await paste.click();
