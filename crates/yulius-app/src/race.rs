@@ -445,7 +445,8 @@ static LAST: std::sync::Mutex<
     Option<std::collections::HashMap<std::path::PathBuf, (Point, std::time::Instant)>>,
 > = std::sync::Mutex::new(None);
 
-/// The last point the server reached for exactly `path`, and when.
+/// The last point the server reached for exactly `path`, and when. Unlike hooks it is not scoped to
+/// a runtime, so it reads well only for keys no other test uses, such as generated task ids.
 #[cfg(feature = "test-support")]
 #[must_use]
 pub fn last_reached(path: &Path) -> Option<(Point, std::time::Instant)> {

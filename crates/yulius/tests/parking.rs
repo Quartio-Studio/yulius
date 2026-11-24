@@ -198,17 +198,23 @@ async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) -> TestResu
     let began = std::time::Instant::now();
     let deadline = tokio::time::Instant::now() + bound;
     let mut passes = 0_u32;
+    // When a pass first decided a park: later passes find the task still Running while its
+    // session ends, and overwrite the last stage with where they gave up.
+    let mut decided = None;
     let mut outcome = "no pass ran";
     while tokio::time::Instant::now() < deadline {
         let look = async {
             if status_of(app, id).await.0 == Some(TaskStatus::Running) {
                 passes += 1;
-                app.park_idle_sessions_now().await;
+                if app.park_idle_sessions_now().await > 0 && decided.is_none() {
+                    decided = Some(began.elapsed());
+                }
             }
             status_of(app, id).await.0 == Some(TaskStatus::Parked)
         };
         match tokio::time::timeout_at(deadline, look).await {
             Ok(true) => return Ok(()),
+            Ok(false) if passes == 0 => outcome = "the task was not running, so no pass ran",
             Ok(false) => outcome = "the last pass ended without parking",
             Err(_) => {
                 outcome = "a pass was still running at the deadline";
@@ -217,13 +223,17 @@ async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) -> TestResu
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let stage = match yulius_app::race::last_reached(key).filter(|(_, at)| *at >= began) {
-        Some((point, at)) => format!(
+    let last = yulius_app::race::last_reached(key).filter(|(_, at)| *at >= began);
+    let stage = match decided.ok_or(last) {
+        Ok(at) => {
+            format!("a park was decided {at:.1?} into the wait; its session had not ended")
+        }
+        Err(Some((point, at))) => format!(
             "{} ({:.1?} into the wait)",
             park_stage(point),
             at.duration_since(began)
         ),
-        None => "none: no pass reached this task's park (idle facts or another task)".into(),
+        Err(None) => "none: no pass reached this task's park (idle facts or another task)".into(),
     };
     let (status, activity) = tokio::time::timeout(Duration::from_secs(1), status_of(app, id))
         .await
@@ -247,7 +257,8 @@ fn park_stage(point: Point) -> String {
             "rechecking delivery, plan, spec and pull requests under the launch lock"
         }
         Point::ParkDecided => "asking the session to end after the park was decided",
-        Point::ParkStateRecorded => "recording the parked state",
+        Point::ParkStateRecorded => "restoring the parked screen",
+        Point::LiveRowPrNews => "reading the idle facts; the pass found the task not parkable",
         other => return format!("{other:?}"),
     }
     .into()

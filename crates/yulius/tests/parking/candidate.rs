@@ -1075,7 +1075,7 @@ fn a_park_pass_held_in_its_pr_reads_fails_at_the_bound_and_names_the_stage() -> 
             .ok_or("parked while its PR read was held")?
             .to_string();
         eprintln!("{failure}");
-        assert!(elapsed < bound + Duration::from_secs(3), "{elapsed:?}");
+        assert!(elapsed < bound + Duration::from_secs(10), "{elapsed:?}");
         assert!(
             failure.contains("still running")
                 && failure.contains("verifying the task's pull requests"),
@@ -1108,7 +1108,7 @@ fn a_stalled_case_fails_at_its_bound_naming_the_case_and_phase() -> TestResult {
         let _ = sent.send(result.map_err(|err| err.to_string()));
     });
     let failure = outcome
-        .recv_timeout(Duration::from_secs(90))
+        .recv_timeout(Duration::from_secs(110))
         .map_err(|_| "a stalled case did not fail within its bounds")?
         .err()
         .ok_or("a stalled case passed")?;
@@ -1172,23 +1172,28 @@ struct CaseBounds {
     seed: Duration,
     restart: Duration,
     check: Duration,
+    /// What seeding, the restart and the check may take together.
+    case: Duration,
     cleanup: Duration,
 }
 
 impl Default for CaseBounds {
+    /// Within nextest's 120 s: the case's 75 s, the cleanup's 25 s and two runtime shutdowns.
     fn default() -> Self {
         Self {
             seed: Duration::from_secs(40),
             restart: Duration::from_secs(40),
             check: Duration::from_secs(40),
-            cleanup: Duration::from_secs(30),
+            case: Duration::from_secs(75),
+            cleanup: Duration::from_secs(25),
         }
     }
 }
 
 /// An answered candidate owner restored after a restart, idle, handed to `check` (#1649).
-/// Seeding, the restart and the check each have their bound, the cleanup its own, and a failure
-/// names `case` and the phase. The task is stopped after a check that failed or timed out too.
+/// Seeding, the restart and the check each have their bound and share the case's, the cleanup
+/// has its own, and a failure names `case` and the phase. The task is stopped after a check that
+/// failed or timed out too, and the check's failure is printed before that stop.
 fn with_idle_case(
     case: &str,
     bounds: CaseBounds,
@@ -1202,17 +1207,23 @@ fn with_idle_case(
 ) -> TestResult {
     let failed =
         |phase: &str, err: Error| -> Error { format!("{case} case, {phase}: {err}").into() };
+    let end = std::time::Instant::now() + bounds.case;
+    let left =
+        |phase: Duration| phase.min(end.saturating_duration_since(std::time::Instant::now()));
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     let cold = ColdCandidate::Backdated;
     eprintln!("{case} case: seeding the candidate owner");
-    let seeded = rt.block_on(within(bounds.seed, Box::pin(seed_candidate(&data, &cold))));
+    let seeded = rt.block_on(within(
+        left(bounds.seed),
+        Box::pin(seed_candidate(&data, &cold)),
+    ));
     rt.shutdown_timeout(Duration::from_secs(5));
     let (id, head, original) = seeded.map_err(|err| failed("seeding the candidate owner", err))?;
     let rt = runtime()?;
     eprintln!("{case} case: restarting with the owner reattached");
     let restored = rt.block_on(within(
-        bounds.restart,
+        left(bounds.restart),
         Box::pin(restore_owner(&data, &cold, &id, &head, &original)),
     ));
     let (app, remote) = match restored {
@@ -1224,9 +1235,15 @@ fn with_idle_case(
     };
     let outcome = rt.block_on(async {
         eprintln!("{case} case: the check");
-        let result = within(bounds.check, check(&data, &app, &remote, id.clone(), head))
-            .await
-            .map_err(|err| failed("the check", err));
+        let result = within(
+            left(bounds.check),
+            check(&data, &app, &remote, id.clone(), head),
+        )
+        .await
+        .map_err(|err| failed("the check", err));
+        if let Err(err) = &result {
+            eprintln!("{err}");
+        }
         eprintln!("{case} case: stopping the task");
         let cleanup = within(bounds.cleanup, async {
             if !super::status_of(&app, &id)

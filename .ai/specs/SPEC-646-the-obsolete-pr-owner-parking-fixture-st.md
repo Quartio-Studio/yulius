@@ -1,6 +1,6 @@
 ---
 yulius-task: 32b2a708-0a8a-481a-86bd-25403f6e73a0
-status: in-progress
+status: done
 ---
 
 # SPEC-646: The obsolete-PR-owner parking fixture stays within its deadline and names its stalled stage
@@ -69,9 +69,10 @@ design), so the fix is in the fixture.
   builds they do nothing.
 - FIX-003: Each of the four PR conditions is its own test, named by its condition, so each has
   its own nextest budget and a failure names its case.
-- FIX-004: `with_idle_candidate` bounds its seeding, restart and check phases by one case budget
-  and its cleanup by a separate bound, and a failure names the case and the phase. The cleanup
-  still runs after a phase that timed out.
+- FIX-004: `with_idle_candidate` bounds each of its seeding, restart and check phases, all three
+  together by one case budget (75 s), and its cleanup by a separate bound (25 s), so a case ends
+  inside nextest's 120 s kill. A failure names the case and the phase, and a failed check is
+  printed before the cleanup. The cleanup still runs after a phase that timed out.
 - FIX-005: Coverage of the fork, merged, head-branch and base-branch cases is unchanged; no
   retries, no hidden assertion.
 
@@ -82,7 +83,7 @@ design), so the fix is in the fixture.
 - [x] Fix: the park wait bounds each pass and names case and stage; each case's setup and cleanup are bounded
 - [x] Four cases under held CPU load and every parking test in full
 - [x] Spec evidence, changes entry and issue comment
-- [ ] Independent review in a fresh session, findings answered
+- [x] Independent review in a fresh session, findings answered
 
 ## Acceptance criteria
 
@@ -134,3 +135,24 @@ design), so the fix is in the fixture.
 - `scripts/dev lint` and `scripts/dev quick`: passed.
 - Not reproduced: which await was slow in run `2f5c9b57` cannot be told from what that run kept;
   the fixture now names it if it happens again.
+- Review round 1 (yulius-reviewer, Fable 5.2) approved `3fe484227`: "approve — no blocker and
+  no major in the change's own code". Its findings, all in this change's test code, spec or a
+  doc comment, are answered after the approval:
+  - Minor, a lossy stage once a park was decided or the idle facts refused it: the wait keeps
+    when a pass first decided a park and then reports "a park was decided … into the wait; its
+    session had not ended". `LiveRowPrNews` has a label, and a wait with no pass says the task
+    was not running.
+  - Minor, FIX-004 named one case budget, but each phase had its own 40 s (about 160 s worst case,
+    over nextest's 120 s kill): the phases now share a 75 s case budget, the cleanup has 25 s, and
+    a failed check is printed before the cleanup. The stalled-case wait is 110 s.
+  - Nits: the hold test's wall-clock margin went from 3 s to 10 s (inside its 20 s outer bound).
+    `ParkStateRecorded` reads "restoring the parked screen". The doc of `last_reached` says the
+    record is not scoped to a runtime.
+  - Not changed: `with_parked_candidate_owner` has no phase bounds (pre-existing, outside FIX-004).
+- After the fixes: all 170 `parking::` tests pass, and `scripts/dev lint` and `scripts/dev quick`
+  pass. Under the same held CPU load, the four PR-condition tests and the two regression tests
+  passed 30 of 30 with `--stress-count 5 --retries 0`.
+- Integration gate (dev `ee5ab98c4`, `xclipboard::tests::native::the_paste_owner_answers_only_its_text_and_lets_it_go`),
+  assigned to this task: #1744 (`95e28bf18`) had already repaired it on dev with a round trip on
+  the releasing connection. On this branch's dev merge it passed 300 of 300 with
+  `--stress-count 300 --retries 0`, so no change here.
