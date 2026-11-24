@@ -420,47 +420,58 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     return true;
   });
   /**
-   * The clipboard's text, else its images as files (a screenshot copied outside Yulius, SPEC-638),
-   * as the browser's own paste offers them. `read()` is called at once, inside the key's or the
-   * click's gesture (Safari asks for that), and one permission covers both kinds.
+   * The clipboard's text and its images, each a reader of a file (a screenshot copied outside
+   * Yulius, SPEC-638), as the browser's own paste offers them. `read()` is called at once, inside
+   * the key's or the click's gesture (Safari asks for that), and one permission covers both kinds.
    */
   async function readClipboard() {
-    if (!navigator.clipboard.read) return { text: await navigator.clipboard.readText(), files: [] };
+    if (!navigator.clipboard.read) return { text: await navigator.clipboard.readText(), images: [] };
     let text = '';
-    const files = [];
+    const images = [];
     for (const item of await navigator.clipboard.read()) {
-      const image = item.types.find((type) => type.startsWith('image/'));
       if (item.types.includes('text/plain')) text += await (await item.getType('text/plain')).text();
-      if (image) files.push(new File([await item.getType(image)], `image.${image.slice(6).replace(/[^a-z0-9]/gi, '') || 'png'}`, { type: image }));
+      const type = item.types.includes('image/png') ? 'image/png' : item.types.find((t) => t.startsWith('image/'));
+      const ext = type && (type.slice(6).replace(/[^a-z0-9]/gi, '') || 'png');
+      if (type) images.push(async () => new File([await item.getType(type)], `image.${ext}`, { type }));
     }
-    return { text, files };
+    return { text, images };
   }
   /** Pastes the clipboard where no paste key exists (Ctrl+V on macOS, the menu). */
   async function pasteFromClipboard() {
     if (!state.can_write) { showNotice(readOnlyText()); return; }
     const pasteKey = IS_MAC ? '⌘V' : 'Ctrl+V';
-    let read = { text: '', files: [] };
+    const nothing = `The clipboard has no text or image to paste here; paste files with ${pasteKey}`;
+    // DataError: nothing the clipboard API can deliver; anything else is a refusal.
+    const refused = `The browser did not share the clipboard; paste with ${pasteKey}`;
+    const unread = (error) => showNotice(error && error.name === 'DataError' ? nothing : refused);
+    let read;
     try {
       read = await readClipboard();
     } catch (error) {
-      // DataError: nothing the clipboard API can deliver (said below); anything else is a refusal.
-      if (!error || error.name !== 'DataError') {
-        showNotice(`The browser did not share the clipboard; paste with ${pasteKey}`);
-        return;
-      }
+      unread(error);
+      return;
     }
     if (destroyed) return;
-    // Text wins, as in the browser's paste (an office app copies a picture of the text beside it).
-    // xterm wraps it in bracketed-paste markers when the program asked for them, then sends it.
+    // Text wins, as in the browser's paste (an office app copies a picture of the text beside it);
+    // the picture is then never read. xterm wraps the text in bracketed-paste markers when the
+    // program asked for them, then sends it.
     if (read.text) { term.paste(read.text); return; }
-    if (read.files.length) {
+    let files;
+    try {
+      files = await Promise.all(read.images.map((image) => image()));
+    } catch (error) {
+      unread(error);
+      return;
+    }
+    if (destroyed) return;
+    if (files.length) {
       // The terminal's file drop uploads them and types their paths, as for a pasted image (filedrop.js).
-      const offer = new CustomEvent('terminal-paste-files', { bubbles: true, cancelable: true, detail: { files: read.files } });
+      const offer = new CustomEvent('terminal-paste-files', { bubbles: true, cancelable: true, detail: { files } });
       if (el.dispatchEvent(offer)) showNotice('This terminal takes text only');
       return;
     }
-    // A file copied in a file manager reaches only the browser's own paste.
-    showNotice(`The clipboard has no text or image to paste here; paste files with ${pasteKey}`);
+    // A file copied in a file manager reaches only the browser's own paste (Chrome on Linux).
+    showNotice(nothing);
   }
   term.attachCustomKeyEventHandler((event) => {
     const action = clipboardKeyAction(event, { mac: IS_MAC, selection: term.hasSelection() });
