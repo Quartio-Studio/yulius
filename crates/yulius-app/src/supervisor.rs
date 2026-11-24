@@ -651,9 +651,12 @@ pub struct TaskRuntime {
     /// (SPEC-065 END-001): it stays live until its processes are gone.
     end_failed: Mutex<Option<(AttemptId, String)>>,
     /// Taken by each session activity write with its look at `end_failed`, and by the record of
-    /// that failure: a write lands before the flag the failure raises, or sees the failure and
-    /// leaves the flag (SPEC-635 EFL-003).
+    /// that failure and the end of its flag's raising: a write lands before the failure is
+    /// recorded, or sees it and leaves the flag (SPEC-635 EFL-003).
     end_gate: tokio::sync::Mutex<()>,
+    /// The failure in `end_failed` is recorded and its flag is being raised: a session write
+    /// meanwhile is held as if the flag stood, since it would land on top of it (EFL-003).
+    end_flag_pending: AtomicBool,
     /// The attempt committed to park and its idle activity. Kept until the stored
     /// task state settles, including when a switch cleared its activity meanwhile.
     parked_activity: Mutex<Option<(AttemptId, Activity)>>,
@@ -1159,6 +1162,7 @@ impl TaskRuntime {
             terminal_cleanup: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
             end_gate: tokio::sync::Mutex::new(()),
+            end_flag_pending: AtomicBool::new(false),
             parked_activity: Mutex::new(None),
             taken_request: Mutex::new(None),
         }
@@ -5118,6 +5122,7 @@ impl App {
             if let Ok(mut failed) = runtime.end_failed.lock() {
                 *failed = Some((attempt.id.clone(), err.to_string()));
             }
+            runtime.end_flag_pending.store(true, Ordering::SeqCst);
         }
         crate::race::reached(
             crate::race::Point::EndFailedRecorded,
@@ -5131,6 +5136,9 @@ impl App {
             crate::race::Point::EndFailedFlagged,
             Path::new(task_id.as_str()),
         );
+        // From now on the stored flag says whether the session's writes are held.
+        let _gate = runtime.end_gate.lock().await;
+        runtime.end_flag_pending.store(false, Ordering::SeqCst);
     }
 
     /// Writes a running task's `activity`, as its session's work or turns decide it, unless the
@@ -5154,7 +5162,7 @@ impl App {
             .lock()
             .ok()
             .and_then(|failed| failed.clone());
-        if let Some((run, why)) = failed {
+        if let Some((run, _)) = failed {
             let store = &self.deps.store;
             if store
                 .live_attempt(task_id)
@@ -5168,10 +5176,11 @@ impl App {
                     *failed = None;
                 }
             } else {
-                let held = store
-                    .task_attention(task_id)
-                    .await?
-                    .is_some_and(|(reason, _)| is_could_not_end(&reason, &why));
+                let held = runtime.end_flag_pending.load(Ordering::SeqCst)
+                    || store
+                        .task_attention(task_id)
+                        .await?
+                        .is_some_and(|(reason, _)| is_could_not_end(&reason));
                 crate::race::reached(
                     crate::race::Point::SessionActivityChecked,
                     Path::new(task_id.as_str()),
@@ -9179,18 +9188,22 @@ fn interrupts_first(reason: &str) -> bool {
         || reason == crate::review::MOVE_FOR_ROOM
 }
 
+/// How the flag of a run whose host could not be terminated begins.
+const COULD_NOT_END: &str = "Yulius could not end this session (";
+
 /// What the flag of a run whose host could not be terminated (`why`) says is wrong.
 fn could_not_end(why: &str) -> String {
-    format!(
-        "Yulius could not end this session ({why}). It still counts as running, so the task \
-         cannot be deleted."
-    )
+    format!("{COULD_NOT_END}{why}). It still counts as running, so the task cannot be deleted.")
 }
 
-/// Whether `reason` is the flag [`could_not_end`] raised for `why`.
-fn is_could_not_end(reason: &AttentionRecord, why: &str) -> bool {
+/// Whether `reason` is a flag [`could_not_end`] raised, for this failure or an earlier one of
+/// the same run (whose words differ: the flag keeps its first reason).
+fn is_could_not_end(reason: &AttentionRecord) -> bool {
     reason.kind == crate::attention::AttentionKind::Yulius
-        && reason.problem == AttentionRecord::yulius(&could_not_end(why), "").problem
+        && reason
+            .problem
+            .as_deref()
+            .is_some_and(|problem| problem.starts_with(COULD_NOT_END))
 }
 
 #[cfg(test)]
@@ -9656,6 +9669,25 @@ mod tests {
             "an existing home is kept"
         );
         Ok(())
+    }
+
+    /// SPEC-635 (review round 2): a run's could-not-end flag is known by its wording, whatever
+    /// the failure's words: a second failure of the same run says something else (a pid), and
+    /// the flag keeps its first reason. Another flag of Yulius's, or Claude Code's, is not it.
+    #[test]
+    fn a_could_not_end_flag_is_known_whatever_the_failures_words() {
+        use crate::attention::AttentionRecord;
+        let first = AttentionRecord::yulius(&super::could_not_end("pid 41 survived"), "Stop.");
+        assert!(super::is_could_not_end(&first));
+        let second = AttentionRecord::yulius(&super::could_not_end("pid 42 survived"), "Stop.");
+        assert!(super::is_could_not_end(&second));
+        assert!(!super::is_could_not_end(&AttentionRecord::yulius(
+            "Another matter.",
+            "Look."
+        )));
+        assert!(!super::is_could_not_end(&AttentionRecord::terminal(Some(
+            "Yulius could not end this session (said in the terminal)"
+        ))));
     }
 
     /// SPEC-106 OTR-002: the dialogs of Claude Code 2.1.292 (measured) and of older releases.
