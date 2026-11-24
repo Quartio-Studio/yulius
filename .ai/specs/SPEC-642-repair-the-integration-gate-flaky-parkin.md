@@ -1,6 +1,6 @@
 ---
 yulius-task: f297e672-6e37-4678-8dd4-2ccf47909b04
-status: in-progress
+status: done
 ---
 
 # SPEC-642: Repair the integration gate: flaky parking::candidate::a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot
@@ -22,9 +22,10 @@ PR #1739 changed no Rust, so the test is flaky.
   then takes that pass as the answer.
 - `observe_candidate_pull` (`pr_watch.rs`) takes the owner's `arm_writer` with `try_write`
   twice: before the hosted read (to start a new observation generation) and after it (to record
-  the answer). Either `try_write` fails with `Conflict` while anyone holds the guard, and
-  `armed_notice_recipient` then returns `None`: the pass types nothing and the notice stays
-  unheard for the next pass.
+  the answer). A typing pass observes twice: in `pr_facts` (deferring through
+  `observed_only()`) and in `armed_notice_recipient`. Any of these `try_write`s fails with
+  `Conflict` while anyone holds the guard: the pass types nothing and the notice stays unheard
+  for the next pass.
 - Capacity readers hold the owner's guard as a read guard for the length of their checks
   (`hold_live_delivery`, through `working_capacity`): the queue's launch, `status`,
   `capacity_view`, account views, notice producers, start rules and `close`. Several run on
@@ -37,8 +38,9 @@ PR #1739 changed no Rust, so the test is flaky.
 The test's wait condition is not the condition it asserts. It stops at the first pass after
 which a hosted read was counted and asserts that pass typed the notice. A pass can read the pull
 request and still defer: when a capacity reader takes the owner's guard during the read, the
-second `try_write` fails, and the pass types nothing. The next pass types the notice. On the
-gate, a capacity check landed inside the read: the read was counted, the pass typed `[]`.
+second `try_write` fails, and the pass types nothing. The next pass types the notice. The gate's
+log holds only the panic; that a capacity check landed inside the read there is inferred, and
+the reproduction shows it is sufficient: the read was counted, the pass typed `[]`.
 
 The product is right. A deferred pass records nothing and leaves the notice unheard. The next
 pass verifies the pull request again and types it (SPEC-621: deferring is designed). Waiting
@@ -63,7 +65,7 @@ reservation, which this test's first half forbids.
 - [x] Root cause: a pass can defer after its hosted read
 - [x] Regression check: a capacity reader inside the held read makes the old wait fail every run
 - [x] Fix: wait for the pass that types; candidate tests in full and under stress
-- [ ] Independent review in a fresh session, findings answered
+- [x] Independent review in a fresh session, findings answered
 
 ## Acceptance criteria
 
@@ -97,3 +99,11 @@ reservation, which this test's first half forbids.
 - All `parking::` tests of `yulius::main`: 165/165 pass.
 - `cargo clippy --locked -p yulius -p yulius-app --all-targets --all-features -- -D warnings`
   and `cargo fmt --all -- --check` pass.
+- Independent review in a fresh session (Fable 5.2), round 1 at `0022fc831`: approve, no
+  blocker, major or minor. Nits answered: the root-cause wording now says the gate's interleaving
+  is inferred and names both observation sites. `pull_reads > during` stays a lower bound, not
+  `during + 1`: `status` and the other readers may list pull requests too, so an exact count
+  would add a new timing dependency. If `status` needed over 5 s to reach the hook, the
+  product's read timeout would end the held read instead of the guard; the test still passes,
+  it just would not exercise the guard on that run.
+- Yulius CI run on PR #1742 at `0022fc831`: passed.
