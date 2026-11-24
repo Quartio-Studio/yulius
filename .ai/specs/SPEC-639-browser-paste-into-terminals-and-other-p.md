@@ -159,8 +159,11 @@ and Ctrl+V / ⌘V on the Browser panel did nothing. Agents' browser tools fail t
   and `browser::viewer_input_is_real_display_input_and_copy_reaches_the_clipboard` pass; the
   sixfold-escaped 32 KiB paste failed (socket closed) before the 256 KiB bound.
   `cargo nextest run -p yulius-browser --all-features`: 154 passed.
-- **Viewer (AC-4, AC-5)**: `npx e2e run tests/browser.e2e.ts`: 8 passed, including
-  "a paste in the browser panel is sent whole and a lost one is said".
+- **Viewer (AC-4, AC-5)**: `npx e2e run tests/browser.e2e.ts`: 8 passed before the merge of dev
+  at 320803966, including "a paste in the browser panel is sent whole and a lost one is said".
+  After it 7 pass: "expired clipboard actions preserve focus and explain how to copy again" fails
+  (`toBeFocused`), the integration failure Yulius reported on dev at 320803966 (task #619; task
+  #616 owns its repair); this change does not touch copy offers.
 - `scripts/dev quick` passed. The pre-existing opt-in `live_display::the_real_chrome_streams_takes_real_input_and_stays_out_of_containment`
   fails on this host at its first click ("timed out waiting for a trusted click"), a path this
   change does not touch: the click lands while Chrome is not yet the active window; the new test
