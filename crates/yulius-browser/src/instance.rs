@@ -2951,7 +2951,7 @@ impl BrowserInstance {
     }
 
     /// A viewer's paste (SPEC-639): on a display the text becomes the display's CLIPBOARD and
-    /// Ctrl+V is pressed, in order with the viewer's other keys, so the page gets a real paste
+    /// Shift+Insert (the paste key) is pressed, in order with the viewer's other keys, so the page gets a real paste
     /// (typed as key presses when the CLIPBOARD cannot be taken); without a display it is typed
     /// as key presses through CDP. Never through `Input.insertText`, which terminals ignore.
     ///

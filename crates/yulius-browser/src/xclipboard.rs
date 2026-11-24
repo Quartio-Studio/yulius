@@ -4,9 +4,10 @@
 //! complete a newer viewer's request.
 //!
 //! Writing ([`Owner`], SPEC-639): a viewer's paste makes its text the CLIPBOARD, owned by an
-//! unmapped window of the display's thread, which then presses Ctrl+V so the page gets a real
+//! unmapped window of the display's thread, which then presses Shift+Insert so the page gets a real
 //! paste. The owner answers `TARGETS`, `UTF8_STRING` and `text/plain;charset=utf-8` (32 KiB at
-//! most, never incremental), says whether a client asked within [`PASTE_WINDOW`], and lets the
+//! most, never incremental), says whether a client fetched the text within [`PASTE_WINDOW`], waits for the reads of one
+//! paste to end before a newer one replaces it ([`PASTE_QUIET`]), and lets the
 //! selection go after [`PASTE_HOLD`] or when another client takes it, erasing the text.
 
 use std::time::{Duration, Instant};
@@ -29,10 +30,17 @@ use crate::display::PasteOutcome;
 
 const CLICK_WINDOW: Duration = Duration::from_secs(3);
 const OFFER_WINDOW: Duration = Duration::from_secs(15);
-/// How long a client (Chrome) has to ask for a paste's text after Ctrl+V.
+/// How long a client (Chrome) has to ask for a paste's text after the paste key.
 pub(crate) const PASTE_WINDOW: Duration = Duration::from_secs(3);
 /// How long the display's CLIPBOARD holds a pasted text.
 const PASTE_HOLD: Duration = Duration::from_secs(30);
+/// A newer paste replaces the CLIPBOARD only once no client asked for the held text for this
+/// long: Chrome reads it several times for one paste (`TARGETS`, `UTF8_STRING`, `TARGETS`
+/// again), and a CLIPBOARD that changes in between, or a read left unanswered, gives the page
+/// an empty paste after Chrome's one-second timeout (traced with Chrome 158).
+pub(crate) const PASTE_QUIET: Duration = Duration::from_millis(100);
+/// The longest a newer paste waits for that quiet.
+pub(crate) const PASTE_QUIET_MAX: Duration = Duration::from_secs(1);
 
 /// The display thread's CLIPBOARD for viewers' pastes.
 pub(super) struct Owner {
@@ -42,6 +50,8 @@ pub(super) struct Owner {
     utf8: Atom,
     plain: Atom,
     held: Option<Held>,
+    /// When a client last asked for the held text (any target).
+    asked: Option<Instant>,
 }
 
 struct Held {
@@ -78,7 +88,14 @@ impl Owner {
             utf8: atom(b"UTF8_STRING")?,
             plain: atom(b"text/plain;charset=utf-8")?,
             held: None,
+            asked: None,
         })
+    }
+
+    /// Whether a client is still reading the held text: it asked for it less than
+    /// [`PASTE_QUIET`] ago. A newer paste waits (answering) until it is not.
+    pub(super) fn reading(&self) -> bool {
+        self.held.is_some() && self.asked.is_some_and(|at| at.elapsed() < PASTE_QUIET)
     }
 
     /// Makes `text` the CLIPBOARD; `outcome` hears whether a client asked for it. Gives
@@ -164,7 +181,8 @@ impl Owner {
     }
 
     /// Answers a client's request for the held text: its targets or its UTF-8 text; anything
-    /// else, or nothing held, is refused. A request answered tells the waiting paste it was read.
+    /// else, or nothing held, is refused. Only the text answered tells the waiting paste it was
+    /// read (the targets alone give the page nothing); any answer is a read for [`Self::reading`].
     fn answer(&mut self, conn: &RustConnection, request: &SelectionRequestEvent) {
         // Obsolete clients name no property: the target is the property then (ICCCM 2.2).
         let property = if request.property == x11rb::NONE {
@@ -172,6 +190,7 @@ impl Owner {
         } else {
             request.property
         };
+        let text = request.target == self.utf8 || request.target == self.plain;
         let written = self.held.as_ref().is_some_and(|held| {
             let written = if request.target == self.targets {
                 conn.change_property32(
@@ -181,7 +200,7 @@ impl Owner {
                     AtomEnum::ATOM,
                     &[self.targets, self.utf8, self.plain],
                 )
-            } else if request.target == self.utf8 || request.target == self.plain {
+            } else if text {
                 conn.change_property8(
                     PropMode::REPLACE,
                     request.requestor,
@@ -194,7 +213,11 @@ impl Owner {
             };
             written.is_ok()
         });
+        if written {
+            self.asked = Some(Instant::now());
+        }
         if written
+            && text
             && let Some(held) = &mut self.held
             && let Some((outcome, _)) = held.waiting.take()
         {

@@ -167,12 +167,21 @@ fn check_owner(conn: &RustConnection, other: &RustConnection) -> Result<()> {
         .take(conn, "pasted", send)
         .map_err(|_| "the CLIPBOARD was not taken")?;
     assert!(owned_by(window)?);
-    // A target it does not offer is refused and does not count as read.
+    // A target it does not offer is refused and does not count as read, and neither do its
+    // targets: the text is what the page gets.
     let html = conn.intern_atom(false, b"text/html")?.reply()?.atom;
-    owner.on_event(conn, &request(html));
-    assert_eq!(outcome.try_recv(), Err(TryRecvError::Empty));
+    let targets = conn.intern_atom(false, b"TARGETS")?.reply()?.atom;
+    for target in [html, targets] {
+        owner.on_event(conn, &request(target));
+        assert_eq!(outcome.try_recv(), Err(TryRecvError::Empty));
+    }
     owner.on_event(conn, &request(plain));
     assert_eq!(outcome.try_recv(), Ok(PasteOutcome::Read));
+    // A newer paste waits while the client still reads (it asked for the text or its targets
+    // less than the quiet ago), and no longer.
+    assert!(owner.reading());
+    owner.asked = Instant::now().checked_sub(PASTE_QUIET);
+    assert!(!owner.reading());
     let value = conn
         .get_property(true, root, utf8, AtomEnum::ANY, 0, 64)?
         .reply()?;
@@ -180,6 +189,8 @@ fn check_owner(conn: &RustConnection, other: &RustConnection) -> Result<()> {
         (value.type_, value.value.as_slice()),
         (plain, &b"pasted"[..])
     );
+    owner.on_event(conn, &request(targets));
+    assert!(owner.reading(), "the targets are a read too");
 
     // Another client (the page copying) takes the CLIPBOARD: the text is let go, and the wait
     // ends unread.

@@ -84,9 +84,9 @@ pub enum DisplayInput {
 /// How a paste ended on the display (SPEC-639).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PasteOutcome {
-    /// The text became the CLIPBOARD, Ctrl+V was pressed and a client (the page) asked for it.
+    /// The text became the CLIPBOARD, the paste key was pressed and a client (the page) asked for it.
     Read,
-    /// The text became the CLIPBOARD and Ctrl+V was pressed, but no client asked for it.
+    /// The text became the CLIPBOARD and the paste key was pressed, but no client asked for it.
     Unread,
     /// The CLIPBOARD could not be taken: the text was typed as real key presses instead.
     Typed,
@@ -828,7 +828,7 @@ impl VirtualDisplay {
         }
     }
 
-    /// Pastes `text` as a person's paste: it becomes the display's CLIPBOARD and Ctrl+V is
+    /// Pastes `text` as a person's paste: it becomes the display's CLIPBOARD and Shift+Insert is
     /// pressed, in order with the input queued before and after it; typed as key presses when
     /// the CLIPBOARD cannot be taken. Waits until a client asked for the text, at most the
     /// paste window.
@@ -1358,12 +1358,12 @@ mod copy_input_tests {
         result
     }
 
-    /// SPEC-639 AC-2: a paste makes its text the display's CLIPBOARD and presses Ctrl+V, in
+    /// SPEC-639 AC-2: a paste makes its text the display's CLIPBOARD and presses Shift+Insert (the paste key), in
     /// order with the keys around it. A client on the display stands in for Chrome: it reads
-    /// the selection when Ctrl+V arrives, as Chrome does.
+    /// the selection when the paste key arrives, as Chrome does.
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn a_paste_owns_the_clipboard_and_presses_ctrl_v_on_a_private_display()
+    async fn a_paste_owns_the_clipboard_and_presses_shift_insert_on_a_private_display()
     -> Result<(), Box<dyn std::error::Error>> {
         use super::*;
         use std::time::Instant;
@@ -1438,15 +1438,17 @@ mod copy_input_tests {
             };
             for length in [100, 5_000] {
                 let text: String = "ab€😀".chars().cycle().take(length).collect();
-                let seen = watch(5_000);
+                let seen = watch(1_500);
                 let outcome = display.paste(zeroize::Zeroizing::new(text.clone())).await?;
                 assert_eq!(outcome, PasteOutcome::Read, "{length} characters");
+                // Shift+Insert: a paste in Chrome, and one xterm.js leaves to the browser (it
+                // makes Ctrl+V the ^V character).
                 let (keys, read) = seen.await??;
-                assert_eq!(keys, ["+37", "+55", "-55", "-37"]);
+                assert_eq!(keys, ["+50", "+118", "-118", "-50"]);
                 assert_eq!(read, [text]);
             }
-            // With Control held by the viewer the paste presses only V, and the viewer's
-            // Control stays down until it lets go.
+            // With Control held by the viewer (its Ctrl+V) Control is lifted around the
+            // shortcut (Ctrl+Shift+Insert is no paste) and pressed again after it.
             display.type_char('x')?;
             display.key(37, true)?;
             let seen = watch(1_500);
@@ -1454,9 +1456,13 @@ mod copy_input_tests {
                 .paste(zeroize::Zeroizing::new("held".into()))
                 .await?;
             assert_eq!(outcome, PasteOutcome::Read);
-            // The viewer's Control stays down.
             let (keys, read) = seen.await??;
-            assert_eq!(keys, ["+53", "-53", "+37", "+55", "-55"]);
+            assert_eq!(
+                keys,
+                [
+                    "+53", "-53", "+37", "-37", "+50", "+118", "-118", "-50", "+37"
+                ]
+            );
             assert_eq!(read, ["held"]);
             display.key(37, false)?;
             // Nobody asks for the text: the paste was not read.
@@ -1482,9 +1488,9 @@ mod copy_input_tests {
         into: u32,
     }
 
-    /// What a page on the display sees until Control is let go or `until`: its key presses
-    /// (`+37`) and releases (`-55`), and the texts it read on each Ctrl+V as Chrome does
-    /// (TARGETS first, then UTF8_STRING).
+    /// What a page on the display sees until `until`: its key presses (`+50`) and releases
+    /// (`-118`), and the texts it read on each Shift+Insert as Chrome does (TARGETS first, then
+    /// UTF8_STRING).
     #[cfg(target_os = "linux")]
     fn observe_paste(
         page: &x11rb::rust_connection::RustConnection,
@@ -1529,15 +1535,15 @@ mod copy_input_tests {
                 }
             }
         };
-        while std::time::Instant::now() < until && !keys.iter().any(|k| k == "-37") {
+        while std::time::Instant::now() < until {
             let Some(event) = page.poll_for_event().map_err(|e| text(&e))? else {
                 std::thread::sleep(std::time::Duration::from_millis(5));
                 continue;
             };
             key(&event, &mut keys);
             if let Event::KeyPress(press) = &event
-                && press.detail == 55
-                && press.state.contains(KeyButMask::CONTROL)
+                && press.detail == 118
+                && press.state.contains(KeyButMask::SHIFT)
             {
                 let offered = convert(atoms.targets, &mut keys)?.unwrap_or_default();
                 let offered: Vec<u32> = offered
