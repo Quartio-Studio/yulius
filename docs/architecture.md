@@ -5269,6 +5269,9 @@ flowchart LR
   sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
   or a goal verdict it applied belongs to a turn that is over and changes nothing
   ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
+  That stamp is read on Yulius's clock (`Clock::of_wall`), so a test clock that runs shifted
+  orders a late hook by its sending too
+  ([ADR-0470](decisions/0470-a-hooks-send-time-is-read-on-yuliuss-clock.md)).
   The client assigns each UserPromptSubmit a 32-hex-digit `x-yulius-hook-invocation` and reuses it on every HTTP retry. A goal run uses that ID to distinguish a retry from a fresh submission of identical text. Older clients use terminal input and the run’s recent issued prompts.
   A prompt the transcript watcher reads takes the same per-task turn order as a clean Stop: the
   Stop remembers its time and settles after a prompt that is being applied, and a prompt read

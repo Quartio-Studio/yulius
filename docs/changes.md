@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-24
+
+- The terminal-draft test `task_message::a_draft_the_screen_shows_holds_until_it_is_cleared` no longer fails when a prompt's submit hook reaches Yulius after its turn's Stop (#1615). On the tests' shifted clock a hook's send time read as its arrival, so a late submit set Working over the held-message flag. Yulius now reads a hook's send time on its own clock, which production's system clock leaves unchanged, and a new test holds a submit past its turn. [ADR-0470](decisions/0470-a-hooks-send-time-is-read-on-yuliuss-clock.md), [SPEC-636](../.ai/specs/SPEC-636-a-late-stop-hook-clears-the-held-message.md)
+
 ## 2026-11-23
 
 - A merged task that asked for staging and left a background command waiting for the verdict is no longer stuck "running (waiting)" until a person closes it (quartio-v2 #377): Yulius types the staging outcome (verified, gate failed or deploy failed) into its session, telling it to stop that wait, and it reads Done once its turn ends with nothing running. A finished task with nothing running still gets its outcome silently. A staging request's deploy attempt is now the task's CD run, "requested by task #N" as before merge-first, so the task's `yulius wait` ends when an attempt ends (the queue may still retry a lost one). [ADR-0466](decisions/0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md), [SPEC-631](../.ai/specs/SPEC-631-a-merged-task-is-never-woken-with-its-st.md)

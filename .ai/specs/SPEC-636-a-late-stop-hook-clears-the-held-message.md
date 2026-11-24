@@ -1,6 +1,6 @@
 ---
 yulius-task: ddb1cc17-40cd-47c9-8308-27b33f3f0d26
-status: in-progress
+status: done
 ---
 
 # SPEC-636 A late submit hook on a shifted test clock reopens a settled turn
@@ -67,22 +67,24 @@ the shifted clock (`turn_began_ms`, `last_stop_ms`); no test hit that, and it is
 
 - [x] Spec with the root cause of the late Stop
 - [x] Deterministic regression: an opening submit held past the held-message flag
-- [ ] Hook send times read on Yulius's clock
-- [ ] Docs, ADR and changes entry
-- [ ] Independent review approves the head
+- [x] Hook send times read on Yulius's clock
+- [x] Docs, ADR and changes entry
+- [x] Independent review in a fresh session
 
 ## Acceptance criteria
 
-- The new integration test holds the opening submit at its arrival (`race::Point::HookArrived`)
+- The new integration test holds a prompt's submit at its arrival (`race::Point::HookArrived`)
   until the flag was raised and Ctrl+U sent; it fails (`Null`) without the fix and passes with it.
 - `task_message` passes in full; the `ShiftedClock` mapping has a unit test.
 - Yulius CI is green at the reviewed head.
 
 ## Test plan
 
-- Integration (`crates/yulius/tests/task_message.rs`): the AC2 steps with the opening submit held
-  at arrival until the box is cleared, its client failing open meanwhile; the existing test
-  unchanged.
+- Integration (`crates/yulius/tests/task_message.rs`): the AC2 steps after a prompt the person
+  sends whose submit is held at arrival until the box is cleared, its client failing open
+  meanwhile; the existing test unchanged. The opening submit cannot be held deterministically:
+  its session id is known only once the run started, and the fake agent's `--stuck-at-start-file`
+  never resumes.
 - Unit: `ShiftedClock::of_wall` across a shift.
 - Mutation by hand: read the stamp as it is again, watch the new test fail.
 
@@ -99,3 +101,28 @@ the shifted clock (`turn_began_ms`, `last_stop_ms`); no test hit that, and it is
   nothing without the `test-support` feature.
 - The spec keeps the task's original slug and first Plan title, written before the cause was
   reproduced; the title of the task names the late Stop for the same reason.
+
+## Evidence
+
+Against dev `b1b50218f`, on this host (128 CPUs).
+
+- Stress without a probe: `taskset -c 0-3` with eight busy loops on the same CPUs, the original
+  test `--stress-count 30`: 30 passed. Load alone did not reproduce it.
+- Task #616's reading (late Stop after the record settled the turn): a hold of the opening Stop at
+  `race::Point::StopTurnLock` left the task Working ("timed out waiting for the first turn's
+  end"); a probe on `on_observation` showed no transcript observation at all in this test.
+- Probe (temporary, not committed): the opening `UserPromptSubmit` held at the entry of
+  `hook_event` until Ctrl+U, with an activity trace polled every millisecond:
+  `NeedsAttention` (first watch) → `Working` at the release → `left: Null` at the flag check
+  after the second watch, the #1615 failure. The same hold after `sent` is read: passed.
+- Regression `task_message::a_submit_that_arrives_after_its_turn_keeps_the_held_message_flag`
+  without the fix (`hooks.rs` at `5dc595ded`): FAIL, `left: Null` at the flag check
+  (`task_message.rs:1540`); with the fix: PASS (6.3 s, the client's 5 s fail-open).
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_message::/) |
+  test(/^first_message::/) | test(/^parking::armed_notice::/))'`: 104 passed (includes
+  `first_message::a_shifted_clock_reads_a_stamp_with_the_offset_of_its_time`).
+- `agent_hooks::`, `intake::`, `subscription_pool::` (hook ordering on fixed clocks): 189 passed.
+- `scripts/cargo clippy -p yulius-app -p yulius --all-targets --features
+  yulius-app/test-support -- -D warnings`: clean; `scripts/dev quick`: passed.
+- Not tested here: the full gate (Yulius CI's), and a production instance under load (production
+  reads one clock in client and server, so the defect cannot occur there).
