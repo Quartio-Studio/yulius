@@ -1229,13 +1229,20 @@ test('the sign-in terminal’s right-click menu shows above its dialog: Paste by
   await browser.keyboard.press('Enter');
   await expect.poll(typed).toBe('code-from-claudecode-from-claude');
 
-  // Escape closes the menu only: the sign-in goes on.
+  // Escape closes the menu only: the sign-in goes on, and the keyboard is back in the terminal.
   await rightClick();
   await expect(paste).toBeFocused();
   await browser.keyboard.press('Escape');
   await expect(paste).toBeHidden();
   await expect(dialog).toBeVisible();
+  await expect(loginInput(browser)).toBeFocused();
   expect(await browser.evaluate(() => (window as unknown as MockLogins).__yuliusMock.loginCancels.length)).toBe(0);
+  // Tab leaves the menu for the terminal too.
+  await rightClick();
+  await expect(paste).toBeFocused();
+  await browser.keyboard.press('Tab');
+  await expect(paste).toBeHidden();
+  await expect(loginInput(browser)).toBeFocused();
 
   // A sign-in that ends while the menu is open closes the menu with its dialog: Escape is the page's again.
   await rightClick();
@@ -1254,6 +1261,25 @@ test('the sign-in terminal’s right-click menu shows above its dialog: Paste by
     document.body.dispatchEvent(event);
     return event.defaultPrevented;
   })).toBe(false);
+});
+
+test('a menu and a toast opened over two modal dialogs are in the upper one and a menu closes with it (unit, in the page, SPEC-644 MDM-001)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await addSubscription(browser, screen, 'Claude #9');
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/dom.js';
+    const { openModal, openMenu, toast } = await import(url);
+    const lower = document.querySelector('dialog[open]');
+    const upper = openModal({ title: 'Upper', body: 'Over the sign-in' });
+    const menu = openMenu({ x: 40, y: 40 }, [{ label: 'One' }, { label: 'Two' }]);
+    toast('Over both');
+    const placed = { menu: menu.parentElement === upper.dialog, toasts: document.getElementById('toasts')?.parentElement === upper.dialog };
+    upper.close();
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    return { ...placed, gone: !menu.isConnected, escapeFree: !event.defaultPrevented, toastsBack: document.getElementById('toasts')?.parentElement === lower };
+  });
+  expect(result).toEqual({ menu: true, toasts: true, gone: true, escapeFree: true, toastsBack: true });
 });
 
 test('a sign-in of a subscription whose email was typed does not say Claude confirmed it (SPEC-463 EML-006)', async ({ app, browser, screen }) => {
