@@ -128,7 +128,13 @@ test('a blocked Browser clipboard write can be completed with an explicit click'
   expect(await browser.evaluate(() => document.body.dataset.copiedText)).toBe('first line\nzażółć');
 });
 
+// SPEC-641: the task terminal's first screen is held until the person focused the toast's
+// button, as on a slow host (CI run be25f19b): the terminal shown late leaves the keyboard there.
 test('expired clipboard actions preserve focus and explain how to copy again', async ({ app, browser, screen }) => {
+  await browser.addInitScript(() => {
+    const w = window as unknown as { __yuliusHoldTerminal?: Promise<void>; __releaseTerminal?: () => void };
+    w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
+  });
   await app.open(mock('/s/studio/t/12'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
@@ -155,6 +161,9 @@ test('expired clipboard actions preserve focus and explain how to copy again', a
   });
   const copy = screen.getByRole('button', 'Copy to my clipboard');
   await copy.focus();
+  await browser.evaluate(() => (window as unknown as { __releaseTerminal: () => void }).__releaseTerminal());
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-pending') === null)).toBe(true);
+  await expect(copy).toBeFocused();
   await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
   await expect(copy).toBeFocused();
   await expect(screen.getByText('Copy expired. Click Copy on the webpage again.')).toBeVisible();
