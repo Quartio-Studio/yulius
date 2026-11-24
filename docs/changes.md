@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-24
 
-- The terminal-draft test `task_message::a_draft_the_screen_shows_holds_until_it_is_cleared` no longer fails when a prompt's submit hook reaches Yulius after its turn's Stop (#1615). On the tests' shifted clock a hook's send time read as its arrival, so a late submit set Working over the held-message flag. Yulius now reads a hook's send time on its own clock, which production's system clock leaves unchanged, and a new test holds a submit past its turn. [ADR-0470](decisions/0470-a-hooks-send-time-is-read-on-yuliuss-clock.md), [SPEC-636](../.ai/specs/SPEC-636-a-late-stop-hook-clears-the-held-message.md)
+- The terminal-draft test `task_message::a_draft_the_screen_shows_holds_until_it_is_cleared` no longer fails when a prompt's submit hook, or its transcript line, reaches Yulius after its turn's Stop (#1615). On the tests' shifted clock such a hook or line read as later than the Stop, so a finished turn's prompt set Working over the held-message flag. Yulius now reads a hook's send time and a transcript line's time on its own clock, which production's system clock leaves unchanged, and two new tests hold a submit and a transcript line past their turn. [ADR-0470](decisions/0470-wall-clock-stamps-are-read-on-yuliuss-clock.md), [SPEC-636](../.ai/specs/SPEC-636-a-late-stop-hook-clears-the-held-message.md)
 
 ## 2026-11-23
 

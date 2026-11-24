@@ -133,7 +133,8 @@ impl yulius_app::ports::Clock for ShiftedClock {
 fn a_shifted_clock_reads_a_stamp_with_the_offset_of_its_time() {
     let clock = ShiftedClock::new(-13 * 60_000);
     let sent = SystemClock.now();
-    // The next move takes effect after `sent` (the same millisecond counts as before it).
+    // The next move takes effect in a later millisecond than `sent`: a stamp in the move's own
+    // millisecond reads with the new offset.
     while SystemClock.now() == sent {
         std::hint::spin_loop();
     }
