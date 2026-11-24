@@ -72,11 +72,11 @@ ignores insertion.
 ## Plan
 
 - [x] Write the spec and record the key-typing decision
-- [ ] Show a secret never reaches a page that ignores inserted text
-- [ ] Type browser_fill_secret as real key presses, refusing tabs and control characters
-- [ ] Port the SPEC-450/SPEC-483 secret tests to key events
-- [ ] Prove a secret fills a real xterm.js terminal in Chrome
-- [ ] Keep the docs true and add the changes entry
+- [x] Show a secret never reaches a page that ignores inserted text
+- [x] Type browser_fill_secret as real key presses, refusing tabs and control characters
+- [x] Port the SPEC-450/SPEC-483 secret tests to key events
+- [x] Prove a secret fills a real xterm.js terminal in Chrome
+- [x] Keep the docs true and add the changes entry
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -126,3 +126,30 @@ ignores insertion.
   and the read after typing exposes its host unless a password field holds the secret. Refusing
   such typing would also refuse fields inside closed shadow roots, which the probe reports as
   `other`.
+
+## Evidence
+
+- Red first (commit `437746354`): `scripts/cargo nextest run -p yulius-browser --features fake
+  --test instance -E 'test(a_secret_reaches_a_page_that_takes_only_keys) |
+  test(a_secret_with_a_tab_or_control)'` failed both: the field stayed empty
+  (`left: None, right: Some("pw-secret-4471")`), and `"zq\t7731xy"` was typed (`Ok(TypeResult {
+  chars: 9 })`).
+- After the fix: `yulius-browser --features fake` (all binaries) 160 passed;
+  `yulius::main` files `browser::`, `superagent_browser::`, `secrets_scopes::`, `cockpit::`,
+  `vidoc_key::` 148 passed; `yulius-app` mcp/browser/vault tests 118 passed; `cargo clippy -p
+  yulius-browser --features fake --all-targets -D warnings` clean; `scripts/dev quick` passed.
+- The ported "nothing typed" checks used to count `Input.insertText`, which the fix no longer
+  sends, so they would have passed vacuously; they now count `Input.dispatchKeyEvent`, and the
+  mid-typing navigations land during a key event.
+- Live (opt-in, real Chrome 158 on Xvfb, `--no-sandbox` wrapper, the host's managed browser
+  policy installed as `yulius host setup` does, `YULIUS_LIVE_DISPLAY_BASE=147`):
+  `live_display::an_agent_secret_fills_an_xterm_terminal` passed (1.4 s), and
+  `live_display::a_viewer_paste_reaches_a_paste_listener_and_an_xterm_terminal` passed beside it.
+- Mutation by hand (the line `self.type_keys(session, line)` in `type_lines` put back to
+  `Input.insertText`, then restored): 9 of 42 `instance` tests failed (both new ones, the six
+  SPEC-483 secret tests and `click_and_type_tools_pass_selectors_as_data`). The live test first
+  passed with insertion: xterm.js takes an inserted `input` event while no key is held. With a
+  viewer key held, it failed with the mutation ("timed out waiting for the user name in the
+  terminal", the text left in xterm's helper textarea) and passed with keys. The test now holds
+  that key.
+
