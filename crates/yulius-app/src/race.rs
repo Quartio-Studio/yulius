@@ -128,6 +128,9 @@ pub enum Point {
     /// `close_task_now` (SPEC-250): the task was read `Running`; the close's end intent is not set
     /// yet. The path is the task id.
     CloseDecided,
+    /// A park's process probe found the session with no background work, before the park
+    /// waits for the launch lock. Keyed by task id.
+    ParkProbed,
     /// A park passed the idle checks and is about to claim the run. Keyed by task id.
     ParkPrepared,
     /// A park (SPEC-512 PRK-003): its end intent is set under the launch lock; the session has

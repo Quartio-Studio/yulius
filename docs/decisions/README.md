@@ -545,6 +545,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0467 -->
 - [0468](0468-a-flag-whose-cause-stands-is-not-answered-by-work.md): A "could not end this session" flag is not answered by the session's work
 <!-- ADR 0468 -->
+- [0469](0469-a-test-of-a-host-wide-resource-asserts-only-what-it-holds.md): A test of a host-wide resource asserts only what it holds
 <!-- ADR 0469 -->
 <!-- ADR 0470 -->
 <!-- ADR 0471 -->

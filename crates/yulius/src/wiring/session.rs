@@ -148,19 +148,33 @@ fn upstream(context: &str, err: impl std::fmt::Display) -> AppError {
     AppError::Upstream(format!("{context}: {err}"))
 }
 
+/// Whether every port of `range` can be bound on both loopback addresses, asking `bind` for
+/// `127.0.0.1` and then `[::1]` port by port (SPEC-637 LPR-001). A host without IPv6 loopback
+/// (`AddrNotAvailable`, `Unsupported`) counts as free there; any other failure keeps the range
+/// reserved. The real `bind` binds a listener and drops it; tests pass a fake host, because a
+/// free ephemeral port of a shared host can be taken by anyone at any moment (#1620).
+fn loopback_ports_idle_with(
+    range: std::ops::RangeInclusive<u16>,
+    mut bind: impl FnMut(std::net::SocketAddr) -> std::io::Result<()>,
+) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+    range.into_iter().all(|port| {
+        bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).is_ok()
+            && match bind(SocketAddr::from((Ipv6Addr::LOCALHOST, port))) {
+                Ok(()) => true,
+                Err(e) => matches!(
+                    e.kind(),
+                    std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+                ),
+            }
+    })
+}
+
 #[async_trait]
 impl SessionHost for PtySessionHost {
     fn loopback_ports_idle(&self, range: std::ops::RangeInclusive<u16>) -> bool {
-        use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
-        range.into_iter().all(|port| {
-            TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
-                && match TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
-                    Ok(_) => true,
-                    Err(e) => matches!(
-                        e.kind(),
-                        std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
-                    ),
-                }
+        loopback_ports_idle_with(range, |address| {
+            std::net::TcpListener::bind(address).map(drop)
         })
     }
 
@@ -504,6 +518,8 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-637 LPR-003: a listener this test holds, on either loopback family, keeps its
+    /// port reserved through the real binder.
     #[test]
     fn a_loopback_listener_keeps_a_port_reserved() -> Result<(), Box<dyn std::error::Error>> {
         let host = PtySessionHost::new(PathBuf::new());
@@ -525,11 +541,135 @@ mod tests {
                 Err(e) => return Err(e.into()),
             };
             let port = listener.local_addr()?.port();
-            assert!(!host.loopback_ports_idle(port..=port));
-            drop(listener);
-            assert!(host.loopback_ports_idle(port..=port));
+            // Only this direction is ours: once the listener is dropped, another loopback user
+            // of the host may take or already hold the port (#1620). The fake host below
+            // covers the free side.
+            assert!(
+                !host.loopback_ports_idle(port..=port),
+                "{address} port {port}"
+            );
         }
         Ok(())
+    }
+
+    /// SPEC-637 LPR-004 (review round 1): the real binder can report a port free. Port 0 asks
+    /// the kernel for any free port on each loopback family, so no other loopback user can make
+    /// this fail short of using up the whole ephemeral range.
+    #[test]
+    fn the_real_binder_reports_a_free_loopback_port_idle() {
+        let host = PtySessionHost::new(PathBuf::new());
+        assert!(host.loopback_ports_idle(0..=0));
+    }
+
+    /// A fake loopback host for the probe's decision: the addresses whose bind fails, with
+    /// their error, and every address the probe asked for, in order.
+    fn probe_fake_host(
+        range: std::ops::RangeInclusive<u16>,
+        failing: &[(std::net::SocketAddr, std::io::ErrorKind)],
+    ) -> (bool, Vec<std::net::SocketAddr>) {
+        let mut asked = Vec::new();
+        let idle = loopback_ports_idle_with(range, |address| {
+            asked.push(address);
+            match failing.iter().find(|(held, _)| *held == address) {
+                Some((_, kind)) => Err(std::io::Error::from(*kind)),
+                None => Ok(()),
+            }
+        });
+        (idle, asked)
+    }
+
+    fn v4(port: u16) -> std::net::SocketAddr {
+        (std::net::Ipv4Addr::LOCALHOST, port).into()
+    }
+
+    fn v6(port: u16) -> std::net::SocketAddr {
+        (std::net::Ipv6Addr::LOCALHOST, port).into()
+    }
+
+    /// SPEC-637 LPR-002: a range free on both loopback addresses is idle, and every port was
+    /// bound on both, IPv4 first.
+    #[test]
+    fn a_range_free_on_both_loopback_addresses_is_idle() {
+        let (idle, asked) = probe_fake_host(20000..=20002, &[]);
+        assert!(idle);
+        assert_eq!(
+            asked,
+            [
+                v4(20000),
+                v6(20000),
+                v4(20001),
+                v6(20001),
+                v4(20002),
+                v6(20002)
+            ]
+        );
+    }
+
+    /// SPEC-637 LPR-002: someone holding a port on `127.0.0.1`, anywhere in the range.
+    #[test]
+    fn a_busy_ipv4_port_keeps_the_range_reserved() {
+        for port in [20000, 20001, 20002] {
+            let (idle, _) =
+                probe_fake_host(20000..=20002, &[(v4(port), std::io::ErrorKind::AddrInUse)]);
+            assert!(!idle, "port {port}");
+        }
+    }
+
+    /// SPEC-637 LPR-002: someone holding a port on `[::1]` only, the case #1620 met.
+    #[test]
+    fn a_busy_ipv6_port_keeps_the_range_reserved() {
+        for port in [20000, 20001, 20002] {
+            let (idle, _) =
+                probe_fake_host(20000..=20002, &[(v6(port), std::io::ErrorKind::AddrInUse)]);
+            assert!(!idle, "port {port}");
+        }
+    }
+
+    /// SPEC-637 LPR-002: a host without IPv6 loopback decides on IPv4 alone.
+    #[test]
+    fn a_host_without_ipv6_loopback_decides_on_ipv4() {
+        for kind in [
+            std::io::ErrorKind::AddrNotAvailable,
+            std::io::ErrorKind::Unsupported,
+        ] {
+            let no_ipv6 = [(v6(20000), kind), (v6(20001), kind)];
+            assert!(probe_fake_host(20000..=20001, &no_ipv6).0, "{kind:?}");
+            let busy = [
+                no_ipv6[0],
+                no_ipv6[1],
+                (v4(20001), std::io::ErrorKind::AddrInUse),
+            ];
+            assert!(!probe_fake_host(20000..=20001, &busy).0, "{kind:?}");
+        }
+    }
+
+    /// SPEC-637 LPR-002: an IPv6 failure other than a missing loopback is not "free".
+    #[test]
+    fn another_ipv6_failure_keeps_the_range_reserved() {
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Other,
+        ] {
+            assert!(
+                !probe_fake_host(20000..=20000, &[(v6(20000), kind)]).0,
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// SPEC-637 LPR-002: IPv4 loopback always exists, so every IPv4 failure keeps it reserved.
+    #[test]
+    fn any_ipv4_failure_keeps_the_range_reserved() {
+        for kind in [
+            std::io::ErrorKind::AddrNotAvailable,
+            std::io::ErrorKind::Unsupported,
+            std::io::ErrorKind::PermissionDenied,
+        ] {
+            assert!(
+                !probe_fake_host(20000..=20000, &[(v4(20000), kind)]).0,
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]
