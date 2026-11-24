@@ -1626,6 +1626,68 @@ mod copy_input_tests {
         Err(format!("the page saw {seen:?}"))
     }
 
+    /// SPEC-639 PST-003 (review round 1): where the CLIPBOARD cannot be taken a paste is typed as
+    /// real key presses, the viewer's held Control lifted meanwhile (it would make shortcuts of
+    /// the text) and pressed again after.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_paste_without_the_clipboard_is_typed_as_key_presses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir()?;
+        let sandbox = SandboxId::parse("paste-typed")?;
+        let mut config = DisplayConfig::new(dir.path().to_owned());
+        if crate::resolve_executable(&config.xvfb).is_err() {
+            eprintln!("Xvfb unavailable; typed paste check did not run");
+            return Ok(());
+        }
+        config.max_size = (320, 240);
+        let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (320, 240))
+            .await?
+            .ok_or("no test display")?;
+        let result = async {
+            let (page, atoms) = paste_page(&display, dir.path(), &sandbox).await?;
+            let auth = std::fs::read(dir.path().join(sandbox.as_str()).join(XAUTHORITY_FILE))?;
+            let number = display.name().trim_start_matches(':').parse()?;
+            let conn = xserver::connect(number, &auth[auth.len() - 16..])?;
+            let typing = xserver::XController::start_with(conn, (320, 240), false)?;
+            let seen = {
+                let page = std::sync::Arc::clone(&page);
+                tokio::task::spawn_blocking(move || {
+                    observe_paste(&page, atoms, Instant::now() + Duration::from_millis(1_500))
+                })
+            };
+            typing
+                .send(DisplayInput::Key {
+                    keycode: 37,
+                    press: true,
+                })
+                .map_err(|e| format!("{e:?}"))?;
+            let (outcome, answer) = tokio::sync::oneshot::channel();
+            typing
+                .queue(xserver::XCommand::Paste(
+                    zeroize::Zeroizing::new("aB\r\n".into()),
+                    outcome,
+                ))
+                .map_err(|e| format!("{e:?}"))?;
+            assert_eq!(answer.await?, PasteOutcome::Typed);
+            let (keys, read) = seen.await??;
+            assert_eq!(
+                keys,
+                [
+                    "+37", "-37", "+38", "-38", "+50", "+56", "-56", "-50", "+36", "-36", "+37"
+                ]
+            );
+            assert!(read.is_empty(), "nothing was pasted: {read:?}");
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        display.stop(crate::StopTimeouts::default()).await?;
+        result
+    }
+
     /// A window on the test display that takes the keyboard, as a page does, and the atoms a
     /// paste uses.
     #[cfg(target_os = "linux")]

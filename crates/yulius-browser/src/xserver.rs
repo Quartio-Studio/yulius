@@ -258,6 +258,16 @@ impl XController {
     /// # Errors
     /// When XTest is missing or the root window cannot be watched.
     pub(crate) fn start(conn: RustConnection, size: (u16, u16)) -> Result<Self, String> {
+        Self::start_with(conn, size, true)
+    }
+
+    /// [`Self::start`]; without `paste_owner` pastes are typed (as when the CLIPBOARD cannot
+    /// be taken).
+    pub(crate) fn start_with(
+        conn: RustConnection,
+        size: (u16, u16),
+        paste_owner: bool,
+    ) -> Result<Self, String> {
         let root = conn
             .setup()
             .roots
@@ -285,7 +295,9 @@ impl XController {
         });
         let (keysyms_per_keycode, scratch) = spare_keycodes(&conn);
         let clipboard = crate::xclipboard::Clipboard::new(&conn);
-        let owner = crate::xclipboard::Owner::new(&conn, root);
+        let owner = paste_owner
+            .then(|| crate::xclipboard::Owner::new(&conn, root))
+            .flatten();
         let mut state = XState {
             clipboard,
             owner,
