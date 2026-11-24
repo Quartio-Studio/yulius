@@ -330,7 +330,7 @@ pub enum ViewerClientMsg {
         modifiers: Option<u8>,
     },
     /// A paste of the viewer's clipboard text, whole (SPEC-639): with a virtual display the
-    /// text becomes the display's CLIPBOARD and Ctrl+V is pressed, so the page gets a real
+    /// text becomes the display's CLIPBOARD and Shift+Insert is pressed, so the page gets a real
     /// paste; without one (or without the CLIPBOARD) it is typed as key presses. At most 32 KiB.
     /// A paste the page did not take is answered with `paste_failed`.
     Paste {
@@ -927,7 +927,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: TOOL_TYPE,
-            description: "Type text into the focused element, or into the element matching selector after focusing it, as real key presses (terminals such as xterm.js take it too). Each newline presses Enter.",
+            description: "Type text into the focused element, or into the element matching selector after focusing it, as real key presses (terminals such as xterm.js take it too). Each newline presses Enter and each tab Tab (which moves the focus in a form); other control characters are left out. Two DevTools calls per character: a long text takes a while.",
             input_schema: json!({"type": "object", "properties": {"tab_id": tab,
                 "text": {"type": "string", "maxLength": TYPE_TEXT_MAX_BYTES}, "selector": selector},
                 "required": ["tab_id", "text"], "additionalProperties": false}),

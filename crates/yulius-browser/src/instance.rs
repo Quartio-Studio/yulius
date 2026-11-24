@@ -2701,7 +2701,8 @@ impl BrowserInstance {
         self.wheel.coalesced()
     }
 
-    /// Inserts text in the shown tab's focused field (IME, emoji, non-ASCII letters, paste).
+    /// Inserts text in the shown tab's focused field (IME, emoji, non-ASCII letters; a paste
+    /// takes `start_paste`).
     async fn insert_text(&self, text: &str) -> Result<(), BrowserError> {
         let Some(tab) = lock(&self.state).active.clone() else {
             return Ok(());
@@ -2906,7 +2907,7 @@ impl BrowserInstance {
             modifiers: input.modifiers | held | bit,
             ..input
         };
-        // Text without a key (IME, paste): a key event carries at most four characters.
+        // Text without a key (IME): a key event carries at most four characters.
         if input.event == KeyEventKind::Char
             && let Some(text) = input.text.as_deref().filter(|t| t.chars().count() > 1)
         {
@@ -3020,10 +3021,11 @@ impl BrowserInstance {
 
     /// Types `text` as real key presses through CDP, so pages that read key events (terminals)
     /// get it: each character a key down carrying its text and a key up; `\n` presses Enter and
-    /// `\t` Tab, `\r` and other control characters are left out. The caller holds the input
-    /// lock.
-    async fn type_keys(&self, session: &str, text: &str) -> Result<(), BrowserError> {
+    /// `\t` Tab, `\r` and other control characters are left out. Returns how many characters
+    /// it typed. The caller holds the input lock.
+    async fn type_keys(&self, session: &str, text: &str) -> Result<usize, BrowserError> {
         let mut buffer = [0_u8; 4];
+        let mut typed_chars = 0;
         for c in text.chars() {
             let (key, code, typed) = match c {
                 '\n' => ("Enter", Some("Enter"), "\r"),
@@ -3051,8 +3053,9 @@ impl BrowserInstance {
                     .call_session(session, "Input.dispatchKeyEvent", params)
                     .await?;
             }
+            typed_chars += 1;
         }
-        Ok(())
+        Ok(typed_chars)
     }
 
     /// Applies one viewer WebSocket message; returns the new tab for `open`.
@@ -3770,14 +3773,13 @@ impl BrowserInstance {
                         .cdp
                         .call_session(session, "Input.insertText", json!({"text": line}))
                         .await
-                        .map(drop)
+                        .map(|_| line.chars().count())
                         .map_err(BrowserError::from),
                 };
                 if let Some(watched) = watched {
                     self.check_edits(session, watched).await;
                 }
-                inserted?;
-                chars += line.chars().count();
+                chars += inserted?;
             }
         }
         Ok(TypeResult { chars })

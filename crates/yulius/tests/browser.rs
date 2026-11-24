@@ -2159,9 +2159,9 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
 }
 
 /// SPEC-639 (PST-001, PST-002, PST-004, PST-006): a viewer's paste is one real paste on the
-/// display (its CLIPBOARD and Ctrl+V), whole and in order with the keys around it, never
-/// inserted through CDP; one the page did not take is answered `paste_failed`, and one over
-/// 32 KiB is refused, not cut.
+/// display (its CLIPBOARD and the paste key, Shift+Insert), whole and in order with the keys
+/// around it, never inserted through CDP; one the page did not take is answered `paste_failed`,
+/// and one over 32 KiB is refused, not cut.
 #[tokio::test]
 async fn a_viewer_paste_is_a_real_paste_on_the_display_in_order_with_keys() -> TestResult {
     with_display(FakeDisplay::new(), |f| async move {
