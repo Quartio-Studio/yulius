@@ -2342,6 +2342,31 @@ async fn a_paste_on_its_way_does_not_hold_up_the_viewers_connection() -> TestRes
     .await
 }
 
+/// SPEC-639 (review round 2), ADR-0423: a paste after a click that wrote the page's copy ends
+/// that offer, so accepting it never hands out the pasted text.
+#[tokio::test]
+async fn a_paste_ends_the_page_copy_offer_of_the_click_before() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        send(&mut socket, json!({"type": "watch", "tab_id": tab})).await?;
+        display.copy_on_next_press("the page's copy");
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        let offered = wait_json(&mut socket, |m| m["type"] == "page_copy_available").await?;
+        send(&mut socket, json!({"type": "paste", "tab_id": tab, "text": "pasted by A"})).await?;
+        let offer = offered["offer"].clone();
+        send(&mut socket, json!({"type": "accept_page_copy", "tab_id": tab, "offer": offer})).await?;
+        let answer = wait_json(&mut socket, |m| m["type"] == "page_clipboard" || m["type"] == "error").await?;
+        assert_eq!(answer["code"], "clipboard_unavailable", "{answer}");
+        Ok(())
+    })
+    .await
+}
+
 /// SPEC-639 PST-003: without a display a paste is typed as key presses through CDP (each
 /// character a key down with its text and a key up, a line break Enter), never inserted.
 #[tokio::test]

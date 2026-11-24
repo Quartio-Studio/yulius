@@ -1599,6 +1599,47 @@ mod copy_input_tests {
         result
     }
 
+    /// SPEC-639 (review round 2), ADR-0423: a paste right after a click is no page's copy: the
+    /// click's watch for a CLIPBOARD write ends, so the pasted text is never offered back.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_paste_after_a_click_is_not_offered_as_the_pages_copy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+
+        let dir = tempfile::tempdir()?;
+        let sandbox = SandboxId::parse("paste-after-click")?;
+        let mut config = DisplayConfig::new(dir.path().to_owned());
+        if crate::resolve_executable(&config.xvfb).is_err() {
+            eprintln!("Xvfb unavailable; paste after click check did not run");
+            return Ok(());
+        }
+        config.max_size = (320, 240);
+        let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (320, 240))
+            .await?
+            .ok_or("no test display")?;
+        let result = async {
+            let (send, mut offer) = tokio::sync::oneshot::channel();
+            display.copy_press(send)?;
+            let outcome = display
+                .paste(zeroize::Zeroizing::new("pasted by A".into()))
+                .await?;
+            assert_eq!(outcome, PasteOutcome::Unread, "no page read it");
+            display.settle().await;
+            assert!(
+                matches!(
+                    offer.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+                ),
+                "the paste was offered as the page's copy"
+            );
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        display.stop(crate::StopTimeouts::default()).await?;
+        result
+    }
+
     /// A page that reads like Chrome: on each Shift+Insert its targets, then the text, then
     /// (after `reread`) its targets again; with `asking`, it goes on asking for the targets every
     /// 10 ms for that long after the first paste key. Returns when and what it saw (`key`,
