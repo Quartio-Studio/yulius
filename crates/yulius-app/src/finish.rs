@@ -737,9 +737,17 @@ impl App {
             Activity::NeedsAttention
         } else {
             let settled = Activity::after_clean_turn(achieved);
-            self.set_task_activity(task, settled).await?;
-            settled
+            if self.set_task_activity_unless_held(task, settled).await? {
+                // A run that could not be ended keeps its flag (SPEC-635).
+                Activity::NeedsAttention
+            } else {
+                settled
+            }
         };
+        crate::race::reached(
+            crate::race::Point::TurnSettled,
+            std::path::Path::new(task.id.as_str()),
+        );
         let (app, task_id) = (Arc::clone(self), task.id.clone());
         tokio::spawn(async move {
             // The background work first: chains and the queue read it.
@@ -853,12 +861,17 @@ impl App {
             .last_stop_ms
             .store(at.map_or(now.0, |at| at.0.max(0)), Ordering::SeqCst);
         tracing::info!(task = %task_id, "the person interrupted the agent's turn");
-        let _ = self
-            .deps
-            .store
-            .set_activity(task_id, Some(Activity::Waiting), now)
-            .await;
-        self.publish_task(task_id).await;
+        if matches!(
+            self.write_session_activity(task_id, Activity::Waiting)
+                .await,
+            Ok(true)
+        ) {
+            self.publish_task(task_id).await;
+        }
+        crate::race::reached(
+            crate::race::Point::TurnInterruptSettled,
+            std::path::Path::new(task_id.as_str()),
+        );
         self.probe_idle_shells(task_id).await;
     }
 
@@ -1242,20 +1255,21 @@ impl App {
             }
             _ => None,
         };
+        let mut held = false;
         if let Some(next) = next
             && task.activity != Some(next)
         {
             if task.activity == Some(Activity::Working) {
                 self.runtime(task_id).end_turn();
             }
-            let _ = self
-                .deps
-                .store
-                .set_activity(task_id, Some(next), self.now())
-                .await;
-            self.publish_task(task_id).await;
+            match self.write_session_activity(task_id, next).await {
+                Ok(true) => self.publish_task(task_id).await,
+                // A run that could not be ended keeps its flag (SPEC-635): not Done.
+                Ok(false) => held = true,
+                Err(_) => {}
+            }
         }
-        Some(next == Some(Activity::Done))
+        Some(!held && next == Some(Activity::Done))
     }
 
     async fn after_idle_settlement(self: &Arc<Self>, task_id: &TaskId, done: bool) {
