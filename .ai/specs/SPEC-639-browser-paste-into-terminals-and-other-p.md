@@ -121,8 +121,12 @@ and Ctrl+V / ⌘V on the Browser panel did nothing. Agents' browser tools fail t
 - The viewer's connection does not wait for a paste's outcome (review round 1): the paste is
   queued in order inside the connection's loop, and the outcome arrives as a future the loop
   serves, so a paste nobody reads no longer freezes that viewer's video for 3 s.
-- A newer paste waits, answering X events, until the page fetched the previous text (also when
-  another viewer queued it) and then asked nothing for 100 ms: Chrome reads
+- Without a display (development hosts only) a paste is typed inside the viewer's connection
+  loop before the next message; that keeps it in order with the keys, which go the same CDP way.
+  At the measured rate a 32 KiB paste holds that loop about 10 s there.
+- A newer paste waits, answering X events, while the page may still read the previous one (a
+  paste not asked for within 200 ms of its key is taken as unread, review round 2) and until it
+  asked nothing for 100 ms: Chrome reads
   one paste several times, and a CLIPBOARD replaced between those reads (or a read left
   unanswered by a sleeping thread) gave the first of two quick pastes empty text after Chrome's
   one-second timeout (traced with `xtrace`).
@@ -209,5 +213,27 @@ and Ctrl+V / ⌘V on the Browser panel did nothing. Agents' browser tools fail t
   `shutdown_escalates_to_sigkill_for_a_browser_ignoring_sigterm`; "the process group's
   descendants are killed") fail here on the unchanged merge base 320803966 too (16 of 19 pass
   there); they passed in this task earlier and in CI. The other 153 browser crate tests pass.
+- **Review round 2** (Fable 5.2, request changes at `f83f99dc3`), answered:
+  - Major, a paste after an unread one held all input 1 s: `unread_pastes_hold_the_input_after_them_only_briefly`
+    failed first ("five unread pastes held the input 4.005 s"); an unread paste now holds a newer
+    one for `PASTE_UNREAD_GRACE` (200 ms) only, and the test passes.
+  - Major, no test of the copy-offer cancel: `a_paste_after_a_click_is_not_offered_as_the_pages_copy`
+    (Xvfb) and `browser::a_paste_ends_the_page_copy_offer_of_the_click_before` (route); with the
+    `clipboard.cancel` line in `XState::paste`, and the matching line in `FakeDisplay::paste`,
+    removed, each failed (the route test handed out "the page's copy").
+  - Minor, the outcome bound counted from queueing: the X thread answers each paste by its own
+    window; the outer bound is now only for a thread that stopped answering (15 s).
+  - Minor, the headless paste typed in the loop: kept and stated (Decisions).
+  - Minor (code from dev made worse here), a person's Shift+Insert went to the sandbox as a key:
+    the viewer leaves it to its browser; the e2e check failed (`["down Insert"]`) without that.
+    In the e2e browser it pasted that browser's own clipboard, as intended.
+  - Nit, letting go of the selection at hold expiry can end another viewer's click watch that
+    is open at that same instant: kept. The window is the time of one X request, and the cost
+    is a missed copy offer, which the person gets again by clicking Copy once more.
+  - The 64 KiB `browser_type` answer held: the reviewer measured 5 000 characters in 1.7 s.
+- Rerun at this head: live real-Chrome test passed (294 ms; `browser_type` 5 000 characters
+  1.38 s); browser crate 155 of 158 (the three environmental `manager` tests above);
+  `browser::`, `superagent_browser::`, `browser_network::` 48 passed; `tests/browser.e2e.ts` 8
+  passed; workspace clippy, `scripts/dev macos` and rustdoc of the touched crates clean.
 - Security scan: disabled for this project in Yulius (not run, not passed).
 
