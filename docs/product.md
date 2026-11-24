@@ -686,6 +686,7 @@ watching, steering and unblocking.
   and sign-ins for the agent. Their clicks and keys need the host's browser policy, which
   `yulius host setup` writes: without it the browser shows but takes none (ADR-0318).
   After clicking a webpage’s Copy button on the virtual display, choose **Copy to my clipboard** to transfer plain text from the shared sandbox browser to your device.
+  A paste (Ctrl+V, ⌘V) reaches the page as a real paste, also in a terminal such as a sign-in's xterm, up to 32 KiB at once; a paste the page did not take, or a longer one, is said in the panel (SPEC-639). Agents' `browser_type` types real keys, so they can fill such terminals too.
   If the policy arrives after an agent used the browser, the panel offers **Restart browser** to recover input while keeping that sandbox’s profile.
   New browser launches keep Chrome’s default extension prompts off the sandbox display,
   including for existing profiles (SPEC-567).

@@ -1395,10 +1395,10 @@ resolves to nothing, the run gets the server without that variable or token.
     and `char` text up to 64 characters are typed as real key presses in order; longer `char` text
     (IME composition) is inserted with CDP `Input.insertText`; lock keys and AltGraph are
     ignored), `{"type":"paste","tab_id","text"}` (the viewer's paste, whole, at most 32 KiB; on a
-    display the text becomes the display's CLIPBOARD and Ctrl+V is pressed in order with the
-    keys, so the page gets a real `paste` event; without a display, or without the CLIPBOARD, it
-    is typed as key presses; answered with the error `paste_failed` when the page did not ask
-    for the text within 3 s or it could not be delivered, SPEC-639),
+    display the text becomes the display's CLIPBOARD and Shift+Insert is pressed in order with
+    the keys, so the page gets a real `paste` event, terminals too; without a display, or without
+    the CLIPBOARD, it is typed as key presses; answered with the error `paste_failed` when no
+    client fetched the text within 3 s or it could not be delivered, SPEC-639),
     `{"type":"accept_page_copy","tab_id","offer"}` (accept a one-use offer issued to this socket),
     `{"type":"copy","tab_id"}` (answered with `clipboard`), `{"type":"viewport","width",
     "height"}` (the panel size in CSS pixels; shared by every viewer, clamped to the configured

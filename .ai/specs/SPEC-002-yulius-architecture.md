@@ -385,7 +385,7 @@ pixel (crisp text) at about three times the encoding cost; the default is 1.
   "Helląo !"); keysyms keep everything on one ordered path and give pages real key events. Only
   longer composed text (IME) uses `Input.insertText`, after the display's queue has drained (an
   X round trip and 50 ms). A paste is a real paste (SPEC-639, ADR-0471): the X thread makes the
-  text the display's CLIPBOARD and presses Ctrl+V. Lock keys and AltGraph are not forwarded.
+  text the display's CLIPBOARD and presses Shift+Insert. Lock keys and AltGraph are not forwarded.
 - The wheel and trackpad use CDP `mouseWheel` with pixel deltas on the shown tab (X wheel buttons
   are 3-line steps), coalesced per animation frame in the client and, on the server, dispatched
   with at most two calls outstanding, the deltas arriving meanwhile summed (never waited for by

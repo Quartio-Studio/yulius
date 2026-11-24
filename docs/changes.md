@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-24
+
+- A paste in the Browser panel reaches the sandbox page as a real paste, also in a terminal such as the "Sign in a Claude account" xterm, whose OAuth code (longer than 64 characters) used to be lost without a sign. The viewer sends the whole text as one `paste` message (at most 32 KiB; a longer one is not sent and the panel says why). On the virtual display it becomes the display's CLIPBOARD and Yulius presses Shift+Insert (xterm.js makes Ctrl+V the `^V` character), so Chrome fires a genuine `paste` event in order with the keys. A paste no client fetched within 3 s is answered `paste_failed` and shown. Without a display a paste is typed as key presses, and agents' `browser_type` types real keys everywhere, so agents can fill terminals too; `Input.insertText` stays for IME text and `browser_fill_secret`. [ADR-0471](decisions/0471-a-viewer-paste-becomes-the-displays-clipboard-and-a-real-paste-key.md), [SPEC-639](../.ai/specs/SPEC-639-browser-paste-into-terminals-and-other-p.md)
+
 ## 2026-11-23
 
 - A review round whose reviewer reported now ends with its verdict also when its hooks missed it (quartio-v2 #377, #1726). The report ends the round when Yulius restarted while the background reviewer ran, and its `SubagentStop` was lost: the session's transcript gives the reviewer's completed notification. It also ends the round when a slow review start recorded the round after Claude Code's `SubagentStart`. A round with no report when its pull request merged reads "unreported (the pull request merged without its report)" in `delivery_status`, not "no report yet", and the delivery's rounds carry `merged_at`. [ADR-0467](decisions/0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md), [SPEC-633](../.ai/specs/SPEC-633-a-review-round-stays-open-with-no-end-or.md)
