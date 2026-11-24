@@ -25,6 +25,7 @@ use yulius_app::context::{App, AppConfig, Deps};
 use yulius_app::hub::HubFrame;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{LaunchKind, PauseKind, TaskMode, TaskOrigin};
+use yulius_app::ports::Clock as _;
 use yulius_app::ports::store::TaskStore;
 use yulius_app::updates::UpdateRunRecord;
 use yulius_contracts::api::tasks::ContinueTask;
@@ -73,16 +74,76 @@ pub(crate) async fn start_with(
 }
 
 /// The system clock plus an offset (ms) the test moves: real processes and their hooks keep
-/// their pace while minutes pass for the server. Start it behind and move it forward: a hook's
-/// time is the earlier of its client's and the server's, so the times the server keeps stay in
-/// order.
-pub(crate) struct ShiftedClock(pub(crate) std::sync::atomic::AtomicI64);
+/// their pace while minutes pass for the server. Start it behind and move it forward. A hook's
+/// send time, which its client stamps on the system clock, reads with the offset in force when
+/// it was sent, so it keeps its order with the server's times also when it arrives late, after
+/// a move (SPEC-636; it used to read as its arrival, #1615).
+pub(crate) struct ShiftedClock(std::sync::Mutex<Vec<(i64, i64)>>);
+
+impl ShiftedClock {
+    /// A clock `offset_ms` from the system's.
+    pub(crate) fn new(offset_ms: i64) -> Self {
+        Self(std::sync::Mutex::new(vec![(i64::MIN, offset_ms)]))
+    }
+
+    /// Runs the clock `offset_ms` from the system's from now on.
+    pub(crate) fn shift(&self, offset_ms: i64) {
+        let at = SystemClock.now().0;
+        self.shifts().push((at, offset_ms));
+    }
+
+    /// Moves the clock `ms` forward from now on.
+    pub(crate) fn advance(&self, ms: i64) {
+        let at = SystemClock.now().0;
+        let mut shifts = self.shifts();
+        let offset = shifts.last().map_or(0, |(_, offset)| *offset) + ms;
+        shifts.push((at, offset));
+    }
+
+    /// The offset in force at the system clock's `wall_ms`.
+    fn offset_at(&self, wall_ms: i64) -> i64 {
+        let shifts = self.shifts();
+        shifts
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= wall_ms)
+            .map_or(0, |(_, offset)| *offset)
+    }
+
+    fn shifts(&self) -> std::sync::MutexGuard<'_, Vec<(i64, i64)>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
 
 impl yulius_app::ports::Clock for ShiftedClock {
     fn now(&self) -> Timestamp {
         let system = SystemClock.now().0;
-        Timestamp(system + self.0.load(std::sync::atomic::Ordering::SeqCst))
+        Timestamp(system + self.offset_at(system))
     }
+
+    fn of_wall(&self, wall: Timestamp) -> Timestamp {
+        Timestamp(wall.0 + self.offset_at(wall.0))
+    }
+}
+
+/// A send time stamped before a move of the clock reads with the offset of its sending.
+#[test]
+fn a_shifted_clock_reads_a_stamp_with_the_offset_of_its_time() {
+    let clock = ShiftedClock::new(-13 * 60_000);
+    let sent = SystemClock.now();
+    // The next move takes effect in a later millisecond than `sent`: a stamp in the move's own
+    // millisecond reads with the new offset.
+    while SystemClock.now() == sent {
+        std::hint::spin_loop();
+    }
+    clock.shift(-2 * 60_000);
+    clock.advance(30_000);
+    assert_eq!(clock.of_wall(sent).0, sent.0 - 13 * 60_000);
+    let later = SystemClock.now();
+    assert_eq!(clock.of_wall(later).0, later.0 - 90_000);
+    assert!(clock.now().0 >= later.0 - 90_000);
 }
 
 /// [`start_with`] on the clock `clock`.

@@ -363,6 +363,13 @@ pub enum Point {
     /// A finished task's staging outcome is to be typed because its background work runs; its
     /// admission has not looked again yet (SPEC-631 SWK-001). Keyed by the task id.
     AwaitedOutcomeDecided,
+    /// A hook reached `hook_event`; nothing of it is read yet, not even the time (SPEC-636). The
+    /// path is the hook's session id joined with its event, so a test holds one hook of one run
+    /// as a loaded server does after its client gave up.
+    HookArrived,
+    /// The transcript watcher read a prompt's record (`Observation::UserTurn`); its last-Stop
+    /// check has not run, nor taken the turn order (SPEC-636). The path is the task id.
+    UserTurnRead,
 }
 
 #[cfg(feature = "test-support")]

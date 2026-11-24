@@ -235,13 +235,21 @@ impl App {
         let Ok(harness) = yulius_domain::harness::Harness::parse(harness) else {
             return Err(AppError::NotFound);
         };
+        if let Some(session) = input.session_id.as_deref() {
+            crate::race::reached(
+                crate::race::Point::HookArrived,
+                &Path::new(session).join(event),
+            );
+        }
         // Capture the ordering boundary before the token lookup yields to a viewer key.
-        // Never later than now: the client's clock is the host's (loopback only), and a time
+        // The client stamps the host's wall clock (loopback only), read on this server's clock:
+        // a hook that arrives late keeps its send time (SPEC-636). Never later than now: a time
         // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).
         let now = self.now().0;
-        let sent = sent_ms
-            .filter(|sent| *sent > 0)
-            .map_or(now, |sent| sent.min(now));
+        let sent = sent_ms.filter(|sent| *sent > 0).map_or(now, |sent| {
+            let wall = yulius_domain::time::Timestamp(sent);
+            self.deps.clock.of_wall(wall).0.min(now)
+        });
         let sequence = self.viewer_input_sequence();
         let ctx = self.agent_context(token).await?;
         if ctx.attempt.harness != harness {
