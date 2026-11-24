@@ -600,6 +600,18 @@ impl App {
         }
     }
 
+    /// Injects the transcript watcher's report of the background agent `id` in tests.
+    #[cfg(feature = "test-support")]
+    pub async fn review_reported_for_test(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        id: &str,
+        report: &str,
+        at: Option<Timestamp>,
+    ) {
+        self.review_agent_reported(task, id, report, at).await;
+    }
+
     /// Reads the resume instruction's recipient and the scheduled subscription move in tests.
     #[cfg(feature = "test-support")]
     pub async fn review_recovery_for_test(
@@ -685,6 +697,36 @@ impl App {
             .await
         {
             tracing::warn!(error = %err, task = %task, "review round not noted");
+        }
+    }
+
+    /// The session's transcript says the background agent `agent_id` completed with `report`
+    /// at `at` (SPEC-633 RRE-002): the open round that agent runs ends with the report's
+    /// verdict, unless its `SubagentStop` ended it already. Nothing started after `at` ends, so
+    /// a replayed first report leaves a resumed reviewer's next round open. An undated replay
+    /// ends nothing.
+    pub(crate) async fn review_agent_reported(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        agent_id: &str,
+        report: &str,
+        at: Option<Timestamp>,
+    ) {
+        let Some(at) = at else {
+            return;
+        };
+        let verdict = verdict_of(report).map(Verdict::as_str);
+        match self
+            .deps
+            .store
+            .end_review_round(task, agent_id, at, verdict, None)
+            .await
+        {
+            Ok(true) => self.reviewer_went_on(task, agent_id, at).await,
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, task = %task, "review round not ended from its report")
+            }
         }
     }
 
@@ -828,20 +870,33 @@ impl App {
             }
             return;
         }
-        let Some(id) = input.agent_id.as_deref().filter(|_| {
+        let (Some(id), Some(agent)) = (
+            input.agent_id.as_deref(),
             input
                 .agent_type
                 .as_deref()
-                .is_some_and(|agent| REVIEWERS.contains(&agent))
-        }) else {
+                .filter(|agent| REVIEWERS.contains(agent)),
+        ) else {
             return;
         };
-        match self
-            .deps
-            .store
-            .end_review_round(&ctx.task.id, id, at, verdict.map(Verdict::as_str), None)
+        let store = &self.deps.store;
+        let verdict = verdict.map(Verdict::as_str);
+        // A start that came before its round (a `PreToolUse` that outlasted the hook client)
+        // linked nothing: the report ends the round it left unlinked. That hook's answer was
+        // lost too, so the reviewer ran as asked, which the round then names (SPEC-633 RRE-001).
+        let ended = match store
+            .end_review_round(&ctx.task.id, id, at, verdict, None)
             .await
         {
+            Ok(false) => {
+                let ran = (agent, reviewer_model(agent).unwrap_or_default());
+                store
+                    .end_unlinked_review_round(&ctx.task.id, ran, id, at, verdict)
+                    .await
+            }
+            other => other,
+        };
+        match ended {
             Ok(true) => self.reviewer_went_on(&ctx.task.id, id, at).await,
             Ok(false) => {}
             Err(err) => tracing::warn!(error = %err, task = %ctx.task.id, "review round not ended"),
@@ -1325,6 +1380,7 @@ fn round_view(
         started_at: format_rfc3339(r.started_at),
         ended_at: r.ended_at.map(format_rfc3339),
         pr_number,
+        merged_at: r.merged_at.map(format_rfc3339),
     }
 }
 
