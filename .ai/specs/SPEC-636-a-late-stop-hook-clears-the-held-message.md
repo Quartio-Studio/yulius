@@ -47,9 +47,20 @@ the test thread 900 ms after the first watch, with the fix for path 1 in place. 
 on `on_observation` saw no transcript observation only because the unmodified test ends in
 0.93 s, before the watcher's first read.
 
-Task #616's reading (a late *Stop* after the transcript record settled the turn) does not hold:
-the record that settles a turn without a Stop (`turn_duration`) is written after the Stop hooks,
-and a held Stop leaves the task Working, so `idle_full_screen` cannot return before the Stop.
+A third ordering is the tests' own: a clean Stop settles the task (Your turn) before Yulius
+records its answer, and a turn whose submit hook never landed leaves the task reading Your turn
+throughout. A test that goes on when the task reads idle can therefore meet that turn's Stop
+still at work, and its settle replaces a flag raised meanwhile. Found under load in review round 2
+(the full binary at a load average of 154): the held-submit test failed in about half its runs
+on 3 CPUs shared with 12 busy loops, its trace showing `NeedsAttention` → `Waiting` from
+`clean_stop` before the held submit was released. In production a held-message flag needs a
+draft ten minutes old (`DRAFT_TOLD_MS`), so a Stop that late does not occur; only a shifted clock
+makes those minutes pass at once. The tests now wait for the run's stop-answered mark instead.
+
+Task #616's reading (a Stop after the transcript record settled the turn) does not hold as
+written: the record that settles a turn without a Stop (`turn_duration`) is written after the
+Stop hooks. Its suggested wait for `STOP_ANSWERED_FILE` in `idle_full_screen` is what closes the
+third ordering.
 
 ### What else the cause can break
 
@@ -98,7 +109,8 @@ and it is left as it is.
 
 - Integration (`crates/yulius/tests/task_message.rs`): the AC2 steps after a prompt the person
   sends, whose submit (or, in the second test, whose transcript record) is held until the box is
-  cleared; each waits for its turn's Stop explicitly; the existing test unchanged. The opening
+  cleared. `idle_full_screen` waits for the opening Stop's answered mark and the held line for
+  the next one; the existing test's steps are unchanged. The opening
   submit cannot be held deterministically: its session id is known only once the run started,
   and the fake agent's `--stuck-at-start-file` never resumes.
 - Unit: `ShiftedClock::of_wall` across a shift; `Observation::with_record_times` maps recorded
@@ -116,6 +128,9 @@ and it is left as it is.
 - Record times are mapped once, right after the watcher's poll, so the live path, the replay's
   facts and every observation agree. Announced times (`resets_at`) stay as written: they are not
   orderings with Yulius's events.
+- The tests wait for the stop-answered mark rather than adding a product guard against a Stop
+  that comes after a flag: outside a shifted clock that Stop is not minutes late, and in prompt
+  mode a Stop ending the turn clears Needs your action by design.
 - Two test-support pause points, which do nothing without the `test-support` feature: one at the
   entry of `hook_event`, keyed by the hook's session id and event, before anything is read; one
   where the watcher takes a prompt record, keyed by the task id, before its last-Stop check.
@@ -145,9 +160,18 @@ Against dev `b1b50218f` (round 1) and `c4eca6b9f` (merged in), on this host (128
   PASS (3.9 s).
 - `yulius-app` `ports::harness::record_time_tests::only_the_times_lines_were_recorded_are_mapped`:
   passed.
-- With both fixes: `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main)'`: 2758
-  passed, 24 skipped; `scripts/cargo nextest run -p yulius-app --features test-support`: 725
-  passed; `scripts/cargo clippy -p yulius-app -p yulius --all-targets --features
+- With both fixes and dev `edcf33a21` merged: `scripts/cargo nextest run -p yulius -E
+  'binary_id(yulius::main)'`: 2766 passed, 24 skipped (an earlier run at a load average of 154
+  also failed `parking::candidate::a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done`,
+  untouched here, which passed in this run); `scripts/cargo nextest run -p yulius-app --features
+  test-support`: 726 passed; `scripts/cargo clippy -p yulius-app -p yulius --all-targets --features
   yulius-app/test-support -- -D warnings`: clean.
+- Review round 2 (load): the held-submit test before the stop-answered waits, under
+  `taskset -c 0-2` with 12 busy loops on those CPUs: 5 of 10 passed (trace: `clean_stop` sets
+  Waiting over the flag before the release). With the waits (`afcc2015c`): 20 of 20; the record
+  and original tests 30 of 30.
+- Mutation by hand at `afcc2015c`: the send time read as it is again → only the held-submit test
+  fails (`left: Null`); the record mapping undone → only the held-record test fails
+  (`left: Null`).
 - Not tested here: the full gate (Yulius CI's), and a production instance under load (production
   reads one clock in client, agent and server, so the defect cannot occur there).
