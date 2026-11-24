@@ -55,6 +55,13 @@ impl std::fmt::Debug for Envelope {
 pub trait Clock: Send + Sync {
     /// Current time.
     fn now(&self) -> Timestamp;
+
+    /// This clock's time at the instant `wall` of the system clock, as another process of this
+    /// host stamped it (a hook client's send time). The system clock reads it as it is; a test
+    /// clock that runs shifted maps it with the shift in force at that instant (SPEC-636).
+    fn of_wall(&self, wall: Timestamp) -> Timestamp {
+        wall
+    }
 }
 
 /// Randomness, hashing and secret sealing.

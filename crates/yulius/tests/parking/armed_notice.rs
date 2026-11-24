@@ -674,12 +674,11 @@ fn an_armed_pr_without_an_ordinary_run_checks_conflicts_at_its_published_head() 
 fn a_decision_during_draft_readiness_keeps_the_armed_notice_unheard() -> TestResult {
     use crate::first_message::ShiftedClock;
     use crate::pr_watch::git;
-    use std::sync::atomic::{AtomicI64, Ordering};
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
         let fake = yulius_ptyhost::test_support::locate_fake_agent().ok_or("fake agent")?;
-        let clock = Arc::new(ShiftedClock(AtomicI64::new(-13 * 60_000)));
+        let clock = Arc::new(ShiftedClock::new(-13 * 60_000));
         let (app, _, github) = crate::first_message::start_hosted_with_github(
             &data,
             &fake,
@@ -726,7 +725,7 @@ fn a_decision_during_draft_readiness_keeps_the_armed_notice_unheard() -> TestRes
         app.restore_armed_merges().await;
         let (ctx, attach) = crate::task_message::full_screen_terminal(&app, &caller, &id).await?;
         app.terminal_input(&ctx, &attach, b"\x7f", false).await?;
-        clock.0.store(-11 * 60_000, Ordering::SeqCst);
+        clock.shift(-11 * 60_000);
         let (entered, release) = super::pause_watch_or_queue(super::Point::BoxSeenEmpty, &id);
         let watcher = app.clone();
         let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
