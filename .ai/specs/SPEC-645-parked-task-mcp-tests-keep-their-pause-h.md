@@ -1,6 +1,6 @@
 ---
 yulius-task: 2c5f677e-38b8-42b9-8249-2f8cd86acdb1
-status: in-progress
+status: done
 ---
 
 # SPEC-645: Parked-task MCP tests keep their pause hooks to themselves (#1644)
@@ -57,13 +57,13 @@ tests expect (step 4 proves both cases with a neighbour beside them).
 
 ## Plan
 
-- [ ] Spec and root cause of the stolen pause hook
-- [ ] Regression test: a neighbour runtime's parked read of its own t-main
-- [ ] Pause hooks scoped to the registering runtime
-- [ ] Both parked MCP cases proven beside a neighbour read
-- [ ] Full suite under nextest, touched modules under libtest threads
-- [ ] ADR, architecture, changes and spec evidence
-- [ ] Independent review approved
+- [x] Spec and root cause of the stolen pause hook
+- [x] Regression test: a neighbour runtime's parked read of its own t-main
+- [x] Pause hooks scoped to the registering runtime
+- [x] Both parked MCP cases proven beside a neighbour read
+- [x] Full suite under nextest, touched modules under libtest threads
+- [x] ADR, architecture, changes and spec evidence
+- [x] Independent review approved
 
 ## Acceptance criteria
 
@@ -134,5 +134,13 @@ All on `feat/629-parked-task-mcp-tests-keep-their-pause-h` from dev `90ec692d2`.
   before the next (a script over `crates/yulius/tests` found no test building a second runtime
   while a hook's first runtime lives); the only hook-using tests with plain threads reach points
   outside a runtime (`projects.rs`) or are the neighbour tests.
+- Review round 1 (yulius-reviewer, Fable 5.2) approved `3b36a17ef` with two minors and three
+  nits, all in tests and documents, answered in `HEAD` after it: the neighbour now registers a
+  flag hook of its own and errors when its read did not reach `ParkedStatusRead` (so a later
+  change that skips the point cannot leave the neighbour tests vacuous); a multi-thread
+  shut-down case (`a_hook_whose_multi_thread_runtime_shut_down_runs_on_the_next_one`); the
+  acceptance criterion, test plan and architecture text say what was proven. Rerun: the 8 tests
+  above pass; with dev's `race.rs` copied back, the two neighbour tests and the runtime test fail
+  as before (`another test's parked read of its own t-main took this test's pause hook`).
 - Not done: the whole binary under libtest (`cargo test` of all 2800 tests in one process) is not
   the gate's runner; Yulius CI runs nextest.
