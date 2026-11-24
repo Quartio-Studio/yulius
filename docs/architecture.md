@@ -4278,6 +4278,10 @@ items, and a menu of 8 or more items opens with a filter box
 ([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
 start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
 continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
+While a modal dialog is open, the menu is mounted in the topmost one, as the toasts are: outside
+it, it would be inert and under the dialog. It closes with an `openModal` dialog, and Escape or Tab
+gives the keyboard back to its anchor, or to the element that had it for a menu at a point
+([decision 0473](decisions/0473-a-menu-opened-over-a-modal-dialog-is-mounted-in-it.md)).
 
 The Tasks page's Graph view (`?view=graph`, SPEC-164, [decision 0135](decisions/0135-the-task-graph-is-drawn-in-the-browser-from-the-task-summaries.md))
 is drawn from the task summaries the store already holds, with no endpoint of its own:
