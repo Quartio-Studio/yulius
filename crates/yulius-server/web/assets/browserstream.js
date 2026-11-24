@@ -46,6 +46,8 @@ const OWN_SHORTCUTS = new Set(['r', 'w', 't', 'q', 'l', 'n', 'tab', '[', ']']);
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
 /** One paste at most, as the server takes it (SPEC-639). */
 const PASTE_MAX_CHARS = 32000;
+/** Shift+Insert, the other paste key outside macOS: the user's browser pastes their clipboard. */
+const isPasteKey = (event) => !IS_MAC && event.key === 'Insert' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
 const PASTE_MAX_BYTES = 32 * 1024;
 
 /** Decode a video frame: u8 4, u8 flags (bit 0 keyframe), u64 big-endian µs, access unit. */
@@ -537,6 +539,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     const command = IS_MAC ? event.metaKey : event.ctrlKey;
     if (command && OWN_SHORTCUTS.has(lower)) return; // the user's own browser
     if (command && lower === 'v') return; // the paste event sends the user's clipboard
+    if (isPasteKey(event)) return; // so does Shift+Insert (it would paste the sandbox's own)
     if (IS_MAC && event.metaKey) {
       if (event.key !== 'Meta' && macCommand(event)) event.preventDefault();
       return;
@@ -557,6 +560,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     if (IS_MAC && (event.metaKey || event.key === 'Meta')) return;
     const lower = event.key.toLowerCase();
     if ((IS_MAC ? event.metaKey : event.ctrlKey) && (OWN_SHORTCUTS.has(lower) || lower === 'v')) return;
+    if (isPasteKey(event)) return;
     key('up', event.key, event.code, modifiers(event));
   });
   keys.addEventListener('compositionend', (event) => {

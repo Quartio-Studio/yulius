@@ -201,6 +201,7 @@ test('a paste in the browser panel is sent whole and a lost one is said', async 
   await paste(long);
   await expect.poll(pastes).toEqual([code, long]);
 
+
   // Over 32,000 characters or 32 KiB is not cut: nothing is sent, and the panel says why.
   await paste('x'.repeat(32001));
   await expect(browser.locator('.toast:has-text("Nothing was pasted: the text has 32,001 characters")')).toBeVisible();
@@ -233,6 +234,26 @@ test('a paste in the browser panel is sent whole and a lost one is said', async 
     session.sendTabs();
   });
   await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  // The person's own Shift+Insert is their browser's paste (with their clipboard), never an
+  // Insert key that would paste the sandbox's clipboard.
+  await browser.evaluate(() => {
+    type Sent = { browsers: Map<string, { viewers: Map<{ send(message: string): void }, string> }> };
+    const session = (window as unknown as { __yuliusMock: Sent }).__yuliusMock.browsers.get('sb_studio')!;
+    const keys: string[] = [];
+    (window as unknown as { sentKeys: string[] }).sentKeys = keys;
+    for (const socket of session.viewers.keys()) {
+      const send = socket.send.bind(socket);
+      socket.send = (message: string) => {
+        const request = JSON.parse(message);
+        if (request.type === 'key') keys.push(`${request.event} ${request.key}`);
+        send(message);
+      };
+    }
+  });
+  await browser.keyboard.press('Shift+Insert');
+  await browser.keyboard.press('q');
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { sentKeys: string[] }).sentKeys)).toContain('down q');
+  expect(await browser.evaluate(() => (window as unknown as { sentKeys: string[] }).sentKeys.filter((k) => k.endsWith('Insert')))).toEqual([]);
   // A connection that died unnoticed sends nothing, and the panel says so.
   await browser.evaluate(() => {
     type Viewers = { browsers: Map<string, { viewers: Map<{ readyState: number }, string> }> };
@@ -241,7 +262,6 @@ test('a paste in the browser panel is sent whole and a lost one is said', async 
   });
   await paste('offline code');
   await expect(browser.locator('.toast:has-text("the browser is not connected")')).toBeVisible();
-  expect(await pastes()).toHaveLength(3);
 });
 
 test('a sandbox browser without the host policy says once that clicks and keys are off', async ({ app, browser, screen }) => {

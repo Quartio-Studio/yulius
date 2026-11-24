@@ -81,6 +81,9 @@ pub enum DisplayInput {
     },
 }
 
+/// The longest a queued paste's outcome is waited for (a display thread that stopped answering).
+const PASTE_ANSWER_MAX: Duration = Duration::from_secs(15);
+
 /// How a queued paste ends ([`VirtualDisplay::queue_paste`]).
 pub(crate) type PasteWait =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<PasteOutcome, BrowserError>> + Send>>;
@@ -849,9 +852,10 @@ impl VirtualDisplay {
                 let (outcome, answer) = tokio::sync::oneshot::channel();
                 x.queue(xserver::XCommand::Paste(text, outcome))
                     .map_err(input_error)?;
-                let bound = crate::xclipboard::PASTE_QUIET_MAX
-                    + crate::xclipboard::PASTE_WINDOW
-                    + Duration::from_secs(1);
+                // The X thread answers each paste by its own window's end, counted from its
+                // paste key (pastes queued before it may wait first); this bound is only for a
+                // thread that stopped answering.
+                let bound = PASTE_ANSWER_MAX;
                 Ok(Box::pin(async move {
                     match tokio::time::timeout(bound, answer).await {
                         Ok(Ok(outcome)) => Ok(outcome),
