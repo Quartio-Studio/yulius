@@ -281,11 +281,6 @@ function withoutClass(attrs) {
 const MAX_TOASTS = 5;
 
 /**
- * The toast region. While a modal dialog is open everything outside it is inert and below its
- * backdrop, so the region moves into the topmost open modal (and back to <body> when it closes):
- * an error raised by a dialog's action is seen, clickable and announced.
- */
-/**
  * The topmost open modal dialog, or null. While one is open everything outside it is inert and
  * below it in the browser's top layer: toasts and menus are mounted in it (ADR-0473).
  */
@@ -293,6 +288,11 @@ function topModal() {
   return [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).pop() || null;
 }
 
+/**
+ * The toast region. While a modal dialog is open everything outside it is inert and below its
+ * backdrop, so the region moves into the topmost open modal (and back to <body> when it closes):
+ * an error raised by a dialog's action is seen, clickable and announced.
+ */
 function toastHost() {
   let host = document.getElementById('toasts');
   if (!host) {
@@ -554,6 +554,9 @@ let menuIds = 0;
  */
 export function openMenu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
+  // Escape and Tab give the keyboard back to the anchor, or for a point (a right-click) to where it was.
+  const returnTo = anchor instanceof HTMLElement ? anchor : document.activeElement;
+  const giveBack = () => { if (returnTo instanceof HTMLElement && returnTo !== document.body && returnTo.isConnected) returnTo.focus(); };
   const button = anchor instanceof HTMLElement && anchor.hasAttribute('aria-haspopup') ? anchor : null;
   if (button) button.setAttribute('aria-expanded', 'true');
   // The panel floats and holds the list of items, which scrolls when the window is too short. The
@@ -737,7 +740,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     // open would hide first and could not take focus).
     // Escape first clears a filter with text (SPEC-038 MNU-005).
     if (event.key === 'Escape' && filter && filter.value) { event.preventDefault(); event.stopPropagation(); filter.value = ''; applyFilter(); filter.focus(); return; }
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); giveBack(); closeMenu(); return; }
     // APG menu: arrows wrap, Home/End jump, a letter moves to the next item starting with it,
     // Tab leaves (closing the menu). Disabled items stay focusable so their reason can be read.
     const buttons = [...list.querySelectorAll('.menu-item:not([hidden])')];
@@ -751,7 +754,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
         buttons.find((el) => el.getAttribute('aria-disabled') !== 'true')?.click();
         return;
       }
-      if (event.key === 'Tab') { event.preventDefault(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
+      if (event.key === 'Tab') { event.preventDefault(); giveBack(); closeMenu(); return; }
       const to = event.key === 'ArrowDown' ? buttons[0] : event.key === 'ArrowUp' ? buttons[buttons.length - 1] : null;
       if (to) { event.preventDefault(); to.focus(); }
       return;
@@ -769,7 +772,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     else if (event.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length;
     else if (event.key === 'Home') next = 0;
     else if (event.key === 'End') next = buttons.length - 1;
-    else if (event.key === 'Tab') { event.preventDefault(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
+    else if (event.key === 'Tab') { event.preventDefault(); giveBack(); closeMenu(); return; }
     else if (typed) {
       const letter = event.key.toLowerCase();
       for (let step = 1; step <= buttons.length; step += 1) {

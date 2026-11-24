@@ -19,10 +19,12 @@ region in the topmost open modal dialog.
 While a modal dialog is open, `openMenu` mounts the menu in the topmost open modal dialog
 (`topModal()`, shared with `toastHost`), and in `<body>` otherwise. The menu stays
 `position: fixed` against the window, because `.modal` has no transform, filter or containment, so
-`place()` puts it where it would be outside a dialog. A dialog that closes while its menu is open
-closes the menu first, so no key or pointer handler of a removed menu stays on the document.
-Escape keeps closing only the menu: its capture-phase handler prevents the key, so the dialog gets
-no `cancel`.
+`place()` puts it where it would be outside a dialog. A dialog of `openModal` that closes while
+its menu is open closes the menu first, so no key or pointer handler of a removed menu stays on the
+document (the Spotlight's own modal opens no menus). Escape keeps closing only the menu: its
+capture-phase handler prevents the key, so the dialog gets no `cancel`. Escape and Tab give the
+keyboard back to the anchor or, for a menu opened at a point (a right-click), to the element that
+had it when the menu opened, so a person typing in the sign-in terminal goes on typing there.
 
 ## Alternatives
 

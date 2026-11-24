@@ -51,9 +51,10 @@ open. Menus outside dialogs keep their placement and behaviour.
 
 | ID | Requirement | Verification |
 | --- | --- | --- |
-| MDM-001 | A menu opened while a modal dialog is open is mounted in the topmost open modal dialog, so it is above the dialog, clickable and focusable; its place on screen is the same as outside a dialog. | `subscriptions.e2e.ts` "the sign-in terminal’s right-click menu shows above its dialog…" |
+| MDM-001 | A menu opened while a modal dialog is open is mounted in the topmost open modal dialog, so it is above the dialog, clickable and focusable; its place on screen is the same as outside a dialog. | `subscriptions.e2e.ts` "the sign-in terminal’s right-click menu shows above its dialog…", "a menu and a toast opened over two modal dialogs…" |
 | MDM-002 | Its keyboard behaviour is the menu's: the first usable item takes the focus, arrows move it, Enter picks; Escape closes only the menu, not the dialog. | the same test |
 | MDM-003 | A dialog that closes while its menu is open closes the menu too (no key handler is left behind). | the same test |
+| MDM-005 | Escape and Tab on a menu opened at a point (no anchor element) give the keyboard back to the element that had it when the menu opened (review round 1; on dev it went to the page, also outside dialogs). | `subscriptions.e2e.ts` "the sign-in terminal’s right-click menu…" (Escape, Tab) |
 | MDM-004 | Menus opened without a modal dialog are still mounted in `<body>` and placed as before. | `menus.e2e.ts`, `terminal.e2e.ts`, `editor.e2e.ts`, `filedrop.e2e.ts` unchanged and passing |
 
 ## Plan
