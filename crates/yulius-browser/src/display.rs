@@ -1533,6 +1533,72 @@ mod copy_input_tests {
         result
     }
 
+    /// SPEC-639 (review round 2): pastes nobody reads (the focus is not in a field, the person
+    /// pastes again) hold the display's input only a short grace each, not a second each.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn unread_pastes_hold_the_input_after_them_only_briefly()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir()?;
+        let sandbox = SandboxId::parse("paste-unread")?;
+        let mut config = DisplayConfig::new(dir.path().to_owned());
+        if crate::resolve_executable(&config.xvfb).is_err() {
+            eprintln!("Xvfb unavailable; unread paste check did not run");
+            return Ok(());
+        }
+        config.max_size = (320, 240);
+        let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (320, 240))
+            .await?
+            .ok_or("no test display")?;
+        let result = async {
+            let (page, atoms) = paste_page(&display, dir.path(), &sandbox).await?;
+            let started = Instant::now();
+            let mut outcomes = Vec::new();
+            for n in 0..5 {
+                outcomes.push(display.queue_paste(zeroize::Zeroizing::new(format!("unread {n}")))?);
+            }
+            display.type_char('z')?;
+            // The page never asks; it only waits for the key after the pastes.
+            let arrived = {
+                let page = std::sync::Arc::clone(&page);
+                tokio::task::spawn_blocking(move || -> Result<Option<Instant>, String> {
+                    use x11rb::connection::Connection as _;
+                    use x11rb::protocol::Event;
+                    let until = Instant::now() + Duration::from_secs(8);
+                    while Instant::now() < until {
+                        match page.poll_for_event().map_err(|e| e.to_string())? {
+                            Some(Event::KeyPress(key)) if key.detail == 52 => {
+                                return Ok(Some(Instant::now()));
+                            }
+                            Some(_) => {}
+                            None => std::thread::sleep(Duration::from_millis(2)),
+                        }
+                    }
+                    Ok(None)
+                })
+            };
+            let at = arrived
+                .await??
+                .ok_or("the key after the pastes never came")?;
+            let held = at.duration_since(started);
+            assert!(
+                held < Duration::from_millis(2_500),
+                "five unread pastes held the input {held:?}"
+            );
+            let _ = atoms;
+            for outcome in outcomes {
+                assert_eq!(outcome.await?, PasteOutcome::Unread);
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        display.stop(crate::StopTimeouts::default()).await?;
+        result
+    }
+
     /// A page that reads like Chrome: on each Shift+Insert its targets, then the text, then
     /// (after `reread`) its targets again; with `asking`, it goes on asking for the targets every
     /// 10 ms for that long after the first paste key. Returns when and what it saw (`key`,

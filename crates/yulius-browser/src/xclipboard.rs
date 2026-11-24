@@ -39,6 +39,10 @@ const PASTE_HOLD: Duration = Duration::from_secs(30);
 /// again), and a CLIPBOARD that changes in between, or a read left unanswered, gives the page
 /// an empty paste after Chrome's one-second timeout (traced with Chrome 158).
 pub(crate) const PASTE_QUIET: Duration = Duration::from_millis(100);
+/// How long a paste nobody asked for yet holds a newer one: Chrome asks within milliseconds of
+/// the paste key, so a paste not asked for by then is one the page does not take (the focus is
+/// not in a field), and pastes after it must not wait a second each.
+pub(crate) const PASTE_UNREAD_GRACE: Duration = Duration::from_millis(200);
 /// The longest a newer paste waits for that quiet.
 pub(crate) const PASTE_QUIET_MAX: Duration = Duration::from_secs(1);
 
@@ -56,6 +60,8 @@ pub(super) struct Owner {
 
 struct Held {
     text: Zeroizing<Vec<u8>>,
+    /// When this text became the CLIPBOARD (its paste key follows at once).
+    taken: Instant,
     until: Instant,
     /// The paste waiting for a client to ask, and until when.
     waiting: Option<(oneshot::Sender<PasteOutcome>, Instant)>,
@@ -93,12 +99,14 @@ impl Owner {
     }
 
     /// Whether a client may still read the held text: its paste waits for the text to be
-    /// fetched, or a client asked for it less than [`PASTE_QUIET`] ago. A newer paste waits
-    /// (answering) until it is not, so it neither takes another viewer's paste away before the
-    /// page read it nor changes the CLIPBOARD between Chrome's reads.
+    /// fetched and was taken less than [`PASTE_UNREAD_GRACE`] ago, or a client asked for it less
+    /// than [`PASTE_QUIET`] ago. A newer paste waits (answering) until it is not, so it neither
+    /// takes another viewer's paste away before the page read it nor changes the CLIPBOARD
+    /// between Chrome's reads, and a paste nobody reads holds it only the grace.
     pub(super) fn reading(&self) -> bool {
         self.held.as_ref().is_some_and(|held| {
-            held.waiting.is_some() || self.asked.is_some_and(|at| at.elapsed() < PASTE_QUIET)
+            (held.waiting.is_some() && held.taken.elapsed() < PASTE_UNREAD_GRACE)
+                || self.asked.is_some_and(|at| at.elapsed() < PASTE_QUIET)
         })
     }
 
@@ -121,6 +129,7 @@ impl Owner {
         let now = Instant::now();
         self.held = Some(Held {
             text: Zeroizing::new(text.as_bytes().to_vec()),
+            taken: now,
             until: now + PASTE_HOLD,
             waiting: Some((outcome, now + PASTE_WINDOW)),
         });
