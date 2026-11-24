@@ -1,6 +1,6 @@
 ---
 yulius-task: ebfb64ea-0281-455e-856b-d4e0115e4672
-status: in-progress
+status: done
 ---
 
 # SPEC-648: browser_fill_secret types real key presses so a secret reaches a terminal
@@ -35,7 +35,7 @@ Issue #1740.
 ## Root cause
 
 `type_text` types a secret with `Typing::Inserted`, which sends `Input.insertText`. That fires no
-key event, only an `input` event of type `insertText`. xterm.js (the vendored 5.x) takes such an
+key event, only an `input` event of type `insertText`. xterm.js (the vendored 6.0.0) takes such an
 event only while it has not seen a key go down without its key up (`_keyDownSeen`, and
 `_keyPressHandled`, both cleared by the key up); otherwise the text stays in its hidden helper
 textarea and never reaches the terminal. A key a person holds in the viewer (Ctrl of Ctrl+V, the
@@ -61,8 +61,8 @@ ignores insertion.
   that holds no part of the text. A pressed Tab would move the focus in the middle of a secret,
   and the rest of it would go to the next field, which may show it; other control characters
   have no key and `type_keys` would leave them out, typing a different secret.
-- FSK-004: A secret typed into a terminal (its focus is a text field, not a password field, and
-  its echo is drawn on a canvas the page-text probe cannot read) counts the tab's host as exposed:
+- FSK-004: A secret typed into a terminal (its focus is a text field, not a password field;
+  whether the probe can read its echo depends on its renderer) counts the tab's host as exposed:
   screenshots of it are refused, as for any field that is not a password field. A user name or
   code typed there is not remembered (SPEC-483 E10), unchanged.
 - FSK-005: A navigation of the page's own can land between two keys instead of between two
@@ -77,7 +77,7 @@ ignores insertion.
 - [x] Port the SPEC-450/SPEC-483 secret tests to key events
 - [x] Prove a secret fills a real xterm.js terminal in Chrome
 - [x] Keep the docs true and add the changes entry
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -158,4 +158,24 @@ ignores insertion.
 - `yulius security-scan --base origin/dev`: exit 0, "Security scan disabled: Vidoc is turned off
   in Yulius, for this project or the whole instance; nothing was scanned" (disabled, not passed).
 - Not tested here: the live tests are opt-in and Yulius CI does not run them; other terminal
-  implementations than the vendored xterm.js 5.x.
+  implementations than the vendored xterm.js 6.0.0.
+- Review round 1 (yulius-reviewer, Fable 5.2) approved head `8ae633a6d` with no blocker or major;
+  it confirmed each SPEC-450/SPEC-483 guarantee and probed a failing key and a navigation
+  between keys. Its 5 minors and 3 nits were tests, docs and comments, answered after it:
+  - xterm.js is the vendored 6.0.0, not 5.x (ADR-0475, this spec).
+  - The canvas claim was untrue for the DOM renderer: the exposure rule does not depend on what
+    the probe can read (ADR-0475, FSK-004, test comments).
+  - New tests `a_key_failing_mid_secret_exposes_the_host` and
+    `a_navigation_between_two_keys_is_reported_and_exposes_both` (the reviewer's probes). By-hand
+    mutation: a `?` after `type_lines` in the secret path fails the first one (log
+    `target/evidence/mutation-round1.log`), restored.
+  - The control-character test asserts the message and that the page was not looked at
+    (`Page.getFrameTree`, `Page.createIsolatedWorld`, `Runtime.callFunctionOn` counts unchanged).
+  - The live test asserts the screenshot refusal's text; it passed again (1.5 s).
+  - ADR-0475's consequences name the longer window and that a part of a secret is covered by
+    host exposure only.
+  - Not changed: one helper for the line splitting shared by the refusal and `type_lines`. The
+    refusal mirrors the split on purpose, and the vault refuses control characters in values and
+    user names already, so a drift cannot type a different secret.
+  - `yulius-browser` `instance` binary: 44 passed after the changes.
+

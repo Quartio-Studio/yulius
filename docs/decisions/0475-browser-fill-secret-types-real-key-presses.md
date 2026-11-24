@@ -11,7 +11,7 @@ Supersedes the `browser_fill_secret` part of
 ADR-0471 made `browser_type` type real key presses through CDP, so agents can fill xterm.js
 terminals, and left `browser_fill_secret` on `Input.insertText` because its page rules and edit
 checks were pinned by SPEC-450 and SPEC-483 tests built on insertion. It named no safety reason.
-Inserted text fires only an `input` event, which xterm.js (5.x) drops while it has seen a key go
+Inserted text fires only an `input` event, which xterm.js (the vendored 6.0.0) drops while it has seen a key go
 down and not up: the text stays in its hidden helper textarea.
 Measured in Chrome 158: with a key held in the viewer (as Ctrl is for Ctrl+V), an inserted user
 name never reached the terminal. Pages that read only keys drop insertion always. A secret, user
@@ -33,8 +33,8 @@ so be lost while the tool answered `filled` (#1740).
   have no key and would be left out, typing a different secret.
 - A terminal gets no rule of its own: its focus is a text field, not a password field, so a
   secret typed into it exposes the tab's host and screenshots of it are refused, as for any field
-  that does not mask it. A terminal draws its echo on a canvas the page-text probe cannot read,
-  which this rule already assumes.
+  that does not mask it. The rule does not depend on what the probe can read of the terminal:
+  its DOM renderer draws text, but a canvas or WebGL renderer draws where the probe cannot read.
 
 ## Alternatives
 
@@ -54,6 +54,8 @@ allowed to get the secret reads its field either way, and the text crosses the s
 session. A navigation of the page's own can now land between two keys rather than two lines;
 the read after typing reports it as before (SPEC-483 E3). Typing takes two DevTools calls per
 character, so the input lock, and with it screenshots, is held a little longer (a 64-character
-secret about 20 ms). Keys typed while nothing takes text can trigger the allowed page's own
+secret a few tens of milliseconds), and the window between the checks before the keys and the
+read after them grows with the secret's length. Keys typed while nothing takes text can trigger the allowed page's own
 shortcuts, as a person's typing would; the host is then exposed unless a password field holds
-the secret. A secret with a tab can no longer be typed by an agent; a person types it.
+the secret. A part of a secret (a key that failed, a navigation between two keys) is matched by
+no content rule; the exposure of the hosts it went to covers it. A secret with a tab can no longer be typed by an agent; a person types it.
