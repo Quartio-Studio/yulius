@@ -203,10 +203,11 @@ and Ctrl+V / ⌘V on the Browser panel did nothing. Agents' browser tools fail t
   - Nits: `chars` counts only typed characters; stale "Ctrl+V" and "paste" comments fixed.
   - The ADR's "whether or not it is shown" for background tabs was not run against Chrome and is
     no longer claimed.
-- After the session moved to another sandbox, `yulius-browser::manager`'s
-  `one_browser_per_sandbox_with_isolated_profiles_and_full_shutdown` and
-  `crash_is_detected_and_the_next_use_restarts` fail here ("the process group's descendants are
-  killed") on unchanged `origin/dev` at 320803966 too; they passed in this task earlier and in
-  CI. The other 154 browser crate tests pass.
+- After the session moved to another sandbox, three `yulius-browser::manager` tests
+  (`one_browser_per_sandbox_with_isolated_profiles_and_full_shutdown`,
+  `crash_is_detected_and_the_next_use_restarts`,
+  `shutdown_escalates_to_sigkill_for_a_browser_ignoring_sigterm`; "the process group's
+  descendants are killed") fail here on the unchanged merge base 320803966 too (16 of 19 pass
+  there); they passed in this task earlier and in CI. The other 153 browser crate tests pass.
 - Security scan: disabled for this project in Yulius (not run, not passed).
 

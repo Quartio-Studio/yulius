@@ -175,14 +175,14 @@ impl Owner {
             {
                 self.answer(conn, request);
             }
+            // Another client (the page copying) took the CLIPBOARD, unless this clear is of an
+            // earlier ownership (it was taken again with the current time since).
             Event::SelectionClear(clear)
-                if clear.owner == self.window && clear.selection == self.selection =>
+                if clear.owner == self.window
+                    && clear.selection == self.selection
+                    && !self.owns(conn) =>
             {
-                // Another client (the page copying) took the CLIPBOARD, unless this clear is of
-                // an earlier ownership (it was taken again with the current time since).
-                if !self.owns(conn) {
-                    self.drop_held();
-                }
+                self.drop_held();
             }
             _ => {}
         }
