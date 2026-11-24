@@ -526,8 +526,8 @@ subscription, and is listed where it was. `POST /api/tasks/{tid}/continue` resum
 provider session with nothing typed (its `needs_you` stays; an `account_id` is 400); `task_message`
 resumes it with the message as its first prompt (`delivered: "resumed"`, the request ends); at the
 session limit the resume waits `queued` with its prompt. Archive and close make it `closed`, Stop
-`stopped_cancelled`. A message while the park is ending the session is 409 ("is parking its idle
-session"). Each park is audited `task.parked` by `yulius`.
+`stopped_cancelled`. A message while the park is ending the session, until its run's end has settled the task, is
+409 ("is parking its idle session"); once the task reads `parked`, a message resumes it. Each park is audited `task.parked` by `yulius`.
 
 A live task whose goal is achieved includes `candidate_pending: true` while its recorded integration failure still applies (the PR watch has not seen its pull request close or its head or base move): it reads as waiting on Yulius, not Done, from the watch's last answered check (a re-read in flight or a failed one changes nothing), the watch publishes the task when that answer changes, and `task_get`'s `waits_for` names the re-check; otherwise the field is absent (SPEC-621 FIN-004).
 

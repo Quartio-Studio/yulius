@@ -2234,7 +2234,12 @@ its loss, makes the task `parked` with its activity (`settle_parked`) and audits
 `parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
 worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
 live overlay. Parking verifies the recorded PR and open repository PRs on the task branch. The published head must contain the current task checkout. An unreadable or failing check keeps the author live, including a failed ordinary CI run whose GitHub status still looks green. The PR watcher can take over pending checks for an active ordinary run on the recorded head. While the park is
-under way nothing is typed into the session. The web terminal treats `parked` as a non-live ended
+under way nothing is typed into the session: a message is refused as parking until the run's end
+has settled the task, also after that end took the park's intent while the task still reads
+`running`. The task reads `parked` only after its intent was taken, so a `parked` task wakes at
+once. A later park pass cannot set a new intent on that ending run: it needs the attempt still
+attached and no terminal cleanup under way
+([SPEC-634](../.ai/specs/SPEC-634-reproduce-the-second-idle-park-pass-that.md), #1605). The web terminal treats `parked` as a non-live ended
 status so it shows the calm parked banner (distinct from a crash or operator stop) and a visible
 `Resume` button (plus `Reply` in the waiting bar for the owner), disables cursor blink, and wakes
 the exact saved provider session and worktree through `start_run` with `RunStart::Resume` on
