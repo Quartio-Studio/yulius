@@ -277,6 +277,9 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
                 },
             )
             .await?;
+            // A shell-probe round of the watcher can fall while the owner works: it forgets the
+            // count, and the next one publishes it again. Probe here so that always happens.
+            app.probe_idle_shells(&id).await;
             app.deps
                 .store
                 .set_activity(&id, Some(Activity::Done), app.now())
@@ -322,6 +325,11 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             }
             seen
         };
+        assert_eq!(
+            app.task_summary(&owner).await?.background_shells,
+            Some(0),
+            "a forgotten shell count is published again on the watcher's clock"
+        );
         let mut events = app.events.subscribe();
         let again = app.watch_prs(&WatchBounds::default()).await;
         assert_eq!(task_updates(&mut events), Vec::<bool>::new(), "{again:?}");
@@ -342,7 +350,9 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             [saved.as_str(), span.key.as_str()],
         )?;
         assert_eq!(changed, 1);
-        assert!(app.task_summary(&owner).await?.candidate_pending);
+        let summary = app.task_summary(&owner).await?;
+        assert!(summary.candidate_pending, "{summary:?}");
+        assert_eq!(summary.background_shells, Some(0), "{summary:?}");
         let mut events = app.events.subscribe();
         // The session's own watcher publishes on its own clock (its shell probe, its
         // transcript): a whole round of it while the pass reads the pull request says nothing
