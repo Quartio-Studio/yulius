@@ -140,7 +140,8 @@ async function holdTaskTerminal(browser: Browser, late: 'screen' | 'code'): Prom
       w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
     });
     return {
-      held: () => browser.evaluate(() => document.querySelector('.taskview .term-pending') !== null),
+      // Not shown yet, whether or not its code has loaded (the inverse of `terminalShown`).
+      held: () => browser.evaluate(() => document.querySelector('.taskview .term-pending, .taskview .term-placeholder') !== null),
       release: () => browser.evaluate(() => (window as unknown as { __releaseTerminal: () => void }).__releaseTerminal()),
     };
   }

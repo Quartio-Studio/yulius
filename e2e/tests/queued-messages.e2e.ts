@@ -127,6 +127,29 @@ test('a Shell opened while the task terminal loads gets the keyboard when it sho
   await expect(shellInput).toBeFocused();
 });
 
+// SPEC-641 (review round 2): the keyboard entering a terminal's own input is not the person moving
+// on. The task terminal takes it from the page; the Shell asked for last still gets it (WUI-102).
+test('the Shell asked for last takes the keyboard from the task terminal that took it from the page', async ({ app, browser, screen }) => {
+  type Holds = { __yuliusHoldTerminal?: Promise<void>; __yuliusHoldShell?: Promise<void>; __releaseTerminal?: () => void; __releaseShell?: () => void };
+  await browser.addInitScript(() => {
+    const w = window as unknown as Holds;
+    w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
+    w.__yuliusHoldShell = new Promise<void>((resolve) => { w.__releaseShell = resolve; });
+  });
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Shell').click();
+  await expect.poll(() => browser.evaluate(() => document.querySelectorAll('.term-views .term-slot .term-pending').length)).toBe(1);
+  // The keyboard goes to the page (as after a click on nothing).
+  await browser.evaluate(() => (document.activeElement as HTMLElement).blur());
+  expect(await browser.evaluate(() => document.activeElement === document.body)).toBe(true);
+  await browser.evaluate(() => (window as unknown as Holds).__releaseTerminal?.());
+  await expect(browser.locator('.taskview .xterm-helper-textarea')).toBeFocused();
+  await browser.evaluate(() => (window as unknown as Holds).__releaseShell?.());
+  await expect(browser.locator('.term-views .term-slot:not([hidden]) .xterm-helper-textarea')).toBeFocused();
+});
+
 test('a Shell that took the keyboard keeps it when the task terminal asked earlier shows after it', async ({ app, browser, screen }) => {
   type Holds = { __yuliusHoldTerminal?: Promise<void>; __yuliusHoldShell?: Promise<void>; __releaseTerminal?: () => void; __releaseShell?: () => void };
   await browser.addInitScript(() => {
