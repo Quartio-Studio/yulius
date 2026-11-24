@@ -35,13 +35,13 @@ The test's fixture starts the switch once fake-agent prints `GOAL SET`, before t
 
 ## Acceptance criteria
 
-1. A goal turn held until the switch failed, then released and settled (met), leaves the task reading `NeedsAttention` with the reason "Yulius could not end this session…". On dev it reads Done with no reason.
+1. A goal turn whose prompt hook is held until the switch failed, then released and settled (met), leaves the task reading `NeedsAttention` with the reason "Yulius could not end this session…". On dev it reads Done with no reason.
 2. `task_done::a_switch_whose_old_run_cannot_be_ended_starts_no_new_run` passes under `--stress-count` with a busy loop beside it.
 3. A stop of the task and the run's own end still work as before (existing `task_done`, `task_delete`, `parking` tests).
 
 ## Test plan
 
-New `task_done` test: the fixture's fake agent holds its goal turn (`turn_hold_file`); the switch fails on a host that refuses ends; the hold is released; a race point at the end of `settle_clean_turn` (`Point::TurnSettled`) tells the test the late turn settled; then the attention is read. It fails without the fix. Run `task_done`, `task_delete`, `parking`, `shells`, `cockpit` in full, and the flaky test with `--stress-count 40` beside busy loops.
+New `task_done` test `a_late_turn_of_a_run_that_cannot_be_ended_keeps_its_flag`: the goal's prompt hook is held at `Point::PromptTurnChecked` (after its turn-end check, before it sets Working) until the switch failed on a host that refuses ends; a new race point at the end of `settle_clean_turn` (`Point::TurnSettled`) tells the test the late turn settled; then the activity and the reason are read. A person's prompt typed afterwards settles the same way. It fails without the fix. (A held Stop alone did not reproduce it: a Goal task reading Needs you with no verdict keeps its flag at Stop.) Run `task_done`, `task_delete`, `parking`, `shells`, `cockpit` in full, and the flaky test with `--stress-count 40` beside busy loops.
 
 ## Decisions
 

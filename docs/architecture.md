@@ -4436,7 +4436,13 @@ moment and shows for six seconds. So the statement that raises the flag
 `yulius`), the problem, what to do, the page where to do it, and the flag's time. It is read
 only while the task is running, reads `needs_attention` and has not changed state since that
 time (`task_attention`), so no other statement has to clear it; a task that is already flagged
-keeps its flag and its reason. One flag changes owner, and its reason follows: a secret
+keeps its flag and its reason. The flag "Yulius could not end this session" is the one that the
+session's own activity cannot replace: while the task's live run is the one whose host could not
+be terminated (`end_failed`), the prompt hook, a turn's settle, a transcript turn start and an
+interrupt leave the task's activity as it is (`write_session_activity`, under the runtime's
+`end_gate`, which the record of that failure takes too), until a person stops the task or the run
+ends ([SPEC-635](../.ai/specs/SPEC-635-a-yulius-could-not-end-this-session-flag.md),
+[ADR-0468](decisions/0468-a-flag-whose-cause-stands-is-not-answered-by-work.md)). One flag changes owner, and its reason follows: a secret
 request's flag that another matter takes over (the request's answer then leaves it) says that
 matter's reason, and one that waits for several requests points at one still open
 (`replace_attention`: the same flag and time, another reason). The reason also records that a
