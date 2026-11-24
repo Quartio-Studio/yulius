@@ -118,8 +118,8 @@ test('a Shell opened while the task terminal loads gets the keyboard when it sho
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Shell').click();
 
-  // The task terminal shows first (the keyboard is on the Shell button: it takes it), then the
-  // Shell asked for afterwards shows: the terminal asked for last gets the keys.
+  // The task terminal shows first (the keyboard moved to the Shell button since it was asked for:
+  // it leaves it there, SPEC-641), then the Shell asked for afterwards shows: it gets the keys.
   await browser.evaluate(() => (window as unknown as Holds).__releaseTerminal?.());
   await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-pending') === null)).toBe(true);
   await browser.evaluate(() => (window as unknown as Holds).__releaseShell?.());

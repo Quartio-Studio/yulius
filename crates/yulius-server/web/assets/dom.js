@@ -900,6 +900,27 @@ export function keepFocus(container, rebuild, missingKeyTarget = null) {
   target.focus({ preventScroll: true });
 }
 
+// ---------------------------------------------------------------- keyboard moves (SPEC-641)
+
+let keyboardMoves = 0;
+let lastFocused = null;
+// A move is focus reaching another control while the one before it is still on the page (or with
+// nothing focused before). A control that a re-render re-created and focused again (keepFocus, a
+// rebuilt tab strip) follows one that left the page: the same place for the person, not a move.
+// Terminals' own inputs are left out: which terminal has the keyboard follows their requests.
+if (typeof document !== 'undefined') {
+  document.addEventListener('focusin', (event) => {
+    const target = event.target;
+    if (target === lastFocused) return;
+    const terminal = target instanceof Element && target.closest('.xterm');
+    if (!terminal && (!lastFocused || lastFocused.isConnected)) keyboardMoves += 1;
+    lastFocused = target;
+  }, true);
+}
+
+/** How often the keyboard moved to another control so far; two reads differ once it moved. */
+export function keyboardMoveCount() { return keyboardMoves; }
+
 const REGIONS = ['.tabrow', '.sidebar', '#main', '.panel:not([hidden])', '.rail:not([hidden])'];
 const FOCUSABLE = 'a[href], summary, button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 

@@ -5,7 +5,7 @@
 // preloadTerminal(). Until the view is ready it shows a calm placeholder of the terminal's
 // colour (never text at another size or font, F 2026-10-09).
 
-import { h, setChildren } from './dom.js';
+import { h, setChildren, keyboardMoveCount } from './dom.js';
 import { token, px, isPhone } from './theme.js';
 
 const XTERM_CSS = '/assets/vendor/xterm/xterm.css';
@@ -70,7 +70,8 @@ export function createTerminalView(options) {
   let view = null;
   let destroyed = false;
   let started = false;
-  let focusWanted = false;
+  // A focus asked for before the core loaded: the keyboard's move count then (null: none).
+  let focusWanted = null;
 
   function mount() {
     // The same calm placeholder the core shows until its first screen (terminal-core.js).
@@ -80,7 +81,7 @@ export function createTerminalView(options) {
       view = module.createTerminalView(options);
       setChildren(el, view.el);
       if (started) view.start();
-      if (focusWanted) view.focus();
+      if (focusWanted !== null) view.focus(focusWanted);
     }, () => {
       if (destroyed) return;
       setChildren(el, h('div', { class: 'term term-placeholder', role: 'alert' },
@@ -110,13 +111,13 @@ export function createTerminalView(options) {
     },
     focus() {
       if (view) view.focus();
-      else focusWanted = true;
+      else focusWanted = keyboardMoveCount();
     },
     /** As the core's. Before the core has loaded there is no notice to say it in: the terminal
      * takes the keyboard when it shows. */
     answerHere() {
       if (view) view.answerHere();
-      else focusWanted = true;
+      else focusWanted = keyboardMoveCount();
     },
     refit() {
       if (view) view.refit();
