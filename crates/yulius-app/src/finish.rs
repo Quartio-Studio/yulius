@@ -867,6 +867,10 @@ impl App {
         ) {
             self.publish_task(task_id).await;
         }
+        crate::race::reached(
+            crate::race::Point::TurnInterruptSettled,
+            std::path::Path::new(task_id.as_str()),
+        );
         self.probe_idle_shells(task_id).await;
     }
 

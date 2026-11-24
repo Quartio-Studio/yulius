@@ -239,6 +239,9 @@ pub enum Point {
     /// A clean turn's end was settled (`settle_clean_turn`): its activity is written, or kept
     /// for a flag that still stands. The path is the task id.
     TurnSettled,
+    /// The person interrupted a turn (`turn_interrupted`): its activity is written, or kept for
+    /// a flag that still stands. The path is the task id.
+    TurnInterruptSettled,
     /// A verdict or timeout found its Stop and is about to claim the turn for settlement.
     GoalVerdictReady,
     /// The watcher read a native goal record. The path identifies its attempt.

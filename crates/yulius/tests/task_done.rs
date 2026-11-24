@@ -2822,14 +2822,25 @@ async fn gated_goal_task_ending(
     fake: &Path,
     switch_end_ms: u64,
 ) -> Result<(Arc<App>, Arc<support::gated::GatedHost>, TaskId), BoxError> {
-    let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
-        "CARGO_BIN_EXE_yulius"
-    ))));
     let agent = FakeAgentOptions {
         transcript: true,
         hooks: true,
         ..FakeAgentOptions::default()
     };
+    gated_goal_task_ending_with(data, fake, switch_end_ms, agent, None).await
+}
+
+/// [`gated_goal_task_ending`] with `agent`, and the turn hooks followed with `turn_hooks`.
+async fn gated_goal_task_ending_with(
+    data: &Path,
+    fake: &Path,
+    switch_end_ms: u64,
+    agent: FakeAgentOptions,
+    turn_hooks: Option<TurnHooks>,
+) -> Result<(Arc<App>, Arc<support::gated::GatedHost>, TaskId), BoxError> {
+    let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+        "CARGO_BIN_EXE_yulius"
+    ))));
     let (app, _) = start_holding(
         data,
         fake,
@@ -2840,7 +2851,7 @@ async fn gated_goal_task_ending(
         false,
         None,
         None,
-        None,
+        turn_hooks,
     )
     .await?;
     let (sandbox, user) = seed(&app, data).await?;
@@ -2984,6 +2995,110 @@ fn a_late_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResult {
         ends_by_itself(&app, &host, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-635 EFL-001 (review round 1): with the "could not end" flag standing, a person's prompt
+/// whose hook never reaches Yulius starts its turn from the transcript (the watcher's user turn),
+/// and that turn's Stop settles it: the flag stays.
+#[test]
+fn a_transcript_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let prompts_lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (stop_answered, _stops) = std::sync::mpsc::channel();
+        let turn = TurnHooks {
+            stop_answered,
+            prompts_lost: prompts_lost.clone(),
+        };
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, host, id) =
+            gated_goal_task_ending_with(&data, &fake, 300, agent, Some(turn)).await?;
+        flag_stands_after_a_failed_switch(&app, &host, &id).await?;
+        prompts_lost.store(true, std::sync::atomic::Ordering::SeqCst);
+        typed_turn_settles(&app, &id, "Still there?").await?;
+        flag_still_stands(&app, &id).await?;
+        ends_by_itself(&app, &host, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-635 EFL-001 (review round 1): with the "could not end" flag standing, the person
+/// interrupts a turn (Claude Code's interrupt line, no Stop): the flag stays.
+#[test]
+fn an_interrupted_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        use yulius_app::race::{Point, on};
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            interrupts: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, host, id) = gated_goal_task_ending_with(&data, &fake, 300, agent, None).await?;
+        flag_stands_after_a_failed_switch(&app, &host, &id).await?;
+        let (settled_tx, settled) = std::sync::mpsc::channel();
+        on(
+            Point::TurnInterruptSettled,
+            Path::new(id.as_str()),
+            move || {
+                let _ = settled_tx.send(());
+            },
+        );
+        app.send_input(&id, b"/work 60000 long\r").await?;
+        wait_for("the turn at work", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "WORKING")
+        })
+        .await?;
+        app.send_input(&id, b"\x03").await?;
+        tokio::task::spawn_blocking(move || settled.recv_timeout(Duration::from_secs(60)))
+            .await??;
+        assert!(screen_contains(&app, &id, "INTERRUPTED").await);
+        flag_still_stands(&app, &id).await?;
+        ends_by_itself(&app, &host, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The launch goal settled, then a switch failed on a run that cannot be ended: the task reads
+/// the "could not end" flag.
+async fn flag_stands_after_a_failed_switch(
+    app: &Arc<App>,
+    host: &support::gated::GatedHost,
+    id: &TaskId,
+) -> TestResult {
+    settled_launch_goal(app, id).await?;
+    host.refuse_ends(true);
+    let outcome = switch_result(switch_on_worker(app, id)).await?;
+    assert_eq!(
+        outcome,
+        Err("the session could not be ended, so it was not switched".to_owned())
+    );
+    flag_still_stands(app, id).await
+}
+
+/// The task reads the "could not end" flag and its reason.
+async fn flag_still_stands(app: &App, id: &TaskId) -> TestResult {
+    assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
+    let why = support::attention(app, id.as_str()).await?;
+    assert!(
+        why["problem"]
+            .as_str()
+            .is_some_and(|p| p.starts_with("Yulius could not end this session")),
+        "{why}"
+    );
+    assert_eq!(why["action"], "Stop the task to try again.", "{why}");
     Ok(())
 }
 
