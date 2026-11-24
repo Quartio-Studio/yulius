@@ -556,6 +556,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0472 -->
 - [0473](0473-a-menu-opened-over-a-modal-dialog-is-mounted-in-it.md): A menu opened while a modal dialog is open is mounted in the topmost one (as the toasts are) and closes with it; not a top-layer popover, which a modal dialog leaves inert (SPEC-644, #1735)
 <!-- ADR 0473 -->
+- [0474](0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md): A test pause hook (`yulius_app::race`) runs only for a point reached on the tokio runtime that registered it while that runtime lives; outside a runtime, or once it shut down, it matches by point and key as before (SPEC-645, #1644)
 <!-- ADR 0474 -->
 <!-- ADR 0475 -->
 <!-- ADR 0476 -->
