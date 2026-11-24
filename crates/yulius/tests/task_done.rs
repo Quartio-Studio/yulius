@@ -3022,7 +3022,25 @@ fn a_transcript_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResul
             gated_goal_task_ending_with(&data, &fake, 300, agent, Some(turn)).await?;
         flag_stands_after_a_failed_switch(&app, &host, &id).await?;
         prompts_lost.store(true, std::sync::atomic::Ordering::SeqCst);
+        // The turn's Stop settles only after the watcher started the turn from the transcript.
+        use yulius_app::race::{Point, on};
+        let key = PathBuf::from(id.as_str());
+        let (checked_tx, checked) = std::sync::mpsc::channel();
+        on(Point::UserTurnChecked, &key, move || {
+            let _ = checked_tx.send(());
+        });
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = started.clone();
+        on(Point::StopClean, &key, move || {
+            let checked =
+                tokio::task::block_in_place(|| checked.recv_timeout(Duration::from_secs(30)));
+            seen.store(checked.is_ok(), std::sync::atomic::Ordering::SeqCst);
+        });
         typed_turn_settles(&app, &id, "Still there?").await?;
+        assert!(
+            started.load(std::sync::atomic::Ordering::SeqCst),
+            "the watcher started the turn"
+        );
         flag_still_stands(&app, &id).await?;
         ends_by_itself(&app, &host, &id).await
     })?;
