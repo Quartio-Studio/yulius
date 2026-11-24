@@ -54,12 +54,17 @@ before the first probe. The replay's publish reports a real activity change too.
 - FLK-001: `restore_owner` returns only after the reattached owner's transcript watcher has
   finished its first round (two rounds began: `transcript_rounds() >= 2`, as
   `pool_supervision` waits for "the transcript replay"), bounded by a timeout, with no sleep.
-- FLK-002: The test proves that the watcher's rounds add nothing to the counted pass. After
+- FLK-002: The test checks that the watcher's rounds add nothing to the counted pass. After
   the first pass's notice, it waits until the watcher has read the agent's answer (the owner
   shows `working`, then two more rounds begin) and puts the owner back at rest (`done`). It holds
   the second pass at `CandidateObservationRead` until a full watcher round has run. It then
   expects the watch's one publish (`true`) first and no other `true`. That pass ends by typing
   the failure notice, so the agent's answer to it (`false`) may already be heard after it.
+- FLK-003: A watcher shell-probe round that falls while the owner answers (`working`) forgets
+  the count (`-1`), and the next probe round would publish it again inside a counted window
+  (review round 1). After putting the owner back at rest, the test waits for a round that began
+  since and probes the shells itself. Before each counted window it asserts a known count
+  (`background_shells == Some(0)`).
 
 ## Plan
 
@@ -115,3 +120,14 @@ Run in this worktree on 2026-11-24 with `scripts/cargo nextest run -p yulius -E
 - Fixed (commit `3444b475a`): `--stress-count 10`: 10/10 PASS. `--stress-count 20` with 128
   CPU-bound busy loops beside it (load average 38 → 154): 20/20 PASS.
 - `parking::` tests of `yulius::main` in full: 165 passed, 0 failed.
+- Review round 1 (Fable 5.2, head `73bc4df1d`) requested changes. Major: a probe round during
+  the answer forgot the shell count, and the reviewer reproduced `[true, true]` with test-side
+  delays. Regression check (`8996c0e5b`: the test runs that probe itself, then asserts a known
+  count before the counted windows): 3/3 FAIL, `left: None, right: Some(0)`. Fix (`ba7b46c8f`,
+  which also answers the minor and two nits): `--stress-count 10`: 10/10 PASS. The reviewer's
+  delay probes (start 1200 ms + final 3500 ms, and 2200 ms + 2500 ms, temporary, since removed):
+  3/3 PASS each. `parking::` in full: 165 passed. `--stress-count 20` beside 128 busy loops
+  (load average 11 → 130): 20/20 PASS.
+- Not reproduced: a shell probe that times out (`SHELL_PROBE_TIMEOUT`, 3 s) inside a counted
+  window would publish a real change. This is a bounded-timeout assumption, like the tests'
+  30 s waits.
