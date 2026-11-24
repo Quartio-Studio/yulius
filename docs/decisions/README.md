@@ -551,6 +551,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0470](0470-wall-clock-stamps-are-read-on-yuliuss-clock.md): Wall-clock stamps (a hook's send time, a transcript line's recorded time) are read on Yulius's clock (`Clock::of_wall`, identity in production); a shifted test clock maps a stamp with its shift at that instant; refines 0234 and 0299 (SPEC-636, #1615)
 <!-- ADR 0470 -->
 <!-- ADR 0471 -->
+- [0472](0472-a-terminal-shown-late-leaves-the-keyboard-where-the-person-moved-it.md): A terminal focus request made before the terminal showed lands at the reveal only if the keyboard is still where it was at the request, on the page or in a terminal's input; a control the person moved to keeps it; refines SPEC-056 WUI-102 and SPEC-052 (SPEC-641)
 <!-- ADR 0472 -->
 <!-- ADR 0473 -->
 <!-- ADR 0474 -->

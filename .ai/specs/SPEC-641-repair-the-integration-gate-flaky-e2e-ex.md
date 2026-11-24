@@ -86,3 +86,6 @@ while a task's terminal was still loading.
   taken). Comparing the focused element at the request and at the reveal keeps the cases WUI-102
   meant (the link or button that opened the task view still focused, or the page itself) and
   stops the theft of everything the person reached afterwards.
+  Recorded as [ADR-0472](../../docs/decisions/0472-a-terminal-shown-late-leaves-the-keyboard-where-the-person-moved-it.md).
+- **No architecture change.** The fix is one rule inside `terminal-core.js`; `docs/architecture.md`
+  does not describe deferred terminal focus, so it stays as it is.
