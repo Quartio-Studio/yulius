@@ -224,23 +224,23 @@ async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) -> TestResu
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let last = yulius_app::race::last_reached(key).filter(|(_, at)| *at >= began);
-    let stage = match decided.ok_or(last) {
-        Ok(at) => {
-            format!("a park was decided {at:.1?} into the wait; its session had not ended")
-        }
-        Err(Some((point, at))) => format!(
+    let begun = decided.map_or_else(String::new, |at: Duration| {
+        format!("; a pass began a park {at:.1?} into the wait (its count covers every task)")
+    });
+    let stage = match last {
+        Some((point, at)) => format!(
             "{} ({:.1?} into the wait)",
             park_stage(point),
             at.duration_since(began)
         ),
-        Err(None) => "none: no pass reached this task's park (idle facts or another task)".into(),
+        None => "none: no pass reached this task's park (idle facts or another task)".into(),
     };
     let (status, activity) = tokio::time::timeout(Duration::from_secs(1), status_of(app, id))
         .await
         .unwrap_or_default();
     Err(format!(
         "timed out waiting for the task to park within {bound:?}: {outcome} after {passes} \
-         pass(es); last stage reached: {stage}; task {status:?}, {activity:?}"
+         pass(es){begun}; last stage reached: {stage}; task {status:?}, {activity:?}"
     )
     .into())
 }
@@ -258,7 +258,9 @@ fn park_stage(point: Point) -> String {
         }
         Point::ParkDecided => "asking the session to end after the park was decided",
         Point::ParkStateRecorded => "restoring the parked screen",
-        Point::LiveRowPrNews => "reading the idle facts; the pass found the task not parkable",
+        Point::LiveRowPrNews => {
+            "reading the idle facts (a pass that ended here found the task not parkable)"
+        }
         other => return format!("{other:?}"),
     }
     .into()

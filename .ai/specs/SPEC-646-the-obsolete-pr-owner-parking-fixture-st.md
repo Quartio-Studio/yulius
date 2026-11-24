@@ -156,3 +156,17 @@ design), so the fix is in the fixture.
   assigned to this task: #1744 (`95e28bf18`) had already repaired it on dev with a round trip on
   the releasing connection. On this branch's dev merge it passed 300 of 300 with
   `--stress-count 300 --retries 0`, so no change here.
+- Review round 2 (same reviewer) approved `8281de759`: "approve — no blocker and no major in the
+  change's own code". Its findings are answered in test code after the approval:
+  - Minor: `park_idle_sessions_now() > 0` counts every task's parks, and the decided note hid
+    this task's last stage. The message now always names the last stage, and adds "a pass began
+    a park … (its count covers every task)" beside it.
+  - Minor: nothing held the new branches. The new test
+    `a_park_whose_session_has_not_ended_is_reported_as_begun` holds the run's end at
+    `RunEndTaking` and asserts the begun note. After the task stops, it asserts "the task was not
+    running". The test also showed that later passes overwrite the last stage while the session
+    ends, which is why the note stays beside it.
+  - Nits: the `LiveRowPrNews` label says a pass that ended there found the task not parkable. A
+    phase failure names the case budget, and the stalled-case wait is 115 s.
+  - After the fixes: all 171 `parking::` tests pass, and `scripts/dev lint` and `scripts/dev quick`
+    pass.

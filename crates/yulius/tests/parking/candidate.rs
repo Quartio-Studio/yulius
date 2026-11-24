@@ -1085,6 +1085,40 @@ fn a_park_pass_held_in_its_pr_reads_fails_at_the_bound_and_names_the_stage() -> 
     })
 }
 
+/// #1649: a park decided while its session is slow to end is reported as begun, beside the last
+/// stage reached; a wait on a task that is not running says so.
+#[test]
+fn a_park_whose_session_has_not_ended_is_reported_as_begun() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        remote.remote.lock().map_err(|_| "remote")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].from_fork = true;
+        let (ending, release) = super::pause_at_key(super::Point::RunEndTaking, id.as_str());
+        let waited = super::parked_within(app, &id, Duration::from_secs(3)).await;
+        tokio::time::timeout(Duration::from_secs(5), ending.notified())
+            .await
+            .map_err(|_| "the parked session's end never began")?;
+        release.notify_one();
+        let failure = waited
+            .err()
+            .ok_or("parked while its run's end was held")?
+            .to_string();
+        eprintln!("{failure}");
+        assert!(
+            failure.contains("a pass began a park") && failure.contains("last stage reached"),
+            "{failure}"
+        );
+        super::parked(app, &id).await?;
+        app.stop_task_now(&id).await?;
+        let idle = super::parked_within(app, &id, Duration::from_millis(200)).await;
+        let failure = idle
+            .err()
+            .ok_or("a stopped task counted as parked")?
+            .to_string();
+        assert!(failure.contains("the task was not running"), "{failure}");
+        Ok(())
+    })
+}
+
 /// #1649: a case whose phase never ends fails at its bound naming the case and the phase, and
 /// its task is still stopped.
 #[test]
@@ -1108,7 +1142,7 @@ fn a_stalled_case_fails_at_its_bound_naming_the_case_and_phase() -> TestResult {
         let _ = sent.send(result.map_err(|err| err.to_string()));
     });
     let failure = outcome
-        .recv_timeout(Duration::from_secs(110))
+        .recv_timeout(Duration::from_secs(115))
         .map_err(|_| "a stalled case did not fail within its bounds")?
         .err()
         .ok_or("a stalled case passed")?;
@@ -1205,8 +1239,13 @@ fn with_idle_case(
         String,
     ) -> TestResult,
 ) -> TestResult {
-    let failed =
-        |phase: &str, err: Error| -> Error { format!("{case} case, {phase}: {err}").into() };
+    let failed = |phase: &str, err: Error| -> Error {
+        format!(
+            "{case} case, {phase}: {err} (of a {:?} case budget)",
+            bounds.case
+        )
+        .into()
+    };
     let end = std::time::Instant::now() + bounds.case;
     let left =
         |phase: Duration| phase.min(end.saturating_duration_since(std::time::Instant::now()));
