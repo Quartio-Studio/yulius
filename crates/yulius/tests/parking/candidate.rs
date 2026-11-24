@@ -598,19 +598,52 @@ fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> Te
             "candidate verification overtook the slot reservation"
         );
         assert!(pass?.is_empty());
-        // Stopping the peer wakes the queue, whose capacity check briefly holds the owner's
-        // delivery guard; a pass meeting it defers the hosted read to the next pass.
-        let retry = tokio::time::timeout(Duration::from_secs(10), async {
+        // Capacity readers (the queue woken by the stop, the status panel, account views) take
+        // the owner's delivery guard on their own clocks, also while a pass reads the pull
+        // request (SPEC-642 FLK-001). Hold one pass inside its hosted read while the status
+        // panel holds the guard. A pass that met the guard before its read typed nothing.
+        let ctx = yulius_app::auth::AuthContext {
+            user: app
+                .deps
+                .store
+                .user(&owner.owner)
+                .await?
+                .ok_or("owner user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
+        let held = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let retry = app.watch_prs(&WatchBounds::default()).await;
-                if remote.pull_reads.load(Ordering::SeqCst) > during {
-                    return retry;
+                let mut pass = {
+                    let app = app.clone();
+                    tokio::spawn(async move { app.watch_prs(&WatchBounds::default()).await })
+                };
+                tokio::select! {
+                    () = remote.pull_read_entered.notified() => return Ok::<_, Error>(pass),
+                    typed = &mut pass => {
+                        let typed = typed?;
+                        assert!(typed.is_empty(), "a deferred pass typed {typed:?}");
+                    }
                 }
-                assert!(retry.is_empty(), "a deferred pass typed {retry:?}");
-                tokio::task::yield_now().await;
             }
         })
-        .await?;
+        .await??;
+        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
+        let (holding, release) = super::pause_watch_or_queue(super::Point::LiveDeliveryHeld, &id);
+        let status = {
+            let app = app.clone();
+            tokio::spawn(async move { app.status(&ctx).await.map(|_| ()) })
+        };
+        tokio::time::timeout(Duration::from_secs(10), holding.notified()).await?;
+        gate.notify_one();
+        let first = tokio::time::timeout(Duration::from_secs(10), held).await??;
+        release.notify_one();
+        status.await??;
+        assert!(remote.pull_reads.load(Ordering::SeqCst) > during);
+        let retry = first;
         assert_eq!(retry.len(), 1, "{retry:?}");
         assert_eq!(retry[0].0, id);
         assert!(

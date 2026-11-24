@@ -5303,6 +5303,10 @@ impl App {
             .clone()
             .try_read_owned()
             .ok()?;
+        crate::race::reached(
+            crate::race::Point::LiveDeliveryHeld,
+            std::path::Path::new(task.id.as_str()),
+        );
         let store = &self.deps.store;
         if self
             .local_candidate_blocks(task, record)
