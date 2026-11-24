@@ -2058,3 +2058,105 @@ async fn a_round_its_merge_left_open_carries_the_merge() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-633 RRE-001, review round 1: the `PreToolUse` answer was lost, so the reviewer ran as
+/// asked (`yulius-reviewer`) while Yulius recorded round 3 for the one it decided
+/// (`yulius-reviewer-opus`). The stop of the reviewer that ran still ends that round, which
+/// then names the reviewer and model that ran.
+#[tokio::test]
+async fn a_stop_ends_an_unlinked_round_that_decided_another_reviewer() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev-1", Some("Verdict: request changes")).await?;
+    a_round(&h, "rev-2", Some("Verdict: request changes")).await?;
+    h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &h.internal,
+        "SubagentStart",
+        json!({"hook_event_name": "SubagentStart", "agent_id": "rev-3",
+            "agent_type": "yulius-reviewer"}),
+    )
+    .await?;
+    let (code, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert_eq!(code, 200, "{answer}");
+    assert_eq!(
+        reviewer_run(&answer, "yulius-reviewer"),
+        "yulius-reviewer-opus"
+    );
+    h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &h.internal,
+        "SubagentStop",
+        reviewer_stop(
+            "rev-3",
+            "yulius-reviewer",
+            "Findings: none.\nVerdict: approve",
+        ),
+    )
+    .await?;
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!(open.len(), 3);
+    let third = &open[2];
+    assert_eq!(third.round, 3);
+    assert_eq!(third.subagent_id.as_deref(), Some("rev-3"));
+    assert!(third.ended_at.is_some(), "the reported round ended");
+    assert_eq!(third.verdict.as_deref(), Some("approve"));
+    assert_eq!(
+        (third.agent.as_str(), third.model.as_str()),
+        ("yulius-reviewer", "claude-fable-5-2"),
+        "the round names the reviewer that ran"
+    );
+    Ok(())
+}
+
+/// SPEC-633 RRE-001, review round 1: a round decided as `no_fable` (Opus, since the
+/// subscription cannot run Fable) whose answer was lost ran the Fable reviewer as asked. Once its
+/// stop ends it, it names that reviewer and no longer counts as a round without Fable.
+#[tokio::test]
+async fn an_unlinked_no_fable_round_its_asked_reviewer_reported_is_no_fable_no_more() -> TestResult
+{
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let full = json!({"weekly_fable": {"used_percent": 100.0, "window_minutes": 10080,
+        "resets_at": 4_102_444_800_000_i64}});
+    let account = add_account(&h, "acc-1", Some(full.to_string())).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    hook(
+        &h.internal,
+        "SubagentStart",
+        json!({"agent_id": "rev-1", "agent_type": "yulius-reviewer"}),
+    )
+    .await?;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert_eq!(
+        reviewer_run(&answer, "yulius-reviewer"),
+        "yulius-reviewer-opus"
+    );
+    h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &h.internal,
+        "SubagentStop",
+        reviewer_stop("rev-1", "yulius-reviewer", "Verdict: approve"),
+    )
+    .await?;
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!(
+        (
+            open[0].agent.as_str(),
+            open[0].model.as_str(),
+            open[0].reason.as_str(),
+            open[0].verdict.as_deref()
+        ),
+        (
+            "yulius-reviewer",
+            "claude-fable-5-2",
+            "round",
+            Some("approve")
+        )
+    );
+    Ok(())
+}
