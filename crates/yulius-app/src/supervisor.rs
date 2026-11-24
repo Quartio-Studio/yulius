@@ -5119,19 +5119,18 @@ impl App {
                 *failed = Some((attempt.id.clone(), err.to_string()));
             }
         }
-        let problem = format!(
-            "Yulius could not end this session ({err}). It still counts as running, so the task \
-             cannot be deleted."
-        );
+        let problem = could_not_end(&err.to_string());
         runtime.hub.notice(format!("{problem} {action}"));
         self.flag_task(task_id, AttentionRecord::yulius(&problem, action))
             .await;
     }
 
-    /// Writes a running task's `activity`, as its session's work or turns decide it, unless its
-    /// live run is the one whose host could not be terminated: that run's flag ("Yulius could
-    /// not end this session") stays until a person stops the task or the run ends, as no work of
-    /// the session can end it (SPEC-635 EFL-001). Whether it wrote.
+    /// Writes a running task's `activity`, as its session's work or turns decide it, unless the
+    /// task reads the flag its live run raised when its host could not be terminated ("Yulius
+    /// could not end this session"): no work of the session ends that cause, so the flag stays
+    /// until a person stops the task or the run ends (SPEC-635 EFL-001). Once something else
+    /// replaced that flag (a pause, another matter's), the session's activity rules again
+    /// (EFL-002). Whether it wrote.
     ///
     /// # Errors
     /// The store's.
@@ -5145,13 +5144,29 @@ impl App {
         let failed = runtime
             .end_failed
             .lock()
-            .is_ok_and(|failed| failed.is_some());
-        if failed
-            && let Some(live) = self.deps.store.live_attempt(task_id).await?
-            && runtime.end_failed_for(&live.id).is_some()
-        {
-            tracing::info!(task = %task_id, ?activity, "the run cannot be ended: its flag stays");
-            return Ok(false);
+            .ok()
+            .and_then(|failed| failed.clone());
+        if let Some((run, why)) = failed {
+            let store = &self.deps.store;
+            if store
+                .live_attempt(task_id)
+                .await?
+                .is_none_or(|live| live.id != run)
+            {
+                // That run is over: its failure holds nothing any more.
+                if let Ok(mut failed) = runtime.end_failed.lock()
+                    && failed.as_ref().is_some_and(|(id, _)| *id == run)
+                {
+                    *failed = None;
+                }
+            } else if store
+                .task_attention(task_id)
+                .await?
+                .is_some_and(|(reason, _)| is_could_not_end(&reason, &why))
+            {
+                tracing::info!(task = %task_id, ?activity, "the run cannot be ended: its flag stays");
+                return Ok(false);
+            }
         }
         self.deps
             .store
@@ -9131,6 +9146,20 @@ fn interrupts_first(reason: &str) -> bool {
     matches!(reason, "manual" | "handover" | "removed")
         || reason == crate::review::MOVE_FOR_FABLE
         || reason == crate::review::MOVE_FOR_ROOM
+}
+
+/// What the flag of a run whose host could not be terminated (`why`) says is wrong.
+fn could_not_end(why: &str) -> String {
+    format!(
+        "Yulius could not end this session ({why}). It still counts as running, so the task \
+         cannot be deleted."
+    )
+}
+
+/// Whether `reason` is the flag [`could_not_end`] raised for `why`.
+fn is_could_not_end(reason: &AttentionRecord, why: &str) -> bool {
+    reason.kind == crate::attention::AttentionKind::Yulius
+        && reason.problem == AttentionRecord::yulius(&could_not_end(why), "").problem
 }
 
 #[cfg(test)]

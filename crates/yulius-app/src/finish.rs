@@ -736,8 +736,12 @@ impl App {
             Activity::NeedsAttention
         } else {
             let settled = Activity::after_clean_turn(achieved);
-            self.set_task_activity(task, settled).await?;
-            settled
+            if self.set_task_activity_unless_held(task, settled).await? {
+                // A run that could not be ended keeps its flag (SPEC-635).
+                Activity::NeedsAttention
+            } else {
+                settled
+            }
         };
         crate::race::reached(
             crate::race::Point::TurnSettled,
@@ -1246,17 +1250,21 @@ impl App {
             }
             _ => None,
         };
+        let mut held = false;
         if let Some(next) = next
             && task.activity != Some(next)
         {
             if task.activity == Some(Activity::Working) {
                 self.runtime(task_id).end_turn();
             }
-            if matches!(self.write_session_activity(task_id, next).await, Ok(true)) {
-                self.publish_task(task_id).await;
+            match self.write_session_activity(task_id, next).await {
+                Ok(true) => self.publish_task(task_id).await,
+                // A run that could not be ended keeps its flag (SPEC-635): not Done.
+                Ok(false) => held = true,
+                Err(_) => {}
             }
         }
-        Some(next == Some(Activity::Done))
+        Some(!held && next == Some(Activity::Done))
     }
 
     async fn after_idle_settlement(self: &Arc<Self>, task_id: &TaskId, done: bool) {
