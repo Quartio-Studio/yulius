@@ -3081,7 +3081,10 @@ fn an_interrupted_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestRes
         app.send_input(&id, b"\x03").await?;
         tokio::task::spawn_blocking(move || settled.recv_timeout(Duration::from_secs(60)))
             .await??;
-        assert!(screen_contains(&app, &id, "INTERRUPTED").await);
+        wait_for("the interrupt on screen", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "INTERRUPTED")
+        })
+        .await?;
         flag_still_stands(&app, &id).await?;
         ends_by_itself(&app, &host, &id).await
     })?;
@@ -3117,6 +3120,51 @@ async fn flag_still_stands(app: &App, id: &TaskId) -> TestResult {
         "{why}"
     );
     assert_eq!(why["action"], "Stop the task to try again.", "{why}");
+    Ok(())
+}
+
+/// SPEC-635 EFL-003 (review round 2): a session write looks at the task after the failure was
+/// recorded but before its flag is stored, and writes only once the flag is stored. The flag
+/// stays: a write that saw the failure leaves the task as it is until the flag stands. Before,
+/// it saw no flag yet and wrote over it.
+#[test]
+fn a_write_that_looked_before_the_flag_was_stored_leaves_it() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        use yulius_app::race::{Point, on};
+        let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        settled_launch_goal(&app, &id).await?;
+        let key = PathBuf::from(id.as_str());
+        let (recorded_tx, recorded) = std::sync::mpsc::channel();
+        let (checked_tx, checked) = std::sync::mpsc::channel();
+        let (flagged_tx, flagged) = std::sync::mpsc::channel();
+        // The flag waits until a session write looked; that write goes on once the flag is in.
+        on(Point::EndFailedRecorded, &key, move || {
+            let _ = recorded_tx.send(());
+            let _ = tokio::task::block_in_place(|| checked.recv_timeout(Duration::from_secs(30)));
+        });
+        on(Point::SessionActivityChecked, &key, move || {
+            let _ = checked_tx.send(());
+            let _ = tokio::task::block_in_place(|| flagged.recv_timeout(Duration::from_secs(30)));
+        });
+        on(Point::EndFailedFlagged, &key, move || {
+            let _ = flagged_tx.send(());
+        });
+        host.refuse_ends(true);
+        let switch = switch_on_worker(&app, &id);
+        tokio::task::spawn_blocking(move || recorded.recv_timeout(Duration::from_secs(60)))
+            .await??;
+        typed_turn_settles(&app, &id, "Still there?").await?;
+        assert_eq!(
+            switch_result(switch).await?,
+            Err("the session could not be ended, so it was not switched".to_owned())
+        );
+        flag_still_stands(&app, &id).await?;
+        ends_by_itself(&app, &host, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
 

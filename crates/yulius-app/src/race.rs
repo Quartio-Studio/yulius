@@ -242,6 +242,14 @@ pub enum Point {
     /// The person interrupted a turn (`turn_interrupted`): its activity is written, or kept for
     /// a flag that still stands. The path is the task id.
     TurnInterruptSettled,
+    /// `run_stays_live` recorded that the run's host could not be terminated (`end_failed`) and
+    /// let the activity gate go; its flag is not raised yet. The path is the task id.
+    EndFailedRecorded,
+    /// `run_stays_live` raised (or tried to raise) the run's flag. The path is the task id.
+    EndFailedFlagged,
+    /// A session activity write looked at the failure recorded for the live run, under the
+    /// activity gate, and decided; it has not written yet. The path is the task id.
+    SessionActivityChecked,
     /// A verdict or timeout found its Stop and is about to claim the turn for settlement.
     GoalVerdictReady,
     /// The watcher read a native goal record. The path identifies its attempt.

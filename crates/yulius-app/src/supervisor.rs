@@ -5119,10 +5119,18 @@ impl App {
                 *failed = Some((attempt.id.clone(), err.to_string()));
             }
         }
+        crate::race::reached(
+            crate::race::Point::EndFailedRecorded,
+            Path::new(task_id.as_str()),
+        );
         let problem = could_not_end(&err.to_string());
         runtime.hub.notice(format!("{problem} {action}"));
         self.flag_task(task_id, AttentionRecord::yulius(&problem, action))
             .await;
+        crate::race::reached(
+            crate::race::Point::EndFailedFlagged,
+            Path::new(task_id.as_str()),
+        );
     }
 
     /// Writes a running task's `activity`, as its session's work or turns decide it, unless the
@@ -5159,13 +5167,19 @@ impl App {
                 {
                     *failed = None;
                 }
-            } else if store
-                .task_attention(task_id)
-                .await?
-                .is_some_and(|(reason, _)| is_could_not_end(&reason, &why))
-            {
-                tracing::info!(task = %task_id, ?activity, "the run cannot be ended: its flag stays");
-                return Ok(false);
+            } else {
+                let held = store
+                    .task_attention(task_id)
+                    .await?
+                    .is_some_and(|(reason, _)| is_could_not_end(&reason, &why));
+                crate::race::reached(
+                    crate::race::Point::SessionActivityChecked,
+                    Path::new(task_id.as_str()),
+                );
+                if held {
+                    tracing::info!(task = %task_id, ?activity, "the run cannot be ended: its flag stays");
+                    return Ok(false);
+                }
             }
         }
         self.deps
