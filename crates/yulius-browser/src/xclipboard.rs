@@ -92,10 +92,14 @@ impl Owner {
         })
     }
 
-    /// Whether a client is still reading the held text: it asked for it less than
-    /// [`PASTE_QUIET`] ago. A newer paste waits (answering) until it is not.
+    /// Whether a client may still read the held text: its paste waits for the text to be
+    /// fetched, or a client asked for it less than [`PASTE_QUIET`] ago. A newer paste waits
+    /// (answering) until it is not, so it neither takes another viewer's paste away before the
+    /// page read it nor changes the CLIPBOARD between Chrome's reads.
     pub(super) fn reading(&self) -> bool {
-        self.held.is_some() && self.asked.is_some_and(|at| at.elapsed() < PASTE_QUIET)
+        self.held.as_ref().is_some_and(|held| {
+            held.waiting.is_some() || self.asked.is_some_and(|at| at.elapsed() < PASTE_QUIET)
+        })
     }
 
     /// Makes `text` the CLIPBOARD; `outcome` hears whether a client asked for it. Gives
