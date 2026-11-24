@@ -77,6 +77,17 @@ function typingElsewhere(root) {
 }
 
 /**
+ * Whether the person moved the keyboard to another control since a terminal outside it asked for
+ * it (`from`: where the keyboard was then), so a terminal shown late leaves it there (SPEC-641).
+ * The page itself and a terminal's own input count as nowhere in particular.
+ */
+function movedOn(root, from) {
+  const active = document.activeElement;
+  if (keyboardOnPage() || active === from || root.contains(active) || active.closest('.xterm')) return false;
+  return true;
+}
+
+/**
  * Order of the focus requests of every terminal on the page: a request that waits for its
  * terminal to show lands only if no later one was made (SPEC-056 WUI-102).
  */
@@ -195,8 +206,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   let ready = false;
   let gotState = false;
   let drawn = false;
-  // The order of this terminal's pending focus request (0: none).
+  // The order of this terminal's pending focus request (0: none), and where the keyboard was then.
   let focusWanted = 0;
+  let focusFrom = null;
   let revealTimer = 0;
   let emptyShown = false;
   // What this viewer last told the server about itself (null: nothing yet on this connection).
@@ -297,10 +309,11 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     renderEmpty();
     render();
     // Focus asked for before the terminal showed lands now, unless the person is typing in a
-    // text field meanwhile (the queued messages box beside a waiting task's terminal), or another
-    // terminal was asked for since (a Shell opened meanwhile): the terminal asked for last wins.
-    // Buttons and tabs do not hold it back.
-    if (focusWanted && (focusWanted === focusRequests || keyboardOnPage()) && !typingElsewhere(el)) term.focus();
+    // text field meanwhile (the queued messages box beside a waiting task's terminal), moved the
+    // keyboard to another control since (a toast's action, a tool; SPEC-641), or another terminal
+    // was asked for since (a Shell opened meanwhile): the terminal asked for last wins. The
+    // control that asked (the link or button that opened the view) does not hold it back.
+    if (focusWanted && (focusWanted === focusRequests || keyboardOnPage()) && !typingElsewhere(el) && !movedOn(el, focusFrom)) term.focus();
     if (onReady) onReady();
   }
 
@@ -919,6 +932,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   function takeFocus() {
     focusRequests += 1;
     focusWanted = focusRequests;
+    focusFrom = document.activeElement;
     if (opened && ready) term.focus();
   }
 
