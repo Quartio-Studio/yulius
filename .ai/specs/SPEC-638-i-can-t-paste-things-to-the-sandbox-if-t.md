@@ -62,8 +62,8 @@ claims its files, so it is not part of this change.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -100,3 +100,36 @@ claims its files, so it is not part of this change.
   own paste handler, which would send empty bracketed-paste markers.
 - Copied files cannot be read this way: the async clipboard API gives no files. The notice for an
   empty read names the browser's paste key, which does upload copied files.
+
+## Evidence
+
+- Regression test first (`69b0503a1`): `npx e2e run tests/filedrop.e2e.ts` failed on the
+  unchanged code with `expected "" to match /…pasted-\d{8}-\d{6}\.png…/`, because the image typed
+  nothing. With the fix, `filedrop.e2e.ts` (15 tests) and `terminal.e2e.ts` (33 tests) pass, 48 of
+  48. `global-superagent.e2e.ts`, which shares the pasted-image upload, passes 13 of 13.
+- Real Chrome 158 on Xvfb, after the fix. The clipboard was owned by `xclip`, a copy made outside
+  Chrome, and input was real `xdotool` input:
+  - Shift+right-click → Paste with `image/png` typed
+    `…/attachments/tasks/tsk_studio_12/pasted-20261124-003950.png ` (before the fix: `""`, no notice).
+  - With `text/uri-list`, a copied file, it typed nothing and showed "The clipboard has no text or
+    image to paste here; paste files with Ctrl+V".
+  - With text, it typed `menu words`.
+  - Ctrl+V under a macOS platform override (`MacIntel`, clipboard read allowed): text typed
+    `mac words`, and `image/png` typed `…/pasted-20261124-004015.png ` with "Added
+    pasted-20261124-004015.png". A copied file showed the notice with ⌘V.
+- Mutation checks by hand, each line restored afterwards:
+  - DataError treated as a refusal: the empty-clipboard notice assertion failed.
+  - Both new notices removed: both new tests failed.
+  - The drop no longer taking `terminal-paste-files`: the image assertion failed with `""`.
+  - Images ahead of text: at first this passed, because the read also skipped an item's image
+    beside its text, so text priority was decided in two places. It is now decided only in
+    `pasteFromClipboard`, and the same mutation fails with `expected "…pasted-….png " to match
+    /^(\[200~)?cell text(\[201~)?$/`.
+- `scripts/dev quick` passed. `scripts/dev security` said "Security scan disabled: Vidoc is
+  turned off in Yulius, for this project or the whole instance; nothing was scanned". It did not
+  run, so it is not a pass.
+- Not tested: Safari and Firefox (no macOS host here; the macOS key path ran in Chrome on Linux
+  under a platform override), and a file copied in macOS Finder.
+- Found on the way, outside this change: the sign-in terminal's right-click menu opens beneath
+  its modal dialog ([#1735](https://github.com/Quartio-Studio/yulius/issues/1735), already on
+  `dev`).
