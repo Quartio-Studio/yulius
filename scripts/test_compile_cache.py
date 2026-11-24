@@ -784,9 +784,14 @@ print('received '+input(), flush=True)
                         time.sleep(.005)
                 os.write(terminal, b"\x1a")
                 read_until(b"Stopped")
+                # Bash reports the job once its own child, the launcher, stops.
+                # Cargo enters the stop when the scheduler next runs it.
                 stat_file = Path("/proc") / backend_file.read_text() / "stat"
-                self.assertEqual(stat_file.read_text().rsplit(")", 1)[1].split()[0], "T",
-                                 "Cargo kept running while Bash reported its job suspended")
+                deadline = time.monotonic() + 5
+                while (state := stat_file.read_text().rsplit(")", 1)[1].split()[0]) != "T":
+                    self.assertLess(time.monotonic(), deadline,
+                                    f"Cargo kept running (state {state}) while Bash reported its job suspended")
+                    time.sleep(.005)
             os.write(terminal, b"fg\n")
             read_until(b"scripts/cargo --scratch-target run")
             if not read_immediately:
