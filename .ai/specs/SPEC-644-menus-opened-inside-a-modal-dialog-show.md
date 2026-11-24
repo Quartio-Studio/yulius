@@ -48,9 +48,9 @@ open. Menus outside dialogs keep their placement and behaviour.
 
 ## Plan
 
-- [ ] Regression e2e test: the sign-in terminal's menu Paste by pointer and keyboard, failing on dev
-- [ ] Menus opened in a modal dialog mount in it and close with it
-- [ ] Menu specs outside dialogs pass; decision record, docs and changes entry
+- [x] Regression e2e test: the sign-in terminal's menu Paste by pointer and keyboard, failing on dev
+- [x] Menus opened in a modal dialog mount in it and close with it
+- [x] Menu specs outside dialogs pass; decision record, docs and changes entry
 - [ ] Independent review in a fresh session, every finding answered
 
 ## Acceptance criteria
