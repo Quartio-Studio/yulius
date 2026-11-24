@@ -1547,8 +1547,10 @@ mod copy_input_tests {
             {
                 let offered = convert(atoms.targets, &mut keys)?.unwrap_or_default();
                 let offered: Vec<u32> = offered
-                    .chunks_exact(4)
-                    .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| u32::from_ne_bytes(*b))
                     .collect();
                 if !offered.contains(&atoms.utf8) {
                     return Err(format!("targets {offered:?}"));

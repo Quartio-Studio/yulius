@@ -221,7 +221,7 @@ fn check_owner(conn: &RustConnection, other: &RustConnection) -> Result<()> {
         conn,
         &Event::SelectionClear(xproto::SelectionClearEvent {
             owner: window,
-            selection: selection,
+            selection,
             ..Default::default()
         }),
     );
