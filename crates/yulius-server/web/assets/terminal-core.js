@@ -37,7 +37,7 @@ import { createMouseFilter } from './mousefilter.js';
 import { clipboardKeyAction, osc52Text } from './termkeys.js';
 import { isTyping } from './typing.js';
 import { createContinuedUrlProvider, createFileChecker, createFileLinkProvider, relativeCwd, trackOscFileLinks } from './termlinks.js';
-import { h, icon, setChildren, openMenu, keepFocus } from './dom.js';
+import { h, icon, setChildren, openMenu, keepFocus, keyboardMoveCount } from './dom.js';
 import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
 import { readJson } from './store.js';
 import { IS_MAC } from './shortcuts.js';
@@ -195,8 +195,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   let ready = false;
   let gotState = false;
   let drawn = false;
-  // The order of this terminal's pending focus request (0: none).
+  // The order of this terminal's pending focus request (0: none), and the keyboard's moves then.
   let focusWanted = 0;
+  let focusMoves = 0;
   let revealTimer = 0;
   let emptyShown = false;
   // What this viewer last told the server about itself (null: nothing yet on this connection).
@@ -297,10 +298,13 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     renderEmpty();
     render();
     // Focus asked for before the terminal showed lands now, unless the person is typing in a
-    // text field meanwhile (the queued messages box beside a waiting task's terminal), or another
-    // terminal was asked for since (a Shell opened meanwhile): the terminal asked for last wins.
-    // Buttons and tabs do not hold it back.
-    if (focusWanted && (focusWanted === focusRequests || keyboardOnPage()) && !typingElsewhere(el)) term.focus();
+    // text field meanwhile (the queued messages box beside a waiting task's terminal), moved the
+    // keyboard to another control since (a toast's action, a tool; SPEC-641), or another terminal
+    // was asked for since (a Shell opened meanwhile): the terminal asked for last wins. The
+    // control that asked (the link or button that opened the view), also re-created by a
+    // re-render, does not hold it back.
+    const stayed = keyboardOnPage() || keyboardMoveCount() === focusMoves;
+    if (focusWanted && (focusWanted === focusRequests || keyboardOnPage()) && !typingElsewhere(el) && stayed) term.focus();
     if (onReady) onReady();
   }
 
@@ -916,9 +920,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     clickTimer = setTimeout(() => { if (!term.hasSelection()) claim(); }, CLICK_SETTLE_MS);
   }, true);
 
-  function takeFocus() {
+  function takeFocus(moves = keyboardMoveCount()) {
     focusRequests += 1;
     focusWanted = focusRequests;
+    focusMoves = moves;
     if (opened && ready) term.focus();
   }
 
@@ -1029,9 +1034,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     get canWrite() {
       return state.can_write;
     },
-    /** Focus the terminal now, or as soon as it is shown. */
-    focus() {
-      takeFocus();
+    /** Focus the terminal now, or as soon as it is shown; `moves`: the keyboard's move count when
+     *  it was asked for, by a caller that waited for this terminal (keyboardMoveCount). */
+    focus(moves) {
+      takeFocus(moves);
     },
     /**
      * Takes the keyboard for an answer asked for elsewhere on the page (the task view's Reply,

@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -33,6 +33,29 @@ test('Fork… in the task menu forks the task with a message and opens the fork;
   await origin.click();
   await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await expect(browser.locator('.stepstrip a.chain-chip:has-text("Forked: #")')).toBeVisible();
+});
+
+// SPEC-641 (review round 2): the fork's view asks for the keyboard while it is on the page (the
+// Fork button was disabled while its request ran, the menu button is hidden again), so the fork's
+// terminal, shown late, takes it.
+test('a fork from the sidebar row menu gets the keyboard in its terminal when it shows', async ({ app, browser, screen }) => {
+  type Holds = { __yuliusHoldTerminal?: Promise<void>; __releaseTerminal?: () => void };
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await terminalShown(browser);
+  await browser.evaluate(() => {
+    const w = window as unknown as Holds;
+    w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
+  });
+  await browser.locator('.task-row:has-text("Checkout API")').hover();
+  await browser.locator('.task-row:has-text("Checkout API") [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', /^Fork…/).click();
+  await screen.getByRole('dialog', 'Fork #12').getByRole('button', 'Fork').click();
+  await firstShown(screen.getByRole('heading', { level: 1 }), /^#\d+ Fork of #12: Checkout API$/);
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-pending') !== null)).toBe(true);
+  await browser.evaluate(() => (window as unknown as Holds).__releaseTerminal?.());
+  await terminalShown(browser);
+  await expect(browser.locator('.taskview .xterm-helper-textarea')).toBeFocused();
 });
 
 test('the task details page forks too and lists the fork', async ({ app, browser, screen }) => {

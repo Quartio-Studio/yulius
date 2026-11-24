@@ -1,6 +1,6 @@
-import { test } from '@e2e-dev/web';
+import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, mock, pressAndMove, tabGrips, tabMenu, tabNames, tabsInPlace } from './support.ts';
+import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, mock, pressAndMove, tabGrips, tabMenu, tabNames, tabsInPlace, terminalShown } from './support.ts';
 
 failOnPageErrors();
 
@@ -128,46 +128,83 @@ test('a blocked Browser clipboard write can be completed with an explicit click'
   expect(await browser.evaluate(() => document.body.dataset.copiedText)).toBe('first line\nzażółć');
 });
 
-test('expired clipboard actions preserve focus and explain how to copy again', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/12'));
-  await screen.getByRole('button', /^Show tools/).click();
-  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
-  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
-  await browser.evaluate(controlCopyExpiry);
-  await browser.evaluate(() => {
-    type Socket = { push(message: string): void; send(message: string): void };
-    type Mock = { browsers: Map<string, { viewers: Map<Socket, string> }> };
-    const session = (window as unknown as { __yuliusMock: Mock }).__yuliusMock.browsers.get('sb_studio')!;
-    navigator.clipboard.writeText = async () => { throw new DOMException('Blocked', 'NotAllowedError'); };
-    for (const socket of session.viewers.keys()) {
-      const offer = (id: number) => socket.push(JSON.stringify({ type: 'page_copy_available', tab_id: 'tab-app', offer: id }));
-      window.addEventListener('offer-copy-again', () => offer(9));
-      const send = socket.send.bind(socket);
-      socket.send = message => {
-        const request = JSON.parse(message);
-        if (request.type === 'accept_page_copy') {
-          socket.push(JSON.stringify({ type: 'page_clipboard', tab_id: 'tab-app', offer: request.offer, text: 'temporary text' }));
-        } else { send(message); }
-      };
-      offer(8);
-    }
-    document.addEventListener('copy', () => { document.body.dataset.unexpectedCopy = 'yes'; });
+/**
+ * Holds the task terminal until the test releases it (SPEC-641): its first screen (`screen`, the
+ * mock's hold) or its code (`code`, the lazily loaded terminal-core.js), as a slow host does.
+ * Returns whether it is still held, and the release.
+ */
+async function holdTaskTerminal(browser: Browser, late: 'screen' | 'code'): Promise<{ held(): Promise<boolean>; release(): Promise<void> }> {
+  if (late === 'screen') {
+    await browser.addInitScript(() => {
+      const w = window as unknown as { __yuliusHoldTerminal?: Promise<void>; __releaseTerminal?: () => void };
+      w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
+    });
+    return {
+      // Not shown yet, whether or not its code has loaded (the inverse of `terminalShown`).
+      held: () => browser.evaluate(() => document.querySelector('.taskview .term-pending, .taskview .term-placeholder') !== null),
+      release: () => browser.evaluate(() => (window as unknown as { __releaseTerminal: () => void }).__releaseTerminal()),
+    };
+  }
+  let release = () => {};
+  const code = new Promise<void>((resolve) => { release = resolve; });
+  await browser.route(/\/assets\/terminal-core\.js(\?|$)/, async (route) => { await code; await route.continue(); });
+  return {
+    held: () => browser.evaluate(() => document.querySelector('.taskview .term-lazy') !== null && document.querySelector('.taskview .term-host') === null),
+    release: async () => release(),
+  };
+}
+
+// SPEC-641: the task terminal shows only after the person focused the toast's button, as on a slow
+// host (CI run be25f19b): the terminal shown late leaves the keyboard there.
+for (const late of ['screen', 'code'] as const) {
+  test(late === 'screen'
+    ? 'expired clipboard actions preserve focus and explain how to copy again'
+    : 'the clipboard action keeps the focus when the terminal code loads after it', async ({ app, browser, screen }) => {
+    const terminal = await holdTaskTerminal(browser, late);
+    await app.open(mock('/s/studio/t/12'));
+    await screen.getByRole('button', /^Show tools/).click();
+    await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+    await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+    await browser.evaluate(controlCopyExpiry);
+    await browser.evaluate(() => {
+      type Socket = { push(message: string): void; send(message: string): void };
+      type Mock = { browsers: Map<string, { viewers: Map<Socket, string> }> };
+      const session = (window as unknown as { __yuliusMock: Mock }).__yuliusMock.browsers.get('sb_studio')!;
+      navigator.clipboard.writeText = async () => { throw new DOMException('Blocked', 'NotAllowedError'); };
+      for (const socket of session.viewers.keys()) {
+        const offer = (id: number) => socket.push(JSON.stringify({ type: 'page_copy_available', tab_id: 'tab-app', offer: id }));
+        window.addEventListener('offer-copy-again', () => offer(9));
+        const send = socket.send.bind(socket);
+        socket.send = message => {
+          const request = JSON.parse(message);
+          if (request.type === 'accept_page_copy') {
+            socket.push(JSON.stringify({ type: 'page_clipboard', tab_id: 'tab-app', offer: request.offer, text: 'temporary text' }));
+          } else { send(message); }
+        };
+        offer(8);
+      }
+      document.addEventListener('copy', () => { document.body.dataset.unexpectedCopy = 'yes'; });
+    });
+    const copy = screen.getByRole('button', 'Copy to my clipboard');
+    await copy.focus();
+    expect(await terminal.held()).toBe(true);
+    await terminal.release();
+    await terminalShown(browser);
+    await expect(copy).toBeFocused();
+    await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
+    await expect(copy).toBeFocused();
+    await expect(screen.getByText('Copy expired. Click Copy on the webpage again.')).toBeVisible();
+    await copy.click();
+    await browser.evaluate(() => window.dispatchEvent(new Event('offer-copy-again')));
+    await copy.click();
+    const retry = screen.getByRole('button', 'Retry copy');
+    await retry.focus();
+    await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
+    await expect(retry).toBeFocused();
+    await retry.click();
+    expect(await browser.evaluate(() => document.body.dataset.unexpectedCopy)).toBeUndefined();
   });
-  const copy = screen.getByRole('button', 'Copy to my clipboard');
-  await copy.focus();
-  await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
-  await expect(copy).toBeFocused();
-  await expect(screen.getByText('Copy expired. Click Copy on the webpage again.')).toBeVisible();
-  await copy.click();
-  await browser.evaluate(() => window.dispatchEvent(new Event('offer-copy-again')));
-  await copy.click();
-  const retry = screen.getByRole('button', 'Retry copy');
-  await retry.focus();
-  await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
-  await expect(retry).toBeFocused();
-  await retry.click();
-  expect(await browser.evaluate(() => document.body.dataset.unexpectedCopy)).toBeUndefined();
-});
+}
 
 // SPEC-434 MTB-003/004: the Browser's tabs move as the sandbox and Notes tabs do, and keep their order.
 const bpStrip = '[role="tablist"][aria-label="Browser tabs"]';
