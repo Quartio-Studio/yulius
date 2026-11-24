@@ -560,7 +560,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     if (IS_MAC && (event.metaKey || event.key === 'Meta')) return;
     const lower = event.key.toLowerCase();
     if ((IS_MAC ? event.metaKey : event.ctrlKey) && (OWN_SHORTCUTS.has(lower) || lower === 'v')) return;
-    if (isPasteKey(event)) return;
+    if (isPasteKey(event) && !held.has(event.code || event.key)) return; // its down stayed here
     key('up', event.key, event.code, modifiers(event));
   });
   keys.addEventListener('compositionend', (event) => {

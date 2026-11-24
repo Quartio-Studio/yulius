@@ -1477,14 +1477,14 @@ mod copy_input_tests {
             .ok_or("no test display")?;
         let result = async {
             let (page, atoms) = paste_page(&display, dir.path(), &sandbox).await?;
-            let watch = |presses: usize, reread: Duration, asking: Duration| {
+            let watch = |presses: usize, reread: Duration, asking: Duration, late: Duration| {
                 let page = std::sync::Arc::clone(&page);
                 tokio::task::spawn_blocking(move || {
-                    observe_rereads(&page, atoms, presses, reread, asking)
+                    observe_rereads(&page, atoms, presses, reread, asking, late)
                 })
             };
             // Two pastes queued at once: the second waits for the page to read the first.
-            let seen = watch(2, Duration::from_millis(30), Duration::ZERO);
+            let seen = watch(2, Duration::from_millis(30), Duration::ZERO, Duration::ZERO);
             let (first, second) = tokio::join!(
                 display.paste(zeroize::Zeroizing::new("first".into())),
                 display.paste(zeroize::Zeroizing::new("second".into()))
@@ -1510,7 +1510,33 @@ mod copy_input_tests {
             );
 
             // A client that keeps asking holds a newer paste at most the bound.
-            let seen = watch(2, Duration::ZERO, PASTE_QUIET_MAX * 3);
+            // A busy page asks late (review round 3 measured 360 ms): the paste queued after it
+            // still waits, so each gets its own text.
+            let seen = watch(
+                2,
+                Duration::ZERO,
+                Duration::ZERO,
+                Duration::from_millis(350),
+            );
+            let (first, second) = tokio::join!(
+                display.paste(zeroize::Zeroizing::new("busy first".into())),
+                display.paste(zeroize::Zeroizing::new("busy second".into()))
+            );
+            assert_eq!((first?, second?), (PasteOutcome::Read, PasteOutcome::Read));
+            let names: Vec<String> = seen.await??.into_iter().map(|(_, name)| name).collect();
+            assert_eq!(
+                names,
+                [
+                    "key",
+                    "text busy first",
+                    "targets",
+                    "key",
+                    "text busy second",
+                    "targets"
+                ]
+            );
+
+            let seen = watch(2, Duration::ZERO, PASTE_QUIET_MAX * 3, Duration::ZERO);
             display
                 .paste(zeroize::Zeroizing::new("third".into()))
                 .await?;
@@ -1644,9 +1670,9 @@ mod copy_input_tests {
         result
     }
 
-    /// A page that reads like Chrome: on each Shift+Insert its targets, then the text, then
-    /// (after `reread`) its targets again; with `asking`, it goes on asking for the targets every
-    /// 10 ms for that long after the first paste key. Returns when and what it saw (`key`,
+    /// A page that reads like Chrome: on each Shift+Insert (`late` after it, a busy page) its
+    /// targets, then the text, then (after `reread`) its targets again; with `asking`, it goes on
+    /// asking for the targets every 10 ms for that long after the first paste key. Returns when and what it saw (`key`,
     /// `text <text>`, `targets`) once it saw `presses` paste keys and read after the last.
     #[cfg(target_os = "linux")]
     fn observe_rereads(
@@ -1655,6 +1681,7 @@ mod copy_input_tests {
         presses: usize,
         reread: std::time::Duration,
         asking: std::time::Duration,
+        late: std::time::Duration,
     ) -> Result<Vec<(std::time::Instant, String)>, String> {
         use std::time::{Duration, Instant};
         use x11rb::connection::Connection as _;
@@ -1725,6 +1752,8 @@ mod copy_input_tests {
                 if asking_until.is_none() && !asking.is_zero() {
                     asking_until = Some(Instant::now() + asking);
                 }
+                // A busy page handles the key, and asks, only once its task ended.
+                std::thread::sleep(late);
                 convert(atoms.targets)?.ok_or("the targets were refused")?;
                 let pasted = convert(atoms.utf8)?.ok_or("the text was refused")?;
                 let pasted = String::from_utf8(pasted).map_err(|e| text(&e))?;

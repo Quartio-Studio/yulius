@@ -39,9 +39,9 @@ const PASTE_HOLD: Duration = Duration::from_secs(30);
 /// again), and a CLIPBOARD that changes in between, or a read left unanswered, gives the page
 /// an empty paste after Chrome's one-second timeout (traced with Chrome 158).
 pub(crate) const PASTE_QUIET: Duration = Duration::from_millis(100);
-/// How long a paste nobody asked for yet holds a newer one: Chrome asks within milliseconds of
-/// the paste key, so a paste not asked for by then is one the page does not take (the focus is
-/// not in a field), and pastes after it must not wait a second each.
+/// How long a paste nobody asked for yet holds a newer one once a paste before it ended unread
+/// (the page takes none: pastes after it must not wait a second each); otherwise it holds it up
+/// to [`PASTE_QUIET_MAX`], as a busy page asks late (measured up to 360 ms).
 pub(crate) const PASTE_UNREAD_GRACE: Duration = Duration::from_millis(200);
 /// The longest a newer paste waits for that quiet.
 pub(crate) const PASTE_QUIET_MAX: Duration = Duration::from_secs(1);
@@ -56,6 +56,8 @@ pub(super) struct Owner {
     held: Option<Held>,
     /// When a client last asked for the held text (any target).
     asked: Option<Instant>,
+    /// Whether the last paste that ended was replaced before a client fetched its text.
+    unread: bool,
 }
 
 struct Held {
@@ -95,6 +97,7 @@ impl Owner {
             plain: atom(b"text/plain;charset=utf-8")?,
             held: None,
             asked: None,
+            unread: false,
         })
     }
 
@@ -105,7 +108,12 @@ impl Owner {
     /// between Chrome's reads, and a paste nobody reads holds it only the grace.
     pub(super) fn reading(&self) -> bool {
         self.held.as_ref().is_some_and(|held| {
-            (held.waiting.is_some() && held.taken.elapsed() < PASTE_UNREAD_GRACE)
+            let grace = if self.unread {
+                PASTE_UNREAD_GRACE
+            } else {
+                PASTE_QUIET_MAX
+            };
+            (held.waiting.is_some() && held.taken.elapsed() < grace)
                 || self.asked.is_some_and(|at| at.elapsed() < PASTE_QUIET)
         })
     }
@@ -173,6 +181,7 @@ impl Owner {
             ..
         }) = self.held.take()
         {
+            self.unread = true;
             let _ = outcome.send(PasteOutcome::Unread);
         }
     }
@@ -231,6 +240,7 @@ impl Owner {
             written.is_ok()
         });
         if written {
+            self.unread &= !text;
             self.asked = Some(Instant::now());
         }
         if written
