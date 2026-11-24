@@ -1274,6 +1274,22 @@ async fn idle_full_screen(
     let (app, _) = start_on(data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
     let (id, caller) = running(&app, data).await?;
     turn_ended(&app, &id).await?;
+    // Its Stop settles the task before Yulius records the answer: a test that flags the task
+    // next must not meet that Stop still at work (#1615).
+    let run_dir = app
+        .deps
+        .store
+        .live_attempt(&id)
+        .await?
+        .ok_or("run")?
+        .run_dir;
+    let answered = Path::new(&run_dir).join(yulius_app::outage::STOP_ANSWERED_FILE);
+    wait_for(
+        "the first turn's Stop answered",
+        Duration::from_secs(30),
+        || async { answered.is_file() },
+    )
+    .await?;
     Ok((app, clock, id, caller))
 }
 
@@ -1310,7 +1326,9 @@ struct HeldLine {
 
 impl HeldLine {
     /// The person sends `prompt` through `attach`; its `late` part is held, and the turn it
-    /// started ends (its Stop answered) without it.
+    /// started ends (its Stop answered) without it. The turn before has its Stop answered
+    /// ([`idle_full_screen`]): with a held submit the task never leaves Your turn, so only the
+    /// next answered Stop says this turn ended.
     async fn send(
         app: &Arc<App>,
         ctx: &AuthContext,

@@ -396,6 +396,15 @@ impl Observation {
                 window_minutes,
                 scope,
             },
+            Self::SubagentReported {
+                agent_id,
+                report,
+                at,
+            } => Self::SubagentReported {
+                agent_id,
+                report,
+                at: map(at),
+            },
             Self::Queue(change, at) => Self::Queue(change, map(at)),
             Self::LimitReached {
                 resets_at,
