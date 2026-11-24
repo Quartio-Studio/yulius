@@ -460,7 +460,7 @@ function pastedName(file) {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  const ext = (file.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'png';
+  const ext = (file.type.split('/')[1] || 'png').replace(/\+xml$/i, '').replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'png';
   return `pasted-${stamp}.${ext}`;
 }
 

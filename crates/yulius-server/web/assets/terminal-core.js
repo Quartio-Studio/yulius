@@ -452,15 +452,15 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       return;
     }
     if (destroyed) return;
-    // Text wins, as in the browser's paste (an office app copies a picture of the text beside it);
-    // the picture is then never read. xterm wraps the text in bracketed-paste markers when the
+    // Text wins, as in the browser's paste (an office app copies a picture of the text beside it),
+    // unless it is only blanks beside an image; the picture is then never read. xterm wraps the text in bracketed-paste markers when the
     // program asked for them, then sends it.
-    if (read.text) { term.paste(read.text); return; }
+    if (read.text.trim() || (read.text && !read.images.length)) { term.paste(read.text); return; }
     let files;
     try {
       files = await Promise.all(read.images.map((image) => image()));
-    } catch (error) {
-      unread(error);
+    } catch {
+      showNotice(`The browser did not share the image; paste with ${pasteKey}`);
       return;
     }
     if (destroyed) return;
