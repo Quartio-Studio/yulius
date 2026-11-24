@@ -865,8 +865,8 @@ impl VirtualDisplay {
         }
     }
 
-    /// [`Self::queue_paste`] and its outcome.
-    #[cfg(test)]
+    /// [`Self::queue_paste`] and its outcome (the Linux display tests).
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) async fn paste(
         &self,
         text: zeroize::Zeroizing<String>,
