@@ -141,6 +141,8 @@ struct FakeState {
     opaque_origins: bool,
     frame_targets: Vec<Value>,
     enter_submits: bool,
+    /// Pages drop `Input.insertText` (xterm.js takes only keys and pastes).
+    inserted_text_ignored: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
     navigating_after: HashMap<String, usize>,
     /// The address the next mid-call navigation ([`FakeCdpServer::navigate_during_nth`]) goes
@@ -348,6 +350,7 @@ impl FakeCdpServer {
                 opaque_origins: false,
                 frame_targets: Vec::new(),
                 enter_submits: false,
+                inserted_text_ignored: false,
                 failing_after: HashMap::new(),
                 navigating_after: HashMap::new(),
                 navigating_to: None,
@@ -613,6 +616,36 @@ impl FakeCdpServer {
     /// Whether pressing Enter submits the page's form: a new document, as a sign-in form does.
     pub fn set_enter_submits(&self, submits: bool) {
         lock(&self.shared.state).enter_submits = submits;
+    }
+
+    /// Whether pages drop `Input.insertText`, as an xterm.js terminal does: only key events
+    /// type into them.
+    pub fn set_inserted_text_ignored(&self, ignored: bool) {
+        lock(&self.shared.state).inserted_text_ignored = ignored;
+    }
+
+    /// The value typed into the field `selector` (`""`: the focused element when nothing was
+    /// focused) of any page, `None` when nothing was typed into it.
+    #[must_use]
+    pub fn field_value(&self, selector: &str) -> Option<String> {
+        lock(&self.shared.state).pages.values().find_map(|page| {
+            page.fields
+                .iter()
+                .find(|(field, _)| field == selector)
+                .map(|(_, value)| value.clone())
+        })
+    }
+
+    /// The text typed by key downs (`Input.dispatchKeyEvent` with `text`), from the `from`-th
+    /// key event on (counting from 0); Enter is `\r`.
+    #[must_use]
+    pub fn key_text_from(&self, from: usize) -> String {
+        self.calls_for("Input.dispatchKeyEvent")
+            .iter()
+            .skip(from)
+            .filter(|call| call.params["type"] == "keyDown")
+            .filter_map(|call| call.params["text"].as_str().map(str::to_owned))
+            .collect()
     }
 
     /// Out-of-process frames: `iframe` targets (`Target.getTargets`) at `url` whose parent frame
@@ -1206,7 +1239,10 @@ fn respond(
         }
         "Input.insertText" => {
             let typed = text("text");
-            if let Some(page) = lock(&shared.state).page(session_id) {
+            let mut state = lock(&shared.state);
+            if !state.inserted_text_ignored
+                && let Some(page) = state.page(session_id)
+            {
                 page.type_into_focus(typed);
             }
             Ok(json!({}))

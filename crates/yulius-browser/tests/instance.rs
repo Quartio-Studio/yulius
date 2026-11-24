@@ -2060,6 +2060,95 @@ async fn a_secret_typed_while_the_page_moves_on_is_reported() -> TestResult {
     Ok(())
 }
 
+/// SPEC-648 FSK-001, FSK-004: an xterm.js terminal drops `Input.insertText`. A secret, a user
+/// name and a code typed by `browser_fill_secret` reach a page that takes only keys, and nothing
+/// is inserted. A secret in a password field stays out of screenshots; one typed into a terminal
+/// (a text field drawing its echo on a canvas) refuses them.
+#[tokio::test]
+async fn a_secret_reaches_a_page_that_takes_only_keys() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    fake.set_inserted_text_ignored(true);
+    fake.set_password_field("#pw", true);
+    let bank_only = |address: &str| address.starts_with("https://bank.example/");
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
+        .await?;
+    assert_eq!(fake.field_value("#pw").as_deref(), Some("pw-secret-4471"));
+    instance
+        .tool_type_beside_secret(&fill(&tab, "#user", "alice@bank.example"), &bank_only)
+        .await?;
+    instance
+        .tool_type_beside_secret(&fill(&tab, "#code", "402917"), &bank_only)
+        .await?;
+    assert_eq!(
+        fake.field_value("#user").as_deref(),
+        Some("alice@bank.example")
+    );
+    assert_eq!(fake.field_value("#code").as_deref(), Some("402917"));
+    // The secret is whole in its password field: a screenshot is taken.
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+
+    // A terminal's focus is a text field, not a password field.
+    instance
+        .tool_type_secret(&fill(&tab, "#term", "term-secret-5512"), &bank_only)
+        .await?;
+    assert_eq!(
+        fake.field_value("#term").as_deref(),
+        Some("term-secret-5512")
+    );
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    assert!(fake.calls_for("Input.insertText").is_empty(), "nothing inserted");
+    Ok(())
+}
+
+/// SPEC-648 FSK-003: a pressed Tab would move the focus in the middle of a secret, and other
+/// control characters have no key. A text holding one is refused before anything is typed,
+/// without the text in the error. Line ends (`\n`, `\r\n`) are typed as Enter.
+#[tokio::test]
+async fn a_secret_with_a_tab_or_control_character_is_refused_before_typing() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    for text in ["zq\t7731xy", "zq7731\u{7}xy", "zq7731\rxy", "zq7731\u{1b}[A"] {
+        let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+        for beside in [false, true] {
+            let params = fill(&tab, "#pw", text);
+            let typed = if beside {
+                instance.tool_type_beside_secret(&params, &|_: &str| true).await
+            } else {
+                instance.tool_type_secret(&params, &|_: &str| true).await
+            };
+            assert!(
+                matches!(&typed, Err(BrowserError::InvalidInput(message)) if !message.contains("7731")),
+                "{text:?}: {typed:?}"
+            );
+        }
+        assert_eq!(
+            fake.calls_for("Input.dispatchKeyEvent").len(),
+            keys,
+            "{text:?}: nothing typed"
+        );
+    }
+    assert!(fake.calls_for("Input.insertText").is_empty());
+    assert_eq!(fake.field_value("#pw"), None);
+
+    let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "line-one\r\nline-two\n"), &|_: &str| true)
+        .await?;
+    assert_eq!(fake.key_text_from(keys), "line-one\rline-two\r");
+    Ok(())
+}
+
 /// SPEC-483 E3: a navigation of Yulius's (an agent's `browser_navigate`, a viewer's address bar,
 /// back, reload) waits while a secret is typed: it cannot put another page under the keys
 /// between the look at the page and the last key.
