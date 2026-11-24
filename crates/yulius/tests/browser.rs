@@ -2264,6 +2264,34 @@ async fn a_viewer_paste_is_a_real_paste_on_the_display_in_order_with_keys() -> T
         let refused = wait_json(&mut socket, |m| m["type"] == "error").await?;
         assert_eq!(refused["code"], "invalid", "{refused}");
         assert_eq!(display.pastes().len(), 3);
+        // 32 KiB that JSON escaping grows sixfold still arrives (the socket's message bound).
+        let escaped = "\u{1}\"".repeat(16 * 1024);
+        send(
+            &mut socket,
+            json!({"type": "paste", "tab_id": tab, "text": escaped}),
+        )
+        .await?;
+        send(
+            &mut socket,
+            json!({"type": "key", "tab_id": tab, "event": "down", "key": "c", "code": "KeyC"}),
+        )
+        .await?;
+        assert!(
+            display
+                .wait_for_input(
+                    |i| *i
+                        == DisplayInput::Key {
+                            keycode: 54,
+                            press: true
+                        },
+                    WAIT
+                )
+                .await
+        );
+        assert_eq!(
+            display.pastes().last().map(|(_, text)| text.as_str()),
+            Some(escaped.as_str())
+        );
         Ok(())
     })
     .await

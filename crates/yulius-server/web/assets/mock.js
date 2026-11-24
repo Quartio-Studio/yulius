@@ -7445,6 +7445,23 @@ class BrowserSession {
         this.render();
         break;
       }
+      case 'paste': {
+        // As the server (SPEC-639): a paste over 32 KiB is refused; one the page does not take
+        // (the mock's `pasteUnread`) is answered `paste_failed`.
+        const shown = this.tabs.find((t) => t.active);
+        if (!shown || typeof msg.text !== 'string') break;
+        if (this.inputLocked) { ws.push(JSON.stringify(inputLocked(this.db))); break; }
+        this.pastes = [...(this.pastes || []), msg.text];
+        if (new TextEncoder().encode(msg.text).length > 32 * 1024) {
+          ws.push(JSON.stringify({ type: 'error', code: 'invalid', message: 'invalid input: text exceeds 32768 bytes' }));
+        } else if (this.db.browserPasteUnread) {
+          ws.push(JSON.stringify({ type: 'error', code: 'paste_failed', message: 'the paste did not reach the page: the page did not take it. Click where the text goes and paste again' }));
+        } else {
+          this.typed.set(shown.id, ((this.typed.get(shown.id) || '') + msg.text).slice(-80));
+          this.render();
+        }
+        break;
+      }
       case 'key': {
         const shown = this.tabs.find((t) => t.active);
         if (!shown) break;

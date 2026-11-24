@@ -175,6 +175,43 @@ const bpStrip = '[role="tablist"][aria-label="Browser tabs"]';
 // SPEC-483 E1 (ADR-0318): on a host whose browser policy is not in force the sandbox browser
 // shows, but refuses clicks and keys (they would reach Chrome's own file dialogs on the host).
 // The viewer is told why and what an administrator runs, once, not at every key.
+// SPEC-639: a paste in the panel goes to the sandbox page whole, as one `paste` message (the
+// server makes it a real paste there); too long, not taken or not connected is said, never lost.
+test('a paste in the browser panel is sent whole and a lost one is said', async ({ app, browser, screen }) => {
+  type Pasting = Window & { __yuliusMock: { browserPasteUnread?: boolean; browsers: Map<string, { pastes?: string[] }> } };
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await expect
+    .poll(() => browser.evaluate(() => ((document.querySelector('.bp-canvas') as HTMLCanvasElement | null)?.width ?? 0) > 10), { timeout: 15000 })
+    .toBe(true);
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  const paste = (text: string) => browser.evaluate((value: string) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', value);
+    const target = document.activeElement as HTMLElement;
+    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    return target.className;
+  }, text);
+  const pastes = () => browser.evaluate(() => (window as unknown as Pasting).__yuliusMock.browsers.get('sb_studio')?.pastes ?? []);
+  const code = 'sk-ant-oauth-'.padEnd(100, 'x');
+  const long = 'ab\n'.repeat(1667).slice(0, 5000);
+  expect(await paste(code)).toContain('bp-keys');
+  await paste(long);
+  await expect.poll(pastes).toEqual([code, long]);
+
+  // Over 32 KiB is not cut: nothing is sent, and the panel says why.
+  await paste('x'.repeat(40 * 1024));
+  await expect(browser.locator('.toast:has-text("Nothing was pasted: the text is 40 KiB")')).toBeVisible();
+  expect(await pastes()).toHaveLength(2);
+  // A paste the page did not take comes back, and the panel says so.
+  await browser.evaluate(() => { (window as unknown as Pasting).__yuliusMock.browserPasteUnread = true; });
+  await paste('lost code');
+  await expect(browser.locator('.toast:has-text("the page did not take it")')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 test('a sandbox browser without the host policy says once that clicks and keys are off', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&browser=locked'));
   await screen.getByRole('button', /^Show tools/).click();

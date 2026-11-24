@@ -61,8 +61,9 @@ const KEYFRAME_REQUEST_SPACING: Duration = Duration::from_secs(1);
 const CONTROL_QUEUE: usize = 64;
 /// How long a JSON message may wait for queue space before the viewer is disconnected.
 const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(10);
-/// Largest accepted client message (a paste is at most 32 KiB of text).
-const MAX_CLIENT_MESSAGE: usize = 64 * 1024;
+/// Largest accepted client message: a paste is at most 32 KiB of text, which JSON escaping
+/// grows up to six times (`\u0001`), SPEC-639.
+const MAX_CLIENT_MESSAGE: usize = 256 * 1024;
 /// Input events per second a connection may send on average.
 const INPUT_RATE: f64 = 500.0;
 /// Input events a connection may send in a burst.
