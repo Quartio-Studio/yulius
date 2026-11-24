@@ -556,6 +556,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0472 -->
 <!-- ADR 0473 -->
 <!-- ADR 0474 -->
+- [0475](0475-browser-fill-secret-types-real-key-presses.md): `browser_fill_secret` types real key presses like `browser_type` (a secret reaches a terminal); a tab or control character is refused before typing; supersedes the secret part of 0471 (SPEC-648, #1740)
 <!-- ADR 0475 -->
 <!-- ADR 0476 -->
 <!-- ADR 0477 -->

@@ -3,6 +3,8 @@
 ## Status
 
 Accepted for [SPEC-639](../../.ai/specs/SPEC-639-browser-paste-into-terminals-and-other-p.md).
+Its `browser_fill_secret` part (kept on `Input.insertText`) is superseded by
+[ADR-0475](0475-browser-fill-secret-types-real-key-presses.md): secrets are typed as key presses too.
 
 ## Context
 
