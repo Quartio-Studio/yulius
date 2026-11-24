@@ -615,7 +615,10 @@ document read again once the field has the focus; and, last, of the addresses Ch
 navigations of the page's frames to (`Leaving`: `Page.frameStartedNavigating`, kept until the
 frame arrived, stopped loading or is gone, bounded). A secret's user name and one-time code are
 typed under the same rule (`tool_type_beside_secret`)
-([ADR-0320](decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md)).
+([ADR-0320](decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md)). All three are typed
+as real key presses, as `browser_type` types, so terminals take them; a text holding a tab or
+another control character is refused before anything is typed
+([ADR-0475](decisions/0475-browser-fill-secret-types-real-key-presses.md)).
 Pixels cannot be
 redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, each value
 `browser_fill_secret` typed, the hosts and documents it went into and the hosts it reached outside
