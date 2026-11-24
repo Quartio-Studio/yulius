@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-24
+
+- A screenshot copied outside Yulius pastes into a terminal from its right-click menu's Paste and with Ctrl+V on macOS (#1734): the paste that reads the clipboard itself took only text, so an image sent nothing. It now reads the clipboard's items: text pastes as before and wins over an image, which is then not even read, an image (PNG first) is uploaded and its path typed as the browser's own paste does, and a clipboard with nothing to paste (in Chrome on Linux, a file copied in a file manager) says to use the paste key, which uploads copied files. The Browser panel's paste is task #623's. [SPEC-638](../.ai/specs/SPEC-638-i-can-t-paste-things-to-the-sandbox-if-t.md)
+
 ## 2026-11-23
 
 - A task whose session Yulius could not end (a switch, stop or park whose host survived) keeps its Needs you "Yulius could not end this session" until a person stops it or the session ends: a late prompt, turn end, goal verdict or interrupt of that session no longer turns it Done, Working or Waiting and drops the reason (once a pause or another matter replaced that flag, the task follows its session as before) (#1611, the flaky `a_switch_whose_old_run_cannot_be_ended_starts_no_new_run`). [ADR-0468](decisions/0468-a-flag-whose-cause-stands-is-not-answered-by-work.md), [SPEC-635](../.ai/specs/SPEC-635-a-yulius-could-not-end-this-session-flag.md)
