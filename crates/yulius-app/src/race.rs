@@ -353,6 +353,9 @@ pub enum Point {
     /// path is the hook's session id joined with its event, so a test holds one hook of one run
     /// as a loaded server does after its client gave up.
     HookArrived,
+    /// The transcript watcher read a prompt's record (`Observation::UserTurn`); its last-Stop
+    /// check has not run, nor taken the turn order (SPEC-636). The path is the task id.
+    UserTurnRead,
 }
 
 #[cfg(feature = "test-support")]

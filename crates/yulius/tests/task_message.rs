@@ -1289,58 +1289,89 @@ async fn turn_ended(app: &App, id: &TaskId) -> TestResult {
     .await
 }
 
-/// A prompt's submit hook, kept at its arrival (`race::Point::HookArrived`) until
-/// [`Self::release`]. Its client gave up on it meanwhile (`HOOK_TIMEOUT`), and the agent
-/// answered and ended its turn, as on a loaded host (#1615).
-struct HeldSubmit {
+/// What of a prompt reaches Yulius late, after its turn ended, as on a loaded host (#1615).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Late {
+    /// Nothing: the steps run on their own.
+    Nothing,
+    /// Its submit hook, kept at its arrival (`race::Point::HookArrived`): its client gives up on
+    /// it meanwhile (`HOOK_TIMEOUT`), and the agent answers and ends its turn.
+    Submit,
+    /// Its transcript record, kept where the watcher reads it (`race::Point::UserTurnRead`): the
+    /// watcher reads once a second, after a turn that ends at once.
+    Record,
+}
+
+/// A prompt the person sent whose `Late` part is kept back until [`Self::release`].
+struct HeldLine {
+    late: Late,
     release: std::sync::mpsc::Sender<()>,
 }
 
-impl HeldSubmit {
-    /// The person sends `prompt` through `attach`; its submit hook is held, and the turn it
-    /// started ends without it.
+impl HeldLine {
+    /// The person sends `prompt` through `attach`; its `late` part is held, and the turn it
+    /// started ends (its Stop answered) without it.
     async fn send(
         app: &Arc<App>,
         ctx: &AuthContext,
         attach: &TerminalAttach,
         prompt: &str,
+        late: Late,
     ) -> Result<Self, Error> {
         let id = &attach.task_id;
         let attempt = app.deps.store.live_attempt(id).await?.ok_or("run")?;
-        let session = attempt.provider_session_id.ok_or("session")?;
+        let run_dir = std::path::PathBuf::from(&attempt.run_dir);
+        let key = match late {
+            Late::Submit => {
+                let session = attempt.provider_session_id.ok_or("session")?;
+                (
+                    yulius_app::race::Point::HookArrived,
+                    Path::new(&session).join("UserPromptSubmit"),
+                )
+            }
+            Late::Record => (
+                yulius_app::race::Point::UserTurnRead,
+                Path::new(id.as_str()).into(),
+            ),
+            Late::Nothing => return Err("nothing to hold".into()),
+        };
         let (reached, parked) = tokio::sync::oneshot::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
-        yulius_app::race::on(
-            yulius_app::race::Point::HookArrived,
-            &Path::new(&session).join("UserPromptSubmit"),
-            move || {
-                let _ = reached.send(());
-                let go_on =
-                    tokio::task::block_in_place(|| released.recv_timeout(Duration::from_secs(120)));
-                assert!(go_on.is_ok(), "the held submit was never released");
-            },
-        );
+        yulius_app::race::on(key.0, &key.1, move || {
+            let _ = reached.send(());
+            let go_on =
+                tokio::task::block_in_place(|| released.recv_timeout(Duration::from_secs(120)));
+            assert!(go_on.is_ok(), "the held line was never released");
+        });
+        let stop_before = yulius_app::outage::stop_answered_at(&run_dir);
         app.terminal_input(ctx, attach, format!("{prompt}\r").as_bytes(), false)
             .await?;
-        tokio::time::timeout(Duration::from_secs(30), parked).await??;
         let answer = format!("ECHO: {prompt}");
         wait_for("the answer", Duration::from_secs(30), || async {
             screen(app, id).contains(&answer)
         })
         .await?;
+        wait_for("the turn's Stop", Duration::from_secs(30), || async {
+            yulius_app::outage::stop_answered_at(&run_dir) > stop_before
+        })
+        .await?;
         turn_ended(app, id).await?;
-        Ok(Self { release })
+        tokio::time::timeout(Duration::from_secs(30), parked).await??;
+        Ok(Self { late, release })
     }
 
-    /// Lets the submit reach Yulius, and waits until Yulius answered it.
+    /// Lets the held part reach Yulius, and waits until Yulius applied it.
     async fn release(self, app: &App, id: &TaskId) -> TestResult {
-        let before = app.prompts_passed(id);
+        let prompts = app.prompts_passed(id);
+        let rounds = app.runtime(id).transcript_rounds();
         self.release.send(())?;
-        wait_for(
-            "the late submit's answer",
-            Duration::from_secs(30),
-            || async { app.prompts_passed(id) > before },
-        )
+        wait_for("the late line applied", Duration::from_secs(30), || async {
+            match self.late {
+                Late::Submit => app.prompts_passed(id) > prompts,
+                // Two more rounds began: the held one ended.
+                _ => app.runtime(id).transcript_rounds() >= rounds + 2,
+            }
+        })
         .await
     }
 }
@@ -1474,7 +1505,7 @@ fn a_message_of_yulius_is_typed_into_a_box_a_key_left_empty() -> TestResult {
 /// types the command, which the agent reads alone, and the flag ends with the hold.
 #[test]
 fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
-    draft_held_until_cleared(false)
+    draft_held_until_cleared(Late::Nothing)
 }
 
 /// #1615: on a loaded host a prompt's submit hook reaches Yulius after its client gave up, the
@@ -1486,12 +1517,22 @@ fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
 /// person sends is held here, as its session is known before its Enter.)
 #[test]
 fn a_submit_that_arrives_after_its_turn_keeps_the_held_message_flag() -> TestResult {
-    draft_held_until_cleared(true)
+    draft_held_until_cleared(Late::Submit)
 }
 
-/// The steps of SPEC-572 AC2, after a prompt whose submit is kept back until the box is cleared
-/// when `late_submit` says so.
-fn draft_held_until_cleared(late_submit: bool) -> TestResult {
+/// #1615, the other order: the transcript watcher reads a prompt's record once a second, so it
+/// can read it after the turn's Stop, the flag of the held message and the cleared box. That
+/// prompt's turn is over, so it changes nothing: the flag stands through the keyboard minute.
+/// On the shifted clock the record's time, stamped on the system clock, used to read as later
+/// than the Stop: the watcher took it for a new turn and set Working over the flag.
+#[test]
+fn a_prompt_record_read_after_its_turn_keeps_the_held_message_flag() -> TestResult {
+    draft_held_until_cleared(Late::Record)
+}
+
+/// The steps of SPEC-572 AC2, after a prompt whose `late` part is kept back until the box is
+/// cleared.
+fn draft_held_until_cleared(late: Late) -> TestResult {
     use yulius_app::mcp_watch::{RECONNECT_TEXT, WatchAction, WatchBounds};
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
@@ -1499,10 +1540,10 @@ fn draft_held_until_cleared(late_submit: bool) -> TestResult {
         let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
         crate::pr_watch::leave_verification_step(&app, &id).await?;
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
-        let held = if late_submit {
-            Some(HeldSubmit::send(&app, &ctx, &attach, "one more thing").await?)
-        } else {
+        let held = if late == Late::Nothing {
             None
+        } else {
+            Some(HeldLine::send(&app, &ctx, &attach, "one more thing", late).await?)
         };
         let mut watch = app.runtime(&id).hub.watch();
         let bounds = WatchBounds {

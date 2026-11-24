@@ -8138,6 +8138,10 @@ impl App {
                 });
             }
             Observation::UserTurn { at, wake } => {
+                crate::race::reached(
+                    crate::race::Point::UserTurnRead,
+                    Path::new(task_id.as_str()),
+                );
                 if let Some(at) = at {
                     runtime.turn_moved_ms.fetch_max(at.0, Ordering::SeqCst);
                 }
