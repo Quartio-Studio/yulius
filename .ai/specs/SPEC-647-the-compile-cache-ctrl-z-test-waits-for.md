@@ -43,9 +43,9 @@ to the whole group and nothing has to forward it (the comment in `run_disposable
 
 ## Plan
 
-- [ ] Race reproduced under a held CPU share with the single read
-- [ ] Bounded wait for the stopped state, test file passes in full
-- [ ] By-hand mutation: SIGTSTP ignored still fails the test
+- [x] Race reproduced under a held CPU share with the single read
+- [x] Bounded wait for the stopped state, test file passes in full
+- [x] By-hand mutation: SIGTSTP ignored still fails the test
 - [ ] Independent review in a fresh session, findings answered
 
 ## Acceptance criteria
@@ -75,3 +75,17 @@ to the whole group and nothing has to forward it (the comment in `run_disposable
   `fg` wait above it. No ADR: a test-only change.
 
 ## Evidence
+
+- Probe before the fix (dev `90ec692d2`, single read; `target/probe-631/run.sh 20`, fake Cargo
+  `SCHED_IDLE` on CPU 0 beside `taskset -c 0 python3 -c 'while 1: pass'`): `pass=0 fail=20`,
+  each `AssertionError: 'R' != 'T'`.
+- Control, the same probe without the busy loop: `pass=20 fail=0`.
+- Probe after the fix (`5a708d998`, `run.sh 50`): `pass=50 fail=0`.
+- Mutation by hand: the fixture's first line
+  `import signal; signal.signal(signal.SIGTSTP, signal.SIG_IGN)`:
+  `test_ctrl_z_stops_a_running_background_build_brought_forward` and
+  `test_terminal_suspends_and_resumes_the_disposable_build` both fail after 5 s with
+  `Cargo kept running (state S) while Bash reported its job suspended`; reverted.
+- `python3 -m unittest discover -s scripts -p test_compile_cache.py`: `Ran 49 tests`,
+  `OK (skipped=7)`.
+- Not tested here: the CI host's own load; the probe stands in for it.
