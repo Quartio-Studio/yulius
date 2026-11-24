@@ -245,8 +245,11 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
         assert_eq!(published, Some(false), "{told:?}");
         // The pass told the owner about its green head, and the fake agent answers with a turn
         // that the session watcher reads on its own clock: once it was read, the owner is at
-        // rest again, and what follows hears the watch alone (SPEC-640 FLK-002).
-        if told.iter().any(|(task, _)| task == &id) {
+        // rest again, and what follows hears the watch alone (SPEC-640 FLK-002). The answer
+        // stays `working` here: the reattached agent's hooks name the first server, and the
+        // fake agent writes no record that closes the turn.
+        assert!(told.iter().any(|(task, _)| task == &id), "{told:?}");
+        {
             super::wait_for(
                 "the owner's answer to the notice",
                 Duration::from_secs(30),
@@ -284,6 +287,20 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
                 .store
                 .set_activity(&id, Some(Activity::Done), app.now())
                 .await?;
+            // A round begun since has ended any probe that still saw the owner working; then
+            // the count is known again before anything is counted.
+            let rounds = app.runtime(&id).transcript_rounds();
+            super::wait_for(
+                "a round of the owner at rest",
+                Duration::from_secs(30),
+                || {
+                    let app = app.clone();
+                    let id = id.clone();
+                    async move { app.runtime(&id).transcript_rounds() > rounds }
+                },
+            )
+            .await?;
+            app.probe_idle_shells(&id).await;
         }
         let summary = app.task_summary(&owner).await?;
         assert!(!summary.candidate_pending, "{summary:?} {told:?}");
@@ -367,7 +384,8 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
         let rounds = app.runtime(&id).transcript_rounds();
         super::wait_for(
             "a watcher round during the pass",
-            Duration::from_secs(30),
+            // Below the hold's own 15 s bound, so a starved run names this wait.
+            Duration::from_secs(10),
             || {
                 let app = app.clone();
                 let id = id.clone();
