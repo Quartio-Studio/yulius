@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-24
 
+- The parking test `a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done` no longer fails the integration gate by chance (dev `fd8d889e1`, `[true, true]`). Its counted watch passes raced the owner's reattached session watcher: that watcher's first round (shell probe and transcript replay) and its reading of the agent's answer to a notice both publish on the watcher's own clock. The fixture now waits for the first round, the test waits for the answer before counting, and a hold of a whole watcher round during the counted pass proves that nothing else is heard. The product was right: one pass publishes once. [SPEC-640](../.ai/specs/SPEC-640-repair-the-integration-gate-flaky-parkin.md)
 - A screenshot copied outside Yulius pastes into a terminal from its right-click menu's Paste and with Ctrl+V on macOS (#1734): the paste that reads the clipboard itself took only text, so an image sent nothing. It now reads the clipboard's items: text pastes as before and wins over an image, which is then not even read, an image (PNG first) is uploaded and its path typed as the browser's own paste does, and a clipboard with nothing to paste (in Chrome on Linux, a file copied in a file manager) says to use the paste key, which uploads copied files. The Browser panel's paste is task #623's. [SPEC-638](../.ai/specs/SPEC-638-i-can-t-paste-things-to-the-sandbox-if-t.md)
 
 ## 2026-11-23

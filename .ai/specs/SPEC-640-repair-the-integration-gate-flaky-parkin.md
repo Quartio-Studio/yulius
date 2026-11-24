@@ -31,12 +31,19 @@ The parent `edcf33a21` has the same Rust code and passed the full gate, so the t
   the host is a little slower, the round falls inside the counted window. The window then
   holds the watch's own publish (`pr_watch.rs` `observe_candidate_pull`, once) plus the
   probe's publish: `[true, true]`.
+- The first counted pass also types a notice into the owner ("Its head … passed its own Yulius
+  CI run, but no merge is armed"). The fake agent answers it with a turn within milliseconds.
+  The watcher reads that turn in its next round and shows the owner `working`, which is a
+  second, independent publisher racing the later windows. Holding the pass for a watcher
+  round made that race certain: `[false, false]`.
 
 ## Root cause
 
 The test counts every `TaskUpdated` of the owner during one `watch_prs` pass. Its fixture does
 not wait for the reattached session watcher's first round. That round publishes on its own
-schedule, so an unrelated, correct publish can land in the counted window.
+schedule, so an unrelated, correct publish can land in the counted window. The same holds
+for the agent's answer to the notice that the first counted pass types: the watcher hears it
+whenever its next round comes.
 
 The product is right. The pass publishes once, when what the task shows changes (SPEC-621
 FIN-004). The probe's publish reports a real change: the background-shell count was unknown
@@ -47,21 +54,24 @@ before the first probe. The replay's publish reports a real activity change too.
 - FLK-001: `restore_owner` returns only after the reattached owner's transcript watcher has
   finished its first round (two rounds began: `transcript_rounds() >= 2`, as
   `pool_supervision` waits for "the transcript replay"), bounded by a timeout, with no sleep.
-- FLK-002: The test proves that the watcher's rounds add nothing to the counted pass. It holds
-  the second pass at `CandidateObservationRead` until a full watcher round has run, then
-  expects exactly the watch's one publish.
+- FLK-002: The test proves that the watcher's rounds add nothing to the counted pass. After
+  the first pass's notice, it waits until the watcher has read the agent's answer (the owner
+  shows `working`, then two more rounds begin) and puts the owner back at rest (`done`). It holds
+  the second pass at `CandidateObservationRead` until a full watcher round has run. It then
+  expects the watch's one publish (`true`) first and no other `true`. That pass ends by typing
+  the failure notice, so the agent's answer to it (`false`) may already be heard after it.
 
 ## Plan
 
 - [x] Reproduce the double publish and find its root cause
-- [ ] Regression check: a watcher round during the held pass adds no publish (fails before the fix)
-- [ ] Fix: the restored owner's watcher finishes its first round before the test body; parking tests in full and under stress
+- [x] Regression check: a watcher round during the held pass adds no publish (fails before the fix)
+- [x] Fix: the restored owner's watcher finishes its first round before the test body; parking tests in full and under stress
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
 - The test passes repeatedly, including with a busy loop beside it under `--stress-count`.
-- Without the fixture fix, the regression check fails with the owner's extra publish.
+- Without either half of the fix, the regression check fails every run.
 - Every `parking::` test of the `yulius::main` binary passes.
 
 ## Test plan
@@ -81,3 +91,27 @@ before the first probe. The replay's publish reports a real activity change too.
   the owner's activity and then reads it, and the watcher's replay could reset it in the same
   first second. Waiting once in the fixture removes that race for all of them.
 - No ADR: this is a test-only change with no lasting product decision.
+
+## Evidence
+
+Run in this worktree on 2026-11-24 with `scripts/cargo nextest run -p yulius -E
+'binary_id(yulius::main) & test(=parking::candidate::a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done)'`
+(logs in the ignored `target/probe/`).
+
+- Probes (temporary `eprintln!` with backtraces in `publish_task`, `probe_idle_shells` and
+  `start_watcher`, since removed) on the unchanged test. The pass published once
+  (`pr_watch.rs:2008`, `observe_candidate_pull`). The extra `pending=true` publish came from
+  `finish.rs` `probe_idle_shells` ← `supervisor.rs` `watch_loop`, `idle=true previous=-1 count=0`.
+  That was the first round of the watcher that `start_watcher` restarted at reattach, about
+  1.0 s after it (`supervisor.rs` reset at reattach, then the first round). The transcript replay
+  (`settle_idle`, `done` → `waiting`) followed in the same round.
+- Regression check alone (commit `9feda500a`, the pass held for two watcher rounds): `--stress-count 5`:
+  5/5 FAIL, `left: [true, false, false]`.
+- With only the fixture wait: `--stress-count 10`: 10/10 FAIL, `left: [false, false]` (the
+  agent's answer to the first pass's notice, read during the held pass).
+- With only the answer wait (fixture wait removed): `--stress-count 5`: 5/5 FAIL, "timed out
+  waiting for the owner's answer to the notice" (the answer is folded into the replay, which
+  never shows `working`).
+- Fixed (commit `3444b475a`): `--stress-count 10`: 10/10 PASS. `--stress-count 20` with 128
+  CPU-bound busy loops beside it (load average 38 → 154): 20/20 PASS.
+- `parking::` tests of `yulius::main` in full: 165 passed, 0 failed.
