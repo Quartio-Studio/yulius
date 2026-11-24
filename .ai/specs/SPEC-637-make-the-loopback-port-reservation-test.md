@@ -1,6 +1,6 @@
 ---
 yulius-task: 0eada8c4-d80b-4c06-9fc3-dffdbe96dd01
-status: in-progress
+status: done
 ---
 
 # SPEC-637 The loopback port reservation test asserts only what it holds
@@ -78,7 +78,7 @@ it is.
 - [x] Probe decision takes an injected binder, unit-tested per address family
 - [x] Real-socket test checks only the held direction, proven under stress
 - [x] ADR, changes entry and spec Evidence
-- [ ] Independent review approves the exact head
+- [x] Independent review approves the exact head
 
 ## Acceptance criteria
 
@@ -151,3 +151,7 @@ Host: this sandbox, `ip_local_port_range` 32768-60999, 128 CPUs. Logs in the wor
 - Not tested: on real sockets, that the binder releases a port it bound (a dropped listener
   frees a port that anyone may take at once; ADR-0469). Also not on real sockets: a host
   without IPv6 loopback, because this host has `[::1]`; the fake host covers both error kinds.
+- Review round 2 (yulius-reviewer, head 8643dda05): approve. The reviewer reapplied the round-1
+  mutant by hand and the lib binary gave 703 run, 1 failed, exactly the new test; restored, 703
+  passed. The two real-socket tests passed 300/300 under `--stress-count 300`. Its one nit, the
+  outdated counts in the PR body, is fixed in the body.
