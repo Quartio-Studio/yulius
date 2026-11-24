@@ -1,6 +1,6 @@
 ---
 yulius-task: d57842b3-f12b-4504-9fbe-86b936cae92c
-status: in-progress
+status: done
 ---
 
 # SPEC-647: The compile-cache Ctrl+Z test waits for Cargo's stopped state instead of reading it once
@@ -46,16 +46,16 @@ to the whole group and nothing has to forward it (the comment in `run_disposable
 - [x] Race reproduced under a held CPU share with the single read
 - [x] Bounded wait for the stopped state, test file passes in full
 - [x] By-hand mutation: SIGTSTP ignored still fails the test
-- [ ] Independent review in a fresh session, findings answered
+- [x] Independent review in a fresh session, findings answered
 
 ## Acceptance criteria
 
 - With a probe that starves the fake Cargo (SCHED_IDLE on CPU 0 beside a busy loop pinned to
   CPU 0), the old single read fails every run with `'R' != 'T'`; the same probe without the
-  busy loop passes every run.
+  busy loop passes nearly every run (the race remains, only rarely lost).
 - With the fix, the same probe passes every run.
 - With the fixture ignoring SIGTSTP, the test fails at the bound naming the state it read.
-- `python3 -m unittest scripts.test_compile_cache` passes.
+- `python3 -m unittest discover -s scripts -p test_compile_cache.py` passes.
 
 ## Test plan
 
@@ -79,7 +79,8 @@ to the whole group and nothing has to forward it (the comment in `run_disposable
 - Probe before the fix (dev `90ec692d2`, single read; `target/probe-631/run.sh 20`, fake Cargo
   `SCHED_IDLE` on CPU 0 beside `taskset -c 0 python3 -c 'while 1: pass'`): `pass=0 fail=20`,
   each `AssertionError: 'R' != 'T'`.
-- Control, the same probe without the busy loop: `pass=20 fail=0`.
+- Control, the same probe without the busy loop: `pass=20 fail=0` here; the reviewer saw one
+  `'R' != 'T'` in 10 such runs, the race itself, rarely lost on an idle CPU.
 - Probe after the fix (`5a708d998`, `run.sh 50`): `pass=50 fail=0`.
 - Mutation by hand: the fixture's first line
   `import signal; signal.signal(signal.SIGTSTP, signal.SIG_IGN)`:
@@ -89,3 +90,9 @@ to the whole group and nothing has to forward it (the comment in `run_disposable
 - `python3 -m unittest discover -s scripts -p test_compile_cache.py`: `Ran 49 tests`,
   `OK (skipped=7)`.
 - Not tested here: the CI host's own load; the probe stands in for it.
+- Independent review (yulius-reviewer, Fable 5.2) of `6937f9e4f`: approve. It reproduced the
+  probe on copies (dev 0/10, head 20/20), confirmed the SIGTSTP mutation, and added a product
+  mutation (`process_group=0` in `run_disposable`) that fails all three shell-job tests. Its
+  minor (this spec named the `-m unittest scripts.test_compile_cache` form, which fails on
+  imports) and its nit (the control is not perfect) are answered above. Yulius CI run
+  `154ee630-80ab-46d7-93fb-de51c18aa79e` passed at that head.
