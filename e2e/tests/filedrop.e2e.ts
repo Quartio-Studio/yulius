@@ -223,7 +223,8 @@ test('an image copied outside pastes into the task terminal from the menu; text 
   // An image only (a screenshot), with PNG preferred over another image type listed first: one
   // upload, its path typed after the text above, which the input still holds. The drop's queue is
   // serial, so an upload of the earlier paste's picture would show as a path before this one.
-  await clipboard([{ 'image/svg+xml': '<svg/>', 'image/png': '' }], { reset: false });
+  // Text of nothing but blanks beside it does not win, as in the browser's own paste.
+  await clipboard([{ 'text/plain': '\n ', 'image/svg+xml': '<svg/>', 'image/png': '' }], { reset: false });
   await menuPaste();
   await expect.poll(() => typedIntoTask(browser)).toMatch(/^(\[200~)?cell text(\[201~)?(\[200~)?\/var\/lib\/yulius\/sandboxes\/sb_studio\/attachments\/tasks\/tsk_studio_12\/pasted-\d{8}-\d{6}\.png (\[201~)?$/);
   await expect(browser.locator('.taskview-term .upload-text')).toHaveText(/^Added pasted-\d{8}-\d{6}\.png$/);
@@ -254,6 +255,17 @@ test('an image copied outside pastes into the task terminal from the menu; text 
   await menuPaste();
   await expect(browser.locator('.taskview .term-notice')).toHaveText(/no text or image.*(Ctrl\+V|⌘V)/);
   expect(await typedIntoTask(browser)).toBe('');
+
+  // An image that cannot be read: said, naming the paste key, and nothing is sent.
+  await clipboard([{ 'image/png': '' }], { failImage: true });
+  await menuPaste();
+  await expect(browser.locator('.taskview .term-notice')).toHaveText(/did not share the image.*(Ctrl\+V|⌘V)/);
+  expect(await typedIntoTask(browser)).toBe('');
+
+  // An SVG only (a web app wrote it): uploaded as `.svg`.
+  await clipboard([{ 'image/svg+xml': '<svg/>' }]);
+  await menuPaste();
+  await expect.poll(() => typedIntoTask(browser)).toMatch(/^(\[200~)?\/var\/lib\/yulius\/sandboxes\/sb_studio\/attachments\/tasks\/tsk_studio_12\/pasted-\d{8}-\d{6}\.svg (\[201~)?$/);
 });
 
 test('a terminal whose files nobody takes says it takes text only (SPEC-638)', async ({ app, browser, screen }) => {
