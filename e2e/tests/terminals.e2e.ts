@@ -104,6 +104,30 @@ test('a Shell tab whose terminal has not opened yet takes the keyboard when chos
   await expect(shownInput(browser)).toBeFocused();
 });
 
+// SPEC-641 (review round 1): choosing a tab rebuilds the tab strip and focuses the new tab node.
+// That is the app keeping the focus, not the person moving on: the terminal still loading behind
+// the chosen tab takes the keyboard when it shows (a key on the tab could close it).
+test('a Shell tab chosen while its terminal still loads takes the keyboard when it shows', async ({ app, browser, screen }) => {
+  type Holds = { __yuliusHoldShell?: Promise<void>; __releaseShell?: () => void };
+  await browser.addInitScript(() => {
+    const w = window as unknown as Holds;
+    w.__yuliusHoldShell = new Promise<void>((resolve) => { w.__releaseShell = resolve; });
+  });
+  await app.open(mock('/s/studio/t/12'));
+  await openShellPanel(screen);
+  const tabs = screen.getByRole('tablist', 'Terminals');
+  await expect(tabs.getByRole('tab')).toHaveCount(1);
+  await screen.getByRole('button', 'New terminal').click();
+  await expect(tabs.getByRole('tab')).toHaveCount(2);
+  // Both terminals exist and wait for their first screen.
+  await expect.poll(() => browser.evaluate(() => document.querySelectorAll('.term-views .term-slot .term-pending').length)).toBe(2);
+  const first = tabs.getByRole('tab').first();
+  await first.click();
+  await expect(first).toHaveAttribute('aria-selected', 'true');
+  await browser.evaluate(() => (window as unknown as Holds).__releaseShell?.());
+  await expect(shownInput(browser)).toBeFocused();
+});
+
 test('closing the shown Shell tab puts the keyboard in the neighbour that had not opened yet', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await seedTwoShells(browser);
