@@ -181,10 +181,18 @@ async fn status_of(app: &App, id: &TaskId) -> (Option<TaskStatus>, Option<Activi
     }
 }
 
+/// How long [`parked`] waits for a park.
+const PARK_WAIT: Duration = Duration::from_secs(30);
+
 /// Parks `id`: a pass runs at each look until it parked, so a pass that came in the millisecond
 /// its state last changed (quiet 0 of a 1 ms grace) is followed by another.
 async fn parked(app: &Arc<App>, id: &TaskId) -> TestResult {
-    wait_for("the task to park", Duration::from_secs(30), || async {
+    parked_within(app, id, PARK_WAIT).await
+}
+
+/// [`parked`] with its own bound.
+async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) -> TestResult {
+    wait_for("the task to park", bound, || async {
         if status_of(app, id).await.0 == Some(TaskStatus::Running) {
             app.park_idle_sessions_now().await;
         }

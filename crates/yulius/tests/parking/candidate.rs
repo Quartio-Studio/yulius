@@ -1029,6 +1029,84 @@ fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner() -> TestResu
     Ok(())
 }
 
+/// #1649: a park pass held inside its PR verification ends the wait at its bound, and the
+/// failure says where the pass was.
+#[test]
+fn a_park_pass_held_in_its_pr_reads_fails_at_the_bound_and_names_the_stage() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        *remote.pull_list_hold.lock().map_err(|_| "hold")? = Some(hold.clone());
+        let bound = Duration::from_secs(2);
+        let started = std::time::Instant::now();
+        let waited = tokio::time::timeout(
+            Duration::from_secs(20),
+            super::parked_within(app, &id, bound),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        remote.pull_list_hold.lock().map_err(|_| "hold")?.take();
+        hold.notify_waiters();
+        let failure = waited
+            .map_err(|_| format!("the park wait outlived its {bound:?} bound by 18 s"))?
+            .err()
+            .ok_or("parked while its PR read was held")?
+            .to_string();
+        assert!(elapsed < bound + Duration::from_secs(3), "{elapsed:?}");
+        assert!(
+            failure.contains("still running")
+                && failure.contains("verifying the task's pull requests"),
+            "{failure}"
+        );
+        Ok(())
+    })
+}
+
+/// #1649: a case whose phase never ends fails at its bound naming the case and the phase, and
+/// its task is still stopped.
+#[test]
+fn a_stalled_case_fails_at_its_bound_naming_the_case_and_phase() -> TestResult {
+    let seen: Arc<std::sync::Mutex<Option<(Arc<yulius_app::context::App>, TaskId)>>> =
+        Arc::default();
+    let kept = seen.clone();
+    let (sent, outcome) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let bounds = CaseBounds {
+            check: Duration::from_secs(2),
+            ..CaseBounds::default()
+        };
+        let result = with_idle_case("stalled", bounds, async |_, app, _, id, _| {
+            if let Ok(mut slot) = kept.lock() {
+                *slot = Some((app.clone(), id));
+            }
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        let _ = sent.send(result.map_err(|err| err.to_string()));
+    });
+    let failure = outcome
+        .recv_timeout(Duration::from_secs(90))
+        .map_err(|_| "a stalled case did not fail within its bounds")?
+        .err()
+        .ok_or("a stalled case passed")?;
+    assert!(
+        failure.contains("stalled") && failure.contains("check") && failure.contains("2s"),
+        "{failure}"
+    );
+    let (app, id) = seen
+        .lock()
+        .map_err(|_| "seen")?
+        .take()
+        .ok_or("no check ran")?;
+    let rt = runtime()?;
+    let status = rt.block_on(super::status_of(&app, &id)).0;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    assert!(
+        status.is_some_and(|state| state.is_resting()),
+        "the stalled case left its task {status:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn an_open_candidate_with_a_missing_branch_defers_the_park() -> TestResult {
     for missing_head_branch in [true, false] {
@@ -1049,6 +1127,41 @@ fn an_open_candidate_with_a_missing_branch_defers_the_park() -> TestResult {
 }
 
 fn with_idle_candidate(
+    check: impl AsyncFnOnce(
+        &Path,
+        &Arc<yulius_app::context::App>,
+        &Arc<crate::support::FakeGitHub>,
+        TaskId,
+        String,
+    ) -> TestResult,
+) -> TestResult {
+    with_idle_case("idle candidate", CaseBounds::default(), check)
+}
+
+/// How long each phase of a [`with_idle_case`] case may take.
+#[derive(Clone, Copy)]
+struct CaseBounds {
+    seed: Duration,
+    restart: Duration,
+    check: Duration,
+    cleanup: Duration,
+}
+
+impl Default for CaseBounds {
+    fn default() -> Self {
+        Self {
+            seed: Duration::from_secs(40),
+            restart: Duration::from_secs(40),
+            check: Duration::from_secs(40),
+            cleanup: Duration::from_secs(30),
+        }
+    }
+}
+
+/// An answered candidate owner restored after a restart, idle, handed to `check` as `case`.
+fn with_idle_case(
+    _case: &str,
+    _bounds: CaseBounds,
     check: impl AsyncFnOnce(
         &Path,
         &Arc<yulius_app::context::App>,
