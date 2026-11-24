@@ -73,3 +73,18 @@ fn a_hook_or_point_outside_any_runtime_matches_by_point_and_key() -> TestResult 
     );
     Ok(())
 }
+
+#[test]
+fn a_hook_whose_runtime_shut_down_runs_on_the_next_one() -> TestResult {
+    let key = "pause-points-restart";
+    let first = runtime()?;
+    let ran = first.block_on(async { hook(key) });
+    first.shutdown_timeout(std::time::Duration::from_secs(5));
+    // The test restarts its server on a new runtime, as `task_done.rs` restarts do.
+    runtime()?.block_on(async { reached(Point::ParkedStatusRead, Path::new(key)) });
+    assert!(
+        ran.load(Ordering::SeqCst),
+        "a test's hook outlives the server life it was registered in"
+    );
+    Ok(())
+}
