@@ -1,11 +1,11 @@
 ---
 yulius-task: 1be160e2-e214-43f5-8c56-57c9463c183f
-status: done
+status: in-progress
 ---
 
 # SPEC-644: Menus opened inside a modal dialog show above it and work
 
-Status: done
+Status: in-progress
 Date: 2026-11-24
 Owner: Yulius task #628
 Scope authorization: task #628: "Solve GitHub issue #1735 in one pull request into `dev` whose
@@ -65,6 +65,7 @@ open. Menus outside dialogs keep their placement and behaviour.
 - [x] Independent review in a fresh session, every finding answered
 - [x] Integration gate repair: the xclipboard paste owner test reads the release after a round trip
 - [x] Review notes: a point menu gives the keyboard back, topmost of two modals tested, comments and ADR wording
+- [ ] Review round 2 of the notes and the gate repair, every finding answered
 
 ## Acceptance criteria
 
