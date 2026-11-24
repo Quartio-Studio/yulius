@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-24
+
+- A screenshot copied outside Yulius pastes into a terminal from its right-click menu's Paste and with Ctrl+V on macOS (#1734): the paste that reads the clipboard itself took only text, so an image sent nothing. It now reads the clipboard's items: text pastes as before and wins over an image, an image is uploaded and its path typed as the browser's own paste does, and a clipboard with nothing to paste (a file copied in a file manager) says to use the paste key. The Browser panel's paste is task #623's. [SPEC-638](../.ai/specs/SPEC-638-i-can-t-paste-things-to-the-sandbox-if-t.md)
+
 ## 2026-11-23
 
 - The test `a_loopback_listener_keeps_a_port_reserved` no longer fails when another loopback user of the host takes or holds the port it released (#1620): the probe's decision takes an injected bind and is tested per address family with a fake host, and the real-socket test checks only that a held listener keeps its port reserved. The product's probe is unchanged. [ADR-0469](decisions/0469-a-test-of-a-host-wide-resource-asserts-only-what-it-holds.md), [SPEC-637](../.ai/specs/SPEC-637-make-the-loopback-port-reservation-test.md)

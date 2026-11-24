@@ -431,7 +431,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     for (const item of await navigator.clipboard.read()) {
       const image = item.types.find((type) => type.startsWith('image/'));
       if (item.types.includes('text/plain')) text += await (await item.getType('text/plain')).text();
-      else if (image) files.push(new File([await item.getType(image)], `image.${image.slice(6).replace(/[^a-z0-9]/gi, '') || 'png'}`, { type: image }));
+      if (image) files.push(new File([await item.getType(image)], `image.${image.slice(6).replace(/[^a-z0-9]/gi, '') || 'png'}`, { type: image }));
     }
     return { text, files };
   }
