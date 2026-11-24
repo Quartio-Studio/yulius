@@ -3140,10 +3140,14 @@ fn a_write_that_looked_before_the_flag_was_stored_leaves_it() -> TestResult {
         let (recorded_tx, recorded) = std::sync::mpsc::channel();
         let (checked_tx, checked) = std::sync::mpsc::channel();
         let (flagged_tx, flagged) = std::sync::mpsc::channel();
+        let looked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let write_looked = looked.clone();
         // The flag waits until a session write looked; that write goes on once the flag is in.
         on(Point::EndFailedRecorded, &key, move || {
             let _ = recorded_tx.send(());
-            let _ = tokio::task::block_in_place(|| checked.recv_timeout(Duration::from_secs(30)));
+            let checked =
+                tokio::task::block_in_place(|| checked.recv_timeout(Duration::from_secs(30)));
+            write_looked.store(checked.is_ok(), std::sync::atomic::Ordering::SeqCst);
         });
         on(Point::SessionActivityChecked, &key, move || {
             let _ = checked_tx.send(());
@@ -3160,6 +3164,10 @@ fn a_write_that_looked_before_the_flag_was_stored_leaves_it() -> TestResult {
         assert_eq!(
             switch_result(switch).await?,
             Err("the session could not be ended, so it was not switched".to_owned())
+        );
+        assert!(
+            looked.load(std::sync::atomic::Ordering::SeqCst),
+            "a session write looked while the flag was being raised"
         );
         flag_still_stands(&app, &id).await?;
         ends_by_itself(&app, &host, &id).await
