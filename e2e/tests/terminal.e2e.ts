@@ -139,6 +139,70 @@ async function selectRow(browser: Browser, text: string): Promise<void> {
   await browser.mouse.up();
 }
 
+// SPEC-641 (review round 1): the sandbox tab that brings a task view back keeps the keyboard while
+// the terminal loads; a count change repaints the tab row and focuses that tab's new node (keepFocus).
+// That is not the person moving on: the terminal takes the keyboard when it shows.
+test('a task terminal shown late takes the keyboard from its sandbox tab repainted meanwhile', async ({ app, browser, screen }) => {
+  type Holds = { __yuliusHoldTerminal?: Promise<void>; __releaseTerminal?: () => void };
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await terminalShown(browser);
+  await browser.locator('.tabrow-tabs .tab:has-text("product")').click();
+  await expect.poll(() => browser.evaluate(() => location.hash)).not.toContain('/s/studio/t/12');
+  await browser.evaluate(() => {
+    const w = window as unknown as Holds;
+    w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
+  });
+  await browser.locator('.tabrow-tabs .tab:has-text("studio")').click();
+  await expect.poll(() => browser.evaluate(() => location.hash)).toContain('/s/studio/t/12');
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-pending') !== null)).toBe(true);
+  type Marked = HTMLElement & { e2eMark?: boolean };
+  expect(await browser.evaluate(() => {
+    const tab = document.activeElement as Marked;
+    tab.e2eMark = true;
+    return tab.closest('.tabrow-tabs') !== null;
+  })).toBe(true);
+  await touchTask(browser, 'sb_product', 7, { status: 'running', started: true });
+  await expect.poll(() => browser.evaluate(() => {
+    const tab = document.activeElement as Marked;
+    return tab.closest('.tabrow-tabs') !== null && !tab.e2eMark;
+  })).toBe(true);
+  await browser.evaluate(() => (window as unknown as Holds).__releaseTerminal?.());
+  await terminalShown(browser);
+  await expect(browser.locator('.taskview .xterm-helper-textarea')).toBeFocused();
+});
+
+// SPEC-641 (review round 2): the control that opened the task view leaves with the page it was on
+// (the composer's prompt, Go to task). The person's next focus, before the terminal shows, is a
+// move: the terminal leaves the keyboard there.
+for (const opener of ['composer', 'Go to task'] as const) {
+  test(`a task opened from ${opener === 'composer' ? 'the composer' : 'Go to task'} leaves the keyboard on the control focused before its terminal shows`, async ({ app, browser, screen }) => {
+    type Holds = { __yuliusHoldTerminal?: Promise<void>; __releaseTerminal?: () => void };
+    await browser.addInitScript(() => {
+      const w = window as unknown as Holds;
+      w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
+    });
+    if (opener === 'composer') {
+      await app.open(mock('/s/studio', '&ambient=0'));
+      const prompt = screen.getByRole('textbox', 'Task prompt');
+      await prompt.fill('Add a health check endpoint');
+      await prompt.press('ControlOrMeta+Enter');
+      await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+    } else {
+      await app.open(mock('/s/studio/tasks/12', '&ambient=0'));
+      await firstShown(screen.getByRole('heading', { level: 1 }), /#12/);
+      await screen.getByRole('link', 'Go to task').click();
+      await expect(browser).toHaveURL(/#\/s\/studio\/t\/12$/);
+    }
+    await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-pending') !== null)).toBe(true);
+    const tools = screen.getByRole('button', /^(Show|Hide) tools/);
+    await tools.focus();
+    await browser.evaluate(() => (window as unknown as Holds).__releaseTerminal?.());
+    await terminalShown(browser);
+    await expect(tools).toBeFocused();
+  });
+}
+
 test('terminalShown waits out the app’s own reveal limit, counted after the terminal core loaded (#949)', async ({ app, browser }) => {
   // The core loads only once the wait has begun, and the hello is never answered: the terminal
   // shows by the app's fallback alone, REVEAL_LIMIT_MS (5 s) after start(), so more than 5 s after
@@ -460,7 +524,7 @@ test('Codex right-click pastes from the viewer’s clipboard', async ({ app, bro
   expect(point).not.toBeNull();
   const sent = await recordInput(browser);
   await browser.evaluate(() => {
-    navigator.clipboard.readText = async () => 'first line\nsecond line';
+    navigator.clipboard.read = async () => [new ClipboardItem({ 'text/plain': new Blob(['first line\nsecond line'], { type: 'text/plain' }) })];
   });
 
   // A primary click still reaches the program in its requested mouse encoding.
@@ -479,7 +543,7 @@ test('Codex right-click pastes from the viewer’s clipboard', async ({ app, bro
   await expect.poll(async () => (await sent()).slice(before)).toEqual(pasted);
 
   await browser.evaluate(() => {
-    navigator.clipboard.readText = async () => { throw new DOMException('Denied', 'NotAllowedError'); };
+    navigator.clipboard.read = async () => { throw new DOMException('Denied', 'NotAllowedError'); };
   });
   await grid.secondaryTap();
   await paste.click();

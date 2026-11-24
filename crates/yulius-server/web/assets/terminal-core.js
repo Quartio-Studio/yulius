@@ -16,11 +16,12 @@
 //
 // Copy and paste work as in a desktop terminal (termkeys.js): ⌘C/⌘V on macOS, Ctrl+C copies a
 // selection (and sends ^C without one), Ctrl+V pastes (bracketed when the program asked for it),
-// Ctrl+Shift+C/V and a right-click menu with Copy and Paste. A program that has the mouse selects
-// a plain drag itself and copies it with OSC 52 (Claude Code does): the write reaches the
-// clipboard for a viewer who just used this terminal, and when the browser refuses it the copy key
-// copies it (SPEC-158, ADR-0130). Paths of existing files are links to the built-in editor
-// (termlinks.js).
+// Ctrl+Shift+C/V and a right-click menu with Copy and Paste; a paste that reads the clipboard
+// itself (the menu, Ctrl+V on macOS) takes an image too, as the file drop does (SPEC-638). A
+// program that has the mouse selects a plain drag itself and copies it with OSC 52 (Claude Code
+// does): the write reaches the clipboard for a viewer who just used this terminal, and when the
+// browser refuses it the copy key copies it (SPEC-158, ADR-0130). Paths of existing files are
+// links to the built-in editor (termlinks.js).
 //
 // It appears once, at its final size and font (F 2026-10-09): the grid is fitted before the
 // socket opens and the size travels with the connection (`?cols=&rows=`), so the server's first
@@ -36,7 +37,7 @@ import { createMouseFilter } from './mousefilter.js';
 import { clipboardKeyAction, osc52Text } from './termkeys.js';
 import { isTyping } from './typing.js';
 import { createContinuedUrlProvider, createFileChecker, createFileLinkProvider, relativeCwd, trackOscFileLinks } from './termlinks.js';
-import { h, icon, setChildren, openMenu, keepFocus } from './dom.js';
+import { h, icon, setChildren, openMenu, keepFocus, keyboardMoveCount } from './dom.js';
 import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
 import { readJson } from './store.js';
 import { IS_MAC } from './shortcuts.js';
@@ -194,8 +195,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   let ready = false;
   let gotState = false;
   let drawn = false;
-  // The order of this terminal's pending focus request (0: none).
+  // The order of this terminal's pending focus request (0: none), and the keyboard's moves then.
   let focusWanted = 0;
+  let focusMoves = 0;
   let revealTimer = 0;
   let emptyShown = false;
   // What this viewer last told the server about itself (null: nothing yet on this connection).
@@ -296,10 +298,13 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     renderEmpty();
     render();
     // Focus asked for before the terminal showed lands now, unless the person is typing in a
-    // text field meanwhile (the queued messages box beside a waiting task's terminal), or another
-    // terminal was asked for since (a Shell opened meanwhile): the terminal asked for last wins.
-    // Buttons and tabs do not hold it back.
-    if (focusWanted && (focusWanted === focusRequests || keyboardOnPage()) && !typingElsewhere(el)) term.focus();
+    // text field meanwhile (the queued messages box beside a waiting task's terminal), moved the
+    // keyboard to another control since (a toast's action, a tool; SPEC-641), or another terminal
+    // was asked for since (a Shell opened meanwhile): the terminal asked for last wins. The
+    // control that asked (the link or button that opened the view), also re-created by a
+    // re-render, does not hold it back.
+    const stayed = keyboardOnPage() || keyboardMoveCount() === focusMoves;
+    if (focusWanted && (focusWanted === focusRequests || keyboardOnPage()) && !typingElsewhere(el) && stayed) term.focus();
     if (onReady) onReady();
   }
 
@@ -418,18 +423,59 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     navigator.clipboard.writeText(text).then(() => { programCopy = ''; showNotice('Copied'); }, refused);
     return true;
   });
-  /** Pastes the clipboard's text where no paste key exists (Ctrl+V on macOS, the menu). */
+  /**
+   * The clipboard's text and its images, each a reader of a file (a screenshot copied outside
+   * Yulius, SPEC-638), as the browser's own paste offers them. `read()` is called at once, inside
+   * the key's or the click's gesture (Safari asks for that), and one permission covers both kinds.
+   */
+  async function readClipboard() {
+    if (!navigator.clipboard.read) return { text: await navigator.clipboard.readText(), images: [] };
+    let text = '';
+    const images = [];
+    for (const item of await navigator.clipboard.read()) {
+      if (item.types.includes('text/plain')) text += await (await item.getType('text/plain')).text();
+      const type = item.types.includes('image/png') ? 'image/png' : item.types.find((t) => t.startsWith('image/'));
+      const ext = type && (type.slice(6).replace(/[^a-z0-9]/gi, '') || 'png');
+      if (type) images.push(async () => new File([await item.getType(type)], `image.${ext}`, { type }));
+    }
+    return { text, images };
+  }
+  /** Pastes the clipboard where no paste key exists (Ctrl+V on macOS, the menu). */
   async function pasteFromClipboard() {
     if (!state.can_write) { showNotice(readOnlyText()); return; }
-    let text = '';
+    const pasteKey = IS_MAC ? '⌘V' : 'Ctrl+V';
+    const nothing = `The clipboard has no text or image to paste here; paste files with ${pasteKey}`;
+    // DataError: nothing the clipboard API can deliver; anything else is a refusal.
+    const refused = `The browser did not share the clipboard; paste with ${pasteKey}`;
+    const unread = (error) => showNotice(error && error.name === 'DataError' ? nothing : refused);
+    let read;
     try {
-      text = await navigator.clipboard.readText();
-    } catch {
-      showNotice(`The browser did not share the clipboard; paste with ${IS_MAC ? '⌘V' : 'Ctrl+V'}`);
+      read = await readClipboard();
+    } catch (error) {
+      unread(error);
       return;
     }
-    // xterm wraps it in bracketed-paste markers when the program asked for them, then sends it.
-    if (text && !destroyed) term.paste(text);
+    if (destroyed) return;
+    // Text wins, as in the browser's paste (an office app copies a picture of the text beside it),
+    // unless it is only blanks beside an image; the picture is then never read. xterm wraps the text in bracketed-paste markers when the
+    // program asked for them, then sends it.
+    if (read.text.trim() || (read.text && !read.images.length)) { term.paste(read.text); return; }
+    let files;
+    try {
+      files = await Promise.all(read.images.map((image) => image()));
+    } catch {
+      showNotice(`The browser did not share the image; paste with ${pasteKey}`);
+      return;
+    }
+    if (destroyed) return;
+    if (files.length) {
+      // The terminal's file drop uploads them and types their paths, as for a pasted image (filedrop.js).
+      const offer = new CustomEvent('terminal-paste-files', { bubbles: true, cancelable: true, detail: { files } });
+      if (el.dispatchEvent(offer)) showNotice('This terminal takes text only');
+      return;
+    }
+    // A file copied in a file manager reaches only the browser's own paste (Chrome on Linux).
+    showNotice(nothing);
   }
   term.attachCustomKeyEventHandler((event) => {
     const action = clipboardKeyAction(event, { mac: IS_MAC, selection: term.hasSelection() });
@@ -874,9 +920,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     clickTimer = setTimeout(() => { if (!term.hasSelection()) claim(); }, CLICK_SETTLE_MS);
   }, true);
 
-  function takeFocus() {
+  function takeFocus(moves = keyboardMoveCount()) {
     focusRequests += 1;
     focusWanted = focusRequests;
+    focusMoves = moves;
     if (opened && ready) term.focus();
   }
 
@@ -987,9 +1034,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     get canWrite() {
       return state.can_write;
     },
-    /** Focus the terminal now, or as soon as it is shown. */
-    focus() {
-      takeFocus();
+    /** Focus the terminal now, or as soon as it is shown; `moves`: the keyboard's move count when
+     *  it was asked for, by a caller that waited for this terminal (keyboardMoveCount). */
+    focus(moves) {
+      takeFocus(moves);
     },
     /**
      * Takes the keyboard for an answer asked for elsewhere on the page (the task view's Reply,

@@ -5,7 +5,6 @@ use super::super::*;
 use crate::{DisplayConfig, DisplayMode, StopTimeouts, VirtualDisplay, XAUTHORITY_FILE, xserver};
 use tokio::sync::oneshot::error::TryRecvError;
 use x11rb::protocol::{xfixes, xproto};
-use x11rb::wrapper::ConnectionExt as _;
 use yulius_domain::ids::SandboxId;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -140,6 +139,170 @@ async fn expiry_and_late_x_events_preserve_the_current_transfer() -> Result<()> 
     let auth = std::fs::read(dir.path().join(sandbox.as_str()).join(XAUTHORITY_FILE))?;
     let number = display.name().trim_start_matches(':').parse()?;
     let result = check_events(&xserver::connect(number, &auth[auth.len() - 16..])?);
+    display.stop(StopTimeouts::default()).await?;
+    result
+}
+
+/// SPEC-639 PST-004, PST-007: the paste owner refuses what it does not hold, hears when another
+/// client takes the CLIPBOARD, and lets go of its text after the hold, never of another's.
+fn check_owner(conn: &RustConnection, other: &RustConnection) -> Result<()> {
+    let root = conn.setup().roots[0].root;
+    let mut owner = Owner::new(conn, root).ok_or("no paste owner")?;
+    let (window, selection, utf8, plain) = (owner.window, owner.selection, owner.utf8, owner.plain);
+    let owned_by = |by: Window| -> Result<bool> {
+        Ok(other.get_selection_owner(selection)?.reply()?.owner == by)
+    };
+    let request = |target| {
+        Event::SelectionRequest(xproto::SelectionRequestEvent {
+            owner: window,
+            requestor: root,
+            selection,
+            target,
+            property: utf8,
+            ..Default::default()
+        })
+    };
+    let (send, mut outcome) = oneshot::channel();
+    owner
+        .take(conn, "pasted", send)
+        .map_err(|_| "the CLIPBOARD was not taken")?;
+    assert!(owned_by(window)?);
+    // A target it does not offer is refused and does not count as read, and neither do its
+    // targets: the text is what the page gets.
+    let html = conn.intern_atom(false, b"text/html")?.reply()?.atom;
+    let targets = conn.intern_atom(false, b"TARGETS")?.reply()?.atom;
+    // Nothing is written for a refused target.
+    let absent = || -> Result<bool> {
+        let value = conn
+            .get_property(false, root, utf8, AtomEnum::ANY, 0, 64)?
+            .reply()?;
+        Ok(value.type_ == x11rb::NONE)
+    };
+    owner.on_event(conn, &request(html));
+    assert!(absent()?, "a refused target got the text");
+    assert_eq!(outcome.try_recv(), Err(TryRecvError::Empty));
+    owner.on_event(conn, &request(targets));
+    assert_eq!(outcome.try_recv(), Err(TryRecvError::Empty));
+    conn.delete_property(root, utf8)?.check()?;
+    owner.on_event(conn, &request(plain));
+    assert_eq!(outcome.try_recv(), Ok(PasteOutcome::Read));
+    // A newer paste waits while the client still reads (it asked for the text or its targets
+    // less than the quiet ago), and no longer.
+    assert!(owner.reading());
+    owner.asked = Instant::now().checked_sub(PASTE_QUIET);
+    assert!(!owner.reading());
+    let value = conn
+        .get_property(true, root, utf8, AtomEnum::ANY, 0, 64)?
+        .reply()?;
+    assert_eq!(
+        (value.type_, value.value.as_slice()),
+        (plain, &b"pasted"[..])
+    );
+    owner.on_event(conn, &request(targets));
+    assert!(owner.reading(), "the targets are a read too");
+    conn.delete_property(root, utf8)?.check()?;
+    // A SelectionClear of an earlier ownership (queued before this owner took the CLIPBOARD
+    // again) leaves the text it holds now.
+    owner.on_event(
+        conn,
+        &Event::SelectionClear(xproto::SelectionClearEvent {
+            owner: window,
+            selection,
+            ..Default::default()
+        }),
+    );
+    assert!(
+        owner.held.is_some(),
+        "a stale SelectionClear let the text go"
+    );
+
+    // Another client (the page copying) takes the CLIPBOARD: the text is let go, and the wait
+    // ends unread.
+    let (send, mut outcome) = oneshot::channel();
+    owner
+        .take(conn, "second", send)
+        .map_err(|_| "the CLIPBOARD was not taken")?;
+    let copier = other.generate_id()?;
+    other
+        .create_window(
+            0,
+            copier,
+            root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            xproto::WindowClass::INPUT_ONLY,
+            0,
+            &xproto::CreateWindowAux::new(),
+        )?
+        .check()?;
+    other
+        .set_selection_owner(copier, selection, x11rb::CURRENT_TIME)?
+        .check()?;
+    owner.on_event(
+        conn,
+        &Event::SelectionClear(xproto::SelectionClearEvent {
+            owner: window,
+            selection,
+            ..Default::default()
+        }),
+    );
+    assert_eq!(outcome.try_recv(), Ok(PasteOutcome::Unread));
+    assert!(owner.held.is_none());
+    // A request that comes after the text was let go gets nothing.
+    owner.on_event(conn, &request(utf8));
+    assert!(absent()?, "a let-go text was answered");
+    // A held text past its hold is let go; another client's CLIPBOARD is left alone.
+    let (send, _outcome) = oneshot::channel();
+    owner
+        .take(conn, "third", send)
+        .map_err(|_| "the CLIPBOARD was not taken")?;
+    other
+        .set_selection_owner(copier, selection, x11rb::CURRENT_TIME)?
+        .check()?;
+    owner.held.as_mut().ok_or("nothing held")?.until = Instant::now();
+    owner.expire(conn);
+    assert!(owner.held.is_none());
+    assert!(owned_by(copier)?, "another client's CLIPBOARD was cleared");
+    let (send, mut outcome) = oneshot::channel();
+    owner
+        .take(conn, "fourth", send)
+        .map_err(|_| "the CLIPBOARD was not taken")?;
+    let held = owner.held.as_mut().ok_or("nothing held")?;
+    held.until = Instant::now();
+    held.waiting.as_mut().ok_or("no wait")?.1 = Instant::now();
+    owner.expire(conn);
+    // The release goes out on `conn` unchecked, and `owned_by` reads on `other`: the server serves
+    // its clients independently, so a flush alone let it answer the read first. A round trip on
+    // `conn` returns once the server has handled every earlier request of it, the release too.
+    conn.get_input_focus()?.reply()?;
+    assert_eq!(outcome.try_recv(), Ok(PasteOutcome::Unread));
+    assert!(owned_by(x11rb::NONE)?, "the held paste was not let go");
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_paste_owner_answers_only_its_text_and_lets_it_go() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let sandbox = SandboxId::parse("paste-owner")?;
+    let mut config = DisplayConfig::new(dir.path().to_owned());
+    if crate::resolve_executable(&config.xvfb).is_err() {
+        eprintln!("Xvfb unavailable; paste owner check did not run");
+        return Ok(());
+    }
+    config.max_size = (320, 240);
+    let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (320, 240))
+        .await?
+        .ok_or("no test display")?;
+    let auth = std::fs::read(dir.path().join(sandbox.as_str()).join(XAUTHORITY_FILE))?;
+    let number = display.name().trim_start_matches(':').parse()?;
+    let cookie = &auth[auth.len() - 16..];
+    let result = check_owner(
+        &xserver::connect(number, cookie)?,
+        &xserver::connect(number, cookie)?,
+    );
     display.stop(StopTimeouts::default()).await?;
     result
 }

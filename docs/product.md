@@ -396,8 +396,10 @@ watching, steering and unblocking.
   another, Fable too. A Claude Code task's independent code review runs as Yulius's reviewer agent, whose
   model Yulius picks per round: Fable 5.2 for a pull request's first two rounds, Opus 5.5 from
   the third, and Opus 5.5 when the task's subscription cannot run Fable then; each round is
-  recorded with its reviewer, its model and its verdict. Continuing a reviewer after it reports
-  counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
+  recorded with its reviewer, its model and its verdict, also when Yulius restarted while the
+  reviewer ran (its report is read from the session's transcript), and a round whose pull
+  request merged without a report reads unreported (SPEC-633). Continuing a reviewer after it
+  reports counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
   review round, and their named review subagents populate the same delivery history and Review
   card. Antigravity tasks request Gemini 4 Neon (High).
   Fork… (in a task's menu and on its details page, and the `task_fork` tool) starts a new task
@@ -638,7 +640,8 @@ watching, steering and unblocking.
       the merged revision.
     - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
       verifies that tested revision in revision order, once per task. A running task with an unfinished step shows the full-suite
-      or staging wait. Finished tasks keep the outcome on their delivery. Later deliveries
+      or staging wait. Finished tasks keep the outcome on their delivery; one whose agent still waits
+      for it in a background command hears it and ends Done. Later deliveries
       record inherited failures and complete when staging serves the verified fix.
     - Working tasks hear the failing tests and their introducing merges. One worker takes the repair.
       With no worker available, project CI and Status name the tests and their introducing merges.
@@ -683,6 +686,7 @@ watching, steering and unblocking.
   and sign-ins for the agent. Their clicks and keys need the host's browser policy, which
   `yulius host setup` writes: without it the browser shows but takes none (ADR-0318).
   After clicking a webpage’s Copy button on the virtual display, choose **Copy to my clipboard** to transfer plain text from the shared sandbox browser to your device.
+  A paste (Ctrl+V, ⌘V) reaches the page as a real paste, also in a terminal such as a sign-in's xterm, up to 32 KiB at once; a paste the page did not take, or a longer one, is said in the panel (SPEC-639). Agents' `browser_type` types real keys, so they can fill such terminals too.
   If the policy arrives after an agent used the browser, the panel offers **Restart browser** to recover input while keeping that sandbox’s profile.
   New browser launches keep Chrome’s default extension prompts off the sandbox display,
   including for existing profiles (SPEC-567).
@@ -733,7 +737,9 @@ watching, steering and unblocking.
   whole session from its first message, which Claude Code no longer shows after a compaction
   (SPEC-326). A wheel gesture on a full-screen task with mouse reporting off leaves the prompt alone
   (SPEC-529). In a Codex terminal, right-click and choose Paste to insert clipboard text in the draft
-  (SPEC-582). Messages are
+  (SPEC-582). A terminal's menu Paste and Ctrl+V on macOS take a screenshot copied outside Yulius as
+  the browser's own paste does: uploaded, its path typed; a clipboard with nothing to paste says so
+  (SPEC-638). Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`. A Yulius restart is invisible to a session:
   its Yulius tools and `yulius wait` hold on until Yulius is back, and a task that went idle

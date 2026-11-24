@@ -9,6 +9,7 @@
 //! - an image loads and a canvas animates in the video;
 //! - the agent's click reaches viewers as its cursor; `navigator.webdriver` is false;
 //! - Yulius refuses to open itself (BRW-008);
+//! - an agent secret typed with `browser_fill_secret` fills an xterm.js terminal (SPEC-648);
 //! - a contained process (the agents' and users' bubblewrap) reaches no display: no socket, no
 //!   cookie, no abstract socket, no TCP; another sandbox's cookie does not open a display.
 //!
@@ -139,6 +140,31 @@ window.clicks = [];
 addEventListener('click', (e) => clicks.push({ trusted: e.isTrusted, x: e.clientX, y: e.clientY }));
 </script></body></html>"#;
 
+/// A page that only listens to `paste` and `keydown` (SPEC-639 AC-1).
+const PASTE_PAGE: &str = r#"<!doctype html><html><head><title>paste</title></head>
+<body style="margin:0;height:100vh"><script>
+window.events = [];
+addEventListener('keydown', (e) => events.push({ type: 'keydown', key: e.key, trusted: e.isTrusted }));
+addEventListener('paste', (e) => {
+  e.preventDefault();
+  events.push({ type: 'paste', text: e.clipboardData.getData('text/plain'), trusted: e.isTrusted });
+});
+</script></body></html>"#;
+
+/// An xterm.js terminal (the version Yulius ships) that collects what it would send.
+const XTERM_PAGE: &str = r#"<!doctype html><html><head><title>xterm</title>
+<link rel="stylesheet" href="/xterm.css"></head>
+<body style="margin:0"><div id="term" style="width:800px;height:400px"></div>
+<script type="module">
+import { Terminal } from '/xterm.mjs';
+const term = new Terminal({ cols: 80, rows: 20 });
+term.open(document.getElementById('term'));
+window.data = '';
+term.onData((d) => { window.data += d; });
+term.focus();
+window.ready = true;
+</script></body></html>"#;
+
 const IMAGE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="rgb(255,200,0)"/></svg>"#;
 
 fn fixture_site() -> Router {
@@ -146,6 +172,26 @@ fn fixture_site() -> Router {
         .route("/", get(|| async { axum::response::Html(FIXTURE) }))
         .route("/flip", get(|| async { axum::response::Html(FLIP) }))
         .route("/popup", get(|| async { axum::response::Html(POPUP) }))
+        .route("/paste", get(|| async { axum::response::Html(PASTE_PAGE) }))
+        .route("/xterm", get(|| async { axum::response::Html(XTERM_PAGE) }))
+        .route(
+            "/xterm.mjs",
+            get(|| async {
+                (
+                    [("content-type", "text/javascript")],
+                    include_str!("../../yulius-server/web/assets/vendor/xterm/xterm.mjs"),
+                )
+            }),
+        )
+        .route(
+            "/xterm.css",
+            get(|| async {
+                (
+                    [("content-type", "text/css")],
+                    include_str!("../../yulius-server/web/assets/vendor/xterm/xterm.css"),
+                )
+            }),
+        )
         .route(
             "/img.svg",
             get(|| async { ([("content-type", "image/svg+xml")], IMAGE) }),
@@ -559,6 +605,38 @@ async fn click(viewer: &mut Viewer, tab: &str, x: f64, y: f64) -> TestResult {
     mouse(viewer, tab, "up", x, y).await
 }
 
+/// Clicks at `(x, y)` and presses Shift (which types nothing) until the page saw a key: keys
+/// that arrive while Chrome is still making its window active after the first click (there is
+/// no window manager to tell it) and the host policy's look at the browser are lost.
+async fn focus_page(
+    viewer: &mut Viewer,
+    tab: &str,
+    cdp: &CdpClient,
+    url: &str,
+    x: f64,
+    y: f64,
+) -> TestResult {
+    eval(
+        cdp,
+        url,
+        "window.__keys = 0, addEventListener('keydown', () => { window.__keys += 1; }, true), true",
+    )
+    .await?;
+    let deadline = Instant::now() + WAIT;
+    click(viewer, tab, x, y).await?;
+    loop {
+        press(viewer, tab, "Shift", "ShiftLeft").await?;
+        viewer.pump(Duration::from_millis(200)).await?;
+        if eval(cdp, url, "window.__keys > 0").await? == json!(true) {
+            return Ok(());
+        }
+        if Instant::now() > deadline {
+            return Err("the page never got a key".into());
+        }
+        click(viewer, tab, x, y).await?;
+    }
+}
+
 async fn press(viewer: &mut Viewer, tab: &str, key: &str, code: &str) -> TestResult {
     viewer.send(json!({"type": "key", "tab_id": tab, "event": "down", "key": key, "code": code, "modifiers": 0})).await?;
     viewer.send(json!({"type": "key", "tab_id": tab, "event": "up", "key": key, "code": code, "modifiers": 0})).await
@@ -600,6 +678,261 @@ async fn the_real_chrome_streams_takes_real_input_and_stays_out_of_containment()
     let result = functional(&live).await;
     live.h.app.stop_workspace_services().await;
     result
+}
+
+/// SPEC-639 AC-1: a viewer's paste (100 and 5 000 characters) reaches a page that only listens
+/// to `paste` and `keydown` as genuine `paste` events with the exact text, in order with the keys
+/// around it, and an xterm.js terminal takes both as its data, and an agent's `browser_type` after
+/// them (PST-005).
+#[tokio::test]
+#[ignore = "needs Linux with Xvfb, ffmpeg and Chrome (YULIUS_LIVE_DISPLAY=1)"]
+async fn a_viewer_paste_reaches_a_paste_listener_and_an_xterm_terminal() -> TestResult {
+    let Some(chrome) = live_chrome() else {
+        return Ok(());
+    };
+    let live = live(&chrome).await?;
+    let result = pastes(&live).await;
+    live.h.app.stop_workspace_services().await;
+    result
+}
+
+async fn pastes(live: &Live) -> TestResult {
+    let short: String = "sk-ant-oc01-"
+        .chars()
+        .chain(('a'..='z').cycle())
+        .take(100)
+        .collect();
+    let long: String = "zażółć gęślą jaźń 🙂 0123456789 "
+        .chars()
+        .cycle()
+        .take(5_000)
+        .collect();
+    let mut viewer = Viewer::connect(live, "s1").await?;
+    let (tab, cdp, url) = open_page(live, &mut viewer, "/paste").await?;
+    focus_page(&mut viewer, &tab, &cdp, &url, 400.0, 300.0).await?;
+    let started = Instant::now();
+    press(&mut viewer, &tab, "a", "KeyA").await?;
+    viewer
+        .send(json!({"type": "paste", "tab_id": tab, "text": short}))
+        .await?;
+    press(&mut viewer, &tab, "b", "KeyB").await?;
+    viewer
+        .send(json!({"type": "paste", "tab_id": tab, "text": long}))
+        .await?;
+    press(&mut viewer, &tab, "c", "KeyC").await?;
+    until(
+        &cdp,
+        &url,
+        "both pastes and the key after them",
+        "events.filter((e) => e.type === 'paste').length === 2 && events.some((e) => e.key === 'c')",
+    )
+    .await?;
+    eprintln!(
+        "two pastes and three keys arrived in {} ms",
+        started.elapsed().as_millis()
+    );
+    let seen = eval(
+        &cdp,
+        &url,
+        "JSON.stringify(events.filter((e) => e.type === 'paste' || ['a', 'b', 'c'].includes(e.key)))",
+    )
+    .await?;
+    let seen: Vec<Value> = serde_json::from_str(seen.as_str().ok_or("no events")?)?;
+    let order: Vec<String> = seen
+        .iter()
+        .map(|e| match e["type"].as_str() {
+            Some("paste") => format!(
+                "paste {}",
+                e["text"].as_str().map_or(0, |t| t.chars().count())
+            ),
+            _ => format!("key {}", e["key"].as_str().unwrap_or_default()),
+        })
+        .collect();
+    assert_eq!(
+        order,
+        ["key a", "paste 100", "key b", "paste 5000", "key c"]
+    );
+    assert_eq!(seen[1]["text"], short.as_str());
+    assert_eq!(seen[3]["text"], long.as_str());
+    assert!(seen.iter().all(|e| e["trusted"] == true), "{seen:?}");
+
+    // An xterm.js terminal (the sign-in terminal's kind) takes both pastes and the keys.
+    let (tab, cdp, url) = open_page(live, &mut viewer, "/xterm").await?;
+    until(&cdp, &url, "the terminal", "window.ready === true").await?;
+    focus_page(&mut viewer, &tab, &cdp, &url, 200.0, 100.0).await?;
+    viewer
+        .send(json!({"type": "paste", "tab_id": tab, "text": short}))
+        .await?;
+    press(&mut viewer, &tab, "q", "KeyQ").await?;
+    viewer
+        .send(json!({"type": "paste", "tab_id": tab, "text": long}))
+        .await?;
+    let expected = format!("{short}q{long}");
+    until(
+        &cdp,
+        &url,
+        "the terminal's data",
+        &format!("[...window.data].length === {}", expected.chars().count()),
+    )
+    .await?;
+    assert_eq!(eval(&cdp, &url, "window.data").await?, json!(expected));
+    // An agent's browser_type fills the terminal too (SPEC-639 PST-005): real key presses,
+    // each line ended by Enter, which the terminal sends as a carriage return.
+    let typed = mcp_tool(
+        &live.h,
+        TOKEN,
+        "browser_type",
+        json!({"tab_id": tab, "text": "echo ok ż\n"}),
+    )
+    .await?;
+    assert_eq!(tool_text(&typed)["chars"], 10, "{typed}");
+    let expected = format!("{expected}echo ok ż\r");
+    until(
+        &cdp,
+        &url,
+        "the agent's typing in the terminal",
+        &format!("[...window.data].length === {}", expected.chars().count()),
+    )
+    .await?;
+    assert_eq!(eval(&cdp, &url, "window.data").await?, json!(expected));
+    // What two DevTools calls a character cost: 5 000 characters typed by an agent.
+    let started = Instant::now();
+    let typed = mcp_tool(
+        &live.h,
+        TOKEN,
+        "browser_type",
+        json!({"tab_id": tab, "text": long}),
+    )
+    .await?;
+    let took = started.elapsed();
+    assert_eq!(tool_text(&typed)["chars"], 5_000, "{typed}");
+    let expected = format!("{expected}{long}");
+    until(
+        &cdp,
+        &url,
+        "the agent's long typing in the terminal",
+        &format!("[...window.data].length === {}", expected.chars().count()),
+    )
+    .await?;
+    eprintln!(
+        "browser_type typed 5 000 characters in {} ms",
+        took.as_millis()
+    );
+    // Nothing failed on the way.
+    let quiet = Instant::now() + Duration::from_millis(500);
+    while let Some(message) = viewer.step(quiet).await? {
+        assert_ne!(message["type"], "error", "{message}");
+    }
+    Ok(())
+}
+
+/// SPEC-648 AC-4 (#1740): an agent's `browser_fill_secret` fills an xterm.js terminal (a CLI
+/// sign-in prompt): the user name and the secret arrive as the terminal's data, typed as real
+/// key presses, and screenshots of the tab are refused from then on, as the terminal's focus is
+/// no password field (a canvas or WebGL renderer would draw where no probe reads). xterm.js drops inserted text (`Input.insertText`)
+/// while it has seen a key go down and not up, here a key a person holds in the viewer (as Ctrl
+/// is held for Ctrl+V, SPEC-639); key presses arrive in that state too.
+#[tokio::test]
+#[ignore = "needs Linux with Xvfb, ffmpeg and Chrome (YULIUS_LIVE_DISPLAY=1)"]
+async fn an_agent_secret_fills_an_xterm_terminal() -> TestResult {
+    let Some(chrome) = live_chrome() else {
+        return Ok(());
+    };
+    let live = live(&chrome).await?;
+    let result = secret_into_terminal(&live).await;
+    live.h.app.stop_workspace_services().await;
+    result
+}
+
+async fn secret_into_terminal(live: &Live) -> TestResult {
+    const VALUE: &str = "term-pass-7731-xyz";
+    const USER: &str = "alice-term";
+    // A secret binds to host names only; Chrome resolves `*.localhost` to the loopback.
+    let host = format!("fixture.localhost:{}", live.site.port());
+    let created = support::call(
+        &live.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "TERM_LOGIN", "description": "CLI sign-in",
+            "hosts": [host], "injection": "basic", "username": USER, "value": VALUE})),
+        &live.writer,
+    )
+    .await?;
+    assert_eq!(
+        created.status,
+        axum::http::StatusCode::CREATED,
+        "{}",
+        created.body
+    );
+    let mut viewer = Viewer::connect(live, "s1").await?;
+    let (tab, cdp, _) = open_page(live, &mut viewer, "/").await?;
+    let url = format!("http://{host}/xterm");
+    viewer
+        .send(json!({"type": "navigate", "tab_id": tab, "url": url}))
+        .await?;
+    until(&cdp, &url, "the terminal", "window.ready === true").await?;
+    focus_page(&mut viewer, &tab, &cdp, &url, 200.0, 100.0).await?;
+    let shot = mcp_tool(&live.h, TOKEN, "browser_screenshot", json!({"tab_id": tab})).await?;
+    assert_eq!(
+        shot["content"][0]["type"], "image",
+        "before the secret: {shot}"
+    );
+    // A person holds Shift in the viewer: the terminal saw it go down, not up.
+    eval(
+        &cdp,
+        &url,
+        "window.__held = false, document.querySelector('.xterm-helper-textarea').addEventListener('keydown', (e) => { if (e.key === 'Shift') window.__held = true; }, true), true",
+    )
+    .await?;
+    viewer.send(json!({"type": "key", "tab_id": tab, "event": "down", "key": "Shift", "code": "ShiftLeft", "modifiers": 0})).await?;
+    until(
+        &cdp,
+        &url,
+        "the held key in the terminal",
+        "window.__held === true",
+    )
+    .await?;
+
+    let fill = |field: &'static str| {
+        mcp_tool(
+            &live.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "TERM_LOGIN", "field": field}),
+        )
+    };
+    let user = fill("username").await?;
+    assert_eq!(user["isError"], false, "{user}");
+    until(
+        &cdp,
+        &url,
+        "the user name in the terminal",
+        &format!("window.data === {}", json!(USER)),
+    )
+    .await?;
+    let filled = fill("value").await?;
+    assert_eq!(filled["isError"], false, "{filled}");
+    assert!(!filled.to_string().contains(VALUE), "{filled}");
+    let expected = format!("{USER}{VALUE}");
+    until(
+        &cdp,
+        &url,
+        "the secret in the terminal",
+        &format!("window.data === {}", json!(expected)),
+    )
+    .await?;
+
+    // The terminal is no password field: the tab may show the secret.
+    let refused = mcp_tool(&live.h, TOKEN, "browser_screenshot", json!({"tab_id": tab})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        tool_text(&refused)
+            .as_str()
+            .is_some_and(|t| t.contains("may show an agent secret")),
+        "{refused}"
+    );
+    assert!(!refused.to_string().contains(VALUE), "{refused}");
+    Ok(())
 }
 
 async fn functional(live: &Live) -> TestResult {

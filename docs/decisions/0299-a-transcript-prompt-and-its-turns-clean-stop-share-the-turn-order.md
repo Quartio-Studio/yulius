@@ -5,7 +5,9 @@
 Accepted. Specified in
 [SPEC-453](../../.ai/specs/SPEC-453-task-done-a-goal-the-tui-dropped-reaches.md) (TPO-001..003);
 task #435, #1066. Extends
-[ADR-0234](0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md).
+[ADR-0234](0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md). Refined by
+[0470](0470-wall-clock-stamps-are-read-on-yuliuss-clock.md): a record's time is read on Yulius's
+clock.
 
 ## Context
 

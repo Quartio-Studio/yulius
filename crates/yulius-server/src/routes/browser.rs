@@ -61,8 +61,9 @@ const KEYFRAME_REQUEST_SPACING: Duration = Duration::from_secs(1);
 const CONTROL_QUEUE: usize = 64;
 /// How long a JSON message may wait for queue space before the viewer is disconnected.
 const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(10);
-/// Largest accepted client message (a paste is at most 32 KiB of text).
-const MAX_CLIENT_MESSAGE: usize = 64 * 1024;
+/// Largest accepted client message: a paste is at most 32 KiB of text, which JSON escaping
+/// grows up to six times (`\u0001`), SPEC-639.
+const MAX_CLIENT_MESSAGE: usize = 256 * 1024;
 /// Input events per second a connection may send on average.
 const INPUT_RATE: f64 = 500.0;
 /// Input events a connection may send in a burst.
@@ -704,6 +705,10 @@ async fn pump(
         return;
     }
     let mut page_copy: Option<(TabId, String, tokio::sync::oneshot::Receiver<u32>)> = None;
+    // Pastes on their way to the page: each ends within the paste window (SPEC-639).
+    let mut pastes: futures::stream::FuturesUnordered<
+        futures::future::BoxFuture<'static, Result<(), yulius_app::ports::browser::BrowserFailure>>,
+    > = futures::stream::FuturesUnordered::new();
     let mut offered_copy = None;
     let mut budget = InputBudget::new();
     let mut recheck = tokio::time::interval(RECHECK);
@@ -712,6 +717,12 @@ async fn pump(
     reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            Some(delivered) = pastes.next(), if !pastes.is_empty() => {
+                if let Err(failure) = delivered {
+                    let error = ViewerServerMsg::Error { code: failure.viewer_code(), message: failure.message };
+                    if !out.json(&error).await { return; }
+                }
+            }
             offer = async {
                 match &mut page_copy {
                     Some((_, _, copy)) => copy.await.ok(),
@@ -892,6 +903,21 @@ async fn pump(
                                 Ok(())
                             }
                             Err(failure) => Err((failure.viewer_code(), failure.message)),
+                        }
+                    }
+                    // A paste is queued in order with the input before it; how it ended arrives
+                    // in `pastes` while this connection goes on (SPEC-639).
+                    Ok(ViewerClientMsg::Paste { tab_id, text }) => {
+                        if budget.take(Instant::now(), false) {
+                            match session.paste(&tab_id, &text).await {
+                                Ok(delivery) => {
+                                    pastes.push(delivery);
+                                    Ok(())
+                                }
+                                Err(failure) => Err((failure.viewer_code(), failure.message)),
+                            }
+                        } else {
+                            Err((ViewerErrorCode::Invalid, "input arrives too fast; slow down".into()))
                         }
                     }
                     Ok(message @ (ViewerClientMsg::Mouse { .. } | ViewerClientMsg::Key { .. })) => {

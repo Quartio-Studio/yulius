@@ -281,6 +281,14 @@ function withoutClass(attrs) {
 const MAX_TOASTS = 5;
 
 /**
+ * The topmost open modal dialog, or null. While one is open everything outside it is inert and
+ * below it in the browser's top layer: toasts and menus are mounted in it (ADR-0473).
+ */
+function topModal() {
+  return [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).pop() || null;
+}
+
+/**
  * The toast region. While a modal dialog is open everything outside it is inert and below its
  * backdrop, so the region moves into the topmost open modal (and back to <body> when it closes):
  * an error raised by a dialog's action is seen, clickable and announced.
@@ -293,8 +301,7 @@ function toastHost() {
     // The phone layout pins the toasts at the top, over a dialog's Close (#640).
     window.addEventListener('resize', () => keepClear(host));
   }
-  const modal = [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).pop();
-  const parent = modal || document.body;
+  const parent = topModal() || document.body;
   if (host.parentElement !== parent) parent.append(host);
   return host;
 }
@@ -393,6 +400,8 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
   function close(value) {
     if (closed) return;
     closed = true;
+    // A menu opened in the dialog goes with it, and its key handler too.
+    if (openMenuEl && dialog.contains(openMenuEl.menu)) closeMenu();
     if (dialog.open) dialog.close();
     const toasts = document.getElementById('toasts');
     if (toasts && dialog.contains(toasts)) toastHost();
@@ -545,6 +554,15 @@ let menuIds = 0;
  */
 export function openMenu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
+  // Escape and Tab give the keyboard back to the anchor, or for a point (a right-click) to where it was.
+  const returnTo = anchor instanceof HTMLElement ? anchor : document.activeElement;
+  // In editable text the caret comes back too (the block editor's slash menu).
+  const caret = returnTo instanceof HTMLElement && returnTo.isContentEditable && getSelection().rangeCount ? getSelection().getRangeAt(0).cloneRange() : null;
+  const giveBack = () => {
+    if (!(returnTo instanceof HTMLElement) || returnTo === document.body || !returnTo.isConnected) return;
+    returnTo.focus();
+    if (caret) getSelection().setBaseAndExtent(caret.startContainer, caret.startOffset, caret.endContainer, caret.endOffset);
+  };
   const button = anchor instanceof HTMLElement && anchor.hasAttribute('aria-haspopup') ? anchor : null;
   if (button) button.setAttribute('aria-expanded', 'true');
   // The panel floats and holds the list of items, which scrolls when the window is too short. The
@@ -651,7 +669,9 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     for (const group of groups) { group.box.scrollTop = 0; cue(group); }
   };
   if (filter) filter.addEventListener('input', applyFilter);
-  document.body.append(menu);
+  // Over a modal dialog the menu is mounted in it: in <body> it would be inert and below the
+  // dialog (#1735). It stays position: fixed against the window, so it is placed the same way.
+  (topModal() || document.body).append(menu);
   // A capped group is as tall as its first rows as drawn, whatever their height (SPEC-102 MSG-001),
   // and opens with its checked row in the middle of it (MSG-003).
   for (const { box, els } of groups) {
@@ -726,7 +746,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     // open would hide first and could not take focus).
     // Escape first clears a filter with text (SPEC-038 MNU-005).
     if (event.key === 'Escape' && filter && filter.value) { event.preventDefault(); event.stopPropagation(); filter.value = ''; applyFilter(); filter.focus(); return; }
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); giveBack(); closeMenu(); return; }
     // APG menu: arrows wrap, Home/End jump, a letter moves to the next item starting with it,
     // Tab leaves (closing the menu). Disabled items stay focusable so their reason can be read.
     const buttons = [...list.querySelectorAll('.menu-item:not([hidden])')];
@@ -740,7 +760,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
         buttons.find((el) => el.getAttribute('aria-disabled') !== 'true')?.click();
         return;
       }
-      if (event.key === 'Tab') { event.preventDefault(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
+      if (event.key === 'Tab') { event.preventDefault(); giveBack(); closeMenu(); return; }
       const to = event.key === 'ArrowDown' ? buttons[0] : event.key === 'ArrowUp' ? buttons[buttons.length - 1] : null;
       if (to) { event.preventDefault(); to.focus(); }
       return;
@@ -758,7 +778,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     else if (event.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length;
     else if (event.key === 'Home') next = 0;
     else if (event.key === 'End') next = buttons.length - 1;
-    else if (event.key === 'Tab') { event.preventDefault(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
+    else if (event.key === 'Tab') { event.preventDefault(); giveBack(); closeMenu(); return; }
     else if (typed) {
       const letter = event.key.toLowerCase();
       for (let step = 1; step <= buttons.length; step += 1) {
@@ -777,6 +797,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   window.addEventListener('resize', onResize);
   window.addEventListener('blur', onBlur);
   openMenuEl = {
+    menu,
     cleanup() {
       document.removeEventListener('pointerdown', onDoc, true);
       document.removeEventListener('keydown', onKey, true);
@@ -898,6 +919,36 @@ export function keepFocus(container, rebuild, missingKeyTarget = null) {
   const keyedTarget = keyed.length === 1 ? keyed[0] : (key ? missingKeyTarget : null);
   const target = keyedTarget || fallback || container;
   target.focus({ preventScroll: true });
+}
+
+// ---------------------------------------------------------------- keyboard moves (SPEC-641)
+
+let keyboardMoves = 0;
+let lastFocused = null;
+// A move is focus reaching another control while the one before it is still on the page (or with
+// nothing focused before). A control that a re-render re-created and focused again (keepFocus, a
+// rebuilt tab strip) follows one that left the page: the same place for the person, not a move.
+// Terminals' own inputs are left out: which terminal has the keyboard follows their requests.
+if (typeof document !== 'undefined') {
+  document.addEventListener('focusin', (event) => {
+    const target = event.target;
+    if (target === lastFocused) return;
+    const terminal = target instanceof Element && target.closest('.xterm');
+    if (!terminal && (!lastFocused || lastFocused.isConnected)) keyboardMoves += 1;
+    lastFocused = target;
+  }, true);
+}
+
+/**
+ * How often the keyboard moved to another control so far; two reads differ once it moved. Read
+ * while the control focused last has already left the page and the keyboard is on the page (the
+ * prompt that opened a task, gone with the composer), the next focus counts: nothing is being
+ * re-rendered in its place any more (SPEC-641).
+ */
+export function keyboardMoveCount() {
+  const active = document.activeElement;
+  if (lastFocused && !lastFocused.isConnected && (!active || active === document.body)) lastFocused = null;
+  return keyboardMoves;
 }
 
 const REGIONS = ['.tabrow', '.sidebar', '#main', '.panel:not([hidden])', '.rail:not([hidden])'];

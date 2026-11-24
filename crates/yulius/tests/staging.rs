@@ -318,6 +318,16 @@ async fn inherited_gate_receipts_preserve_the_origin_and_leave_finished_tasks_qu
             }
         }
     }
+    // Their turns ended: a finished task mid-turn is decided once it is idle (SPEC-631 SWK-001).
+    for task in ["breaker", "later1", "later2", "later3", "mixed"] {
+        f.h.store
+            .set_activity(
+                &TaskId::parse(task)?,
+                Some(yulius_domain::task::Activity::Waiting),
+                f.h.app.now(),
+            )
+            .await?;
+    }
     assert_eq!(f.h.app.tell_staging_outcomes().await, 0);
     assert!(
         f.h.store.untold_staging_requests().await?.is_empty(),
@@ -2468,6 +2478,40 @@ async fn staging_deploys_only_under_the_owners_write_access() -> TestResult {
     land(&f, "t2", "two.txt").await?;
     let said = refused(&f, "t2").await?;
     assert!(said.contains("write access"), "{said}");
+    Ok(())
+}
+
+/// SPEC-631 SWK-004 (quartio-v2 #377: CD run 982a24b6 read "requested by MrFishPL" although its
+/// note said "a task's delivery"): the deploy of a task's staging request is that task's CD run,
+/// requested by `task:<n>`, still deployed with its owner's access; the task's `yulius wait`
+/// sees it.
+#[tokio::test]
+async fn a_staging_deploy_is_the_requesting_tasks_cd_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let revision = land(&f, "t1", "one.txt").await?;
+    gate(&f, &revision, RunState::Passed).await?;
+    let asked = ask(&f, "t1").await?;
+    settle(&f).await?;
+    let verified = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(verified.state, StagingState::Verified, "{verified:?}");
+    let run =
+        f.h.store
+            .cd_run(verified.cd_run_id.as_deref().ok_or("its run")?, false)
+            .await?
+            .ok_or("run")?;
+    let task = TaskId::parse("t1")?;
+    let number = f.h.store.task(&task).await?.ok_or("task")?.number;
+    assert_eq!(run.requested_by, format!("task:{number}"));
+    assert_eq!(run.task_id.as_ref(), Some(&task));
+    assert!(
+        run.note
+            .as_deref()
+            .is_some_and(|n| n.contains("a task's delivery")),
+        "{run:?}"
+    );
+    let waits = f.h.app.agent_wait_state(&token("t1"), None).await?;
+    assert_eq!(waits.cd_run.as_deref(), Some(run.id.as_str()));
     Ok(())
 }
 

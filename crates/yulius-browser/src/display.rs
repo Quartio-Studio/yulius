@@ -81,6 +81,24 @@ pub enum DisplayInput {
     },
 }
 
+/// The longest a queued paste's outcome is waited for (a display thread that stopped answering).
+const PASTE_ANSWER_MAX: Duration = Duration::from_secs(15);
+
+/// How a queued paste ends ([`VirtualDisplay::queue_paste`]).
+pub(crate) type PasteWait =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<PasteOutcome, BrowserError>> + Send>>;
+
+/// How a paste ended on the display (SPEC-639).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasteOutcome {
+    /// The text became the CLIPBOARD, the paste key was pressed and a client (the page) asked for it.
+    Read,
+    /// The text became the CLIPBOARD and the paste key was pressed, but no client asked for it.
+    Unread,
+    /// The CLIPBOARD could not be taken: the text was typed as real key presses instead.
+    Typed,
+}
+
 impl DisplayInput {
     /// A new press or typed character supersedes the pending clipboard offer.
     pub(crate) fn supersedes_copy(self) -> bool {
@@ -817,6 +835,49 @@ impl VirtualDisplay {
         }
     }
 
+    /// Queues `text` as a person's paste: it becomes the display's CLIPBOARD and Shift+Insert is
+    /// pressed, in order with the input queued before and after it; typed as key presses when
+    /// the CLIPBOARD cannot be taken. The returned future says how it ended, once a client
+    /// fetched the text or at most the paste window after it (and the wait for the page to stop
+    /// reading the paste before).
+    ///
+    /// # Errors
+    /// When the input queue is full or the display stopped.
+    pub(crate) fn queue_paste(
+        &self,
+        text: zeroize::Zeroizing<String>,
+    ) -> Result<PasteWait, BrowserError> {
+        match &self.backend {
+            Backend::Xvfb { x, .. } => {
+                let (outcome, answer) = tokio::sync::oneshot::channel();
+                x.queue(xserver::XCommand::Paste(text, outcome))
+                    .map_err(input_error)?;
+                // The X thread answers each paste by its own window's end, counted from its
+                // paste key (pastes queued before it may wait first); this bound is only for a
+                // thread that stopped answering.
+                let bound = PASTE_ANSWER_MAX;
+                Ok(Box::pin(async move {
+                    match tokio::time::timeout(bound, answer).await {
+                        Ok(Ok(outcome)) => Ok(outcome),
+                        Ok(Err(_)) => Err(display_error("the display stopped")),
+                        Err(_) => Ok(PasteOutcome::Unread),
+                    }
+                }))
+            }
+            #[cfg(feature = "fake")]
+            Backend::Fake(fake) => Ok(fake.paste(&text)),
+        }
+    }
+
+    /// [`Self::queue_paste`] and its outcome (the Linux display tests).
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) async fn paste(
+        &self,
+        text: zeroize::Zeroizing<String>,
+    ) -> Result<PasteOutcome, BrowserError> {
+        self.queue_paste(text)?.await
+    }
+
     /// Queues a primary press together with a one-shot recipient for a fresh clipboard write.
     pub(crate) fn copy_press(
         &self,
@@ -1317,6 +1378,606 @@ mod copy_input_tests {
         .await;
         display.stop(crate::StopTimeouts::default()).await?;
         result
+    }
+
+    /// SPEC-639 AC-2: a paste makes its text the display's CLIPBOARD and presses Shift+Insert (the paste key), in
+    /// order with the keys around it. A client on the display stands in for Chrome: it reads
+    /// the selection when the paste key arrives, as Chrome does.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_paste_owns_the_clipboard_and_presses_shift_insert_on_a_private_display()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use std::time::Instant;
+        use x11rb::protocol::xproto::ConnectionExt as _;
+
+        let dir = tempfile::tempdir()?;
+        let sandbox = SandboxId::parse("paste-test")?;
+        let mut config = DisplayConfig::new(dir.path().to_owned());
+        if crate::resolve_executable(&config.xvfb).is_err() {
+            eprintln!("Xvfb unavailable; private-display paste check did not run");
+            return Ok(());
+        }
+        config.max_size = (320, 240);
+        let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (320, 240))
+            .await?
+            .ok_or("no test display")?;
+        let result = async {
+            let (page, atoms) = paste_page(&display, dir.path(), &sandbox).await?;
+            let watch = |millis: u64| {
+                let page = std::sync::Arc::clone(&page);
+                tokio::task::spawn_blocking(move || {
+                    observe_paste(&page, atoms, Instant::now() + Duration::from_millis(millis))
+                })
+            };
+            for length in [100, 5_000] {
+                let text: String = "ab€😀".chars().cycle().take(length).collect();
+                let seen = watch(1_500);
+                let outcome = display.paste(zeroize::Zeroizing::new(text.clone())).await?;
+                assert_eq!(outcome, PasteOutcome::Read, "{length} characters");
+                // Shift+Insert: a paste in Chrome, and one xterm.js leaves to the browser (it
+                // makes Ctrl+V the ^V character).
+                let (keys, read) = seen.await??;
+                assert_eq!(keys, ["+50", "+118", "-118", "-50"]);
+                assert_eq!(read, [text]);
+            }
+            // With Control held by the viewer (its Ctrl+V) Control is lifted around the
+            // shortcut (Ctrl+Shift+Insert is no paste) and pressed again after it.
+            display.type_char('x')?;
+            display.key(37, true)?;
+            let seen = watch(1_500);
+            let outcome = display
+                .paste(zeroize::Zeroizing::new("held".into()))
+                .await?;
+            assert_eq!(outcome, PasteOutcome::Read);
+            let (keys, read) = seen.await??;
+            assert_eq!(
+                keys,
+                [
+                    "+53", "-53", "+37", "-37", "+50", "+118", "-118", "-50", "+37"
+                ]
+            );
+            assert_eq!(read, ["held"]);
+            display.key(37, false)?;
+            // Nobody asks for the text: the paste was not read.
+            page.unmap_window(atoms.window)?.check()?;
+            let unread = display
+                .paste(zeroize::Zeroizing::new("lost".into()))
+                .await?;
+            assert_eq!(unread, PasteOutcome::Unread);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        display.stop(crate::StopTimeouts::default()).await?;
+        result
+    }
+
+    /// SPEC-639 PST-006 (review round 1): a newer paste waits while the page still reads the one
+    /// before (Chrome asks for the targets again after the text), also when it was queued before
+    /// the page asked at all, so each paste key reads its own text; and the wait is bounded for a
+    /// client that never stops asking.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_newer_paste_waits_until_the_page_stopped_reading_the_one_before()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use crate::xclipboard::{PASTE_QUIET, PASTE_QUIET_MAX};
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir()?;
+        let sandbox = SandboxId::parse("paste-quiet")?;
+        let mut config = DisplayConfig::new(dir.path().to_owned());
+        if crate::resolve_executable(&config.xvfb).is_err() {
+            eprintln!("Xvfb unavailable; paste quiet check did not run");
+            return Ok(());
+        }
+        config.max_size = (320, 240);
+        let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (320, 240))
+            .await?
+            .ok_or("no test display")?;
+        let result = async {
+            let (page, atoms) = paste_page(&display, dir.path(), &sandbox).await?;
+            let watch = |presses: usize, reread: Duration, asking: Duration, late: Duration| {
+                let page = std::sync::Arc::clone(&page);
+                tokio::task::spawn_blocking(move || {
+                    observe_rereads(&page, atoms, presses, reread, asking, late)
+                })
+            };
+            // Two pastes queued at once: the second waits for the page to read the first.
+            let seen = watch(2, Duration::from_millis(30), Duration::ZERO, Duration::ZERO);
+            let (first, second) = tokio::join!(
+                display.paste(zeroize::Zeroizing::new("first".into())),
+                display.paste(zeroize::Zeroizing::new("second".into()))
+            );
+            assert_eq!((first?, second?), (PasteOutcome::Read, PasteOutcome::Read));
+            let seen = seen.await??;
+            let names: Vec<&str> = seen.iter().map(|(_, name)| name.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "key",
+                    "text first",
+                    "targets",
+                    "key",
+                    "text second",
+                    "targets"
+                ]
+            );
+            let gap = seen[3].0.duration_since(seen[2].0);
+            assert!(
+                gap >= PASTE_QUIET,
+                "the second paste came {gap:?} after the last read"
+            );
+
+            // A client that keeps asking holds a newer paste at most the bound.
+            // A busy page asks late (review round 3 measured 360 ms): the paste queued after it
+            // still waits, so each gets its own text.
+            let seen = watch(
+                2,
+                Duration::ZERO,
+                Duration::ZERO,
+                Duration::from_millis(350),
+            );
+            let (first, second) = tokio::join!(
+                display.paste(zeroize::Zeroizing::new("busy first".into())),
+                display.paste(zeroize::Zeroizing::new("busy second".into()))
+            );
+            assert_eq!((first?, second?), (PasteOutcome::Read, PasteOutcome::Read));
+            let names: Vec<String> = seen.await??.into_iter().map(|(_, name)| name).collect();
+            assert_eq!(
+                names,
+                [
+                    "key",
+                    "text busy first",
+                    "targets",
+                    "key",
+                    "text busy second",
+                    "targets"
+                ]
+            );
+
+            let seen = watch(2, Duration::ZERO, PASTE_QUIET_MAX * 3, Duration::ZERO);
+            display
+                .paste(zeroize::Zeroizing::new("third".into()))
+                .await?;
+            let started = Instant::now();
+            let outcome = display
+                .paste(zeroize::Zeroizing::new("fourth".into()))
+                .await?;
+            assert_eq!(outcome, PasteOutcome::Read);
+            let seen = seen.await??;
+            let second_key = seen
+                .iter()
+                .filter(|(_, name)| name == "key")
+                .nth(1)
+                .ok_or("no second paste key")?;
+            let held = second_key.0.duration_since(started);
+            assert!(
+                held < PASTE_QUIET_MAX * 2,
+                "a client that kept asking held the paste {held:?}"
+            );
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        display.stop(crate::StopTimeouts::default()).await?;
+        result
+    }
+
+    /// SPEC-639 (review round 2): pastes nobody reads (the focus is not in a field, the person
+    /// pastes again) hold the display's input only a short grace each, not a second each.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn unread_pastes_hold_the_input_after_them_only_briefly()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir()?;
+        let sandbox = SandboxId::parse("paste-unread")?;
+        let mut config = DisplayConfig::new(dir.path().to_owned());
+        if crate::resolve_executable(&config.xvfb).is_err() {
+            eprintln!("Xvfb unavailable; unread paste check did not run");
+            return Ok(());
+        }
+        config.max_size = (320, 240);
+        let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (320, 240))
+            .await?
+            .ok_or("no test display")?;
+        let result = async {
+            let (page, atoms) = paste_page(&display, dir.path(), &sandbox).await?;
+            let started = Instant::now();
+            let mut outcomes = Vec::new();
+            for n in 0..5 {
+                outcomes.push(display.queue_paste(zeroize::Zeroizing::new(format!("unread {n}")))?);
+            }
+            display.type_char('z')?;
+            // The page never asks; it only waits for the key after the pastes.
+            let arrived = {
+                let page = std::sync::Arc::clone(&page);
+                tokio::task::spawn_blocking(move || -> Result<Option<Instant>, String> {
+                    use x11rb::connection::Connection as _;
+                    use x11rb::protocol::Event;
+                    let until = Instant::now() + Duration::from_secs(8);
+                    while Instant::now() < until {
+                        match page.poll_for_event().map_err(|e| e.to_string())? {
+                            Some(Event::KeyPress(key)) if key.detail == 52 => {
+                                return Ok(Some(Instant::now()));
+                            }
+                            Some(_) => {}
+                            None => std::thread::sleep(Duration::from_millis(2)),
+                        }
+                    }
+                    Ok(None)
+                })
+            };
+            let at = arrived
+                .await??
+                .ok_or("the key after the pastes never came")?;
+            let held = at.duration_since(started);
+            assert!(
+                held < Duration::from_millis(2_500),
+                "five unread pastes held the input {held:?}"
+            );
+            let _ = atoms;
+            for outcome in outcomes {
+                assert_eq!(outcome.await?, PasteOutcome::Unread);
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        display.stop(crate::StopTimeouts::default()).await?;
+        result
+    }
+
+    /// SPEC-639 (review round 2), ADR-0423: a paste right after a click is no page's copy: the
+    /// click's watch for a CLIPBOARD write ends, so the pasted text is never offered back.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_paste_after_a_click_is_not_offered_as_the_pages_copy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+
+        let dir = tempfile::tempdir()?;
+        let sandbox = SandboxId::parse("paste-after-click")?;
+        let mut config = DisplayConfig::new(dir.path().to_owned());
+        if crate::resolve_executable(&config.xvfb).is_err() {
+            eprintln!("Xvfb unavailable; paste after click check did not run");
+            return Ok(());
+        }
+        config.max_size = (320, 240);
+        let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (320, 240))
+            .await?
+            .ok_or("no test display")?;
+        let result = async {
+            let (send, mut offer) = tokio::sync::oneshot::channel();
+            display.copy_press(send)?;
+            let outcome = display
+                .paste(zeroize::Zeroizing::new("pasted by A".into()))
+                .await?;
+            assert_eq!(outcome, PasteOutcome::Unread, "no page read it");
+            display.settle().await;
+            assert!(
+                matches!(
+                    offer.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+                ),
+                "the paste was offered as the page's copy"
+            );
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        display.stop(crate::StopTimeouts::default()).await?;
+        result
+    }
+
+    /// A page that reads like Chrome: on each Shift+Insert (`late` after it, a busy page) its
+    /// targets, then the text, then (after `reread`) its targets again; with `asking`, it goes on
+    /// asking for the targets every 10 ms for that long after the first paste key. Returns when and what it saw (`key`,
+    /// `text <text>`, `targets`) once it saw `presses` paste keys and read after the last.
+    #[cfg(target_os = "linux")]
+    fn observe_rereads(
+        page: &x11rb::rust_connection::RustConnection,
+        atoms: PasteAtoms,
+        presses: usize,
+        reread: std::time::Duration,
+        asking: std::time::Duration,
+        late: std::time::Duration,
+    ) -> Result<Vec<(std::time::Instant, String)>, String> {
+        use std::time::{Duration, Instant};
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::Event;
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, KeyButMask};
+        let text = |e: &dyn std::fmt::Display| e.to_string();
+        // Events that arrive while a read waits for its answer, for the loop below.
+        let later = std::cell::RefCell::new(std::collections::VecDeque::new());
+        let convert = |target| -> Result<Option<Vec<u8>>, String> {
+            page.convert_selection(
+                atoms.window,
+                atoms.selection,
+                target,
+                atoms.into,
+                x11rb::CURRENT_TIME,
+            )
+            .map_err(|e| text(&e))?;
+            page.flush().map_err(|e| text(&e))?;
+            loop {
+                let event = page.wait_for_event().map_err(|e| text(&e))?;
+                let Event::SelectionNotify(answer) = event else {
+                    later.borrow_mut().push_back(event);
+                    continue;
+                };
+                if answer.requestor == atoms.window {
+                    if answer.property == x11rb::NONE {
+                        return Ok(None);
+                    }
+                    let value = page
+                        .get_property(true, atoms.window, atoms.into, AtomEnum::ANY, 0, 1 << 20)
+                        .map_err(|e| text(&e))?
+                        .reply()
+                        .map_err(|e| text(&e))?
+                        .value;
+                    return Ok(Some(value));
+                }
+            }
+        };
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut seen = Vec::new();
+        let mut asking_until: Option<Instant> = None;
+        while Instant::now() < until {
+            let keys = seen
+                .iter()
+                .filter(|(_, n): &&(Instant, String)| n == "key")
+                .count();
+            if keys == presses && seen.last().is_some_and(|(_, n)| n == "targets") {
+                return Ok(seen);
+            }
+            if asking_until.is_some_and(|end| Instant::now() < end) {
+                convert(atoms.targets)?;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let queued = later.borrow_mut().pop_front();
+            let next = match queued {
+                Some(event) => Some(event),
+                None => page.poll_for_event().map_err(|e| text(&e))?,
+            };
+            let Some(event) = next else {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            };
+            if let Event::KeyPress(press) = &event
+                && press.detail == 118
+                && press.state.contains(KeyButMask::SHIFT)
+            {
+                seen.push((Instant::now(), "key".to_owned()));
+                if asking_until.is_none() && !asking.is_zero() {
+                    asking_until = Some(Instant::now() + asking);
+                }
+                // A busy page handles the key, and asks, only once its task ended.
+                std::thread::sleep(late);
+                convert(atoms.targets)?.ok_or("the targets were refused")?;
+                let pasted = convert(atoms.utf8)?.ok_or("the text was refused")?;
+                let pasted = String::from_utf8(pasted).map_err(|e| text(&e))?;
+                seen.push((Instant::now(), format!("text {pasted}")));
+                std::thread::sleep(reread);
+                convert(atoms.targets)?.ok_or("the targets were refused")?;
+                seen.push((Instant::now(), "targets".to_owned()));
+            }
+        }
+        Err(format!("the page saw {seen:?}"))
+    }
+
+    /// SPEC-639 PST-003 (review round 1): where the CLIPBOARD cannot be taken a paste is typed as
+    /// real key presses, the viewer's held Control lifted meanwhile (it would make shortcuts of
+    /// the text) and pressed again after.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_paste_without_the_clipboard_is_typed_as_key_presses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::*;
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir()?;
+        let sandbox = SandboxId::parse("paste-typed")?;
+        let mut config = DisplayConfig::new(dir.path().to_owned());
+        if crate::resolve_executable(&config.xvfb).is_err() {
+            eprintln!("Xvfb unavailable; typed paste check did not run");
+            return Ok(());
+        }
+        config.max_size = (320, 240);
+        let display = VirtualDisplay::start(&DisplayMode::Virtual(config), &sandbox, (320, 240))
+            .await?
+            .ok_or("no test display")?;
+        let result = async {
+            let (page, atoms) = paste_page(&display, dir.path(), &sandbox).await?;
+            let auth = std::fs::read(dir.path().join(sandbox.as_str()).join(XAUTHORITY_FILE))?;
+            let number = display.name().trim_start_matches(':').parse()?;
+            let conn = xserver::connect(number, &auth[auth.len() - 16..])?;
+            let typing = xserver::XController::start_with(conn, (320, 240), false)?;
+            let seen = {
+                let page = std::sync::Arc::clone(&page);
+                tokio::task::spawn_blocking(move || {
+                    observe_paste(&page, atoms, Instant::now() + Duration::from_millis(1_500))
+                })
+            };
+            typing
+                .send(DisplayInput::Key {
+                    keycode: 37,
+                    press: true,
+                })
+                .map_err(|e| format!("{e:?}"))?;
+            let (outcome, answer) = tokio::sync::oneshot::channel();
+            typing
+                .queue(xserver::XCommand::Paste(
+                    zeroize::Zeroizing::new("aB\r\n".into()),
+                    outcome,
+                ))
+                .map_err(|e| format!("{e:?}"))?;
+            assert_eq!(answer.await?, PasteOutcome::Typed);
+            let (keys, read) = seen.await??;
+            assert_eq!(
+                keys,
+                [
+                    "+37", "-37", "+38", "-38", "+50", "+56", "-56", "-50", "+36", "-36", "+37"
+                ]
+            );
+            assert!(read.is_empty(), "nothing was pasted: {read:?}");
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+        .await;
+        display.stop(crate::StopTimeouts::default()).await?;
+        result
+    }
+
+    /// A window on the test display that takes the keyboard, as a page does, and the atoms a
+    /// paste uses.
+    #[cfg(target_os = "linux")]
+    async fn paste_page(
+        display: &super::VirtualDisplay,
+        runtime: &std::path::Path,
+        sandbox: &yulius_domain::ids::SandboxId,
+    ) -> Result<
+        (
+            std::sync::Arc<x11rb::rust_connection::RustConnection>,
+            PasteAtoms,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        use super::*;
+        use std::time::Instant;
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::{
+            ConnectionExt as _, CreateWindowAux, EventMask, WindowClass,
+        };
+        let auth = std::fs::read(runtime.join(sandbox.as_str()).join(XAUTHORITY_FILE))?;
+        let number = display.name().trim_start_matches(':').parse()?;
+        let page = xserver::connect(number, &auth[auth.len() - 16..])?;
+        let root = page.setup().roots[0].root;
+        let atom = |name: &[u8]| -> Result<u32, Box<dyn std::error::Error>> {
+            Ok(page.intern_atom(false, name)?.reply()?.atom)
+        };
+        let (selection, targets, utf8, into) = (
+            atom(b"CLIPBOARD")?,
+            atom(b"TARGETS")?,
+            atom(b"UTF8_STRING")?,
+            atom(b"YULIUS_TEST_PASTE")?,
+        );
+        let window = page.generate_id()?;
+        page.create_window(
+            0,
+            window,
+            root,
+            0,
+            0,
+            100,
+            100,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().event_mask(EventMask::KEY_PRESS | EventMask::KEY_RELEASE),
+        )?
+        .check()?;
+        page.map_window(window)?.check()?;
+        // The display's thread focuses a window that maps (it plays the window manager).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while page.get_input_focus()?.reply()?.focus != window {
+            assert!(
+                Instant::now() < deadline,
+                "the test window never got the focus"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let atoms = PasteAtoms {
+            window,
+            selection,
+            targets,
+            utf8,
+            into,
+        };
+        Ok((std::sync::Arc::new(page), atoms))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[derive(Clone, Copy)]
+    struct PasteAtoms {
+        window: u32,
+        selection: u32,
+        targets: u32,
+        utf8: u32,
+        into: u32,
+    }
+
+    /// What a page on the display sees until `until`: its key presses (`+50`) and releases
+    /// (`-118`), and the texts it read on each Shift+Insert as Chrome does (TARGETS first, then
+    /// UTF8_STRING).
+    #[cfg(target_os = "linux")]
+    fn observe_paste(
+        page: &x11rb::rust_connection::RustConnection,
+        atoms: PasteAtoms,
+        until: std::time::Instant,
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::Event;
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, KeyButMask};
+        let text = |e: &dyn std::fmt::Display| e.to_string();
+        let (mut keys, mut read) = (Vec::new(), Vec::new());
+        let key = |event: &Event, keys: &mut Vec<String>| match event {
+            Event::KeyPress(key) => keys.push(format!("+{}", key.detail)),
+            Event::KeyRelease(key) => keys.push(format!("-{}", key.detail)),
+            _ => {}
+        };
+        let convert = |target, keys: &mut Vec<String>| -> Result<Option<Vec<u8>>, String> {
+            page.convert_selection(
+                atoms.window,
+                atoms.selection,
+                target,
+                atoms.into,
+                x11rb::CURRENT_TIME,
+            )
+            .map_err(|e| text(&e))?;
+            page.flush().map_err(|e| text(&e))?;
+            loop {
+                match page.wait_for_event().map_err(|e| text(&e))? {
+                    Event::SelectionNotify(answer) if answer.requestor == atoms.window => {
+                        if answer.property == x11rb::NONE {
+                            return Ok(None);
+                        }
+                        let value = page
+                            .get_property(true, atoms.window, atoms.into, AtomEnum::ANY, 0, 1 << 20)
+                            .map_err(|e| text(&e))?
+                            .reply()
+                            .map_err(|e| text(&e))?
+                            .value;
+                        return Ok(Some(value));
+                    }
+                    other => key(&other, keys),
+                }
+            }
+        };
+        while std::time::Instant::now() < until {
+            let Some(event) = page.poll_for_event().map_err(|e| text(&e))? else {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            };
+            key(&event, &mut keys);
+            if let Event::KeyPress(press) = &event
+                && press.detail == 118
+                && press.state.contains(KeyButMask::SHIFT)
+            {
+                let offered = convert(atoms.targets, &mut keys)?.unwrap_or_default();
+                let offered: Vec<u32> = offered
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| u32::from_ne_bytes(*b))
+                    .collect();
+                if !offered.contains(&atoms.utf8) {
+                    return Err(format!("targets {offered:?}"));
+                }
+                let pasted = convert(atoms.utf8, &mut keys)?.ok_or("the text was refused")?;
+                read.push(String::from_utf8(pasted).map_err(|e| text(&e))?);
+            }
+        }
+        Ok((keys, read))
     }
 
     #[test]

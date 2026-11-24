@@ -645,26 +645,64 @@ async fn click_and_type_tools_pass_selectors_as_data() -> TestResult {
         .map(|c| (c.method.clone(), c.params.clone()))
         .collect();
     let methods: Vec<&str> = sequence.iter().map(|(m, _)| m.as_str()).collect();
-    assert_eq!(
-        methods,
-        [
-            "Runtime.callFunctionOn",
-            "Input.insertText",
-            "Input.dispatchKeyEvent",
-            "Input.dispatchKeyEvent",
-            "Input.insertText"
-        ]
-    );
+    assert_eq!(methods[0], "Runtime.callFunctionOn");
     assert!(
         sequence[0].1["functionDeclaration"]
             .as_str()
             .unwrap_or_default()
             .contains("focus()")
     );
-    assert_eq!(sequence[1].1["text"], "hello");
-    assert_eq!(sequence[2].1["text"], "\r");
-    assert_eq!(sequence[3].1["type"], "keyUp");
-    assert_eq!(sequence[4].1["text"], "world");
+    // SPEC-639 PST-005: real key presses (a key down with its text, a key up), never inserted
+    // text, which terminals ignore.
+    assert!(
+        methods[1..].iter().all(|m| *m == "Input.dispatchKeyEvent"),
+        "{methods:?}"
+    );
+    let kinds: Vec<&str> = sequence[1..]
+        .iter()
+        .map(|(_, p)| p["type"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(kinds, ["keyDown", "keyUp"].repeat(11));
+    let typed: String = sequence[1..]
+        .iter()
+        .filter_map(|(_, p)| p["text"].as_str())
+        .collect();
+    assert_eq!(typed, "hello\rworld");
+    assert_eq!(sequence[1].1["key"], "h");
+    assert_eq!(sequence[1].1["windowsVirtualKeyCode"], 72);
+    assert_eq!(sequence[11].1["key"], "Enter");
+    // A tab presses Tab (it moves the focus, as a person's would); other control characters
+    // are no key and are left out, and not counted.
+    let before = fake.calls().len();
+    let typed = instance
+        .tool_type(&TypeParams {
+            tab_id: tab.clone(),
+            text: "a\tb\u{1}c".into(),
+            selector: None,
+        })
+        .await?;
+    assert_eq!(typed.chars, 4);
+    let downs: Vec<(String, String, Value)> = fake.calls()[before..]
+        .iter()
+        .filter(|c| c.method == "Input.dispatchKeyEvent" && c.params["type"] == "keyDown")
+        .map(|c| {
+            let field = |name: &str| c.params[name].as_str().unwrap_or_default().to_owned();
+            (
+                field("key"),
+                field("text"),
+                c.params["windowsVirtualKeyCode"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        downs,
+        [
+            ("a".to_owned(), "a".to_owned(), json!(65)),
+            ("Tab".to_owned(), "\t".to_owned(), json!(9)),
+            ("b".to_owned(), "b".to_owned(), json!(66)),
+            ("c".to_owned(), "c".to_owned(), json!(67)),
+        ]
+    );
     assert!(matches!(
         instance
             .tool_type(&TypeParams {
@@ -928,14 +966,14 @@ async fn typed_secrets_refuse_screenshots_while_a_page_may_show_them() -> TestRe
             )
             .await?;
     }
-    let typed = fake.calls_for("Input.insertText").len();
+    let typed = fake.calls_for("Input.dispatchKeyEvent").len();
     assert!(matches!(
         instance
             .tool_type_secret(&fill(&other, "#pw", "one-too-many"), &|_: &str| true)
             .await,
         Err(BrowserError::InvalidInput(_))
     ));
-    assert_eq!(fake.calls_for("Input.insertText").len(), typed);
+    assert_eq!(fake.calls_for("Input.dispatchKeyEvent").len(), typed);
 
     // A probe that fails is refused.
     fake.fail("Page.createIsolatedWorld", -32000, "no world");
@@ -1687,14 +1725,14 @@ async fn a_secret_needs_a_known_document() -> TestResult {
     assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
-    let typed = fake.calls_for("Input.insertText").len();
+    let typed = fake.calls_for("Input.dispatchKeyEvent").len();
     assert!(matches!(
         instance
             .tool_type_secret(&fill(&tab, "#pw", "frame-secret-8812"), &|_: &str| true)
             .await,
         Err(BrowserError::InvalidInput(_))
     ));
-    assert_eq!(fake.calls_for("Input.insertText").len(), typed);
+    assert_eq!(fake.calls_for("Input.dispatchKeyEvent").len(), typed);
     Ok(())
 }
 
@@ -1940,7 +1978,7 @@ async fn a_secret_is_typed_only_into_a_page_it_may_go_to() -> TestResult {
         .tool_navigate(&to(&tab, "https://evil.example/collect"))
         .await?;
     fake.set_password_field("#pw", true);
-    let texts = fake.calls_for("Input.insertText").len();
+    let keys = fake.calls_for("Input.dispatchKeyEvent").len();
     let bank_only = |address: &str| address.starts_with("https://bank.example/");
     let refused = instance
         .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
@@ -1950,8 +1988,8 @@ async fn a_secret_is_typed_only_into_a_page_it_may_go_to() -> TestResult {
         "{refused:?}"
     );
     assert_eq!(
-        fake.calls_for("Input.insertText").len(),
-        texts,
+        fake.calls_for("Input.dispatchKeyEvent").len(),
+        keys,
         "nothing typed"
     );
     // Nothing was typed, so the page holds no secret: a screenshot is still taken.
@@ -1966,7 +2004,7 @@ async fn a_secret_is_typed_only_into_a_page_it_may_go_to() -> TestResult {
     instance
         .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
         .await?;
-    assert!(fake.calls_for("Input.insertText").len() > texts);
+    assert!(fake.calls_for("Input.dispatchKeyEvent").len() > keys);
     Ok(())
 }
 
@@ -1980,10 +2018,10 @@ async fn a_secret_typed_while_the_page_moves_on_is_reported() -> TestResult {
         .tool_navigate(&to(&tab, "https://bank.example/login"))
         .await?;
     fake.set_password_field("#pw", true);
-    let texts = fake.calls_for("Input.insertText").len();
+    let keys = fake.calls_for("Input.dispatchKeyEvent").len();
     fake.navigate_to_during_nth(
-        "Input.insertText",
-        texts + 1,
+        "Input.dispatchKeyEvent",
+        keys + 1,
         "https://evil.example/collect",
     );
     // The page where the typing begins may get it; the site it moved to may not.
@@ -2010,15 +2048,213 @@ async fn a_secret_typed_while_the_page_moves_on_is_reported() -> TestResult {
     instance
         .tool_navigate(&to(&tab, "https://bank.example/login"))
         .await?;
-    let texts = fake.calls_for("Input.insertText").len();
+    let keys = fake.calls_for("Input.dispatchKeyEvent").len();
     fake.navigate_to_during_nth(
-        "Input.insertText",
-        texts + 1,
+        "Input.dispatchKeyEvent",
+        keys + 1,
         "https://bank.example/welcome",
     );
     instance
         .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
         .await?;
+    Ok(())
+}
+
+/// SPEC-648 FSK-001, FSK-004: a page that reads only keys (and xterm.js while a key is held)
+/// drops `Input.insertText`. A secret, a user name and a code typed by `browser_fill_secret`
+/// reach a page that takes only keys, and nothing is inserted. A secret in a password field
+/// stays out of screenshots; one typed into a terminal (a text field, not a password field)
+/// refuses them.
+#[tokio::test]
+async fn a_secret_reaches_a_page_that_takes_only_keys() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    fake.set_inserted_text_ignored(true);
+    fake.set_password_field("#pw", true);
+    let bank_only = |address: &str| address.starts_with("https://bank.example/");
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
+        .await?;
+    assert_eq!(fake.field_value("#pw").as_deref(), Some("pw-secret-4471"));
+    instance
+        .tool_type_beside_secret(&fill(&tab, "#user", "alice@bank.example"), &bank_only)
+        .await?;
+    instance
+        .tool_type_beside_secret(&fill(&tab, "#code", "402917"), &bank_only)
+        .await?;
+    assert_eq!(
+        fake.field_value("#user").as_deref(),
+        Some("alice@bank.example")
+    );
+    assert_eq!(fake.field_value("#code").as_deref(), Some("402917"));
+    // The secret is whole in its password field: a screenshot is taken.
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+
+    // A terminal's focus is a text field, not a password field.
+    instance
+        .tool_type_secret(&fill(&tab, "#term", "term-secret-5512"), &bank_only)
+        .await?;
+    assert_eq!(
+        fake.field_value("#term").as_deref(),
+        Some("term-secret-5512")
+    );
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    assert!(
+        fake.calls_for("Input.insertText").is_empty(),
+        "nothing inserted"
+    );
+    Ok(())
+}
+
+/// SPEC-648 FSK-003: a pressed Tab would move the focus in the middle of a secret, and other
+/// control characters have no key. A text holding one is refused before anything is typed,
+/// without the text in the error. Line ends (`\n`, `\r\n`) are typed as Enter.
+#[tokio::test]
+async fn a_secret_with_a_tab_or_control_character_is_refused_before_typing() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    let looks = || {
+        (
+            fake.calls_for("Page.getFrameTree").len(),
+            fake.calls_for("Page.createIsolatedWorld").len(),
+            fake.calls_for("Runtime.callFunctionOn").len(),
+        )
+    };
+    for text in [
+        "zq\t7731xy",
+        "zq7731\u{7}xy",
+        "zq7731\rxy",
+        "zq7731\u{1b}[A",
+    ] {
+        let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+        let before = looks();
+        for beside in [false, true] {
+            let params = fill(&tab, "#pw", text);
+            let typed = if beside {
+                instance
+                    .tool_type_beside_secret(&params, &|_: &str| true)
+                    .await
+            } else {
+                instance.tool_type_secret(&params, &|_: &str| true).await
+            };
+            assert!(
+                matches!(&typed, Err(BrowserError::InvalidInput(message))
+                    if message.contains("control character") && !message.contains("7731")),
+                "{text:?}: {typed:?}"
+            );
+        }
+        // Refused before the page was read, its field focused or the secret remembered.
+        assert_eq!(looks(), before, "{text:?}: the page was not looked at");
+        assert_eq!(
+            fake.calls_for("Input.dispatchKeyEvent").len(),
+            keys,
+            "{text:?}: nothing typed"
+        );
+    }
+    assert!(fake.calls_for("Input.insertText").is_empty());
+    assert_eq!(fake.field_value("#pw"), None);
+
+    let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "line-one\r\nline-two\n"), &|_: &str| {
+            true
+        })
+        .await?;
+    assert_eq!(fake.key_text_from(keys), "line-one\rline-two\r");
+    Ok(())
+}
+
+/// SPEC-648 FSK-005: a navigation of the page's own can now land between two keys, leaving part
+/// of the secret in each document. The page it went to is reported, and both sites are exposed:
+/// neither part is whole in a password field, and no content rule matches a part.
+#[tokio::test]
+async fn a_navigation_between_two_keys_is_reported_and_exposes_both() -> TestResult {
+    let bank_only = |address: &str| address.starts_with("https://bank.example/");
+    for (next, astray) in [
+        ("https://evil.example/collect", true),
+        ("https://bank.example/welcome", false),
+    ] {
+        let (fake, instance, tab) = setup().await?;
+        instance
+            .tool_navigate(&to(&tab, "https://bank.example/login"))
+            .await?;
+        fake.set_password_field("#pw", true);
+        let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+        // The 9th key event: the key down of the fifth character.
+        fake.navigate_to_during_nth("Input.dispatchKeyEvent", keys + 9, next);
+        let typed = instance
+            .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
+            .await;
+        if astray {
+            assert!(
+                matches!(&typed, Err(BrowserError::SecretAstray(host)) if host == "evil.example"),
+                "{typed:?}"
+            );
+        } else {
+            typed?;
+        }
+        // The next document got the rest, into its focused element.
+        assert_eq!(
+            fake.field_value("").as_deref(),
+            Some("ecret-4471"),
+            "{next}"
+        );
+        assert!(
+            refused(instance.tool_screenshot_within(&shot(&tab), 100_000).await),
+            "{next}: the page it went to"
+        );
+        // The page it was typed into, shown again.
+        instance
+            .tool_navigate(&to(&tab, "https://bank.example/login"))
+            .await?;
+        assert!(
+            refused(instance.tool_screenshot_within(&shot(&tab), 100_000).await),
+            "{next}: the page it was typed into"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-648: a key event that fails in the middle of a secret leaves a part of it in the field,
+/// which no content rule matches. The typing's error is returned and the host is exposed, also
+/// when the field is a password field (the part is not the secret it holds).
+#[tokio::test]
+async fn a_key_failing_mid_secret_exposes_the_host() -> TestResult {
+    for selector in ["#term", "#pw"] {
+        let (fake, instance, tab) = setup().await?;
+        instance
+            .tool_navigate(&to(&tab, "https://bank.example/login"))
+            .await?;
+        fake.set_password_field("#pw", true);
+        instance
+            .tool_screenshot_within(&shot(&tab), 100_000)
+            .await?;
+        let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+        // The 5th key event: the key down of the third character.
+        fake.fail_nth("Input.dispatchKeyEvent", keys + 5, -32000, "no key");
+        let typed = instance
+            .tool_type_secret(&fill(&tab, selector, "term-secret-5512"), &|_: &str| true)
+            .await;
+        assert!(typed.is_err(), "{selector}: {typed:?}");
+        assert_eq!(
+            fake.field_value(selector).as_deref(),
+            Some("te"),
+            "{selector}"
+        );
+        assert!(
+            refused(instance.tool_screenshot_within(&shot(&tab), 100_000).await),
+            "{selector}"
+        );
+    }
     Ok(())
 }
 
@@ -2035,14 +2271,14 @@ async fn a_navigation_waits_for_a_secret_being_typed() -> TestResult {
     // The look at the page after the typing takes a while: the typing holds the lock.
     fake.set_secret_probe_delay(Duration::from_millis(400));
     for navigation in ["navigate", "reload", "back"] {
-        let texts = fake.calls_for("Input.insertText").len();
+        let keys = fake.calls_for("Input.dispatchKeyEvent").len();
         let typing = {
             let instance = Arc::clone(&instance);
             let params = fill(&tab, "#pw", "pw-secret-4471");
             tokio::spawn(async move { instance.tool_type_secret(&params, &|_: &str| true).await })
         };
         assert!(
-            fake.wait_for_calls("Input.insertText", texts + 1, WAIT)
+            fake.wait_for_calls("Input.dispatchKeyEvent", keys + 1, WAIT)
                 .await
         );
         assert!(!typing.is_finished(), "the typing is under way");
@@ -2087,8 +2323,8 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
         text: "pw-secret-4471".into(),
         selector: None,
     };
-    let texts = || fake.calls_for("Input.insertText").len();
-    let before = texts();
+    let keys = || fake.calls_for("Input.dispatchKeyEvent").len();
+    let before = keys();
 
     // The focus is in a frame of another site (an advertisement, a widget): refused, named.
     fake.set_child_frames(&["https://evil.example/collect"]);
@@ -2098,7 +2334,7 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
         matches!(&refused, Err(BrowserError::SecretFrameRefused(host)) if host == "evil.example"),
         "{refused:?}"
     );
-    assert_eq!(texts(), before, "nothing typed");
+    assert_eq!(keys(), before, "nothing typed");
 
     // A frame in a process of its own (a target, not in the tree) of such a site: the same.
     fake.set_child_frames(&[]);
@@ -2108,7 +2344,7 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
         matches!(&refused, Err(BrowserError::SecretFrameRefused(host)) if host == "evil.example"),
         "{refused:?}"
     );
-    assert_eq!(texts(), before, "nothing typed");
+    assert_eq!(keys(), before, "nothing typed");
 
     // Its frames cannot be listed: nothing is typed.
     let listed = fake.calls_for("Target.getTargets").len();
@@ -2119,7 +2355,7 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
             .await
             .is_err()
     );
-    assert_eq!(texts(), before, "nothing typed");
+    assert_eq!(keys(), before, "nothing typed");
 
     // The focus in the page itself: other sites' frames beside it do not matter.
     fake.set_secret_probe(None);
@@ -2127,7 +2363,7 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
     instance
         .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &for_the_bank)
         .await?;
-    let typed = texts();
+    let typed = keys();
     assert!(typed > before);
 
     // The focus in the sign-in frame of a site the secret is for: typed.
@@ -2135,7 +2371,7 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
     fake.set_child_frames(&["https://id.bank-auth.example/form"]);
     fake.set_secret_probe(Some(in_a_frame));
     instance.tool_type_secret(&secret, &for_the_bank).await?;
-    let typed = texts();
+    let typed = keys();
     assert!(typed > before);
 
     // Only a text field of the page is the page's own. The focus on anything else (the host
@@ -2164,10 +2400,10 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
             "{focus}: {refused:?}"
         );
     }
-    assert_eq!(texts(), typed, "nothing typed");
+    assert_eq!(keys(), typed, "nothing typed");
     fake.set_secret_probe(Some(focused(json!({"kind": "field"}))));
     instance.tool_type_secret(&secret, &for_the_bank).await?;
-    let typed = texts();
+    let typed = keys();
 
     // A fenced frame is on no list of the page's frames: refused whatever they are.
     fake.set_child_frames(&[]);
@@ -2196,7 +2432,7 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
         matches!(&refused, Err(BrowserError::InvalidInput(why)) if why.contains("frames cannot be identified")),
         "{refused:?}"
     );
-    assert_eq!(texts(), typed, "nothing typed");
+    assert_eq!(keys(), typed, "nothing typed");
     Ok(())
 }
 
@@ -2210,14 +2446,14 @@ async fn a_secret_is_not_typed_into_a_page_that_changed_since_the_look() -> Test
     fake.set_password_field("#pw", true);
     let bank_only = |address: &str| address.starts_with("https://bank.example/");
     let secret = fill(&tab, "#pw", "pw-secret-4471");
-    let texts = || fake.calls_for("Input.insertText").len();
+    let keys = || fake.calls_for("Input.dispatchKeyEvent").len();
     let looks = || fake.calls_for("Page.createIsolatedWorld").len();
 
     // Another site arrived while the page was looked at: named, nothing typed.
     instance
         .tool_navigate(&to(&tab, "https://bank.example/login"))
         .await?;
-    let before = texts();
+    let before = keys();
     fake.navigate_to_during_nth(
         "Page.createIsolatedWorld",
         looks() + 1,
@@ -2228,7 +2464,7 @@ async fn a_secret_is_not_typed_into_a_page_that_changed_since_the_look() -> Test
         matches!(&refused, Err(BrowserError::SecretPageRefused(host)) if host == "evil.example"),
         "{refused:?}"
     );
-    assert_eq!(texts(), before, "nothing typed");
+    assert_eq!(keys(), before, "nothing typed");
 
     // Another page of the secret's site arrived: the field that was focused is gone with the
     // page it was in, so nothing is typed and the fill is asked again.
@@ -2245,7 +2481,7 @@ async fn a_secret_is_not_typed_into_a_page_that_changed_since_the_look() -> Test
         matches!(&refused, Err(BrowserError::InvalidInput(why)) if why.contains("changed while")),
         "{refused:?}"
     );
-    assert_eq!(texts(), before, "nothing typed");
+    assert_eq!(keys(), before, "nothing typed");
 
     // The focus is in the page's field at the look and in a frame of another site after the
     // keys: reported, for the secret and for what is typed beside it.
@@ -2260,7 +2496,7 @@ async fn a_secret_is_not_typed_into_a_page_that_changed_since_the_look() -> Test
         matches!(&astray, Err(BrowserError::SecretFrameAstray(host)) if host == "evil.example"),
         "{astray:?}"
     );
-    assert!(texts() > before, "it was typed, and said so");
+    assert!(keys() > before, "it was typed, and said so");
     // (One more look in between: what is typed beside a secret may edit one typed before.)
     fake.queue_secret_probes(vec![probe("field"), probe("field"), probe("frame")]);
     let astray = instance.tool_type_beside_secret(&secret, &bank_only).await;
@@ -2311,7 +2547,7 @@ async fn a_secret_is_not_typed_into_a_tab_leaving_for_another_site() -> TestResu
         .await?;
     fake.set_password_field("#pw", true);
     let bank_only = |address: &str| address.starts_with("https://bank.example/");
-    let texts = || fake.calls_for("Input.insertText").len();
+    let keys = || fake.calls_for("Input.dispatchKeyEvent").len();
     // Events arrive in order: once a title set after an event shows, the event was heard.
     let mut tabs = instance.subscribe_tabs();
     let mut titles = 0;
@@ -2326,22 +2562,22 @@ async fn a_secret_is_not_typed_into_a_tab_leaving_for_another_site() -> TestResu
     let secret = fill(&tab, "#pw", "pw-secret-4471");
     // Whether a fill is refused as leaving for `site`; `None`: it is typed.
     let leaving = async || -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let before = texts();
+        let before = keys();
         match instance.tool_type_secret(&secret, &bank_only).await {
             Err(BrowserError::SecretPageLeaving(site)) => {
-                assert_eq!(texts(), before, "nothing typed");
+                assert_eq!(keys(), before, "nothing typed");
                 // A user name or a one-time code goes where the secret goes (SPEC-483 E10).
                 let beside = instance.tool_type_beside_secret(&secret, &bank_only).await;
                 assert!(
                     matches!(&beside, Err(BrowserError::SecretPageLeaving(s)) if *s == site),
                     "{beside:?}"
                 );
-                assert_eq!(texts(), before, "nothing typed");
+                assert_eq!(keys(), before, "nothing typed");
                 Ok(Some(site))
             }
             Err(other) => Err(other.into()),
             Ok(_) => {
-                assert!(texts() > before);
+                assert!(keys() > before);
                 Ok(None)
             }
         }
@@ -2481,7 +2717,7 @@ async fn a_secret_is_not_typed_into_a_tab_leaving_for_another_site() -> TestResu
     // The announcement comes while the page is looked at, after the page itself was asked:
     // where it is going is asked last, before the keys.
     fake.set_secret_probe_delay(Duration::from_millis(1500));
-    let (looks, before) = (fake.calls_for("Page.createIsolatedWorld").len(), texts());
+    let (looks, before) = (fake.calls_for("Page.createIsolatedWorld").len(), keys());
     let (refused, ()) = tokio::join!(instance.tool_type_secret(&secret, &bank_only), async {
         while fake.calls_for("Page.createIsolatedWorld").len() == looks {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -2500,6 +2736,6 @@ async fn a_secret_is_not_typed_into_a_tab_leaving_for_another_site() -> TestResu
         matches!(&refused, Err(BrowserError::SecretPageLeaving(host)) if host == "evil.example"),
         "{refused:?}"
     );
-    assert_eq!(texts(), before, "nothing typed");
+    assert_eq!(keys(), before, "nothing typed");
     Ok(())
 }

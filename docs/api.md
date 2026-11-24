@@ -526,8 +526,8 @@ subscription, and is listed where it was. `POST /api/tasks/{tid}/continue` resum
 provider session with nothing typed (its `needs_you` stays; an `account_id` is 400); `task_message`
 resumes it with the message as its first prompt (`delivered: "resumed"`, the request ends); at the
 session limit the resume waits `queued` with its prompt. Archive and close make it `closed`, Stop
-`stopped_cancelled`. A message while the park is ending the session is 409 ("is parking its idle
-session"). Each park is audited `task.parked` by `yulius`.
+`stopped_cancelled`. A message while the park is ending the session, until its run's end has settled the task, is
+409 ("is parking its idle session"); once the task reads `parked`, a message resumes it. Each park is audited `task.parked` by `yulius`.
 
 A live task whose goal is achieved includes `candidate_pending: true` while its recorded integration failure still applies (the PR watch has not seen its pull request close or its head or base move): it reads as waiting on Yulius, not Done, from the watch's last answered check (a re-read in flight or a failed one changes nothing), the watch publishes the task when that answer changes, and `task_get`'s `waits_for` names the re-check; otherwise the field is absent (SPEC-621 FIN-004).
 
@@ -671,7 +671,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview`. HTTP 429 when 30 overlapping overview reads already hold publication slots in this sandbox. Parked task branch reads have a separate limit per task. Home and MCP task lists continue to read available PR observations. |
-| GET | `/api/tasks/{tid}/delivery` | read | → `Delivery`. `review_rounds` lists the current review or the just-delivered PR's rounds, oldest first, including `started_at`, `ended_at` (RFC 3339) and `pr_number` when known. In a playground the available action is the local squash (`merge`). Its local prerequisites appear in `blocked`, and a merged task has no further actions. |
+| GET | `/api/tasks/{tid}/delivery` | read | → `Delivery`. `review_rounds` lists the current review or the just-delivered PR's rounds, oldest first, including `started_at`, `ended_at` (RFC 3339) and `pr_number` when known, and the pull request's `merged_at` once it merged (a round with no report by then is unreported). In a playground the available action is the local squash (`merge`). Its local prerequisites appear in `blocked`, and a merged task has no further actions. |
 | GET | `/api/tasks/{tid}/delivery/evidence/{merged_sha}` | read | → `MergeEvidence`. Task, PR, branch, accepted head, landed SHA and up to 50 newest CI, CD and profile-command attempts with individual check states. When truncated, pass `?before=<next_before>` for the next page, including archived attempts. Add `?run_id=<id>` to pin one attempt. A missing task landing or requested attempt returns 404. Task agents use `delivery_status` with optional `merged_sha`, `before` or `run_id` to read the same evidence with their task credential. |
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the task has not started (no worktree yet) or its worktree is gone (the Git overview's `worktree`) |
 | GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100); 409 as for `/changes` |
@@ -704,6 +704,7 @@ ReviewRound = {"round":1, "agent":"yulius-reviewer|yulius-reviewer-opus|codex-re
   "model":"<model-id>", "model_answered":"<model-id>|null",
   "reason":"round|kept|no_fable", "head":"<sha>|null",
   "started_at":"<RFC3339>", "ended_at":"<RFC3339>|null", "pr_number":42|null,
+  "merged_at":"<RFC3339>|null",
   "verdict":"approve|request_changes|null", "reported":bool, "cut_off":bool}
 EnvironmentRun = {"run_id","environment","kind":"command|manual",
   "state":"running|succeeded|failed|error","command":"…|null","commit":"<sha>|null",
@@ -1391,8 +1392,13 @@ resolves to nothing, the run gets the server without that variable or token.
     `dx`/`dy` pixels), `{"type":"key","tab_id","event":"down|up|char","key","code","text",
     "modifiers"}` (on a display: printable ASCII by `key` as a US-layout key with Shift as needed,
     with Ctrl/Alt/Meta held the user's Shift is kept; other keys by `code`; a `key` no US key types
-    and `char` text up to 64 characters are typed as real key presses in order; longer `char` text,
-    a paste, is inserted with CDP `Input.insertText`; lock keys and AltGraph are ignored),
+    and `char` text up to 64 characters are typed as real key presses in order; longer `char` text
+    (IME composition) is inserted with CDP `Input.insertText`; lock keys and AltGraph are
+    ignored), `{"type":"paste","tab_id","text"}` (the viewer's paste, whole, at most 32 KiB; on a
+    display the text becomes the display's CLIPBOARD and Shift+Insert is pressed in order with
+    the keys, so the page gets a real `paste` event, terminals too; without a display, or without
+    the CLIPBOARD, it is typed as key presses; answered with the error `paste_failed` when no
+    client fetched the text within 3 s or it could not be delivered, SPEC-639),
     `{"type":"accept_page_copy","tab_id","offer"}` (accept a one-use offer issued to this socket),
     `{"type":"copy","tab_id"}` (answered with `clipboard`), `{"type":"viewport","width",
     "height"}` (the panel size in CSS pixels; shared by every viewer, clamped to the configured
@@ -1421,7 +1427,7 @@ resolves to nothing, the run gets the server without that variable or token.
     `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
     agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested","tab_id",
     "reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|capacity|
-    input_locked|input_locked_until_restart|upstream|internal","message"}`.
+    input_locked|input_locked_until_restart|upstream|paste_failed|internal","message"}`.
   - Bounds: an acknowledging viewer has at most its base round trip plus 120 ms of video
     unacknowledged; video that waited on the server 250 ms (or beyond 300 frames, 8 MiB) is
     dropped and the viewer resumes at a fresh keyframe, which the server asks the encoder for
@@ -2333,7 +2339,8 @@ task; other hooks answer as usual.
   ones are not listed. `secret_request_hosts` for a secret with rules waits for a person even
   with `auto_allow`.
 - MCP: `secrets_list` (each secret's `rules: [{methods, path}]`), `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
-  selector?}` and `secret_request_hosts {secret, hosts, reason?}` (stores a request a person
+  selector?}` (typed as real key presses, so terminals take it; a text with a tab or another
+  control character is refused, SPEC-648) and `secret_request_hosts {secret, hosts, reason?}` (stores a request a person
   allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing,
   unless the secret has `auto_allow`: then the hosts are bound at once, answered as `bound`,
   audited `vault.agent.auto_allow`, SPEC-216),

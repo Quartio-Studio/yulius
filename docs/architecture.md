@@ -582,6 +582,7 @@ itself that the host's managed policy, which switches those windows off, is in f
 blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
 The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
+The other way, a viewer's paste (`paste`, at most 32 KiB) becomes that display's CLIPBOARD, owned by the X thread (`xclipboard::Owner`), and the thread presses Shift+Insert in order with the viewer's keys, so the page gets a real `paste` event (xterm.js terminals too, which make Ctrl+V the `^V` character). The paste is answered `paste_failed` when no client fetched the text within 3 s. A newer paste waits until Chrome's reads of the last one are over, and the text is let go after 30 s. Without a display a paste, like an agent's `browser_type`, is typed as CDP key events. [ADR-0471](decisions/0471-a-viewer-paste-becomes-the-displays-clipboard-and-a-real-paste-key.md)
 A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
 Before each start the manager removes the profile's Chrome lock entries (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) unless a running process of this host holds the lock, so a profile carried from another host starts. This happens before the display starts (`yulius_browser::profile`). [ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)
 A browser slot keeps whatever it could not stop: a browser, a display, or the Xvfb of a display that failed to start and then survived SIGKILL (`StrandedXvfb`, with its cookie). Every later start, restart, idle reap and shutdown stops it again first. While it survives they fail with its error, so the sandbox never gets a second X server. [SPEC-616](../.ai/specs/SPEC-616-keep-ownership-of-xvfb-when-display-star.md)
@@ -614,7 +615,10 @@ document read again once the field has the focus; and, last, of the addresses Ch
 navigations of the page's frames to (`Leaving`: `Page.frameStartedNavigating`, kept until the
 frame arrived, stopped loading or is gone, bounded). A secret's user name and one-time code are
 typed under the same rule (`tool_type_beside_secret`)
-([ADR-0320](decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md)).
+([ADR-0320](decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md)). All three are typed
+as real key presses, as `browser_type` types, so terminals take them; a text holding a tab or
+another control character is refused before anything is typed
+([ADR-0475](decisions/0475-browser-fill-secret-types-real-key-presses.md)).
 Pixels cannot be
 redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, each value
 `browser_fill_secret` typed, the hosts and documents it went into and the hosts it reached outside
@@ -1489,9 +1493,23 @@ links the round to Claude Code's subagent. Resuming an unfinished reviewer conti
 Resuming it after its report opens the next round on the current head and keeps its model
 ([ADR-0400](decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md)).
 The first `SubagentStop` ends the round with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
-subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a
-pull request's rounds in the same transaction that records its merge
-(`transition_delivery`), so the task's next pull request starts at round 1.
+subagent off sends no `SubagentStop`, so such a round stays without a report. When the hooks missed
+a round, its report still ends it
+([ADR-0467](decisions/0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md)):
+- **Start came first.** A `PreToolUse` that outlasted the hook client inserts its round after
+  `SubagentStart`, which then linked nothing. A stop whose id no round carries links and ends the
+  newest unlinked open round (`end_unlinked_review_round`). The reviewer ran as asked, since the
+  answer was lost too, so the round then names the agent and model that ran.
+- **Lost stop.** Reviewers run in the background, and a stop sent while Yulius restarts is lost.
+  Claude Code's own completed `<task-notification>` in the session's transcript
+  (`Observation::SubagentReported`: `origin.kind`, exactly one notice, a final result) ends the
+  round linked to that agent id. This also holds while a reattached run's watcher catches up.
+  Rounds that started after that time are left open.
+
+The store closes a pull request's rounds in the same transaction that records its merge
+(`transition_delivery`), so the task's next pull request starts at round 1. A round with no
+report by then keeps no end. The delivery view gives its `merged_at`, and `delivery_status` reads
+it as unreported.
 
 The Codex briefing assigns fresh review children a `yulius_review_<n>` task name.
 `SubagentStart` supplies the child ID and active model. Yulius checks that the sandbox's
@@ -1537,7 +1555,10 @@ sequenceDiagram
     A->>H: SubagentStart (agent_id, agent_type)
     H->>Y: link the round to the subagent
     A->>H: SubagentStop (last_assistant_message)
-    H->>Y: end the unfinished round with its verdict
+    H->>Y: end the unfinished round with its verdict (or the unlinked one of its agent)
+    opt The stop never reached Yulius (a restart)
+        Y->>Y: transcript task-notification (completed, result) ends the round linked to the agent id
+    end
     opt Author continues the same reviewer after its report
         A->>H: SubagentStart (same agent_id)
         H->>Y: open the next round on the current head
@@ -1948,7 +1969,10 @@ in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken 
 `project_change` works in `<data>/changes`, and `extract_snapshot` refuses a linked root ([SPEC-296](../.ai/specs/SPEC-296-snapshot-import-reserves-its-worktree-pa.md),
 [decision 0213](decisions/0213-a-snapshot-import-checks-out-in-a-server-private-folder.md)).
 Races are tested at pause points
-(`yulius_app::race`, only with the `test-support` feature).
+(`yulius_app::race`, only with the `test-support` feature). While the tokio runtime that registered a hook
+lives, only a point reached on it runs the hook, so running tests sharing a process do not take
+each other's hooks through a repeated task id; hooks registered or reached outside a runtime, and
+those of a runtime that shut down, still match by point and key alone ([decision 0474](decisions/0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md)).
 
 Git itself, which the server runs in those folders as the service user, is confined by the
 kernel: every command of the Git adapter is started through `yulius git-confined`
@@ -2217,7 +2241,12 @@ its loss, makes the task `parked` with its activity (`settle_parked`) and audits
 `parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
 worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
 live overlay. Parking verifies the recorded PR and open repository PRs on the task branch. The published head must contain the current task checkout. An unreadable or failing check keeps the author live, including a failed ordinary CI run whose GitHub status still looks green. The PR watcher can take over pending checks for an active ordinary run on the recorded head. While the park is
-under way nothing is typed into the session. The web terminal treats `parked` as a non-live ended
+under way nothing is typed into the session: a message is refused as parking until the run's end
+has settled the task, also after that end took the park's intent while the task still reads
+`running`. The task reads `parked` only after its intent was taken, so a `parked` task wakes at
+once. A later park pass cannot set a new intent on that ending run: it needs the attempt still
+attached and no terminal cleanup under way
+([SPEC-634](../.ai/specs/SPEC-634-reproduce-the-second-idle-park-pass-that.md), #1605). The web terminal treats `parked` as a non-live ended
 status so it shows the calm parked banner (distinct from a crash or operator stop) and a visible
 `Resume` button (plus `Reply` in the waiting bar for the owner), disables cursor blink, and wakes
 the exact saved provider session and worktree through `start_run` with `RunStart::Resume` on
@@ -3643,7 +3672,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
     still testing.
   - Requests staging already contains are `included`.
 - **Deploy.**
-  - `CdRequest::DeployRevision` deploys exactly that commit, as the task's owner.
+  - `CdRequest::DeployRevision` deploys exactly that commit with the task owner's access; the
+    run is the task's (`CdActor::ForTask`, requested by `task:<n>`).
   - One deploy per environment (unique index). It waits, costing no attempt, while another
     run of it goes on or an update holds deploys.
   - A lost or errored run is retried up to 3 attempts, and a person's cancel stands.
@@ -3651,7 +3681,9 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   verified once (`CdRequest::Restore`, a rollback run).
 - **Told and shown.**
   - A running task with an unfinished step shows which part of staging it awaits. The queue
-    delivers its verdict to that session. Finished tasks show the receipt on their page and in lists. Each stage change
+    delivers its verdict to that session. Finished tasks show the receipt on their page and in lists,
+    and hear it only while their idle agent still runs background work that waits for it
+    (`Sender::YuliusAwaited`, [ADR-0466](decisions/0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md)). Each stage change
     updates the task view. If the summary exceeds its budget, sandbox viewers receive a resync.
     [ADR-0437](decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
   - `tell_staging_outcomes` sends delivery outcomes to working sessions once.
@@ -4249,6 +4281,10 @@ items, and a menu of 8 or more items opens with a filter box
 ([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
 start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
 continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
+While a modal dialog is open, the menu is mounted in the topmost one, as the toasts are: outside
+it, it would be inert and under the dialog. It closes with an `openModal` dialog, and Escape or Tab
+gives the keyboard back to its anchor, or to the element that had it for a menu at a point
+([decision 0473](decisions/0473-a-menu-opened-over-a-modal-dialog-is-mounted-in-it.md)).
 
 The Tasks page's Graph view (`?view=graph`, SPEC-164, [decision 0135](decisions/0135-the-task-graph-is-drawn-in-the-browser-from-the-task-summaries.md))
 is drawn from the task summaries the store already holds, with no endpoint of its own:
@@ -4433,7 +4469,14 @@ moment and shows for six seconds. So the statement that raises the flag
 `yulius`), the problem, what to do, the page where to do it, and the flag's time. It is read
 only while the task is running, reads `needs_attention` and has not changed state since that
 time (`task_attention`), so no other statement has to clear it; a task that is already flagged
-keeps its flag and its reason. One flag changes owner, and its reason follows: a secret
+keeps its flag and its reason. The flag "Yulius could not end this session" is the one that the
+session's own activity cannot replace: while the task's live run is the one whose host could not
+be terminated (`end_failed`) and the task still reads that flag, the prompt hook, a turn's settle,
+a transcript turn start and an interrupt leave the task's activity as it is
+(`write_session_activity`, under the runtime's `end_gate`, which the record of that failure takes
+too), until a person stops the task or the run ends; once a pause or another matter replaced the
+flag, the session's activity rules again ([SPEC-635](../.ai/specs/SPEC-635-a-yulius-could-not-end-this-session-flag.md),
+[ADR-0468](decisions/0468-a-flag-whose-cause-stands-is-not-answered-by-work.md)). One flag changes owner, and its reason follows: a secret
 request's flag that another matter takes over (the request's answer then leaves it) says that
 matter's reason, and one that waits for several requests points at one still open
 (`replace_attention`: the same flag and time, another reason). The reason also records that a
@@ -5266,6 +5309,9 @@ flowchart LR
   sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
   or a goal verdict it applied belongs to a turn that is over and changes nothing
   ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
+  That stamp, like each transcript line's recorded time, is read on Yulius's clock
+  (`Clock::of_wall`), so a test clock that runs shifted orders a late hook or line by when it was
+  made too ([ADR-0470](decisions/0470-wall-clock-stamps-are-read-on-yuliuss-clock.md)).
   The client assigns each UserPromptSubmit a 32-hex-digit `x-yulius-hook-invocation` and reuses it on every HTTP retry. A goal run uses that ID to distinguish a retry from a fresh submission of identical text. Older clients use terminal input and the run’s recent issued prompts.
   A prompt the transcript watcher reads takes the same per-task turn order as a clean Stop: the
   Stop remembers its time and settles after a prompt that is being applied, and a prompt read

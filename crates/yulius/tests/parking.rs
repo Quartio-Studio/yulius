@@ -181,16 +181,89 @@ async fn status_of(app: &App, id: &TaskId) -> (Option<TaskStatus>, Option<Activi
     }
 }
 
+/// How long [`parked`] waits for a park.
+const PARK_WAIT: Duration = Duration::from_secs(30);
+
 /// Parks `id`: a pass runs at each look until it parked, so a pass that came in the millisecond
 /// its state last changed (quiet 0 of a 1 ms grace) is followed by another.
 async fn parked(app: &Arc<App>, id: &TaskId) -> TestResult {
-    wait_for("the task to park", Duration::from_secs(30), || async {
-        if status_of(app, id).await.0 == Some(TaskStatus::Running) {
-            app.park_idle_sessions_now().await;
+    parked_within(app, id, PARK_WAIT).await
+}
+
+/// [`parked`] with its own bound (#1649). The bound covers the whole wait: a pass still running
+/// at the deadline is cancelled there. The failure says whether a pass was still running or
+/// the last one ended without parking, and the last park stage the task reached.
+async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) -> TestResult {
+    let key = Path::new(id.as_str());
+    let began = std::time::Instant::now();
+    let deadline = tokio::time::Instant::now() + bound;
+    let mut passes = 0_u32;
+    // When a pass first decided a park: later passes find the task still Running while its
+    // session ends, and overwrite the last stage with where they gave up.
+    let mut decided = None;
+    let mut outcome = "no pass ran";
+    while tokio::time::Instant::now() < deadline {
+        let look = async {
+            if status_of(app, id).await.0 == Some(TaskStatus::Running) {
+                passes += 1;
+                if app.park_idle_sessions_now().await > 0 && decided.is_none() {
+                    decided = Some(began.elapsed());
+                }
+            }
+            status_of(app, id).await.0 == Some(TaskStatus::Parked)
+        };
+        match tokio::time::timeout_at(deadline, look).await {
+            Ok(true) => return Ok(()),
+            Ok(false) if passes == 0 => outcome = "the task was not running, so no pass ran",
+            Ok(false) => outcome = "the last pass ended without parking",
+            Err(_) => {
+                outcome = "a pass was still running at the deadline";
+                break;
+            }
         }
-        status_of(app, id).await.0 == Some(TaskStatus::Parked)
-    })
-    .await
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let last = yulius_app::race::last_reached(key).filter(|(_, at)| *at >= began);
+    let begun = decided.map_or_else(String::new, |at: Duration| {
+        format!("; a pass began a park {at:.1?} into the wait (its count covers every task)")
+    });
+    let stage = match last {
+        Some((point, at)) => format!(
+            "{} ({:.1?} into the wait)",
+            park_stage(point),
+            at.duration_since(began)
+        ),
+        None => "none: no pass reached this task's park (idle facts or another task)".into(),
+    };
+    let (status, activity) = tokio::time::timeout(Duration::from_secs(1), status_of(app, id))
+        .await
+        .unwrap_or_default();
+    Err(format!(
+        "timed out waiting for the task to park within {bound:?}: {outcome} after {passes} \
+         pass(es){begun}; last stage reached: {stage}; task {status:?}, {activity:?}"
+    )
+    .into())
+}
+
+/// What a park pass does after reaching `point` (#1649).
+fn park_stage(point: Point) -> String {
+    match point {
+        Point::ParkVerifying => {
+            "verifying the task's pull requests (GitHub reads, local Git checks)"
+        }
+        Point::ParkPrsVerified => "probing the session's processes",
+        Point::ParkProbed => "taking the launch lock and rechecking the idle facts",
+        Point::ParkPrepared => {
+            "rechecking delivery, plan, spec and pull requests under the launch lock"
+        }
+        Point::ParkDecided => "asking the session to end after the park was decided",
+        Point::ParkStateRecorded => "restoring the parked screen",
+        Point::LiveRowPrNews => {
+            "reading the idle facts (a pass that ended here found the task not parkable)"
+        }
+        other => return format!("{other:?}"),
+    }
+    .into()
 }
 
 #[test]
@@ -1357,6 +1430,103 @@ fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> Test
             screen(&app, &id).contains("Late: answer with an echo")
         })
         .await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-003 (#1605): a second idle-park pass whose process probe saw the session alive, and that
+/// gets the launch lock only after the first park's run end took the park's intent (the task
+/// still reads Running), parks nothing. A message in that interval is refused as parking, never
+/// typed into the ending session; the next one, once the task is Parked, resumes it in the same
+/// conversation, once.
+#[test]
+fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        past_the_grace(&app, &id).await?;
+        // The first pass decides to park and holds the launch lock; its session still runs.
+        let (decided, shut_down) = pause_watch_or_queue(Point::ParkDecided, &id);
+        let first = tokio::spawn({
+            let app = app.clone();
+            async move { app.park_idle_sessions_now().await }
+        });
+        tokio::time::timeout(Duration::from_secs(30), decided.notified()).await?;
+        // The second pass probes the live session, then waits for the launch lock.
+        let probed = Arc::new(tokio::sync::Notify::new());
+        {
+            let probed = probed.clone();
+            yulius_app::race::on(Point::ParkProbed, Path::new(id.as_str()), move || {
+                probed.notify_one();
+            });
+        }
+        let (prepared, claim) = pause_watch_or_queue(Point::ParkPrepared, &id);
+        let (taken, record) = pause_watch_or_queue(Point::RunEndTaken, &id);
+        let second = tokio::spawn({
+            let app = app.clone();
+            async move { app.park_idle_sessions_now().await }
+        });
+        tokio::time::timeout(Duration::from_secs(30), probed.notified()).await?;
+        // The first park ends the session; its run's end takes the park's intent while the
+        // second pass reaches its claim.
+        shut_down.notify_one();
+        assert_eq!(first.await?, 1);
+        tokio::time::timeout(Duration::from_secs(30), taken.notified()).await?;
+        tokio::time::timeout(Duration::from_secs(30), prepared.notified()).await?;
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+        claim.notify_one();
+        let again = tokio::time::timeout(Duration::from_secs(30), second).await??;
+        let early = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Early: answer with an echo"}),
+            )
+            .await;
+        record.notify_one();
+        assert_eq!(again, 0, "a second pass parked the ending run again");
+        assert!(
+            matches!(&early, Err(yulius_app::error::AppError::Conflict(why))
+                if why.contains("is parking its idle session")),
+            "{early:?}"
+        );
+        wait_for("the task to park", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
+        })
+        .await?;
+        let resumed = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Late: answer with an echo"}),
+            )
+            .await?;
+        assert_eq!(resumed["delivered"], "resumed");
+        wait_for("the resumed answer", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Late: answer with an echo")
+        })
+        .await?;
+        // Counted once the resumed turn ended, so a later second delivery would show.
+        wait_for(
+            "the resumed turn's end",
+            Duration::from_secs(30),
+            || async {
+                status_of(&app, &id).await == (Some(TaskStatus::Running), Some(Activity::Waiting))
+            },
+        )
+        .await?;
+        let resumed = screen(&app, &id);
+        assert_eq!(
+            resumed.matches("Late: answer with an echo").count(),
+            1,
+            "{resumed}"
+        );
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
+        assert_eq!(runs[0].provider_session_id, runs[1].provider_session_id);
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

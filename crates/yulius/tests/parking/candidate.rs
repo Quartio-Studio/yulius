@@ -243,6 +243,65 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             }
         }
         assert_eq!(published, Some(false), "{told:?}");
+        // The pass told the owner about its green head, and the fake agent answers with a turn
+        // that the session watcher reads on its own clock: once it was read, the owner is at
+        // rest again, and what follows hears the watch alone (SPEC-640 FLK-002). The answer
+        // stays `working` here: the reattached agent's hooks name the first server, and the
+        // fake agent writes no record that closes the turn.
+        assert!(told.iter().any(|(task, _)| task == &id), "{told:?}");
+        {
+            super::wait_for(
+                "the owner's answer to the notice",
+                Duration::from_secs(30),
+                || {
+                    let app = app.clone();
+                    let id = id.clone();
+                    async move {
+                        app.deps
+                            .store
+                            .task(&id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|t| t.activity)
+                            == Some(Activity::Working)
+                    }
+                },
+            )
+            .await?;
+            let rounds = app.runtime(&id).transcript_rounds();
+            super::wait_for(
+                "the answer read to its end",
+                Duration::from_secs(30),
+                || {
+                    let app = app.clone();
+                    let id = id.clone();
+                    async move { app.runtime(&id).transcript_rounds() >= rounds + 2 }
+                },
+            )
+            .await?;
+            // A shell-probe round of the watcher can fall while the owner works: it forgets the
+            // count, and the next one publishes it again. Probe here so that always happens.
+            app.probe_idle_shells(&id).await;
+            app.deps
+                .store
+                .set_activity(&id, Some(Activity::Done), app.now())
+                .await?;
+            // A round begun since has ended any probe that still saw the owner working; then
+            // the count is known again before anything is counted.
+            let rounds = app.runtime(&id).transcript_rounds();
+            super::wait_for(
+                "a round of the owner at rest",
+                Duration::from_secs(30),
+                || {
+                    let app = app.clone();
+                    let id = id.clone();
+                    async move { app.runtime(&id).transcript_rounds() > rounds }
+                },
+            )
+            .await?;
+            app.probe_idle_shells(&id).await;
+        }
         let summary = app.task_summary(&owner).await?;
         assert!(!summary.candidate_pending, "{summary:?} {told:?}");
         let value = serde_json::to_value(&summary)?;
@@ -283,6 +342,11 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             }
             seen
         };
+        assert_eq!(
+            app.task_summary(&owner).await?.background_shells,
+            Some(0),
+            "a forgotten shell count is published again on the watcher's clock"
+        );
         let mut events = app.events.subscribe();
         let again = app.watch_prs(&WatchBounds::default()).await;
         assert_eq!(task_updates(&mut events), Vec::<bool>::new(), "{again:?}");
@@ -303,10 +367,39 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             [saved.as_str(), span.key.as_str()],
         )?;
         assert_eq!(changed, 1);
-        assert!(app.task_summary(&owner).await?.candidate_pending);
+        let summary = app.task_summary(&owner).await?;
+        assert!(summary.candidate_pending, "{summary:?}");
+        assert_eq!(summary.background_shells, Some(0), "{summary:?}");
         let mut events = app.events.subscribe();
-        let second = app.watch_prs(&WatchBounds::default()).await;
-        assert_eq!(task_updates(&mut events), vec![true], "{second:?}");
+        // The session's own watcher publishes on its own clock (its shell probe, its
+        // transcript): a whole round of it while the pass reads the pull request says nothing
+        // new, so the pass's one publish is all the views hear (SPEC-640 FLK-002).
+        let (reading, release) =
+            super::pause_watch_or_queue(super::Point::CandidateObservationRead, &id);
+        let pass = {
+            let app = app.clone();
+            tokio::spawn(async move { app.watch_prs(&WatchBounds::default()).await })
+        };
+        tokio::time::timeout(Duration::from_secs(10), reading.notified()).await?;
+        let rounds = app.runtime(&id).transcript_rounds();
+        super::wait_for(
+            "a watcher round during the pass",
+            // Below the hold's own 15 s bound, so a starved run names this wait.
+            Duration::from_secs(10),
+            || {
+                let app = app.clone();
+                let id = id.clone();
+                async move { app.runtime(&id).transcript_rounds() >= rounds + 2 }
+            },
+        )
+        .await?;
+        release.notify_one();
+        let second = pass.await?;
+        // The pass ends by telling the owner about the failure: the owner's answer may already
+        // be heard after the watch's one publish, never before it.
+        let seen = task_updates(&mut events);
+        assert_eq!(seen.first(), Some(&true), "{seen:?} {second:?}");
+        assert!(!seen[1..].contains(&true), "{seen:?} {second:?}");
         Ok(())
     })
 }
@@ -505,15 +598,65 @@ fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> Te
             "candidate verification overtook the slot reservation"
         );
         assert!(pass?.is_empty());
-        // Stopping the peer wakes the queue, whose capacity check briefly holds the owner's
-        // delivery guard; a pass meeting it defers the hosted read to the next pass.
+        // Capacity readers (the queue woken by the stop, the status panel, account views) take
+        // the owner's delivery guard on their own clocks, also while a pass reads the pull
+        // request (SPEC-642 FLK-001). Hold one pass inside its hosted read while the status
+        // panel holds the guard. A pass that met the guard before its read typed nothing.
+        let ctx = yulius_app::auth::AuthContext {
+            user: app
+                .deps
+                .store
+                .user(&owner.owner)
+                .await?
+                .ok_or("owner user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
+        let held = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let mut pass = {
+                    let app = app.clone();
+                    tokio::spawn(async move { app.watch_prs(&WatchBounds::default()).await })
+                };
+                tokio::select! {
+                    () = remote.pull_read_entered.notified() => return Ok::<_, Error>(pass),
+                    typed = &mut pass => {
+                        let typed = typed?;
+                        assert!(typed.is_empty(), "a deferred pass typed {typed:?}");
+                    }
+                }
+            }
+        })
+        .await??;
+        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
+        let (holding, release) = super::pause_watch_or_queue(super::Point::LiveDeliveryHeld, &id);
+        let status = {
+            let app = app.clone();
+            tokio::spawn(async move { app.status(&ctx).await.map(|_| ()) })
+        };
+        tokio::time::timeout(Duration::from_secs(10), holding.notified()).await?;
+        gate.notify_one();
+        let first = tokio::time::timeout(Duration::from_secs(10), held).await??;
+        release.notify_one();
+        status.await??;
+        // The held pass read the pull request and then met the guard: it records nothing and
+        // leaves the notice unheard for a later pass (SPEC-621, as designed).
+        assert!(remote.pull_reads.load(Ordering::SeqCst) > during);
+        assert!(
+            first.is_empty(),
+            "a pass that met the guard typed {first:?}"
+        );
+        // Wait for what is asserted, the pass that types the notice: any pass before it met a
+        // capacity reader and typed nothing (SPEC-642 FLK-002).
         let retry = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let retry = app.watch_prs(&WatchBounds::default()).await;
-                if remote.pull_reads.load(Ordering::SeqCst) > during {
+                if !retry.is_empty() {
                     return retry;
                 }
-                assert!(retry.is_empty(), "a deferred pass typed {retry:?}");
                 tokio::task::yield_now().await;
             }
         })
@@ -862,10 +1005,34 @@ fn a_new_pr_on_the_same_head_and_base_releases_the_candidate_owner() -> TestResu
     })
 }
 
+/// Each PR condition is its own test (#1649): its own budget, and a failure names it.
 #[test]
-fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner() -> TestResult {
-    for field in ["fork", "merged", "head branch", "base branch"] {
-        with_idle_candidate(async |_, app, remote, id, _| {
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner_from_a_fork() -> TestResult {
+    unrelated_or_merged_pr_releases_the_owner("fork")
+}
+
+#[test]
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner_once_merged() -> TestResult {
+    unrelated_or_merged_pr_releases_the_owner("merged")
+}
+
+#[test]
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner_on_another_head_branch()
+-> TestResult {
+    unrelated_or_merged_pr_releases_the_owner("head branch")
+}
+
+#[test]
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner_on_another_base_branch()
+-> TestResult {
+    unrelated_or_merged_pr_releases_the_owner("base branch")
+}
+
+fn unrelated_or_merged_pr_releases_the_owner(field: &str) -> TestResult {
+    with_idle_case(
+        field,
+        CaseBounds::default(),
+        async |_, app, remote, id, _| {
             remote.remote.lock().map_err(|_| "remote")?.take();
             {
                 let mut pulls = remote.pulls.lock().map_err(|_| "PR")?;
@@ -881,8 +1048,124 @@ fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner() -> TestResu
                 }
             }
             super::parked(app, &id).await
-        })?;
-    }
+        },
+    )
+}
+
+/// #1649: a park pass held inside its PR verification ends the wait at its bound, and the
+/// failure says where the pass was.
+#[test]
+fn a_park_pass_held_in_its_pr_reads_fails_at_the_bound_and_names_the_stage() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        *remote.pull_list_hold.lock().map_err(|_| "hold")? = Some(hold.clone());
+        let bound = Duration::from_secs(2);
+        let started = std::time::Instant::now();
+        let waited = tokio::time::timeout(
+            Duration::from_secs(20),
+            super::parked_within(app, &id, bound),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        remote.pull_list_hold.lock().map_err(|_| "hold")?.take();
+        hold.notify_waiters();
+        let failure = waited
+            .map_err(|_| format!("the park wait outlived its {bound:?} bound by 18 s"))?
+            .err()
+            .ok_or("parked while its PR read was held")?
+            .to_string();
+        eprintln!("{failure}");
+        assert!(elapsed < bound + Duration::from_secs(10), "{elapsed:?}");
+        assert!(
+            failure.contains("still running")
+                && failure.contains("verifying the task's pull requests"),
+            "{failure}"
+        );
+        Ok(())
+    })
+}
+
+/// #1649: a park decided while its session is slow to end is reported as begun, beside the last
+/// stage reached; a wait on a task that is not running says so.
+#[test]
+fn a_park_whose_session_has_not_ended_is_reported_as_begun() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        remote.remote.lock().map_err(|_| "remote")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].from_fork = true;
+        let (ending, release) = super::pause_at_key(super::Point::RunEndTaking, id.as_str());
+        let waited = super::parked_within(app, &id, Duration::from_secs(3)).await;
+        tokio::time::timeout(Duration::from_secs(5), ending.notified())
+            .await
+            .map_err(|_| "the parked session's end never began")?;
+        release.notify_one();
+        let failure = waited
+            .err()
+            .ok_or("parked while its run's end was held")?
+            .to_string();
+        eprintln!("{failure}");
+        assert!(
+            failure.contains("a pass began a park") && failure.contains("last stage reached"),
+            "{failure}"
+        );
+        super::parked(app, &id).await?;
+        app.stop_task_now(&id).await?;
+        let idle = super::parked_within(app, &id, Duration::from_millis(200)).await;
+        let failure = idle
+            .err()
+            .ok_or("a stopped task counted as parked")?
+            .to_string();
+        assert!(failure.contains("the task was not running"), "{failure}");
+        Ok(())
+    })
+}
+
+/// #1649: a case whose phase never ends fails at its bound naming the case and the phase, and
+/// its task is still stopped.
+#[test]
+fn a_stalled_case_fails_at_its_bound_naming_the_case_and_phase() -> TestResult {
+    type Seen = Option<(Arc<yulius_app::context::App>, TaskId)>;
+    let seen: Arc<std::sync::Mutex<Seen>> = Arc::default();
+    let kept = seen.clone();
+    let (sent, outcome) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let bounds = CaseBounds {
+            check: Duration::from_secs(2),
+            ..CaseBounds::default()
+        };
+        let result = with_idle_case("stalled", bounds, async |_, app, _, id, _| {
+            if let Ok(mut slot) = kept.lock() {
+                *slot = Some((app.clone(), id));
+            }
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        let _ = sent.send(result.map_err(|err| err.to_string()));
+    });
+    let failure = outcome
+        .recv_timeout(Duration::from_secs(115))
+        .map_err(|_| "a stalled case did not fail within its bounds")?
+        .err()
+        .ok_or("a stalled case passed")?;
+    eprintln!("{failure}");
+    assert!(
+        failure.contains("stalled") && failure.contains("check") && failure.contains("2s"),
+        "{failure}"
+    );
+    let (app, id) = seen
+        .lock()
+        .map_err(|_| "seen")?
+        .take()
+        .ok_or("no check ran")?;
+    let rt = runtime()?;
+    let status = rt.block_on(super::status_of(&app, &id)).0;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    // The run's reader records its end on the case's runtime, which is gone by now.
+    assert!(
+        status.is_some_and(|state| {
+            state.is_resting() || state == yulius_domain::task::TaskStatus::Stopping
+        }),
+        "the stalled case did not stop its task: {status:?}"
+    );
     Ok(())
 }
 
@@ -914,27 +1197,122 @@ fn with_idle_candidate(
         String,
     ) -> TestResult,
 ) -> TestResult {
+    with_idle_case("idle candidate", CaseBounds::default(), check)
+}
+
+/// How long each phase of a [`with_idle_case`] case may take.
+#[derive(Clone, Copy)]
+struct CaseBounds {
+    seed: Duration,
+    restart: Duration,
+    check: Duration,
+    /// What seeding, the restart and the check may take together.
+    case: Duration,
+    cleanup: Duration,
+}
+
+impl Default for CaseBounds {
+    /// Within nextest's 120 s: the case's 75 s, the cleanup's 25 s and two runtime shutdowns.
+    fn default() -> Self {
+        Self {
+            seed: Duration::from_secs(40),
+            restart: Duration::from_secs(40),
+            check: Duration::from_secs(40),
+            case: Duration::from_secs(75),
+            cleanup: Duration::from_secs(25),
+        }
+    }
+}
+
+/// An answered candidate owner restored after a restart, idle, handed to `check` (#1649).
+/// Seeding, the restart and the check each have their bound and share the case's, the cleanup
+/// has its own, and a failure names `case` and the phase. The task is stopped after a check that
+/// failed or timed out too, and the check's failure is printed before that stop.
+fn with_idle_case(
+    case: &str,
+    bounds: CaseBounds,
+    check: impl AsyncFnOnce(
+        &Path,
+        &Arc<yulius_app::context::App>,
+        &Arc<crate::support::FakeGitHub>,
+        TaskId,
+        String,
+    ) -> TestResult,
+) -> TestResult {
+    let failed = |phase: &str, err: Error| -> Error {
+        format!(
+            "{case} case, {phase}: {err} (of a {:?} case budget)",
+            bounds.case
+        )
+        .into()
+    };
+    let end = std::time::Instant::now() + bounds.case;
+    let left =
+        |phase: Duration| phase.min(end.saturating_duration_since(std::time::Instant::now()));
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
-    let case = ColdCandidate::Backdated;
-    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(&data, &case)))?;
+    let cold = ColdCandidate::Backdated;
+    eprintln!("{case} case: seeding the candidate owner");
+    let seeded = rt.block_on(within(
+        left(bounds.seed),
+        Box::pin(seed_candidate(&data, &cold)),
+    ));
     rt.shutdown_timeout(Duration::from_secs(5));
+    let (id, head, original) = seeded.map_err(|err| failed("seeding the candidate owner", err))?;
     let rt = runtime()?;
-    let (app, remote) =
-        rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
-    rt.block_on(async {
-        let result = check(&data, &app, &remote, id.clone(), head).await;
-        if !super::status_of(&app, &id)
-            .await
-            .0
-            .is_some_and(|state| state.is_resting())
-        {
-            app.stop_task_now(&id).await?;
+    eprintln!("{case} case: restarting with the owner reattached");
+    let restored = rt.block_on(within(
+        left(bounds.restart),
+        Box::pin(restore_owner(&data, &cold, &id, &head, &original)),
+    ));
+    let (app, remote) = match restored {
+        Ok(restored) => restored,
+        Err(err) => {
+            rt.shutdown_timeout(Duration::from_secs(5));
+            return Err(failed("restarting with the owner reattached", err));
         }
-        result
-    })?;
+    };
+    let outcome = rt.block_on(async {
+        eprintln!("{case} case: the check");
+        let result = within(
+            left(bounds.check),
+            check(&data, &app, &remote, id.clone(), head),
+        )
+        .await
+        .map_err(|err| failed("the check", err));
+        if let Err(err) = &result {
+            eprintln!("{err}");
+        }
+        eprintln!("{case} case: stopping the task");
+        let cleanup = within(bounds.cleanup, async {
+            if !super::status_of(&app, &id)
+                .await
+                .0
+                .is_some_and(|state| state.is_resting())
+            {
+                app.stop_task_now(&id).await?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| failed("stopping the task", err));
+        match (result, cleanup) {
+            (Err(check), Err(stop)) => Err(format!("{check}; then {stop}").into()),
+            (result, cleanup) => result.and(cleanup),
+        }
+    });
     rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
+    outcome
+}
+
+/// `work`, failing once `bound` passed.
+async fn within<T>(
+    bound: Duration,
+    work: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::time::timeout(bound, work)
+        .await
+        .map_err(|_| format!("did not finish within {bound:?}"))?
 }
 
 #[test]
@@ -2435,6 +2813,16 @@ async fn restore_owner(
             .id,
         *original
     );
+    // The reattached session's watcher starts its first round a second later: it probes the
+    // idle shells (unknown until then) and replays the transcript to its end, publishing and
+    // settling the activity on its own clock. A test sees the owner after that round, not
+    // racing it (SPEC-640 FLK-001).
+    super::wait_for(
+        "the reattached transcript replay",
+        Duration::from_secs(30),
+        || async { cold.runtime(id).transcript_rounds() >= 2 },
+    )
+    .await?;
     remote.set_checks(head, ChecksState::Success);
     let bounds = WatchBounds::default();
     ask(&cold, id).await?;

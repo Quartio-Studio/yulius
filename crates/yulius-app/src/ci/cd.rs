@@ -60,7 +60,7 @@ use crate::coordination::AgentContext;
 use crate::delivery::runner::OutputRing;
 use crate::delivery::{PromotionSource, delivery_profile};
 use crate::error::{AppError, AppResult};
-use crate::model::{SandboxRecord, Secret, UserRecord};
+use crate::model::{SandboxRecord, Secret, TaskRecord, UserRecord};
 use crate::ports::session::{Containment, LaunchPlan};
 use crate::ports::store_ext::CdRunHistory;
 use crate::vault::holds::StateHold;
@@ -155,6 +155,9 @@ pub(crate) enum CdActor<'a> {
     Person(&'a UserRecord),
     /// A task's agent.
     Agent(&'a AgentContext),
+    /// A task's staging request, which the queue deploys only while the task's owner has write
+    /// access (SPEC-575): the run is the task's (SPEC-631 SWK-004), its rights the person's.
+    ForTask(&'a TaskRecord),
 }
 
 impl CdActor<'_> {
@@ -162,6 +165,16 @@ impl CdActor<'_> {
         match self {
             Self::Person(user) => App::dlv_actor_login(user),
             Self::Agent(ctx) => ctx.actor(),
+            Self::ForTask(task) => format!("task:{}", task.number),
+        }
+    }
+
+    /// The task whose run it is.
+    fn task(&self) -> Option<&TaskId> {
+        match self {
+            Self::Person(..) => None,
+            Self::Agent(ctx) => Some(&ctx.task.id),
+            Self::ForTask(task) => Some(&task.id),
         }
     }
 }
@@ -1152,10 +1165,6 @@ impl App {
                 return Err(err);
             }
         };
-        let asker = match actor {
-            CdActor::Agent(ctx) => Some(*ctx),
-            CdActor::Person(..) => None,
-        };
         let run = CdRunRecord {
             id: preset.unwrap_or_else(|| self.deps.crypto.new_id()),
             sandbox_id: sandbox.id.clone(),
@@ -1166,7 +1175,7 @@ impl App {
             state: RunState::Running,
             reason: None,
             requested_by: actor.label(),
-            task_id: asker.map(|ctx| ctx.task.id.clone()),
+            task_id: actor.task().cloned(),
             deploy: match prepared.kind {
                 CdRunKind::Deploy => prepared.target.deploy.clone(),
                 CdRunKind::Rollback | CdRunKind::Drill => prepared.target.rollback.clone(),
@@ -1605,7 +1614,7 @@ impl App {
         }
         let asker = match actor {
             CdActor::Agent(ctx) => Some(*ctx),
-            CdActor::Person(..) => None,
+            CdActor::Person(..) | CdActor::ForTask(..) => None,
         };
         let why = format!("CD {} deploy", env_label(env));
         self.cd_names_present(sandbox, &target).await?;

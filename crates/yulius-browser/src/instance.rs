@@ -27,7 +27,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use zeroize::Zeroizing;
 
 use crate::cdp::{CdpClient, CdpConfig, CdpEvent, FrameSink, ScreencastFrame, wait_closed};
-use crate::display::VirtualDisplay;
+use crate::display::{PasteOutcome, VirtualDisplay};
 use crate::error::{BrowserError, CdpError};
 use crate::keys::{self, DisplayKey, SHIFT_KEYCODES};
 use crate::process::{StopTimeouts, Supervised};
@@ -35,6 +35,10 @@ use crate::snapshot;
 use crate::url_policy::{UrlDenyList, UrlRefused, normalize_url};
 use crate::video::{VideoSubscription, VideoUnavailable};
 use crate::wheel::{WheelDispatcher, WheelEvent};
+
+/// How a started paste ends ([`BrowserInstance::start_paste`]): `Ok` once the page took it.
+pub type PasteDelivery =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BrowserError>> + Send>>;
 
 /// Smallest accepted viewport edge in CSS pixels.
 pub const VIEWPORT_MIN: u32 = 64;
@@ -44,10 +48,11 @@ pub const VIEWPORT_MAX: u32 = 4096;
 const COORDINATE_LIMIT: f64 = 1.0e6;
 /// Largest accepted `key`/`code` text.
 const KEY_FIELD_MAX_BYTES: usize = 64;
-/// Largest accepted text of one key event (a paste).
+/// Largest accepted text of one key event or paste.
 const KEY_TEXT_MAX_BYTES: usize = 32 * 1024;
-/// Text up to this many characters is typed as real key presses on a display (in order with
-/// other keys); longer text (a paste) is inserted through CDP once the display settled.
+/// `char` text up to this many characters is typed as real key presses on a display (in order
+/// with other keys); longer composed text is inserted through CDP once the display settled. A
+/// paste takes its own path ([`BrowserInstance::dispatch_paste`]).
 const TYPED_TEXT_MAX_CHARS: usize = 64;
 /// Presses closer than this in time and space count as a multi-click.
 const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(500);
@@ -1320,6 +1325,17 @@ fn check_coordinate(name: &str, value: f64) -> Result<(), BrowserError> {
         Err(BrowserError::InvalidInput(format!(
             "{name} must be a finite number within ±{COORDINATE_LIMIT}"
         )))
+    }
+}
+
+/// A paste that went wrong on the way is a failed paste for the viewer (who is told), unless the
+/// input locks refused it (they have their own notice).
+fn paste_failed(error: BrowserError) -> BrowserError {
+    match error {
+        BrowserError::PasteFailed(_)
+        | BrowserError::InputLocked
+        | BrowserError::InputLockedUntilRestart => error,
+        other => BrowserError::PasteFailed(other.to_string()),
     }
 }
 
@@ -2674,7 +2690,8 @@ impl BrowserInstance {
         self.wheel.coalesced()
     }
 
-    /// Inserts text in the shown tab's focused field (IME, emoji, non-ASCII letters, paste).
+    /// Inserts text in the shown tab's focused field (IME, emoji, non-ASCII letters; a paste
+    /// takes `start_paste`).
     async fn insert_text(&self, text: &str) -> Result<(), BrowserError> {
         let Some(tab) = lock(&self.state).active.clone() else {
             return Ok(());
@@ -2879,7 +2896,7 @@ impl BrowserInstance {
             modifiers: input.modifiers | held | bit,
             ..input
         };
-        // Text without a key (IME, paste): a key event carries at most four characters.
+        // Text without a key (IME): a key event carries at most four characters.
         if input.event == KeyEventKind::Char
             && let Some(text) = input.text.as_deref().filter(|t| t.chars().count() > 1)
         {
@@ -2936,6 +2953,98 @@ impl BrowserInstance {
             .call_session(&session, "Input.dispatchKeyEvent", params)
             .await?;
         Ok(())
+    }
+
+    /// A viewer's paste (SPEC-639): on a display the text becomes the display's CLIPBOARD and
+    /// Shift+Insert (the paste key) is pressed, in order with the viewer's other keys, so the
+    /// page gets a real paste (typed as key presses when the CLIPBOARD cannot be taken); without
+    /// a display it is typed as key presses through CDP. Never through `Input.insertText`,
+    /// which terminals ignore. Returns once the paste is in order with the input before it; the
+    /// returned [`PasteDelivery`] says how it ended (the page fetched the text, or not within
+    /// the paste window), so the caller need not wait for that to take the next input.
+    ///
+    /// # Errors
+    /// [`BrowserError::InvalidInput`] for text over 32 KiB; the input locks;
+    /// [`BrowserError::PasteFailed`] when it could not be delivered (also from the delivery,
+    /// when the page did not take it).
+    pub async fn start_paste(
+        &self,
+        tab: &TabId,
+        text: &str,
+    ) -> Result<PasteDelivery, BrowserError> {
+        self.touch();
+        check_len("text", Some(text), KEY_TEXT_MAX_BYTES)?;
+        if text.is_empty() {
+            return Ok(Box::pin(async { Ok(()) }));
+        }
+        let Some(display) = &self.display else {
+            let session = self.session(tab).await.map_err(paste_failed)?;
+            let _input = self.input_lock.lock().await;
+            self.type_keys(&session, text).await.map_err(paste_failed)?;
+            return Ok(Box::pin(async { Ok(()) }));
+        };
+        if !self.viewer_input_allowed().await {
+            return Err(self.input_locked());
+        }
+        let outcome = display
+            .queue_paste(Zeroizing::new(text.to_owned()))
+            .map_err(paste_failed)?;
+        Ok(Box::pin(async move {
+            match outcome.await {
+                Ok(PasteOutcome::Read | PasteOutcome::Typed) => Ok(()),
+                Ok(PasteOutcome::Unread) => Err(BrowserError::PasteFailed(
+                    "the page did not take it. Click where the text goes and paste again".into(),
+                )),
+                Err(error) => Err(paste_failed(error)),
+            }
+        }))
+    }
+
+    /// [`Self::start_paste`] and its delivery.
+    ///
+    /// # Errors
+    /// As [`Self::start_paste`].
+    pub async fn dispatch_paste(&self, tab: &TabId, text: &str) -> Result<(), BrowserError> {
+        self.start_paste(tab, text).await?.await
+    }
+
+    /// Types `text` as real key presses through CDP, so pages that read key events (terminals)
+    /// get it: each character a key down carrying its text and a key up; `\n` presses Enter and
+    /// `\t` Tab, `\r` and other control characters are left out. Returns how many characters
+    /// it typed. The caller holds the input lock.
+    async fn type_keys(&self, session: &str, text: &str) -> Result<usize, BrowserError> {
+        let mut buffer = [0_u8; 4];
+        let mut typed_chars = 0;
+        for c in text.chars() {
+            let (key, code, typed) = match c {
+                '\n' => ("Enter", Some("Enter"), "\r"),
+                '\t' => ("Tab", Some("Tab"), "\t"),
+                c if c.is_control() => continue,
+                c => {
+                    let typed: &str = c.encode_utf8(&mut buffer);
+                    (typed, None, typed)
+                }
+            };
+            for kind in ["keyDown", "keyUp"] {
+                let mut params = json!({"type": kind, "key": key, "modifiers": 0});
+                if let Some(code) = code {
+                    params["code"] = json!(code);
+                }
+                if kind == "keyDown" {
+                    params["text"] = json!(typed);
+                    params["unmodifiedText"] = json!(typed);
+                }
+                if let Some(virtual_key) = keys::virtual_key_code(Some(key), code) {
+                    params["windowsVirtualKeyCode"] = json!(virtual_key);
+                    params["nativeVirtualKeyCode"] = json!(virtual_key);
+                }
+                self.cdp
+                    .call_session(session, "Input.dispatchKeyEvent", params)
+                    .await?;
+            }
+            typed_chars += 1;
+        }
+        Ok(typed_chars)
     }
 
     /// Applies one viewer WebSocket message; returns the new tab for `open`.
@@ -3008,6 +3117,9 @@ impl BrowserInstance {
                     modifiers: modifiers.unwrap_or(0),
                 };
                 self.dispatch_key(&tab_id, input).await.map(|()| None)
+            }
+            ViewerClientMsg::Paste { tab_id, text } => {
+                self.dispatch_paste(&tab_id, &text).await.map(|()| None)
             }
             ViewerClientMsg::Viewport { width, height } => {
                 self.set_viewport(width, height).await.map(|()| None)
@@ -3201,8 +3313,8 @@ impl BrowserInstance {
         Ok(())
     }
 
-    /// `browser_type`: focuses `selector` (if given) and inserts the text; each `\n` presses
-    /// Enter.
+    /// `browser_type`: focuses `selector` (if given) and types the text as key presses; each
+    /// `\n` presses Enter.
     ///
     /// # Errors
     /// Parameter errors, [`BrowserError::ElementNotFound`], tab or CDP failures.
@@ -3219,9 +3331,10 @@ impl BrowserInstance {
     /// # Errors
     /// As [`Self::tool_type`]; [`BrowserError::SecretPageRefused`],
     /// [`BrowserError::SecretFrameRefused`] and [`BrowserError::SecretPageLeaving`] when
-    /// `allowed` refuses, and [`BrowserError::InvalidInput`] when the tab's page cannot be told
-    /// or read or the browser remembers too many secrets or documents already (nothing is
-    /// typed in any of these); [`BrowserError::SecretAstray`] and
+    /// `allowed` refuses, and [`BrowserError::InvalidInput`] when the text holds a tab or
+    /// another control character (line ends apart), the tab's page cannot be told or read or
+    /// the browser remembers too many secrets or documents already (nothing is typed in any of
+    /// these); [`BrowserError::SecretAstray`] and
     /// [`BrowserError::SecretFrameAstray`] when the page or the focus moved to where it may not
     /// go while it was typed.
     pub async fn tool_type_secret(
@@ -3276,6 +3389,19 @@ impl BrowserInstance {
             let watched = self.watched_values(&session).await;
             return self.type_lines(&session, params, watched.as_ref()).await;
         };
+        // A pressed Tab would move the focus in the middle of the secret, and other control
+        // characters have no key, so the text typed would differ (SPEC-648 FSK-003).
+        if params.text.split('\n').any(|line| {
+            line.strip_suffix('\r')
+                .unwrap_or(line)
+                .chars()
+                .any(char::is_control)
+        }) {
+            return Err(BrowserError::InvalidInput(
+                "the text holds a tab or another control character, which cannot be typed as keys, so nothing was typed"
+                    .into(),
+            ));
+        }
         let unknown = || UNKNOWN_SITE.to_owned();
         // A secret's field is focused with the lock held too: nothing of Yulius's moves the
         // focus between that and the keys.
@@ -3622,8 +3748,10 @@ impl BrowserInstance {
         Ok(())
     }
 
-    /// Inserts `params.text`, pressing Enter for each `\n`; with `watched`, checks for edits
-    /// after each line, before its Enter may submit the form ([`Self::check_edits`]).
+    /// Types `params.text` line by line as real key presses ([`Self::type_keys`]: pages that
+    /// read key events, such as terminals, get it; SPEC-639, SPEC-648), pressing Enter for each
+    /// `\n`; with `watched`, checks for edits after each line, before its Enter may submit the
+    /// form ([`Self::check_edits`]).
     async fn type_lines(
         &self,
         session: &str,
@@ -3638,15 +3766,11 @@ impl BrowserInstance {
             }
             let line = line.strip_suffix('\r').unwrap_or(line);
             if !line.is_empty() {
-                let inserted = self
-                    .cdp
-                    .call_session(session, "Input.insertText", json!({"text": line}))
-                    .await;
+                let typed = self.type_keys(session, line).await;
                 if let Some(watched) = watched {
                     self.check_edits(session, watched).await;
                 }
-                inserted?;
-                chars += line.chars().count();
+                chars += typed?;
             }
         }
         Ok(TypeResult { chars })

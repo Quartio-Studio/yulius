@@ -1,6 +1,6 @@
-import { test } from '@e2e-dev/web';
+import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, mock, pressAndMove, tabGrips, tabMenu, tabNames, tabsInPlace } from './support.ts';
+import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, mock, pressAndMove, tabGrips, tabMenu, tabNames, tabsInPlace, terminalShown } from './support.ts';
 
 failOnPageErrors();
 
@@ -128,46 +128,83 @@ test('a blocked Browser clipboard write can be completed with an explicit click'
   expect(await browser.evaluate(() => document.body.dataset.copiedText)).toBe('first line\nzażółć');
 });
 
-test('expired clipboard actions preserve focus and explain how to copy again', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/12'));
-  await screen.getByRole('button', /^Show tools/).click();
-  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
-  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
-  await browser.evaluate(controlCopyExpiry);
-  await browser.evaluate(() => {
-    type Socket = { push(message: string): void; send(message: string): void };
-    type Mock = { browsers: Map<string, { viewers: Map<Socket, string> }> };
-    const session = (window as unknown as { __yuliusMock: Mock }).__yuliusMock.browsers.get('sb_studio')!;
-    navigator.clipboard.writeText = async () => { throw new DOMException('Blocked', 'NotAllowedError'); };
-    for (const socket of session.viewers.keys()) {
-      const offer = (id: number) => socket.push(JSON.stringify({ type: 'page_copy_available', tab_id: 'tab-app', offer: id }));
-      window.addEventListener('offer-copy-again', () => offer(9));
-      const send = socket.send.bind(socket);
-      socket.send = message => {
-        const request = JSON.parse(message);
-        if (request.type === 'accept_page_copy') {
-          socket.push(JSON.stringify({ type: 'page_clipboard', tab_id: 'tab-app', offer: request.offer, text: 'temporary text' }));
-        } else { send(message); }
-      };
-      offer(8);
-    }
-    document.addEventListener('copy', () => { document.body.dataset.unexpectedCopy = 'yes'; });
+/**
+ * Holds the task terminal until the test releases it (SPEC-641): its first screen (`screen`, the
+ * mock's hold) or its code (`code`, the lazily loaded terminal-core.js), as a slow host does.
+ * Returns whether it is still held, and the release.
+ */
+async function holdTaskTerminal(browser: Browser, late: 'screen' | 'code'): Promise<{ held(): Promise<boolean>; release(): Promise<void> }> {
+  if (late === 'screen') {
+    await browser.addInitScript(() => {
+      const w = window as unknown as { __yuliusHoldTerminal?: Promise<void>; __releaseTerminal?: () => void };
+      w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
+    });
+    return {
+      // Not shown yet, whether or not its code has loaded (the inverse of `terminalShown`).
+      held: () => browser.evaluate(() => document.querySelector('.taskview .term-pending, .taskview .term-placeholder') !== null),
+      release: () => browser.evaluate(() => (window as unknown as { __releaseTerminal: () => void }).__releaseTerminal()),
+    };
+  }
+  let release = () => {};
+  const code = new Promise<void>((resolve) => { release = resolve; });
+  await browser.route(/\/assets\/terminal-core\.js(\?|$)/, async (route) => { await code; await route.continue(); });
+  return {
+    held: () => browser.evaluate(() => document.querySelector('.taskview .term-lazy') !== null && document.querySelector('.taskview .term-host') === null),
+    release: async () => release(),
+  };
+}
+
+// SPEC-641: the task terminal shows only after the person focused the toast's button, as on a slow
+// host (CI run be25f19b): the terminal shown late leaves the keyboard there.
+for (const late of ['screen', 'code'] as const) {
+  test(late === 'screen'
+    ? 'expired clipboard actions preserve focus and explain how to copy again'
+    : 'the clipboard action keeps the focus when the terminal code loads after it', async ({ app, browser, screen }) => {
+    const terminal = await holdTaskTerminal(browser, late);
+    await app.open(mock('/s/studio/t/12'));
+    await screen.getByRole('button', /^Show tools/).click();
+    await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+    await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+    await browser.evaluate(controlCopyExpiry);
+    await browser.evaluate(() => {
+      type Socket = { push(message: string): void; send(message: string): void };
+      type Mock = { browsers: Map<string, { viewers: Map<Socket, string> }> };
+      const session = (window as unknown as { __yuliusMock: Mock }).__yuliusMock.browsers.get('sb_studio')!;
+      navigator.clipboard.writeText = async () => { throw new DOMException('Blocked', 'NotAllowedError'); };
+      for (const socket of session.viewers.keys()) {
+        const offer = (id: number) => socket.push(JSON.stringify({ type: 'page_copy_available', tab_id: 'tab-app', offer: id }));
+        window.addEventListener('offer-copy-again', () => offer(9));
+        const send = socket.send.bind(socket);
+        socket.send = message => {
+          const request = JSON.parse(message);
+          if (request.type === 'accept_page_copy') {
+            socket.push(JSON.stringify({ type: 'page_clipboard', tab_id: 'tab-app', offer: request.offer, text: 'temporary text' }));
+          } else { send(message); }
+        };
+        offer(8);
+      }
+      document.addEventListener('copy', () => { document.body.dataset.unexpectedCopy = 'yes'; });
+    });
+    const copy = screen.getByRole('button', 'Copy to my clipboard');
+    await copy.focus();
+    expect(await terminal.held()).toBe(true);
+    await terminal.release();
+    await terminalShown(browser);
+    await expect(copy).toBeFocused();
+    await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
+    await expect(copy).toBeFocused();
+    await expect(screen.getByText('Copy expired. Click Copy on the webpage again.')).toBeVisible();
+    await copy.click();
+    await browser.evaluate(() => window.dispatchEvent(new Event('offer-copy-again')));
+    await copy.click();
+    const retry = screen.getByRole('button', 'Retry copy');
+    await retry.focus();
+    await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
+    await expect(retry).toBeFocused();
+    await retry.click();
+    expect(await browser.evaluate(() => document.body.dataset.unexpectedCopy)).toBeUndefined();
   });
-  const copy = screen.getByRole('button', 'Copy to my clipboard');
-  await copy.focus();
-  await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
-  await expect(copy).toBeFocused();
-  await expect(screen.getByText('Copy expired. Click Copy on the webpage again.')).toBeVisible();
-  await copy.click();
-  await browser.evaluate(() => window.dispatchEvent(new Event('offer-copy-again')));
-  await copy.click();
-  const retry = screen.getByRole('button', 'Retry copy');
-  await retry.focus();
-  await browser.evaluate(() => window.dispatchEvent(new Event('expire-clipboard')));
-  await expect(retry).toBeFocused();
-  await retry.click();
-  expect(await browser.evaluate(() => document.body.dataset.unexpectedCopy)).toBeUndefined();
-});
+}
 
 // SPEC-434 MTB-003/004: the Browser's tabs move as the sandbox and Notes tabs do, and keep their order.
 const bpStrip = '[role="tablist"][aria-label="Browser tabs"]';
@@ -175,6 +212,110 @@ const bpStrip = '[role="tablist"][aria-label="Browser tabs"]';
 // SPEC-483 E1 (ADR-0318): on a host whose browser policy is not in force the sandbox browser
 // shows, but refuses clicks and keys (they would reach Chrome's own file dialogs on the host).
 // The viewer is told why and what an administrator runs, once, not at every key.
+// SPEC-639: a paste in the panel goes to the sandbox page whole, as one `paste` message (the
+// server makes it a real paste there); too long, not taken or not connected is said, never lost.
+test('a paste in the browser panel is sent whole and a lost one is said', async ({ app, browser, screen }) => {
+  type Pasting = Window & { __yuliusMock: { browserPasteUnread?: boolean; browsers: Map<string, { pastes?: string[] }> } };
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await expect
+    .poll(() => browser.evaluate(() => ((document.querySelector('.bp-canvas') as HTMLCanvasElement | null)?.width ?? 0) > 10), { timeout: 15000 })
+    .toBe(true);
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  const paste = (text: string) => browser.evaluate((value: string) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', value);
+    const target = document.activeElement as HTMLElement;
+    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    return target.className;
+  }, text);
+  const pastes = () => browser.evaluate(() => (window as unknown as Pasting).__yuliusMock.browsers.get('sb_studio')?.pastes ?? []);
+  const code = 'sk-ant-oauth-'.padEnd(100, 'x');
+  const long = 'ab\n'.repeat(1667).slice(0, 5000);
+  expect(await paste(code)).toContain('bp-keys');
+  await paste(long);
+  await expect.poll(pastes).toEqual([code, long]);
+
+  // Over 32,000 characters or 32 KiB is not cut: nothing is sent, and the panel says why.
+  await paste('x'.repeat(32001));
+  await expect(browser.locator('.toast:has-text("Nothing was pasted: the text has 32,001 characters")')).toBeVisible();
+  await paste('€'.repeat(12000));
+  await expect(browser.locator('.toast:has-text("Nothing was pasted: the text is 36 KiB")')).toBeVisible();
+  expect(await pastes()).toHaveLength(2);
+  // A paste the page did not take comes back, and the panel says so.
+  await browser.evaluate(() => { (window as unknown as Pasting).__yuliusMock.browserPasteUnread = true; });
+  await paste('lost code');
+  await expect(browser.locator('.toast:has-text("the page did not take it")')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  // With no tab to paste into the panel says what to do.
+  type Tabbed = { browsers: Map<string, { tabs: unknown[]; saved?: unknown[]; sendTabs(): void }> };
+  await browser.evaluate(() => {
+    const session = (window as unknown as { __yuliusMock: Tabbed }).__yuliusMock.browsers.get('sb_studio')!;
+    session.saved = session.tabs;
+    session.tabs = [];
+    session.sendTabs();
+  });
+  await expect(screen.getByRole('tab', /^Checkout/)).toBeHidden();
+  await browser.evaluate(() => {
+    const data = new DataTransfer();
+    data.setData('text/plain', 'nowhere');
+    document.querySelector('.bp-keys')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(browser.locator('.toast:has-text("Open a tab in the browser first")')).toBeVisible();
+  await browser.evaluate(() => {
+    const session = (window as unknown as { __yuliusMock: Tabbed }).__yuliusMock.browsers.get('sb_studio')!;
+    session.tabs = session.saved!;
+    session.sendTabs();
+  });
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  // The person's own Shift+Insert is their browser's paste (with their clipboard), never an
+  // Insert key that would paste the sandbox's clipboard.
+  await browser.evaluate(() => {
+    type Sent = { browsers: Map<string, { viewers: Map<{ send(message: string): void }, string> }> };
+    const session = (window as unknown as { __yuliusMock: Sent }).__yuliusMock.browsers.get('sb_studio')!;
+    const keys: string[] = [];
+    (window as unknown as { sentKeys: string[] }).sentKeys = keys;
+    for (const socket of session.viewers.keys()) {
+      const send = socket.send.bind(socket);
+      socket.send = (message: string) => {
+        const request = JSON.parse(message);
+        if (request.type === 'key') keys.push(`${request.event} ${request.key}`);
+        send(message);
+      };
+    }
+  });
+  await browser.keyboard.press('Shift+Insert');
+  await browser.keyboard.press('q');
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { sentKeys: string[] }).sentKeys)).toContain('down q');
+  const sentKeys = () => browser.evaluate(() => (window as unknown as { sentKeys: string[] }).sentKeys);
+  expect((await sentKeys()).filter((k) => k.endsWith('Insert'))).toEqual([]);
+  // An Insert pressed before Shift was sent, and so is its release: it never stays held there.
+  await browser.evaluate(() => {
+    const keys = document.querySelector('.bp-keys')!;
+    const press = (type: string, key: string, code: string, shiftKey: boolean) =>
+      keys.dispatchEvent(new KeyboardEvent(type, { key, code, shiftKey, bubbles: true, cancelable: true }));
+    press('keydown', 'Insert', 'Insert', false);
+    press('keydown', 'Shift', 'ShiftLeft', true);
+    press('keyup', 'Insert', 'Insert', true);
+    press('keyup', 'Shift', 'ShiftLeft', false);
+  });
+  await expect.poll(async () => (await sentKeys()).filter((k) => k.endsWith('Insert'))).toEqual(['down Insert', 'up Insert']);
+  // A connection that died unnoticed sends nothing, and the panel says so (the mock got all
+  // that was sent before: the keys typed above reached it).
+  await expect.poll(() => browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.browsers.get('sb_studio')?.typed.get('tab-app') ?? '')).toContain('q');
+  const before = (await pastes()).length;
+  await browser.evaluate(() => {
+    type Viewers = { browsers: Map<string, { viewers: Map<{ readyState: number }, string> }> };
+    const session = (window as unknown as { __yuliusMock: Viewers }).__yuliusMock.browsers.get('sb_studio')!;
+    for (const socket of session.viewers.keys()) socket.readyState = 3;
+  });
+  await paste('offline code');
+  await expect(browser.locator('.toast:has-text("the browser is not connected")')).toBeVisible();
+  expect(await pastes()).toHaveLength(before);
+});
+
 test('a sandbox browser without the host policy says once that clicks and keys are off', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&browser=locked'));
   await screen.getByRole('button', /^Show tools/).click();

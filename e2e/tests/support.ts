@@ -250,10 +250,10 @@ export const TERMINAL_SHOW_MS = 30_000;
 
 /**
  * Waits until the task view's terminal shows its first screen, within `TERMINAL_SHOW_MS`. The task
- * view asks for the keyboard when it opens, and that request lands when the terminal shows, over a
- * button or link focused meanwhile (SPEC-056 WUI-102). A test that puts the keyboard elsewhere on a
- * task's page waits for this first: before, it raced the terminal, which took the keyboard 30–100 ms
- * after the sidebar showed (SPEC-082 TST-003).
+ * view asks for the keyboard when it opens, and that request lands when the terminal shows, unless
+ * the keyboard moved to another control since (SPEC-056 WUI-102, SPEC-641). A test that puts the
+ * keyboard elsewhere on a task's page waits for this first when the order matters: the terminal
+ * shows 30–100 ms after the sidebar (SPEC-082 TST-003).
  */
 export async function terminalShown(browser: Browser): Promise<void> {
   await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term') !== null

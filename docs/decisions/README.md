@@ -508,7 +508,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0448 -->
 - [0449](0449-use-codex-quota-headroom-and-preserve-idle-moves.md) Automatic Codex placement prefers the most remaining quota in the tightest binding window. A moved idle Codex task keeps its activity when the replacement opens without a turn.
 <!-- ADR 0449 -->
-- [0450](0450-attribute-integration-test-failures-in-first-parent-order.md) Attribute integration test failures in first-parent order.
+- [0450](0450-attribute-integration-test-failures-in-first-parent-order.md) Attribute integration test failures in first-parent order (narrowed by 0466).
 <!-- ADR 0450 -->
 - [0451](0451-repaint-an-unreadable-codex-terminal-before-typing.md) Repaint an unreadable Codex terminal before typing.
 <!-- ADR 0451 -->
@@ -540,15 +540,25 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0464 -->
 - [0465](0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md): Script watches run in the sandbox without an agent and post keyed notices
 <!-- ADR 0465 -->
+- [0466](0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md): A finished task whose background work waits hears its staging outcome; narrows 0450
 <!-- ADR 0466 -->
+- [0467](0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md): A reviewer's report ends its round when its hooks missed it
 <!-- ADR 0467 -->
+- [0468](0468-a-flag-whose-cause-stands-is-not-answered-by-work.md): A "could not end this session" flag is not answered by the session's work; narrows 0306
 <!-- ADR 0468 -->
+- [0469](0469-a-test-of-a-host-wide-resource-asserts-only-what-it-holds.md): A test of a host-wide resource asserts only what it holds
 <!-- ADR 0469 -->
+- [0470](0470-wall-clock-stamps-are-read-on-yuliuss-clock.md): Wall-clock stamps (a hook's send time, a transcript line's recorded time) are read on Yulius's clock (`Clock::of_wall`, identity in production); a shifted test clock maps a stamp with its shift at that instant; refines 0234 and 0299 (SPEC-636, #1615)
 <!-- ADR 0470 -->
+- [0471](0471-a-viewer-paste-becomes-the-displays-clipboard-and-a-real-paste-key.md): A viewer paste becomes the display's CLIPBOARD and a real paste key
 <!-- ADR 0471 -->
+- [0472](0472-a-terminal-shown-late-leaves-the-keyboard-where-the-person-moved-it.md): A terminal focus request made before the terminal showed lands at the reveal only if the person did not move the keyboard since (a page-wide count in `dom.js`; a control re-created by a re-render is not a move) or it is on the page; refines SPEC-056 WUI-102 and SPEC-052 (SPEC-641)
 <!-- ADR 0472 -->
+- [0473](0473-a-menu-opened-over-a-modal-dialog-is-mounted-in-it.md): A menu opened while a modal dialog is open is mounted in the topmost one (as the toasts are) and closes with it; not a top-layer popover, which a modal dialog leaves inert (SPEC-644, #1735)
 <!-- ADR 0473 -->
+- [0474](0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md): A test pause hook (`yulius_app::race`) runs only for a point reached on the tokio runtime that registered it while that runtime lives; outside a runtime, or once it shut down, it matches by point and key as before (SPEC-645, #1644)
 <!-- ADR 0474 -->
+- [0475](0475-browser-fill-secret-types-real-key-presses.md): `browser_fill_secret` types real key presses like `browser_type` (a secret reaches a terminal); a tab or control character is refused before typing; supersedes the secret part of 0471 (SPEC-648, #1740)
 <!-- ADR 0475 -->
 <!-- ADR 0476 -->
 <!-- ADR 0477 -->
