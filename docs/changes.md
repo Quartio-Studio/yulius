@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-24
+
+- A screenshot copied outside Yulius pastes into a terminal from its right-click menu's Paste and with Ctrl+V on macOS (#1734): the paste that reads the clipboard itself took only text, so an image sent nothing. It now reads the clipboard's items: text pastes as before and wins over an image, which is then not even read, an image (PNG first) is uploaded and its path typed as the browser's own paste does, and a clipboard with nothing to paste (in Chrome on Linux, a file copied in a file manager) says to use the paste key, which uploads copied files. The Browser panel's paste is task #623's. [SPEC-638](../.ai/specs/SPEC-638-i-can-t-paste-things-to-the-sandbox-if-t.md)
+
 ## 2026-11-23
 
 - A review round whose reviewer reported now ends with its verdict also when its hooks missed it (quartio-v2 #377, #1726). The report ends the round when Yulius restarted while the background reviewer ran, and its `SubagentStop` was lost: the session's transcript gives the reviewer's completed notification. It also ends the round when a slow review start recorded the round after Claude Code's `SubagentStart`. A round with no report when its pull request merged reads "unreported (the pull request merged without its report)" in `delivery_status`, not "no report yet", and the delivery's rounds carry `merged_at`. [ADR-0467](decisions/0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md), [SPEC-633](../.ai/specs/SPEC-633-a-review-round-stays-open-with-no-end-or.md)
