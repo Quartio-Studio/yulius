@@ -173,6 +173,48 @@ test('an image pasted into the task terminal is uploaded and typed by path; text
   await expect(taskTerminal(browser)).toHaveText(/plain words/);
 });
 
+// SPEC-638 (#1734), task #622: "i can't paste things to the sandbox if they were copied outside".
+// The menu's Paste (and Ctrl+V on macOS, which has no browser paste key) reads the clipboard
+// itself. A screenshot copied outside Yulius is an image item there; Chrome's readText() gives ''.
+test('an image copied outside pastes into the task terminal from the menu; text wins; an empty clipboard says so', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(taskTerminal(browser)).toHaveText(/Welcome to Claude Code/);
+  /** The clipboard as the browser's clipboard API shows it: one item with these types. */
+  const clipboard = (types: Record<string, string> | null) => browser.evaluate((item) => {
+    const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
+    const blobs = item ? Object.fromEntries(Object.entries(item).map(([type, text]) => [type, new Blob([type.startsWith('image/') ? png : text], { type })])) : null;
+    navigator.clipboard.read = async () => (blobs ? [new ClipboardItem(blobs)] : []);
+    navigator.clipboard.readText = async () => (item && item['text/plain']) || '';
+    (window as unknown as { __yuliusMock: { sessions: Map<string, { input: string }> } }).__yuliusMock.sessions.get('tsk_studio_12')!.input = '';
+  }, types);
+  /** Opens the terminal's menu (the program has the mouse: Shift, Option on macOS) and pastes. */
+  const menuPaste = async () => {
+    await browser.evaluate(() => {
+      const line = [...document.querySelectorAll('.taskview-term .xterm-rows > div')].find((d) => (d.textContent || '').trim())!;
+      const box = line.getBoundingClientRect();
+      const key = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? 'altKey' : 'shiftKey';
+      line.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 40, clientY: box.top + box.height / 2, [key]: true }));
+    });
+    await screen.getByRole('menuitem', /^Paste/).click();
+  };
+
+  await clipboard({ 'image/png': '' });
+  await menuPaste();
+  await expect.poll(() => typedIntoTask(browser)).toMatch(/^(\[200~)?\/var\/lib\/yulius\/sandboxes\/sb_studio\/attachments\/tasks\/tsk_studio_12\/pasted-\d{8}-\d{6}\.png (\[201~)?$/);
+  await expect(browser.locator('.taskview-term .upload-text')).toHaveText(/^Added pasted-\d{8}-\d{6}\.png$/);
+
+  // Text and an image (an office app copies both): the text, as the browser's own paste does.
+  await clipboard({ 'text/plain': 'cell text', 'image/png': '' });
+  await menuPaste();
+  await expect.poll(() => typedIntoTask(browser)).toMatch(/^(\[200~)?cell text(\[201~)?$/);
+
+  // Nothing the read can deliver (a file copied in a file manager): a notice, never silence.
+  await clipboard(null);
+  await menuPaste();
+  await expect(browser.locator('.taskview .term-notice')).toHaveText(/no text or image.*(Ctrl\+V|⌘V)/);
+  expect(await typedIntoTask(browser)).toBe('');
+});
+
 test('a read-only terminal refuses dropped files', async ({ app, browser }) => {
   await app.open(mock('/s/sandbox-3/t/2'));
   await expect(taskTerminal(browser)).toHaveText(/Welcome to Claude Code/);
