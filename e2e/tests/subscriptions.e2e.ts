@@ -1191,6 +1191,97 @@ test('a finished Claude sign-in closes its dialog by itself and says the subscri
   await expect(browser.locator('main .card:has-text("Claude #9") button:has-text("Sign in again")')).toHaveCount(0);
 });
 
+test('the sign-in terminal’s right-click menu shows above its dialog: Paste by pointer and keyboard, Escape closes only the menu (#1735, SPEC-644)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  const dialog = await addSubscription(browser, screen, 'Claude #9');
+  // The clipboard holds the code Claude printed (read as text: a browser without clipboard.read()).
+  await browser.evaluate(() => {
+    (navigator.clipboard as { read?: unknown }).read = undefined;
+    navigator.clipboard.readText = async () => 'code-from-claude';
+  });
+  const typed = () => browser.evaluate(() => [...(window as unknown as MockLogins).__yuliusMock.logins.values()]
+    .map((session) => (session as unknown as { input: string }).input).join('|'));
+  /** Right-clicks the terminal; answers where, and where the menu's top left corner is drawn. */
+  const rightClick = () => browser.evaluate(() => {
+    const target = document.querySelector('.login-terminal .xterm-screen')!;
+    const box = target.getBoundingClientRect();
+    const at = { x: Math.round(box.left + 40), y: Math.round(box.top + 40) };
+    target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: at.x, clientY: at.y }));
+    const menu = document.querySelector('.menu')!.getBoundingClientRect();
+    return { at, menu: { left: Math.round(menu.left), top: Math.round(menu.top) } };
+  });
+  const paste = screen.getByRole('menuitem', /^Paste/);
+
+  // A click: the menu opens at the pointer, over the dialog, and its Paste types the code.
+  const { at, menu } = await rightClick();
+  expect(menu).toEqual({ left: at.x, top: at.y + 4 });
+  await paste.click();
+  await expect(paste).toBeHidden();
+  await expect.poll(typed).toBe('code-from-claude');
+
+  // The keyboard: the menu takes the focus (Copy is off without a selection), arrows move it, Enter pastes.
+  await rightClick();
+  await expect(paste).toBeFocused();
+  await browser.keyboard.press('ArrowDown');
+  await expect(screen.getByRole('menuitem', /^Select all/)).toBeFocused();
+  await browser.keyboard.press('ArrowUp');
+  await expect(paste).toBeFocused();
+  await browser.keyboard.press('Enter');
+  await expect.poll(typed).toBe('code-from-claudecode-from-claude');
+
+  // Escape closes the menu only: the sign-in goes on, and the keyboard is back in the terminal.
+  await rightClick();
+  await expect(paste).toBeFocused();
+  await browser.keyboard.press('Escape');
+  await expect(paste).toBeHidden();
+  await expect(dialog).toBeVisible();
+  await expect(loginInput(browser)).toBeFocused();
+  expect(await browser.evaluate(() => (window as unknown as MockLogins).__yuliusMock.loginCancels.length)).toBe(0);
+  // Tab leaves the menu for the terminal too.
+  await rightClick();
+  await expect(paste).toBeFocused();
+  await browser.keyboard.press('Tab');
+  await expect(paste).toBeHidden();
+  await expect(loginInput(browser)).toBeFocused();
+
+  // A sign-in that ends while the menu is open closes the menu with its dialog: Escape is the page's again.
+  await rightClick();
+  await expect(paste).toBeFocused();
+  await browser.evaluate(() => {
+    for (const session of (window as unknown as MockLogins).__yuliusMock.logins.values()) {
+      const s = session as unknown as { input: string; finish: () => void };
+      s.input = 'code-from-claude';
+      s.finish();
+    }
+  });
+  await expect(dialog).toBeHidden();
+  await expect(paste).toBeHidden();
+  expect(await browser.evaluate(() => {
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    return event.defaultPrevented;
+  })).toBe(false);
+});
+
+test('a menu and a toast opened over two modal dialogs are in the upper one and a menu closes with it (unit, in the page, SPEC-644 MDM-001)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await addSubscription(browser, screen, 'Claude #9');
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/dom.js';
+    const { openModal, openMenu, toast } = await import(url);
+    const lower = document.querySelector('dialog[open]');
+    const upper = openModal({ title: 'Upper', body: 'Over the sign-in' });
+    const menu = openMenu({ x: 40, y: 40 }, [{ label: 'One' }, { label: 'Two' }]);
+    toast('Over both');
+    const placed = { menu: menu.parentElement === upper.dialog, toasts: document.getElementById('toasts')?.parentElement === upper.dialog };
+    upper.close();
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    return { ...placed, gone: !menu.isConnected, escapeFree: !event.defaultPrevented, toastsBack: document.getElementById('toasts')?.parentElement === lower };
+  });
+  expect(result).toEqual({ menu: true, toasts: true, gone: true, escapeFree: true, toastsBack: true });
+});
+
 test('a sign-in of a subscription whose email was typed does not say Claude confirmed it (SPEC-463 EML-006)', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts', '&ambient=0'));
   await firstShown(browser.locator('main .account-card').first());

@@ -1966,7 +1966,10 @@ in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken 
 `project_change` works in `<data>/changes`, and `extract_snapshot` refuses a linked root ([SPEC-296](../.ai/specs/SPEC-296-snapshot-import-reserves-its-worktree-pa.md),
 [decision 0213](decisions/0213-a-snapshot-import-checks-out-in-a-server-private-folder.md)).
 Races are tested at pause points
-(`yulius_app::race`, only with the `test-support` feature).
+(`yulius_app::race`, only with the `test-support` feature). While the tokio runtime that registered a hook
+lives, only a point reached on it runs the hook, so running tests sharing a process do not take
+each other's hooks through a repeated task id; hooks registered or reached outside a runtime, and
+those of a runtime that shut down, still match by point and key alone ([decision 0474](decisions/0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md)).
 
 Git itself, which the server runs in those folders as the service user, is confined by the
 kernel: every command of the Git adapter is started through `yulius git-confined`
@@ -4275,6 +4278,10 @@ items, and a menu of 8 or more items opens with a filter box
 ([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
 start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
 continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
+While a modal dialog is open, the menu is mounted in the topmost one, as the toasts are: outside
+it, it would be inert and under the dialog. It closes with an `openModal` dialog, and Escape or Tab
+gives the keyboard back to its anchor, or to the element that had it for a menu at a point
+([decision 0473](decisions/0473-a-menu-opened-over-a-modal-dialog-is-mounted-in-it.md)).
 
 The Tasks page's Graph view (`?view=graph`, SPEC-164, [decision 0135](decisions/0135-the-task-graph-is-drawn-in-the-browser-from-the-task-summaries.md))
 is drawn from the task summaries the store already holds, with no endpoint of its own:

@@ -274,7 +274,10 @@ fn check_owner(conn: &RustConnection, other: &RustConnection) -> Result<()> {
     held.until = Instant::now();
     held.waiting.as_mut().ok_or("no wait")?.1 = Instant::now();
     owner.expire(conn);
-    conn.flush()?;
+    // The release goes out on `conn` unchecked, and `owned_by` reads on `other`: the server serves
+    // its clients independently, so a flush alone let it answer the read first. A round trip on
+    // `conn` returns once the server has handled every earlier request of it, the release too.
+    conn.get_input_focus()?.reply()?;
     assert_eq!(outcome.try_recv(), Ok(PasteOutcome::Unread));
     assert!(owned_by(x11rb::NONE)?, "the held paste was not let go");
     Ok(())
