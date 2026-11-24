@@ -7919,6 +7919,12 @@ impl App {
                     continue;
                 }
             };
+            // A line's time is stamped on the host's wall clock: read on Yulius's clock, so a
+            // test clock that runs shifted orders it with the hooks (SPEC-636).
+            let observations: Vec<Observation> = observations
+                .into_iter()
+                .map(|observation| observation.with_record_times(|at| self.deps.clock.of_wall(at)))
+                .collect();
             // A workflow agent's limit of another model than the session runs is not the
             // session's (SPEC-486 WFL-002): it goes into the subscription's reading when it is
             // read live, and never into what is known of the session.

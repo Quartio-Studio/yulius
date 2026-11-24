@@ -317,6 +317,149 @@ pub enum Observation {
     },
 }
 
+impl Observation {
+    /// The same observation with each time a line was recorded (its `at`) passed through `map`,
+    /// as the watcher reads them on Yulius's clock (SPEC-636). Times a line announces (a limit's
+    /// reset) are left as written.
+    #[must_use]
+    pub fn with_record_times(self, map: impl Fn(Timestamp) -> Timestamp) -> Self {
+        let map = |at: Option<Timestamp>| at.map(&map);
+        match self {
+            Self::UserTurn { at, wake } => Self::UserTurn { at: map(at), wake },
+            Self::TurnInterrupted { at } => Self::TurnInterrupted { at: map(at) },
+            Self::TurnComplete { at } => Self::TurnComplete { at: map(at) },
+            Self::Goal(outcome, at) => Self::Goal(outcome, map(at)),
+            Self::TurnEnded {
+                background_agents,
+                at,
+            } => Self::TurnEnded {
+                background_agents,
+                at: map(at),
+            },
+            Self::AgentWork { at } => Self::AgentWork { at: map(at) },
+            Self::BackgroundStarted {
+                id,
+                agent,
+                expires_in_ms,
+                at,
+            } => Self::BackgroundStarted {
+                id,
+                agent,
+                expires_in_ms,
+                at: map(at),
+            },
+            Self::WorkflowLimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at,
+            } => Self::WorkflowLimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at: map(at),
+            },
+            Self::SubagentAnswered {
+                agent_id,
+                model,
+                at,
+            } => Self::SubagentAnswered {
+                agent_id,
+                model,
+                at: map(at),
+            },
+            Self::SubagentCutOff {
+                agent_id,
+                at,
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+            } => Self::SubagentCutOff {
+                agent_id,
+                at: map(at),
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+            },
+            Self::Queue(change, at) => Self::Queue(change, map(at)),
+            Self::LimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at,
+            } => Self::LimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at: map(at),
+            },
+            Self::AccessLost { message, at } => Self::AccessLost {
+                message,
+                at: map(at),
+            },
+            other @ (Self::Session { .. }
+            | Self::WorkflowLaunched { .. }
+            | Self::BackgroundEnded { .. }
+            | Self::BackgroundResumable { .. }
+            | Self::GoalRetry { .. }
+            | Self::ContextFull
+            | Self::Compacted
+            | Self::CompactFailed
+            | Self::RateLimits(_)) => other,
+        }
+    }
+}
+
+#[cfg(test)]
+mod record_time_tests {
+    use super::*;
+
+    /// SPEC-636: recorded times move, announced ones stay, timeless facts are kept.
+    #[test]
+    fn only_the_times_lines_were_recorded_are_mapped() {
+        let back = |at: Timestamp| Timestamp(at.0 - 1_000);
+        let turn = Observation::UserTurn {
+            at: Some(Timestamp(5_000)),
+            wake: true,
+        };
+        assert_eq!(
+            turn.with_record_times(back),
+            Observation::UserTurn {
+                at: Some(Timestamp(4_000)),
+                wake: true,
+            }
+        );
+        let limit = Observation::LimitReached {
+            resets_at: Some(Timestamp(9_000)),
+            message: "limit".into(),
+            window_minutes: Some(300),
+            scope: LimitScope::Account,
+            at: Some(Timestamp(5_000)),
+        };
+        let Observation::LimitReached { resets_at, at, .. } = limit.with_record_times(back) else {
+            panic!("a limit stays a limit");
+        };
+        assert_eq!(
+            (resets_at, at),
+            (Some(Timestamp(9_000)), Some(Timestamp(4_000)))
+        );
+        assert_eq!(
+            Observation::TurnComplete { at: None }.with_record_times(back),
+            Observation::TurnComplete { at: None }
+        );
+        assert_eq!(
+            Observation::Compacted.with_record_times(back),
+            Observation::Compacted
+        );
+    }
+}
+
 /// Accumulated usage of one attempt, from its transcript lines alone, so reading them again after
 /// a restart gives the same figures (SPEC-087).
 #[derive(Debug, Clone, PartialEq, Default)]
