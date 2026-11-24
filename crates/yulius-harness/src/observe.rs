@@ -150,6 +150,17 @@ pub enum Observed {
         /// Claude Code's task id.
         id: String,
     },
+    /// A `<task-notification>` said the background agent `id` completed with this `<result>`:
+    /// a reviewer's report, also when its `SubagentStop` never reached Yulius (SPEC-633
+    /// RRE-002). It comes with the [`Observed::BackgroundEnded`] of the same `id`.
+    SubagentReported {
+        /// Claude Code's id of the agent (the notification's `<task-id>`).
+        agent_id: String,
+        /// The end of its result, at most [`crate::claude::MAX_REPORT_TAIL`] bytes.
+        report: String,
+        /// When the notification was recorded, if parseable.
+        at: Option<Timestamp>,
+    },
     /// A `<task-notification>` said the background agent `id` stopped with background work of its
     /// own still running (its `<note>`): it resumes by itself when that work ends, and the same id
     /// notifies again; the result it carries may be interim (SPEC-079 BGW-006).
