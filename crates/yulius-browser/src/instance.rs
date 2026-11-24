@@ -3391,11 +3391,12 @@ impl BrowserInstance {
         };
         // A pressed Tab would move the focus in the middle of the secret, and other control
         // characters have no key, so the text typed would differ (SPEC-648 FSK-003).
-        if params
-            .text
-            .split('\n')
-            .any(|line| line.strip_suffix('\r').unwrap_or(line).chars().any(char::is_control))
-        {
+        if params.text.split('\n').any(|line| {
+            line.strip_suffix('\r')
+                .unwrap_or(line)
+                .chars()
+                .any(char::is_control)
+        }) {
             return Err(BrowserError::InvalidInput(
                 "the text holds a tab or another control character, which cannot be typed as keys, so nothing was typed"
                     .into(),
@@ -3500,9 +3501,7 @@ impl BrowserInstance {
             }
             typed.record(Some(&before), &params.text);
         }
-        let typed = self
-            .type_lines(&session, params, watched.as_ref())
-            .await;
+        let typed = self.type_lines(&session, params, watched.as_ref()).await;
         let mut after = self.document(&session).await;
         let page = match &after {
             Some(document) => self.read_page(&session, &document.frame).await,

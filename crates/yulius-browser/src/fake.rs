@@ -141,7 +141,7 @@ struct FakeState {
     opaque_origins: bool,
     frame_targets: Vec<Value>,
     enter_submits: bool,
-    /// Pages drop `Input.insertText` (xterm.js takes only keys and pastes).
+    /// Pages drop `Input.insertText` (a page that reads only keys; xterm.js with a key held).
     inserted_text_ignored: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
     navigating_after: HashMap<String, usize>,
@@ -618,8 +618,8 @@ impl FakeCdpServer {
         lock(&self.shared.state).enter_submits = submits;
     }
 
-    /// Whether pages drop `Input.insertText`, as an xterm.js terminal does: only key events
-    /// type into them.
+    /// Whether pages drop `Input.insertText`, as a page that reads only keys does (and xterm.js
+    /// while a key is held): only key events type into them.
     pub fn set_inserted_text_ignored(&self, ignored: bool) {
         lock(&self.shared.state).inserted_text_ignored = ignored;
     }

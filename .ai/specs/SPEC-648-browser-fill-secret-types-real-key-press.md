@@ -19,8 +19,9 @@ Issue #1740.
   `Input.dispatchKeyEvent`.
 - `browser_fill_secret` (`tool_type_secret`, `tool_type_beside_secret` in
   `crates/yulius-browser/src/instance.rs`) still calls `type_lines(..., Typing::Inserted)`: one
-  `Input.insertText` per line. xterm.js ignores `Input.insertText`, so a secret typed into a
-  terminal never arrives, and the tool still answers `filled`.
+  `Input.insertText` per line. xterm.js drops inserted text in some states (a key held, see Root
+  cause) and key-only pages always do, so a secret typed into a terminal can be lost while the
+  tool answers `filled`.
 - ADR-0471 kept insertion for secrets only because the SPEC-450/SPEC-483 tests were built on it
   (its decision and consequences name the gap). It gives no safety reason against keys.
 - The secret path (`type_text` with a rule), all under the input lock: the page is read as it is
@@ -34,9 +35,16 @@ Issue #1740.
 ## Root cause
 
 `type_text` types a secret with `Typing::Inserted`, which sends `Input.insertText`. That fires no
-key event, and xterm.js, which reads keys and `paste` events, drops the text (measured for
-SPEC-639, ADR-0471). The tests missed it because the fake applies `Input.insertText`
-to any focused field, and no test types a secret into a page that ignores insertion.
+key event, only an `input` event of type `insertText`. xterm.js (the vendored 5.x) takes such an
+event only while it has not seen a key go down without its key up (`_keyDownSeen`, and
+`_keyPressHandled`, both cleared by the key up); otherwise the text stays in its hidden helper
+textarea and never reaches the terminal. A key a person holds in the viewer (Ctrl of Ctrl+V, the
+case SPEC-639 met) is such a state. Measured in Chrome 158 for this spec: with a viewer key held,
+an inserted user name sat in `.xterm-helper-textarea` and the terminal's data stayed empty; with
+nothing held, insertion reached the terminal. Terminals and pages that read only key events drop
+inserted text in every state. Key presses arrive in all of these. The tests missed it because the
+fake applies `Input.insertText` to any focused field, and no test types a secret into a page that
+ignores insertion.
 
 ## Requirements
 
@@ -84,7 +92,8 @@ to any focused field, and no test types a secret into a page that ignores insert
   with nothing typed and nothing recorded; `\r\n` line ends are typed as before.
 - AC-4 (FSK-004): after a secret is typed into a terminal-like text field, a screenshot of the tab
   is refused (fake), and in real Chrome (opt-in live test) the xterm.js terminal receives the
-  secret and a following `browser_screenshot` is refused.
+  user name and the secret while a viewer key is held (where insertion is dropped), and a
+  following `browser_screenshot` is refused.
 
 ## Test plan
 

@@ -11,9 +11,12 @@ Supersedes the `browser_fill_secret` part of
 ADR-0471 made `browser_type` type real key presses through CDP, so agents can fill xterm.js
 terminals, and left `browser_fill_secret` on `Input.insertText` because its page rules and edit
 checks were pinned by SPEC-450 and SPEC-483 tests built on insertion. It named no safety reason.
-xterm.js drops inserted text, so a secret, user name or one-time code typed into a terminal (a
-CLI sign-in prompt in the sandbox browser) never arrived, while the tool answered `filled`
-(#1740).
+Inserted text fires only an `input` event, which xterm.js (5.x) drops while it has seen a key go
+down and not up: the text stays in its hidden helper textarea.
+Measured in Chrome 158: with a key held in the viewer (as Ctrl is for Ctrl+V), an inserted user
+name never reached the terminal. Pages that read only keys drop insertion always. A secret, user
+name or one-time code typed into a terminal (a CLI sign-in prompt in the sandbox browser) could
+so be lost while the tool answered `filled` (#1740).
 
 ## Decision
 

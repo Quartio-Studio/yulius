@@ -2060,9 +2060,9 @@ async fn a_secret_typed_while_the_page_moves_on_is_reported() -> TestResult {
     Ok(())
 }
 
-/// SPEC-648 FSK-001, FSK-004: an xterm.js terminal drops `Input.insertText`. A secret, a user
-/// name and a code typed by `browser_fill_secret` reach a page that takes only keys, and nothing
-/// is inserted. A secret in a password field stays out of screenshots; one typed into a terminal
+/// SPEC-648 FSK-001, FSK-004: a page that reads only keys (and xterm.js while a key is held)
+/// drops `Input.insertText`. A secret, a user name and a code typed by `browser_fill_secret`
+/// reach a page that takes only keys, and nothing is inserted. A secret in a password field stays out of screenshots; one typed into a terminal
 /// (a text field drawing its echo on a canvas) refuses them.
 #[tokio::test]
 async fn a_secret_reaches_a_page_that_takes_only_keys() -> TestResult {
@@ -2104,7 +2104,10 @@ async fn a_secret_reaches_a_page_that_takes_only_keys() -> TestResult {
     assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
-    assert!(fake.calls_for("Input.insertText").is_empty(), "nothing inserted");
+    assert!(
+        fake.calls_for("Input.insertText").is_empty(),
+        "nothing inserted"
+    );
     Ok(())
 }
 
@@ -2118,12 +2121,19 @@ async fn a_secret_with_a_tab_or_control_character_is_refused_before_typing() -> 
         .tool_navigate(&to(&tab, "https://bank.example/login"))
         .await?;
     fake.set_password_field("#pw", true);
-    for text in ["zq\t7731xy", "zq7731\u{7}xy", "zq7731\rxy", "zq7731\u{1b}[A"] {
+    for text in [
+        "zq\t7731xy",
+        "zq7731\u{7}xy",
+        "zq7731\rxy",
+        "zq7731\u{1b}[A",
+    ] {
         let keys = fake.calls_for("Input.dispatchKeyEvent").len();
         for beside in [false, true] {
             let params = fill(&tab, "#pw", text);
             let typed = if beside {
-                instance.tool_type_beside_secret(&params, &|_: &str| true).await
+                instance
+                    .tool_type_beside_secret(&params, &|_: &str| true)
+                    .await
             } else {
                 instance.tool_type_secret(&params, &|_: &str| true).await
             };
@@ -2143,7 +2153,9 @@ async fn a_secret_with_a_tab_or_control_character_is_refused_before_typing() -> 
 
     let keys = fake.calls_for("Input.dispatchKeyEvent").len();
     instance
-        .tool_type_secret(&fill(&tab, "#pw", "line-one\r\nline-two\n"), &|_: &str| true)
+        .tool_type_secret(&fill(&tab, "#pw", "line-one\r\nline-two\n"), &|_: &str| {
+            true
+        })
         .await?;
     assert_eq!(fake.key_text_from(keys), "line-one\rline-two\r");
     Ok(())

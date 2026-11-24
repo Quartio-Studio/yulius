@@ -858,7 +858,12 @@ async fn secret_into_terminal(live: &Live) -> TestResult {
         &live.writer,
     )
     .await?;
-    assert_eq!(created.status, axum::http::StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.status,
+        axum::http::StatusCode::CREATED,
+        "{}",
+        created.body
+    );
     let mut viewer = Viewer::connect(live, "s1").await?;
     let (tab, cdp, _) = open_page(live, &mut viewer, "/").await?;
     let url = format!("http://{host}/xterm");
@@ -868,7 +873,10 @@ async fn secret_into_terminal(live: &Live) -> TestResult {
     until(&cdp, &url, "the terminal", "window.ready === true").await?;
     focus_page(&mut viewer, &tab, &cdp, &url, 200.0, 100.0).await?;
     let shot = mcp_tool(&live.h, TOKEN, "browser_screenshot", json!({"tab_id": tab})).await?;
-    assert_eq!(shot["content"][0]["type"], "image", "before the secret: {shot}");
+    assert_eq!(
+        shot["content"][0]["type"], "image",
+        "before the secret: {shot}"
+    );
     // A person holds Shift in the viewer: the terminal saw it go down, not up.
     eval(
         &cdp,
@@ -877,7 +885,13 @@ async fn secret_into_terminal(live: &Live) -> TestResult {
     )
     .await?;
     viewer.send(json!({"type": "key", "tab_id": tab, "event": "down", "key": "Shift", "code": "ShiftLeft", "modifiers": 0})).await?;
-    until(&cdp, &url, "the held key in the terminal", "window.__held === true").await?;
+    until(
+        &cdp,
+        &url,
+        "the held key in the terminal",
+        "window.__held === true",
+    )
+    .await?;
 
     let fill = |field: &'static str| {
         mcp_tool(
