@@ -681,7 +681,8 @@ async fn the_real_chrome_streams_takes_real_input_and_stays_out_of_containment()
 
 /// SPEC-639 AC-1: a viewer's paste (100 and 5 000 characters) reaches a page that only listens
 /// to `paste` and `keydown` as genuine `paste` events with the exact text, in order with the keys
-/// around it, and an xterm.js terminal takes both as its data.
+/// around it, and an xterm.js terminal takes both as its data, and an agent's `browser_type` after
+/// them (PST-005).
 #[tokio::test]
 #[ignore = "needs Linux with Xvfb, ffmpeg and Chrome (YULIUS_LIVE_DISPLAY=1)"]
 async fn a_viewer_paste_reaches_a_paste_listener_and_an_xterm_terminal() -> TestResult {
@@ -770,6 +771,25 @@ async fn pastes(live: &Live) -> TestResult {
         &cdp,
         &url,
         "the terminal's data",
+        &format!("[...window.data].length === {}", expected.chars().count()),
+    )
+    .await?;
+    assert_eq!(eval(&cdp, &url, "window.data").await?, json!(expected));
+    // An agent's browser_type fills the terminal too (SPEC-639 PST-005): real key presses,
+    // each line ended by Enter, which the terminal sends as a carriage return.
+    let typed = mcp_tool(
+        &live.h,
+        TOKEN,
+        "browser_type",
+        json!({"tab_id": tab, "text": "echo ok ż\n"}),
+    )
+    .await?;
+    assert_eq!(tool_text(&typed)["chars"], 10, "{typed}");
+    let expected = format!("{expected}echo ok ż\r");
+    until(
+        &cdp,
+        &url,
+        "the agent's typing in the terminal",
         &format!("[...window.data].length === {}", expected.chars().count()),
     )
     .await?;
