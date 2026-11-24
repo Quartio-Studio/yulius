@@ -61,8 +61,8 @@ reservation, which this test's first half forbids.
 ## Plan
 
 - [x] Root cause: a pass can defer after its hosted read
-- [ ] Regression check: a capacity reader inside the held read makes the old wait fail every run
-- [ ] Fix: wait for the pass that types; candidate tests in full and under stress
+- [x] Regression check: a capacity reader inside the held read makes the old wait fail every run
+- [x] Fix: wait for the pass that types; candidate tests in full and under stress
 - [ ] Independent review in a fresh session, findings answered
 
 ## Acceptance criteria
@@ -85,3 +85,15 @@ reservation, which this test's first half forbids.
   reservation stall the watch.
 - The pause point is a test hook like the others in `race.rs` (ADR-0174), so the interleaving
   is certain in every run, not left to timing.
+
+## Evidence
+
+- Regression check (`dc4621278`: the held pass under a `status` capacity reader, judged by the
+  old rule "the pass that read is the answer"): `--stress-count 5 --no-fail-fast`: 5/5 fail with
+  `` assertion `left == right` failed: [] `` (left 0, right 1), the gate's panic.
+- Fixed (the held pass typed nothing; passes run until one types):
+  `--stress-count 20`: 20/20 pass; `--stress-count 20` beside 128 CPU-bound busy loops (load
+  average 4 → 110): 20/20 pass.
+- All `parking::` tests of `yulius::main`: 165/165 pass.
+- `cargo clippy --locked -p yulius -p yulius-app --all-targets --all-features -- -D warnings`
+  and `cargo fmt --all -- --check` pass.

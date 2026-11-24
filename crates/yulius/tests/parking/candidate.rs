@@ -642,8 +642,25 @@ fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> Te
         let first = tokio::time::timeout(Duration::from_secs(10), held).await??;
         release.notify_one();
         status.await??;
+        // The held pass read the pull request and then met the guard: it records nothing and
+        // leaves the notice unheard for a later pass (SPEC-621, as designed).
         assert!(remote.pull_reads.load(Ordering::SeqCst) > during);
-        let retry = first;
+        assert!(
+            first.is_empty(),
+            "a pass that met the guard typed {first:?}"
+        );
+        // Wait for what is asserted, the pass that types the notice: any pass before it met a
+        // capacity reader and typed nothing (SPEC-642 FLK-002).
+        let retry = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let retry = app.watch_prs(&WatchBounds::default()).await;
+                if !retry.is_empty() {
+                    return retry;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
         assert_eq!(retry.len(), 1, "{retry:?}");
         assert_eq!(retry[0].0, id);
         assert!(
