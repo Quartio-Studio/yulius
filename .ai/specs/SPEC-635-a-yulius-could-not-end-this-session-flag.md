@@ -21,8 +21,8 @@ The test's fixture starts the switch once fake-agent prints `GOAL SET`, before t
 
 ## Requirements
 
-- EFL-001. While the task's live run is the one whose host could not be terminated, no session-driven activity write (prompt hook, Stop or verdict settle, transcript work, transcript turn start, interrupt) changes the task's activity: the flag and its reason stay.
-- EFL-002. The flag ends when its cause ends: a person stops the task (the re-armed escalation clears `end_failed`), or the run ends (its task changes status). A later run of the task is not held by an earlier run's failure.
+- EFL-001. While the task's live run is the one whose host could not be terminated and the task reads the flag that failure raised, no session-driven activity write (prompt hook, Stop or verdict settle, transcript work, transcript turn start, interrupt) changes the task's activity: the flag and its reason stay.
+- EFL-002. The flag ends when its cause ends: a person stops the task (the re-armed escalation clears `end_failed`), or the run ends (its task changes status). A later run of the task is not held by an earlier run's failure, and a record whose run is over is dropped. Once something else replaced the flag (a capacity pause and release, another matter's flag that stood first), the session's activity rules as before. A held write reports no Done to the settles that call it.
 - EFL-003. The check and the write are one step against the flag: a write that began before the failure was recorded lands before the flag is raised, so the flag is always the last word.
 
 ## Plan
@@ -31,6 +31,7 @@ The test's fixture starts the switch once fake-agent prints `GOAL SET`, before t
 - [x] Keep the flag against session activity while the run cannot be ended
 - [x] Prove the fix under stress with a busy loop beside it
 - [x] Record the decision and update the docs
+- [x] Hold session writes only while the could-not-end flag stands
 - [x] Answer the independent review
 
 ## Acceptance criteria
@@ -56,4 +57,7 @@ New `task_done` test `a_late_turn_of_a_run_that_cannot_be_ended_keeps_its_flag`:
 - With the fix, both `a_late_turn_of_a_run_that_cannot_be_ended_keeps_its_flag` and `a_switch_whose_old_run_cannot_be_ended_starts_no_new_run` passed `--stress-count 40` with 128 busy loops beside them on 128 CPUs (load average 176): 40/40 iterations.
 - `scripts/cargo nextest run --no-fail-fast -p yulius -p yulius-app --lib --test main` passed 4,174 tests before and 4,183 after merging dev dafc8ed03 (24 skipped by the default profile). `cargo fmt --all -- --check` and `scripts/cargo clippy -p yulius-app -p yulius --all-targets --features yulius-app/test-support -- -D warnings` passed.
 - `scripts/dev security`: disabled (Vidoc is turned off in Yulius); nothing was scanned.
-- Not covered by a test of its own: the transcript turn start, the interrupt and the idle settle reach the guard through the same `write_session_activity` as the prompt hook and the turn settle the test drives.
+- Independent review round 1 of c9c021bb3 (request changes): the refusal followed `end_failed`, not the flag. After a capacity pause and release the task read Working for good. A task whose flag was another matter's could never answer it. Three guarded call sites had no test. A held Done still advanced chains. The new tests `a_run_that_cannot_be_ended_follows_its_session_once_a_pause_replaced_its_flag` (`left: Some(Working)`) and `another_flag_on_a_run_that_cannot_be_ended_is_answered_as_before` (`left: Some(NeedsAttention)`) failed on that head (commit 31c478e1f). They pass with the guard tied to the flag the task reads.
+- Call-site coverage, each checked by undoing that site's guard: the transcript turn start fails `a_transcript_turn_of_a_run_that_cannot_be_ended_keeps_its_flag` (`left: Some(Waiting)`; its Stop is held at `StopClean` until the watcher passed `UserTurnChecked`), the interrupt fails `an_interrupted_turn_of_a_run_that_cannot_be_ended_keeps_its_flag` (new point `TurnInterruptSettled`), and the prompt hook fails the late-turn, transcript and interrupt tests.
+- Not covered by a test of its own: `settle_idle_activity` writes only from Working, Waiting or Done, so it can meet the flag only in the moment between its read and its write, which the gate closes. No test holds that moment.
+- After round 1: all six `task_done::*cannot_be_ended*` tests passed `--stress-count 40` beside 128 busy loops (load average 150): 40/40. The full `nextest -p yulius -p yulius-app --lib --test main` run passed 4,187 tests (24 skipped). clippy `-D warnings` and fmt were clean.

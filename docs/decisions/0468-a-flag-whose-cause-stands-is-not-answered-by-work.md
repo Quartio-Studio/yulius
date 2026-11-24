@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for SPEC-635 (#1611). Narrows how ADR-0306's flags end: one flag outlives work.
+Accepted for SPEC-635 (#1611). Narrows 0306: one flag is not answered by the session's work.
 
 ## Context
 
@@ -18,14 +18,18 @@ under load the goal turn's prompt hook landed after the flag.
 
 ## Decision
 
-While the task's live run is the one recorded in the runtime's `end_failed`, the session's
-activity writes (prompt hook, clean-turn and verdict settles, idle settles, transcript turn
-starts, interrupts) are refused and the flag stays. A person's typed prompt is such a write too:
-typing does not make the host endable. The flag ends when its cause does: a person stops the task
-(the re-armed escalation clears `end_failed`), or the run ends and the task changes status. A
-later run of the task is not affected, since the check is against the live run's id. The check
-and the write share one per-task lock (`end_gate`) with the record of the failure, so a write
-either lands before the flag is raised or sees the failure.
+While the task's live run is the one recorded in the runtime's `end_failed` and the task still
+reads the flag that failure raised (its stored reason), the session's activity writes (prompt
+hook, clean-turn and verdict settles, idle settles, transcript turn starts, interrupts) are
+refused and the flag stays. A person's typed prompt is such a write too: typing does not make the
+host endable. The flag ends when its cause does: a person stops the task (the re-armed escalation
+clears `end_failed`), or the run ends and the task changes status. Once something else replaced
+the flag (a capacity pause and its release, another matter's flag that stood first so this one
+was never raised), the session's activity rules again, as before. A later run of the task is not
+affected: the check is against the live run's id, and a record whose run is over is dropped. The
+check and the write share one per-task lock (`end_gate`) with the record of the failure, so a
+write either lands before the flag is raised or sees the failure; the lock is released before the
+flag is raised and holds nothing but store calls.
 
 ## Alternatives
 
@@ -37,9 +41,17 @@ either lands before the flag is raised or sees the failure.
   cause; the runtime's `end_failed` is the record that knows the failure.
 - Raise the flag again after each overwriting write: the task would flicker between states, and
   each notice and publish would repeat.
+- Refuse while `end_failed` names the live run, whatever the task reads (review round 1): after a
+  pause and its release the task read Working for good, and another matter's flag that stood
+  first could never be answered.
+- Raise the flag again when a paused task runs again: a second notice for one failure, and the
+  release paths would need to know about a supervisor matter; the terminal's notice and the
+  delete's 409 still say the run cannot be ended.
 
 ## Consequences
 
-A task with an un-endable run reads Needs you while its session works on, and its chains and
-the queue do not see it Done until a person stops it or the session leaves. The guard costs a
-mutex look per activity write; the store is read only while a failure is recorded.
+A task with an un-endable run reads Needs you while its session works on. As with any standing
+flag, its chains and the queue do not see it Done, its idle session is not parked or restarted on
+a newer Claude Code, and Yulius types nothing into it (the pull request watch stays quiet), until a
+person stops it or the session leaves. The guard costs a mutex look per activity write; the store
+is read only while a failure is recorded for the live run.
