@@ -829,7 +829,9 @@ async fn pastes(live: &Live) -> TestResult {
 /// SPEC-648 AC-4 (#1740): an agent's `browser_fill_secret` fills an xterm.js terminal (a CLI
 /// sign-in prompt): the user name and the secret arrive as the terminal's data, typed as real
 /// key presses, and screenshots of the tab are refused from then on, as the terminal draws the
-/// secret on a canvas no page-text probe reads.
+/// secret on a canvas no page-text probe reads. xterm.js drops inserted text (`Input.insertText`)
+/// while it has seen a key go down and not up, here a key a person holds in the viewer (as Ctrl
+/// is held for Ctrl+V, SPEC-639); key presses arrive in that state too.
 #[tokio::test]
 #[ignore = "needs Linux with Xvfb, ffmpeg and Chrome (YULIUS_LIVE_DISPLAY=1)"]
 async fn an_agent_secret_fills_an_xterm_terminal() -> TestResult {
@@ -867,6 +869,15 @@ async fn secret_into_terminal(live: &Live) -> TestResult {
     focus_page(&mut viewer, &tab, &cdp, &url, 200.0, 100.0).await?;
     let shot = mcp_tool(&live.h, TOKEN, "browser_screenshot", json!({"tab_id": tab})).await?;
     assert_eq!(shot["content"][0]["type"], "image", "before the secret: {shot}");
+    // A person holds Shift in the viewer: the terminal saw it go down, not up.
+    eval(
+        &cdp,
+        &url,
+        "window.__held = false, document.querySelector('.xterm-helper-textarea').addEventListener('keydown', (e) => { if (e.key === 'Shift') window.__held = true; }, true), true",
+    )
+    .await?;
+    viewer.send(json!({"type": "key", "tab_id": tab, "event": "down", "key": "Shift", "code": "ShiftLeft", "modifiers": 0})).await?;
+    until(&cdp, &url, "the held key in the terminal", "window.__held === true").await?;
 
     let fill = |field: &'static str| {
         mcp_tool(
