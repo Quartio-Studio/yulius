@@ -171,10 +171,19 @@ fn check_owner(conn: &RustConnection, other: &RustConnection) -> Result<()> {
     // targets: the text is what the page gets.
     let html = conn.intern_atom(false, b"text/html")?.reply()?.atom;
     let targets = conn.intern_atom(false, b"TARGETS")?.reply()?.atom;
-    for target in [html, targets] {
-        owner.on_event(conn, &request(target));
-        assert_eq!(outcome.try_recv(), Err(TryRecvError::Empty));
-    }
+    // Nothing is written for a refused target.
+    let absent = || -> Result<bool> {
+        let value = conn
+            .get_property(false, root, utf8, AtomEnum::ANY, 0, 64)?
+            .reply()?;
+        Ok(value.type_ == x11rb::NONE)
+    };
+    owner.on_event(conn, &request(html));
+    assert!(absent()?, "a refused target got the text");
+    assert_eq!(outcome.try_recv(), Err(TryRecvError::Empty));
+    owner.on_event(conn, &request(targets));
+    assert_eq!(outcome.try_recv(), Err(TryRecvError::Empty));
+    conn.delete_property(root, utf8)?.check()?;
     owner.on_event(conn, &request(plain));
     assert_eq!(outcome.try_recv(), Ok(PasteOutcome::Read));
     // A newer paste waits while the client still reads (it asked for the text or its targets
@@ -191,6 +200,21 @@ fn check_owner(conn: &RustConnection, other: &RustConnection) -> Result<()> {
     );
     owner.on_event(conn, &request(targets));
     assert!(owner.reading(), "the targets are a read too");
+    conn.delete_property(root, utf8)?.check()?;
+    // A SelectionClear of an earlier ownership (queued before this owner took the CLIPBOARD
+    // again) leaves the text it holds now.
+    owner.on_event(
+        conn,
+        &Event::SelectionClear(xproto::SelectionClearEvent {
+            owner: window,
+            selection,
+            ..Default::default()
+        }),
+    );
+    assert!(
+        owner.held.is_some(),
+        "a stale SelectionClear let the text go"
+    );
 
     // Another client (the page copying) takes the CLIPBOARD: the text is let go, and the wait
     // ends unread.
@@ -227,7 +251,9 @@ fn check_owner(conn: &RustConnection, other: &RustConnection) -> Result<()> {
     );
     assert_eq!(outcome.try_recv(), Ok(PasteOutcome::Unread));
     assert!(owner.held.is_none());
+    // A request that comes after the text was let go gets nothing.
     owner.on_event(conn, &request(utf8));
+    assert!(absent()?, "a let-go text was answered");
     // A held text past its hold is let go; another client's CLIPBOARD is left alone.
     let (send, _outcome) = oneshot::channel();
     owner

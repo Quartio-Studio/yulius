@@ -113,10 +113,8 @@ impl Owner {
         self.drop_held();
         let owned = conn
             .set_selection_owner(self.window, self.selection, x11rb::CURRENT_TIME)
-            .ok()
-            .and_then(|_| conn.get_selection_owner(self.selection).ok())
-            .and_then(|cookie| cookie.reply().ok())
-            .is_some_and(|reply| reply.owner == self.window);
+            .is_ok()
+            && self.owns(conn);
         if !owned {
             return Err(outcome);
         }
@@ -146,15 +144,18 @@ impl Owner {
         if now >= held.until {
             self.drop_held();
             // Only this owner's selection is cleared, never another client's.
-            let ours = conn
-                .get_selection_owner(self.selection)
-                .ok()
-                .and_then(|cookie| cookie.reply().ok())
-                .is_some_and(|reply| reply.owner == self.window);
-            if ours {
+            if self.owns(conn) {
                 let _ = conn.set_selection_owner(x11rb::NONE, self.selection, x11rb::CURRENT_TIME);
             }
         }
+    }
+
+    /// Whether the server names this owner's window as the CLIPBOARD's owner now.
+    fn owns(&self, conn: &RustConnection) -> bool {
+        conn.get_selection_owner(self.selection)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|reply| reply.owner == self.window)
     }
 
     fn drop_held(&mut self) {
@@ -177,8 +178,11 @@ impl Owner {
             Event::SelectionClear(clear)
                 if clear.owner == self.window && clear.selection == self.selection =>
             {
-                // Another client (the page copying) took the CLIPBOARD.
-                self.drop_held();
+                // Another client (the page copying) took the CLIPBOARD, unless this clear is of
+                // an earlier ownership (it was taken again with the current time since).
+                if !self.owns(conn) {
+                    self.drop_held();
+                }
             }
             _ => {}
         }
