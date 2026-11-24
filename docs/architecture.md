@@ -1494,11 +1494,13 @@ a round, its report still ends it
 ([ADR-0467](decisions/0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md)):
 - **Start came first.** A `PreToolUse` that outlasted the hook client inserts its round after
   `SubagentStart`, which then linked nothing. A stop whose id no round carries links and ends the
-  newest unlinked open round of its reviewer agent (`end_unlinked_review_round`).
+  newest unlinked open round (`end_unlinked_review_round`). The reviewer ran as asked, since the
+  answer was lost too, so the round then names the agent and model that ran.
 - **Lost stop.** Reviewers run in the background, and a stop sent while Yulius restarts is lost.
-  The completed `<task-notification>` in the session's transcript
-  (`Observation::SubagentReported`) ends the round linked to that agent id. Rounds that started
-  after that time are left open.
+  Claude Code's own completed `<task-notification>` in the session's transcript
+  (`Observation::SubagentReported`: `origin.kind`, exactly one notice, a final result) ends the
+  round linked to that agent id. This also holds while a reattached run's watcher catches up.
+  Rounds that started after that time are left open.
 
 The store closes a pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1. A round with no

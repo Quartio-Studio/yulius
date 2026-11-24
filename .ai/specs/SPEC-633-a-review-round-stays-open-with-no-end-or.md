@@ -73,14 +73,20 @@ either: the merge needs the approval of the reviewed head first, which is the st
 
 ## Requirements
 
-- RRE-001: A reviewer's `SubagentStop` whose id no open round carries links and ends the newest
-  open round of the same reviewer agent that has no subagent and started at or before the stop,
-  with the report's verdict.
-- RRE-002: A `<task-notification>` in the session's own transcript that says a background agent
-  completed and carries its `<result>` ends the open round linked to that agent id, with the
-  result's verdict, at the record's time, unless the round's `SubagentStop` already ended it. A
-  replayed notification ends nothing that started after it, so a reviewer resumed after its
-  report keeps its continuation open.
+- RRE-001: A reviewer's `SubagentStop` whose id no round carries links and ends the newest open
+  round that has no subagent and started at or before the stop, with the report's verdict.
+  - Any reviewer agent's round qualifies: the lost answer means the reviewer ran as asked.
+  - The round then records the reviewer and model that ran, and reason `round` when they differ
+    from what was decided.
+- RRE-002: A completed agent's `<task-notification>` in the session's own transcript ends the open
+  round linked to that agent id, with the result's verdict, at the record's time, unless the
+  round's `SubagentStop` already ended it.
+  - It counts only from a record Claude Code wrote as its own notification (`origin.kind`), whose
+    text is exactly one notification, and not from an interim result.
+  - The result runs to its last closing result tag.
+  - It applies when read live and while a reattached run's watcher catches up after a restart.
+  - A replayed notification ends nothing that started after it, so a reviewer resumed after its
+    report keeps its continuation open.
 - RRE-003: A round that has no report when its pull request merged reads "unreported (the pull
   request merged without its report)" in `delivery_status`; the delivery's round view carries
   the round's `merged_at`. A cut-off round keeps "cut off by a usage limit".
