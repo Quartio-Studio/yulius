@@ -6,7 +6,9 @@ Accepted. Specified in [SPEC-346](../../.ai/specs/SPEC-346-goal-resubmit-after-a
 (LPH-001..003); task #330, #921. Refines
 [ADR-0115](0115-a-received-hook-is-applied-to-its-end.md). Extended by
 [0299](0299-a-transcript-prompt-and-its-turns-clean-stop-share-the-turn-order.md): the prompt the
-transcript watcher reads and the clean Stop's own mark take the same order.
+transcript watcher reads and the clean Stop's own mark take the same order. Refined by
+[0470](0470-wall-clock-stamps-are-read-on-yuliuss-clock.md): the send time is read on Yulius's
+clock.
 
 ## Context
 
