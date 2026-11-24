@@ -1725,10 +1725,11 @@ async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResul
         let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
         let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
         let key = json!({"type": "key", "tab_id": tab, "event": "down", "key": "a", "code": "KeyA", "modifiers": 0});
-        // Typed text (an IME, a paste) is input too.
+        // Typed text (an IME) and a paste are input too (SPEC-639).
         let text = json!({"type": "key", "tab_id": tab, "event": "char", "text": "ab"});
+        let paste = json!({"type": "paste", "tab_id": tab, "text": "pasted"});
 
-        for refused in [&down, &key, &text] {
+        for refused in [&down, &key, &text, &paste] {
             send(&mut socket, refused.clone()).await?;
             let error = loop {
                 let message = next_json(&mut socket).await?;
@@ -1768,7 +1769,8 @@ async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResul
             "{:?}",
             display.inputs()
         );
-        // One probe for the three refusals (the answer stands for a moment), its tab closed.
+        assert!(display.pastes().is_empty(), "a paste went through: {:?}", display.pastes());
+        // One probe for the refusals (the answer stands for a moment), its tab closed.
         assert_eq!(f.fake.calls_for("Target.createTarget").len(), 1);
         assert_eq!(f.fake.target_ids().len(), 1);
 
@@ -1970,6 +1972,11 @@ async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) 
                 .is_some_and(|m| m.contains("file dialog") && m.contains("restarts")),
             "{refused}"
         );
+        // A paste is refused with the same reason (the banner), never as a failed paste.
+        send(&mut socket, json!({"type": "paste", "tab_id": tab, "text": "pasted"})).await?;
+        let paste_refused = wait_json(&mut socket, |m| m["type"] == "error").await?;
+        assert_eq!(paste_refused["code"], "input_locked_until_restart", "{paste_refused}");
+        assert!(display.pastes().is_empty(), "{:?}", display.pastes());
         assert!(
             !display
                 .inputs()
