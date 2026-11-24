@@ -201,7 +201,6 @@ test('a paste in the browser panel is sent whole and a lost one is said', async 
   await paste(long);
   await expect.poll(pastes).toEqual([code, long]);
 
-
   // Over 32,000 characters or 32 KiB is not cut: nothing is sent, and the panel says why.
   await paste('x'.repeat(32001));
   await expect(browser.locator('.toast:has-text("Nothing was pasted: the text has 32,001 characters")')).toBeVisible();
@@ -253,8 +252,23 @@ test('a paste in the browser panel is sent whole and a lost one is said', async 
   await browser.keyboard.press('Shift+Insert');
   await browser.keyboard.press('q');
   await expect.poll(() => browser.evaluate(() => (window as unknown as { sentKeys: string[] }).sentKeys)).toContain('down q');
-  expect(await browser.evaluate(() => (window as unknown as { sentKeys: string[] }).sentKeys.filter((k) => k.endsWith('Insert')))).toEqual([]);
-  // A connection that died unnoticed sends nothing, and the panel says so.
+  const sentKeys = () => browser.evaluate(() => (window as unknown as { sentKeys: string[] }).sentKeys);
+  expect((await sentKeys()).filter((k) => k.endsWith('Insert'))).toEqual([]);
+  // An Insert pressed before Shift was sent, and so is its release: it never stays held there.
+  await browser.evaluate(() => {
+    const keys = document.querySelector('.bp-keys')!;
+    const press = (type: string, key: string, code: string, shiftKey: boolean) =>
+      keys.dispatchEvent(new KeyboardEvent(type, { key, code, shiftKey, bubbles: true, cancelable: true }));
+    press('keydown', 'Insert', 'Insert', false);
+    press('keydown', 'Shift', 'ShiftLeft', true);
+    press('keyup', 'Insert', 'Insert', true);
+    press('keyup', 'Shift', 'ShiftLeft', false);
+  });
+  await expect.poll(async () => (await sentKeys()).filter((k) => k.endsWith('Insert'))).toEqual(['down Insert', 'up Insert']);
+  // A connection that died unnoticed sends nothing, and the panel says so (the mock got all
+  // that was sent before: the keys typed above reached it).
+  await expect.poll(() => browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.browsers.get('sb_studio')?.typed.get('tab-app') ?? '')).toContain('q');
+  const before = (await pastes()).length;
   await browser.evaluate(() => {
     type Viewers = { browsers: Map<string, { viewers: Map<{ readyState: number }, string> }> };
     const session = (window as unknown as { __yuliusMock: Viewers }).__yuliusMock.browsers.get('sb_studio')!;
@@ -262,6 +276,7 @@ test('a paste in the browser panel is sent whole and a lost one is said', async 
   });
   await paste('offline code');
   await expect(browser.locator('.toast:has-text("the browser is not connected")')).toBeVisible();
+  expect(await pastes()).toHaveLength(before);
 });
 
 test('a sandbox browser without the host policy says once that clicks and keys are off', async ({ app, browser, screen }) => {
