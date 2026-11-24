@@ -48,6 +48,9 @@ pub enum Point {
     CandidateCapacityRead,
     /// The free capacity has been verified, before the launch reserves its slot.
     CandidateCapacityCleared,
+    /// A capacity check holds an achieved owner's delivery guard, before checking its delivery.
+    /// Keyed by task ID.
+    LiveDeliveryHeld,
     /// A compound start rule is reading a named predecessor. Keyed by task ID.
     RuleOwnerRead,
     /// The watch started a hosted re-read of the owner's failed candidate. Keyed by task ID.
