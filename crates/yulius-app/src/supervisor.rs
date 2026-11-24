@@ -5960,6 +5960,10 @@ impl App {
         };
         let delivery = self.deps.store.delivery(task_id).await?;
         let before = self.deps.store.latest_merge_wait(task_id).await?;
+        crate::race::reached(
+            crate::race::Point::ParkVerifying,
+            Path::new(task_id.as_str()),
+        );
         // Neither a slow PR read nor the fresh process probe should hold up another launch.
         // Probe last so background work started during the PR read keeps its session.
         let Some(prs) = self
@@ -5972,6 +5976,10 @@ impl App {
         else {
             return Ok(false);
         };
+        crate::race::reached(
+            crate::race::Point::ParkPrsVerified,
+            Path::new(task_id.as_str()),
+        );
         if self.background_or_wait_now(task_id).await != Some(false) {
             return Ok(false);
         }

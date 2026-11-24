@@ -131,6 +131,11 @@ pub enum Point {
     /// `close_task_now` (SPEC-250): the task was read `Running`; the close's end intent is not set
     /// yet. The path is the task id.
     CloseDecided,
+    /// A park read the task and its delivery and is about to verify its pull requests (GitHub
+    /// reads and local Git checks). Keyed by task id.
+    ParkVerifying,
+    /// A park verified the task's pull requests, before its process probe. Keyed by task id.
+    ParkPrsVerified,
     /// A park's process probe found the session with no background work, before the park
     /// waits for the launch lock. Keyed by task id.
     ParkProbed,
@@ -433,10 +438,32 @@ pub fn on(point: Point, below: &Path, hook: impl FnOnce() + Send + 'static) {
         .push((point, below, owner, Box::new(hook)));
 }
 
+/// The last point reached for each path, and when (#1649): a test waiting on the server says
+/// where it stopped without taking a hook another test registered.
+#[cfg(feature = "test-support")]
+static LAST: std::sync::Mutex<
+    Option<std::collections::HashMap<std::path::PathBuf, (Point, std::time::Instant)>>,
+> = std::sync::Mutex::new(None);
+
+/// The last point the server reached for exactly `path`, and when. Unlike hooks it is not scoped to
+/// a runtime, so it reads well only for keys no other test uses, such as generated task ids.
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn last_reached(path: &Path) -> Option<(Point, std::time::Instant)> {
+    LAST.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(|last| last.get(path).copied())
+}
+
 /// The server reached `point` for `path`: runs the hook registered for it, if any.
 pub fn reached(point: Point, path: &Path) {
     #[cfg(feature = "test-support")]
     {
+        LAST.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_default()
+            .insert(path.to_path_buf(), (point, std::time::Instant::now()));
         let here = tokio::runtime::Handle::try_current()
             .ok()
             .map(|handle| handle.id());

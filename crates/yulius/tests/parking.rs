@@ -181,16 +181,89 @@ async fn status_of(app: &App, id: &TaskId) -> (Option<TaskStatus>, Option<Activi
     }
 }
 
+/// How long [`parked`] waits for a park.
+const PARK_WAIT: Duration = Duration::from_secs(30);
+
 /// Parks `id`: a pass runs at each look until it parked, so a pass that came in the millisecond
 /// its state last changed (quiet 0 of a 1 ms grace) is followed by another.
 async fn parked(app: &Arc<App>, id: &TaskId) -> TestResult {
-    wait_for("the task to park", Duration::from_secs(30), || async {
-        if status_of(app, id).await.0 == Some(TaskStatus::Running) {
-            app.park_idle_sessions_now().await;
+    parked_within(app, id, PARK_WAIT).await
+}
+
+/// [`parked`] with its own bound (#1649). The bound covers the whole wait: a pass still running
+/// at the deadline is cancelled there. The failure says whether a pass was still running or
+/// the last one ended without parking, and the last park stage the task reached.
+async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) -> TestResult {
+    let key = Path::new(id.as_str());
+    let began = std::time::Instant::now();
+    let deadline = tokio::time::Instant::now() + bound;
+    let mut passes = 0_u32;
+    // When a pass first decided a park: later passes find the task still Running while its
+    // session ends, and overwrite the last stage with where they gave up.
+    let mut decided = None;
+    let mut outcome = "no pass ran";
+    while tokio::time::Instant::now() < deadline {
+        let look = async {
+            if status_of(app, id).await.0 == Some(TaskStatus::Running) {
+                passes += 1;
+                if app.park_idle_sessions_now().await > 0 && decided.is_none() {
+                    decided = Some(began.elapsed());
+                }
+            }
+            status_of(app, id).await.0 == Some(TaskStatus::Parked)
+        };
+        match tokio::time::timeout_at(deadline, look).await {
+            Ok(true) => return Ok(()),
+            Ok(false) if passes == 0 => outcome = "the task was not running, so no pass ran",
+            Ok(false) => outcome = "the last pass ended without parking",
+            Err(_) => {
+                outcome = "a pass was still running at the deadline";
+                break;
+            }
         }
-        status_of(app, id).await.0 == Some(TaskStatus::Parked)
-    })
-    .await
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let last = yulius_app::race::last_reached(key).filter(|(_, at)| *at >= began);
+    let begun = decided.map_or_else(String::new, |at: Duration| {
+        format!("; a pass began a park {at:.1?} into the wait (its count covers every task)")
+    });
+    let stage = match last {
+        Some((point, at)) => format!(
+            "{} ({:.1?} into the wait)",
+            park_stage(point),
+            at.duration_since(began)
+        ),
+        None => "none: no pass reached this task's park (idle facts or another task)".into(),
+    };
+    let (status, activity) = tokio::time::timeout(Duration::from_secs(1), status_of(app, id))
+        .await
+        .unwrap_or_default();
+    Err(format!(
+        "timed out waiting for the task to park within {bound:?}: {outcome} after {passes} \
+         pass(es){begun}; last stage reached: {stage}; task {status:?}, {activity:?}"
+    )
+    .into())
+}
+
+/// What a park pass does after reaching `point` (#1649).
+fn park_stage(point: Point) -> String {
+    match point {
+        Point::ParkVerifying => {
+            "verifying the task's pull requests (GitHub reads, local Git checks)"
+        }
+        Point::ParkPrsVerified => "probing the session's processes",
+        Point::ParkProbed => "taking the launch lock and rechecking the idle facts",
+        Point::ParkPrepared => {
+            "rechecking delivery, plan, spec and pull requests under the launch lock"
+        }
+        Point::ParkDecided => "asking the session to end after the park was decided",
+        Point::ParkStateRecorded => "restoring the parked screen",
+        Point::LiveRowPrNews => {
+            "reading the idle facts (a pass that ended here found the task not parkable)"
+        }
+        other => return format!("{other:?}"),
+    }
+    .into()
 }
 
 #[test]

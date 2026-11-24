@@ -1005,10 +1005,34 @@ fn a_new_pr_on_the_same_head_and_base_releases_the_candidate_owner() -> TestResu
     })
 }
 
+/// Each PR condition is its own test (#1649): its own budget, and a failure names it.
 #[test]
-fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner() -> TestResult {
-    for field in ["fork", "merged", "head branch", "base branch"] {
-        with_idle_candidate(async |_, app, remote, id, _| {
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner_from_a_fork() -> TestResult {
+    unrelated_or_merged_pr_releases_the_owner("fork")
+}
+
+#[test]
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner_once_merged() -> TestResult {
+    unrelated_or_merged_pr_releases_the_owner("merged")
+}
+
+#[test]
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner_on_another_head_branch()
+-> TestResult {
+    unrelated_or_merged_pr_releases_the_owner("head branch")
+}
+
+#[test]
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner_on_another_base_branch()
+-> TestResult {
+    unrelated_or_merged_pr_releases_the_owner("base branch")
+}
+
+fn unrelated_or_merged_pr_releases_the_owner(field: &str) -> TestResult {
+    with_idle_case(
+        field,
+        CaseBounds::default(),
+        async |_, app, remote, id, _| {
             remote.remote.lock().map_err(|_| "remote")?.take();
             {
                 let mut pulls = remote.pulls.lock().map_err(|_| "PR")?;
@@ -1024,8 +1048,124 @@ fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner() -> TestResu
                 }
             }
             super::parked(app, &id).await
-        })?;
-    }
+        },
+    )
+}
+
+/// #1649: a park pass held inside its PR verification ends the wait at its bound, and the
+/// failure says where the pass was.
+#[test]
+fn a_park_pass_held_in_its_pr_reads_fails_at_the_bound_and_names_the_stage() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        *remote.pull_list_hold.lock().map_err(|_| "hold")? = Some(hold.clone());
+        let bound = Duration::from_secs(2);
+        let started = std::time::Instant::now();
+        let waited = tokio::time::timeout(
+            Duration::from_secs(20),
+            super::parked_within(app, &id, bound),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        remote.pull_list_hold.lock().map_err(|_| "hold")?.take();
+        hold.notify_waiters();
+        let failure = waited
+            .map_err(|_| format!("the park wait outlived its {bound:?} bound by 18 s"))?
+            .err()
+            .ok_or("parked while its PR read was held")?
+            .to_string();
+        eprintln!("{failure}");
+        assert!(elapsed < bound + Duration::from_secs(10), "{elapsed:?}");
+        assert!(
+            failure.contains("still running")
+                && failure.contains("verifying the task's pull requests"),
+            "{failure}"
+        );
+        Ok(())
+    })
+}
+
+/// #1649: a park decided while its session is slow to end is reported as begun, beside the last
+/// stage reached; a wait on a task that is not running says so.
+#[test]
+fn a_park_whose_session_has_not_ended_is_reported_as_begun() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        remote.remote.lock().map_err(|_| "remote")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].from_fork = true;
+        let (ending, release) = super::pause_at_key(super::Point::RunEndTaking, id.as_str());
+        let waited = super::parked_within(app, &id, Duration::from_secs(3)).await;
+        tokio::time::timeout(Duration::from_secs(5), ending.notified())
+            .await
+            .map_err(|_| "the parked session's end never began")?;
+        release.notify_one();
+        let failure = waited
+            .err()
+            .ok_or("parked while its run's end was held")?
+            .to_string();
+        eprintln!("{failure}");
+        assert!(
+            failure.contains("a pass began a park") && failure.contains("last stage reached"),
+            "{failure}"
+        );
+        super::parked(app, &id).await?;
+        app.stop_task_now(&id).await?;
+        let idle = super::parked_within(app, &id, Duration::from_millis(200)).await;
+        let failure = idle
+            .err()
+            .ok_or("a stopped task counted as parked")?
+            .to_string();
+        assert!(failure.contains("the task was not running"), "{failure}");
+        Ok(())
+    })
+}
+
+/// #1649: a case whose phase never ends fails at its bound naming the case and the phase, and
+/// its task is still stopped.
+#[test]
+fn a_stalled_case_fails_at_its_bound_naming_the_case_and_phase() -> TestResult {
+    type Seen = Option<(Arc<yulius_app::context::App>, TaskId)>;
+    let seen: Arc<std::sync::Mutex<Seen>> = Arc::default();
+    let kept = seen.clone();
+    let (sent, outcome) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let bounds = CaseBounds {
+            check: Duration::from_secs(2),
+            ..CaseBounds::default()
+        };
+        let result = with_idle_case("stalled", bounds, async |_, app, _, id, _| {
+            if let Ok(mut slot) = kept.lock() {
+                *slot = Some((app.clone(), id));
+            }
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        let _ = sent.send(result.map_err(|err| err.to_string()));
+    });
+    let failure = outcome
+        .recv_timeout(Duration::from_secs(115))
+        .map_err(|_| "a stalled case did not fail within its bounds")?
+        .err()
+        .ok_or("a stalled case passed")?;
+    eprintln!("{failure}");
+    assert!(
+        failure.contains("stalled") && failure.contains("check") && failure.contains("2s"),
+        "{failure}"
+    );
+    let (app, id) = seen
+        .lock()
+        .map_err(|_| "seen")?
+        .take()
+        .ok_or("no check ran")?;
+    let rt = runtime()?;
+    let status = rt.block_on(super::status_of(&app, &id)).0;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    // The run's reader records its end on the case's runtime, which is gone by now.
+    assert!(
+        status.is_some_and(|state| {
+            state.is_resting() || state == yulius_domain::task::TaskStatus::Stopping
+        }),
+        "the stalled case did not stop its task: {status:?}"
+    );
     Ok(())
 }
 
@@ -1057,27 +1197,122 @@ fn with_idle_candidate(
         String,
     ) -> TestResult,
 ) -> TestResult {
+    with_idle_case("idle candidate", CaseBounds::default(), check)
+}
+
+/// How long each phase of a [`with_idle_case`] case may take.
+#[derive(Clone, Copy)]
+struct CaseBounds {
+    seed: Duration,
+    restart: Duration,
+    check: Duration,
+    /// What seeding, the restart and the check may take together.
+    case: Duration,
+    cleanup: Duration,
+}
+
+impl Default for CaseBounds {
+    /// Within nextest's 120 s: the case's 75 s, the cleanup's 25 s and two runtime shutdowns.
+    fn default() -> Self {
+        Self {
+            seed: Duration::from_secs(40),
+            restart: Duration::from_secs(40),
+            check: Duration::from_secs(40),
+            case: Duration::from_secs(75),
+            cleanup: Duration::from_secs(25),
+        }
+    }
+}
+
+/// An answered candidate owner restored after a restart, idle, handed to `check` (#1649).
+/// Seeding, the restart and the check each have their bound and share the case's, the cleanup
+/// has its own, and a failure names `case` and the phase. The task is stopped after a check that
+/// failed or timed out too, and the check's failure is printed before that stop.
+fn with_idle_case(
+    case: &str,
+    bounds: CaseBounds,
+    check: impl AsyncFnOnce(
+        &Path,
+        &Arc<yulius_app::context::App>,
+        &Arc<crate::support::FakeGitHub>,
+        TaskId,
+        String,
+    ) -> TestResult,
+) -> TestResult {
+    let failed = |phase: &str, err: Error| -> Error {
+        format!(
+            "{case} case, {phase}: {err} (of a {:?} case budget)",
+            bounds.case
+        )
+        .into()
+    };
+    let end = std::time::Instant::now() + bounds.case;
+    let left =
+        |phase: Duration| phase.min(end.saturating_duration_since(std::time::Instant::now()));
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
-    let case = ColdCandidate::Backdated;
-    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(&data, &case)))?;
+    let cold = ColdCandidate::Backdated;
+    eprintln!("{case} case: seeding the candidate owner");
+    let seeded = rt.block_on(within(
+        left(bounds.seed),
+        Box::pin(seed_candidate(&data, &cold)),
+    ));
     rt.shutdown_timeout(Duration::from_secs(5));
+    let (id, head, original) = seeded.map_err(|err| failed("seeding the candidate owner", err))?;
     let rt = runtime()?;
-    let (app, remote) =
-        rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
-    rt.block_on(async {
-        let result = check(&data, &app, &remote, id.clone(), head).await;
-        if !super::status_of(&app, &id)
-            .await
-            .0
-            .is_some_and(|state| state.is_resting())
-        {
-            app.stop_task_now(&id).await?;
+    eprintln!("{case} case: restarting with the owner reattached");
+    let restored = rt.block_on(within(
+        left(bounds.restart),
+        Box::pin(restore_owner(&data, &cold, &id, &head, &original)),
+    ));
+    let (app, remote) = match restored {
+        Ok(restored) => restored,
+        Err(err) => {
+            rt.shutdown_timeout(Duration::from_secs(5));
+            return Err(failed("restarting with the owner reattached", err));
         }
-        result
-    })?;
+    };
+    let outcome = rt.block_on(async {
+        eprintln!("{case} case: the check");
+        let result = within(
+            left(bounds.check),
+            check(&data, &app, &remote, id.clone(), head),
+        )
+        .await
+        .map_err(|err| failed("the check", err));
+        if let Err(err) = &result {
+            eprintln!("{err}");
+        }
+        eprintln!("{case} case: stopping the task");
+        let cleanup = within(bounds.cleanup, async {
+            if !super::status_of(&app, &id)
+                .await
+                .0
+                .is_some_and(|state| state.is_resting())
+            {
+                app.stop_task_now(&id).await?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| failed("stopping the task", err));
+        match (result, cleanup) {
+            (Err(check), Err(stop)) => Err(format!("{check}; then {stop}").into()),
+            (result, cleanup) => result.and(cleanup),
+        }
+    });
     rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
+    outcome
+}
+
+/// `work`, failing once `bound` passed.
+async fn within<T>(
+    bound: Duration,
+    work: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::time::timeout(bound, work)
+        .await
+        .map_err(|_| format!("did not finish within {bound:?}"))?
 }
 
 #[test]
