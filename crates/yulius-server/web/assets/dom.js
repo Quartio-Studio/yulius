@@ -285,6 +285,14 @@ const MAX_TOASTS = 5;
  * backdrop, so the region moves into the topmost open modal (and back to <body> when it closes):
  * an error raised by a dialog's action is seen, clickable and announced.
  */
+/**
+ * The topmost open modal dialog, or null. While one is open everything outside it is inert and
+ * below it in the browser's top layer: toasts and menus are mounted in it (ADR-0473).
+ */
+function topModal() {
+  return [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).pop() || null;
+}
+
 function toastHost() {
   let host = document.getElementById('toasts');
   if (!host) {
@@ -293,8 +301,7 @@ function toastHost() {
     // The phone layout pins the toasts at the top, over a dialog's Close (#640).
     window.addEventListener('resize', () => keepClear(host));
   }
-  const modal = [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).pop();
-  const parent = modal || document.body;
+  const parent = topModal() || document.body;
   if (host.parentElement !== parent) parent.append(host);
   return host;
 }
@@ -393,6 +400,8 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
   function close(value) {
     if (closed) return;
     closed = true;
+    // A menu opened in the dialog goes with it, and its key handler too.
+    if (openMenuEl && dialog.contains(openMenuEl.menu)) closeMenu();
     if (dialog.open) dialog.close();
     const toasts = document.getElementById('toasts');
     if (toasts && dialog.contains(toasts)) toastHost();
@@ -651,7 +660,9 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     for (const group of groups) { group.box.scrollTop = 0; cue(group); }
   };
   if (filter) filter.addEventListener('input', applyFilter);
-  document.body.append(menu);
+  // Over a modal dialog the menu is mounted in it: in <body> it would be inert and below the
+  // dialog (#1735). It stays position: fixed against the window, so it is placed the same way.
+  (topModal() || document.body).append(menu);
   // A capped group is as tall as its first rows as drawn, whatever their height (SPEC-102 MSG-001),
   // and opens with its checked row in the middle of it (MSG-003).
   for (const { box, els } of groups) {
@@ -777,6 +788,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   window.addEventListener('resize', onResize);
   window.addEventListener('blur', onBlur);
   openMenuEl = {
+    menu,
     cleanup() {
       document.removeEventListener('pointerdown', onDoc, true);
       document.removeEventListener('keydown', onKey, true);
