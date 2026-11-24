@@ -153,3 +153,9 @@ ignores insertion.
   terminal", the text left in xterm's helper textarea) and passed with keys. The test now holds
   that key.
 
+- The whole `yulius::main` binary: 2776 passed, 26 skipped (opt-in), before merging dev
+  `ee5ab98c4` (which changed no Rust).
+- `yulius security-scan --base origin/dev`: exit 0, "Security scan disabled: Vidoc is turned off
+  in Yulius, for this project or the whole instance; nothing was scanned" (disabled, not passed).
+- Not tested here: the live tests are opt-in and Yulius CI does not run them; other terminal
+  implementations than the vendored xterm.js 5.x.
