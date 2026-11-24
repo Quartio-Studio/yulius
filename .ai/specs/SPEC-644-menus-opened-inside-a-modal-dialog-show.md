@@ -36,6 +36,16 @@ open. Menus outside dialogs keep their placement and behaviour.
   region into the topmost open modal dialog and back to `<body>` when it closes.
 - **Other menus in modals.** Any `openMenu` whose anchor sits in a modal had the same defect. The
   terminal's menu is the one people meet: the sign-in dialog is the only modal that holds a terminal.
+- **Integration gate repair (assigned to this task by Yulius).** Dev `ee5ab98c4` failed its gate
+  (Yulius CI run 93f09d24, `test (2/2)`) on
+  `yulius-browser xclipboard::tests::native::the_paste_owner_answers_only_its_text_and_lets_it_go`
+  ("the held paste was not let go", `native.rs:279`), a test from SPEC-639 unrelated to menus. The
+  paste owner releases the CLIPBOARD on its X connection (`conn`) without waiting for a reply, and
+  the test reads the owner on a second connection (`other`) after only `conn.flush()`. The X server
+  serves its clients independently, so it may answer `other`'s read before handling `conn`'s
+  release. Reproduced 1 in 159 `--stress-count` runs with the same message. The product is right:
+  nothing in it reads the release back. The test now makes a round trip on `conn`
+  (`GetInputFocus`) before the read; 2000 of 2000 stress runs pass.
 
 ## Requirements
 
@@ -51,7 +61,9 @@ open. Menus outside dialogs keep their placement and behaviour.
 - [x] Regression e2e test: the sign-in terminal's menu Paste by pointer and keyboard, failing on dev
 - [x] Menus opened in a modal dialog mount in it and close with it
 - [x] Menu specs outside dialogs pass; decision record, docs and changes entry
-- [ ] Independent review in a fresh session, every finding answered
+- [x] Independent review in a fresh session, every finding answered
+- [ ] Integration gate repair: the xclipboard paste owner test reads the release after a round trip
+- [ ] Review notes: a point menu gives the keyboard back, topmost of two modals tested, comments and ADR wording
 
 ## Acceptance criteria
 
