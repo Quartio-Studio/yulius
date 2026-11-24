@@ -1392,8 +1392,13 @@ resolves to nothing, the run gets the server without that variable or token.
     `dx`/`dy` pixels), `{"type":"key","tab_id","event":"down|up|char","key","code","text",
     "modifiers"}` (on a display: printable ASCII by `key` as a US-layout key with Shift as needed,
     with Ctrl/Alt/Meta held the user's Shift is kept; other keys by `code`; a `key` no US key types
-    and `char` text up to 64 characters are typed as real key presses in order; longer `char` text,
-    a paste, is inserted with CDP `Input.insertText`; lock keys and AltGraph are ignored),
+    and `char` text up to 64 characters are typed as real key presses in order; longer `char` text
+    (IME composition) is inserted with CDP `Input.insertText`; lock keys and AltGraph are
+    ignored), `{"type":"paste","tab_id","text"}` (the viewer's paste, whole, at most 32 KiB; on a
+    display the text becomes the display's CLIPBOARD and Shift+Insert is pressed in order with
+    the keys, so the page gets a real `paste` event, terminals too; without a display, or without
+    the CLIPBOARD, it is typed as key presses; answered with the error `paste_failed` when no
+    client fetched the text within 3 s or it could not be delivered, SPEC-639),
     `{"type":"accept_page_copy","tab_id","offer"}` (accept a one-use offer issued to this socket),
     `{"type":"copy","tab_id"}` (answered with `clipboard`), `{"type":"viewport","width",
     "height"}` (the panel size in CSS pixels; shared by every viewer, clamped to the configured
@@ -1422,7 +1427,7 @@ resolves to nothing, the run gets the server without that variable or token.
     `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
     agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested","tab_id",
     "reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|capacity|
-    input_locked|input_locked_until_restart|upstream|internal","message"}`.
+    input_locked|input_locked_until_restart|upstream|paste_failed|internal","message"}`.
   - Bounds: an acknowledging viewer has at most its base round trip plus 120 ms of video
     unacknowledged; video that waited on the server 250 ms (or beyond 300 frames, 8 MiB) is
     dropped and the viewer resumes at a fresh keyframe, which the server asks the encoder for

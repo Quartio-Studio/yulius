@@ -81,6 +81,19 @@ struct FakePage {
 }
 
 impl FakePage {
+    /// Appends `typed` to the focused field's value.
+    fn type_into_focus(&mut self, typed: String) {
+        let focused = self.focused.clone();
+        match self
+            .fields
+            .iter_mut()
+            .find(|(selector, _)| *selector == focused)
+        {
+            Some((_, value)) => value.push_str(&typed),
+            None => self.fields.push((focused, typed)),
+        }
+    }
+
     /// Shows another document (form state is not modelled).
     fn move_to(&mut self, loader: u64) {
         self.previous.push(self.loader);
@@ -1194,15 +1207,7 @@ fn respond(
         "Input.insertText" => {
             let typed = text("text");
             if let Some(page) = lock(&shared.state).page(session_id) {
-                let focused = page.focused.clone();
-                match page
-                    .fields
-                    .iter_mut()
-                    .find(|(selector, _)| *selector == focused)
-                {
-                    Some((_, value)) => value.push_str(&typed),
-                    None => page.fields.push((focused, typed)),
-                }
+                page.type_into_focus(typed);
             }
             Ok(json!({}))
         }
@@ -1254,6 +1259,15 @@ fn respond(
         "Accessibility.getFullAXTree" => Ok(json!({"nodes": lock(&shared.state).ax_nodes.clone()})),
         "Input.dispatchKeyEvent" => {
             let mut state = lock(&shared.state);
+            // A key down with printable text types it into the focused field, as Chromium does.
+            let typed = text("text");
+            if text("type") == "keyDown"
+                && !typed.is_empty()
+                && !typed.chars().any(char::is_control)
+                && let Some(page) = state.page(session_id)
+            {
+                page.type_into_focus(typed);
+            }
             if state.enter_submits && text("type") == "keyDown" && text("key") == "Enter" {
                 let loader = state.next_loader();
                 if let Some(page) = state.page(session_id) {
@@ -1535,6 +1549,9 @@ struct FakeDisplayInner {
     inputs_seen: watch::Sender<u64>,
     next_copy: Mutex<Option<String>>,
     offered_copy: Mutex<(u32, Option<String>)>,
+    pastes: Mutex<Vec<(usize, String)>>,
+    paste_unread: AtomicBool,
+    paste_held: watch::Sender<bool>,
     encoders: Mutex<Vec<(u32, u32)>>,
     tiers: Mutex<Vec<Tier>>,
     running: AtomicUsize,
@@ -1585,6 +1602,9 @@ impl FakeDisplay {
                 inputs_seen: watch::channel(0).0,
                 next_copy: Mutex::new(None),
                 offered_copy: Mutex::new((0, None)),
+                pastes: Mutex::new(Vec::new()),
+                paste_unread: AtomicBool::new(false),
+                paste_held: watch::channel(false).0,
                 encoders: Mutex::new(Vec::new()),
                 tiers: Mutex::new(Vec::new()),
                 running: AtomicUsize::new(0),
@@ -1631,6 +1651,41 @@ impl FakeDisplay {
         tokio::time::timeout(timeout, waiting)
             .await
             .unwrap_or(false)
+    }
+
+    /// Every paste the display received, with the number of inputs received before it.
+    #[must_use]
+    pub fn pastes(&self) -> Vec<(usize, String)> {
+        lock(&self.inner.pastes).clone()
+    }
+
+    /// Makes the page not read the pastes that follow (`true`), or read them again.
+    pub fn set_paste_unread(&self, unread: bool) {
+        self.inner.paste_unread.store(unread, Ordering::SeqCst);
+    }
+
+    /// Holds the outcome of the pastes that follow until released (`false`): the page is slow
+    /// to read them.
+    pub fn hold_pastes(&self, held: bool) {
+        self.inner.paste_held.send_replace(held);
+    }
+
+    pub(crate) fn paste(&self, text: &str) -> crate::display::PasteWait {
+        lock(&self.inner.offered_copy).1 = None;
+        let before = lock(&self.inner.inputs).len();
+        lock(&self.inner.pastes).push((before, text.to_owned()));
+        self.inner.inputs_seen.send_modify(|n| *n += 1);
+        let outcome = if self.inner.paste_unread.load(Ordering::SeqCst) {
+            crate::display::PasteOutcome::Unread
+        } else {
+            crate::display::PasteOutcome::Read
+        };
+        let mut held = self.inner.paste_held.subscribe();
+        Box::pin(async move {
+            // A dropped sender (the display went away) ends the hold.
+            let _ = held.wait_for(|held| !*held).await;
+            Ok(outcome)
+        })
     }
 
     /// Makes the next primary press imitate a webpage that writes text to the display.

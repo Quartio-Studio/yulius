@@ -645,26 +645,64 @@ async fn click_and_type_tools_pass_selectors_as_data() -> TestResult {
         .map(|c| (c.method.clone(), c.params.clone()))
         .collect();
     let methods: Vec<&str> = sequence.iter().map(|(m, _)| m.as_str()).collect();
-    assert_eq!(
-        methods,
-        [
-            "Runtime.callFunctionOn",
-            "Input.insertText",
-            "Input.dispatchKeyEvent",
-            "Input.dispatchKeyEvent",
-            "Input.insertText"
-        ]
-    );
+    assert_eq!(methods[0], "Runtime.callFunctionOn");
     assert!(
         sequence[0].1["functionDeclaration"]
             .as_str()
             .unwrap_or_default()
             .contains("focus()")
     );
-    assert_eq!(sequence[1].1["text"], "hello");
-    assert_eq!(sequence[2].1["text"], "\r");
-    assert_eq!(sequence[3].1["type"], "keyUp");
-    assert_eq!(sequence[4].1["text"], "world");
+    // SPEC-639 PST-005: real key presses (a key down with its text, a key up), never inserted
+    // text, which terminals ignore.
+    assert!(
+        methods[1..].iter().all(|m| *m == "Input.dispatchKeyEvent"),
+        "{methods:?}"
+    );
+    let kinds: Vec<&str> = sequence[1..]
+        .iter()
+        .map(|(_, p)| p["type"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(kinds, ["keyDown", "keyUp"].repeat(11));
+    let typed: String = sequence[1..]
+        .iter()
+        .filter_map(|(_, p)| p["text"].as_str())
+        .collect();
+    assert_eq!(typed, "hello\rworld");
+    assert_eq!(sequence[1].1["key"], "h");
+    assert_eq!(sequence[1].1["windowsVirtualKeyCode"], 72);
+    assert_eq!(sequence[11].1["key"], "Enter");
+    // A tab presses Tab (it moves the focus, as a person's would); other control characters
+    // are no key and are left out, and not counted.
+    let before = fake.calls().len();
+    let typed = instance
+        .tool_type(&TypeParams {
+            tab_id: tab.clone(),
+            text: "a\tb\u{1}c".into(),
+            selector: None,
+        })
+        .await?;
+    assert_eq!(typed.chars, 4);
+    let downs: Vec<(String, String, Value)> = fake.calls()[before..]
+        .iter()
+        .filter(|c| c.method == "Input.dispatchKeyEvent" && c.params["type"] == "keyDown")
+        .map(|c| {
+            let field = |name: &str| c.params[name].as_str().unwrap_or_default().to_owned();
+            (
+                field("key"),
+                field("text"),
+                c.params["windowsVirtualKeyCode"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        downs,
+        [
+            ("a".to_owned(), "a".to_owned(), json!(65)),
+            ("Tab".to_owned(), "\t".to_owned(), json!(9)),
+            ("b".to_owned(), "b".to_owned(), json!(66)),
+            ("c".to_owned(), "c".to_owned(), json!(67)),
+        ]
+    );
     assert!(matches!(
         instance
             .tool_type(&TypeParams {

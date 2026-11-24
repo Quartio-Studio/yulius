@@ -67,8 +67,8 @@ pub use display::{
 pub use error::{BrowserError, CdpError};
 pub use instance::{
     BOUNDED_SCREENSHOT_STEPS, BoundedScreenshot, BrowserEvent, BrowserInstance, FrameSubscription,
-    InstanceConfig, KeyInput, MouseInput, PageRule, ScreencastConfig, ScreenshotStep, VIEWPORT_MAX,
-    VIEWPORT_MIN,
+    InstanceConfig, KeyInput, MouseInput, PageRule, PasteDelivery, ScreencastConfig,
+    ScreenshotStep, VIEWPORT_MAX, VIEWPORT_MIN,
 };
 pub use manager::{BrowserConfig, BrowserManager, IdleReaper};
 pub use network::{BrowserNetwork, NetworkLease, proxy_args};

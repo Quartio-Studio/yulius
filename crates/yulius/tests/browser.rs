@@ -348,7 +348,8 @@ async fn viewers_need_write_access_and_drive_a_per_sandbox_browser() -> TestResu
         send(&mut socket, json!({"type": "mouse", "tab_id": new_tab, "event": "down", "x": 10, "y": 20, "button": "left"}))
             .await?;
         send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "down", "key": "h", "code": "KeyH"})).await?;
-        // Text without a key (a paste) is inserted: a key event carries at most four characters.
+        // Composed text without a key (IME) is inserted: a key event carries at most four
+        // characters. A paste is not a `char` (SPEC-639).
         send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "char", "text": "hi there"})).await?;
         assert!(f.fake.wait_for_calls("Input.dispatchMouseEvent", 1, WAIT).await);
         assert!(f.fake.wait_for_calls("Input.dispatchKeyEvent", 1, WAIT).await);
@@ -567,7 +568,9 @@ async fn agent_tools_drive_the_tabs_the_viewer_sees() -> TestResult {
             .await?,
         );
         assert_eq!(typed["chars"], 6);
-        assert!(f.fake.wait_for_calls("Input.insertText", 1, WAIT).await);
+        // Real key presses (SPEC-639): "alice" and Enter, a key down and up each.
+        assert_eq!(f.fake.calls_for("Input.dispatchKeyEvent").len(), 12);
+        assert!(f.fake.calls_for("Input.insertText").is_empty());
         let snapshot =
             tool_text(&mcp_tool(&f.h, TOKEN, "browser_snapshot", json!({"tab_id": tab})).await?);
         assert!(
@@ -1722,10 +1725,11 @@ async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResul
         let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
         let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
         let key = json!({"type": "key", "tab_id": tab, "event": "down", "key": "a", "code": "KeyA", "modifiers": 0});
-        // Typed text (an IME, a paste) is input too.
+        // Typed text (an IME) and a paste are input too (SPEC-639).
         let text = json!({"type": "key", "tab_id": tab, "event": "char", "text": "ab"});
+        let paste = json!({"type": "paste", "tab_id": tab, "text": "pasted"});
 
-        for refused in [&down, &key, &text] {
+        for refused in [&down, &key, &text, &paste] {
             send(&mut socket, refused.clone()).await?;
             let error = loop {
                 let message = next_json(&mut socket).await?;
@@ -1765,7 +1769,8 @@ async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResul
             "{:?}",
             display.inputs()
         );
-        // One probe for the three refusals (the answer stands for a moment), its tab closed.
+        assert!(display.pastes().is_empty(), "a paste went through: {:?}", display.pastes());
+        // One probe for the refusals (the answer stands for a moment), its tab closed.
         assert_eq!(f.fake.calls_for("Target.createTarget").len(), 1);
         assert_eq!(f.fake.target_ids().len(), 1);
 
@@ -1967,6 +1972,11 @@ async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) 
                 .is_some_and(|m| m.contains("file dialog") && m.contains("restarts")),
             "{refused}"
         );
+        // A paste is refused with the same reason (the banner), never as a failed paste.
+        send(&mut socket, json!({"type": "paste", "tab_id": tab, "text": "pasted"})).await?;
+        let paste_refused = wait_json(&mut socket, |m| m["type"] == "error").await?;
+        assert_eq!(paste_refused["code"], "input_locked_until_restart", "{paste_refused}");
+        assert!(display.pastes().is_empty(), "{:?}", display.pastes());
         assert!(
             !display
                 .inputs()
@@ -2106,7 +2116,8 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
         assert!(f.fake.calls_for("Input.dispatchKeyEvent").is_empty(), "keys are not CDP");
 
         // The wheel scrolls the shown tab by CSS pixels. A Polish letter and short text are
-        // typed as real key presses (in order with the other keys); a long paste is inserted.
+        // typed as real key presses (in order with the other keys); long composed text is
+        // inserted.
         send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "wheel", "x": 5, "y": 6, "dx": 0, "dy": 37.5})).await?;
         send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "down", "key": "ą", "code": "KeyA"})).await?;
         send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "char", "text": "zażółć 🙂\n"})).await?;
@@ -2142,6 +2153,271 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
         assert!(display.wait_for_input(|i| *i == DisplayInput::Key { keycode: 50, press: true }, WAIT).await);
         drop(socket);
         assert!(display.wait_for_input(|i| *i == DisplayInput::ReleaseAll, WAIT).await);
+        Ok(())
+    })
+    .await
+}
+
+/// SPEC-639 (PST-001, PST-002, PST-004, PST-006): a viewer's paste is one real paste on the
+/// display (its CLIPBOARD and the paste key, Shift+Insert), whole and in order with the keys
+/// around it, never inserted through CDP; one the page did not take is answered `paste_failed`,
+/// and one over 32 KiB is refused, not cut.
+#[tokio::test]
+async fn a_viewer_paste_is_a_real_paste_on_the_display_in_order_with_keys() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let texts: Vec<String> = [100, 5_000]
+            .into_iter()
+            .map(|n| "code-ż🙂\n".chars().cycle().take(n).collect())
+            .collect();
+        send(
+            &mut socket,
+            json!({"type": "key", "tab_id": tab, "event": "down", "key": "a", "code": "KeyA"}),
+        )
+        .await?;
+        send(
+            &mut socket,
+            json!({"type": "key", "tab_id": tab, "event": "up", "key": "a", "code": "KeyA"}),
+        )
+        .await?;
+        for text in &texts {
+            send(
+                &mut socket,
+                json!({"type": "paste", "tab_id": tab, "text": text}),
+            )
+            .await?;
+        }
+        send(
+            &mut socket,
+            json!({"type": "key", "tab_id": tab, "event": "down", "key": "b", "code": "KeyB"}),
+        )
+        .await?;
+        assert!(
+            display
+                .wait_for_input(
+                    |i| *i
+                        == DisplayInput::Key {
+                            keycode: 56,
+                            press: true
+                        },
+                    WAIT
+                )
+                .await
+        );
+        let inputs = display.inputs();
+        let pastes = display.pastes();
+        assert_eq!(
+            pastes
+                .iter()
+                .map(|(_, text)| text.clone())
+                .collect::<Vec<_>>(),
+            texts
+        );
+        let at = pastes[0].0;
+        assert_eq!(pastes[1].0, at, "nothing between the two pastes");
+        assert_eq!(
+            inputs[at - 1],
+            DisplayInput::Key {
+                keycode: 38,
+                press: false
+            },
+            "after the key before"
+        );
+        assert_eq!(
+            inputs[at],
+            DisplayInput::Key {
+                keycode: 56,
+                press: true
+            },
+            "before the key after"
+        );
+        assert!(
+            !inputs.iter().any(|i| matches!(i, DisplayInput::Type(_))),
+            "a paste is not typed"
+        );
+        assert!(
+            f.fake.calls_for("Input.insertText").is_empty(),
+            "nor inserted"
+        );
+        assert!(f.fake.calls_for("Input.dispatchKeyEvent").is_empty());
+
+        // A paste the page did not take is said, not dropped.
+        display.set_paste_unread(true);
+        send(
+            &mut socket,
+            json!({"type": "paste", "tab_id": tab, "text": "lost"}),
+        )
+        .await?;
+        let failed = wait_json(&mut socket, |m| m["type"] == "error").await?;
+        assert_eq!(failed["code"], "paste_failed", "{failed}");
+        assert!(
+            failed["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("did not take")),
+            "{failed}"
+        );
+        display.set_paste_unread(false);
+        // Over 32 KiB is refused whole.
+        send(
+            &mut socket,
+            json!({"type": "paste", "tab_id": tab, "text": "x".repeat(32 * 1024 + 1)}),
+        )
+        .await?;
+        let refused = wait_json(&mut socket, |m| m["type"] == "error").await?;
+        assert_eq!(refused["code"], "invalid", "{refused}");
+        assert_eq!(display.pastes().len(), 3);
+        // 32 KiB that JSON escaping grows sixfold still arrives (the socket's message bound).
+        let escaped = "\u{1}\"".repeat(16 * 1024);
+        send(
+            &mut socket,
+            json!({"type": "paste", "tab_id": tab, "text": escaped}),
+        )
+        .await?;
+        send(
+            &mut socket,
+            json!({"type": "key", "tab_id": tab, "event": "down", "key": "c", "code": "KeyC"}),
+        )
+        .await?;
+        assert!(
+            display
+                .wait_for_input(
+                    |i| *i
+                        == DisplayInput::Key {
+                            keycode: 54,
+                            press: true
+                        },
+                    WAIT
+                )
+                .await
+        );
+        assert_eq!(
+            display.pastes().last().map(|(_, text)| text.as_str()),
+            Some(escaped.as_str())
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// SPEC-639 PST-004 (review round 1): while a paste is on its way to the page the viewer's
+/// connection goes on (other answers arrive), and the outcome comes when the page did not take
+/// it.
+#[tokio::test]
+async fn a_paste_on_its_way_does_not_hold_up_the_viewers_connection() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        display.hold_pastes(true);
+        display.set_paste_unread(true);
+        send(
+            &mut socket,
+            json!({"type": "paste", "tab_id": tab, "text": "slow"}),
+        )
+        .await?;
+        f.fake.set_selection("copied meanwhile");
+        send(&mut socket, json!({"type": "copy", "tab_id": tab})).await?;
+        let answer = wait_json(&mut socket, |m| {
+            m["type"] == "clipboard" || m["type"] == "error"
+        })
+        .await?;
+        assert_eq!(
+            answer["type"], "clipboard",
+            "the paste held up the connection: {answer}"
+        );
+        assert_eq!(display.pastes().len(), 1);
+        display.hold_pastes(false);
+        let failed = wait_json(&mut socket, |m| m["type"] == "error").await?;
+        assert_eq!(failed["code"], "paste_failed", "{failed}");
+        Ok(())
+    })
+    .await
+}
+
+/// SPEC-639 (review round 2), ADR-0423: a paste after a click that wrote the page's copy ends
+/// that offer, so accepting it never hands out the pasted text.
+#[tokio::test]
+async fn a_paste_ends_the_page_copy_offer_of_the_click_before() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        send(&mut socket, json!({"type": "watch", "tab_id": tab})).await?;
+        display.copy_on_next_press("the page's copy");
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        let offered = wait_json(&mut socket, |m| m["type"] == "page_copy_available").await?;
+        send(&mut socket, json!({"type": "paste", "tab_id": tab, "text": "pasted by A"})).await?;
+        let offer = offered["offer"].clone();
+        send(&mut socket, json!({"type": "accept_page_copy", "tab_id": tab, "offer": offer})).await?;
+        let answer = wait_json(&mut socket, |m| m["type"] == "page_clipboard" || m["type"] == "error").await?;
+        assert_eq!(answer["code"], "clipboard_unavailable", "{answer}");
+        Ok(())
+    })
+    .await
+}
+
+/// SPEC-639 PST-003: without a display a paste is typed as key presses through CDP (each
+/// character a key down with its text and a key up, a line break Enter), never inserted.
+#[tokio::test]
+async fn a_headless_paste_is_typed_as_key_presses() -> TestResult {
+    with_fixture(|f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        send(
+            &mut socket,
+            json!({"type": "paste", "tab_id": tab, "text": "aŻ\r\n🙂"}),
+        )
+        .await?;
+        assert!(
+            f.fake
+                .wait_for_calls("Input.dispatchKeyEvent", 8, WAIT)
+                .await
+        );
+        let keys = f.fake.calls_for("Input.dispatchKeyEvent");
+        let seen: Vec<(String, String)> = keys
+            .iter()
+            .map(|k| {
+                let text = k.params["text"].as_str().unwrap_or("-").to_owned();
+                (
+                    k.params["type"].as_str().unwrap_or_default().to_owned(),
+                    text,
+                )
+            })
+            .collect();
+        let expected: Vec<(String, String)> = [
+            ("keyDown", "a"),
+            ("keyUp", "-"),
+            ("keyDown", "Ż"),
+            ("keyUp", "-"),
+            ("keyDown", "\r"),
+            ("keyUp", "-"),
+            ("keyDown", "🙂"),
+            ("keyUp", "-"),
+        ]
+        .iter()
+        .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+        .collect();
+        assert_eq!(seen, expected);
+        assert_eq!(keys[4].params["key"], "Enter");
+        assert_eq!(keys[4].params["windowsVirtualKeyCode"], 13);
+        assert!(
+            f.fake.calls_for("Input.insertText").is_empty(),
+            "a paste is not inserted"
+        );
         Ok(())
     })
     .await

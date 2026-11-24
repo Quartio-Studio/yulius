@@ -550,6 +550,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0469 -->
 - [0470](0470-wall-clock-stamps-are-read-on-yuliuss-clock.md): Wall-clock stamps (a hook's send time, a transcript line's recorded time) are read on Yulius's clock (`Clock::of_wall`, identity in production); a shifted test clock maps a stamp with its shift at that instant; refines 0234 and 0299 (SPEC-636, #1615)
 <!-- ADR 0470 -->
+- [0471](0471-a-viewer-paste-becomes-the-displays-clipboard-and-a-real-paste-key.md): A viewer paste becomes the display's CLIPBOARD and a real paste key
 <!-- ADR 0471 -->
 <!-- ADR 0472 -->
 <!-- ADR 0473 -->
