@@ -2062,8 +2062,9 @@ async fn a_secret_typed_while_the_page_moves_on_is_reported() -> TestResult {
 
 /// SPEC-648 FSK-001, FSK-004: a page that reads only keys (and xterm.js while a key is held)
 /// drops `Input.insertText`. A secret, a user name and a code typed by `browser_fill_secret`
-/// reach a page that takes only keys, and nothing is inserted. A secret in a password field stays out of screenshots; one typed into a terminal
-/// (a text field drawing its echo on a canvas) refuses them.
+/// reach a page that takes only keys, and nothing is inserted. A secret in a password field
+/// stays out of screenshots; one typed into a terminal (a text field, not a password field)
+/// refuses them.
 #[tokio::test]
 async fn a_secret_reaches_a_page_that_takes_only_keys() -> TestResult {
     let (fake, instance, tab) = setup().await?;
@@ -2121,6 +2122,13 @@ async fn a_secret_with_a_tab_or_control_character_is_refused_before_typing() -> 
         .tool_navigate(&to(&tab, "https://bank.example/login"))
         .await?;
     fake.set_password_field("#pw", true);
+    let looks = || {
+        (
+            fake.calls_for("Page.getFrameTree").len(),
+            fake.calls_for("Page.createIsolatedWorld").len(),
+            fake.calls_for("Runtime.callFunctionOn").len(),
+        )
+    };
     for text in [
         "zq\t7731xy",
         "zq7731\u{7}xy",
@@ -2128,6 +2136,7 @@ async fn a_secret_with_a_tab_or_control_character_is_refused_before_typing() -> 
         "zq7731\u{1b}[A",
     ] {
         let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+        let before = looks();
         for beside in [false, true] {
             let params = fill(&tab, "#pw", text);
             let typed = if beside {
@@ -2138,10 +2147,13 @@ async fn a_secret_with_a_tab_or_control_character_is_refused_before_typing() -> 
                 instance.tool_type_secret(&params, &|_: &str| true).await
             };
             assert!(
-                matches!(&typed, Err(BrowserError::InvalidInput(message)) if !message.contains("7731")),
+                matches!(&typed, Err(BrowserError::InvalidInput(message))
+                    if message.contains("control character") && !message.contains("7731")),
                 "{text:?}: {typed:?}"
             );
         }
+        // Refused before the page was read, its field focused or the secret remembered.
+        assert_eq!(looks(), before, "{text:?}: the page was not looked at");
         assert_eq!(
             fake.calls_for("Input.dispatchKeyEvent").len(),
             keys,
@@ -2158,6 +2170,91 @@ async fn a_secret_with_a_tab_or_control_character_is_refused_before_typing() -> 
         })
         .await?;
     assert_eq!(fake.key_text_from(keys), "line-one\rline-two\r");
+    Ok(())
+}
+
+/// SPEC-648 FSK-005: a navigation of the page's own can now land between two keys, leaving part
+/// of the secret in each document. The page it went to is reported, and both sites are exposed:
+/// neither part is whole in a password field, and no content rule matches a part.
+#[tokio::test]
+async fn a_navigation_between_two_keys_is_reported_and_exposes_both() -> TestResult {
+    let bank_only = |address: &str| address.starts_with("https://bank.example/");
+    for (next, astray) in [
+        ("https://evil.example/collect", true),
+        ("https://bank.example/welcome", false),
+    ] {
+        let (fake, instance, tab) = setup().await?;
+        instance
+            .tool_navigate(&to(&tab, "https://bank.example/login"))
+            .await?;
+        fake.set_password_field("#pw", true);
+        let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+        // The 9th key event: the key down of the fifth character.
+        fake.navigate_to_during_nth("Input.dispatchKeyEvent", keys + 9, next);
+        let typed = instance
+            .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
+            .await;
+        if astray {
+            assert!(
+                matches!(&typed, Err(BrowserError::SecretAstray(host)) if host == "evil.example"),
+                "{typed:?}"
+            );
+        } else {
+            typed?;
+        }
+        // The next document got the rest, into its focused element.
+        assert_eq!(
+            fake.field_value("").as_deref(),
+            Some("ecret-4471"),
+            "{next}"
+        );
+        assert!(
+            refused(instance.tool_screenshot_within(&shot(&tab), 100_000).await),
+            "{next}: the page it went to"
+        );
+        // The page it was typed into, shown again.
+        instance
+            .tool_navigate(&to(&tab, "https://bank.example/login"))
+            .await?;
+        assert!(
+            refused(instance.tool_screenshot_within(&shot(&tab), 100_000).await),
+            "{next}: the page it was typed into"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-648: a key event that fails in the middle of a secret leaves a part of it in the field,
+/// which no content rule matches. The typing's error is returned and the host is exposed, also
+/// when the field is a password field (the part is not the secret it holds).
+#[tokio::test]
+async fn a_key_failing_mid_secret_exposes_the_host() -> TestResult {
+    for selector in ["#term", "#pw"] {
+        let (fake, instance, tab) = setup().await?;
+        instance
+            .tool_navigate(&to(&tab, "https://bank.example/login"))
+            .await?;
+        fake.set_password_field("#pw", true);
+        instance
+            .tool_screenshot_within(&shot(&tab), 100_000)
+            .await?;
+        let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+        // The 5th key event: the key down of the third character.
+        fake.fail_nth("Input.dispatchKeyEvent", keys + 5, -32000, "no key");
+        let typed = instance
+            .tool_type_secret(&fill(&tab, selector, "term-secret-5512"), &|_: &str| true)
+            .await;
+        assert!(typed.is_err(), "{selector}: {typed:?}");
+        assert_eq!(
+            fake.field_value(selector).as_deref(),
+            Some("te"),
+            "{selector}"
+        );
+        assert!(
+            refused(instance.tool_screenshot_within(&shot(&tab), 100_000).await),
+            "{selector}"
+        );
+    }
     Ok(())
 }
 

@@ -828,8 +828,8 @@ async fn pastes(live: &Live) -> TestResult {
 
 /// SPEC-648 AC-4 (#1740): an agent's `browser_fill_secret` fills an xterm.js terminal (a CLI
 /// sign-in prompt): the user name and the secret arrive as the terminal's data, typed as real
-/// key presses, and screenshots of the tab are refused from then on, as the terminal draws the
-/// secret on a canvas no page-text probe reads. xterm.js drops inserted text (`Input.insertText`)
+/// key presses, and screenshots of the tab are refused from then on, as the terminal's focus is
+/// no password field (a canvas or WebGL renderer would draw where no probe reads). xterm.js drops inserted text (`Input.insertText`)
 /// while it has seen a key go down and not up, here a key a person holds in the viewer (as Ctrl
 /// is held for Ctrl+V, SPEC-639); key presses arrive in that state too.
 #[tokio::test]
@@ -925,6 +925,12 @@ async fn secret_into_terminal(live: &Live) -> TestResult {
     // The terminal is no password field: the tab may show the secret.
     let refused = mcp_tool(&live.h, TOKEN, "browser_screenshot", json!({"tab_id": tab})).await?;
     assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        tool_text(&refused)
+            .as_str()
+            .is_some_and(|t| t.contains("may show an agent secret")),
+        "{refused}"
+    );
     assert!(!refused.to_string().contains(VALUE), "{refused}");
     Ok(())
 }
