@@ -1,5 +1,13 @@
-//! Fresh CLIPBOARD transfers on a sandbox's private display. Each click gets an unmapped
-//! requestor window so late X events cannot complete a newer viewer's request.
+//! CLIPBOARD transfers on a sandbox's private display, both ways.
+//!
+//! Reading ([`Clipboard`]): each click gets an unmapped requestor window so late X events cannot
+//! complete a newer viewer's request.
+//!
+//! Writing ([`Owner`], SPEC-639): a viewer's paste makes its text the CLIPBOARD, owned by an
+//! unmapped window of the display's thread, which then presses Ctrl+V so the page gets a real
+//! paste. The owner answers `TARGETS`, `UTF8_STRING` and `text/plain;charset=utf-8` (32 KiB at
+//! most, never incremental), says whether a client asked within [`PASTE_WINDOW`], and lets the
+//! selection go after [`PASTE_HOLD`] or when another client takes it, erasing the text.
 
 use std::time::{Duration, Instant};
 
@@ -8,14 +16,206 @@ use x11rb::connection::Connection as _;
 use x11rb::protocol::Event;
 use x11rb::protocol::xfixes::{ConnectionExt as _, SelectionEventMask};
 use x11rb::protocol::xproto::{
-    Atom, AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, GetPropertyReply, Property,
-    Window, WindowClass,
+    Atom, AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, GetPropertyReply, PropMode,
+    Property, SELECTION_NOTIFY_EVENT, SelectionNotifyEvent, SelectionRequestEvent, Window,
+    WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
+use x11rb::wrapper::ConnectionExt as _;
 use yulius_contracts::browser::CLIPBOARD_MAX_BYTES;
+use zeroize::Zeroizing;
+
+use crate::display::PasteOutcome;
 
 const CLICK_WINDOW: Duration = Duration::from_secs(3);
 const OFFER_WINDOW: Duration = Duration::from_secs(15);
+/// How long a client (Chrome) has to ask for a paste's text after Ctrl+V.
+pub(crate) const PASTE_WINDOW: Duration = Duration::from_secs(3);
+/// How long the display's CLIPBOARD holds a pasted text.
+const PASTE_HOLD: Duration = Duration::from_secs(30);
+
+/// The display thread's CLIPBOARD for viewers' pastes.
+pub(super) struct Owner {
+    window: Window,
+    selection: Atom,
+    targets: Atom,
+    utf8: Atom,
+    plain: Atom,
+    held: Option<Held>,
+}
+
+struct Held {
+    text: Zeroizing<Vec<u8>>,
+    until: Instant,
+    /// The paste waiting for a client to ask, and until when.
+    waiting: Option<(oneshot::Sender<PasteOutcome>, Instant)>,
+}
+
+impl Owner {
+    pub(super) fn new(conn: &RustConnection, root: Window) -> Option<Self> {
+        let atom = |name| Some(conn.intern_atom(false, name).ok()?.reply().ok()?.atom);
+        let window = conn.generate_id().ok()?;
+        conn.create_window(
+            0,
+            window,
+            root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_ONLY,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .ok()?
+        .check()
+        .ok()?;
+        Some(Self {
+            window,
+            selection: atom(b"CLIPBOARD")?,
+            targets: atom(b"TARGETS")?,
+            utf8: atom(b"UTF8_STRING")?,
+            plain: atom(b"text/plain;charset=utf-8")?,
+            held: None,
+        })
+    }
+
+    /// Makes `text` the CLIPBOARD; `outcome` hears whether a client asked for it. Gives
+    /// `outcome` back when the server did not hand the selection to this owner.
+    pub(super) fn take(
+        &mut self,
+        conn: &RustConnection,
+        text: &str,
+        outcome: oneshot::Sender<PasteOutcome>,
+    ) -> Result<(), oneshot::Sender<PasteOutcome>> {
+        self.drop_held();
+        let owned = conn
+            .set_selection_owner(self.window, self.selection, x11rb::CURRENT_TIME)
+            .ok()
+            .and_then(|_| conn.get_selection_owner(self.selection).ok())
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|reply| reply.owner == self.window);
+        if !owned {
+            return Err(outcome);
+        }
+        let now = Instant::now();
+        self.held = Some(Held {
+            text: Zeroizing::new(text.as_bytes().to_vec()),
+            until: now + PASTE_HOLD,
+            waiting: Some((outcome, now + PASTE_WINDOW)),
+        });
+        Ok(())
+    }
+
+    /// Ends a wait whose window passed (unread) and lets go of a text held long enough.
+    pub(super) fn expire(&mut self, conn: &RustConnection) {
+        let now = Instant::now();
+        let Some(held) = &mut self.held else {
+            return;
+        };
+        if held
+            .waiting
+            .as_ref()
+            .is_some_and(|(outcome, until)| now >= *until || outcome.is_closed())
+            && let Some((outcome, _)) = held.waiting.take()
+        {
+            let _ = outcome.send(PasteOutcome::Unread);
+        }
+        if now >= held.until {
+            self.drop_held();
+            // Only this owner's selection is cleared, never another client's.
+            let ours = conn
+                .get_selection_owner(self.selection)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .is_some_and(|reply| reply.owner == self.window);
+            if ours {
+                let _ = conn.set_selection_owner(x11rb::NONE, self.selection, x11rb::CURRENT_TIME);
+            }
+        }
+    }
+
+    fn drop_held(&mut self) {
+        if let Some(Held {
+            waiting: Some((outcome, _)),
+            ..
+        }) = self.held.take()
+        {
+            let _ = outcome.send(PasteOutcome::Unread);
+        }
+    }
+
+    pub(super) fn on_event(&mut self, conn: &RustConnection, event: &Event) {
+        match event {
+            Event::SelectionRequest(request)
+                if request.owner == self.window && request.selection == self.selection =>
+            {
+                self.answer(conn, request);
+            }
+            Event::SelectionClear(clear)
+                if clear.owner == self.window && clear.selection == self.selection =>
+            {
+                // Another client (the page copying) took the CLIPBOARD.
+                self.drop_held();
+            }
+            _ => {}
+        }
+    }
+
+    /// Answers a client's request for the held text: its targets or its UTF-8 text; anything
+    /// else, or nothing held, is refused. A request answered tells the waiting paste it was read.
+    fn answer(&mut self, conn: &RustConnection, request: &SelectionRequestEvent) {
+        // Obsolete clients name no property: the target is the property then (ICCCM 2.2).
+        let property = if request.property == x11rb::NONE {
+            request.target
+        } else {
+            request.property
+        };
+        let written = self.held.as_ref().is_some_and(|held| {
+            let written = if request.target == self.targets {
+                conn.change_property32(
+                    PropMode::REPLACE,
+                    request.requestor,
+                    property,
+                    AtomEnum::ATOM,
+                    &[self.targets, self.utf8, self.plain],
+                )
+            } else if request.target == self.utf8 || request.target == self.plain {
+                conn.change_property8(
+                    PropMode::REPLACE,
+                    request.requestor,
+                    property,
+                    request.target,
+                    &held.text,
+                )
+            } else {
+                return false;
+            };
+            written.is_ok()
+        });
+        if written
+            && let Some(held) = &mut self.held
+            && let Some((outcome, _)) = held.waiting.take()
+        {
+            let _ = outcome.send(PasteOutcome::Read);
+        }
+        let _ = conn.send_event(
+            false,
+            request.requestor,
+            EventMask::NO_EVENT,
+            SelectionNotifyEvent {
+                response_type: SELECTION_NOTIFY_EVENT,
+                sequence: 0,
+                time: request.time,
+                requestor: request.requestor,
+                selection: request.selection,
+                target: request.target,
+                property: if written { property } else { x11rb::NONE },
+            },
+        );
+    }
+}
 
 pub(super) struct Clipboard {
     selection: Atom,

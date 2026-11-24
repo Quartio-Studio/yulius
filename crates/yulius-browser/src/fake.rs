@@ -1535,6 +1535,8 @@ struct FakeDisplayInner {
     inputs_seen: watch::Sender<u64>,
     next_copy: Mutex<Option<String>>,
     offered_copy: Mutex<(u32, Option<String>)>,
+    pastes: Mutex<Vec<(usize, String)>>,
+    paste_unread: AtomicBool,
     encoders: Mutex<Vec<(u32, u32)>>,
     tiers: Mutex<Vec<Tier>>,
     running: AtomicUsize,
@@ -1585,6 +1587,8 @@ impl FakeDisplay {
                 inputs_seen: watch::channel(0).0,
                 next_copy: Mutex::new(None),
                 offered_copy: Mutex::new((0, None)),
+                pastes: Mutex::new(Vec::new()),
+                paste_unread: AtomicBool::new(false),
                 encoders: Mutex::new(Vec::new()),
                 tiers: Mutex::new(Vec::new()),
                 running: AtomicUsize::new(0),
@@ -1631,6 +1635,29 @@ impl FakeDisplay {
         tokio::time::timeout(timeout, waiting)
             .await
             .unwrap_or(false)
+    }
+
+    /// Every paste the display received, with the number of inputs received before it.
+    #[must_use]
+    pub fn pastes(&self) -> Vec<(usize, String)> {
+        lock(&self.inner.pastes).clone()
+    }
+
+    /// Makes the page not read the pastes that follow (`true`), or read them again.
+    pub fn set_paste_unread(&self, unread: bool) {
+        self.inner.paste_unread.store(unread, Ordering::SeqCst);
+    }
+
+    pub(crate) fn paste(&self, text: &str) -> crate::display::PasteOutcome {
+        lock(&self.inner.offered_copy).1 = None;
+        let before = lock(&self.inner.inputs).len();
+        lock(&self.inner.pastes).push((before, text.to_owned()));
+        self.inner.inputs_seen.send_modify(|n| *n += 1);
+        if self.inner.paste_unread.load(Ordering::SeqCst) {
+            crate::display::PasteOutcome::Unread
+        } else {
+            crate::display::PasteOutcome::Read
+        }
     }
 
     /// Makes the next primary press imitate a webpage that writes text to the display.

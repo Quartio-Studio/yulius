@@ -39,8 +39,8 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, warn};
 
-use crate::display::DisplayInput;
-use crate::keys::{SHIFT_KEYCODES, us_char};
+use crate::display::{DisplayInput, PasteOutcome};
+use crate::keys::{SHIFT_KEYCODES, SHORTCUT_KEYCODES, us_char};
 
 /// What the X thread is asked to do.
 #[derive(Debug)]
@@ -49,6 +49,12 @@ pub(crate) enum XCommand {
     /// Arm a clipboard transfer and deliver the primary press as one command.
     CopyPress(tokio::sync::oneshot::Sender<u32>),
     AcceptCopy(u32, tokio::sync::oneshot::Sender<String>),
+    /// A viewer's paste: own the CLIPBOARD with the text and press Ctrl+V (type the text when
+    /// the CLIPBOARD cannot be taken); the sender hears how it ended.
+    Paste(
+        zeroize::Zeroizing<String>,
+        tokio::sync::oneshot::Sender<crate::display::PasteOutcome>,
+    ),
     /// Apply the move slot if it still belongs to this generation (a wake-up for moves).
     Motion(u64),
     /// Answer once the server has processed every earlier request (a round trip).
@@ -172,6 +178,9 @@ const SCRATCH_KEYCODES: usize = 32;
 /// The Return and Tab keycodes (evdev).
 const RETURN_KEYCODE: u8 = 36;
 const TAB_KEYCODE: u8 = 23;
+/// The left Control and the V keycodes (evdev): the paste shortcut.
+const CONTROL_KEYCODES: [u8; 2] = [37, 105];
+const V_KEYCODE: u8 = 55;
 
 /// The X keysym of a character: Latin-1 keysyms equal the code point, every other character
 /// uses the Unicode keysym range.
@@ -277,8 +286,10 @@ impl XController {
         });
         let (keysyms_per_keycode, scratch) = spare_keycodes(&conn);
         let clipboard = crate::xclipboard::Clipboard::new(&conn);
+        let owner = crate::xclipboard::Owner::new(&conn, root);
         let mut state = XState {
             clipboard,
+            owner,
             keysyms_per_keycode,
             scratch,
             typed: HashMap::new(),
@@ -346,6 +357,8 @@ impl XController {
 
 struct XState {
     clipboard: Option<crate::xclipboard::Clipboard>,
+    /// The CLIPBOARD of viewers' pastes (`None`: pastes are typed).
+    owner: Option<crate::xclipboard::Owner>,
     conn: RustConnection,
     root: Window,
     /// The screen's current size.
@@ -432,6 +445,9 @@ impl XState {
             if let Some(clipboard) = &mut self.clipboard {
                 clipboard.expire(&self.conn);
             }
+            if let Some(owner) = &mut self.owner {
+                owner.expire(&self.conn);
+            }
             if self.conn.flush().is_err() {
                 return;
             }
@@ -462,6 +478,7 @@ impl XState {
                     clipboard.accept(&self.conn, offer, result);
                 }
             }
+            XCommand::Paste(text, outcome) => self.paste(&text, outcome),
             XCommand::CopyPress(result) => {
                 if let Some(clipboard) = &mut self.clipboard {
                     clipboard.start(&self.conn, self.root, result);
@@ -482,6 +499,49 @@ impl XState {
                 }
             }
         }
+    }
+
+    /// A viewer's paste: the text becomes the CLIPBOARD and Ctrl+V is pressed (with the viewer's
+    /// own Control if held); without the CLIPBOARD the text is typed, without the modifiers the
+    /// viewer holds (they would make shortcuts of it).
+    fn paste(&mut self, text: &str, outcome: tokio::sync::oneshot::Sender<PasteOutcome>) {
+        // A paste is a new write: a pending offer of the page's copy must not offer it back.
+        if let Some(clipboard) = &mut self.clipboard {
+            clipboard.cancel(&self.conn);
+        }
+        let outcome = match &mut self.owner {
+            Some(owner) => match owner.take(&self.conn, text, outcome) {
+                Ok(()) => {
+                    let control = self.keys.iter().any(|k| CONTROL_KEYCODES.contains(k));
+                    if !control {
+                        self.fake(xproto::KEY_PRESS_EVENT, CONTROL_KEYCODES[0], 0, 0);
+                    }
+                    self.tap(V_KEYCODE);
+                    if !control {
+                        self.fake(xproto::KEY_RELEASE_EVENT, CONTROL_KEYCODES[0], 0, 0);
+                    }
+                    return;
+                }
+                Err(outcome) => outcome,
+            },
+            None => outcome,
+        };
+        let held: Vec<u8> = self
+            .keys
+            .iter()
+            .copied()
+            .filter(|keycode| SHORTCUT_KEYCODES.contains(keycode))
+            .collect();
+        for keycode in &held {
+            self.fake(xproto::KEY_RELEASE_EVENT, *keycode, 0, 0);
+        }
+        for c in text.chars().filter(|c| *c != '\r') {
+            self.type_char(c);
+        }
+        for keycode in &held {
+            self.fake(xproto::KEY_PRESS_EVENT, *keycode, 0, 0);
+        }
+        let _ = outcome.send(PasteOutcome::Typed);
     }
 
     /// Types `c` as a real key press: Return, Tab and the characters of a US layout by their
@@ -651,6 +711,9 @@ impl XState {
     fn on_event(&mut self, event: &Event) {
         if let Some(clipboard) = &mut self.clipboard {
             clipboard.on_event(&self.conn, event);
+        }
+        if let Some(owner) = &mut self.owner {
+            owner.on_event(&self.conn, event);
         }
         match event {
             Event::MapNotify(map) if map.event == self.root && !map.override_redirect => {
@@ -857,7 +920,7 @@ mod tests {
                     while let Some(command) = next.take() {
                         match command {
                             XCommand::Input(input) => apply(input),
-                            XCommand::AcceptCopy(_, _) => {}
+                            XCommand::AcceptCopy(_, _) | XCommand::Paste(_, _) => {}
                             XCommand::CopyPress(_) => apply(DisplayInput::Button {
                                 button: 1,
                                 press: true,
