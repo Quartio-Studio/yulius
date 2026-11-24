@@ -548,6 +548,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0469](0469-a-test-of-a-host-wide-resource-asserts-only-what-it-holds.md): A test of a host-wide resource asserts only what it holds
 <!-- ADR 0469 -->
 <!-- ADR 0470 -->
+- [0471](0471-a-viewer-paste-becomes-the-displays-clipboard-and-a-real-ctrl-v.md): A viewer paste becomes the display's CLIPBOARD and a real Ctrl+V
 <!-- ADR 0471 -->
 <!-- ADR 0472 -->
 <!-- ADR 0473 -->

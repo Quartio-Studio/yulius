@@ -32,6 +32,7 @@ fn failure(error: BrowserError) -> BrowserFailure {
             BrowserFailureKind::Capacity
         }
         BrowserError::InputLocked => BrowserFailureKind::InputLocked,
+        BrowserError::PasteFailed(_) => BrowserFailureKind::PasteFailed,
         BrowserError::InputLockedUntilRestart => BrowserFailureKind::InputLockedUntilRestart,
         BrowserError::SecretPageRefused(_)
         | BrowserError::SecretPageLeaving(_)

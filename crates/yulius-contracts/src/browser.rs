@@ -308,8 +308,9 @@ pub enum ViewerClientMsg {
         modifiers: Option<u8>,
     },
     /// Keyboard input. With a virtual display, `down`/`up` are real key presses: printable ASCII
-    /// by `key` (a US layout key with Shift as needed), other keys by `code`; `char` inserts
-    /// text that has no key (IME, emoji, non-ASCII letters, paste).
+    /// by `key` (a US layout key with Shift as needed), other keys by `code`; `char` types short
+    /// text that has no key event of its own (IME, emoji, non-ASCII letters) as key presses and
+    /// inserts longer composed text. A paste is [`Self::Paste`].
     Key {
         /// Target tab.
         tab_id: TabId,
@@ -327,6 +328,16 @@ pub enum ViewerClientMsg {
         /// Bit field of `MODIFIER_*` constants.
         #[serde(default)]
         modifiers: Option<u8>,
+    },
+    /// A paste of the viewer's clipboard text, whole (SPEC-639): with a virtual display the
+    /// text becomes the display's CLIPBOARD and Ctrl+V is pressed, so the page gets a real
+    /// paste; without one (or without the CLIPBOARD) it is typed as key presses. At most 32 KiB.
+    /// A paste the page did not take is answered with `paste_failed`.
+    Paste {
+        /// Target tab.
+        tab_id: TabId,
+        /// The pasted text.
+        text: String,
     },
     /// The viewer's panel size in CSS pixels; applies to all tabs of the sandbox browser.
     Viewport {
@@ -413,6 +424,9 @@ pub enum ViewerErrorCode {
     InputLockedUntilRestart,
     /// The browser failed or did not answer.
     Upstream,
+    /// A paste did not reach the page (the page did not take it, or the browser could not
+    /// deliver it); the message says what to do (SPEC-639).
+    PasteFailed,
     /// Unexpected server failure.
     Internal,
 }
@@ -913,7 +927,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: TOOL_TYPE,
-            description: "Type text into the focused element, or into the element matching selector after focusing it. Each newline presses Enter.",
+            description: "Type text into the focused element, or into the element matching selector after focusing it, as real key presses (terminals such as xterm.js take it too). Each newline presses Enter.",
             input_schema: json!({"type": "object", "properties": {"tab_id": tab,
                 "text": {"type": "string", "maxLength": TYPE_TEXT_MAX_BYTES}, "selector": selector},
                 "required": ["tab_id", "text"], "additionalProperties": false}),

@@ -81,6 +81,19 @@ struct FakePage {
 }
 
 impl FakePage {
+    /// Appends `typed` to the focused field's value.
+    fn type_into_focus(&mut self, typed: String) {
+        let focused = self.focused.clone();
+        match self
+            .fields
+            .iter_mut()
+            .find(|(selector, _)| *selector == focused)
+        {
+            Some((_, value)) => value.push_str(&typed),
+            None => self.fields.push((focused, typed)),
+        }
+    }
+
     /// Shows another document (form state is not modelled).
     fn move_to(&mut self, loader: u64) {
         self.previous.push(self.loader);
@@ -1194,15 +1207,7 @@ fn respond(
         "Input.insertText" => {
             let typed = text("text");
             if let Some(page) = lock(&shared.state).page(session_id) {
-                let focused = page.focused.clone();
-                match page
-                    .fields
-                    .iter_mut()
-                    .find(|(selector, _)| *selector == focused)
-                {
-                    Some((_, value)) => value.push_str(&typed),
-                    None => page.fields.push((focused, typed)),
-                }
+                page.type_into_focus(typed);
             }
             Ok(json!({}))
         }
@@ -1254,6 +1259,15 @@ fn respond(
         "Accessibility.getFullAXTree" => Ok(json!({"nodes": lock(&shared.state).ax_nodes.clone()})),
         "Input.dispatchKeyEvent" => {
             let mut state = lock(&shared.state);
+            // A key down with printable text types it into the focused field, as Chromium does.
+            let typed = text("text");
+            if text("type") == "keyDown"
+                && !typed.is_empty()
+                && !typed.chars().any(char::is_control)
+                && let Some(page) = state.page(session_id)
+            {
+                page.type_into_focus(typed);
+            }
             if state.enter_submits && text("type") == "keyDown" && text("key") == "Enter" {
                 let loader = state.next_loader();
                 if let Some(page) = state.page(session_id) {

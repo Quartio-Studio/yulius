@@ -894,7 +894,7 @@ async fn pump(
                             Err(failure) => Err((failure.viewer_code(), failure.message)),
                         }
                     }
-                    Ok(message @ (ViewerClientMsg::Mouse { .. } | ViewerClientMsg::Key { .. })) => {
+                    Ok(message @ (ViewerClientMsg::Mouse { .. } | ViewerClientMsg::Key { .. } | ViewerClientMsg::Paste { .. })) => {
                         let silent = droppable(&message);
                         if budget.take(Instant::now(), silent) {
                             let page = match &message {

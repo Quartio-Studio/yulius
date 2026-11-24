@@ -51,6 +51,8 @@ pub enum BrowserFailureKind {
     SecretPageRefused,
     /// The tab went to another page while a secret was typed: part of it may be there.
     SecretAstray,
+    /// A viewer's paste did not reach the page (SPEC-639).
+    PasteFailed,
     /// Malformed or out-of-bounds input (including a missing element).
     Invalid,
     /// A result exceeded its bound.
@@ -97,6 +99,7 @@ impl BrowserFailure {
             BrowserFailureKind::NotInstalled
             | BrowserFailureKind::Upstream
             | BrowserFailureKind::TooLarge => ViewerErrorCode::Upstream,
+            BrowserFailureKind::PasteFailed => ViewerErrorCode::PasteFailed,
             BrowserFailureKind::Internal => ViewerErrorCode::Internal,
         }
     }
@@ -117,6 +120,7 @@ impl From<BrowserFailure> for AppError {
             | BrowserFailureKind::SecretAstray => Self::Forbidden(failure.message),
             BrowserFailureKind::NotInstalled
             | BrowserFailureKind::Upstream
+            | BrowserFailureKind::PasteFailed
             | BrowserFailureKind::TooLarge => Self::Upstream(failure.message),
             BrowserFailureKind::Internal => Self::Internal(failure.message),
         }
