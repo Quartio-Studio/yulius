@@ -323,6 +323,25 @@ test('the Markdown slash menu filters too', async ({ app, browser, screen }) => 
   expect(await browser.evaluate(() => (document.querySelector('.md-block') as HTMLElement).dataset.type)).toBe('code');
 });
 
+test('Escape on the Markdown slash menu gives the keyboard back at the caret (SPEC-644 MDM-005)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
+  await browser.evaluate(async () => {
+    const url = '/assets/mdeditor.js';
+    const { createMarkdownEditor } = await import(url);
+    const editor = createMarkdownEditor({ markdown: '' });
+    document.body.prepend(editor.el);
+    editor.focus();
+  });
+  await browser.keyboard.type('/');
+  await expect(screen.getByRole('searchbox', 'Filter')).toBeFocused();
+  await browser.keyboard.press('Escape');
+  await expect(screen.getByRole('searchbox', 'Filter')).toBeHidden();
+  // The next key goes on after the slash, where the caret was when the menu opened.
+  await browser.keyboard.type('x');
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.md-block .md-text')?.textContent)).toBe('/x');
+});
+
 test('a menu placed again while filtered still fits once the filter is cleared', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1280, height: 800 });
   await app.open(mock('/s/studio', '&tasks=many'));
