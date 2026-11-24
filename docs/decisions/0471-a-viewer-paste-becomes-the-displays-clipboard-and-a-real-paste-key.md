@@ -35,16 +35,20 @@ What Chrome 158 does, traced on Xvfb with `xtrace`:
 - Delivery is judged by a client fetching the text within 3 s. A paste whose text nobody fetched
   is answered `paste_failed`, and the panel says so. Nothing is typed instead, since typed keys
   outside a field would trigger the page's shortcuts.
-- A newer paste replaces the CLIPBOARD only after no client asked for the held text for 100 ms
-  (at most 1 s). The X thread keeps answering events while it waits.
+- A newer paste replaces the CLIPBOARD only once the page fetched the previous text and then
+  asked nothing for 100 ms (at most 1 s), also when it comes from another viewer. The X thread
+  keeps answering events while it waits, and the viewer's connection does not wait for a
+  paste's outcome: the paste is queued in order with that viewer's keys, and `paste_failed`
+  arrives when it is known.
 - The text is held 30 s at most, or until another client takes the CLIPBOARD or a newer paste
   replaces it. Then the selection is let go (only when it is still Yulius's) and the text erased.
 - Where the CLIPBOARD cannot be taken, the X thread types the text as key presses, lifting the
   viewer's held Ctrl/Alt/Meta. Without a display, a paste is typed as CDP key events, one per
   character. `Input.insertText` remains only for composed IME text (`char`) and secret typing.
 - `browser_type` types its text as CDP key events: a key down with the character's text and a
-  key up; `\n` presses Enter and `\t` presses Tab. These reach the agent's tab whether or not it
-  is shown, and need no display. `browser_fill_secret` keeps `Input.insertText`: its page rules
+  key up; `\n` presses Enter and `\t` presses Tab (moving the focus, as a person's Tab does);
+  other control characters are left out. They go to the agent's tab through its own DevTools
+  session and need no display. `browser_fill_secret` keeps `Input.insertText`: its page rules
   and edit checks are per line and pinned by SPEC-450 and SPEC-483.
 
 ## Alternatives
@@ -65,9 +69,11 @@ What Chrome 158 does, traced on Xvfb with `xtrace`:
 ## Consequences
 
 Pastes reach terminals and other key- or paste-driven pages exactly as a local paste would,
-including through cross-origin frames. A page that binds Shift+Insert to something else gets
-that instead. A viewer's socket waits up to 3 s on a paste nobody reads. The pasted text lives in
+including through cross-origin frames. A page that binds Shift+Insert to something else gets that
+instead. The viewer hears of a paste nobody read after the 3 s window. The pasted text lives in
 Yulius's memory and in the sandbox's CLIPBOARD for at most 30 s; a page granted clipboard-read
 could read it meanwhile, as on a person's own computer. `browser_type` takes two CDP calls per
-character, slower than one insertion per line. A secret typed by `browser_fill_secret` into a
-terminal is still not taken.
+character, slower than one insertion per line: 5 000 characters took 1.5 s in Chrome 158, so the
+largest text (64 KiB) holds the input lock, and with it screenshots, for about 20 s. Text typed
+with no field focused can trigger the page's own shortcuts, as a person's typing would. A secret
+typed by `browser_fill_secret` into a terminal is still not taken.

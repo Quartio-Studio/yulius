@@ -118,12 +118,21 @@ and Ctrl+V / ⌘V on the Browser panel did nothing. Agents' browser tools fail t
   fetched means the page took no paste (for example the focus is not in the page); the viewer
   is told, nothing is typed instead (typed keys outside a field would trigger the page's
   shortcuts).
-- A newer paste waits, answering X events, until Chrome asked nothing for 100 ms: Chrome reads
+- The viewer's connection does not wait for a paste's outcome (review round 1): the paste is
+  queued in order inside the connection's loop, and the outcome arrives as a future the loop
+  serves, so a paste nobody reads no longer freezes that viewer's video for 3 s.
+- A newer paste waits, answering X events, until the page fetched the previous text (also when
+  another viewer queued it) and then asked nothing for 100 ms: Chrome reads
   one paste several times, and a CLIPBOARD replaced between those reads (or a read left
   unanswered by a sleeping thread) gave the first of two quick pastes empty text after Chrome's
   one-second timeout (traced with `xtrace`).
 - `browser_type` uses CDP key events, not the display: they reach the agent's tab even when it is
   not the shown one and work without a display.
+- `browser_type` keeps two CDP calls per character under the input lock: measured, 5 000
+  characters take 1.5 s in Chrome 158, so the largest text (64 KiB) holds screenshots for about
+  20 s, which an agent's typing of that size may take; chunking the lock would let a screenshot
+  show half-typed text. A tab presses Tab (as a person's would); other control characters are
+  left out and not counted.
 - `browser_fill_secret` keeps `Input.insertText`: its page rules and per-line edit checks are
   pinned by SPEC-450 and SPEC-483 tests built on insertion. A secret typed into a terminal is not
   taken; that is a separate change.
@@ -168,5 +177,36 @@ and Ctrl+V / ⌘V on the Browser panel did nothing. Agents' browser tools fail t
   fails on this host at its first click ("timed out waiting for a trusted click"), a path this
   change does not touch: the click lands while Chrome is not yet the active window; the new test
   waits for the page to take a key first. Not run on dev here.
+- **Review round 1** (Fable 5.2, request changes at `b349a02ed`), answered:
+  - Blocker, clippy in two test lines: fixed in `dce9ec090` (CI run `90921d7a` passed).
+  - Major, no test of the input lock for a paste: `viewer_clicks_and_keys_wait_for_the_hosts_browser_policy`
+    and `an_enter_typed_before_the_policy_keeps_input_off_until_a_restart` now send a `paste`;
+    with the `viewer_input_allowed()` check removed from the paste both failed.
+  - Major, the quiet wait untested in CI: `a_newer_paste_waits_until_the_page_stopped_reading_the_one_before`
+    (a Chrome-like client re-reading the targets 30 ms after the text; two pastes queued at
+    once; a client that never stops asking). Without the wait it failed (`(Unread, Read)`), with
+    the bound raised tenfold it failed ("held the paste 3.07 s"). It also showed the minor about
+    a second viewer's paste: the wait now covers a paste whose text was not fetched yet.
+  - Minor, the viewer's connection blocked on a paste: fixed as decided above;
+    `a_paste_on_its_way_does_not_hold_up_the_viewers_connection` failed (timed out) with the
+    outcome awaited in the loop.
+  - Minor, typed fallback untested: `a_paste_without_the_clipboard_is_typed_as_key_presses`
+    (an X thread without a paste owner types `aB\r\n` as keys, a held Control lifted and pressed
+    again).
+  - Minor, weak refusal assertions and a stale SelectionClear: the owner test asserts no text for
+    a refused or let-go request, and a clear of an earlier ownership leaves the text (it failed
+    before the owner checked the server's owner).
+  - Minor, Tab and control characters: tested, counted, and named in the tool description.
+  - Minor, the 64 KiB `browser_type` holding the lock: measured and kept (Decisions).
+  - Minor, e2e for a closed socket and no tab: both toasts are asserted; the limit message names
+    characters or KiB as the case is (nit).
+  - Nits: `chars` counts only typed characters; stale "Ctrl+V" and "paste" comments fixed.
+  - The ADR's "whether or not it is shown" for background tabs was not run against Chrome and is
+    no longer claimed.
+- After the session moved to another sandbox, `yulius-browser::manager`'s
+  `one_browser_per_sandbox_with_isolated_profiles_and_full_shutdown` and
+  `crash_is_detected_and_the_next_use_restarts` fail here ("the process group's descendants are
+  killed") on unchanged `origin/dev` at 320803966 too; they passed in this task earlier and in
+  CI. The other 154 browser crate tests pass.
 - Security scan: disabled for this project in Yulius (not run, not passed).
 

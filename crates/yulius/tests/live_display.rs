@@ -794,6 +794,29 @@ async fn pastes(live: &Live) -> TestResult {
     )
     .await?;
     assert_eq!(eval(&cdp, &url, "window.data").await?, json!(expected));
+    // What two DevTools calls a character cost: 5 000 characters typed by an agent.
+    let started = Instant::now();
+    let typed = mcp_tool(
+        &live.h,
+        TOKEN,
+        "browser_type",
+        json!({"tab_id": tab, "text": long}),
+    )
+    .await?;
+    let took = started.elapsed();
+    assert_eq!(tool_text(&typed)["chars"], 5_000, "{typed}");
+    let expected = format!("{expected}{long}");
+    until(
+        &cdp,
+        &url,
+        "the agent's long typing in the terminal",
+        &format!("[...window.data].length === {}", expected.chars().count()),
+    )
+    .await?;
+    eprintln!(
+        "browser_type typed 5 000 characters in {} ms",
+        took.as_millis()
+    );
     // Nothing failed on the way.
     let quiet = Instant::now() + Duration::from_millis(500);
     while let Some(message) = viewer.step(quiet).await? {
