@@ -99,6 +99,7 @@ either: the merge needs the approval of the reviewed head first, which is the st
 - [x] A reviewer's completed notification ends its round when its stop was lost
 - [x] A round its pull request merged without a report reads unreported
 - [x] Decision, architecture and changes entry
+- [x] Review round 1 findings fixed test-first
 - [ ] Independent review approved
 
 ## Acceptance criteria
@@ -158,4 +159,38 @@ At the branch head after `c1622cf84` (from dev `b1b50218f`):
   #615's round 1 and its resumed round 2, as its delivery recorded them.
 - Not read: quartio-v2 #377's own hook records and transcript (not reachable from this project).
   Path 1 (lost stop) is the likeliest for it but unconfirmed; both paths are fixed and tested.
+
+### Review round 1 (head 030ebc09a, request changes)
+
+Five own-code findings, all fixed test-first at 03ccc9c2d.
+- **Major, replay dropped reports.** During a reattached run's catch-up the supervisor dropped
+  `SubagentReported`. Now forwarded with `ObservationSource::Replay`.
+  - Test: `usage_credits::a_report_written_while_yulius_was_down_ends_its_round_at_the_replay`
+    (real fake-agent session, restart, `reconcile`). Before the fix it timed out with the round
+    open.
+- **Major, the stop fallback required the decided agent.** In path 2 the reviewer runs as asked.
+  The fallback now takes any reviewer's unlinked round and records the agent, model and reason
+  that ran.
+  - Tests: `review_rounds::a_stop_ends_an_unlinked_round_that_decided_another_reviewer` (round 3,
+    before the fix `subagent_id` was `None`) and
+    `review_rounds::an_unlinked_no_fable_round_its_asked_reviewer_reported_is_no_fable_no_more`
+    (before the fix the reason stayed `no_fable`).
+- **Minors, parser rules.** A report comes only from a record Claude Code wrote as its own
+  notification (`origin.kind`), exactly one notice, and not an interim result. The result runs to
+  its last closing result tag. A queued attachment's time is asserted, and the older cases are
+  asserted exactly.
+  - Test: `claude::tests::a_completed_agent_notification_carries_its_report`. These assertions
+    were written before the parser change but not run red on their own.
+- **Not fixed, a documented limit (ADR-0467).** A reviewer resumed in the seconds between a
+  restart and the replay of its lost first report.
+
+After the fixes:
+- `-p yulius -p yulius-harness -p yulius-store -p yulius-contracts`: 3960 of 3962 passed.
+  - The two failures were outside this change:
+    `parking::candidate::a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done` and
+    `parking::candidate::a_replacement_merge_is_refused_while_the_reader_settles_a_close`. They
+    failed under that four-crate parallel load, and all 78 `parking::candidate::` tests pass
+    alone. No issue tracks them; reported on #1726.
+- `review_rounds::` and the replay test: 42 passed.
+- `yulius-app` lib: 724 passed. clippy `-D warnings` and `cargo fmt --check` are clean.
 
