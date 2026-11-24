@@ -740,19 +740,33 @@ impl App {
         task: &TaskRecord,
         activity: Activity,
     ) -> AppResult<()> {
+        self.set_task_activity_unless_held(task, activity)
+            .await
+            .map(|_| ())
+    }
+
+    /// [`Self::set_task_activity`]; whether the flag of a run that could not be ended held the
+    /// task as it was ([`Self::write_session_activity`], SPEC-635).
+    pub(crate) async fn set_task_activity_unless_held(
+        &self,
+        task: &TaskRecord,
+        activity: Activity,
+    ) -> AppResult<bool> {
         if activity == Activity::NeedsAttention {
-            return self.flag_needs_attention(&task.id, None).await;
+            return self
+                .flag_needs_attention(&task.id, None)
+                .await
+                .map(|()| false);
         }
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
-            return Ok(());
+            return Ok(false);
         }
         self.runtime(&task.id)
             .notice_attention_ms
             .store(0, Ordering::SeqCst);
-        self.deps
-            .store
-            .set_activity(&task.id, Some(activity), self.now())
-            .await?;
+        if !self.write_session_activity(&task.id, activity).await? {
+            return Ok(true);
+        }
         // The turn settled: its screen is kept, so a run lost later (a reboot) still shows how
         // its last turn ended (SPEC-229 RBT-002).
         if activity.is_idle()
@@ -764,7 +778,7 @@ impl App {
             );
         }
         self.publish_task(&task.id).await;
-        Ok(())
+        Ok(false)
     }
 
     /// Flags a running task under its attention lock (SPEC-213, SPEC-472). The current
