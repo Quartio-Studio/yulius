@@ -1,6 +1,6 @@
 ---
 yulius-task: 043ccc83-f810-42e9-8929-e94e28c82718
-status: in-progress
+status: done
 ---
 
 # SPEC-638. An image copied outside Yulius pastes into a terminal from the menu and Ctrl+V on macOS
@@ -53,7 +53,8 @@ claims its files, so it is not part of this change.
   the program asked for one. An item offering PNG among other image types is taken as PNG.
 - **PST-002** Text keeps priority, as in the browser's own paste: when the clipboard holds text,
   that text is pasted, and the image beside it is neither read nor uploaded, so a picture that
-  cannot be read loses no text. A browser without `clipboard.read()` keeps the `readText()` paste.
+  cannot be read loses no text. Text of only blanks beside an image does not win, as in the
+  browser's paste. An image that cannot be read is said, naming the paste key. A browser without `clipboard.read()` keeps the `readText()` paste.
   A refused read keeps its notice naming the paste key.
 - **PST-003** The terminal never ignores a paste without saying so. A clipboard holding nothing the
   read can deliver shows a notice that names the paste key. In Chrome on Linux this covers a file
@@ -66,7 +67,7 @@ claims its files, so it is not part of this change.
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -166,3 +167,19 @@ claims its files, so it is not part of this change.
     `menu words`.
   - macOS Ctrl+V (platform override) typed `mac words`, and with an image typed
     `…/pasted-20261124-010712.png `.
+
+### Review round 2
+
+- The reviewer (Fable 5.2) approved `fa8b3cb9f`. All seven round-1 findings were resolved, and it
+  ran both probes again: each now fails the test. The head's Yulius CI run `0d413281` passed.
+- It left one own-code minor and two nits, fixed after the approval within the allowance for
+  product lines:
+  - **Minor:** no test held the notice for an image-only read that fails.
+  - **Nit:** blank text beside an image won here but not in the browser's own paste.
+  - **Nit, pre-existing and newly reachable:** an SVG uploaded as `.svgxml`.
+- Test first (`git log` "blank text beside an image…"): on the approved code it failed with
+  `expected " " to match /^(\[200~)?cell text…pasted-….png…/`, because the blank text was pasted.
+- Fix: text wins when it is not blank, or when there is no image. An image read that fails shows
+  "The browser did not share the image; paste with ⌘V/Ctrl+V". `pastedName` drops `+xml`, so an
+  SVG is `pasted-<stamp>.svg`.
+- `filedrop.e2e.ts`, `terminal.e2e.ts` and `global-superagent.e2e.ts` pass, 61 of 61.
