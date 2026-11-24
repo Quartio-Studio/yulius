@@ -40,17 +40,6 @@ use crate::wheel::{WheelDispatcher, WheelEvent};
 pub type PasteDelivery =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BrowserError>> + Send>>;
 
-/// How [`BrowserInstance::type_lines`] puts a line into the page.
-#[derive(Debug, Clone, Copy)]
-enum Typing {
-    /// Real key presses through CDP (`browser_type`, SPEC-639): pages that read key events,
-    /// such as terminals, get the text.
-    Keys,
-    /// `Input.insertText`, one call per line: a secret's typing (`browser_fill_secret`), whose
-    /// page rules and edit checks are per line (SPEC-450, SPEC-483).
-    Inserted,
-}
-
 /// Smallest accepted viewport edge in CSS pixels.
 pub const VIEWPORT_MIN: u32 = 64;
 /// Largest accepted viewport edge in CSS pixels.
@@ -3324,8 +3313,8 @@ impl BrowserInstance {
         Ok(())
     }
 
-    /// `browser_type`: focuses `selector` (if given) and inserts the text; each `\n` presses
-    /// Enter.
+    /// `browser_type`: focuses `selector` (if given) and types the text as key presses; each
+    /// `\n` presses Enter.
     ///
     /// # Errors
     /// Parameter errors, [`BrowserError::ElementNotFound`], tab or CDP failures.
@@ -3342,9 +3331,10 @@ impl BrowserInstance {
     /// # Errors
     /// As [`Self::tool_type`]; [`BrowserError::SecretPageRefused`],
     /// [`BrowserError::SecretFrameRefused`] and [`BrowserError::SecretPageLeaving`] when
-    /// `allowed` refuses, and [`BrowserError::InvalidInput`] when the tab's page cannot be told
-    /// or read or the browser remembers too many secrets or documents already (nothing is
-    /// typed in any of these); [`BrowserError::SecretAstray`] and
+    /// `allowed` refuses, and [`BrowserError::InvalidInput`] when the text holds a tab or
+    /// another control character (line ends apart), the tab's page cannot be told or read or
+    /// the browser remembers too many secrets or documents already (nothing is typed in any of
+    /// these); [`BrowserError::SecretAstray`] and
     /// [`BrowserError::SecretFrameAstray`] when the page or the focus moved to where it may not
     /// go while it was typed.
     pub async fn tool_type_secret(
@@ -3397,10 +3387,20 @@ impl BrowserInstance {
             // Screenshots hold the same lock from their look at the page to the capture.
             let _input = self.input_lock.lock().await;
             let watched = self.watched_values(&session).await;
-            return self
-                .type_lines(&session, params, watched.as_ref(), Typing::Keys)
-                .await;
+            return self.type_lines(&session, params, watched.as_ref()).await;
         };
+        // A pressed Tab would move the focus in the middle of the secret, and other control
+        // characters have no key, so the text typed would differ (SPEC-648 FSK-003).
+        if params
+            .text
+            .split('\n')
+            .any(|line| line.strip_suffix('\r').unwrap_or(line).chars().any(char::is_control))
+        {
+            return Err(BrowserError::InvalidInput(
+                "the text holds a tab or another control character, which cannot be typed as keys, so nothing was typed"
+                    .into(),
+            ));
+        }
         let unknown = || UNKNOWN_SITE.to_owned();
         // A secret's field is focused with the lock held too: nothing of Yulius's moves the
         // focus between that and the keys.
@@ -3501,7 +3501,7 @@ impl BrowserInstance {
             typed.record(Some(&before), &params.text);
         }
         let typed = self
-            .type_lines(&session, params, watched.as_ref(), Typing::Inserted)
+            .type_lines(&session, params, watched.as_ref())
             .await;
         let mut after = self.document(&session).await;
         let page = match &after {
@@ -3749,15 +3749,15 @@ impl BrowserInstance {
         Ok(())
     }
 
-    /// Types `params.text` line by line (as key presses or inserted, see [`Typing`]), pressing
-    /// Enter for each `\n`; with `watched`, checks for edits after each line, before its Enter
-    /// may submit the form ([`Self::check_edits`]).
+    /// Types `params.text` line by line as real key presses ([`Self::type_keys`]: pages that
+    /// read key events, such as terminals, get it; SPEC-639, SPEC-648), pressing Enter for each
+    /// `\n`; with `watched`, checks for edits after each line, before its Enter may submit the
+    /// form ([`Self::check_edits`]).
     async fn type_lines(
         &self,
         session: &str,
         params: &TypeParams,
         watched: Option<&(Document, Vec<Zeroizing<String>>)>,
-        typing: Typing,
     ) -> Result<TypeResult, BrowserError> {
         let mut chars = 0;
         for (index, line) in params.text.split('\n').enumerate() {
@@ -3767,19 +3767,11 @@ impl BrowserInstance {
             }
             let line = line.strip_suffix('\r').unwrap_or(line);
             if !line.is_empty() {
-                let inserted = match typing {
-                    Typing::Keys => self.type_keys(session, line).await,
-                    Typing::Inserted => self
-                        .cdp
-                        .call_session(session, "Input.insertText", json!({"text": line}))
-                        .await
-                        .map(|_| line.chars().count())
-                        .map_err(BrowserError::from),
-                };
+                let typed = self.type_keys(session, line).await;
                 if let Some(watched) = watched {
                     self.check_edits(session, watched).await;
                 }
-                chars += inserted?;
+                chars += typed?;
             }
         }
         Ok(TypeResult { chars })
