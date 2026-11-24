@@ -542,8 +542,10 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0465 -->
 - [0466](0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md): A finished task whose background work waits hears its staging outcome; narrows 0450
 <!-- ADR 0466 -->
+- [0467](0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md): A reviewer's report ends its round when its hooks missed it
 <!-- ADR 0467 -->
 <!-- ADR 0468 -->
+- [0469](0469-a-test-of-a-host-wide-resource-asserts-only-what-it-holds.md): A test of a host-wide resource asserts only what it holds
 <!-- ADR 0469 -->
 - [0470](0470-wall-clock-stamps-are-read-on-yuliuss-clock.md): Wall-clock stamps (a hook's send time, a transcript line's recorded time) are read on Yulius's clock (`Clock::of_wall`, identity in production); a shifted test clock maps a stamp with its shift at that instant; refines 0234 and 0299 (SPEC-636, #1615)
 <!-- ADR 0470 -->

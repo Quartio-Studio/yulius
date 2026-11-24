@@ -174,6 +174,9 @@ const MONITOR_STARTED: &str = "Monitor started (task ";
 
 /// The longest task id taken from a notification or a tool result.
 const MAX_TASK_ID: usize = 128;
+/// The most of a completed agent's `<result>` kept for its verdict: its end, where a reviewer
+/// writes its verdict line (SPEC-633 RRE-002).
+pub const MAX_REPORT_TAIL: usize = 4096;
 
 /// How the `<note>` of a background agent's notification says, in Claude Code 2.1.292's words
 /// (lower case, single spaces), that the agent stopped with background work of its own still
@@ -332,7 +335,10 @@ fn observe_attachment(record: &Map<String, Value>) -> Vec<Observed> {
     }
     // A notification delivered while the agent works (SPEC-079 BGW-002).
     if str_of(attachment, "type") == Some("queued_command") {
-        return str_of(attachment, "prompt").map_or_else(Vec::new, background_notified);
+        let at = str_of(record, "timestamp").and_then(parse_rfc3339);
+        let own = from_notification(attachment);
+        return str_of(attachment, "prompt")
+            .map_or_else(Vec::new, |prompt| background_notified(prompt, at, own));
     }
     if str_of(attachment, "type") != Some("goal_status") {
         return Vec::new();
@@ -478,7 +484,7 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     // resumed process's "Background workflow … didn't finish before the previous session
     // ended") starts no turn and asks the model nothing; what it says ended did (SPEC-486).
     if bool_of(record, "queueTranscriptOnly") {
-        let mut out = background_notified(&text);
+        let mut out = background_notified(&text, at, from_notification(record));
         out.extend(session);
         // Claude Code hands it on from its queue like a prompt (`enqueue`, `dequeue`): the
         // hand-over ends here, with no turn.
@@ -497,7 +503,7 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
         }
     };
     // A wake-up prompt says which background work ended.
-    let mut out = background_notified(&text);
+    let mut out = background_notified(&text, at, from_notification(record));
     out.extend(session);
     out.push(turn);
     out
@@ -598,11 +604,18 @@ fn tool_result_text(message: &Map<String, Value>) -> String {
 /// What the `<task-notification>` blocks of `text` say of background work: a block with a
 /// `<status>` (completed, failed, stopped) or a Monitor's expiry event ends it, unless its note
 /// says the agent stopped with background work of its own still running, which resumes by itself
-/// (SPEC-079 BGW-006). A Monitor's other events leave it running.
-fn background_notified(text: &str) -> Vec<Observed> {
-    const OPEN: &str = "<task-notification>";
-    const CLOSE: &str = "</task-notification>";
+/// (SPEC-079 BGW-006). A Monitor's other events leave it running. When Claude Code wrote the
+/// text as its own notification (`own`), a completed agent's `<result>` is also its report
+/// ([`notified_report`], SPEC-633 RRE-002).
+fn background_notified(text: &str, at: Option<Timestamp>, own: bool) -> Vec<Observed> {
     let mut out = Vec::new();
+    if let Some((agent_id, report)) = notified_report(text).filter(|_| own) {
+        out.push(Observed::SubagentReported {
+            agent_id,
+            report: report_tail(report).to_owned(),
+            at,
+        });
+    }
     let mut rest = text;
     while let Some(start) = rest.find(OPEN) {
         let after = &rest[start + OPEN.len()..];
@@ -624,6 +637,45 @@ fn background_notified(text: &str) -> Vec<Observed> {
         }
     }
     out
+}
+
+/// The `<task-notification>` tags Claude Code wraps a background task's news in.
+const OPEN: &str = "<task-notification>";
+const CLOSE: &str = "</task-notification>";
+
+/// Whether a user record, or a `queued_command` attachment, is Claude Code's own notification
+/// (`origin.kind`; every real one carries it since 2.1.292), not a prompt quoting one.
+fn from_notification(record: &Map<String, Value>) -> bool {
+    obj_of(record, "origin").and_then(|origin| str_of(origin, "kind")) == Some("task-notification")
+}
+
+/// The agent id and report of `text` when it is exactly one notification of a `completed`
+/// agent with a non-empty, final `<result>`. Its id and status are read before the result, which is
+/// the agent's own text and may quote any tag; the result runs to the last closing result tag.
+fn notified_report(text: &str) -> Option<(String, &str)> {
+    let body = text.trim().strip_prefix(OPEN)?.strip_suffix(CLOSE)?;
+    let (head, tail) = body.split_once("<result>")?;
+    let tag = |name: &str| {
+        head.split_once(&format!("<{name}>"))
+            .and_then(|(_, rest)| rest.split_once(&format!("</{name}>")))
+            .map(|(value, _)| value.trim())
+    };
+    // An agent that stopped with work of its own running resumes: its result is interim.
+    if tag("status")? != "completed" || stopped_with_own_work(head) {
+        return None;
+    }
+    let id = tag("task-id").filter(|id| !id.is_empty() && id.len() <= MAX_TASK_ID)?;
+    let (result, _) = tail.rsplit_once("</result>")?;
+    (!result.trim().is_empty()).then(|| (id.to_owned(), result))
+}
+
+/// The last [`MAX_REPORT_TAIL`] bytes of `report`, cut at a character boundary.
+fn report_tail(report: &str) -> &str {
+    let mut start = report.len().saturating_sub(MAX_REPORT_TAIL);
+    while !report.is_char_boundary(start) {
+        start += 1;
+    }
+    &report[start..]
 }
 
 /// Whether a notification block's `<note>` says the agent stopped with background work of its own
@@ -1283,6 +1335,135 @@ mod tests {
         assert_eq!(pending(""), None);
     }
 
+    /// SPEC-633 RRE-002: a background reviewer's completed notification (Claude Code 2.1.x, the
+    /// shape of task #615's round 2, its texts shortened) gives the end of its result as its
+    /// report beside the end of its background work; a failed, interim or result-less one gives
+    /// no report. A long result keeps only its end, cut at a character boundary.
+    #[test]
+    fn a_completed_agent_notification_carries_its_report() {
+        let text = |status: &str, note: &str, result: &str| {
+            format!(
+                "<task-notification>\n<task-id>ab61345c6b2894101</task-id>\n<tool-use-id>toolu_01PV</tool-use-id>\n<output-file>/tmp/tasks/ab61345c6b2894101.output</output-file>\n<status>{status}</status>\n<summary>Agent \"Independent review\" finished</summary>\n<note>{note}</note>\n{result}\n<usage><subagent_tokens>178269</subagent_tokens></usage>\n</task-notification>"
+            )
+        };
+        let user = |text: &str| {
+            observe_line(
+                &serde_json::json!({"parentUuid": "p", "isSidechain": false, "promptId": "q",
+                    "type": "user", "timestamp": "2026-11-23T12:16:08.248Z",
+                    "message": {"role": "user", "content": text},
+                    "origin": {"kind": "task-notification", "producer": "session-task"},
+                    "promptSource": "system", "queueSkipAttachments": true})
+                .to_string(),
+            )
+        };
+        let notice = |status: &str, note: &str, result: &str| user(&text(status, note, result));
+        let note = "A task-notification fires each time this agent stops with no live background \
+                    children of its own. The user can send it another message and resume it, so \
+                    the same task-id may notify more than once.";
+        let at = parse_rfc3339("2026-11-23T12:16:08.248Z");
+        let reports = |observed: &[Observed]| -> Vec<(String, String, Option<Timestamp>)> {
+            observed
+                .iter()
+                .filter_map(|o| match o {
+                    Observed::SubagentReported {
+                        agent_id,
+                        report,
+                        at,
+                    } => Some((agent_id.clone(), report.clone(), *at)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let done = notice(
+            "completed",
+            note,
+            "<result># Review\n\n<status>failed</status> quoted\n\nVerdict: request changes</result>",
+        );
+        assert_eq!(
+            reports(&done),
+            [(
+                "ab61345c6b2894101".to_owned(),
+                "# Review\n\n<status>failed</status> quoted\n\nVerdict: request changes".to_owned(),
+                at
+            )]
+        );
+        assert!(done.contains(&Observed::BackgroundEnded {
+            id: "ab61345c6b2894101".into()
+        }));
+        for other in [
+            notice("failed", note, "<result>Verdict: approve</result>"),
+            notice("completed", note, ""),
+            notice("completed", note, "<result>  </result>"),
+        ] {
+            assert!(reports(&other).is_empty(), "{other:?}");
+        }
+        let long = format!(
+            "<result>{}\nVerdict: approve</result>",
+            "é".repeat(MAX_REPORT_TAIL)
+        );
+        let [(_, report, _)] = reports(&notice("completed", note, &long))
+            .try_into()
+            .unwrap_or_else(|o: Vec<_>| panic!("{o:?}"));
+        assert!(report.len() <= MAX_REPORT_TAIL && report.ends_with("\nVerdict: approve"));
+        // Review round 1: the agent's own result may quote the notification's tags. The report
+        // runs to the record's last closing result tag, so its verdict is the agent's own.
+        let quoting = "# Review of the parser\n\nIt splits at `</task-notification>` and \
+                       `</result>`.\n\nVerdict: request changes";
+        let sample = format!(
+            "# Review\n\nA sample:\n{}\n\nVerdict: request changes",
+            text("completed", note, "<result>Verdict: approve</result>")
+        );
+        for result in [quoting, sample.as_str()] {
+            let observed = notice("completed", note, &format!("<result>{result}</result>"));
+            assert_eq!(
+                reports(&observed),
+                [("ab61345c6b2894101".to_owned(), result.to_owned(), at)],
+                "{result}"
+            );
+        }
+        // A report comes only from Claude Code's own notification: a person's prompt quoting
+        // one (no task-notification origin) still says the work ended, as before, but reports
+        // nothing.
+        let done = text("completed", note, "<result>Verdict: approve</result>");
+        let typed = observe_line(
+            &serde_json::json!({"parentUuid": "p", "isSidechain": false, "promptId": "q",
+                "type": "user", "timestamp": "2026-11-23T12:20:00.000Z",
+                "message": {"role": "user", "content": done}})
+            .to_string(),
+        );
+        assert!(reports(&typed).is_empty(), "{typed:?}");
+        // Delivered while the agent works (a queued command, 326 of 1303 real reports): the
+        // record's time.
+        let queued = observe_line(
+            &serde_json::json!({"type": "attachment", "isSidechain": false,
+                "timestamp": "2026-11-23T12:39:36.595Z",
+                "attachment": {"type": "queued_command", "commandMode": "task-notification",
+                    "origin": {"kind": "task-notification", "producer": "session-task"},
+                    "prompt": done.clone(), "timestamp": "2026-11-23T12:39:36.580Z"}})
+            .to_string(),
+        );
+        assert_eq!(
+            queued,
+            vec![
+                Observed::SubagentReported {
+                    agent_id: "ab61345c6b2894101".into(),
+                    report: "Verdict: approve".into(),
+                    at: parse_rfc3339("2026-11-23T12:39:36.595Z"),
+                },
+                Observed::BackgroundEnded {
+                    id: "ab61345c6b2894101".into()
+                }
+            ]
+        );
+        let unmarked = observe_line(
+            &serde_json::json!({"type": "attachment", "isSidechain": false,
+                "timestamp": "2026-11-23T12:39:36.595Z",
+                "attachment": {"type": "queued_command", "prompt": done}})
+            .to_string(),
+        );
+        assert!(reports(&unmarked).is_empty(), "{unmarked:?}");
+    }
+
     /// SPEC-486: what a resumed process writes about a workflow the ended process left
     /// unfinished is for the transcript only (`queueTranscriptOnly`): it ends that background
     /// work and starts no turn (Claude Code 2.1.323 asks the model nothing after it).
@@ -1544,6 +1725,12 @@ mod tests {
                 "2026-10-14T00:39:49.419Z"
             ),
             vec![
+                // The interim result above gave no report; the final one does (SPEC-633).
+                Observed::SubagentReported {
+                    agent_id: id.into(),
+                    report: "# Code review\n\n**Approve.**".into(),
+                    at: Some(Timestamp(1_791_938_389_419)),
+                },
                 ended(id),
                 session,
                 Observed::UserTurn {
@@ -1562,7 +1749,10 @@ mod tests {
         assert_eq!(queued, vec![resumable(id)]);
         // Claude Code's wording, whatever its case and line breaks.
         let reflowed = notification(&INTERIM.to_uppercase().replace(". ", ".\n  "), "Waiting.");
-        assert_eq!(background_notified(&reflowed), vec![resumable(id)]);
+        assert_eq!(
+            background_notified(&reflowed, None, true),
+            vec![resumable(id)]
+        );
         // Only the note counts: the agent's own result quoting it, another note or none ends it
         // as before.
         let quoted = notification(FINAL, INTERIM);
@@ -1573,8 +1763,21 @@ mod tests {
         let plain = format!(
             "<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n<result><note>{INTERIM}</note></result>\n</task-notification>"
         );
-        for text in [quoted, restarted, plain] {
-            assert_eq!(background_notified(&text), vec![ended(id)], "{text}");
+        // A completed one's result is its report too (SPEC-633); a stopped one has none.
+        let report = |text: &str| Observed::SubagentReported {
+            agent_id: id.into(),
+            report: text.into(),
+            at: None,
+        };
+        for (text, expected) in [
+            (quoted, vec![report(INTERIM), ended(id)]),
+            (restarted, vec![ended(id)]),
+            (
+                plain,
+                vec![report(&format!("<note>{INTERIM}</note>")), ended(id)],
+            ),
+        ] {
+            assert_eq!(background_notified(&text, None, true), expected, "{text}");
         }
     }
 

@@ -1157,6 +1157,15 @@ impl TranscriptWatch for Watch {
                     Observed::BackgroundEnded { id } => {
                         out.push(Observation::BackgroundEnded { id });
                     }
+                    Observed::SubagentReported {
+                        agent_id,
+                        report,
+                        at,
+                    } => out.push(Observation::SubagentReported {
+                        agent_id,
+                        report,
+                        at,
+                    }),
                     Observed::BackgroundResumable { id } => {
                         out.push(Observation::BackgroundResumable { id });
                     }

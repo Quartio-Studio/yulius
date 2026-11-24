@@ -263,6 +263,17 @@ pub enum Observation {
         /// The run id the workflow is resumed by (letters, digits, `_` and `-` only).
         run: String,
     },
+    /// A task notification said the background agent `agent_id` completed with `report` (the
+    /// end of its result): a review round's report when its `SubagentStop` was lost (SPEC-633
+    /// RRE-002).
+    SubagentReported {
+        /// Claude Code's id of the agent.
+        agent_id: String,
+        /// The end of its result.
+        report: String,
+        /// When the notification was recorded, if known.
+        at: Option<Timestamp>,
+    },
     /// A task notification said the background work `id` ended.
     BackgroundEnded {
         /// Claude Code's task id.

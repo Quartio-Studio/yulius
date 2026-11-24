@@ -239,6 +239,7 @@ impl TranscriptFacts {
             | Observation::WorkflowLaunched { .. }
             | Observation::SubagentAnswered { .. }
             | Observation::SubagentCutOff { .. }
+            | Observation::SubagentReported { .. }
             | Observation::BackgroundStarted { .. }
             | Observation::BackgroundEnded { .. }
             | Observation::BackgroundResumable { .. } => {}
