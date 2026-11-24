@@ -58,10 +58,14 @@ nothing. In both cases nothing ended the round.
 ## Consequences
 
 A reported round ends after a restart once the watcher replays the transcript, and when its start
-came first. A round neither hook nor transcript can place still reads unreported after the merge:
+came first. A round neither hook nor transcript can place still reads unreported after the merge,
+and the review numbers count it as a round without a report, as before:
 - The start came before the round and the stop was lost too: the notification links nothing.
 - A usage limit cut the reviewer off.
-- The first stop was lost and the reviewer was resumed in the seconds before the reattached
-  watcher replayed the first report. The first report then ends the round the resume continues,
-  and the second report finds no open round. The review numbers count such
-rounds as rounds without a report, as before.
+
+One case ends a round with the wrong report rather than none. The first stop was lost, and the
+reviewer was resumed in the seconds before the reattached watcher replayed the first report. That
+report then ends the round the resume continues, and the second report finds no open round, so
+the delivery shows the first verdict. If only the second report approved the head, the merge
+record says that no round approved it. Fixing this needs the round's last start time, which the
+store does not keep.

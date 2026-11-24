@@ -2160,3 +2160,58 @@ async fn an_unlinked_no_fable_round_its_asked_reviewer_reported_is_no_fable_no_m
     );
     Ok(())
 }
+
+/// SPEC-633 RRE-001, review round 2: when the reviewer that ran is the one the round decided (the
+/// Opus reviewer asked for by name on a subscription out of Fable), the stop fallback keeps the
+/// round's reason.
+#[tokio::test]
+async fn an_unlinked_round_its_decided_reviewer_reported_keeps_its_reason() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let full = json!({"weekly_fable": {"used_percent": 100.0, "window_minutes": 10080,
+        "resets_at": 4_102_444_800_000_i64}});
+    let account = add_account(&h, "acc-1", Some(full.to_string())).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    hook(
+        &h.internal,
+        "SubagentStart",
+        json!({"agent_id": "rev-1", "agent_type": "yulius-reviewer-opus"}),
+    )
+    .await?;
+    let (_, _, answer) = hook(
+        &h.internal,
+        "PreToolUse",
+        agent_start("yulius-reviewer-opus"),
+    )
+    .await?;
+    assert_eq!(
+        reviewer_run(&answer, "yulius-reviewer-opus"),
+        "yulius-reviewer-opus"
+    );
+    h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &h.internal,
+        "SubagentStop",
+        reviewer_stop("rev-1", "yulius-reviewer-opus", "Verdict: approve"),
+    )
+    .await?;
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!(
+        (
+            open[0].agent.as_str(),
+            open[0].model.as_str(),
+            open[0].reason.as_str(),
+            open[0].subagent_id.as_deref(),
+            open[0].verdict.as_deref()
+        ),
+        (
+            "yulius-reviewer-opus",
+            "claude-opus-5-5",
+            "no_fable",
+            Some("rev-1"),
+            Some("approve")
+        )
+    );
+    Ok(())
+}

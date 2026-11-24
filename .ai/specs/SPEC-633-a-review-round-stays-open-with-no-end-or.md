@@ -1,6 +1,6 @@
 ---
 yulius-task: fc7e0234-8cbd-4d7a-9b9e-c238f11eeed8
-status: in-progress
+status: done
 ---
 
 # SPEC-633 A reviewer that reported ends its round; a round its merge left open reads unreported
@@ -100,7 +100,7 @@ either: the merge needs the approval of the reviewed head first, which is the st
 - [x] A round its pull request merged without a report reads unreported
 - [x] Decision, architecture and changes entry
 - [x] Review round 1 findings fixed test-first
-- [ ] Independent review approved
+- [x] Independent review approved
 
 ## Acceptance criteria
 
@@ -193,4 +193,20 @@ After the fixes:
     alone. No issue tracks them; reported on #1726.
 - `review_rounds::` and the replay test: 42 passed.
 - `yulius-app` lib: 724 passed. clippy `-D warnings` and `cargo fmt --check` are clean.
+
+### Review round 2 (head c53f6d3a6, approve)
+
+The reviewer found all five round-1 findings fixed and tested. Its own structure-only port of the
+parser rules gave the same id and verdict for all 1307 real reports.
+
+Its two notes were tests and documents only, fixed after the approval:
+- **A test that keeps the reason.**
+  `review_rounds::an_unlinked_round_its_decided_reviewer_reported_keeps_its_reason`: the decided
+  reviewer reported, so the reason stays `no_fable`. The reviewer's mutation of the `CASE` had
+  survived before this test.
+- **ADR-0467 Consequences.** A resume before the replay ends the round with the first report; it
+  does not read unreported.
+
+Not changed: its optional nit, two notices in one record. No real record has two.
+- `review_rounds::`: 42 passed. `python3 scripts/repository_tests.py` passes.
 
