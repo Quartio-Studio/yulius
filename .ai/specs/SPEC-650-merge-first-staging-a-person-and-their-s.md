@@ -124,8 +124,8 @@ production authorization, not staging.
 - [x] Person staging requests in the domain: a red task-less request waits as inherited, admission of a person's repeat
 - [x] The queue deploys task-less requests as their requester and carries a red one forward to the next head
 - [x] Person's ask: App::staging_ask and POST /cd/{env}/staging; the plain deploy's refusal names it
-- [ ] The Superagent's cd_deploy of staging waits on its panel and records the person's request
-- [ ] CD page: Deploy dev enabled for writers, staging waits in plain words, e2e
+- [x] The Superagent's cd_deploy of staging waits on its panel and records the person's request
+- [x] CD page: Deploy dev enabled for writers, staging waits in plain words, e2e
 - [ ] Docs, changes entry and the independent review of pull request 1
 - [ ] Scheduled serving: serve_every_minutes and serve_after_merges in [cd.<name>]
 - [ ] The staging tick records a scheduled request when staging is behind
