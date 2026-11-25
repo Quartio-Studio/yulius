@@ -684,9 +684,9 @@ async fn end_to_end(iso: &Iso, forward: u16, blocked: u16) -> TestResult {
         iso,
         &task,
         &format!(
-            "(echo x >> {m}/MEMORY.md) 2>/dev/null && echo mem-append-wrote || echo mem-append-refused; (echo n > {m}/new.md) 2>/dev/null && echo mem-create-wrote || echo mem-create-refused; rm -f {m}/MEMORY.md 2>/dev/null && echo mem-delete-wrote || echo mem-delete-refused; mv {m} {m}.x 2>/dev/null && echo mem-rename-wrote || echo mem-rename-refused; (echo r >> $HOME/.claude/CLAUDE.md) 2>/dev/null && echo claude-md-wrote || echo claude-md-refused; echo mem-read=$(cat {m}/MEMORY.md)"
+            "(echo x >> {m}/MEMORY.md) 2>/dev/null && echo mem-append-wrote || echo mem-append-refused; (echo n > {m}/new.md) 2>/dev/null && echo mem-create-wrote || echo mem-create-refused; rm -f {m}/MEMORY.md 2>/dev/null && echo mem-delete-wrote || echo mem-delete-refused; mv {m} {m}.x 2>/dev/null && echo mem-rename-wrote || echo mem-rename-refused; (echo r >> $HOME/.claude/CLAUDE.md) 2>/dev/null && echo claude-md-wrote || echo claude-md-refused; echo mem-read=$(cat {m}/MEMORY.md); echo MEM-$((40+2))-DONE"
         ),
-        "SH EXIT",
+        "MEM-42-DONE",
         WAIT,
     )
     .await?;
@@ -701,7 +701,11 @@ async fn end_to_end(iso: &Iso, forward: u16, blocked: u16) -> TestResult {
     ] {
         assert!(screen.contains(expected), "{expected}: {screen}");
     }
-    assert!(!screen.contains("-wrote"), "{screen}");
+    // A result line, not the echoed command (which names every outcome).
+    assert!(
+        !screen.lines().any(|line| line.trim().ends_with("-wrote")),
+        "{screen}"
+    );
     assert_eq!(
         std::fs::read_to_string(memory.join("MEMORY.md"))?,
         "existing note\n"
@@ -1206,7 +1210,13 @@ async fn docker_end_to_end(
         std::fs::read_to_string(memory.join("MEMORY.md"))?,
         "existing note\n"
     );
-    assert!(!claude.join("CLAUDE.md").exists(), "{out}");
+    // An agent session's guard may have left an empty `CLAUDE.md` as its mount point: nothing
+    // the container wrote is in it.
+    assert_eq!(
+        std::fs::read_to_string(claude.join("CLAUDE.md")).unwrap_or_default(),
+        "",
+        "{out}"
+    );
 
     // `--privileged` stays inside the sandbox: its user namespace, no nested one, and even in the
     // engine's cgroup namespace (`--cgroupns=host`) only the engine's tree, not the sandbox's
