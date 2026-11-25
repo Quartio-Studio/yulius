@@ -3665,6 +3665,7 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_request_hosts",
         "secret_create_from_file",
         "browser_fill_secret",
+        "Dev-stage deploys",
         "$NAME",
         "/s/fixture/secrets?section=agents",
     ] {
