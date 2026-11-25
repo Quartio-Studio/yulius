@@ -3413,6 +3413,7 @@ impl App {
                     .collect(),
                 identity: None,
                 join: join.map(Box::new),
+                guard: Vec::new(),
             }
         } else {
             Containment::None

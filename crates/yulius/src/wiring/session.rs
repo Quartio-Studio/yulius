@@ -23,9 +23,10 @@ use yulius_ptyhost::{
 };
 use yulius_sandbox::{cgroup, freeze};
 
-/// The ptyhost wire form of an app-level containment plan (shared with the editor adapter).
+/// The ptyhost wire form of an app-level containment plan; `exe` is the `yulius` executable
+/// that opens a guarded run's memory paths (`sandbox-exec --guard`, SPEC-652).
 #[must_use]
-pub fn wire_containment(containment: &Containment) -> wire::Containment {
+pub fn wire_containment(containment: &Containment, exe: &Path) -> wire::Containment {
     match containment {
         Containment::None => wire::Containment::None,
         Containment::Bubblewrap {
@@ -36,6 +37,7 @@ pub fn wire_containment(containment: &Containment) -> wire::Containment {
             binds,
             identity,
             join,
+            guard,
         } => wire::Containment::Bubblewrap(BubblewrapSpec {
             sandbox_root: sandbox_root.to_string_lossy().into_owned(),
             home: home.to_string_lossy().into_owned(),
@@ -89,7 +91,10 @@ pub fn wire_containment(containment: &Containment) -> wire::Containment {
                         .map(|p| p.to_string_lossy().into_owned()),
                 })
             }),
-            guard: None,
+            guard: (!guard.is_empty()).then(|| wire::Guard {
+                exe: exe.to_string_lossy().into_owned(),
+                paths: guard.clone(),
+            }),
         }),
     }
 }
@@ -192,7 +197,7 @@ impl SessionHost for PtySessionHost {
             write_planned(file).map_err(|e| upstream("cannot write run configuration", e))?;
         }
         let env: BTreeMap<String, String> = plan.env.iter().cloned().collect();
-        let containment = wire_containment(&plan.containment);
+        let containment = wire_containment(&plan.containment, &self.exe);
         let launch = LaunchSpec {
             version: wire::RECORD_VERSION,
             attempt_id: attempt_id.to_owned(),
@@ -712,8 +717,11 @@ mod tests {
             binds: Vec::new(),
             identity: None,
             join: Some(Box::new(join)),
+            guard: Vec::new(),
         };
-        let wire::Containment::Bubblewrap(spec) = wire_containment(&containment) else {
+        let wire::Containment::Bubblewrap(spec) =
+            wire_containment(&containment, Path::new("/usr/local/bin/yulius"))
+        else {
             return Err("a bubblewrap containment".into());
         };
         let argv = yulius_ptyhost::bwrap_argv(&spec, &["sh".into()], "/data/sandboxes/s1");
@@ -770,7 +778,7 @@ mod tests {
             secret_env_names: vec!["PROD_TOKEN".into()],
             cols: 160,
             rows: 48,
-            containment: wire_containment(&containment),
+            containment: wire_containment(&containment, Path::new("/usr/local/bin/yulius")),
             ring_bytes: 0,
             token_sha256: "0".repeat(64),
             linger_ms: wire::DEFAULT_LINGER_MS,

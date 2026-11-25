@@ -1312,6 +1312,7 @@ impl App {
                 .collect(),
             identity: None,
             join: join.map(|join| Box::new(ci_join(join))),
+            guard: Vec::new(),
         }
     }
 
@@ -2212,6 +2213,7 @@ mod tests {
                 binds: Vec::new(),
                 identity: None,
                 join: None,
+                guard: Vec::new(),
             },
         };
         bind_run_files(&mut plan);

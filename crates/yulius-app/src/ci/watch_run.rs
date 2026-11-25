@@ -174,6 +174,7 @@ impl App {
                     .collect(),
                 identity: None,
                 join: join.map(|join| Box::new(ci_join(join))),
+                guard: Vec::new(),
             };
             (containment, lease)
         } else {

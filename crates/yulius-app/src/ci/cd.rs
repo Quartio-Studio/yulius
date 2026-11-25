@@ -2041,6 +2041,7 @@ impl App {
                 binds: Vec::new(),
                 identity: None,
                 join: None,
+                guard: Vec::new(),
             },
             (CdStage::Dev, join) => Containment::Bubblewrap {
                 sandbox_root: self.sandbox_dir(&sandbox.id),
@@ -2053,6 +2054,7 @@ impl App {
                     .collect(),
                 identity: None,
                 join: join.map(|join| Box::new(ci_join(join))),
+                guard: Vec::new(),
             },
         };
         Ok((containment, lease))
@@ -2580,6 +2582,7 @@ pub fn production_containment(
         binds: Vec::new(),
         identity: None,
         join: Some(Box::new(join)),
+        guard: Vec::new(),
     }
 }
 

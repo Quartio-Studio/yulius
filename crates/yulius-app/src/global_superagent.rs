@@ -374,6 +374,7 @@ impl App {
                 .collect(),
             identity: None,
             join: None,
+            guard: Vec::new(),
         }
     }
 

@@ -108,8 +108,8 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 
 - [x] Spec and decision record of the read-only memory guarantee
 - [ ] Protected paths of each harness and session, with Claude Code's memory key
-- [ ] bwrap binds of opened descriptors: placeholders, pins and the argument descriptors
-- [ ] `sandbox-exec` opens the protected paths without following links and starts bwrap
+- [x] bwrap binds of opened descriptors: placeholders, pins and the argument descriptors
+- [x] `sandbox-exec` opens the protected paths without following links and starts bwrap
 - [ ] Task runs, a person's Superagent and the Global Superagent launch with the guard
 - [ ] Claude Code run settings pin the memory folder and deny edits there
 - [ ] Real-bwrap proof on a guest: writes refused per harness, reads kept, purge works

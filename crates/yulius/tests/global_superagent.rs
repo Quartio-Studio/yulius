@@ -548,6 +548,7 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
         binds,
         identity,
         join,
+        guard: _,
     } = &plan.containment
     else {
         return Err("not contained".into());
