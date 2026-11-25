@@ -87,8 +87,9 @@ non-owner creator (#1751, outside this change).
   token names the account they signed in as (`github_id`): GitHub frees a renamed account's login
   for anyone (#653). An account that cannot be confirmed gets nobody the role (`failed`).
 - CRA-006: A grant that fails in a way that may pass (a 5xx, a timeout, the network; the adapter's
-  `map_refusal` keeps those `Upstream`) is asked again, at most 3 times in all, with a short pause;
-  a refusal (a 4xx) is asked once.
+  `map_grant` keeps those `Upstream`) is asked again, at most 3 times in all, with a short pause;
+  a refusal (a 4xx) is asked once, and so is a rate limit (`Capacity`), which is waited out
+  rather than asked into; both end the grant (`refused`, `failed`).
 
 ## Plan
 

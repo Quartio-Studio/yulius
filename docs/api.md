@@ -181,7 +181,8 @@ meanwhile, only what onboarding will do and its button (SPEC-096). Create mode
 and adds rulesets requiring pull requests on both. In an organization the App creates it, so Yulius
 then gives the creator the `admin` role on it (`PUT /repos/{owner}/{repo}/collaborators/{login}`
 with the installation token, to the login their own GitHub token names now and only for the
-account they signed in as; a 5xx or timeout is asked again, at most 3 times; ADR-0476). Every
+account they signed in as; a 5xx or timeout is asked again, at most 3 times, a refusal or a rate
+limit once; ADR-0476). Every
 outcome is audited as `sandbox.creator_admin` about `owner/name` when it happens. An invitation (a
 creator outside the organization), a refusal or a failure still creates the project: the answer's
 `access` is what GitHub gives them and its `admin_grant` says `invited`, `refused` or `failed`
