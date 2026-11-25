@@ -163,7 +163,18 @@ Review round 1 (findings answered in the pull request):
 - The new tests failed on `ee478fb7f` against the round-0 code: no `admin_grant` (`left:
   (String("write"), Null)`), the audit on the sandbox instead of the repository, and the stale
   login granted (`left: [("Quartio-Studio/renamed", "alice", "inst-7")]`).
-- To be completed with the round-1 runs.
+- With the round-1 fix: `projects::` 37 of 37; `scripts/cargo nextest run -p yulius -p yulius-app
+  -p yulius-contracts -p yulius-server --no-fail-fast`: 4310 passed, 26 skipped;
+  `scripts/cargo nextest run -p yulius-github --all-features`: 66 passed; e2e
+  `npx e2e run tests/home.e2e.ts`: 6 of 6 (the three warnings, and none for a creator made admin);
+  `scripts/cargo clippy --locked -p yulius-github -p yulius-app -p yulius -p yulius-contracts
+  --all-targets --all-features -- -D warnings`: clean; `scripts/dev quick`: passed.
+- Mutation checks by hand, each restored: dropping the account id check failed
+  `the_admin_role_goes_to_the_creators_current_login_only`; granting the stored login instead of
+  the current one failed it too; never asking again after a 5xx failed
+  `an_invited_refused_or_failed_creator_still_gets_the_project_and_the_reason` (the `flaky` case).
+- Vidoc: `yulius security-scan` answered "Security scan disabled: Vidoc is turned off in Yulius,
+  for this project or the whole instance; nothing was scanned": not run, not passed.
 
 Not testable here: GitHub's real answer to `PUT …/collaborators/{login}` for this organization (the
 sandbox's installation token reaches only `Quartio-Studio/yulius`; GitHub documents 204 for an
