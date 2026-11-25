@@ -49,6 +49,7 @@ pub mod scope;
 pub mod spec_format;
 pub mod stages;
 pub mod staging;
+pub mod staging_gate;
 pub mod steps;
 pub mod sweep;
 pub mod task;

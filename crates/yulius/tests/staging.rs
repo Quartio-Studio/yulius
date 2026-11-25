@@ -5086,3 +5086,317 @@ async fn a_needs_you_card_may_ask_a_named_person_who_can_press_the_deploy() -> T
     assert_eq!(bob["isError"], false, "{bob}");
     Ok(())
 }
+
+/// The candidate run judging `sha` (SPEC-575 MFS-003), if one was queued.
+async fn candidate(f: &Fixture, sha: &str) -> BoxResult<Option<String>> {
+    let runs =
+        f.h.store
+            .ci_runs_for_sha(&SandboxId::parse("s1")?, sha)
+            .await?;
+    let mut candidates = runs
+        .iter()
+        .filter(|run| run.reference == CiRef::Candidate(sha.to_owned()));
+    let first = candidates.next().map(|run| run.id.clone());
+    assert!(candidates.next().is_none(), "one candidate run: {runs:?}");
+    Ok(first)
+}
+
+/// Ends run `id` with the full suite `full`, naming its failing `tests` as CI retains them.
+async fn finish(f: &Fixture, id: &str, full: RunState, tests: &[&str]) -> TestResult {
+    let blocks = tests
+        .iter()
+        .map(|name| format!("---- {name} stdout ----\nassertion failed\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let state = full.as_str();
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET state = CASE WHEN job_key = 'full' THEN '{state}' ELSE 'passed' END, \
+             exit_code = CASE WHEN job_key = 'full' AND '{state}' <> 'passed' THEN 1 ELSE 0 END, \
+             failures = CASE WHEN job_key = 'full' AND '{blocks}' <> '' THEN '{blocks}' END \
+             WHERE run_id = '{id}'; \
+             UPDATE ci_runs SET state = '{state}' WHERE id = '{id}'"
+        ))
+        .await?;
+    Ok(())
+}
+
+/// SPEC-653 NWF-001: a request below a newer revision whose full gate passed gets no run of its
+/// own. Nobody asked for the green revision and a red head sits above it, yet Yulius asks for the
+/// green revision itself, deploys it and includes the request (review round 1, finding 1).
+#[tokio::test]
+async fn a_request_under_a_green_newer_revision_gets_no_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "older").await?;
+    agent(&f, "newer").await?;
+    let older = land(&f, "older", "older").await?;
+    let newer = land(&f, "newer", "newer").await?;
+    let green = gate(&f, &newer, RunState::Passed).await?;
+    let red = f.push("dev", &[("red", Some("red"))])?;
+    named_gate(&f, &red, &["gate::red"]).await?;
+    let asked = ask(&f, "older").await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &older).await?, None, "no run of its own");
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::Inherited, "{row:?}");
+    let note = row.note.unwrap_or_default();
+    assert!(
+        note.contains(&newer[..12]) && note.contains(&green) && note.contains("no run of its own"),
+        "{note}"
+    );
+    for _ in 0..3 {
+        f.h.app.staging_advance(&sandbox, "staging").await?;
+    }
+    settle(&f).await?;
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&newer));
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::Included, "{row:?}");
+    assert_eq!(candidate(&f, &newer).await?, None, "its own pass judged it");
+    Ok(())
+}
+
+/// SPEC-653 NWF-001 for a person's request (review round 1, finding 2): covered by a newer green
+/// revision, it says so instead of a failure, and the green revision deploys and includes it.
+#[tokio::test]
+async fn a_persons_request_under_a_green_newer_revision_says_so_and_is_included() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Running).await?;
+    let asked = person_asks(&f, &f.alice).await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(request(&f, &id).await?.state, StagingState::Inherited);
+    let view = staging_view(&f).await?;
+    let mine = view["requests"]
+        .as_array()
+        .ok_or("requests")?
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .ok_or("the request")?
+        .clone();
+    assert_eq!(
+        mine["waiting"],
+        format!(
+            "Tests passed on a newer revision containing {}: it deploys with that revision",
+            &r1[..7]
+        ),
+        "{view}"
+    );
+    for _ in 0..3 {
+        f.h.app.staging_advance(&sandbox, "staging").await?;
+    }
+    settle(&f).await?;
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&r2));
+    assert_eq!(request(&f, &id).await?.state, StagingState::Included);
+    Ok(())
+}
+
+/// SPEC-653 NWF-002 and NWF-004: of three waiting requests the newest gets the only run. Its new
+/// failure narrows the range: the middle request is judged, then the older one, and only the
+/// merge that brought the failure fails its gate; the newest inherits it.
+#[tokio::test]
+async fn the_newest_goes_first_and_a_new_failure_is_narrowed_to_its_merge() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b", "c"] {
+        agent(&f, task).await?;
+    }
+    // The integration branch's run of an earlier revision holds the lane while they ask.
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    let holding = gate(&f, &base, RunState::Running).await?;
+    let a = land(&f, "a", "a").await?;
+    let b = land(&f, "b", "b").await?;
+    let c = land(&f, "c", "c").await?;
+    let mut ids = Vec::new();
+    for task in ["a", "b", "c"] {
+        ids.push(ask(&f, task).await?["id"].as_str().ok_or("id")?.to_owned());
+    }
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    for sha in [&a, &b, &c] {
+        assert_eq!(candidate(&f, sha).await?, None, "the lane is held");
+    }
+    finish(&f, &holding, RunState::Passed, &[]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &a).await?, None);
+    assert_eq!(candidate(&f, &b).await?, None);
+    let newest = candidate(&f, &c)
+        .await?
+        .ok_or("the newest is judged first")?;
+
+    // It fails with a new failure: the middle request of its range is judged, and nobody is
+    // told who broke the gate yet.
+    finish(&f, &newest, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &a).await?, None);
+    let middle = candidate(&f, &b)
+        .await?
+        .ok_or("a narrowing run on the middle")?;
+    assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Testing);
+    finish(&f, &middle, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let oldest = candidate(&f, &a).await?.ok_or("then the older half")?;
+    assert_eq!(request(&f, &ids[1]).await?.state, StagingState::Testing);
+    finish(&f, &oldest, RunState::Passed, &[]).await?;
+    settle(&f).await?;
+
+    let breaker = request(&f, &ids[1]).await?;
+    assert_eq!(breaker.state, StagingState::GateFailed, "{breaker:?}");
+    let note = breaker.note.unwrap_or_default();
+    assert!(note.contains("new failures: gate::x"), "{note}");
+    let newest = request(&f, &ids[2]).await?;
+    assert_eq!(newest.state, StagingState::Inherited, "{newest:?}");
+    let note = newest.note.unwrap_or_default();
+    assert!(
+        note.contains(&format!("gate::x from {}", &b[..12])),
+        "{note}"
+    );
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&a));
+    assert_eq!(request(&f, &ids[0]).await?.state, StagingState::Verified);
+    Ok(())
+}
+
+/// SPEC-653 NWF-004: while a red revision's range still holds a waiting request, nobody is
+/// named as the breaker, even when the lane is busy and the narrowing run cannot start yet.
+/// Once it is narrowed, the notice names the merge that brought the failure.
+#[tokio::test]
+async fn no_repair_owner_is_named_before_a_new_failure_is_narrowed() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b", "c"] {
+        agent(&f, task).await?;
+    }
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    gate(&f, &base, RunState::Passed).await?;
+    let a = land(&f, "a", "a").await?;
+    let b = land(&f, "b", "b").await?;
+    let c = land(&f, "c", "c").await?;
+    // The integration branch's run judges c while they ask.
+    let judging_c = gate(&f, &c, RunState::Running).await?;
+    let mut ids = Vec::new();
+    for task in ["a", "b", "c"] {
+        ids.push(ask(&f, task).await?["id"].as_str().ok_or("id")?.to_owned());
+    }
+    let sandbox = sandbox(&f).await?;
+    // A later merge's run holds the lane when c fails with a new failure.
+    let d = f.push("dev", &[("d", Some("d"))])?;
+    let judging_d = gate(&f, &d, RunState::Running).await?;
+    finish(&f, &judging_c, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &b).await?, None, "the lane is busy");
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let notices = || async {
+        BoxResult::Ok(f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone())
+    };
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(notices().await?, json!([]), "c may not be the breaker");
+    assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Testing);
+
+    finish(&f, &judging_d, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let middle = candidate(&f, &b).await?.ok_or("the narrowing run")?;
+    finish(&f, &middle, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(notices().await?, json!([]), "a may still be the breaker");
+    let oldest = candidate(&f, &a).await?.ok_or("the older half")?;
+    finish(&f, &oldest, RunState::Passed, &[]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let notices = notices().await?;
+    assert_eq!(notices[0]["test"], "gate::x", "{notices}");
+    assert_eq!(notices[0]["revision"], b.as_str(), "{notices}");
+    assert_eq!(request(&f, &ids[1]).await?.state, StagingState::GateFailed);
+    assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Inherited);
+    Ok(())
+}
+
+/// SPEC-653 NWF-006 (review round 1): a person's cancel of a request's own candidate stands,
+/// also when a newer red revision with only earlier failures would answer it without a run.
+#[tokio::test]
+async fn a_cancelled_candidate_fails_its_gate_under_a_red_revision() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "a").await?;
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    named_gate(&f, &base, &["gate::x"]).await?;
+    let a = land(&f, "a", "a").await?;
+    let asked = ask(&f, "a").await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let own = candidate(&f, &a).await?.ok_or("its own candidate")?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET state = 'cancelled' WHERE id = '{own}'; \
+             UPDATE ci_jobs SET state = 'cancelled' WHERE run_id = '{own}'"
+        ))
+        .await?;
+    let later = f.push("dev", &[("later", Some("later"))])?;
+    named_gate(&f, &later, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let row = request(&f, &id).await?;
+    assert_eq!(row.state, StagingState::GateFailed, "{row:?}");
+    assert_eq!(row.ci_run_id.as_deref(), Some(own.as_str()));
+    Ok(())
+}
+
+/// SPEC-653 NWF-003 (review round 1): a request between two red revisions with the same failure
+/// needs no run. The queue reads below the lowest request down to the judged revision whose
+/// failures the newer red one is compared with.
+#[tokio::test]
+async fn a_request_between_red_revisions_with_the_same_failure_gets_no_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "a").await?;
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    named_gate(&f, &base, &["gate::x"]).await?;
+    let a = land(&f, "a", "a").await?;
+    let later = f.push("dev", &[("later", Some("later"))])?;
+    named_gate(&f, &later, &["gate::x"]).await?;
+    let asked = ask(&f, "a").await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &a).await?, None, "no narrowing run");
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::Inherited, "{row:?}");
+    assert!(
+        row.note
+            .is_some_and(|note| note.contains("failed only on failures from earlier merges")),
+    );
+    Ok(())
+}
+
+/// SPEC-653 NWF-001 (review round 2): a round that moved a covered request to `inherited` and
+/// ended before it asked for the green revision (an error, a restart) is made good by a later
+/// round, although no request is testing any more.
+#[tokio::test]
+async fn a_covered_request_left_by_an_interrupted_round_is_still_served() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "older").await?;
+    let older = land(&f, "older", "older").await?;
+    let newer = f.push("dev", &[("newer", Some("newer"))])?;
+    let judging = gate(&f, &newer, RunState::Running).await?;
+    let asked = ask(&f, "older").await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &older).await?, None, "the lane is held");
+    // The interrupted round: covered, and nothing asked for the green revision.
+    finish(&f, &judging, RunState::Passed, &[]).await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE staging_requests SET state = 'inherited', \
+             note = 'the full gate passed on revision {}, which contains it' WHERE id = '{id}'",
+            &newer[..12]
+        ))
+        .await?;
+    for _ in 0..3 {
+        f.h.app.staging_advance(&sandbox, "staging").await?;
+    }
+    settle(&f).await?;
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&newer));
+    assert_eq!(request(&f, &id).await?.state, StagingState::Included);
+    Ok(())
+}

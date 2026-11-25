@@ -3702,6 +3702,16 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
   Inventory includes retained full integration and candidate runs and configuration refusals at the current integration head after unrelated PR runs fill its planning window. An active staging candidate defers admission of a new integration suite.
+- **Newest first** ([decision 0480](decisions/0480-the-full-gate-judges-the-newest-waiting-revision-first.md),
+  [SPEC-653](../.ai/specs/SPEC-653-staging-the-full-gate-judges-the-newest.md)). Each round reads
+  up to 512 first-parent revisions below the verified head and their newest verdicts, and
+  `yulius_domain::staging_gate::judging` decides: a `testing` request at or below a green revision
+  needs no run (`inherited`, naming it; `stg::serves_green` asks for that revision when no request
+  at or above it is on its way); the candidate run goes to the newest request above every
+  judged revision; under a red revision a request needs a run only when that revision brings a
+  failure the judged revision below it did not have. Then its range is bisected over its waiting
+  requests (middle first, before newer requests), the red revision's own request stays `testing`,
+  and the gate history stops its replay before it, so nobody is named the breaker too early.
 - When a test fails, first-parent gate evidence identifies its origin. Candidate runs are queued
   one at a time. The queue records inherited tests and completes those requests in revision
   order once a verified deployment contains them. One available worker owns the red branch.

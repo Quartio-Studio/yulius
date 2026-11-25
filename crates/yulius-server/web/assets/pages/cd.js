@@ -41,14 +41,14 @@ const SECRET_STATE = {
   // Nobody can allow it: the Secrets page offers no Allow for a secret agents use (SPEC-237).
   agents_use: { label: 'agents use it: production never gets it', tone: 'danger' },
 };
-// A merge-first staging request's state (SPEC-575, ADR-0411).
+// A merge-first staging request's state (SPEC-575, ADR-0411, ADR-0480).
 const STAGING_STATE = {
   testing: { label: 'full gate running', tone: 'warn' },
   ready: { label: 'waiting its turn', tone: '' },
   deploying: { label: 'deploying', tone: 'warn' },
   verified: { label: 'verified on staging', tone: 'ok' },
   included: { label: 'in a verified deploy', tone: 'ok' },
-  inherited: { label: 'waiting for a fix', tone: 'warn' },
+  inherited: { label: 'waiting for a verified revision', tone: 'warn' },
   gate_failed: { label: 'full gate failed', tone: 'danger' },
   deploy_failed: { label: 'deploy failed', tone: 'danger' },
   superseded: { label: 'superseded', tone: '' },
