@@ -65,12 +65,12 @@ Confirmed against `dev` at 1770c1b30.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] A billing cycle counts a subscription's next charge
-- [ ] The store keeps each subscription's charge date and drops it with the subscription
-- [ ] PUT and DELETE /api/admin/accounts/{id}/billing, and the next charge in every account view
-- [ ] Each Subscriptions card shows its next charge and sets it in a dialog
-- [ ] ADR-0478, API reference, architecture and product say where the charge date comes from
+- [x] Read the product context and related work, then write and validate the spec
+- [x] A billing cycle counts a subscription's next charge
+- [x] The store keeps each subscription's charge date and drops it with the subscription
+- [x] PUT and DELETE /api/admin/accounts/{id}/billing, and the next charge in every account view
+- [x] Each Subscriptions card shows its next charge and sets it in a dialog
+- [x] ADR-0478, API reference, architecture and product say where the charge date comes from
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
