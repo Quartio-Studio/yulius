@@ -506,7 +506,7 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "cd_deploy",
-            "Deploy an environment cd_status lists: Yulius runs its deploy and verify commands from the integration branch head; follow the run with cd_status. A dev-stage one deploys at once. A production-stage one is a person's: your Superagent call waits on its panel until the person types the project's slug (an administrator), and then deploys as them; any other caller is refused (the CD page).",
+            "Deploy an environment cd_status lists: Yulius runs its deploy and verify commands from the integration branch head; follow the run with cd_status. A dev-stage one deploys at once. A production-stage one is a person's: your Superagent call waits on its panel until the person types the project's slug (an administrator), and then deploys as them; any other caller is refused (the CD page). The merge-first staging target (its staging queue in cd_status) waits on the panel the same way (write access is enough), then asks its queue for the integration head: it deploys once that revision's full gate passed, or the next green revision if it is red.",
             json!({"environment": {"type": "string", "description": "An environment's name from cd_status (dev, prod, …)"}}),
             &["environment"],
         ),

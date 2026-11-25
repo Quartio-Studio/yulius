@@ -89,6 +89,17 @@ impl RepoAccess {
     }
 }
 
+/// How GitHub took a role given to a person on a repository
+/// ([`crate::GitHubClient::add_collaborator`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollaboratorAdded {
+    /// 204: they have the role now (a member of the owning organization, or a collaborator
+    /// already).
+    Added,
+    /// 201: GitHub invited them; they have the role once they accept the invitation.
+    Invited,
+}
+
 /// Repository creation request. Use [`CreateRepo::private`] for the Yulius defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateRepo {

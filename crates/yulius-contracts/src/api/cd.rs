@@ -79,6 +79,38 @@ pub struct CdEnvironment {
     /// The merge-first staging target's queue (SPEC-575); `None` for every other environment.
     #[serde(default)]
     pub staging: Option<CdStaging>,
+    /// Its Deploy button for the person reading it (SPEC-650 PST-007): the one place that
+    /// decides whether it works for them, which the CD page and guidance both follow.
+    #[serde(default)]
+    pub deploy_action: CdDeployAction,
+}
+
+/// An environment's Deploy button for one person (SPEC-650 PST-007).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdDeployAction {
+    /// What it says: `Deploy dev`, `Deploy production…`.
+    pub label: String,
+    /// It works for them now.
+    pub enabled: bool,
+    /// Why it does not, in words the page shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Why it does not, as a code: `administrator`, `write`, `nothing`, `running` or `waiting`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl CdDeployAction {
+    /// `reason`: only an administrator deploys a production-stage environment.
+    pub const ADMINISTRATOR: &'static str = "administrator";
+    /// `reason`: the reader has no write access.
+    pub const WRITE: &'static str = "write";
+    /// `reason`: the environment has nothing to deploy (empty or not defined).
+    pub const NOTHING: &'static str = "nothing";
+    /// `reason`: a deploy of it is running.
+    pub const RUNNING: &'static str = "running";
+    /// `reason`: production waits for the rollback drill it asked for.
+    pub const WAITING: &'static str = "waiting";
 }
 
 /// A merge-first staging target's queue (SPEC-575, ADR-0411).
@@ -92,6 +124,10 @@ pub struct CdStaging {
     pub verified: Option<String>,
     /// The newest requests, newest first.
     pub requests: Vec<CdStagingRequest>,
+    /// What the newest pending request of no task waits for, in plain words ("Waiting for green
+    /// tests on 1a2b3c4"; SPEC-650 PST-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
 }
 
 /// One staging request (SPEC-575 MFS-004 to MFS-008).
@@ -102,6 +138,12 @@ pub struct CdStagingRequest {
     /// The task it delivers, by number.
     #[serde(default)]
     pub task_number: Option<u32>,
+    /// The person who asked when no task did, by login (SPEC-650).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_by: Option<String>,
+    /// Yulius's schedule asked (SPEC-650 PST-006).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scheduled: bool,
     /// The integration branch's commit it deploys.
     pub revision: String,
     /// `testing`, `ready`, `deploying`, `verified`, `included`, `gate_failed`, `inherited`, `deploy_failed` or
@@ -116,6 +158,9 @@ pub struct CdStagingRequest {
     /// What its state means.
     #[serde(default)]
     pub note: Option<String>,
+    /// What it waits for while on its way, in plain words (SPEC-650 PST-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
     /// Its last change (RFC 3339).
     pub updated_at: String,
 }

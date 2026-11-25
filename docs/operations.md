@@ -1917,8 +1917,16 @@ merged revision of `dev`.
 - **Staging changes only through its queue** (ADR-0411). The agent of a task whose work merged
   asks with `cd_deploy`. Yulius deploys that revision, or a newer verified one that contains it,
   once its full suite passed. The rollback drill follows by itself.
-- **A person cannot deploy the head from the CD page.** A person can still roll staging back
-  there.
+- **A person asks for the head** with Deploy on the CD page, or through their Superagent once
+  they confirm on its panel (SPEC-650). It deploys once that head's full suite passed. A red head
+  waits for the next green revision, and the page says what it waits for. A person can still
+  roll staging back there.
+- **Staging follows `dev` by itself** (SPEC-650) with the defaults: once it is 5 merges behind, or
+  60 minutes without a staging change while `dev` is ahead. It deploys as the project's creator.
+  A person's rollback, cancel or a failed deploy stands for that revision: the schedule asks only
+  for a newer head. Where the delivery profile promotes automatically, a verified scheduled
+  deploy is promoted as any verified staging revision is. Set both `serve_*` keys to `0` to keep
+  staging where people put it.
 - A red `dev` leaves staging on the verified release. A new failure records `gate_failed`.
   An inherited failure records its original revision and task. One working task owns the repair.
   If none is working, project CI and Status list each test with its introducing revision and task.
@@ -1945,8 +1953,8 @@ or address beyond the variable and the pinned key.
 6. Pin the new host key in a pull request: the line `yulius-staging ssh-ed25519 <key>` from
    `/etc/ssh/ssh_host_ed25519_key.pub` in `scripts/cd/known_hosts`. Check its fingerprint on the
    VM (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) before committing it.
-7. Have a task's agent ask for staging with `cd_deploy` once its work merged, for example the task
-   that pinned the new key (a merge-first target is not deployed from the CD page). The first
+7. Ask for staging with Deploy dev on the CD page once the key's pull request merged (it deploys
+   the integration head once its full suite passed). The first
    deploy keeps the binary it finds (and its store) on the VM, but Yulius's CD never recorded it as a release: the CD page and `cd_rollback` cannot
    return to it, and the first deploy has no drill (it needs two). Return to it by hand (above).
 

@@ -93,6 +93,15 @@ fn parse<T: serde::de::DeserializeOwned>(args: &Value) -> AppResult<T> {
         .map_err(|err| AppError::Invalid(format!("invalid arguments: {err}")))
 }
 
+/// Whether `environment` is the overview's merge-first staging target (dev stage, with a queue).
+fn is_staging(cd: &yulius_contracts::api::cd::CdOverview, environment: &str) -> bool {
+    yulius_domain::cd::env_name(environment).is_some_and(|env| {
+        cd.environments
+            .iter()
+            .any(|e| e.name == env && e.stage != "prod" && e.staging.is_some())
+    })
+}
+
 /// The person as the pages know them, for a function their page calls.
 fn as_person(user: &UserRecord) -> AuthContext {
     AuthContext {
@@ -215,6 +224,44 @@ impl App {
                 .any(|e| e.name == env && e.stage == "prod"))
     }
 
+    /// Whether `environment` of the Superagent's sandbox is its merge-first staging target, so
+    /// its deploy waits for the person on the panel too and then asks the staging queue
+    /// (SPEC-650 PST-004). An overview that cannot be read reads as no.
+    ///
+    /// # Errors
+    /// The person no longer works in the project; store failures.
+    pub async fn superagent_staging(
+        &self,
+        caller: &ProjectCaller,
+        environment: &str,
+    ) -> AppResult<bool> {
+        let user = self.manage_authority(caller).await?;
+        let Some(env) = yulius_domain::cd::env_name(environment) else {
+            return Ok(false);
+        };
+        Ok(self
+            .cd_overview(&as_person(&user), caller.sandbox.as_str())
+            .await
+            .is_ok_and(|cd| is_staging(&cd, &env)))
+    }
+
+    /// Whether the Superagent's `cd_deploy` or `cd_rollback` of `environment` waits on its
+    /// panel (REL-003; SPEC-650 PST-004): a production-stage environment, and a deploy of the
+    /// merge-first staging target. Anything else runs at once as the person's project tool.
+    ///
+    /// # Errors
+    /// The person no longer works in the project; store failures.
+    pub async fn superagent_on_panel(
+        &self,
+        caller: &ProjectCaller,
+        action: CrossAction,
+        environment: &str,
+    ) -> AppResult<bool> {
+        Ok(self.superagent_production(caller, environment).await?
+            || (action == CrossAction::Deploy
+                && self.superagent_staging(caller, environment).await?))
+    }
+
     /// Refuses before anyone is asked what the page would refuse the person now (REL-002).
     pub(crate) async fn checked_release(
         &self,
@@ -243,6 +290,26 @@ impl App {
             }
             _ => return Err(AppError::internal("not a release")),
         };
+        // The merge-first staging target asks its queue with write access (SPEC-650 PST-004).
+        if action == CrossAction::Deploy
+            && let Some(environment) = &environment
+            && self
+                .cd_overview(&as_person(user), own.id.as_str())
+                .await
+                .is_ok_and(|cd| is_staging(&cd, environment))
+        {
+            return self
+                .require(user, &own.id, Action::Work)
+                .await
+                .map(|_| ())
+                .map_err(|_| {
+                    AppError::Forbidden(
+                        "asking for staging needs write access to this project, and your \
+                         person has none here: tell them so"
+                            .into(),
+                    )
+                });
+        }
         if self
             .require(user, &own.id, Action::Administer)
             .await
@@ -295,6 +362,25 @@ impl App {
         Ok(match action {
             CrossAction::Deploy => {
                 let asked: DeployArgs = parse(args)?;
+                // The merge-first staging target: the person's request to its queue (PST-004).
+                if self
+                    .cd_overview(person, sid)
+                    .await
+                    .is_ok_and(|cd| is_staging(&cd, &asked.environment))
+                {
+                    let request = self.cd_staging_ask(person, sid, &asked.environment).await?;
+                    return Ok(json!({
+                        "outcome": "approved",
+                        "staging": record(&request)?,
+                        "note": format!(
+                            "The person approved: staging request {} for revision {} is {}{}. It deploys once its full gate passed, or the next green revision; follow it with cd_status.",
+                            request.id,
+                            request.revision.get(..12).unwrap_or(&request.revision),
+                            request.state,
+                            request.waiting.as_deref().map_or_else(String::new, |w| format!(" ({w})")),
+                        ),
+                    }));
+                }
                 let req = CdDeploy {
                     confirm: slug,
                     expect: None,

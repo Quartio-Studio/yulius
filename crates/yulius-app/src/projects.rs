@@ -26,7 +26,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, TaskRecord, UserRecord};
-use crate::ports::github::{GhRepo, GitHubAppConfig, RepoAccess, RulesetRequest};
+use crate::ports::github::{GhRepo, GitHubAppConfig, RepoAccess, RoleGrant, RulesetRequest};
 
 /// First port of the first sandbox range (PRJ-010).
 pub const PORT_RANGE_START: u16 = 20_000;
@@ -34,6 +34,10 @@ pub const PORT_RANGE_START: u16 = 20_000;
 pub const PORT_RANGE_SIZE: u16 = 20;
 /// Last port below Linux’s default ephemeral range. Allocate only whole blocks.
 const PORT_RANGE_END: u16 = 32_767;
+/// Times GitHub is asked to make a project's creator its admin when it fails (#1749).
+const GRANT_ATTEMPTS: u32 = 3;
+/// The pause before asking again, times the attempts so far.
+const GRANT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
 /// Longest GitHub repository name accepted.
 pub const MAX_REPO_NAME_BYTES: usize = 100;
 /// Most installation repositories examined by one listing (each needs a permission lookup).
@@ -426,6 +430,7 @@ impl App {
         ctx: &AuthContext,
         req: &CreateSandbox,
     ) -> AppResult<Sandbox> {
+        let mut admin_grant = None;
         let record = match req {
             CreateSandbox::Import { repo, vidoc } => {
                 let (owner, name) = repo
@@ -449,9 +454,10 @@ impl App {
                 description,
                 vidoc,
             } => {
-                let record = self
+                let (record, grant) = self
                     .create_repository(ctx, name.trim(), template, description, *vidoc)
                     .await?;
+                admin_grant = grant.map(str::to_owned);
                 self.audit_new_switch(&ctx.user, &record, *vidoc).await;
                 record
             }
@@ -464,7 +470,9 @@ impl App {
             .access_level(&ctx.user, &record)
             .await
             .unwrap_or(AccessLevel::None);
-        self.sandbox_view(&record, level).await
+        let mut view = self.sandbox_view(&record, level).await?;
+        view.admin_grant = admin_grant;
+        Ok(view)
     }
 
     /// Audits a new project added with its Vidoc scans off (SPEC-338 VOF-004): the switch is in
@@ -823,7 +831,7 @@ impl App {
         template: &str,
         description: &str,
         vidoc: Option<bool>,
-    ) -> AppResult<SandboxRecord> {
+    ) -> AppResult<(SandboxRecord, Option<&'static str>)> {
         self.require_instance_admin(ctx)?;
         let template = TemplateKind::parse(template).ok_or_else(|| {
             AppError::Invalid(format!(
@@ -893,6 +901,14 @@ impl App {
             name.to_owned()
         } else {
             repo.name.clone()
+        };
+        // The App created an organization's repository, so GitHub made nobody its admin: its
+        // creator becomes its admin, as creating it on GitHub would make them (#1749).
+        let admin_grant = if is_org {
+            self.grant_creator_admin(&ctx.user, &install_token, &repo_owner, &repo_name)
+                .await
+        } else {
+            None
         };
         let profile = DeliveryProfile::standard();
         let id = SandboxId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
@@ -980,7 +996,153 @@ impl App {
             )
             .await?;
         self.publish_resync(Some(record.id.clone()));
-        Ok(record)
+        Ok((record, admin_grant))
+    }
+
+    /// Makes `user`, who created the organization's repository `owner/name` through the App, its
+    /// admin on GitHub (#1749): access mirrors GitHub (ACC-007), and GitHub made nobody admin of a
+    /// repository the App created. Every outcome is audited as `sandbox.creator_admin` about
+    /// `owner/name` when it happens. Returns how it ended when they are not its admin by it
+    /// (`invited`, `refused` or `failed`), for the creation's answer.
+    async fn grant_creator_admin(
+        &self,
+        user: &UserRecord,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+    ) -> Option<&'static str> {
+        // The superadmin has no GitHub identity and administers every sandbox (ACC-012).
+        let stored = user.github_login.as_deref()?;
+        let repo = format!("{owner}/{name}");
+        let (detail, outcome) = match self.creator_login(user).await {
+            Ok(login) => {
+                self.grant_admin_to(user, token, (owner, name), &login)
+                    .await
+            }
+            Err(reason) => (
+                format!(
+                    "{stored} could not be confirmed as the GitHub account that created {repo} \
+                     ({reason}); nobody was made its admin"
+                ),
+                Some("failed"),
+            ),
+        };
+        if outcome.is_some() {
+            tracing::warn!(repo = %repo, login = stored, detail = %detail, "the creator of a project is not its admin on GitHub");
+        }
+        let actor = self.login_of(&user.id).await;
+        if let Err(err) = self
+            .deps
+            .store
+            .audit(
+                self.now(),
+                &actor,
+                "sandbox.creator_admin",
+                Some(&repo),
+                Some(&detail),
+            )
+            .await
+        {
+            tracing::warn!(repo = %repo, error = %err, "the creator's admin role could not be audited");
+        }
+        outcome
+    }
+
+    /// The GitHub login `user` has now, read with their own token: GitHub frees a renamed
+    /// account's login for anyone (#653), so the one stored at their sign-in may name someone
+    /// else. Refused unless the token names the account they signed in as.
+    async fn creator_login(&self, user: &UserRecord) -> Result<String, String> {
+        let token = self
+            .user_github_token(user)
+            .await
+            .map_err(|err| err.public_message())?;
+        let account = self
+            .deps
+            .github
+            .current_user(&token)
+            .await
+            .map_err(|err| err.public_message())?;
+        if user.github_id != Some(account.id) {
+            return Err("their GitHub sign-in names another account".into());
+        }
+        Ok(account.login)
+    }
+
+    /// Asks GitHub to make `login` an admin of `owner/name`, again after a failure that may pass
+    /// (a 5xx, a timeout, the network), at most [`GRANT_ATTEMPTS`] times; a refusal is final.
+    /// Returns the audit's sentence and how it ended when they are not its admin by it.
+    async fn grant_admin_to(
+        &self,
+        user: &UserRecord,
+        token: &Secret,
+        (owner, name): (&str, &str),
+        login: &str,
+    ) -> (String, Option<&'static str>) {
+        let repo = format!("{owner}/{name}");
+        let mut attempt = 1;
+        let err = loop {
+            match self
+                .deps
+                .github
+                .grant_admin(token, owner, name, login)
+                .await
+            {
+                Ok(RoleGrant::Added) => return (format!("{login} is an admin of {repo}"), None),
+                Ok(RoleGrant::Invited) => {
+                    return (
+                        format!(
+                            "GitHub invited {login} to be an admin of {repo}; they are its admin \
+                             once they accept the invitation"
+                        ),
+                        Some("invited"),
+                    );
+                }
+                Err(AppError::Upstream(_)) if attempt < GRANT_ATTEMPTS => {
+                    tokio::time::sleep(GRANT_RETRY_PAUSE * attempt).await;
+                    attempt += 1;
+                }
+                Err(err) => break err,
+            }
+        };
+        let reason = err.public_message();
+        if self.is_github_admin(user, owner, name).await {
+            return (
+                format!(
+                    "GitHub did not make {login} an admin of {repo} ({reason}); they are its \
+                     admin already"
+                ),
+                None,
+            );
+        }
+        // A rate limit (`Capacity`) is a failure too, asked once.
+        if matches!(err, AppError::Upstream(_) | AppError::Capacity(_)) {
+            let tries = if attempt > 1 {
+                format!(" after {attempt} attempts")
+            } else {
+                String::new()
+            };
+            (
+                format!("GitHub could not make {login} an admin of {repo}{tries}: {reason}"),
+                Some("failed"),
+            )
+        } else {
+            (
+                format!("GitHub refused to make {login} an admin of {repo}: {reason}"),
+                Some("refused"),
+            )
+        }
+    }
+
+    /// Whether GitHub rates `user` an admin of `owner/name` (an organization owner is one of
+    /// every repository); `false` when it cannot be told.
+    async fn is_github_admin(&self, user: &UserRecord, owner: &str, name: &str) -> bool {
+        let Ok(token) = self.user_github_token(user).await else {
+            return false;
+        };
+        matches!(
+            self.deps.github.repo_access(&token, owner, name).await,
+            Ok(RepoAccess::Access { permissions, .. }) if permissions.admin
+        )
     }
 
     /// Clones the new (empty) repository into a scratch directory, commits the scaffold on the

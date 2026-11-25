@@ -3652,8 +3652,33 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 `yulius_domain::staging`, rows in `staging_requests`, migration 0078).
 
 - **Request.** A task's agent's `cd_deploy` of that environment records a request for the
-  task's newest landing (`task_merges`), under the owner's write access. A plain deploy of it is
-  refused in `cd_prepare`.
+  task's newest landing (`task_merges`), under the owner's write access. A person's Deploy on the
+  CD page (`POST …/cd/{env}/staging`, `App::staging_ask`) records a request of no task for the
+  verified integration head (`requested_by` `user:<id>`). So does their Superagent's `cd_deploy`
+  once approved on its panel with the slug typed (write access is enough). A plain deploy of it
+  is refused in `cd_prepare`, naming those
+  ([decision 0477](decisions/0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md)).
+- **Waiting for green.** A request of no task whose gate failed is `inherited`
+  (`stg::after_failed_gate`). Once the head moves past it, one request of no task is recorded
+  for the new head (`stg::follow_up`): one carried request at a time, none for what staging
+  serves, and none for a head that already has a person's or the schedule's request in any
+  state (a failed one is never deployed again by the queue). A passing rerun of its revision
+  makes it ready. It is `included` when a verified deploy contains it. "A person's or the
+  schedule's" is read from `requested_by` (`is_asked`): a deleted task's request also has no
+  task id and stays a task's. `CdStaging.waiting` and each request's `waiting` say in words what
+  it waits for.
+- **Schedule.** Staging never waits for one task to finish its plan. The staging tick checks each
+  project after its repair notices, at most every 5 minutes, and a project whose last check found
+  no merge-first target once an hour (`staging_schedules`, one verified-head read). When the
+  merge-first target is behind the head and nothing is on its way (testing, ready or deploying;
+  an inherited request waits for others), `stg::due` asks for the head (`requested_by`
+  `yulius:schedule`, `CdStagingRequest.scheduled`): when staging serves no revision of the branch
+  yet, after `serve_after_merges` first-parent commits (default 5), or once staging has had no
+  request or run (deploy, rollback or drill) for `serve_every_minutes` (default 60). It never asks
+  for a head any request already tried (a task's too; superseded and inherited ones do not
+  count), so a cancel, rollback or failed deploy stands until a newer head. It deploys as the
+  project's creator, else the newest requester with write access. A task's own request keeps
+  "its whole delivery once" for its own bookkeeping.
 - **Candidate gate.** The integration branch's run of that exact commit, or a
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
@@ -3673,7 +3698,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   - Requests staging already contains are `included`.
 - **Deploy.**
   - `CdRequest::DeployRevision` deploys exactly that commit with the task owner's access; the
-    run is the task's (`CdActor::ForTask`, requested by `task:<n>`).
+    run is the task's (`CdActor::ForTask`, requested by `task:<n>`). A request of no task deploys
+    as the person who asked, while they have write access (`staging_person`).
   - One deploy per environment (unique index). It waits, costing no attempt, while another
     run of it goes on or an update holds deploys.
   - A lost or errored run is retried up to 3 attempts, and a person's cancel stands.
@@ -3691,6 +3717,13 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
     (`staging_note`).
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
+  - Each environment's Deploy button is decided once, for its reader (`deploy_action` in
+    `ci/cd.rs`, `CdEnvironment.deploy_action`). The CD page renders it, and `needs_you` refuses a
+    card whose to-do names a button disabled for the task's owner and for everyone it names in
+    `who` (`refuse_a_disabled_deploy`), with advice for the reason (`deploy_action.reason`; a
+    named person's when theirs is more than access, else the owner's), so
+    guidance never sends a person to a control they cannot press. The production gate names
+    "Deploy <drill env> on the CD page", which works on a merge-first dev too (SPEC-650 PST-007).
   - A production CD deploy selects the verified staging revision through the CD mirror.
     If the integration branch has advanced, a fast-forward uses the selected SHA and a
     merge-commit release uses a same-repository pull request pinned to it. CD checks the
@@ -3839,6 +3872,13 @@ and `gh` get `App::agent_git_credential`: an installation token restricted to th
 to the agent permissions (`AGENT_TOKEN_PERMISSIONS`, no Administration or Workflows), never a
 person's. The production ruleset (`rulesets_for`: restrict updates and deletions, block force
 pushes, repository admins the only bypass) makes GitHub refuse that token on the branch.
+A project created from a template in an organization is created by the App, so
+`App::grant_creator_admin` gives its creator that admin role (`GitHubPort::grant_admin`, `PUT
+…/collaborators/{login}` with the installation token, to the login the creator's own token names
+for the account they signed in as; failures that may pass asked again, at most 3 times; every
+outcome audited as `sandbox.creator_admin`): without it only the organization's owners, or people
+an owner made its admins, could promote or deploy its production
+([ADR-0476](decisions/0476-the-creator-of-a-project-is-made-its-admin-on-github.md)).
 `App::production_branch_warning` asks GitHub, with an agent token, which rules apply to the
 production branch and whether that token may bypass them (`GitHubPort::branch_guard`), and
 onboarding reports a branch the agents could write. The preparation agent then calls

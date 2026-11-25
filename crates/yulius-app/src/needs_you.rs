@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use yulius_contracts::api::cd::CdDeployAction;
 use yulius_contracts::api::tasks::NeedsYouView;
 use yulius_domain::ids::TaskId;
 use yulius_domain::time::Timestamp;
@@ -258,6 +259,7 @@ impl App {
         let who = self
             .named_people(&ctx.task, args.who.as_deref().unwrap_or_default())
             .await?;
+        self.refuse_a_disabled_deploy(ctx, &action, &who).await?;
         let record = NeedsYouRecord {
             action: action.clone(),
             happened,
@@ -303,6 +305,98 @@ impl App {
             "cause": cause,
             "next": next,
         }))
+    }
+
+    /// Refuses a card whose to-do sends the task's owner to a CD page Deploy button that is
+    /// disabled for them (SPEC-650 PST-007), unless a person the card names (`who`) may press it.
+    /// It reads the decision the page renders (`CdEnvironment.deploy_action`, for each of them),
+    /// and says what works for the reason the button is disabled. A page that cannot be read now
+    /// leaves the card as it is.
+    ///
+    /// # Errors
+    /// `Invalid` with the button, why it is disabled and what works.
+    async fn refuse_a_disabled_deploy(
+        &self,
+        ctx: &AgentContext,
+        action: &str,
+        who: &[String],
+    ) -> AppResult<()> {
+        if !action.contains("Deploy ") {
+            return Ok(());
+        }
+        let Some(owner) = self.deps.store.user(&ctx.task.owner).await? else {
+            return Ok(());
+        };
+        let Some(cd) = self.deploy_buttons_of(&owner, &ctx.task.sandbox_id).await else {
+            return Ok(());
+        };
+        let Some(env) = cd.environments.iter().find(|env| {
+            !env.deploy_action.enabled
+                && names_button(action, env.deploy_action.label.trim_end_matches('…'))
+        }) else {
+            return Ok(());
+        };
+        // A named person may press it for the owner; otherwise the refusal gives the reason of
+        // a named person whose button is disabled for more than access (review round 2 of PR 3).
+        let access = [CdDeployAction::ADMINISTRATOR, CdDeployAction::WRITE];
+        let mut blocked = (owner.label(), env.deploy_action.clone());
+        for login in who {
+            let Some(user) = self.deps.store.user_by_login(login).await? else {
+                continue;
+            };
+            let Some(theirs) = self
+                .deploy_buttons_of(&user, &ctx.task.sandbox_id)
+                .await
+                .and_then(|cd| cd.environments.into_iter().find(|e| e.name == env.name))
+            else {
+                continue;
+            };
+            if theirs.deploy_action.enabled {
+                return Ok(());
+            }
+            if !access.contains(&theirs.deploy_action.reason.as_deref().unwrap_or_default())
+                && access.contains(&blocked.1.reason.as_deref().unwrap_or_default())
+            {
+                blocked = (user.label(), theirs.deploy_action);
+            }
+        }
+        let (whose, button) = blocked;
+        let works = match button.reason.as_deref() {
+            Some(CdDeployAction::ADMINISTRATOR) => "an administrator of this project deploys it: say that one does and name them in `who`, without asking the owner to press it".to_owned(),
+            Some(CdDeployAction::NOTHING) => format!(
+                "[cd.{}] has nothing to deploy yet: its table in yulius.toml comes first",
+                env.name
+            ),
+            Some(CdDeployAction::RUNNING) => "a deploy of it is running: wait for it (`yulius wait`), then say how it ended".to_owned(),
+            Some(CdDeployAction::WAITING) => "it deploys by itself once the rollback drill it waits for passes: say so".to_owned(),
+            _ => "name a person with write access in `who`, or say what they should decide".to_owned(),
+        };
+        Err(AppError::Invalid(format!(
+            "nothing was asked: this card tells {}{} to press {} on the CD page, which is unavailable to {whose} ({}). Say instead what works: {works}",
+            owner.label(),
+            if who.is_empty() {
+                String::new()
+            } else {
+                format!(" (and {})", who.join(", "))
+            },
+            button.label,
+            button.why.as_deref().unwrap_or("disabled"),
+        )))
+    }
+
+    /// The CD page as `user` reads it, with its Deploy buttons; `None` when it cannot be read.
+    async fn deploy_buttons_of(
+        &self,
+        user: &crate::model::UserRecord,
+        sandbox: &yulius_domain::ids::SandboxId,
+    ) -> Option<yulius_contracts::api::cd::CdOverview> {
+        let person = crate::auth::AuthContext {
+            user: user.clone(),
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        self.cd_overview(&person, sandbox.as_str()).await.ok()
     }
 
     /// The logins `asked` names, cleaned (`@`, case, the owner and repeats dropped), each a person
@@ -673,9 +767,35 @@ impl App {
     }
 }
 
+/// Whether `text` names the button `label` ("Deploy dev"), not a longer word ("Deploy devices").
+fn names_button(text: &str, label: &str) -> bool {
+    text.match_indices(label).any(|(at, _)| {
+        text[at + label.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '-' || c == '_'))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_button_is_named_by_its_whole_label() {
+        assert!(super::names_button(
+            "Press Deploy dev on the CD page",
+            "Deploy dev"
+        ));
+        assert!(super::names_button("press “Deploy dev”.", "Deploy dev"));
+        assert!(super::names_button("Deploy dev", "Deploy dev"));
+        assert!(!super::names_button("Deploy devices first", "Deploy dev"));
+        assert!(!super::names_button("Deploy dev-tools", "Deploy dev"));
+        assert!(
+            !super::names_button("deploy dev", "Deploy dev"),
+            "a button's own capital"
+        );
+    }
 
     #[test]
     fn requests_are_single_bounded_lines() {

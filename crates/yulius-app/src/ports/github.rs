@@ -122,6 +122,15 @@ pub enum RepoAccess {
     },
 }
 
+/// How GitHub took the admin role given to a person on a repository ([`GitHubPort::grant_admin`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleGrant {
+    /// They are its admin now.
+    Added,
+    /// GitHub invited them (not a member of the organization): its admin once they accept.
+    Invited,
+}
+
 /// Branch protection request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RulesetRequest {
@@ -441,6 +450,24 @@ pub trait GitHubPort: Send + Sync {
         name: &str,
         branch: &str,
     ) -> AppResult<BranchGuard>;
+    /// Makes `login` an admin of the organization's repository `owner/name` (installation token,
+    /// App permission Administration: write): the role GitHub gives the creator of a repository,
+    /// which a repository the App created has nobody in (#1749).
+    ///
+    /// # Errors
+    /// GitHub's refusal (the App's permission, the organization's policy) and failures.
+    async fn grant_admin(
+        &self,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+        login: &str,
+    ) -> AppResult<RoleGrant> {
+        let _ = (token, owner, name, login);
+        Err(crate::error::AppError::Upstream(
+            "granting a repository role is not available".into(),
+        ))
+    }
     /// Creates a branch ruleset.
     async fn create_ruleset(
         &self,

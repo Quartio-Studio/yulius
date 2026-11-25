@@ -7,10 +7,12 @@ use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::repos::{OWNER, World, git};
 use support::{TestResult, call};
+use yulius_app::error::AppError;
 use yulius_app::model::{
     AccountRecord, AccountStatus, AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord,
 };
-use yulius_app::ports::store::{AccountStore, CoordinationStore};
+use yulius_app::ports::github::RoleGrant;
+use yulius_app::ports::store::{AccountStore, AuditStore, CoordinationStore};
 use yulius_app::ports::store::{InstanceStore, SandboxStore, TaskFieldUpdate, TaskStore};
 use yulius_app::supervisor::RunStart;
 use yulius_domain::harness::Harness;
@@ -927,7 +929,6 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
     let w = World::new("org").await?;
     let (_, admin) = w.user("alice", true).await?;
     let (_, bob) = w.user("bob", false).await?;
-    w.grant("alice", "new-shop", "admin");
     let body = json!({"mode": "create", "name": "new-shop", "template": "web", "description": "Demo shop"});
 
     let denied = call(
@@ -977,7 +978,18 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
     assert_eq!(sandbox["onboarding"], "not_needed");
     assert_eq!(sandbox["profile"]["preset"], "standard");
     assert_eq!(sandbox["default_branch"], "main");
-    assert_eq!(sandbox["access"], "admin");
+    assert_eq!(
+        sandbox["access"], "admin",
+        "the creator is made its admin (#1749)"
+    );
+    assert_eq!(
+        w.github.grants(),
+        vec![(
+            format!("{OWNER}/new-shop"),
+            "alice".to_owned(),
+            "inst-7".to_owned()
+        )]
+    );
 
     let created_repos = w.github.created();
     assert_eq!(created_repos.len(), 1);
@@ -1065,11 +1077,294 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
     Ok(())
 }
 
+/// #1749: the App creates an organization's repository, so GitHub makes nobody its admin; the
+/// person who created the project is made its admin, so they deploy its production. Here the
+/// organization gives its members write on every repository, as GitHub's base permission does.
+#[tokio::test]
+async fn the_creator_of_a_project_is_its_admin_and_may_deploy_production() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", true).await?;
+    w.grant("alice", "new-shop", "push");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "new-shop", "template": "web"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["access"], "admin", "{:?}", created.body);
+    assert_eq!(
+        w.github.grants(),
+        vec![(
+            format!("{OWNER}/new-shop"),
+            "alice".to_owned(),
+            "inst-7".to_owned()
+        )],
+        "the installation gives the creator the admin role"
+    );
+    assert!(
+        created.body.get("admin_grant").is_none(),
+        "{:?}",
+        created.body
+    );
+    assert_eq!(
+        w.h.store
+            .audit_details(&format!("{OWNER}/new-shop"), "sandbox.creator_admin", 5)
+            .await?,
+        vec![format!("alice is an admin of {OWNER}/new-shop")]
+    );
+    let sid = text(&created.body["id"]).to_owned();
+    let cd = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sid}/cd"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(cd.status, StatusCode::OK, "{:?}", cd.body);
+    assert_eq!(cd.body["can_deploy_prod"], true, "{:?}", cd.body);
+    let deploy = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/cd/prod/deploy"),
+        Some(json!({"confirm": "new-shop"})),
+        &alice,
+    )
+    .await?;
+    // Past the administrator check (403 "deploying production needs administrator access to the
+    // project") to the promotion, which reads the branches this fake GitHub does not keep.
+    assert_eq!(
+        (
+            deploy.status,
+            text(&deploy.body["error"]["message"]).to_owned()
+        ),
+        (
+            StatusCode::CONFLICT,
+            "branch 'dev' does not exist on GitHub".to_owned()
+        ),
+        "{:?}",
+        deploy.body
+    );
+    Ok(())
+}
+
+/// Creates `name` from the empty template as `creds`.
+async fn create_project(
+    w: &World,
+    creds: &support::Creds,
+    name: &str,
+) -> Result<support::Resp, Error> {
+    call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": name, "template": "empty"})),
+        creds,
+    )
+    .await
+}
+
+/// The audit of making the creator of `OWNER/name` its admin.
+async fn creator_admin_audit(w: &World, name: &str) -> Result<Vec<String>, Error> {
+    Ok(w.h
+        .store
+        .audit_details(&format!("{OWNER}/{name}"), "sandbox.creator_admin", 5)
+        .await?)
+}
+
+/// #1749: GitHub invites a creator who is not a member of the organization, refuses the grant,
+/// or fails: the project is still created, its creator has what GitHub gives them, the answer
+/// says which (`admin_grant`) and the audit says why, at the moment of the grant. A failure is
+/// asked again (3 attempts); a refusal is not. A refusal for an organization owner, admin of
+/// every repository anyway, is no failure.
+#[tokio::test]
+async fn an_invited_refused_or_failed_creator_still_gets_the_project_and_the_reason() -> TestResult
+{
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", true).await?;
+
+    w.grant("alice", "invited", "push");
+    w.github.answer_grants(vec![Ok(RoleGrant::Invited)]);
+    let invited = create_project(&w, &alice, "invited").await?;
+    assert_eq!(invited.status, StatusCode::CREATED, "{:?}", invited.body);
+    assert_eq!(
+        (&invited.body["access"], &invited.body["admin_grant"]),
+        (&json!("write"), &json!("invited"))
+    );
+    assert_eq!(
+        creator_admin_audit(&w, "invited").await?,
+        vec![format!(
+            "GitHub invited alice to be an admin of {OWNER}/invited; they are its admin once \
+             they accept the invitation"
+        )]
+    );
+
+    // GitHub's 403 for the App's permission or the organization's policy: asked once.
+    w.grant("alice", "refused", "push");
+    w.github.answer_grants(vec![Err(AppError::Forbidden(
+        "GitHub: forbidden: Resource not accessible by integration".into(),
+    ))]);
+    let refused = create_project(&w, &alice, "refused").await?;
+    assert_eq!(refused.status, StatusCode::CREATED, "{:?}", refused.body);
+    assert_eq!(
+        (&refused.body["access"], &refused.body["admin_grant"]),
+        (&json!("write"), &json!("refused"))
+    );
+    assert_eq!(
+        creator_admin_audit(&w, "refused").await?,
+        vec![format!(
+            "GitHub refused to make alice an admin of {OWNER}/refused: GitHub: forbidden: \
+             Resource not accessible by integration"
+        )]
+    );
+    assert_eq!(w.github.grants().len(), 2, "a refusal is not asked again");
+
+    // A 5xx or a timeout is asked again, at most 3 times in all.
+    w.grant("alice", "failed", "push");
+    let down = || {
+        Err(AppError::Upstream(
+            "GitHub: upstream error (HTTP 502)".into(),
+        ))
+    };
+    w.github.answer_grants(vec![down(), down(), down()]);
+    let failed = create_project(&w, &alice, "failed").await?;
+    assert_eq!(failed.status, StatusCode::CREATED, "{:?}", failed.body);
+    assert_eq!(
+        (&failed.body["access"], &failed.body["admin_grant"]),
+        (&json!("write"), &json!("failed"))
+    );
+    assert_eq!(
+        creator_admin_audit(&w, "failed").await?,
+        vec![format!(
+            "GitHub could not make alice an admin of {OWNER}/failed after 3 attempts: GitHub: \
+             upstream error (HTTP 502)"
+        )]
+    );
+    assert_eq!(w.github.grants().len(), 5);
+
+    // A rate limit is waited out, never asked into again.
+    w.grant("alice", "limited", "push");
+    w.github.answer_grants(vec![Err(AppError::Capacity(
+        "GitHub rate limit reached. Waiting until 2026-11-25T08:00:00Z.".into(),
+    ))]);
+    let limited = create_project(&w, &alice, "limited").await?;
+    assert_eq!(limited.status, StatusCode::CREATED, "{:?}", limited.body);
+    assert_eq!(limited.body["admin_grant"], "failed", "{:?}", limited.body);
+    assert_eq!(
+        creator_admin_audit(&w, "limited").await?,
+        vec![format!(
+            "GitHub could not make alice an admin of {OWNER}/limited: GitHub rate limit \
+             reached. Waiting until 2026-11-25T08:00:00Z."
+        )]
+    );
+    assert_eq!(
+        w.github.grants().len(),
+        6,
+        "a rate limit is not asked again"
+    );
+
+    w.grant("alice", "flaky", "push");
+    w.github.answer_grants(vec![down()]);
+    let flaky = create_project(&w, &alice, "flaky").await?;
+    assert_eq!(flaky.status, StatusCode::CREATED, "{:?}", flaky.body);
+    assert_eq!(flaky.body["access"], "admin", "{:?}", flaky.body);
+    assert!(flaky.body.get("admin_grant").is_none(), "{:?}", flaky.body);
+    assert_eq!(w.github.grants().len(), 8);
+
+    w.grant("alice", "owned", "admin");
+    w.github.answer_grants(vec![Err(AppError::Invalid(
+        "GitHub: validation failed".into(),
+    ))]);
+    let owned = create_project(&w, &alice, "owned").await?;
+    assert_eq!(owned.status, StatusCode::CREATED, "{:?}", owned.body);
+    assert_eq!(owned.body["access"], "admin");
+    assert!(owned.body.get("admin_grant").is_none(), "{:?}", owned.body);
+    assert_eq!(
+        creator_admin_audit(&w, "owned").await?,
+        vec![format!(
+            "GitHub did not make alice an admin of {OWNER}/owned (GitHub: validation \
+             failed); they are its admin already"
+        )],
+        "an organization owner is its admin already"
+    );
+    Ok(())
+}
+
+/// #1749 review: GitHub frees a renamed account's login for anyone (#653), so the role goes to
+/// the login the creator's own token names now, and only while that is the account they signed
+/// in as; a token naming another account gets nobody the role.
+#[tokio::test]
+async fn the_admin_role_goes_to_the_creators_current_login_only() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", true).await?;
+    let alice_id = alice_user.github_id.ok_or("a GitHub id")?;
+
+    // Renamed on GitHub since signing in: the same account, a new login.
+    w.github
+        .token_names("token-alice", alice_id, "alice-renamed");
+    let renamed = create_project(&w, &alice, "renamed").await?;
+    assert_eq!(renamed.status, StatusCode::CREATED, "{:?}", renamed.body);
+    assert_eq!(
+        w.github.grants(),
+        vec![(
+            format!("{OWNER}/renamed"),
+            "alice-renamed".to_owned(),
+            "inst-7".to_owned()
+        )]
+    );
+    assert!(
+        renamed.body.get("admin_grant").is_none(),
+        "{:?}",
+        renamed.body
+    );
+
+    // The token names another account: nobody is made admin.
+    w.github.token_names("token-alice", alice_id + 1, "alice");
+    let other = create_project(&w, &alice, "other").await?;
+    assert_eq!(other.status, StatusCode::CREATED, "{:?}", other.body);
+    assert_eq!(other.body["admin_grant"], "failed", "{:?}", other.body);
+    assert_eq!(w.github.grants().len(), 1, "no grant for another account");
+    assert_eq!(
+        creator_admin_audit(&w, "other").await?,
+        vec![format!(
+            "alice could not be confirmed as the GitHub account that created {OWNER}/other \
+             (their GitHub sign-in names another account); nobody was made its admin"
+        )]
+    );
+    Ok(())
+}
+
+/// #1749 review round 2: the grant is audited when it happens, so an invitation GitHub sent stays
+/// on record when setting up the project fails afterwards (here the App's installation cannot
+/// reach the new repository) and no sandbox is made.
+#[tokio::test]
+async fn a_grant_is_audited_when_setup_fails_after_it() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", true).await?;
+    w.github
+        .selected_only
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    w.github.answer_grants(vec![Ok(RoleGrant::Invited)]);
+    let refused = create_project(&w, &alice, "unreached").await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert!(w.h.store.sandboxes().await?.is_empty());
+    assert_eq!(
+        creator_admin_audit(&w, "unreached").await?,
+        vec![format!(
+            "GitHub invited alice to be an admin of {OWNER}/unreached; they are its admin \
+             once they accept the invitation"
+        )]
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
     let w = World::new("user").await?;
     let (_, admin) = w.user("alice", true).await?;
-    w.grant("alice", "tool", "admin");
     let body = json!({"mode": "create", "name": "tool", "template": "empty"});
     let missing_owner = call(
         &w.h.router,
@@ -1092,10 +1387,22 @@ async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    // In a personal account only its owner is a repository's admin: nothing is asked, and the
+    // page is told of no grant (ADR-0476).
+    assert_eq!(created.body["access"], "none", "{:?}", created.body);
+    assert!(
+        created.body.get("admin_grant").is_none(),
+        "{:?}",
+        created.body
+    );
     let repos = w.github.created();
     assert_eq!(repos.len(), 1);
     assert!(!repos[0].is_org);
     assert_eq!(repos[0].token, format!("token-{OWNER}"));
+    assert!(
+        w.github.grants().is_empty(),
+        "the owner created it: GitHub made them its admin"
+    );
     assert!(
         w.github
             .rulesets()

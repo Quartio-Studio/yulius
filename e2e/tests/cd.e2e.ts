@@ -577,6 +577,8 @@ test('members deploy dev but never production, and an empty dev says so', async 
   await app.open(mock('/s/studio/cd', '&role=member'));
   await expect(screen.getByRole('button', 'Deploy production…')).toBeDisabled();
   await expect(screen.getByRole('button', 'Deploy production…')).toHaveAttribute('title', 'Only an administrator deploys production');
+  // SPEC-650 PST-005: a disabled deploy says why in words, not only on hover.
+  await expect(screen.getByRole('region', 'Production environment').getByText('Deploy production unavailable: Only an administrator deploys production.')).toBeVisible();
   await expect(screen.getByRole('button', 'Deploy dev')).toBeEnabled();
 
   await app.open(mock('/s/product/cd'));
@@ -875,7 +877,8 @@ test('a needs_you decision reads Decide, and an action alone only To do', async 
 });
 
 // Task #420 (SPEC-438, #1115): "Couldn't deploy production: … the last rollback drill of dev ran
-// at e83c627; deploy dev at this commit first". A production deploy whose rollback is unproven
+// at e83c627; deploy dev at this commit first" (since SPEC-650: "get this commit deployed on dev
+// first (Deploy dev on the CD page, or cd_deploy; …)"). A production deploy whose rollback is unproven
 // only for its commit deploys dev first, says so, and waits for dev's drill; the page shows the
 // wait and offers no second deploy meanwhile.
 test('a production deploy proves its rollback on dev first', async ({ app, browser, screen }) => {
@@ -1020,8 +1023,8 @@ test('an environment that deploys nothing needs no rollback; one that deploys sa
 });
 
 // SPEC-575 (ADR-0411): a merge-first staging target shows its queue (the revision it serves and
-// each request's task, revision, state and runs), and its Deploy button says that tasks ask for
-// it instead of deploying its head.
+// each request's task, revision, state and runs). SPEC-650 PST-001, PST-005: its Deploy button is
+// a person's request for the integration head, and the page says in words what it waits for.
 test('a merge-first staging target shows its queue with run and revision ids', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?section=cd'));
   await expect(screen.getByRole('region', 'Dev environment')).toBeVisible();
@@ -1051,7 +1054,11 @@ test('a merge-first staging target shows its queue with run and revision ids', a
   await expect(queue.getByText('CI ci_77')).toBeVisible();
   await expect(queue.getByText('CD cd_41')).toBeVisible();
   await expect(queue.getByText(/staging did not change/)).toBeVisible();
-  await expect(staging.getByRole('button', 'Deploy staging')).toBeDisabled();
-  await expect(staging.getByRole('button', 'Deploy staging')).toHaveAttribute('title', /the task asks with cd_deploy/);
+  await expect(staging.getByText(/asks for the integration head: it deploys once its full gate passed, or the next green revision if it is red/)).toBeVisible();
+  await expect(staging.getByRole('button', 'Deploy staging')).toBeEnabled();
+  await staging.getByRole('button', 'Deploy staging').click();
+  await expect(screen.getByText('Asked staging for the integration head. Waiting for green tests on 9f3c2a1.')).toBeVisible();
+  await expect(queue.getByRole('status')).toHaveText('Waiting for green tests on 9f3c2a1.');
+  await expect(queue.getByText('Asked by mkarp')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
 });

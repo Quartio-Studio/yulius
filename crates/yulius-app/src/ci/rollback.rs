@@ -1082,6 +1082,7 @@ mod tests {
                 ..CdRollback::default()
             },
             staging: None,
+            deploy_action: Default::default(),
         }
     }
 

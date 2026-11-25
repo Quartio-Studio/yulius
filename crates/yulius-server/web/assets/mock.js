@@ -1199,7 +1199,10 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
   const sandbox = {
     id: `sb_${db.nextId}`, slug: repoName.toLowerCase(), name: repoName,
     repo: { owner: 'Quartio-Studio', name: repoName, url: `https://github.com/Quartio-Studio/${repoName}` },
-    access: 'admin', default_branch: 'main',
+    // #1749: the server makes a project's creator its admin on GitHub; `createGrant` (`invited`,
+    // `refused`, `failed`) stands in for a grant that left them what the organization gives.
+    access: body.mode === 'create' && db.createGrant ? 'write' : 'admin', default_branch: 'main',
+    ...(body.mode === 'create' && db.createGrant ? { admin_grant: db.createGrant } : {}),
     // SPEC-338 VOF-004: added switched off when the person unchecked Vidoc.
     profile: { ...clone(PRESETS.standard), vidoc: body.vidoc !== false },
     // Like the server, a project added switched off is audited as its first change.
@@ -2504,7 +2507,7 @@ function seedCd() {
           rollback: cdRollback('scripts/cd/rollback.sh prod', [
             cdRelease('v41', '4be81c0d2a9f1e2d', 26 * 60, 'mkarp'),
             cdRelease('v39', '6f7e8d9c0b1a2f3e', 5 * 24 * 60, 'mkarp'),
-          ], { drill: cdSummary(drill), blocked: 'rollback is not proven for this commit: the last rollback drill of dev ran at 3c5a7e9; deploy dev at this commit first: its rollback drill follows by itself' }) },
+          ], { drill: cdSummary(drill), blocked: 'rollback is not proven for this commit: the last rollback drill of dev ran at 3c5a7e9; get this commit deployed on dev first (Deploy dev on the CD page, or cd_deploy; a merge-first dev asks for the integration head): its rollback drill follows by itself' }) },
       ],
       runs: [
         drill,
@@ -2542,6 +2545,21 @@ function progressCd(run, ms = 15000) {
 
 const cdSummary = (run) => ({ ...run, created: undefined, output: undefined });
 
+/** An environment's Deploy button for the caller, as the server decides it (SPEC-650 PST-007). */
+function cdDeployAction(env, sandbox, runs) {
+  const prod = env.stage ? env.stage === 'prod' : env.name === 'prod';
+  const word = env.name === 'prod' ? 'production' : env.name;
+  const rank = RANK[sandbox.access] || 0;
+  const running = runs.some((r) => r.environment === env.name && r.state === 'running');
+  const waiting = prod ? ((env.rollback || {}).waiting || null) : null;
+  const [reason, why] = prod && rank < RANK.admin ? ['administrator', 'Only an administrator deploys production']
+    : rank < RANK.write ? ['write', 'Requires write access']
+      : env.state !== 'ready' ? ['nothing', 'Nothing to deploy yet']
+        : running && !env.staging ? ['running', 'A deploy is running']
+          : waiting ? ['waiting', waiting] : [null, null];
+  return { label: prod ? `Deploy ${word}…` : `Deploy ${word}`, enabled: !why, ...(why ? { why, reason } : {}) };
+}
+
 function cdOverview(db, sid) {
   const sandbox = sandboxOf(db, sid);
   const cd = cdOf(db, sid);
@@ -2551,7 +2569,7 @@ function cdOverview(db, sid) {
     environments: cdNotNeeded(cd.environments).map((env) => {
       const mine = runs.filter((r) => r.environment === env.name);
       const deployed = mine.find((r) => r.state === 'passed');
-      return { ...clone(env), deployed: deployed ? deployed.commit : null, last_run: mine.length ? cdSummary(mine[0]) : null };
+      return { ...clone(env), deployed: deployed ? deployed.commit : null, last_run: mine.length ? cdSummary(mine[0]) : null, deploy_action: cdDeployAction(env, sandbox, runs) };
     }),
     runs: runs.map(cdSummary),
     can_deploy_dev: (RANK[sandbox.access] || 0) >= RANK.write,
@@ -2560,6 +2578,21 @@ function cdOverview(db, sid) {
 }
 
 route('GET', `/api/sandboxes/${ID}/cd`, ({ db, p }) => cdOverview(db, p[0]));
+// SPEC-650 PST-001: a person's request for the merge-first staging target, for its head; it waits
+// for green tests (a test moves it on by editing the queue).
+route('POST', `/api/sandboxes/${ID}/cd/${ID}/staging`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  const env = cdOf(db, p[0]).environments.find((e) => e.name === p[1]);
+  if (!env || !env.staging) fail(409, 'conflict', `[cd.${p[1]}] is not the merge-first staging target: deploy it with its Deploy button or cd_deploy`);
+  const existing = env.staging.requests.find((r) => r.revision === env.head && r.task_number == null && r.state !== 'superseded');
+  if (existing) return existing;
+  db.nextId += 1;
+  const request = { id: `sr_${db.nextId}`, task_number: null, asked_by: db.me.user.login, revision: env.head, state: 'testing', ci_run_id: null, cd_run_id: null, note: null, waiting: `Waiting for green tests on ${String(env.head).slice(0, 7)}`, updated_at: new Date().toISOString() };
+  env.staging.requests.unshift(request);
+  env.staging.waiting = request.waiting;
+  return request;
+});
 route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   const cd = cdOf(db, p[0]);
@@ -4179,6 +4212,11 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   if (['deploy', 'rollback', 'promote', 'onboard'].includes(request.view.action)) {
     if (!body.approve) return { outcome: 'declined' };
     db.superagentReleases = [...(db.superagentReleases || []), { action: request.view.action, confirm: body.confirm ?? null }];
+    // The merge-first staging target's deploy records the person's request (SPEC-650 PST-004).
+    const env = request.view.options && request.view.options.environment;
+    if (request.view.action === 'deploy' && env === 'staging') {
+      return { outcome: 'approved', staging: { id: 'sr_panel', revision: '9f3c2a1b7e4d5f6a', state: 'testing', asked_by: db.me.user.login, waiting: 'Waiting for green tests on 9f3c2a1' }, note: 'The person approved.' };
+    }
     return { outcome: 'approved', note: 'The person approved.' };
   }
   // A decision the Superagent left to its person (SPEC-487 XRQ-005): the answer is kept for it.

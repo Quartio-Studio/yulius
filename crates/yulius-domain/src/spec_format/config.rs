@@ -96,6 +96,8 @@
 //! verify = "scripts/cd/verify.sh staging"
 //! rollback = "scripts/cd/rollback.sh staging"
 //! migrations = "none: stateless"
+//! serve_every_minutes = 60               # SPEC-650: Yulius asks for the head after 60 minutes
+//! serve_after_merges = 5                 # behind it, or 5 merges ahead (defaults; 0 turns off)
 //!
 //! [local]                              # the task-local deployment (SPEC-575 MFS-010): it deploys
 //! deploy = "scripts/cd/deploy.sh local"  # and tests the project in the task's own sandbox only
@@ -271,6 +273,11 @@ pub enum ConfigProblem {
         "[{0}] has 'merge_first = true': it needs 'deploy', 'verify' and 'rollback', since staging changes only to a verified revision and goes back to its last verified release after a failed deploy"
     )]
     MergeFirstNeedsScripts(String),
+    /// A schedule of staging on a table that is not the merge-first target (SPEC-650 PST-006).
+    #[error(
+        "[{0}] has 'serve_every_minutes' or 'serve_after_merges', which only the merge-first staging target takes: add 'merge_first = true' or remove them"
+    )]
+    ServeNeedsMergeFirst(String),
     /// Every CI job is part of the full suite (SPEC-575 MFS-002).
     #[error(
         "every [[ci.jobs]] entry has 'after_merge = true': keep at least one quick check without it, since a pull request merges on those alone"
@@ -337,7 +344,9 @@ const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb, secrets, timeout_minutes, \
     exclusive, paths, after_merge";
 const CD_DEV_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, rollback, \
-    migrations, parts, merge_first";
+    migrations, parts, merge_first, serve_every_minutes, serve_after_merges";
+const CD_SERVE_EVERY: &str = "0 (never by time) to 10080 minutes (a week)";
+const CD_SERVE_AFTER: &str = "0 (never by count) to 1000 merged revisions";
 const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, promote, \
     rollback, migrations, parts, drill";
 const CD_PARTS: &str = "at most 8 part names like [\"engine\", \"infra\"] (an array, or space-separated) of 1-32 lowercase letters, digits and '-', starting with a letter";
@@ -1055,6 +1064,7 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
         )
     };
     let mut target = CdTarget::new(env, stage);
+    let mut serve_set = false;
     for entry in &table.entries {
         match entry.key.as_str() {
             "stage" => {}
@@ -1091,6 +1101,25 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
             }
             "promote" if stage == CdStage::Prod => target.promote = bool_value(entry)?,
             "merge_first" if stage == CdStage::Dev => target.merge_first = bool_value(entry)?,
+            // SPEC-650 PST-006: `0` turns either trigger off.
+            "serve_every_minutes" | "serve_after_merges" if stage == CdStage::Dev => {
+                let (max, allowed) = if entry.key == "serve_every_minutes" {
+                    (10_080, CD_SERVE_EVERY)
+                } else {
+                    (1_000, CD_SERVE_AFTER)
+                };
+                let value = match entry.value {
+                    Value::Int(value) if value <= max => u32::try_from(value).unwrap_or(0),
+                    Value::Int(value) => return Err(invalid(entry, &value.to_string(), allowed)),
+                    _ => return Err(invalid(entry, "", allowed)),
+                };
+                if entry.key == "serve_every_minutes" {
+                    target.serve_every_minutes = value;
+                } else {
+                    target.serve_after_merges = value;
+                }
+                serve_set = true;
+            }
             "rollback" => target.rollback = Some(command(entry)?),
             "migrations" => {
                 let text = string_value(entry)?.trim();
@@ -1143,6 +1172,9 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
         && (target.deploy.is_none() || target.verify.is_none() || target.rollback.is_none())
     {
         return Err(err(table.line, ConfigProblem::MergeFirstNeedsScripts(name)));
+    }
+    if serve_set && !target.merge_first {
+        return Err(err(table.line, ConfigProblem::ServeNeedsMergeFirst(name)));
     }
     Ok(target)
 }
@@ -2579,6 +2611,48 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
             let error = parse_yulius_toml(bad).err().ok_or("refused")?;
             assert!(error.to_string().contains(says), "{bad}: {error}");
         }
+        Ok(())
+    }
+
+    /// SPEC-650 PST-006: staging moves on by itself on a timer and after a number of merges,
+    /// configurable on the merge-first target; `0` turns either off.
+    #[test]
+    fn the_merge_first_target_serves_on_a_schedule() -> TestResult {
+        let staging = "[cd.staging]\nstage = \"dev\"\nmerge_first = true\ndeploy = \"d\"\n\
+                       verify = \"v\"\nrollback = \"r\"\nmigrations = \"none: stateless\"\n";
+        let target = |extra: &str| -> Result<CdTarget, FormatError> {
+            let cd = parse_yulius_toml_cd(&format!("[cd.dev]\n[cd.prod]\n{staging}{extra}"))?;
+            Ok(cd
+                .target("staging")
+                .cloned()
+                .unwrap_or_else(|| CdTarget::new("x", CdStage::Dev)))
+        };
+        let plain = target("")?;
+        assert_eq!(
+            (plain.serve_every_minutes, plain.serve_after_merges),
+            (60, 5)
+        );
+        let set = target("serve_every_minutes = 30\nserve_after_merges = 0\n")?;
+        assert_eq!((set.serve_every_minutes, set.serve_after_merges), (30, 0));
+        let most = target("serve_every_minutes = 10080\nserve_after_merges = 1000\n")?;
+        assert_eq!(
+            (most.serve_every_minutes, most.serve_after_merges),
+            (10_080, 1_000)
+        );
+        for bad in [
+            "serve_every_minutes = 10081\n",
+            "serve_after_merges = 1001\n",
+            "serve_every_minutes = \"soon\"\n",
+        ] {
+            let said = target(bad).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(said.contains("serve_"), "{bad}: {said}");
+        }
+        let said = parse_yulius_toml_cd("[cd.dev]\nserve_every_minutes = 30\n")
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(said.contains("merge_first"), "{said}");
+        assert!(parse_yulius_toml_cd("[cd.prod]\nserve_after_merges = 2\n").is_err());
         Ok(())
     }
 

@@ -643,6 +643,14 @@ watching, steering and unblocking.
       or staging wait. Finished tasks keep the outcome on their delivery; one whose agent still waits
       for it in a background command hears it and ends Done. Later deliveries
       record inherited failures and complete when staging serves the verified fix.
+    - A person asks for the integration head with Deploy on the CD page, or through their
+      Superagent after confirming on its panel. It deploys once that head's full suite passed. A
+      red head waits for the next green one, and the page says so ("Waiting for green tests on
+      `<sha>`"). [SPEC-650](../.ai/specs/SPEC-650-merge-first-staging-a-person-and-their-s.md)
+    - Staging also moves on by itself, whoever finishes what. When it is behind the head and
+      nothing is on its way, Yulius asks for the head after 5 merges, or after 60 minutes without
+      a staging change. Each project sets `serve_after_merges` and `serve_every_minutes` (0 turns
+      either off).
     - Working tasks hear the failing tests and their introducing merges. One worker takes the repair.
       With no worker available, project CI and Status name the tests and their introducing merges.
       Writers can rerun the affected revision or start a task in the project.
@@ -880,7 +888,8 @@ watching, steering and unblocking.
 ## Principles
 
 Agents are real CLIs; sessions outlive the server; GitHub is the authority for permissions (a playground's guests, let
-in through an expiring link, are the one exception);
+in through an expiring link, are the one exception), and the person who creates a project of an organization in
+Yulius is made its repository's admin there ([decision 0476](decisions/0476-the-creator-of-a-project-is-made-its-admin-on-github.md));
 coordination goes through one MCP and hook protocol; every queue, stream, retry and wait is
 bounded and owned; features have specs, research and questions do not; a defect a request
 reports is fixed in its task, also when it is asked as a question, never filed and left

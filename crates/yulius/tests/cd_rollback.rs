@@ -1043,7 +1043,10 @@ async fn a_redeployed_release_keeps_its_barrier() -> TestResult {
 }
 
 /// Bob's (an administrator's) or alice's (a writer's) Superagent in `app`.
-fn superagent(user: &str, login: &str) -> BoxResult<yulius_app::coordination::ProjectCaller> {
+pub(crate) fn superagent(
+    user: &str,
+    login: &str,
+) -> BoxResult<yulius_app::coordination::ProjectCaller> {
     Ok(yulius_app::coordination::ProjectCaller {
         sandbox: yulius_domain::ids::SandboxId::parse("s1")?,
         user: yulius_domain::ids::UserId::parse(user)?,
@@ -1056,7 +1059,7 @@ fn superagent(user: &str, login: &str) -> BoxResult<yulius_app::coordination::Pr
 
 impl Fixture {
     /// The Superagent `caller` asks for `action` with `args`; its call waits for the person.
-    fn ask_release(
+    pub(crate) fn ask_release(
         &self,
         caller: &yulius_app::coordination::ProjectCaller,
         action: yulius_app::cross_sandbox::CrossAction,
@@ -1067,7 +1070,7 @@ impl Fixture {
     }
 
     /// `who`'s waiting requests on their Superagent's panel, once there are `count`.
-    async fn panel(&self, who: &Creds, count: usize) -> BoxResult<Vec<Value>> {
+    pub(crate) async fn panel(&self, who: &Creds, count: usize) -> BoxResult<Vec<Value>> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             let listed = call(

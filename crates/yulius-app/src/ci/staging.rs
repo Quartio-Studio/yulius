@@ -58,6 +58,11 @@ const AWAITED_OUTCOME: &str = "This task's work is finished: if a background com
      waits for this outcome, stop it, and leave anything else running; then answer in one line \
      and end your turn.";
 
+/// How a person's request names its requester (SPEC-650 PST-003): `user:<id>`.
+pub(crate) const PERSON_REQUESTER: &str = "user:";
+/// The schedule's requests' requester (SPEC-650 PST-006).
+pub(crate) const SCHEDULE_REQUESTER: &str = "yulius:schedule";
+
 /// How a staging deploy's run note starts: the queue knows its own runs by it.
 const DEPLOY_NOTE: &str = "merge-first staging: request";
 /// How a restore's run note starts, before the part's label.
@@ -270,6 +275,338 @@ impl App {
         }
     }
 
+    /// A person's request for the merge-first environment `env` (SPEC-650 PST-001): the CD page's
+    /// Deploy, or their Superagent's `cd_deploy` once approved on its panel. It records a request
+    /// of no task for the verified integration head; the queue deploys it once its full gate
+    /// passed, or the next green revision when it is red. A repeat answers with the request.
+    ///
+    /// # Errors
+    /// `Forbidden` without write access; `Conflict` for an environment that is not the
+    /// merge-first target, a project without a CI gate, a playground; store and Git failures.
+    pub(crate) async fn staging_ask(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        env: &str,
+        user: &UserRecord,
+    ) -> AppResult<StagingRequestRecord> {
+        crate::playground::refuse_in_playground(sandbox, "A deploy")?;
+        if self.staging_writer(&sandbox.id, &user.id).await?.is_none() {
+            return Err(AppError::Forbidden(
+                "asking for staging needs write access to this project".into(),
+            ));
+        }
+        if !self.config.ci.enabled || self.ci_gate(sandbox).await.gate.is_none() {
+            return Err(AppError::Conflict(
+                "merge-first staging deploys only a revision whose full gate passed, and this project has no CI gate".into(),
+            ));
+        }
+        crate::ports::github::for_purpose(crate::ports::github::GitHubPurpose::Staging, async {
+            let (head, target) = self.staging_target(sandbox).await?;
+            let Some(target) = target.filter(|t| t.name == env) else {
+                return Err(AppError::Conflict(format!(
+                    "[cd.{env}] is not the merge-first staging target: deploy it with its Deploy button or cd_deploy"
+                )));
+            };
+            let lock = queue_lock(&sandbox.id);
+            let _queue = lock.lock().await;
+            let requester = format!("{PERSON_REQUESTER}{}", user.id.as_str());
+            self.staging_record_task_less(sandbox, &target, &head, &requester, Asking::Person)
+                .await?
+                .ok_or_else(|| AppError::internal("a person's request is always answered"))
+        })
+        .await
+    }
+
+    /// Records a request of no task for `revision` of the integration branch (SPEC-650): a
+    /// person's, the schedule's, or a red one's follow-up (`Asking::Yulius`). The caller holds
+    /// the queue's lock.
+    ///
+    /// - A pending request of a person or the schedule for that revision answers instead.
+    /// - One that succeeded answers while staging still contains the revision.
+    /// - Otherwise (it failed, or staging was rolled back past it) a new request is recorded,
+    ///   for the one asking now (review round 1, findings 3 and 4): a failed one is never made
+    ///   ready again, so a person's cancel stands.
+    /// - Yulius's own ask records nothing when that revision has any request (a task's too) in
+    ///   any state but superseded
+    ///   (finding 1): `None`.
+    async fn staging_record_task_less(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        target: &CdTarget,
+        revision: &str,
+        requested_by: &str,
+        asking: Asking,
+    ) -> AppResult<Option<StagingRequestRecord>> {
+        let store = &self.deps.store;
+        let env = target.name.as_str();
+        let own: Vec<StagingRequestRecord> = store
+            .staging_requests_of(&sandbox.id, env, None, revision)
+            .await?
+            .into_iter()
+            .filter(|r| is_asked(r) && r.state != StagingState::Superseded)
+            .collect();
+        let note = match asking {
+            Asking::Yulius(_) if !own.is_empty() => return Ok(None),
+            Asking::Yulius(note) => {
+                // Any request of that revision, a task's too, was tried already: a cancel, a
+                // rollback or a failed deploy stands until a new merge or a person asks (review
+                // round 1 of PR 2). An inherited one only waits: a rerun may still green it.
+                let tried = store
+                    .recent_staging_requests(&sandbox.id, env, 200)
+                    .await?
+                    .iter()
+                    .any(|r| {
+                        r.revision == revision
+                            && !matches!(
+                                r.state,
+                                StagingState::Superseded | StagingState::Inherited
+                            )
+                    });
+                if tried {
+                    return Ok(None);
+                }
+                Some(note)
+            }
+            Asking::Person => None,
+        };
+        if let Some(pending) = own.iter().rev().find(|r| r.state.is_pending()) {
+            return Ok(Some(pending.clone()));
+        }
+        let contained = self.staging_contained(sandbox, target, revision).await?;
+        if contained.is_some()
+            && let Some(done) = own.iter().rev().find(|r| r.state.is_success())
+        {
+            return Ok(Some(done.clone()));
+        }
+        let now = self.now();
+        let state = if contained.is_some() {
+            StagingState::Included
+        } else {
+            StagingState::Testing
+        };
+        let record = StagingRequestRecord {
+            id: self.deps.crypto.new_id(),
+            sandbox_id: sandbox.id.clone(),
+            environment: env.to_owned(),
+            task_id: None,
+            revision: revision.to_owned(),
+            state,
+            ci_run_id: None,
+            cd_run_id: contained.clone(),
+            attempts: 0,
+            note: contained
+                .as_ref()
+                .map(|run| format!("already on staging: run {run} deployed and verified a revision containing it"))
+                .or(note),
+            requested_by: requested_by.to_owned(),
+            // Nobody's session hears a request of no task.
+            told: true,
+            created_at: now,
+            updated_at: now,
+        };
+        if !store.insert_staging_request(&record).await? {
+            return Err(AppError::Conflict(
+                "the staging request could not be recorded".into(),
+            ));
+        }
+        self.dlv_audit(
+            requested_by,
+            "staging.requested",
+            &format!("{}/{env}", sandbox.slug),
+            &format!("revision {} ({})", short(revision), state.as_str()),
+        )
+        .await;
+        self.staging_kick(sandbox, env);
+        Ok(Some(record))
+    }
+
+    /// Carries a red request of no task to the integration head once the head moved past it
+    /// (SPEC-650 PST-002): one new request for the head, by the same requester, unless the head
+    /// has a request (a task's too) in any state but superseded or inherited. `true` when one was
+    /// recorded.
+    async fn staging_carry_forward(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        target: &CdTarget,
+        (head, current): (&str, Option<u64>),
+        pending: &[StagingRequestRecord],
+        positions: &[(String, Option<u64>)],
+    ) -> AppResult<bool> {
+        if !pending
+            .iter()
+            .any(|r| is_asked(r) && r.state == StagingState::Inherited)
+        {
+            return Ok(false);
+        }
+        let Some(at) = self
+            .deps
+            .git
+            .first_parent_position(&self.cd_mirror(&sandbox.id), head, head)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let facts: Vec<Facts> = pending.iter().map(|r| facts_of(r, positions)).collect();
+        let Some(waiting) = stg::follow_up(&facts, at, current) else {
+            return Ok(false);
+        };
+        let Some(from) = pending.iter().find(|r| r.id == waiting.id) else {
+            return Ok(false);
+        };
+        let note = format!(
+            "asked again for the newer head: the full gate failed on {}",
+            short(&from.revision)
+        );
+        Ok(self
+            .staging_record_task_less(
+                sandbox,
+                target,
+                head,
+                &from.requested_by,
+                Asking::Yulius(note),
+            )
+            .await?
+            .is_some())
+    }
+
+    /// The schedule's request for the integration head (SPEC-650 PST-006): when the project's
+    /// merge-first target is behind the verified head, nothing is on its way, and the merges or
+    /// minutes of its `serve_after_merges` or `serve_every_minutes` were reached. It deploys as the
+    /// project's creator (`staging_person`). `Ok(None)` when nothing was recorded.
+    ///
+    /// # Errors
+    /// GitHub, Git and store failures (tried again at a later tick).
+    pub async fn staging_schedule(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Option<StagingRequestRecord>> {
+        Ok(self.staging_schedule_checked_once(sandbox).await?.1)
+    }
+
+    /// [`App::staging_schedule`], and whether the project has a merge-first target at all.
+    async fn staging_schedule_checked_once(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<(bool, Option<StagingRequestRecord>)> {
+        if sandbox.is_playground()
+            || !self.deps.git.has_cd_mirror()
+            || !self.config.ci.enabled
+            || self.ci_gate(sandbox).await.gate.is_none()
+        {
+            return Ok((false, None));
+        }
+        crate::ports::github::for_purpose(crate::ports::github::GitHubPurpose::Staging, async {
+            let (head, target) = self.staging_target(sandbox).await?;
+            let Some(target) = target else {
+                return Ok((false, None));
+            };
+            let lock = queue_lock(&sandbox.id);
+            let _queue = lock.lock().await;
+            let store = &self.deps.store;
+            let env = target.name.as_str();
+            // An inherited request waits for another's deploy: it is not on its way (review
+            // round 1 of PR 2).
+            let pending = store
+                .pending_staging_requests(&sandbox.id, env)
+                .await?
+                .iter()
+                .any(|r| r.state != StagingState::Inherited);
+            let mirror = self.cd_mirror(&sandbox.id);
+            let Some(head_at) = self
+                .deps
+                .git
+                .first_parent_position(&mirror, &head, &head)
+                .await?
+            else {
+                return Ok((true, None));
+            };
+            let (current, _) = self.staging_current(sandbox, &target, &head).await?;
+            let last_request = store
+                .recent_staging_requests(&sandbox.id, env, 1)
+                .await?
+                .first()
+                .map(|r| r.created_at.0);
+            let mut last_run = None;
+            for kind in [CdRunKind::Deploy, CdRunKind::Rollback, CdRunKind::Drill] {
+                let run = store
+                    .last_cd_run_of_kind(
+                        &sandbox.id,
+                        env,
+                        CdStage::Dev,
+                        kind,
+                        crate::ports::store_ext::CdRunHistory::Latest,
+                    )
+                    .await?;
+                last_run = last_run.max(run.map(|run| run.started_at.0));
+            }
+            let idle_ms = match last_request.max(last_run) {
+                Some(at) => u64::try_from(self.now().0.saturating_sub(at)).unwrap_or(0),
+                None => u64::MAX,
+            };
+            let behind = stg::Behind {
+                merges_ahead: current.map(|at| head_at.saturating_sub(at)),
+                idle_ms,
+                pending,
+            };
+            let schedule = stg::Schedule {
+                every_minutes: target.serve_every_minutes,
+                after_merges: target.serve_after_merges,
+            };
+            let Some(trigger) = stg::due(schedule, behind) else {
+                return Ok((true, None));
+            };
+            let asked = self
+                .staging_record_task_less(
+                    sandbox,
+                    &target,
+                    &head,
+                    SCHEDULE_REQUESTER,
+                    Asking::Yulius(trigger.note()),
+                )
+                .await?;
+            Ok((true, asked))
+        })
+        .await
+    }
+
+    /// Checks each project's staging schedule at most every 5 minutes, and a project whose last
+    /// check found no merge-first target once an hour (each check reads the verified head from
+    /// GitHub).
+    async fn staging_schedules(self: &Arc<Self>, projects: &[SandboxRecord]) {
+        const EVERY_MS: i64 = 5 * 60 * 1000;
+        const NO_TARGET_MS: i64 = 60 * 60 * 1000;
+        let now = self.now().0;
+        for project in projects {
+            if project.is_playground() || project.removed_at.is_some() {
+                continue;
+            }
+            {
+                let mut checked = self
+                    .staging_schedule_checked
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if checked.get(&project.id).is_some_and(|(at, target)| {
+                    now.saturating_sub(*at) < if *target { EVERY_MS } else { NO_TARGET_MS }
+                }) {
+                    continue;
+                }
+                checked.insert(project.id.clone(), (now, true));
+            }
+            match self.staging_schedule_checked_once(project).await {
+                Ok((true, _)) => {}
+                Ok((false, _)) => {
+                    self.staging_schedule_checked
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(project.id.clone(), (now, false));
+                }
+                Err(err) => {
+                    tracing::warn!(sandbox = %project.slug, error = %err, "the staging schedule could not be checked");
+                }
+            }
+        }
+    }
+
     /// Advances one sandbox's queue soon, off the caller's path.
     pub(crate) fn staging_kick(self: &Arc<Self>, sandbox: &SandboxRecord, env: &str) {
         let (app, sandbox, env) = (Arc::clone(self), sandbox.clone(), env.to_owned());
@@ -322,14 +659,17 @@ impl App {
         }
         self.tell_staging_outcomes().await;
         if let Ok(projects) = self.deps.store.sandboxes().await {
-            for project in projects {
+            for project in &projects {
                 if !project.is_playground()
                     && project.removed_at.is_none()
-                    && let Err(err) = self.tell_gate_repairs(&project).await
+                    && let Err(err) = self.tell_gate_repairs(project).await
                 {
                     tracing::warn!(sandbox = %project.slug, error = %err, "integration repair notices deferred");
                 }
             }
+            // Staging moves on by itself, whoever finishes what (SPEC-650 PST-006); after the
+            // repair notices, which a slow GitHub must not hold.
+            self.staging_schedules(&projects).await;
         }
     }
 
@@ -425,6 +765,18 @@ impl App {
             }
         }
         let (current, served) = self.staging_current(sandbox, &target, &head).await?;
+        let (pending, positions) = if self
+            .staging_carry_forward(sandbox, &target, (&head, current), &pending, &positions)
+            .await?
+        {
+            let pending = store.pending_staging_requests(&sandbox.id, env).await?;
+            let positions = self
+                .staging_positions(sandbox, &head, pending.iter().map(|r| r.revision.as_str()))
+                .await?;
+            (pending, positions)
+        } else {
+            (pending, positions)
+        };
         let facts: Vec<Facts> = pending.iter().map(|r| facts_of(r, &positions)).collect();
         let pick = stg::pick(&facts, current);
         for id in &pick.included {
@@ -466,6 +818,40 @@ impl App {
         positions: &[(String, Option<u64>)],
         pending: &[StagingRequestRecord],
     ) -> AppResult<()> {
+        let integration = delivery_profile(sandbox).integration_branch;
+        // A person's or the schedule's red request is green again once a rerun of its revision
+        // passed the full gate (review round 1, finding 6).
+        for request in pending
+            .iter()
+            .filter(|r| is_asked(r) && r.state == StagingState::Inherited)
+            .take(MAX_PENDING)
+        {
+            let verdict = self
+                .deps
+                .store
+                .integration_verdicts(
+                    &sandbox.id,
+                    &integration,
+                    std::slice::from_ref(&request.revision),
+                    super::GateRead::Latest,
+                )
+                .await?
+                .into_iter()
+                .next();
+            if let Some(run) = verdict
+                && run.state == RunState::Passed
+                && !run.jobs.iter().any(|j| j.skipped)
+                && request.ci_run_id.as_deref() != Some(run.run.as_str())
+            {
+                let change = StagingChange {
+                    ci_run_id: Some(run.run.clone()),
+                    note: Some(format!("the full gate passed on a rerun: run {}", run.run)),
+                    ..StagingChange::default()
+                };
+                self.staging_move(request, StagingState::Ready, change)
+                    .await?;
+            }
+        }
         let testing = pending.iter().filter(|r| r.state == StagingState::Testing);
         let mut ordered: Vec<_> = testing
             .filter_map(|r| {
@@ -477,7 +863,6 @@ impl App {
             })
             .collect();
         ordered.sort_by_key(|(at, _)| *at);
-        let integration = delivery_profile(sandbox).integration_branch;
         for (_, request) in ordered.into_iter().take(MAX_PENDING) {
             let verdicts = self
                 .deps
@@ -517,11 +902,7 @@ impl App {
                             None => run.owner,
                         };
                         if let Some((inherited, detail)) = history.describe(&run, requester) {
-                            next = if inherited {
-                                StagingState::Inherited
-                            } else {
-                                StagingState::GateFailed
-                            };
+                            next = stg::after_failed_gate(false, inherited);
                             let outcome = if run.state == RunState::Passed {
                                 "skipped an unresolved job"
                             } else {
@@ -533,6 +914,16 @@ impl App {
                                 run.run
                             );
                         }
+                    }
+                    // A person's or the schedule's request waits for the next green revision
+                    // (SPEC-650 PST-002).
+                    if is_asked(request) && next != StagingState::Ready {
+                        next = stg::after_failed_gate(true, next == StagingState::Inherited);
+                        note = format!(
+                            "waiting for green tests: the full gate failed on {} (run {}); the next merged revision is tested and deployed once green",
+                            short(&request.revision),
+                            run.run
+                        );
                     }
                     self.staging_move(
                         request,
@@ -706,15 +1097,13 @@ impl App {
             return Ok(());
         }
         request.state = StagingState::Deploying;
-        // The run is the task's (SPEC-631 SWK-004); its owner's access deploys it.
+        // The run is the task's (SPEC-631 SWK-004); its owner's access deploys it. A request of
+        // no task deploys as the person who asked, or for the schedule (SPEC-650 PST-003).
         let task = match &request.task_id {
             Some(task) => self.deps.store.task(task).await?,
             None => None,
         };
-        let person = match &task {
-            Some(task) => self.staging_owner(task).await?,
-            None => None,
-        };
+        let person = self.staging_person(&request).await?;
         let started = match &person {
             Some(person) => {
                 let actor = match &task {
@@ -744,9 +1133,11 @@ impl App {
                 )
                 .await
             }
-            None => Err(AppError::Forbidden(
-                "its task's owner is no longer active or lost write access: nobody can deploy for it".into(),
-            )),
+            None => Err(AppError::Forbidden(if request.task_id.is_some() {
+                "its task's owner is no longer active or lost write access: nobody can deploy for it".into()
+            } else {
+                "the person it deploys for is no longer active or lost write access: nobody can deploy for it".into()
+            })),
         };
         match started {
             Ok(run) => {
@@ -1092,34 +1483,81 @@ impl App {
         &self,
         task: &crate::model::TaskRecord,
     ) -> AppResult<Option<UserRecord>> {
-        let Some(owner) = self
+        self.staging_writer(&task.sandbox_id, &task.owner).await
+    }
+
+    /// `user` when active with write access to `sandbox`, now.
+    async fn staging_writer(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        user: &yulius_domain::ids::UserId,
+    ) -> AppResult<Option<UserRecord>> {
+        let Some(user) = self
             .deps
             .store
-            .user(&task.owner)
+            .user(user)
             .await?
             .filter(|u| u.disabled_at.is_none())
         else {
             return Ok(None);
         };
-        match self.require(&owner, &task.sandbox_id, Action::Work).await {
-            Ok(_) => Ok(Some(owner)),
+        match self.require(&user, sandbox, Action::Work).await {
+            Ok(_) => Ok(Some(user)),
             Err(AppError::Forbidden(_) | AppError::NotFound) => Ok(None),
             Err(err) => Err(err),
         }
     }
 
-    /// The person a request's deploy acts for: its task's owner with write access, now.
+    /// The person a request's deploy acts for, with write access now (SPEC-650 PST-003): its
+    /// task's owner; the person who asked; for the schedule, the project's creator, else the
+    /// newest requester of the environment's queue (a person, or a task's owner).
     async fn staging_person(
         &self,
         request: &StagingRequestRecord,
     ) -> AppResult<Option<UserRecord>> {
-        let Some(task) = &request.task_id else {
+        if let Some(found) = self.staging_asker(request).await? {
+            return Ok(Some(found));
+        }
+        if request.requested_by != SCHEDULE_REQUESTER {
+            return Ok(None);
+        }
+        let store = &self.deps.store;
+        if let Some(sandbox) = store.sandbox(&request.sandbox_id).await?
+            && let Some(creator) = self
+                .staging_writer(&request.sandbox_id, &sandbox.created_by)
+                .await?
+        {
+            return Ok(Some(creator));
+        }
+        for other in store
+            .recent_staging_requests(&request.sandbox_id, &request.environment, 50)
+            .await?
+        {
+            if other.id != request.id
+                && let Some(found) = self.staging_asker(&other).await?
+            {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Who asked for `request` with write access now: its task's owner or the person.
+    async fn staging_asker(&self, request: &StagingRequestRecord) -> AppResult<Option<UserRecord>> {
+        if let Some(task) = &request.task_id {
+            return match self.deps.store.task(task).await? {
+                Some(task) => self.staging_owner(&task).await,
+                None => Ok(None),
+            };
+        }
+        let Some(id) = request
+            .requested_by
+            .strip_prefix(PERSON_REQUESTER)
+            .and_then(|id| yulius_domain::ids::UserId::parse(id).ok())
+        else {
             return Ok(None);
         };
-        match self.deps.store.task(task).await? {
-            Some(task) => self.staging_owner(&task).await,
-            None => Ok(None),
-        }
+        self.staging_writer(&request.sandbox_id, &id).await
     }
 
     /// After the queue's newest deploy failed, puts staging back on its last verified release
@@ -1369,10 +1807,32 @@ impl App {
     }
 }
 
+/// How a request of no task is recorded.
+enum Asking {
+    /// A person asks now.
+    Person,
+    /// Yulius asks by itself, with this note: a red request carried to the head, or the
+    /// schedule (SPEC-650 PST-002, PST-006).
+    Yulius(String),
+}
+
+/// Whether `request` is a person's or the schedule's (SPEC-650), read from who asked: a deleted
+/// task's request has no task either, and stays a task's (review round 1, finding 2).
+pub(crate) fn is_asked(request: &StagingRequestRecord) -> bool {
+    request.task_id.is_none()
+        && (request.requested_by.starts_with(PERSON_REQUESTER)
+            || request.requested_by == SCHEDULE_REQUESTER)
+}
+
 fn facts_of(request: &StagingRequestRecord, positions: &[(String, Option<u64>)]) -> Facts {
     Facts {
         id: request.id.clone(),
-        task: request.task_id.as_ref().map(|t| t.as_str().to_owned()),
+        // A deleted task's request is still a task's to the decisions (finding 2).
+        task: match &request.task_id {
+            Some(task) => Some(task.as_str().to_owned()),
+            None if is_asked(request) => None,
+            None => Some(request.requested_by.clone()),
+        },
         revision: request.revision.clone(),
         state: request.state,
         position: positions
@@ -1384,6 +1844,66 @@ fn facts_of(request: &StagingRequestRecord, positions: &[(String, Option<u64>)])
 }
 
 impl App {
+    /// One request as the CD page and `cd_status` show it.
+    async fn staging_request_view(
+        &self,
+        request: &StagingRequestRecord,
+    ) -> AppResult<yulius_contracts::api::cd::CdStagingRequest> {
+        let store = &self.deps.store;
+        let task_number = match &request.task_id {
+            Some(task) => store.task(task).await?.map(|t| t.number),
+            None => None,
+        };
+        // A person's login; the schedule and a deleted task's request name nobody (finding 2).
+        let asked_by = match request
+            .requested_by
+            .strip_prefix(PERSON_REQUESTER)
+            .filter(|_| request.task_id.is_none())
+            .and_then(|id| yulius_domain::ids::UserId::parse(id).ok())
+        {
+            Some(id) => Some(
+                store
+                    .user(&id)
+                    .await?
+                    .map_or_else(|| "a removed person".to_owned(), |u| u.label()),
+            ),
+            None => None,
+        };
+        Ok(yulius_contracts::api::cd::CdStagingRequest {
+            id: request.id.clone(),
+            task_number,
+            asked_by,
+            scheduled: request.task_id.is_none() && request.requested_by == SCHEDULE_REQUESTER,
+            revision: request.revision.clone(),
+            state: request.state.as_str().to_owned(),
+            ci_run_id: request.ci_run_id.clone(),
+            cd_run_id: request.cd_run_id.clone(),
+            note: request.note.clone(),
+            waiting: staging_wait_text(request.state, &request.revision),
+            updated_at: crate::auth::rfc3339(request.updated_at),
+        })
+    }
+
+    /// `POST /api/sandboxes/{sid}/cd/{env}/staging` (write; SPEC-650 PST-001): the person's
+    /// request for the merge-first environment, answered with where it stands.
+    ///
+    /// # Errors
+    /// `NotFound` without access, every refusal of `App::staging_ask`.
+    pub async fn cd_staging_ask(
+        self: &Arc<Self>,
+        ctx: &crate::auth::AuthContext,
+        sandbox_id: &str,
+        environment: &str,
+    ) -> AppResult<yulius_contracts::api::cd::CdStagingRequest> {
+        let sid =
+            yulius_domain::ids::SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
+        let (sandbox, _) = self.require_for(ctx, &sid, Action::Work).await?;
+        let env = yulius_domain::cd::env_name(environment)
+            .ok_or_else(|| AppError::Invalid(super::cd::UNKNOWN_ENV.into()))?;
+        let request = self.staging_ask(&sandbox, &env, &ctx.user).await?;
+        self.staging_request_view(&request).await
+    }
+
     /// The queue of the merge-first environment `env` for the CD page and `cd_status`: the
     /// verified revision and the newest requests with their run ids (SPEC-575).
     pub(crate) async fn cd_staging_view(
@@ -1397,29 +1917,43 @@ impl App {
             .await?;
         let mut requests = Vec::with_capacity(recent.len());
         for request in &recent {
-            let task_number = match &request.task_id {
-                Some(task) => store.task(task).await?.map(|t| t.number),
-                None => None,
-            };
-            requests.push(yulius_contracts::api::cd::CdStagingRequest {
-                id: request.id.clone(),
-                task_number,
-                revision: request.revision.clone(),
-                state: request.state.as_str().to_owned(),
-                ci_run_id: request.ci_run_id.clone(),
-                cd_run_id: request.cd_run_id.clone(),
-                note: request.note.clone(),
-                updated_at: crate::auth::rfc3339(request.updated_at),
-            });
+            requests.push(self.staging_request_view(request).await?);
         }
         // What staging serves (a rollback moves it back), when a verified request put it there.
         let verified = self.staging_verified_revision(sandbox, target).await?;
+        let waiting = recent
+            .iter()
+            .zip(&requests)
+            .find(|(r, _)| is_asked(r) && r.state != StagingState::Superseded)
+            .and_then(|(r, shown)| match r.state {
+                // A failed deploy waits for a person's press, not for tests (review round 2).
+                StagingState::DeployFailed => Some(format!(
+                    "The deploy of {} failed: Deploy asks for it again",
+                    r.revision.get(..7).unwrap_or(&r.revision)
+                )),
+                _ => shown.waiting.clone(),
+            });
         Ok(yulius_contracts::api::cd::CdStaging {
             verified,
             requests,
+            waiting,
             github_wait: self.github_wait(),
         })
     }
+}
+
+/// What a pending request of no task waits for, in plain words (SPEC-650 PST-005).
+pub(crate) fn staging_wait_text(state: StagingState, revision: &str) -> Option<String> {
+    let sha = revision.get(..7).unwrap_or(revision);
+    Some(match state {
+        StagingState::Testing => format!("Waiting for green tests on {sha}"),
+        StagingState::Inherited => {
+            format!("Waiting for green tests: {sha} failed; the next merged revision is tested")
+        }
+        StagingState::Ready => format!("Tests passed on {sha}: it deploys next"),
+        StagingState::Deploying => format!("Deploying {sha}"),
+        _ => return None,
+    })
 }
 
 /// `cd_status`'s lines for a merge-first environment's queue.
@@ -1429,9 +1963,12 @@ pub(crate) fn staging_text(
     staging: &yulius_contracts::api::cd::CdStaging,
 ) {
     text.push_str(&format!(
-        "  staging queue of [cd.{env}] (merge-first: a task's cd_deploy asks for its merged revision; the full gate runs on exactly it first): verified revision {}\n",
+        "  staging queue of [cd.{env}] (merge-first: a task's cd_deploy asks for its merged revision, a person's Deploy on the CD page or their Superagent's cd_deploy for the integration head; the full gate runs on exactly it first): verified revision {}\n",
         staging.verified.as_deref().map_or("none yet", short)
     ));
+    if let Some(waiting) = &staging.waiting {
+        text.push_str(&format!("  {waiting}\n"));
+    }
     if let Some(wait) = &staging.github_wait {
         text.push_str(wait);
         text.push('\n');
@@ -1440,9 +1977,12 @@ pub(crate) fn staging_text(
         text.push_str(&format!(
             "  - request {} {} revision {}: {}{}{}\n",
             request.id,
-            request
-                .task_number
-                .map_or_else(|| "a deleted task's".to_owned(), |n| format!("task #{n}")),
+            match (&request.asked_by, request.task_number) {
+                (Some(who), _) => format!("asked by {who},"),
+                (None, None) if request.scheduled => "the schedule's,".to_owned(),
+                (None, Some(n)) => format!("task #{n}"),
+                (None, None) => "a deleted task's".to_owned(),
+            },
             short(&request.revision),
             request.state,
             run_ids_of(request.ci_run_id.as_deref(), request.cd_run_id.as_deref()),

@@ -436,6 +436,7 @@ pub fn public() -> Router<AppState> {
         .route("/api/sandboxes/{sid}/delivery/runs", get(delivery::runs))
         .route("/api/sandboxes/{sid}/cd", get(cd::overview))
         .route("/api/sandboxes/{sid}/cd/{env}/deploy", post(cd::deploy))
+        .route("/api/sandboxes/{sid}/cd/{env}/staging", post(cd::staging))
         .route("/api/sandboxes/{sid}/cd/{env}/rollback", post(cd::rollback))
         .route("/api/sandboxes/{sid}/cd/runs/{rid}", get(cd::run))
         .route(
