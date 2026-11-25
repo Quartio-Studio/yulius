@@ -4670,3 +4670,225 @@ async fn the_staging_tick_checks_the_schedule_at_most_every_5_minutes() -> TestR
     );
     Ok(())
 }
+
+/// Moves request `id` from `from` to `to` as a round of the queue would.
+async fn moved(f: &Fixture, id: &str, from: StagingState, to: StagingState) -> TestResult {
+    assert!(
+        f.h.store
+            .move_staging_request(id, from, to, &StagingChange::default(), f.h.app.now())
+            .await?
+    );
+    Ok(())
+}
+
+/// Review round 1 of PR 2, findings 1 and 3: a task's request on its way keeps the schedule
+/// quiet, and a task's inherited one (it waits for someone else's deploy) does not.
+#[tokio::test]
+async fn the_schedule_waits_for_a_request_on_its_way_but_not_an_inherited_one() -> TestResult {
+    let f = fixture(&scheduled_toml(0, 2)).await?;
+    let project = sandbox(&f).await?;
+    agent(&f, "t1").await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    let first = f.h.app.staging_schedule(&project).await?.ok_or("first")?;
+    assert!(
+        first
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("serves no revision")),
+        "{first:?}"
+    );
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Failed).await?;
+    let tasks = recorded_ask(&f, "sr-t1", &r2, "task:1", Some("t1")).await?;
+    let r3 = f.push("dev", &[("three.txt", Some("3"))])?;
+    gate(&f, &r3, RunState::Passed).await?;
+    assert!(
+        f.h.app.staging_schedule(&project).await?.is_none(),
+        "a task's request is testing"
+    );
+    moved(
+        &f,
+        &tasks.id,
+        StagingState::Testing,
+        StagingState::Inherited,
+    )
+    .await?;
+    let asked = f.h.app.staging_schedule(&project).await?.ok_or("asked")?;
+    assert_eq!(asked.revision, r3);
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r3);
+    assert_eq!(request(&f, &tasks.id).await?.state, StagingState::Included);
+    Ok(())
+}
+
+/// Review round 1 of PR 2, findings 2 and 3: the schedule never asks again for a head any request
+/// already tried (its own failed deploy, a task's request a person cancelled); a newer head is
+/// asked for; a red head waits and is carried once.
+#[tokio::test]
+async fn the_schedule_never_asks_again_for_a_head_already_tried() -> TestResult {
+    let f = fixture(&scheduled_toml(0, 1)).await?;
+    let project = sandbox(&f).await?;
+    agent(&f, "t1").await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    f.h.app.staging_schedule(&project).await?.ok_or("first")?;
+    settle(&f).await?;
+    // Its own deploy fails: never deployed again by the schedule.
+    let r2 = f.push("dev", &[("fail", Some("x"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    let failing = f.h.app.staging_schedule(&project).await?.ok_or("failing")?;
+    settle(&f).await?;
+    assert_eq!(
+        request(&f, &failing.id).await?.state,
+        StagingState::DeployFailed
+    );
+    for _ in 0..3 {
+        assert!(f.h.app.staging_schedule(&project).await?.is_none());
+        settle(&f).await?;
+    }
+    assert_eq!(deployed(&f).await?, [r1.clone(), r2.clone()]);
+    // A task's request for the head that a person cancelled stands too.
+    let r3 = f.push("dev", &[("gone", Some("fail"))])?;
+    gate(&f, &r3, RunState::Passed).await?;
+    let cancelled = recorded_ask(&f, "sr-cancelled", &r3, "task:1", Some("t1")).await?;
+    moved(
+        &f,
+        &cancelled.id,
+        StagingState::Testing,
+        StagingState::DeployFailed,
+    )
+    .await?;
+    assert!(f.h.app.staging_schedule(&project).await?.is_none());
+    // A newer head is asked for.
+    let r4 = f.push("dev", &[("fail", None)])?;
+    gate(&f, &r4, RunState::Passed).await?;
+    f.h.app.staging_schedule(&project).await?.ok_or("r4")?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r4);
+    // A red head: its request waits, nothing more is asked for it, a newer head is carried once.
+    let r5 = f.push("dev", &[("five.txt", Some("5"))])?;
+    gate(&f, &r5, RunState::Failed).await?;
+    let red = f.h.app.staging_schedule(&project).await?.ok_or("red")?;
+    settle(&f).await?;
+    assert_eq!(request(&f, &red.id).await?.state, StagingState::Inherited);
+    assert!(f.h.app.staging_schedule(&project).await?.is_none());
+    let r6 = f.push("dev", &[("six.txt", Some("6"))])?;
+    gate(&f, &r6, RunState::Running).await?;
+    settle(&f).await?;
+    assert!(f.h.app.staging_schedule(&project).await?.is_none());
+    let at_r6 = staging_view(&f).await?["requests"]
+        .as_array()
+        .ok_or("requests")?
+        .iter()
+        .filter(|r| r["revision"] == r6.as_str())
+        .count();
+    assert_eq!(at_r6, 1);
+    Ok(())
+}
+
+/// Review round 1 of PR 2, finding 3: a scheduled deploy acts as the project's creator, else the
+/// newest requester with write access; with nobody, it fails saying why.
+#[tokio::test]
+async fn a_scheduled_deploy_acts_for_someone_with_write_access_or_fails() -> TestResult {
+    let f = fixture(&scheduled_toml(0, 1)).await?;
+    let project = sandbox(&f).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    person_asks(&f, &f.bob).await?;
+    settle(&f).await?;
+    let ttl = || {
+        f.h.clock.0.fetch_add(
+            f.h.app.config.permission_ttl_ms + 1,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    };
+    // The creator (alice) lost write access: bob, the newest requester, deploys it.
+    f.h.github
+        .set_perm("alice", "acme/app", support::perms("read"));
+    ttl();
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    f.h.app.staging_schedule(&project).await?.ok_or("r2")?;
+    settle(&f).await?;
+    assert_eq!(
+        deploys_by(&f).await?.last(),
+        Some(&(r2.clone(), "bob".to_owned()))
+    );
+    // Nobody may: it fails, saying why.
+    f.h.github
+        .set_perm("bob", "acme/app", support::perms("read"));
+    ttl();
+    let r3 = f.push("dev", &[("three.txt", Some("3"))])?;
+    gate(&f, &r3, RunState::Passed).await?;
+    let nobody = f.h.app.staging_schedule(&project).await?.ok_or("r3")?;
+    settle(&f).await?;
+    let nobody = request(&f, &nobody.id).await?;
+    assert_eq!(nobody.state, StagingState::DeployFailed, "{nobody:?}");
+    assert!(
+        nobody
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("nobody can deploy for it")),
+        "{nobody:?}"
+    );
+    assert_eq!(serving(&f)?, r2);
+    Ok(())
+}
+
+/// Review round 1 of PR 2, finding 3: the timer counts from the environment's last request or
+/// run, whichever is newer: a person's rollback restarts it.
+#[tokio::test]
+async fn the_schedules_timer_counts_from_the_last_request_or_run() -> TestResult {
+    let toml = format!(
+        "{}serve_every_minutes = 30\nserve_after_merges = 0\n",
+        restoring_toml()
+    );
+    let f = fixture(&toml).await?;
+    let project = sandbox(&f).await?;
+    let minutes = |m: i64| {
+        f.h.clock
+            .0
+            .fetch_add(m * 60_000, std::sync::atomic::Ordering::SeqCst);
+    };
+    let r1 = f.push(
+        "dev",
+        &[
+            ("scripts/cd/rollback.sh", Some(ROLLBACK)),
+            ("scripts/cd/staging-verify.sh", Some(STAGING_VERIFY)),
+        ],
+    )?;
+    gate(&f, &r1, RunState::Passed).await?;
+    f.h.app.staging_schedule(&project).await?.ok_or("r1")?;
+    settle(&f).await?;
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    minutes(31);
+    f.h.app.staging_schedule(&project).await?.ok_or("r2")?;
+    settle(&f).await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r2);
+    // 25 minutes later a person rolls staging back; a new head lands.
+    minutes(25);
+    let back = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/cd/staging/rollback",
+        Some(json!({})),
+        &f.alice,
+    )
+    .await?;
+    assert!(back.status.is_success(), "{}", back.body);
+    f.ended(back.body["run_id"].as_str().ok_or("run")?).await?;
+    let r3 = f.push("dev", &[("three.txt", Some("3"))])?;
+    gate(&f, &r3, RunState::Passed).await?;
+    // 35 minutes after the last request, 10 after the rollback: not due.
+    minutes(10);
+    assert!(f.h.app.staging_schedule(&project).await?.is_none());
+    minutes(21);
+    let asked = f.h.app.staging_schedule(&project).await?.ok_or("r3")?;
+    assert_eq!(asked.revision, r3);
+    Ok(())
+}

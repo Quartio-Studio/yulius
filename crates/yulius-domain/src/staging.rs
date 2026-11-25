@@ -262,11 +262,12 @@ pub struct Schedule {
 /// Where staging stands against the integration head, for [`due`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Behind {
-    /// First-parent commits from what staging serves to the head (0: it serves the head).
-    pub merges_ahead: u64,
+    /// First-parent commits from what staging serves to the head (0: it serves the head;
+    /// `None`: it serves no revision of the branch yet).
+    pub merges_ahead: Option<u64>,
     /// Milliseconds since the environment's last staging request or run.
     pub idle_ms: u64,
-    /// A request is on its way (testing, inherited, ready or deploying).
+    /// A request is on its way (testing, ready or deploying; an inherited one waits for others).
     pub pending: bool,
 }
 
@@ -277,6 +278,8 @@ pub enum Trigger {
     Merges(u64),
     /// Staging has not changed (no request, no run) for the configured minutes.
     Minutes(u32),
+    /// Staging serves no revision of the integration branch yet.
+    NothingServed,
 }
 
 impl Trigger {
@@ -286,6 +289,10 @@ impl Trigger {
         match self {
             Self::Merges(n) => {
                 format!("Yulius's schedule: {n} merged revisions since what staging serves")
+            }
+            Self::NothingServed => {
+                "Yulius's schedule: staging serves no revision of the integration branch yet"
+                    .to_owned()
             }
             Self::Minutes(m) => format!(
                 "Yulius's schedule: staging has not changed for {m} minutes, and the integration head is ahead"
@@ -298,11 +305,18 @@ impl Trigger {
 /// behind it, nothing is on its way, and the merges or the minutes reached the project's setting.
 #[must_use]
 pub fn due(schedule: Schedule, behind: Behind) -> Option<Trigger> {
-    if behind.merges_ahead == 0 || behind.pending {
+    let off = schedule.after_merges == 0 && schedule.every_minutes == 0;
+    if behind.pending || off {
         return None;
     }
-    if schedule.after_merges > 0 && behind.merges_ahead >= u64::from(schedule.after_merges) {
-        return Some(Trigger::Merges(behind.merges_ahead));
+    let Some(ahead) = behind.merges_ahead else {
+        return Some(Trigger::NothingServed);
+    };
+    if ahead == 0 {
+        return None;
+    }
+    if schedule.after_merges > 0 && ahead >= u64::from(schedule.after_merges) {
+        return Some(Trigger::Merges(ahead));
     }
     let every_ms = u64::from(schedule.every_minutes) * 60_000;
     (schedule.every_minutes > 0 && behind.idle_ms >= every_ms)
@@ -742,7 +756,7 @@ mod tests {
     #[test]
     fn the_schedule_asks_for_the_head_when_staging_is_behind() {
         let at = |merges_ahead: u64, minutes_idle: u64| Behind {
-            merges_ahead,
+            merges_ahead: Some(merges_ahead),
             idle_ms: minutes_idle * 60_000,
             pending: false,
         };
@@ -775,6 +789,29 @@ mod tests {
         };
         assert_eq!(due(time_only, at(999, 29)), None);
         assert_eq!(due(time_only, at(1, 30)), Some(Trigger::Minutes(30)));
+        // Review round 1 of PR 2: staging serving nothing of the branch is its own trigger,
+        // whatever the settings say, unless both are off or a request is on its way.
+        let nothing = Behind {
+            merges_ahead: None,
+            ..at(0, 0)
+        };
+        assert_eq!(due(every, nothing), Some(Trigger::NothingServed));
+        assert_eq!(due(time_only, nothing), Some(Trigger::NothingServed));
+        assert_eq!(due(off, nothing), None);
+        assert_eq!(
+            due(
+                every,
+                Behind {
+                    pending: true,
+                    ..nothing
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            Trigger::NothingServed.note(),
+            "Yulius's schedule: staging serves no revision of the integration branch yet"
+        );
         assert_eq!(
             Trigger::Merges(7).note(),
             "Yulius's schedule: 7 merged revisions since what staging serves"
