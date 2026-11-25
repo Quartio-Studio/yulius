@@ -1312,7 +1312,9 @@ impl App {
                 .collect(),
             identity: None,
             join: join.map(|join| Box::new(ci_join(join))),
-            guard: Vec::new(),
+            // A job runs the branch's code: the sandbox's harness folders are not its to write
+            // (SPEC-652 MEM-010).
+            guard: crate::memory_guard::sandbox_masks(&self.sandbox_dir(&sandbox.id)),
         }
     }
 

@@ -2224,22 +2224,23 @@ impl App {
         sandbox: &SandboxId,
         harness: Harness,
         home: &Path,
-        worktree: &Path,
         codex_home: Option<&Path>,
         antigravity_home: Option<&Path>,
-    ) -> Vec<yulius_contracts::ptyhost::GuardPath> {
+    ) -> AppResult<Vec<yulius_contracts::ptyhost::GuardPath>> {
         let root = self.sandbox_dir(sandbox);
-        match harness {
-            Harness::ClaudeCode => {
+        match (harness, codex_home, antigravity_home) {
+            (Harness::ClaudeCode, ..) => {
                 let config = home.join(".claude");
-                crate::memory_guard::claude_guard(&root, &config, &config, worktree, &root)
+                let base = crate::memory_guard::sandbox_memory_base(&root);
+                crate::memory_guard::claude_guard(&root, &config, &config, &base)
             }
-            Harness::Codex => codex_home
-                .map(|codex| crate::memory_guard::codex_guard(&root, codex))
-                .unwrap_or_default(),
-            Harness::Antigravity => antigravity_home
-                .map(|agy| crate::memory_guard::antigravity_guard(agy, &home.join(".gemini")))
-                .unwrap_or_default(),
+            (Harness::Codex, Some(codex), _) => crate::memory_guard::codex_guard(&root, codex),
+            (Harness::Antigravity, _, Some(agy)) => {
+                crate::memory_guard::antigravity_guard(agy, &home.join(".gemini"))
+            }
+            (Harness::Codex | Harness::Antigravity, ..) => Err(AppError::internal(
+                "the run's harness home is missing: its memory cannot be guarded",
+            )),
         }
     }
 
@@ -3444,10 +3445,9 @@ impl App {
                     &sandbox.id,
                     harness,
                     &home,
-                    &worktree,
                     codex_home.as_ref().map(|(path, _)| path.as_path()),
                     antigravity_home.as_deref(),
-                ),
+                )?,
             }
         } else {
             Containment::None

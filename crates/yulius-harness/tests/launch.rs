@@ -2126,6 +2126,41 @@ fn a_claude_run_keeps_to_its_read_only_memory_folder() -> TestResult {
             "Edit(//data/sandboxes/s1/home/.claude/rules/**)",
         ])
     );
+    // Instruction files of every folder above the worktree are not read: an agent could write
+    // one there (the sandbox folder is its own) and every later task would load it (review
+    // round 1; Claude Code 2.1.332 reads them up to `/`).
+    let excludes = settings["claudeMdExcludes"]
+        .as_array()
+        .ok_or("claudeMdExcludes")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    for folder in [
+        "/data/sandboxes/s1/worktrees",
+        "/data/sandboxes/s1",
+        "/data/sandboxes",
+        "/data",
+        "",
+    ] {
+        for name in [
+            "CLAUDE.md",
+            "CLAUDE.local.md",
+            ".claude/CLAUDE.md",
+            ".claude/rules/**",
+        ] {
+            let pattern = format!("{folder}/{name}");
+            assert!(
+                excludes.contains(&pattern.as_str()),
+                "{pattern} in {excludes:?}"
+            );
+        }
+    }
+    assert!(
+        !excludes
+            .iter()
+            .any(|e| e.starts_with("/data/sandboxes/s1/worktrees/t1/")),
+        "the worktree's own instructions still load: {excludes:?}"
+    );
     request.claude_memory_dir = None;
     let settings = json_of(file(&plan_launch(&request)?, "claude-settings.json")?)?;
     assert!(settings.get("autoMemoryDirectory").is_none() && settings.get("permissions").is_none());
@@ -2163,6 +2198,12 @@ fn a_claude_run_keeps_to_its_read_only_memory_folder() -> TestResult {
     assert_eq!(
         settings["permissions"]["deny"][1],
         "Edit(//home/alice/.claude/CLAUDE.md)"
+    );
+    assert!(
+        settings["claudeMdExcludes"]
+            .as_array()
+            .is_some_and(|e| e.iter().any(|p| p == "/data/sandboxes/s1/CLAUDE.md")),
+        "{settings}"
     );
     Ok(())
 }

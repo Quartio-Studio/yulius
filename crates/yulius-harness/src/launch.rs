@@ -631,10 +631,16 @@ fn reviewer_agents() -> Value {
 /// MEM-002, MEM-006): `autoMemoryDirectory` names it, so the session reads exactly the folder its
 /// namespace binds read-only, and `permissions.deny` refuses Claude Code's own edits there and to
 /// `CLAUDE.md` and `rules` in `config_dir` (an absolute path in a rule starts with `//`).
+///
+/// `claudeMdExcludes` names the instruction files of every folder above `project` (the session's
+/// folder): Claude Code reads `CLAUDE.md`, `CLAUDE.local.md` and `.claude/` there up to `/`, and an
+/// agent could write one above its worktree, in the sandbox folder it owns, that every later
+/// session would load (review round 1, measured on 2.1.332). The project's own files still load.
 fn memory_settings(
     settings: &mut Map<String, Value>,
     memory_dir: &Path,
     config_dir: &Path,
+    project: &Path,
 ) -> Result<(), LaunchError> {
     let memory = utf8(memory_dir, "claude_memory_dir")?;
     let config = utf8(config_dir, "config_dir")?;
@@ -651,7 +657,32 @@ fn memory_settings(
             format!("Edit(/{config}/rules/**)"),
         ] }),
     );
+    let mut excludes = Vec::new();
+    for folder in project.ancestors().skip(1) {
+        let folder = glob_escaped(utf8(folder, "worktree")?.trim_end_matches('/'));
+        for name in [
+            "CLAUDE.md",
+            "CLAUDE.local.md",
+            ".claude/CLAUDE.md",
+            ".claude/rules/**",
+        ] {
+            excludes.push(Value::String(format!("{folder}/{name}")));
+        }
+    }
+    settings.insert("claudeMdExcludes".into(), Value::Array(excludes));
     Ok(())
+}
+
+/// `path` with picomatch's special characters escaped, so it matches only itself.
+fn glob_escaped(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        if "\\*?[](){}!+@|^$".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
@@ -742,7 +773,7 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         settings.insert(ENABLED_PLUGINS.into(), off);
     }
     if let (Some(memory), Some(settings)) = (&request.claude_memory_dir, settings.as_object_mut()) {
-        memory_settings(settings, memory, &config_dir)?;
+        memory_settings(settings, memory, &config_dir, &request.worktree)?;
     }
 
     // Yulius's own tools go through `yulius mcp`, a stdio bridge to `${YULIUS_URL}/mcp` that
@@ -1536,7 +1567,7 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
         settings.insert(ENABLED_PLUGINS.into(), off);
     }
     if let Some(memory) = &request.claude_memory_dir {
-        memory_settings(&mut settings, memory, &request.config_dir)?;
+        memory_settings(&mut settings, memory, &request.config_dir, &request.cwd)?;
     }
     if !settings.is_empty() {
         argv.extend(["--settings".into(), Value::Object(settings).to_string()]);

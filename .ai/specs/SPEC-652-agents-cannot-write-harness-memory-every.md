@@ -101,6 +101,15 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - **MEM-007** Removing and purging a sandbox that has notes works: the protection is only in each
   session's namespace, nothing on the host is immutable.
 - **MEM-008** A person with access to the host edits these files in place, as before.
+- **MEM-010** Every other process of a sandbox that runs code an agent chose sees the sandbox
+  home's `.claude` and its Codex homes as empty read-only folders: its Docker engine (so a
+  container's `-v` never reaches them), its CI jobs and its script watches.
+- **MEM-011** A Claude Code session reads no instruction file of a folder above its own
+  (`claudeMdExcludes`), so a `CLAUDE.md` an agent leaves in the sandbox folder loads nowhere.
+- **MEM-012** The memory key of every task and Superagent session of a sandbox is Claude Code's
+  key of the sandbox's repository, from its path alone; a guarded path that is not beneath its
+  anchor, or that cannot be opened for another reason than being missing or a link, fails the
+  start.
 - **MEM-009** The update's host check (root) clears the stopgap's immutable flag on
   `sandboxes/*/home/.claude/projects/*/memory` and `users/*/home/.claude/projects/*/memory`
   (folder and files) and reports what it cleared; the `MEMORY.md` line and the deny rules in
@@ -116,6 +125,9 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - [x] Claude Code run settings pin the memory folder and deny edits there
 - [x] Real-bwrap proof on a guest: writes refused per harness, reads kept, purge works
 - [x] Architecture, operations and changes updated
+- [ ] Containers, CI jobs and script watches see the harness folders masked
+- [ ] Memory key from the sandbox's repository; ancestors' instructions excluded; guard errors fail the start
+- [ ] Joined runs and the Docker mask proven on a guest
 - [ ] Independent review of the guarantee approved
 - [ ] The refusal sentence for edit tools, shell results and the Antigravity start
 - [ ] The update's host check clears the stopgap's immutable flags
@@ -169,6 +181,12 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
   one).
 - **Descriptors, not names.** See MEM-004. Placeholders instead of failing a start, so an agent
   cannot stop its sandbox's later sessions with a link.
+- **Review round 1.** A worktree's `.git` is no longer read to find the key (a FIFO there hung
+  the launch; a crafted pointer chose the folder), the engine and CI get masks (a container's
+  `-v` reached the files), a guard error fails the start instead of an empty guard or
+  placeholder, `claudeMdExcludes` closes the folders above the worktree, and the limits are named
+  in ADR-0479. Masks rather than read-only binds in the engine's view: dockerd and a container
+  could remount a read-only bind of the real folder read-write.
 - **Pins only inside Claude Code's configuration.** Binding the home or a Codex home over itself
   would also close renames out of the home: a mount boundary there makes renames and hard links
   between the home and the rest of the sandbox fail (`EXDEV`: the compiler cache's hard links,

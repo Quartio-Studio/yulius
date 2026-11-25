@@ -142,6 +142,9 @@ pub struct CockpitLaunch {
     /// The Global Superagent (SPEC-427 GSA-002): only the Yulius MCP, no built-in tools and no
     /// redaction hook, with these of its tools pre-allowed. `None` for a sandbox's Cockpit.
     pub only_yulius: Option<Vec<String>>,
+    /// The folder its Claude Code memory is keyed by (the sandbox's repository, or the Global
+    /// Superagent's folder): the same one its guard binds read-only (SPEC-652 MEM-002).
+    pub memory_base: PathBuf,
 }
 
 /// A launch plan plus the session id known up front.

@@ -178,10 +178,6 @@ pub fn host(action: HostAction) -> ExitCode {
     }
 }
 
-/// `yulius sandbox-exec [--engine] [--cgroup DIR] [--join FILE] -- bwrap …`: joins `cgroup` and
-/// the sandbox of `join` (still single-threaded), then execs `bwrap` with the run's seccomp
-/// filter, or the engine's (ADR-0151).
-#[must_use]
 /// What `yulius sandbox-exec` does before it execs `bwrap`.
 #[derive(Debug, Clone, Copy)]
 pub struct Exec<'a> {
@@ -197,8 +193,10 @@ pub struct Exec<'a> {
     pub filter: bool,
 }
 
-/// `yulius sandbox-exec`: joins what it is asked to, opens the guarded paths, and execs `argv`
-/// (bwrap) with the seccomp filter unless it is turned off.
+/// `yulius sandbox-exec [--engine] [--cgroup DIR] [--join FILE] [--guard JSON] [--no-filter] --
+/// bwrap …`: joins `cgroup` and the sandbox of `join` (still single-threaded), opens the guarded
+/// paths of `guard` (SPEC-652), then execs `bwrap` with the run's seccomp filter, or the
+/// engine's (ADR-0151), unless `--no-filter`.
 #[must_use]
 pub fn exec(how: Exec<'_>, argv: &[OsString]) -> ExitCode {
     if let Some(path) = how.join {

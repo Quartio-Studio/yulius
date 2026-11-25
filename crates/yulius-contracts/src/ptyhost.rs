@@ -460,6 +460,27 @@ pub const GUARD_ARGS_FD: i32 = 199;
 /// Most guarded paths of one run.
 pub const GUARD_MAX_PATHS: usize = 32;
 
+/// The folders below a sandbox directory that a process of the sandbox which runs code an agent
+/// chose, other than a harness session, sees as empty read-only folders (SPEC-652 MEM-010): the
+/// sandbox home's Claude Code configuration and its Codex homes.
+pub const SANDBOX_MASKED: [&str; 2] = ["home/.claude", "codex"];
+
+/// The masks of [`SANDBOX_MASKED`] for the sandbox directory `sandbox_dir`, bound at the same
+/// path.
+#[must_use]
+pub fn sandbox_masks(sandbox_dir: &str) -> Vec<GuardPath> {
+    let root = sandbox_dir.trim_end_matches('/');
+    SANDBOX_MASKED
+        .iter()
+        .map(|relative| GuardPath {
+            anchor: root.to_owned(),
+            relative: (*relative).to_owned(),
+            dest: format!("{root}/{relative}"),
+            kind: GuardKind::Mask,
+        })
+        .collect()
+}
+
 /// What a guarded path is (SPEC-652).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -471,6 +492,9 @@ pub enum GuardKind {
     /// A folder bound writable over itself, so it cannot be renamed or removed (`EBUSY`); nothing
     /// when it is missing or not a folder.
     Pin,
+    /// A folder covered by an empty read-only folder whatever it holds: what a sandbox's Docker
+    /// engine, CI jobs and script watches see of its harness folders (SPEC-652 MEM-010).
+    Mask,
 }
 
 /// One guarded path: `relative` below `anchor` (opened from it without following a link), bound

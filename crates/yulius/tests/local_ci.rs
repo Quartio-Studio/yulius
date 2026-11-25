@@ -7752,10 +7752,23 @@ async fn a_ci_job_binds_the_agent_cli_of_its_join() -> TestResult {
     f.settle().await?;
     let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
     assert!(!seen.is_empty(), "no CI job ran");
+    // SPEC-652 MEM-010: a job runs the branch's code, so the sandbox's harness folders are
+    // masked for it.
+    let masks = yulius_app::memory_guard::sandbox_masks(
+        &f.h.app
+            .config
+            .data_dir
+            .join("sandboxes")
+            .join(f.sandbox.id.as_str()),
+    );
     for containment in &seen {
-        let Containment::Bubblewrap { binds, join, .. } = containment else {
+        let Containment::Bubblewrap {
+            binds, join, guard, ..
+        } = containment
+        else {
             return Err(format!("a contained job: {containment:?}").into());
         };
+        assert_eq!(guard, &masks);
         assert!(join.is_some(), "joined");
         assert!(
             binds.contains(&Bind {

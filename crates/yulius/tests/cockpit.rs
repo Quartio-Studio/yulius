@@ -1590,6 +1590,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
         mcp: Vec::new(),
         contained,
         only_yulius: None,
+        memory_base: PathBuf::from("/data/sandboxes/s1/repo"),
     };
     let settled = |home: &str| -> Result<Value, Box<dyn std::error::Error>> {
         let path = dir.path().join(home).join(".claude.json");

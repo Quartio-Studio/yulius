@@ -567,7 +567,17 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
             .iter()
             .all(|(anchor, dest)| *anchor == own_text && Path::new(dest).starts_with(&config))
     );
-    assert!(guarded.iter().any(|(_, dest)| dest.ends_with("/memory")));
+    // The memory folder it reads is the one its guard binds (review round 1).
+    let memory = guard
+        .iter()
+        .find(|p| {
+            p.kind == yulius_contracts::ptyhost::GuardKind::Dir && p.dest.ends_with("/memory")
+        })
+        .ok_or("a guarded memory folder")?;
+    assert_eq!(
+        auto_memory_dir(&plan).as_deref(),
+        Some(memory.dest.as_str())
+    );
     assert_eq!(sandbox_root, &own);
     assert_eq!(home, &own);
     assert!(writable.is_empty(), "{writable:?}");
@@ -1093,5 +1103,18 @@ async fn a_contained_superagent_guards_its_memory_in_the_persons_home() -> TestR
     )));
     assert!(guard.iter().all(|p| p.anchor == at(home_host.clone())));
     assert!(home_host.join(&memory).is_dir(), "made before the session");
+    // The memory folder it reads is the one its guard binds (review round 1).
+    assert_eq!(auto_memory_dir(&plan), Some(at(home.join(&memory))));
     Ok(())
+}
+
+/// The `autoMemoryDirectory` of a Superagent's plan (its inline `--settings`).
+fn auto_memory_dir(plan: &yulius_app::ports::session::LaunchPlan) -> Option<String> {
+    let settings = plan
+        .argv
+        .windows(2)
+        .find(|w| w[0] == "--settings")
+        .map(|w| w[1].clone())?;
+    let settings: serde_json::Value = serde_json::from_str(&settings).ok()?;
+    settings["autoMemoryDirectory"].as_str().map(str::to_owned)
 }

@@ -51,6 +51,7 @@ pub fn decide(kind: GuardKind, found: Found) -> Bind {
         (GuardKind::File, _) => Bind::EmptyFile,
         (GuardKind::Pin, Found::Dir) => Bind::Pin,
         (GuardKind::Pin, _) => Bind::Skip,
+        (GuardKind::Mask, _) => Bind::EmptyDir,
     }
 }
 
@@ -139,6 +140,7 @@ pub fn clear_ways(paths: &[GuardPath]) -> io::Result<Vec<String>> {
                 Err(rustix::io::Errno::NOENT) => break,
                 Err(err) => return Err(err.into()),
             };
+            // A mask's folder, a pin's and every folder on the way must be folders.
             let fits = match (last, path.kind) {
                 (true, GuardKind::File) => kind == FileType::RegularFile,
                 _ => kind == FileType::Directory,
@@ -191,11 +193,77 @@ pub struct Opened {
     held: Vec<std::os::fd::OwnedFd>,
 }
 
+/// Whether opening a guarded path failed because it is missing or a link (or a wrong kind) is on
+/// the way, which a placeholder answers (MEM-003). Any other error fails the start: an empty
+/// placeholder there would hide notes that exist (review round 1).
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn placeholder_for(errno: rustix::io::Errno) -> bool {
+    use rustix::io::Errno;
+    matches!(
+        errno,
+        Errno::NOENT | Errno::LOOP | Errno::NOTDIR | Errno::XDEV
+    )
+}
+
+/// The `bwrap` arguments of `path`, found as `found` and opened as `fd`: the descriptors they
+/// name (kept open until the exec) and whether they belong in the pins' pipe.
+///
+/// # Errors
+/// A descriptor that cannot be made inheritable, or `/dev/null` that cannot be opened.
+#[cfg(target_os = "linux")]
+pub fn bind_args(
+    path: &GuardPath,
+    found: Found,
+    fd: Option<std::os::fd::OwnedFd>,
+) -> io::Result<(Vec<String>, Vec<std::os::fd::OwnedFd>, bool)> {
+    use std::os::fd::AsRawFd as _;
+
+    use rustix::fs::{Mode, OFlags};
+    use rustix::io::{FdFlags, fcntl_setfd};
+
+    let dest = path.dest.clone();
+    Ok(match (decide(path.kind, found), fd) {
+        (bind @ (Bind::ReadOnly | Bind::Pin), Some(fd)) => {
+            fcntl_setfd(&fd, FdFlags::empty())?;
+            let option = if bind == Bind::Pin {
+                "--bind-fd"
+            } else {
+                "--ro-bind-fd"
+            };
+            let args = vec![option.to_owned(), fd.as_raw_fd().to_string(), dest];
+            (args, vec![fd], bind == Bind::Pin)
+        }
+        (Bind::EmptyFile, _) => {
+            let empty =
+                rustix::fs::open("/dev/null", OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())?;
+            fcntl_setfd(&empty, FdFlags::empty())?;
+            let args = vec![
+                "--ro-bind-data".to_owned(),
+                empty.as_raw_fd().to_string(),
+                dest,
+            ];
+            (args, vec![empty], false)
+        }
+        (Bind::EmptyDir | Bind::ReadOnly, _) => {
+            let args = vec![
+                "--tmpfs".to_owned(),
+                dest.clone(),
+                "--remount-ro".to_owned(),
+                dest,
+            ];
+            (args, Vec::new(), false)
+        }
+        (Bind::Skip | Bind::Pin, _) => (Vec::new(), Vec::new(), true),
+    })
+}
+
 /// Opens every guarded path and its placeholders and writes their binds into the argument pipes
 /// at [`GUARD_PIN_ARGS_FD`] (when a path is a pin) and [`GUARD_ARGS_FD`].
 ///
 /// # Errors
-/// An invalid path list, an anchor that cannot be opened, or a descriptor that cannot be made.
+/// An invalid path list, an anchor that cannot be opened, a guarded path that cannot be opened
+/// for another reason than [`placeholder_for`], or a descriptor that cannot be made.
 #[cfg(target_os = "linux")]
 pub fn open(paths: &[GuardPath]) -> io::Result<Opened> {
     use std::os::fd::AsRawFd as _;
@@ -216,69 +284,52 @@ pub fn open(paths: &[GuardPath]) -> io::Result<Opened> {
         held: Vec::new(),
     };
     for path in paths {
-        let anchor = rustix::fs::open(
-            path.anchor.as_str(),
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("guard anchor {}: {e}", path.anchor),
+        let (found, fd) = if path.kind == GuardKind::Mask {
+            (Found::Other, None)
+        } else {
+            let anchor = rustix::fs::open(
+                path.anchor.as_str(),
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
             )
-        })?;
-        let target = openat2(
-            &anchor,
-            path.relative.as_str(),
-            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS | ResolveFlags::BENEATH,
-        )
-        .ok();
-        let found = target
-            .as_ref()
-            .and_then(|fd| rustix::fs::fstat(fd).ok())
-            .map_or(
-                Found::Other,
-                |stat| match rustix::fs::FileType::from_raw_mode(stat.st_mode) {
-                    rustix::fs::FileType::Directory => Found::Dir,
-                    rustix::fs::FileType::RegularFile => Found::File,
-                    _ => Found::Other,
-                },
-            );
-        let dest = path.dest.clone();
-        match (decide(path.kind, found), target) {
-            (Bind::ReadOnly, Some(fd)) | (Bind::Pin, Some(fd)) => {
-                fcntl_setfd(&fd, FdFlags::empty())?;
-                let (option, list) = if path.kind == GuardKind::Pin {
-                    ("--bind-fd", &mut opened.pins)
-                } else {
-                    ("--ro-bind-fd", &mut opened.binds)
-                };
-                list.extend([option.to_owned(), fd.as_raw_fd().to_string(), dest]);
-                opened.held.push(fd);
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("guard anchor {}: {e}", path.anchor),
+                )
+            })?;
+            match openat2(
+                &anchor,
+                path.relative.as_str(),
+                OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS | ResolveFlags::BENEATH,
+            ) {
+                Ok(fd) => {
+                    let stat = rustix::fs::fstat(&fd)?;
+                    let found = match rustix::fs::FileType::from_raw_mode(stat.st_mode) {
+                        rustix::fs::FileType::Directory => Found::Dir,
+                        rustix::fs::FileType::RegularFile => Found::File,
+                        _ => Found::Other,
+                    };
+                    (found, Some(fd))
+                }
+                Err(errno) if placeholder_for(errno) => (Found::Other, None),
+                Err(errno) => {
+                    return Err(io::Error::other(format!(
+                        "cannot open the guarded path {}: {errno}",
+                        path.dest
+                    )));
+                }
             }
-            (Bind::EmptyFile, _) => {
-                let empty =
-                    rustix::fs::open("/dev/null", OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())?;
-                fcntl_setfd(&empty, FdFlags::empty())?;
-                opened.binds.extend([
-                    "--ro-bind-data".to_owned(),
-                    empty.as_raw_fd().to_string(),
-                    dest,
-                ]);
-                opened.held.push(empty);
-            }
-            (Bind::EmptyDir, _) | (Bind::ReadOnly, None) => {
-                opened.binds.extend([
-                    "--tmpfs".to_owned(),
-                    dest.clone(),
-                    "--remount-ro".to_owned(),
-                    dest,
-                ]);
-            }
-            (Bind::Skip, _) | (Bind::Pin, None) => {}
+        };
+        let (args, held, pin) = bind_args(path, found, fd)?;
+        if pin {
+            opened.pins.extend(args);
+        } else {
+            opened.binds.extend(args);
         }
+        opened.held.extend(held);
     }
     let any_pin = paths.iter().any(|p| p.kind == GuardKind::Pin);
     let pipes = [
@@ -349,6 +400,62 @@ mod tests {
         assert_eq!(decide(GuardKind::Pin, Found::Dir), Bind::Pin);
         assert_eq!(decide(GuardKind::Pin, Found::File), Bind::Skip);
         assert_eq!(decide(GuardKind::Pin, Found::Other), Bind::Skip);
+        for found in [Found::Dir, Found::File, Found::Other] {
+            assert_eq!(decide(GuardKind::Mask, found), Bind::EmptyDir);
+        }
+    }
+
+    /// Review round 1: only a missing path, a link or a wrong kind on the way gets a
+    /// placeholder; any other error opening a guarded path fails the start instead of hiding
+    /// existing notes behind an empty folder.
+    #[test]
+    fn only_missing_paths_and_links_get_placeholders() {
+        use rustix::io::Errno;
+        for errno in [Errno::NOENT, Errno::LOOP, Errno::NOTDIR, Errno::XDEV] {
+            assert!(placeholder_for(errno), "{errno:?}");
+        }
+        for errno in [
+            Errno::ACCESS,
+            Errno::MFILE,
+            Errno::NOSYS,
+            Errno::IO,
+            Errno::PERM,
+        ] {
+            assert!(!placeholder_for(errno), "{errno:?}");
+        }
+    }
+
+    /// MEM-010: a mask covers what is there with an empty read-only folder, needs no descriptor,
+    /// and a link at it is moved aside first.
+    #[test]
+    fn a_mask_hides_the_folder_whatever_it_holds() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let anchor = root.path().join("anchor");
+        std::fs::create_dir_all(anchor.join("home/.claude/projects"))?;
+        std::os::unix::fs::symlink(root.path(), anchor.join("codex"))?;
+        let paths = [
+            path(&anchor, "home/.claude", GuardKind::Mask),
+            path(&anchor, "codex", GuardKind::Mask),
+        ];
+        assert_eq!(clear_ways(&paths)?, ["codex"]);
+        let mut binds = Vec::new();
+        for guarded in &paths {
+            binds.extend(bind_args(guarded, Found::Other, None)?.0);
+        }
+        assert_eq!(
+            binds,
+            [
+                "--tmpfs",
+                "/in/home/.claude",
+                "--remount-ro",
+                "/in/home/.claude",
+                "--tmpfs",
+                "/in/codex",
+                "--remount-ro",
+                "/in/codex"
+            ]
+        );
+        Ok(())
     }
 
     #[test]

@@ -1293,6 +1293,8 @@ impl Manager {
             "--engine".into(),
             "--cgroup".into(),
             text(cgroup),
+            "--guard".into(),
+            serde_json::to_string(&crate::engine::engine_guard(&view)).unwrap_or_default(),
             "--".into(),
         ];
         command.extend(crate::engine::bwrap_argv(&view));
@@ -4439,10 +4441,18 @@ while True:
                 "--engine",
                 "--cgroup",
                 "/sys/fs/cgroup/yulius.service/sandboxes/s1/engine",
-                "--",
+                "--guard",
             ]
         );
-        assert_eq!(spec.command[6], "/usr/bin/bwrap");
+        // The sandbox's harness folders, masked for the engine (SPEC-652 MEM-010).
+        let masks: Vec<yulius_contracts::ptyhost::GuardPath> =
+            serde_json::from_str(&spec.command[6])?;
+        assert_eq!(
+            masks,
+            yulius_contracts::ptyhost::sandbox_masks(&format!("{d}/sandboxes/s1"))
+        );
+        assert_eq!(spec.command[7], "--");
+        assert_eq!(spec.command[8], "/usr/bin/bwrap");
         let has = |window: &[String]| spec.command.windows(window.len()).any(|w| w == window);
         assert!(has(&[
             "--bind".into(),

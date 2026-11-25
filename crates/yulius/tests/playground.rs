@@ -3259,7 +3259,7 @@ async fn a_sandbox_with_memory_notes_is_purged() -> TestResult {
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join(".git"))?;
     let config = dir.join("home/.claude");
-    let guard = yulius_app::memory_guard::claude_guard(&dir, &config, &config, &repo, &dir);
+    let guard = yulius_app::memory_guard::claude_guard(&dir, &config, &config, &repo)?;
     assert!(!guard.is_empty());
     let key = yulius_app::memory_guard::claude_key(&repo);
     let memory = config.join("projects").join(key).join("memory");

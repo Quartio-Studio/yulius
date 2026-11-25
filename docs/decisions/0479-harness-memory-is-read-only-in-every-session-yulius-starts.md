@@ -41,9 +41,19 @@ namespace binds).
   `<config>/projects/<key>` are bound over themselves, so renaming the memory folder's parents
   away fails (`EBUSY`).
 - **Claude Code reads exactly the protected folder**: its run settings pin
-  `autoMemoryDirectory` to `<config>/projects/<key>/memory`, with `<key>` its own rule (the git
-  root, a worktree's main repository) and deny `Edit` there; the folder already used keeps
-  loading.
+  `autoMemoryDirectory` to `<config>/projects/<key>/memory` and deny `Edit` there. `<key>` is
+  Claude Code's own key of the sandbox's repository (`<sandbox>/repo`, which is what it uses for
+  the repository and every worktree of it), derived from that path alone: nothing the agent writes
+  (a worktree's `.git`) steers it or can stall a launch. The folder already used keeps loading.
+- **No instructions from above the project.** Claude Code reads `CLAUDE.md`, `CLAUDE.local.md`
+  and `.claude/` in every folder up to `/`; the run settings exclude those of every folder above
+  the session's folder (`claudeMdExcludes`), so a file an agent leaves in the sandbox folder
+  loads nowhere.
+- **Every other process of the sandbox that runs code an agent chose** (its Docker engine, so
+  every container's `-v`; its CI jobs; its script watches) sees the home's `.claude` and the Codex
+  homes as empty read-only folders. None of them needs either.
+- **A start that cannot be guarded does not happen**: a guarded path outside its anchor, or one
+  that cannot be opened for another reason than being missing or a link, fails the start.
 
 ## Alternatives
 
@@ -52,6 +62,9 @@ namespace binds).
 - **Deny rules and hooks only**: a script or a subprocess writes past them.
 - **`autoMemoryEnabled: false`**: stops loading the notes too.
 - **Landlock**: rules only allow; a folder cannot be carved out of a writable home.
+- **Read-only binds of the real folders in the engine's view**: dockerd has every capability in
+  the sandbox's user namespace, and a container's bind is remounted with the flags it asks for, so
+  the engine sees an empty folder instead.
 - **A server-held copy bound over the path**: two places to edit, and a person's own terminal
   would read the other one.
 - **Binding the home or a Codex home over itself too**: also closes renaming the whole home
@@ -65,6 +78,15 @@ namespace binds).
 - A person with access to the host edits memory in place; a person's own terminal in a sandbox
   writes it as before.
 - An uncontained server (development) has no namespace: only the deny rules and hooks hold there.
-- An agent that renames its whole home or Codex home away while its session runs in it could
-  start a new one there; the session it runs in breaks with it.
+- Limits, none tried in a real session:
+  - Renaming the whole home (or a Codex home) away and copying it back (`mv ~ ~.old && cp -a
+    ~.old ~`) leaves a writable copy at the same path, which the next session guards with
+    whatever was written into it. Pinning the home would make renames and hard links between the
+    home and the rest of the sandbox fail (`EXDEV`: the compiler cache, package stores).
+  - dockerd has every capability in the sandbox's user namespace: a privileged container that
+    binds a folder above `.claude` could unmount the engine's mask inside it.
+  - CD runs (reviewed, merged code) and a person's terminals are not masked.
+  - Antigravity reads `AGENTS.md` and `GEMINI.md` in folders above its working folder; those
+    are not guarded.
+  - Memory folders of other keys are not guarded; no session Yulius starts reads them.
 - A protected path that is a link shows an empty placeholder instead of the link's target.

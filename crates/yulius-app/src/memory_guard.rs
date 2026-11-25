@@ -17,6 +17,8 @@ use std::path::{Component, Path, PathBuf};
 
 use yulius_contracts::ptyhost::{GuardKind, GuardPath};
 
+use crate::error::{AppError, AppResult};
+
 /// The one sentence a refused write is explained with (SPEC-652 MEM-006).
 pub const READ_ONLY_SENTENCE: &str = "Yulius keeps this harness's memory and user-level \
      instructions read-only (the owner's decision of 2026-11-25): put lasting knowledge in the \
@@ -24,9 +26,6 @@ pub const READ_ONLY_SENTENCE: &str = "Yulius keeps this harness's memory and use
 
 /// Longest Claude Code key kept whole; a longer one is cut there and ends in a hash (2.1.332).
 const CLAUDE_KEY_MAX: usize = 200;
-
-/// Largest `.git` or `commondir` file read to find a worktree's main repository.
-const GIT_POINTER_MAX: u64 = 4096;
 
 /// Claude Code's `projects/<key>` of the folder `base` (2.1.332): every UTF-16 unit outside
 /// `[a-zA-Z0-9]` becomes `-`; past 200 units the key is cut there and gets `-` and the absolute
@@ -63,82 +62,33 @@ pub fn claude_key(base: &Path) -> String {
     format!("{cut}-{}", digits.iter().rev().collect::<String>())
 }
 
-/// The memory key of a Claude Code session started in `cwd` within the sandbox (or folder)
-/// `within`: [`claude_key`] of [`claude_project_base`].
+/// The folder Yulius keys a sandbox's Claude Code memory by: its repository, `<sandbox>/repo`,
+/// which is what Claude Code itself keys a session in that repository or any of its worktrees by
+/// (the git root, a worktree's main repository). Derived from the sandbox's path alone: nothing an
+/// agent writes (a worktree's `.git`) can steer it or stall the launch (review round 1).
 #[must_use]
-pub fn claude_session_key(cwd: &Path, within: &Path) -> String {
-    claude_key(&claude_project_base(cwd, within))
+pub fn sandbox_memory_base(sandbox_dir: &Path) -> PathBuf {
+    sandbox_dir.join("repo")
 }
 
-/// Reads a small file without following a link at its last component.
-fn read_pointer(path: &Path) -> Option<String> {
-    use std::io::Read as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(path)
-        .ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
-    }
-    let mut text = String::new();
-    file.take(GIT_POINTER_MAX).read_to_string(&mut text).ok()?;
-    Some(text)
-}
-
-/// `path` with `.` and `..` resolved lexically; `None` when it is not absolute or climbs past
-/// the root.
-fn normalized(path: &Path) -> Option<PathBuf> {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::RootDir => out.push("/"),
-            Component::Normal(part) => out.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() || out.as_os_str().is_empty() {
-                    return None;
-                }
-            }
-            Component::Prefix(_) => return None,
-        }
-    }
-    out.is_absolute().then_some(out)
-}
-
-/// The folder Claude Code keys the memory of a session in `cwd` by: the git root of `cwd`, a
-/// worktree's main repository, else `cwd` itself. Only `.git` pointers that stay inside `within`
-/// (the sandbox) are followed, and no link is: a session whose repository cannot be read keys by
-/// its worktree, which `autoMemoryDirectory` then names for it (MEM-002).
+/// The memory folder of a Claude Code session whose configuration is `config` (inside the
+/// namespace) and whose memory is keyed by `base`: what the run settings name as
+/// `autoMemoryDirectory` and the guard binds read-only (MEM-002).
 #[must_use]
-pub fn claude_project_base(cwd: &Path, within: &Path) -> PathBuf {
-    let inside = |path: &Path| path.starts_with(within);
-    let mut dir = Some(cwd);
-    while let Some(here) = dir.filter(|d| inside(d)) {
-        let dot_git = here.join(".git");
-        match std::fs::symlink_metadata(&dot_git) {
-            Ok(meta) if meta.is_dir() => return here.to_path_buf(),
-            Ok(meta) if meta.is_file() => {
-                return main_repository(&dot_git, within).unwrap_or_else(|| here.to_path_buf());
-            }
-            _ => dir = here.parent(),
-        }
-    }
-    cwd.to_path_buf()
+pub fn claude_memory_dir(config: &Path, base: &Path) -> PathBuf {
+    config
+        .join("projects")
+        .join(claude_key(base))
+        .join("memory")
 }
 
-/// The main repository of the worktree whose `.git` file is `dot_git` (`gitdir: <repo>/.git/
-/// worktrees/<name>`, whose `commondir` names `<repo>/.git`).
-fn main_repository(dot_git: &Path, within: &Path) -> Option<PathBuf> {
-    let text = read_pointer(dot_git)?;
-    let gitdir = text.lines().next()?.strip_prefix("gitdir:")?.trim();
-    let gitdir = normalized(&dot_git.parent()?.join(gitdir))?;
-    let common = read_pointer(&gitdir.join("commondir"))?;
-    let common = normalized(&gitdir.join(common.lines().next()?.trim()))?;
-    (common.starts_with(within) && common.file_name() == Some(OsStr::new(".git")))
-        .then(|| common.parent().map(Path::to_path_buf))
-        .flatten()
+/// A guarded path that is not beneath its anchor: a launch that cannot be guarded does not start.
+fn not_beneath(anchor: &Path, path: &Path) -> AppError {
+    AppError::internal(format!(
+        "cannot guard {}: it is not beneath {}",
+        path.display(),
+        anchor.display()
+    ))
 }
 
 /// `path` relative to `anchor`, as plain components; `None` when it is not beneath it.
@@ -152,10 +102,13 @@ fn below(anchor: &Path, path: &Path) -> Option<PathBuf> {
 }
 
 /// One guarded path: `outer` (beneath `anchor`, in the view bwrap starts in) bound at `inner`.
-fn guarded(anchor: &Path, outer: &Path, inner: PathBuf, kind: GuardKind) -> Option<GuardPath> {
-    Some(GuardPath {
+fn guarded(anchor: &Path, outer: &Path, inner: PathBuf, kind: GuardKind) -> AppResult<GuardPath> {
+    Ok(GuardPath {
         anchor: anchor.to_string_lossy().into_owned(),
-        relative: below(anchor, outer)?.to_string_lossy().into_owned(),
+        relative: below(anchor, outer)
+            .ok_or_else(|| not_beneath(anchor, outer))?
+            .to_string_lossy()
+            .into_owned(),
         dest: inner.to_string_lossy().into_owned(),
         kind,
     })
@@ -184,9 +137,11 @@ impl ClaudeConfig<'_> {
     }
 
     /// The guarded paths: the pins, outer to inner, then the memory folder, `CLAUDE.md` and
-    /// `rules`. Empty when `outer` is not beneath `anchor`.
-    #[must_use]
-    pub fn guard(&self) -> Vec<GuardPath> {
+    /// `rules`.
+    ///
+    /// # Errors
+    /// `Internal` when `outer` is not beneath `anchor`.
+    pub fn guard(&self) -> AppResult<Vec<GuardPath>> {
         let at = |rel: &[&str]| {
             let mut outer = self.outer.to_path_buf();
             let mut inner = self.inner.to_path_buf();
@@ -210,8 +165,7 @@ impl ClaudeConfig<'_> {
                 let (outer, inner) = at(rel);
                 guarded(self.anchor, &outer, inner, *kind)
             })
-            .collect::<Option<Vec<_>>>()
-            .unwrap_or_default()
+            .collect()
     }
 
     /// Makes the memory folder and its parents when missing, opened one folder at a time without
@@ -236,19 +190,20 @@ impl ClaudeConfig<'_> {
     }
 }
 
-/// The guard of a Claude Code session started in `cwd` within `within`, whose configuration is
-/// `outer` beneath `anchor` (`inner` inside the namespace): its memory folder made first, so its
+/// The guard of a Claude Code session whose configuration is `outer` beneath `anchor` (`inner`
+/// inside the namespace) and whose memory is keyed by `base`: its memory folder made first, so its
 /// parents are pinned from the first session; one that cannot be made (a link on the way) gets a
 /// placeholder (MEM-003).
-#[must_use]
+///
+/// # Errors
+/// `Internal` when `outer` is not beneath `anchor`.
 pub fn claude_guard(
     anchor: &Path,
     outer: &Path,
     inner: &Path,
-    cwd: &Path,
-    within: &Path,
-) -> Vec<GuardPath> {
-    let key = claude_session_key(cwd, within);
+    base: &Path,
+) -> AppResult<Vec<GuardPath>> {
+    let key = claude_key(base);
     let config = ClaudeConfig {
         anchor,
         outer,
@@ -262,8 +217,10 @@ pub fn claude_guard(
 }
 
 /// The guarded paths of a Codex home `codex_home` beneath `anchor`, bound at the same path.
-#[must_use]
-pub fn codex_guard(anchor: &Path, codex_home: &Path) -> Vec<GuardPath> {
+///
+/// # Errors
+/// `Internal` when `codex_home` is not beneath `anchor`.
+pub fn codex_guard(anchor: &Path, codex_home: &Path) -> AppResult<Vec<GuardPath>> {
     [
         ("AGENTS.md", GuardKind::File),
         ("AGENTS.override.md", GuardKind::File),
@@ -274,14 +231,15 @@ pub fn codex_guard(anchor: &Path, codex_home: &Path) -> Vec<GuardPath> {
         let path = codex_home.join(name);
         guarded(anchor, &path, path.clone(), kind)
     })
-    .collect::<Option<Vec<_>>>()
-    .unwrap_or_default()
+    .collect()
 }
 
 /// The guarded paths of an Antigravity run whose home is `run_home` (its `.gemini` bound at
 /// `gemini_inner`), opened from `run_home`, the run's own folder.
-#[must_use]
-pub fn antigravity_guard(run_home: &Path, gemini_inner: &Path) -> Vec<GuardPath> {
+///
+/// # Errors
+/// Never in practice (every path is beneath `run_home`); `Internal` otherwise.
+pub fn antigravity_guard(run_home: &Path, gemini_inner: &Path) -> AppResult<Vec<GuardPath>> {
     [
         (&["GEMINI.md"][..], GuardKind::File),
         (&["config", "GEMINI.md"][..], GuardKind::File),
@@ -298,8 +256,16 @@ pub fn antigravity_guard(run_home: &Path, gemini_inner: &Path) -> Vec<GuardPath>
         }
         guarded(run_home, &outer, inner, kind)
     })
-    .collect::<Option<Vec<_>>>()
-    .unwrap_or_default()
+    .collect()
+}
+
+/// What every other process of a sandbox that runs code an agent chose sees in place of the
+/// sandbox home's Claude Code configuration and its Codex homes: an empty read-only folder
+/// (SPEC-652 MEM-010). Its CI jobs and script watches get these masks, as its Docker engine does
+/// (so a container's `-v` never reaches them); none of them needs either folder.
+#[must_use]
+pub fn sandbox_masks(sandbox_dir: &Path) -> Vec<GuardPath> {
+    yulius_contracts::ptyhost::sandbox_masks(&sandbox_dir.to_string_lossy())
 }
 
 #[cfg(test)]
@@ -336,52 +302,56 @@ mod tests {
         );
     }
 
-    /// A worktree's memory is keyed by its main repository; a plain folder by itself; a pointer
-    /// out of the sandbox or through a link is not followed.
+    /// A sandbox's sessions key their memory by its repository, from its path alone: the folder
+    /// is the one Claude Code itself uses for the repository and its worktrees, and a worktree's
+    /// `.git` (which the agent writes, and could make a FIFO) is never read.
     #[test]
-    fn a_worktree_keys_by_its_main_repository() -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let sandbox = root.path().join("s1");
-        let repo = sandbox.join("repo");
-        let worktree = sandbox.join("worktrees/t1");
-        let admin = repo.join(".git/worktrees/t1");
-        std::fs::create_dir_all(&admin)?;
-        std::fs::create_dir_all(worktree.join("src"))?;
-        std::fs::write(admin.join("commondir"), "../..\n")?;
-        std::fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", admin.display()),
-        )?;
-        assert_eq!(claude_project_base(&worktree.join("src"), &sandbox), repo);
-        assert_eq!(claude_project_base(&repo, &sandbox), repo);
-        let plain = sandbox.join("home");
-        std::fs::create_dir_all(&plain)?;
-        assert_eq!(claude_project_base(&plain, &sandbox), plain);
-        // A pointer out of the sandbox: the worktree itself.
-        let outside = root.path().join("other/.git/worktrees/t1");
-        std::fs::create_dir_all(&outside)?;
-        std::fs::write(outside.join("commondir"), "../..\n")?;
-        std::fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", outside.display()),
-        )?;
-        assert_eq!(claude_project_base(&worktree, &sandbox), worktree);
-        // A `.git` that is a link is not read.
-        std::fs::remove_file(worktree.join(".git"))?;
-        std::os::unix::fs::symlink(repo.join(".git"), worktree.join(".git"))?;
-        assert_eq!(claude_project_base(&worktree, &sandbox), worktree);
-        Ok(())
+    fn a_sandbox_keys_its_memory_by_its_repository() {
+        let sandbox = Path::new("/var/lib/yulius/sandboxes/d62be476-f169-4960-b45c-0fce704d71f9");
+        assert_eq!(sandbox_memory_base(sandbox), sandbox.join("repo"));
+        assert_eq!(
+            claude_memory_dir(
+                Path::new("/home/alice/.claude"),
+                &sandbox_memory_base(sandbox)
+            ),
+            Path::new(
+                "/home/alice/.claude/projects/-var-lib-yulius-sandboxes-d62be476-f169-4960-b45c-0fce704d71f9-repo/memory"
+            )
+        );
+    }
+
+    /// MEM-010: a sandbox's engine, CI jobs and script watches see its home's `.claude` and its
+    /// Codex homes as empty read-only folders.
+    #[test]
+    fn a_sandbox_masks_its_harness_folders_for_other_processes() {
+        let masks = sandbox_masks(Path::new("/data/sandboxes/s1"));
+        let shown: Vec<(&str, &str, GuardKind)> = masks
+            .iter()
+            .map(|p| (p.relative.as_str(), p.dest.as_str(), p.kind))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    "home/.claude",
+                    "/data/sandboxes/s1/home/.claude",
+                    GuardKind::Mask
+                ),
+                ("codex", "/data/sandboxes/s1/codex", GuardKind::Mask),
+            ]
+        );
+        assert!(masks.iter().all(|p| p.anchor == "/data/sandboxes/s1"));
     }
 
     #[test]
-    fn claude_guards_pin_the_parents_and_protect_memory_and_instructions() {
+    fn claude_guards_pin_the_parents_and_protect_memory_and_instructions() -> AppResult<()> {
         let config = ClaudeConfig {
             anchor: Path::new("/data/users/u1/home"),
             outer: Path::new("/data/users/u1/home/.claude"),
             inner: Path::new("/home/alice/.claude"),
             key: "-k",
         };
-        let guard = config.guard();
+        let guard = config.guard()?;
         let shown: Vec<(&str, &str, GuardKind)> = guard
             .iter()
             .map(|p| (p.relative.as_str(), p.dest.as_str(), p.kind))
@@ -418,11 +388,15 @@ mod tests {
             config.memory_dir(),
             Path::new("/home/alice/.claude/projects/-k/memory")
         );
+        // A configuration outside its anchor cannot be guarded: the launch fails, never starts
+        // unguarded (review round 1).
         let outside = ClaudeConfig {
             outer: Path::new("/elsewhere/.claude"),
             ..config
         };
-        assert!(outside.guard().is_empty());
+        assert!(outside.guard().is_err());
+        assert!(codex_guard(Path::new("/data/sandboxes/s1"), Path::new("/data/other/a1")).is_err());
+        Ok(())
     }
 
     #[test]
@@ -451,11 +425,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_and_antigravity_guard_their_instruction_files() {
+    fn codex_and_antigravity_guard_their_instruction_files() -> AppResult<()> {
         let codex = codex_guard(
             Path::new("/data/sandboxes/s1"),
             Path::new("/data/sandboxes/s1/codex/a1"),
-        );
+        )?;
         let shown: Vec<(&str, GuardKind)> = codex
             .iter()
             .map(|p| (p.relative.as_str(), p.kind))
@@ -476,7 +450,7 @@ mod tests {
         let agy = antigravity_guard(
             Path::new("/data/runs/r1/antigravity-home"),
             Path::new("/data/sandboxes/s1/home/.gemini"),
-        );
+        )?;
         let shown: Vec<(&str, &str)> = agy
             .iter()
             .map(|p| (p.relative.as_str(), p.dest.as_str()))
@@ -506,6 +480,7 @@ mod tests {
             agy.iter()
                 .all(|p| p.anchor == "/data/runs/r1/antigravity-home")
         );
+        Ok(())
     }
 
     #[test]

@@ -285,12 +285,25 @@ fn bwrap_usable() -> Result<(), String> {
     }
 }
 
+/// What a refused attempt's error says: a read-only mount, a mount point, a cross-mount link, or
+/// a mount call refused in a nested namespace.
+const REFUSALS: [&str; 6] = [
+    "Read-only file system",
+    "Device or resource busy",
+    "Operation not permitted",
+    "Invalid cross-device link",
+    "ermission denied",
+    "Invalid argument",
+];
+
 /// The shell script a guarded run executes: every attempt prints `<name>=wrote` or
-/// `<name>=refused` into `$RESULTS`, each read `<name>=<what it read>`.
+/// `<name>=refused:<its error's last line>` into `$RESULTS`, each read `<name>=<what it read>`, and
+/// a missing tool `tools=missing <tool>`.
 const ATTEMPTS: &str = r#"
 r="$RESULTS"
-try() { name=$1; shift; if "$@" >/dev/null 2>&1; then echo "$name=wrote" >>"$r"; else echo "$name=refused" >>"$r"; fi; }
-py() { command -v python3 >/dev/null || { echo "$1=refused" >>"$r"; return; }; try "$1" python3 -c "$2" "$3"; }
+for tool in python3 unshare mount umount ln; do command -v "$tool" >/dev/null || echo "tools=missing $tool" >>"$r"; done
+try() { name=$1; shift; if out=$("$@" 2>&1 >/dev/null); then echo "$name=wrote" >>"$r"; else echo "$name=refused:$(printf '%s' "$out" | tail -n 1)" >>"$r"; fi; }
+py() { try "$1" python3 -c "$2" "$3"; }
 for f in "$CLAUDE_MEMORY/MEMORY.md" "$CLAUDE_CONFIG/CLAUDE.md" "$CODEX_HOME/AGENTS.md" "$GEMINI/config/AGENTS.md"; do
   n=$(echo "$f" | tr -c 'a-zA-Z0-9\n' _)
   try "append$n" sh -c 'echo note >>"$1"' _ "$f"
@@ -362,12 +375,12 @@ async fn a_guarded_session_cannot_write_its_memory_but_reads_it() -> TestResult 
     let run_home = data.join("runs/r1/antigravity-home");
     std::fs::create_dir_all(run_home.join(".gemini/config"))?;
     std::fs::write(run_home.join(".gemini/config/AGENTS.md"), "agy rule")?;
-    let mut guard = yulius_app::memory_guard::claude_guard(&root, &config, &config, &repo, &root);
-    guard.extend(yulius_app::memory_guard::codex_guard(&root, &codex));
+    let mut guard = yulius_app::memory_guard::claude_guard(&root, &config, &config, &repo)?;
+    guard.extend(yulius_app::memory_guard::codex_guard(&root, &codex)?);
     guard.extend(yulius_app::memory_guard::antigravity_guard(
         &run_home,
         &home.join(".gemini"),
-    ));
+    )?);
     let results = root.join("results.txt");
     let script = data.join("attempts.sh");
     std::fs::write(&script, ATTEMPTS)?;
@@ -431,6 +444,7 @@ async fn a_guarded_session_cannot_write_its_memory_but_reads_it() -> TestResult 
     let text = std::fs::read_to_string(&results)?;
     eprintln!("{text}");
     let mut wrote = Vec::new();
+    let mut unexplained = Vec::new();
     for line in text.lines() {
         let (name, value) = line.split_once('=').unwrap_or((line, ""));
         match name {
@@ -442,13 +456,22 @@ async fn a_guarded_session_cannot_write_its_memory_but_reads_it() -> TestResult 
             "fds" => assert_eq!(value.trim(), "", "descriptors reached the run: {value}"),
             "worktree_still_writable" => assert_eq!(value, "wrote"),
             "done" => {}
-            _ if value != "refused" => wrote.push(line.to_owned()),
-            _ => {}
+            "tools" => return Err(format!("the attempts need {value}").into()),
+            _ => match value.strip_prefix("refused:") {
+                // Refused by the namespace, never for another reason (a missing tool, a typo).
+                Some(why) if REFUSALS.iter().any(|r| why.contains(r)) => {}
+                Some(why) => unexplained.push(format!("{name}: {why}")),
+                None => wrote.push(line.to_owned()),
+            },
         }
     }
     assert!(
         wrote.is_empty(),
         "writes that went through: {wrote:?}\n{text}"
+    );
+    assert!(
+        unexplained.is_empty(),
+        "refused for another reason: {unexplained:?}"
     );
     assert!(text.contains("rename_config=refused"), "{text}");
     // Nothing changed on the host, and the sandbox with its notes is removed.

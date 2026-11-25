@@ -2052,11 +2052,14 @@ or deletes them, while what is there still loads
 | Antigravity | `.gemini/GEMINI.md`, `.gemini/config/{GEMINI.md,AGENTS.md,rules}` | none |
 
 `<config>` is the session's `CLAUDE_CONFIG_DIR` and `<key>` Claude Code's project key of the
-session's folder (its git root; a worktree's is its main repository's, `claude_session_key`).
-Claude Code's run settings pin `autoMemoryDirectory` to that guarded folder and deny `Edit(...)`
-there and on `CLAUDE.md` and `rules`. Task runs (every harness), a person's Superagent (its home on
-the host, bound at `/home/<login>`) and the Global Superagent carry the list as the containment's
-`guard`; CI and CD runs and a person's own terminal do not.
+sandbox's repository (`sandbox_memory_base`, from its path alone; the Global Superagent's: its
+folder). Claude Code's run settings pin `autoMemoryDirectory` to that guarded folder, deny
+`Edit(...)` there and on `CLAUDE.md` and `rules`, and exclude the instruction files of every folder
+above the session's (`claudeMdExcludes`). Task runs (every harness), a person's Superagent (its
+home on the host, bound at `/home/<login>`) and the Global Superagent carry the list as the
+containment's `guard`. The sandbox's Docker engine, CI jobs and script watches carry masks
+instead (`sandbox_masks`: the home's `.claude` and `codex` as empty read-only folders); CD runs
+and a person's own terminal carry nothing.
 
 The list travels with the launch to the process host, which starts bwrap through `yulius
 sandbox-exec --guard` (with the seccomp filter of a joined run, `--no-filter` otherwise). In the

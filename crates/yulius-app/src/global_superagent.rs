@@ -293,6 +293,7 @@ impl App {
             mcp: Vec::new(),
             contained: self.config.contained,
             only_yulius: Some(global_tool_names()),
+            memory_base: folder.clone(),
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));
@@ -347,7 +348,7 @@ impl App {
         {
             readonly.push(no_shell);
             // Its memory and user-level instructions, read-only (SPEC-652 MEM-001).
-            *guard = crate::memory_guard::claude_guard(&dir, &config, &config, &folder, &dir);
+            *guard = crate::memory_guard::claude_guard(&dir, &config, &config, &folder)?;
         }
         let reader = self.spawn_shell(runtime, &plan).await?;
         self.save_shell(runtime)?;
