@@ -1711,6 +1711,11 @@ impl App {
     }
 }
 
+/// What a request shown to a person waits for, in plain words (SPEC-650 PST-005).
+pub(crate) fn wait_text(request: &yulius_contracts::api::cd::CdStagingRequest) -> Option<String> {
+    staging_wait_text(StagingState::parse(&request.state)?, &request.revision)
+}
+
 /// What a pending request of no task waits for, in plain words (SPEC-650 PST-005).
 pub(crate) fn staging_wait_text(state: StagingState, revision: &str) -> Option<String> {
     let sha = revision.get(..7).unwrap_or(revision);

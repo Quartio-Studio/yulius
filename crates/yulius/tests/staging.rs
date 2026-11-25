@@ -3998,3 +3998,69 @@ async fn a_persons_request_waits_while_the_heads_gate_runs() -> TestResult {
     );
     Ok(())
 }
+
+/// Alice answers her Superagent's request `id` as from her browser, typing `confirm`.
+async fn alice_answers(
+    f: &Fixture,
+    id: &Value,
+    approve: bool,
+) -> BoxResult<yulius_app::error::AppResult<Value>> {
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let ctx = yulius_app::auth::AuthContext {
+        user: f.h.store.user(&alice).await?.ok_or("alice")?,
+        csrf_token: Some("csrf".into()),
+        session_hash: None,
+        token: None,
+    };
+    let answer = if approve {
+        yulius_app::cross_sandbox::RequestAnswer {
+            confirm: Some("app".into()),
+            ..yulius_app::cross_sandbox::RequestAnswer::approve()
+        }
+    } else {
+        yulius_app::cross_sandbox::RequestAnswer::default()
+    };
+    Ok(f.h
+        .app
+        .superagent_request_answer(&ctx, "s1", id.as_str().ok_or("id")?, &answer)
+        .await)
+}
+
+/// SPEC-650 PST-004: the Superagent's `cd_deploy` of the merge-first target waits on its panel
+/// as a production deploy does, for a person with write access; approved with the slug, it
+/// records the person's staging request; declined, nothing.
+#[tokio::test]
+async fn the_superagents_staging_deploy_waits_on_the_panel_then_asks_the_queue() -> TestResult {
+    use yulius_app::cross_sandbox::CrossAction;
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    let alices = crate::cd_rollback::superagent("u-alice", "alice")?;
+    assert!(f.h.app.superagent_staging(&alices, "staging").await?);
+    assert!(!f.h.app.superagent_staging(&alices, "dev").await?);
+    assert!(!f.h.app.superagent_production(&alices, "staging").await?);
+
+    // Declined: nothing is recorded.
+    let declined = f.ask_release(&alices, CrossAction::Deploy, json!({"environment": "staging"}));
+    let card = f.panel(&f.alice, 1).await?.remove(0);
+    assert_eq!(card["action"], "deploy", "{card}");
+    assert_eq!(card["options"]["environment"], "staging", "{card}");
+    alice_answers(&f, &card["id"], false).await??;
+    let answer = declined.await??;
+    assert_eq!(answer["outcome"], "declined", "{answer}");
+    assert!(staging_view(&f).await?["requests"].as_array().ok_or("requests")?.is_empty());
+
+    // Approved with the typed slug: the person's request, deployed once its gate passed.
+    let asking = f.ask_release(&alices, CrossAction::Deploy, json!({"environment": "staging"}));
+    let card = f.panel(&f.alice, 1).await?.remove(0);
+    alice_answers(&f, &card["id"], true).await??;
+    let answer = asking.await??;
+    assert_eq!(answer["outcome"], "approved", "{answer}");
+    assert_eq!(answer["staging"]["revision"], r1.as_str(), "{answer}");
+    assert_eq!(answer["staging"]["asked_by"], "alice", "{answer}");
+    let note = answer["note"].as_str().unwrap_or_default();
+    assert!(note.contains("Waiting for green tests on"), "{note}");
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+    Ok(())
+}
