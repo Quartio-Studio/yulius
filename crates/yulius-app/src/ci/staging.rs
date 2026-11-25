@@ -6,9 +6,11 @@
 //! 1. **Request.** A task's agent asks with `cd_deploy` under its owner's write access, and
 //!    Yulius records a staging request for the task's newest landing on the integration
 //!    branch.
-//! 2. **Candidate gate.** The full gate must pass on exactly that revision. The integration
-//!    branch's run or a candidate's run that judged the commit counts; otherwise one
-//!    [`CiRef::Candidate`] run is queued, which the branch moving on never supersedes.
+//! 2. **Candidate gate.** The full gate must pass on exactly that revision, or on a revision
+//!    above it on first-parent history. The integration branch's run or a candidate's run that
+//!    judged the commit counts; otherwise one [`CiRef::Candidate`] run is queued, which the
+//!    branch moving on never supersedes: for the newest waiting request first, and for an older
+//!    one only to narrow a new failure to its merge (SPEC-653, `yulius_domain::staging_gate`).
 //! 3. **Deploy in revision order.** One deploy per environment at a time, of the newest ready
 //!    revision above what staging serves. It waits, costing no attempt, while another run of
 //!    the environment goes on or an update holds deploys. Requests staging contains are
@@ -815,8 +817,9 @@ impl App {
         self.staging_start_deploy(sandbox, env, deploy).await
     }
 
-    /// The full gate's verdicts on the testing requests' revisions, and a candidate run for each
-    /// revision no run judged or is judging (SPEC-575 MFS-003).
+    /// The full gate's verdicts on the testing requests' revisions, and the next candidate run:
+    /// the newest waiting revision first, none for one a judged revision above answers
+    /// (SPEC-575 MFS-003, SPEC-653).
     async fn staging_judge(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
@@ -2166,7 +2169,7 @@ pub(super) fn staging_outcome_text(request: &StagingRequestRecord) -> String {
 /// The next step a request's state leaves its task (empty while it is on its way).
 fn staging_next(request: &StagingRequestRecord) -> String {
     match request.state {
-        StagingState::Inherited => "Staging will serve this request when it verifies a revision containing the fix.".to_owned(),
+        StagingState::Inherited => "Staging will serve this request when it verifies a revision containing it (and the fix, if its gate is red).".to_owned(),
         StagingState::Verified => {
             "Staging deployed and verified your revision, so this task's staging deployment is done."
                 .to_owned()

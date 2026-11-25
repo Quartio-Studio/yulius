@@ -567,6 +567,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0478](0478-a-person-gives-each-subscriptions-charge-date.md): An administrator gives each subscription one charge date and whether it repeats monthly or yearly; Yulius counts the next charge (UTC) and every account view and Subscriptions card shows it, since no provider tells Yulius the billing date (SPEC-651, task #635)
 <!-- ADR 0478 -->
 <!-- ADR 0479 -->
+- [0480](0480-the-full-gate-judges-the-newest-waiting-revision-first.md): The merge-first queue's full gate judges the newest waiting revision first; a request a green revision contains needs no run, one under a red revision only to narrow a new failure to its merge, by bisection over the waiting requests; one full-gate run at a time (SPEC-653, task #637; supersedes 0411's order)
 <!-- ADR 0480 -->
 <!-- ADR 0481 -->
 <!-- ADR 0482 -->
