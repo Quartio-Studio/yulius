@@ -3659,12 +3659,15 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
     // The Superagent's own guidance (SAV-007): bound hosts through the proxy, `$NAME`, the
     // repository's `.env`, host requests, `secret_verify`, and the Secrets page.
     let how = listed["how_to_use"].to_string();
+    // SPEC-654 (review): the Superagent is not served `needs_you`, so its advice never names it.
+    assert!(!how.contains("needs_you"), "{how}");
     for said in [
         "secret_verify",
         "secret_copy_to_env",
         "secret_request_hosts",
         "secret_create_from_file",
         "browser_fill_secret",
+        "Dev-stage deploys",
         "$NAME",
         "/s/fixture/secrets?section=agents",
     ] {
