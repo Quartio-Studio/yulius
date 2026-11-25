@@ -9,7 +9,8 @@ Status: in-progress
 Date: 2026-11-25
 Owner: Yulius task #638
 Scope authorization: the person's request of 2026-11-25 (a screenshot of a Needs you card, "in
-such case model should run yulius tools to create "allow" button but it didnt").
+such case model should run yulius tools to create "allow" button but it didnt"). Issue
+[#1759](https://github.com/Quartio-Studio/yulius/issues/1759).
 
 ## Goal
 
@@ -62,7 +63,7 @@ on purpose (ADR-0109: production is a person's), so `needs_you` stays right for 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
+- [x] Write the fix spec and the regression test that fails
 - [ ] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
@@ -75,6 +76,9 @@ on purpose (ADR-0109: production is a person's), so `needs_you` stays right for 
 
 ## Test plan
 
+- Integration tests `secrets_env::secrets_list_teaches_the_env_default` and
+  `cockpit::the_superagent_lists_its_sandboxs_agent_secrets_without_values` check that
+  `secrets_list`'s advice (task and Superagent) names the Allow button and dev-stage deploys.
 - Unit test in `crates/yulius-app/src/mcp.rs`. It checks that `needs_you`'s description names
   `secret_request_hosts`, `secret_copy_to_env` and `secret_request_copy` and the Allow button,
   and that it no longer contains "allow a secret". It checks that `secret_copy_to_env`'s
