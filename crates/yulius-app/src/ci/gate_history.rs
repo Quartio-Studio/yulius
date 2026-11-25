@@ -11,6 +11,7 @@ use yulius_contracts::api::ci::GateNotice;
 use yulius_domain::ci::RunState;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::TaskId;
+use yulius_domain::staging_gate::Gate;
 
 use crate::context::App;
 use crate::delivery::delivery_profile;
@@ -58,6 +59,31 @@ pub struct GateVerdict {
     pub owner: Option<u32>,
     /// Compact evidence of jobs that ran.
     pub jobs: Vec<GateJob>,
+}
+
+impl GateVerdict {
+    /// The verdict as the full gate's judging plan reads it (SPEC-653): a cancelled or skipped
+    /// run judges only its own request, so it is none here.
+    pub(crate) fn gate(&self) -> Option<Gate> {
+        match self.state {
+            RunState::Queued | RunState::Running => Some(Gate::Active),
+            RunState::Passed if !self.jobs.iter().any(|j| j.skipped) => Some(Gate::Passed),
+            RunState::Passed | RunState::Failed | RunState::Error => {
+                let mut failures = BTreeSet::new();
+                for job in self.jobs.iter().filter(|job| !job.passed) {
+                    if job.skipped || job.unknown || job.tests.is_empty() {
+                        failures.insert(format!("job {}", job.name));
+                    }
+                    failures.extend(job.tests.iter().cloned());
+                }
+                if failures.is_empty() {
+                    failures.insert(format!("run {}", self.state.as_str()));
+                }
+                Some(Gate::Failed(failures))
+            }
+            RunState::Cancelled | RunState::Skipped => None,
+        }
+    }
 }
 
 /// A worker yet to receive the current integration repair assignment.

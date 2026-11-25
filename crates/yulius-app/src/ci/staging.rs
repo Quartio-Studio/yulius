@@ -34,6 +34,7 @@ use yulius_domain::rollback::CdRunKind;
 use yulius_domain::staging::{
     self as stg, Admission, DeployEnd, Facts, MAX_DEPLOY_ATTEMPTS, StagingState,
 };
+use yulius_domain::staging_gate as judge;
 use yulius_domain::task::{Activity, TaskStatus};
 
 use super::cd::{CdActor, CdRequest, mirror_lock};
@@ -49,6 +50,9 @@ use crate::task_message::{Sender, Typed};
 
 /// Most requests a queue reads at once (the requests still on their way).
 const MAX_PENDING: usize = 200;
+/// Most first-parent revisions below the verified head the full gate's judging reads in one
+/// round (SPEC-653 NWF-007).
+const WINDOW: usize = 512;
 /// A task view or browser handoff that is busy yields to the staging queue.
 pub(super) const TASK_VIEW_BUDGET: Duration = Duration::from_millis(750);
 
@@ -742,7 +746,8 @@ impl App {
         let positions = self
             .staging_positions(sandbox, &head, pending.iter().map(|r| r.revision.as_str()))
             .await?;
-        self.staging_judge(sandbox, &positions, &pending).await?;
+        self.staging_judge(sandbox, &head, &positions, &pending)
+            .await?;
         let pending = store.pending_staging_requests(&sandbox.id, env).await?;
         // A Git failure ends the round, to be tried again: it never reads as "not on the branch".
 
@@ -815,6 +820,7 @@ impl App {
     async fn staging_judge(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
+        head: &str,
         positions: &[(String, Option<u64>)],
         pending: &[StagingRequestRecord],
     ) -> AppResult<()> {
@@ -852,144 +858,250 @@ impl App {
                     .await?;
             }
         }
-        let testing = pending.iter().filter(|r| r.state == StagingState::Testing);
-        let mut ordered: Vec<_> = testing
-            .filter_map(|r| {
-                positions
-                    .iter()
-                    .find(|(sha, _)| sha == &r.revision)?
-                    .1
-                    .map(|at| (at, r))
-            })
+        // The newest waiting revision is judged first, and a request a judged revision above it
+        // answers needs no run of its own (SPEC-653).
+        let mut testing: Vec<(u64, &StagingRequestRecord)> = pending
+            .iter()
+            .filter(|r| r.state == StagingState::Testing)
+            .filter_map(|r| Some((positions.iter().find(|(sha, _)| sha == &r.revision)?.1?, r)))
             .collect();
-        ordered.sort_by_key(|(at, _)| *at);
-        for (_, request) in ordered.into_iter().take(MAX_PENDING) {
-            let verdicts = self
-                .deps
-                .store
-                .integration_verdicts(
-                    &sandbox.id,
-                    &integration,
-                    std::slice::from_ref(&request.revision),
-                    super::GateRead::Latest,
-                )
-                .await?;
-            match verdicts.into_iter().next() {
-                Some(run) => {
-                    let verdict = if run.state == RunState::Cancelled {
-                        RunState::Error
-                    } else {
-                        run.state
-                    };
-                    let Some(mut next) = stg::after_verdict(Some(verdict)) else {
-                        break;
-                    };
-                    let mut note = format!("the full gate passed: run {}", run.run);
-                    if next == StagingState::GateFailed || run.jobs.iter().any(|j| j.skipped) {
-                        let history = self
-                            .gate_failures_at(
-                                sandbox,
-                                &self.cd_mirror(&sandbox.id),
-                                &request.revision,
-                                false,
-                            )
-                            .await?;
-                        if history.waiting {
-                            break;
-                        }
-                        let requester = match &request.task_id {
-                            Some(id) => self.deps.store.task(id).await?.map(|t| t.number),
-                            None => run.owner,
-                        };
-                        if let Some((inherited, detail)) = history.describe(&run, requester) {
-                            next = stg::after_failed_gate(false, inherited);
-                            let outcome = if run.state == RunState::Passed {
-                                "skipped an unresolved job"
-                            } else {
-                                "failed"
-                            };
-                            note = format!(
-                                "the full gate {outcome} on revision {}: run {} ({detail}); staging did not change",
-                                short(&request.revision),
-                                run.run
-                            );
-                        }
-                    }
-                    // A person's or the schedule's request waits for the next green revision
-                    // (SPEC-650 PST-002).
-                    if is_asked(request) && next != StagingState::Ready {
-                        next = stg::after_failed_gate(true, next == StagingState::Inherited);
-                        note = format!(
-                            "waiting for green tests: the full gate failed on {} (run {}); the next merged revision is tested and deployed once green",
-                            short(&request.revision),
-                            run.run
-                        );
-                    }
-                    self.staging_move(
-                        request,
-                        next,
-                        StagingChange {
-                            ci_run_id: Some(run.run),
-                            note: Some(note),
-                            ..StagingChange::default()
-                        },
-                    )
-                    .await?;
-                }
-                None => {
-                    let gate = self
-                        .ci_gate(sandbox)
-                        .await
-                        .gate
-                        .filter(|_| self.config.ci.enabled);
-                    let Some(gate) = gate else {
-                        // Nothing can judge it, and it would hold every newer request back.
-                        let change = StagingChange {
-                            note: Some(
-                                "no full gate can run: this project has no CI gate in force".into(),
-                            ),
-                            ..StagingChange::default()
-                        };
-                        self.staging_move(request, StagingState::GateFailed, change)
-                            .await?;
-                        continue;
-                    };
-                    // CI inventory holds the same scheduling lock while it takes its snapshot
-                    // and records branch runs. A concurrent inventory cannot double-admit this SHA.
-                    let scheduler = self.ci_sync_lock(&sandbox.id);
-                    let guard = scheduler.schedule.lock().await;
-                    if !self.deps.store.integration_verdicts(&sandbox.id, &integration,
-                        std::slice::from_ref(&request.revision), super::GateRead::Latest).await?.is_empty()
-                        || self.deps.store.active_ci_runs().await?.iter().any(|r| {
-                            r.sandbox_id == sandbox.id && (matches!(r.reference, CiRef::Candidate(_))
-                            || matches!(&r.reference, CiRef::Branch(branch) if branch == &integration))
-                        }) {
-                        break;
-                    }
-                    let run = self
-                        .ci_record_placed(
-                            sandbox,
-                            CiRef::Candidate(request.revision.clone()),
-                            &request.revision,
-                            &gate,
-                            "yulius",
-                            self.now(),
-                        )
-                        .await?;
-                    drop(guard);
-                    self.ci_publish(&run.id).await;
-                    let change = StagingChange {
-                        ci_run_id: Some(run.id.clone()),
-                        note: Some(format!("the full gate runs on it: run {}", run.id)),
-                        ..StagingChange::default()
-                    };
-                    self.staging_move(request, StagingState::Testing, change)
-                        .await?;
-                    self.ci_wake();
-                    break;
-                }
+        testing.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        testing.truncate(MAX_PENDING);
+        let Some(lowest) = testing.iter().map(|(at, _)| *at).min() else {
+            return Ok(());
+        };
+        let mut window = self.staging_window(sandbox, head, lowest).await?;
+        for (at, request) in &testing {
+            if !window.iter().any(|(sha, _)| sha == &request.revision) {
+                window.push((request.revision.clone(), *at));
             }
         }
+        let revisions: Vec<String> = window.iter().map(|(sha, _)| sha.clone()).collect();
+        let verdicts = self
+            .deps
+            .store
+            .integration_verdicts(
+                &sandbox.id,
+                &integration,
+                &revisions,
+                super::GateRead::Latest,
+            )
+            .await?;
+        let verdict = |sha: &str| verdicts.iter().find(|v| v.sha == sha);
+        let points: Vec<judge::Point> = window
+            .iter()
+            .map(|(sha, position)| judge::Point {
+                position: *position,
+                gate: verdict(sha).and_then(super::GateVerdict::gate),
+                asked: testing.iter().any(|(_, r)| &r.revision == sha),
+            })
+            .collect();
+        let plan = judge::judging(&points);
+        let named = |position: u64| {
+            let sha = window
+                .iter()
+                .find(|(_, at)| *at == position)
+                .map(|(sha, _)| sha.as_str());
+            let run = sha.and_then(verdict).map(|v| v.run.as_str());
+            (short(sha.unwrap_or("?")), run.unwrap_or("?"))
+        };
+        for (at, request) in &testing {
+            let answered = plan.covered.iter().map(|(p, green)| (p, green, true));
+            let answered = answered.chain(plan.inherited.iter().map(|(p, red)| (p, red, false)));
+            if let Some((_, above, green)) = answered.into_iter().find(|(p, _, _)| *p == at) {
+                let (revision, run) = named(*above);
+                let verdict = if green {
+                    "passed on"
+                } else {
+                    "failed only on failures from earlier merges on"
+                };
+                let note = format!(
+                    "the full gate {verdict} revision {revision}, which contains it: run {run}; it needs no run of its own, and staging deploys it with a verified revision containing it"
+                );
+                let change = StagingChange {
+                    note: Some(note),
+                    ..StagingChange::default()
+                };
+                self.staging_move(request, StagingState::Inherited, change)
+                    .await?;
+            } else if !plan.unresolved.contains(at)
+                && let Some(run) = verdict(&request.revision)
+            {
+                self.staging_verdict(sandbox, request, run).await?;
+            }
+        }
+        let next = plan.run.and_then(|at| {
+            testing
+                .iter()
+                .find(|(p, r)| *p == at && verdict(&r.revision).is_none())
+        });
+        let Some((_, request)) = next else {
+            return Ok(());
+        };
+        let gate = self
+            .ci_gate(sandbox)
+            .await
+            .gate
+            .filter(|_| self.config.ci.enabled);
+        let Some(gate) = gate else {
+            // Nothing can judge them, and they would hold every newer request back.
+            for (_, request) in testing
+                .iter()
+                .filter(|(_, r)| verdict(&r.revision).is_none())
+            {
+                let change = StagingChange {
+                    note: Some("no full gate can run: this project has no CI gate in force".into()),
+                    ..StagingChange::default()
+                };
+                self.staging_move(request, StagingState::GateFailed, change)
+                    .await?;
+            }
+            return Ok(());
+        };
+        // CI inventory holds the same scheduling lock while it takes its snapshot and records
+        // branch runs. A concurrent inventory cannot double-admit this SHA. One full-gate run at a
+        // time (SPEC-653 NWF-005).
+        let scheduler = self.ci_sync_lock(&sandbox.id);
+        let guard = scheduler.schedule.lock().await;
+        if !self
+            .deps
+            .store
+            .integration_verdicts(
+                &sandbox.id,
+                &integration,
+                std::slice::from_ref(&request.revision),
+                super::GateRead::Latest,
+            )
+            .await?
+            .is_empty()
+            || self.deps.store.active_ci_runs().await?.iter().any(|r| {
+                r.sandbox_id == sandbox.id
+                    && (matches!(r.reference, CiRef::Candidate(_))
+                        || matches!(&r.reference, CiRef::Branch(branch) if branch == &integration))
+            })
+        {
+            return Ok(());
+        }
+        let run = self
+            .ci_record_placed(
+                sandbox,
+                CiRef::Candidate(request.revision.clone()),
+                &request.revision,
+                &gate,
+                "yulius",
+                self.now(),
+            )
+            .await?;
+        drop(guard);
+        self.ci_publish(&run.id).await;
+        let change = StagingChange {
+            ci_run_id: Some(run.id.clone()),
+            note: Some(format!("the full gate runs on it: run {}", run.id)),
+            ..StagingChange::default()
+        };
+        self.staging_move(request, StagingState::Testing, change)
+            .await?;
+        self.ci_wake();
+        Ok(())
+    }
+
+    /// The first-parent revisions of the verified head from the head down to position `lowest`,
+    /// with their positions, at most [`WINDOW`] (SPEC-653 NWF-007).
+    ///
+    /// # Errors
+    /// Git failures: never read as "not on the branch".
+    async fn staging_window(
+        &self,
+        sandbox: &SandboxRecord,
+        head: &str,
+        lowest: u64,
+    ) -> AppResult<Vec<(String, u64)>> {
+        let mirror = self.cd_mirror(&sandbox.id);
+        let git = &self.deps.git;
+        let Some(top) = git.first_parent_position(&mirror, head, head).await? else {
+            return Ok(Vec::new());
+        };
+        let mut window = vec![(head.to_owned(), top)];
+        while let Some((oldest, at)) = window.last().cloned()
+            && at > lowest
+            && window.len() < WINDOW
+        {
+            let batch = git.preceding_commits(&mirror, &oldest).await?;
+            if batch.is_empty() {
+                break;
+            }
+            for (sha, position) in batch.into_iter().zip((lowest..at).rev()) {
+                window.push((sha, position));
+            }
+            window.truncate(WINDOW);
+        }
+        Ok(window)
+    }
+
+    /// Moves a testing request on the full gate's verdict at its own revision (SPEC-575
+    /// MFS-003, MFS-007; SPEC-612; SPEC-650 PST-002); nothing while the verdict or the failures'
+    /// attribution is still to come.
+    async fn staging_verdict(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        request: &StagingRequestRecord,
+        run: &super::GateVerdict,
+    ) -> AppResult<()> {
+        let verdict = if run.state == RunState::Cancelled {
+            RunState::Error
+        } else {
+            run.state
+        };
+        let Some(mut next) = stg::after_verdict(Some(verdict)) else {
+            return Ok(());
+        };
+        let mut note = format!("the full gate passed: run {}", run.run);
+        if next == StagingState::GateFailed || run.jobs.iter().any(|j| j.skipped) {
+            let history = self
+                .gate_failures_at(
+                    sandbox,
+                    &self.cd_mirror(&sandbox.id),
+                    &request.revision,
+                    false,
+                )
+                .await?;
+            if history.waiting {
+                return Ok(());
+            }
+            let requester = match &request.task_id {
+                Some(id) => self.deps.store.task(id).await?.map(|t| t.number),
+                None => run.owner,
+            };
+            if let Some((inherited, detail)) = history.describe(run, requester) {
+                next = stg::after_failed_gate(false, inherited);
+                let outcome = if run.state == RunState::Passed {
+                    "skipped an unresolved job"
+                } else {
+                    "failed"
+                };
+                note = format!(
+                    "the full gate {outcome} on revision {}: run {} ({detail}); staging did not change",
+                    short(&request.revision),
+                    run.run
+                );
+            }
+        }
+        // A person's or the schedule's request waits for the next green revision (SPEC-650
+        // PST-002).
+        if is_asked(request) && next != StagingState::Ready {
+            next = stg::after_failed_gate(true, next == StagingState::Inherited);
+            note = format!(
+                "waiting for green tests: the full gate failed on {} (run {}); the next merged revision is tested and deployed once green",
+                short(&request.revision),
+                run.run
+            );
+        }
+        let change = StagingChange {
+            ci_run_id: Some(run.run.clone()),
+            note: Some(note),
+            ..StagingChange::default()
+        };
+        self.staging_move(request, next, change).await?;
         Ok(())
     }
 

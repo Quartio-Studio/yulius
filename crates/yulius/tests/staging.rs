@@ -5086,3 +5086,132 @@ async fn a_needs_you_card_may_ask_a_named_person_who_can_press_the_deploy() -> T
     assert_eq!(bob["isError"], false, "{bob}");
     Ok(())
 }
+
+/// The candidate run judging `sha` (SPEC-575 MFS-003), if one was queued.
+async fn candidate(f: &Fixture, sha: &str) -> BoxResult<Option<String>> {
+    let runs =
+        f.h.store
+            .ci_runs_for_sha(&SandboxId::parse("s1")?, sha)
+            .await?;
+    let mut candidates = runs
+        .iter()
+        .filter(|run| run.reference == CiRef::Candidate(sha.to_owned()));
+    let first = candidates.next().map(|run| run.id.clone());
+    assert!(candidates.next().is_none(), "one candidate run: {runs:?}");
+    Ok(first)
+}
+
+/// Ends run `id` with the full suite `full`, naming its failing `tests` as CI retains them.
+async fn finish(f: &Fixture, id: &str, full: RunState, tests: &[&str]) -> TestResult {
+    let blocks = tests
+        .iter()
+        .map(|name| format!("---- {name} stdout ----\nassertion failed\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let state = full.as_str();
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET state = CASE WHEN job_key = 'full' THEN '{state}' ELSE 'passed' END, \
+             exit_code = CASE WHEN job_key = 'full' AND '{state}' <> 'passed' THEN 1 ELSE 0 END, \
+             failures = CASE WHEN job_key = 'full' AND '{blocks}' <> '' THEN '{blocks}' END \
+             WHERE run_id = '{id}'; \
+             UPDATE ci_runs SET state = '{state}' WHERE id = '{id}'"
+        ))
+        .await?;
+    Ok(())
+}
+
+/// SPEC-653 NWF-001: a request below a newer revision whose full gate passed gets no run of its
+/// own; staging deploys the green revision and includes it.
+#[tokio::test]
+async fn a_request_under_a_green_newer_revision_gets_no_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "older").await?;
+    agent(&f, "newer").await?;
+    let older = land(&f, "older", "older").await?;
+    let newer = land(&f, "newer", "newer").await?;
+    let green = gate(&f, &newer, RunState::Passed).await?;
+    let asked = ask(&f, "older").await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &older).await?, None, "no run of its own");
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::Inherited, "{row:?}");
+    let note = row.note.unwrap_or_default();
+    assert!(
+        note.contains(&newer[..12]) && note.contains(&green) && note.contains("no run of its own"),
+        "{note}"
+    );
+    ask(&f, "newer").await?;
+    settle(&f).await?;
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&newer));
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::Included, "{row:?}");
+    Ok(())
+}
+
+/// SPEC-653 NWF-002 and NWF-004: of three waiting requests the newest gets the only run. Its new
+/// failure narrows the range: the middle request is judged, then the older one, and only the
+/// merge that brought the failure fails its gate; the newest inherits it.
+#[tokio::test]
+async fn the_newest_goes_first_and_a_new_failure_is_narrowed_to_its_merge() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b", "c"] {
+        agent(&f, task).await?;
+    }
+    // The integration branch's run of an earlier revision holds the lane while they ask.
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    let holding = gate(&f, &base, RunState::Running).await?;
+    let a = land(&f, "a", "a").await?;
+    let b = land(&f, "b", "b").await?;
+    let c = land(&f, "c", "c").await?;
+    let mut ids = Vec::new();
+    for task in ["a", "b", "c"] {
+        ids.push(ask(&f, task).await?["id"].as_str().ok_or("id")?.to_owned());
+    }
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    for sha in [&a, &b, &c] {
+        assert_eq!(candidate(&f, sha).await?, None, "the lane is held");
+    }
+    finish(&f, &holding, RunState::Passed, &[]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &a).await?, None);
+    assert_eq!(candidate(&f, &b).await?, None);
+    let newest = candidate(&f, &c)
+        .await?
+        .ok_or("the newest is judged first")?;
+
+    // It fails with a new failure: the middle request of its range is judged, and nobody is
+    // told who broke the gate yet.
+    finish(&f, &newest, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &a).await?, None);
+    let middle = candidate(&f, &b)
+        .await?
+        .ok_or("a narrowing run on the middle")?;
+    assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Testing);
+    finish(&f, &middle, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let oldest = candidate(&f, &a).await?.ok_or("then the older half")?;
+    assert_eq!(request(&f, &ids[1]).await?.state, StagingState::Testing);
+    finish(&f, &oldest, RunState::Passed, &[]).await?;
+    settle(&f).await?;
+
+    let breaker = request(&f, &ids[1]).await?;
+    assert_eq!(breaker.state, StagingState::GateFailed, "{breaker:?}");
+    let note = breaker.note.unwrap_or_default();
+    assert!(note.contains("new failures: gate::x"), "{note}");
+    let newest = request(&f, &ids[2]).await?;
+    assert_eq!(newest.state, StagingState::Inherited, "{newest:?}");
+    let note = newest.note.unwrap_or_default();
+    assert!(
+        note.contains(&format!("gate::x from {}", &b[..12])),
+        "{note}"
+    );
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&a));
+    assert_eq!(request(&f, &ids[0]).await?.state, StagingState::Verified);
+    Ok(())
+}
