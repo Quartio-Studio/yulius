@@ -49,6 +49,13 @@ pub struct EngineView {
     pub cgroup: String,
 }
 
+/// The masks the engine of `view` starts with (`sandbox-exec --guard`, SPEC-652 MEM-010): the
+/// sandbox home's Claude Code configuration and its Codex homes, as empty read-only folders.
+#[must_use]
+pub fn engine_guard(view: &EngineView) -> Vec<yulius_contracts::ptyhost::GuardPath> {
+    yulius_contracts::ptyhost::sandbox_masks(&view.sandbox_dir)
+}
+
 /// The engine's address pools for new networks (SPEC-497 HBA-003): Docker's own default ranges
 /// (172.17.0.0 to 172.31.255.255 and 192.168.0.0/16), cut into /24 networks instead of /16 and
 /// /20 ones. The engine runs in the sandbox's own network namespace, whose only other network is
@@ -221,6 +228,13 @@ pub fn bwrap_argv(view: &EngineView) -> Vec<String> {
     for (option, source, dest) in pairs {
         argv.extend([option.to_owned(), source, dest.to_owned()]);
     }
+    // The sandbox's harness folders, empty and read-only for the engine and so for every
+    // container's `-v` (SPEC-652 MEM-010): `sandbox-exec --guard` writes the masks of
+    // [`engine_guard`] there.
+    argv.extend([
+        "--args".into(),
+        yulius_contracts::ptyhost::GUARD_ARGS_FD.to_string(),
+    ]);
     argv.extend([
         "--symlink".into(),
         DOCKER_SOCKET_LINK.into(),
@@ -1265,6 +1279,34 @@ mod tests {
         assert!(
             private < exe,
             "the executable may live in the data directory: {argv:?}"
+        );
+    }
+
+    /// SPEC-652 MEM-010: the masks of the sandbox's harness folders come after the sandbox's
+    /// bind (which they cover) and before the engine starts; they are the home's `.claude` and
+    /// the Codex homes, as empty read-only folders.
+    #[test]
+    fn the_engine_sees_the_harness_folders_masked() {
+        let argv = bwrap_argv(&view());
+        let sandbox = position(&argv, &["--bind", "/data/sandboxes/s1"]);
+        let masks = position(&argv, &["--args", "199"]);
+        let chdir = position(&argv, &["--chdir", "/"]);
+        assert!(sandbox < masks && masks < chdir, "{argv:?}");
+        let guard = engine_guard(&view());
+        let shown: Vec<(&str, yulius_contracts::ptyhost::GuardKind)> =
+            guard.iter().map(|p| (p.dest.as_str(), p.kind)).collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    "/data/sandboxes/s1/home/.claude",
+                    yulius_contracts::ptyhost::GuardKind::Mask
+                ),
+                (
+                    "/data/sandboxes/s1/codex",
+                    yulius_contracts::ptyhost::GuardKind::Mask
+                ),
+            ]
         );
     }
 

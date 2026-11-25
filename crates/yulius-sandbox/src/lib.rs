@@ -35,6 +35,7 @@ pub mod enter;
 pub mod freeze;
 pub mod front_gate;
 pub mod front_repair;
+pub mod guard;
 pub mod holder;
 pub mod manager;
 pub mod procnet;

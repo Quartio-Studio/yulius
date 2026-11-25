@@ -508,6 +508,7 @@ impl App {
                 hostname: sandbox_hostname(&sandbox.slug),
             }),
             join: join.map(Box::new),
+            guard: Vec::new(),
         };
         Ok(UserSpace {
             login,
@@ -1042,6 +1043,7 @@ mod tests {
             binds: Vec::new(),
             identity: None,
             join: None,
+            guard: Vec::new(),
         });
         contained
             .env

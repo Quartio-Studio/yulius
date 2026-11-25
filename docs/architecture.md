@@ -2036,6 +2036,52 @@ flowchart LR
     S["agent swaps a folder for a link"] -. "after the open: not followed" .-> F
 ```
 
+## Harness memory is read-only
+
+Every contained session Yulius starts sees its harness's persistent memory and user-level
+instruction files read-only, so no edit tool, shell command or script of the agent adds, changes
+or deletes them, while what is there still loads
+([decision 0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md),
+[SPEC-652](../.ai/specs/SPEC-652-agents-cannot-write-harness-memory-every.md)). The paths
+(`yulius_app::memory_guard`):
+
+| Harness | Guarded (read-only) | Pinned (bound over itself) |
+| --- | --- | --- |
+| Claude Code | `<config>/projects/<key>/memory`, `<config>/CLAUDE.md`, `<config>/rules` | `<config>`, `<config>/projects`, `<config>/projects/<key>` |
+| Codex | `AGENTS.md`, `AGENTS.override.md`, `memories` in its `CODEX_HOME` | none |
+| Antigravity | `.gemini/GEMINI.md`, `.gemini/config/{GEMINI.md,AGENTS.md,rules}` | none |
+
+`<config>` is the session's `CLAUDE_CONFIG_DIR` and `<key>` Claude Code's project key of the
+sandbox's repository (`sandbox_memory_base`, from its path alone; the Global Superagent's: its
+folder). Claude Code's run settings pin `autoMemoryDirectory` to that guarded folder, deny
+`Edit(...)` there and on `CLAUDE.md` and `rules`, and exclude the instruction files of every folder
+above the session's (`claudeMdExcludes`). Task runs (every harness), a person's Superagent (its
+home on the host, bound at `/home/<login>`) and the Global Superagent carry the list as the
+containment's `guard`. The sandbox's Docker engine, CI jobs and script watches carry masks
+instead (`sandbox_masks`: the home's `.claude` and `codex` as empty read-only folders); CD runs
+and a person's own terminal carry nothing.
+
+The list travels with the launch to the process host, which starts bwrap through `yulius
+sandbox-exec --guard` (with the seccomp filter of a joined run, `--no-filter` otherwise). In the
+view bwrap starts in, `sandbox-exec` first moves aside a link, or an entry of the wrong kind, at a
+guarded path or on the way to it (to `<name>.yulius-moved-<ms>`), then opens each path from its
+anchor (a folder Yulius made: the sandbox directory, the person's home, the Global Superagent's
+folder, the run's own folder) with `openat2` refusing every link, and writes `--ro-bind-fd` (or an
+empty read-only placeholder for a missing path) and `--bind-fd` for each pin into two pipes. bwrap
+reads them where `bwrap_argv` put `--args 198` (before the first bind beneath a pin) and `--args
+199` (after every bind), binds the descriptors and closes them before the run starts. Nothing on
+the host becomes immutable: a person with access to the host edits these files in place, and a
+removed sandbox is purged with its notes.
+
+```mermaid
+flowchart LR
+    S["supervisor / Superagent launch"] -->|"guard: anchor + relative + dest"| P["yulius ptyhost"]
+    P -->|"exec"| X["yulius sandbox-exec --guard"]
+    X -->|"move links aside; openat2 NO_SYMLINKS from the anchor"| FD["descriptors + /dev/null"]
+    FD -->|"--ro-bind-fd / --bind-fd in pipes 198, 199"| B["bwrap --args 198 … --args 199"]
+    B --> R["agent run: memory and instructions read-only (EROFS), parents pinned (EBUSY)"]
+```
+
 ## Task start
 
 A task's agent is a native Claude Code session, and its first message is in before a person can

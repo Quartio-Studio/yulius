@@ -79,6 +79,7 @@ mod local_ci;
 mod manage_tools;
 mod mcp_coordination;
 mod mcp_scopes;
+mod memory_guard;
 mod merge_train;
 mod metrics_recount;
 mod migration;

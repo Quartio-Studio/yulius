@@ -767,7 +767,8 @@ impl Manager {
     /// holder has none or it ended, replaced when the mode changed. An engine's other settings
     /// change only with a new holder, so a running engine is never cut for them; but a front
     /// whose engine group is gone (the sandbox's groups moved to another unit, SPEC-458 LAY-005)
-    /// is replaced, since it could start no engine again.
+    /// is replaced, since it could start no engine again, and so is a quiet one whose engine
+    /// would start without the masks of SPEC-652.
     async fn keep_front(&self, sandbox: &str, state: &mut SandboxState) {
         let request = state
             .request
@@ -783,12 +784,26 @@ impl Manager {
             .map(|front| (front, crate::docker_front::is_front(front.pid, net_ns)));
         let wanted = self.front_mode(&request, &live.record);
         // Only an engine front that runs is asked for its group: one file read per tick.
-        let moved = current.is_some_and(|(front, running)| running && front.mode == "engine")
+        let engine_front = current.filter(|(front, running)| *running && front.mode == "engine");
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        let moved = engine_front.is_some()
             && engine_group_moved(
-                served_engine_group(&StatePaths::new(self.state_dir(sandbox))).as_deref(),
+                served_engine_group(&paths).as_deref(),
                 &wanted,
                 Path::exists,
             );
+        // An engine front from before the masks is replaced as a moved one is, once it is quiet
+        // (no engine, no connection, read live; SPEC-652 MEM-010, review rounds 2 and 3).
+        let moved = moved
+            || engine_front.is_some_and(|(front, _)| {
+                matches!(wanted, DockerServe::Engine { .. })
+                    && engine_unguarded(served_engine_command(&paths).as_deref())
+                    && crate::front_repair::quiet(
+                        crate::front_gate::read_state(&paths.docker_state(), front.pid).as_ref(),
+                        front.pid,
+                        &paths.docker_socket(),
+                    )
+            });
         let serve = match front_action(current, wanted, moved) {
             FrontAction::Keep => {
                 // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
@@ -1293,6 +1308,8 @@ impl Manager {
             "--engine".into(),
             "--cgroup".into(),
             text(cgroup),
+            "--guard".into(),
+            serde_json::to_string(&crate::engine::engine_guard(&view)).unwrap_or_default(),
             "--".into(),
         ];
         command.extend(crate::engine::bwrap_argv(&view));
@@ -2594,6 +2611,26 @@ fn front_action(
         Some(_) => FrontAction::Replace(wanted),
         None => FrontAction::Start(wanted),
     }
+}
+
+/// The engine command of the front of `paths`, from the spec it was started with; `None` for a
+/// front that serves no engine of its own, or without a readable spec.
+fn served_engine_command(paths: &StatePaths) -> Option<Vec<String>> {
+    match read_json::<DockerFrontSpec>(&paths.docker_spec())
+        .ok()?
+        .serve
+    {
+        DockerServe::Engine { engine } => Some(engine.command),
+        _ => None,
+    }
+}
+
+/// Whether a front serves an engine started without the masks of the sandbox's harness folders:
+/// its command has no `--guard` (a front from before SPEC-652 reads its engine command once at
+/// its start). Such a front is replaced once it is quiet, so the next engine starts masked
+/// (MEM-010).
+fn engine_unguarded(command: Option<&[String]>) -> bool {
+    command.is_some_and(|command| !command.iter().any(|arg| arg == "--guard"))
 }
 
 /// The group the front of `paths` starts its engine in, from the spec it was started with;
@@ -3935,6 +3972,30 @@ while True:
         );
     }
 
+    /// SPEC-652 MEM-010 (review rounds 2 and 3): a front started before the engine's masks (its
+    /// engine command has no `--guard`) is one to replace once quiet; a guarded front stays.
+    #[test]
+    fn an_unguarded_engine_front_is_replaced_once_its_engine_stopped() {
+        let old = vec![
+            "/y".to_owned(),
+            "sandbox-exec".into(),
+            "--engine".into(),
+            "--".into(),
+        ];
+        let new = vec![
+            "/y".to_owned(),
+            "sandbox-exec".into(),
+            "--engine".into(),
+            "--guard".into(),
+            "[]".into(),
+            "--".into(),
+        ];
+        // Whether it is quiet is `front_repair::quiet`'s live read (its own tests).
+        assert!(engine_unguarded(Some(&old)));
+        assert!(!engine_unguarded(Some(&new)));
+        assert!(!engine_unguarded(None));
+    }
+
     /// SPEC-458 LAY-005: a front's engine group counts as moved only when the front was given
     /// another group than the sandbox's engine group now and that group is gone. One that is
     /// still there may hold a running engine, which is never cut.
@@ -4439,10 +4500,18 @@ while True:
                 "--engine",
                 "--cgroup",
                 "/sys/fs/cgroup/yulius.service/sandboxes/s1/engine",
-                "--",
+                "--guard",
             ]
         );
-        assert_eq!(spec.command[6], "/usr/bin/bwrap");
+        // The sandbox's harness folders, masked for the engine (SPEC-652 MEM-010).
+        let masks: Vec<yulius_contracts::ptyhost::GuardPath> =
+            serde_json::from_str(&spec.command[6])?;
+        assert_eq!(
+            masks,
+            yulius_contracts::ptyhost::sandbox_masks(&format!("{d}/sandboxes/s1"))
+        );
+        assert_eq!(spec.command[7], "--");
+        assert_eq!(spec.command[8], "/usr/bin/bwrap");
         let has = |window: &[String]| spec.command.windows(window.len()).any(|w| w == window);
         assert!(has(&[
             "--bind".into(),

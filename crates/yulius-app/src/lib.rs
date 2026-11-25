@@ -72,6 +72,7 @@ pub mod mcp;
 pub mod mcp_config;
 pub mod mcp_text;
 pub mod mcp_watch;
+pub mod memory_guard;
 pub mod merge_train;
 pub mod merges;
 pub mod metrics_recount;

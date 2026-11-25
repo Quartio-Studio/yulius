@@ -283,7 +283,7 @@ impl App {
             cwd: folder.clone(),
             sandbox_dir: dir.clone(),
             config_dir: config.clone(),
-            config_dir_host: config,
+            config_dir_host: config.clone(),
             resume: resume.clone(),
             continue_interrupted: continue_interrupted && resume.is_some(),
             model: runtime.model.get().cloned(),
@@ -293,6 +293,7 @@ impl App {
             mcp: Vec::new(),
             contained: self.config.contained,
             only_yulius: Some(global_tool_names()),
+            memory_base: folder.clone(),
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));
@@ -341,8 +342,13 @@ impl App {
             mode: 0o755,
         });
         plan.containment = self.global_containment(&dir);
-        if let Containment::Bubblewrap { readonly, .. } = &mut plan.containment {
+        if let Containment::Bubblewrap {
+            readonly, guard, ..
+        } = &mut plan.containment
+        {
             readonly.push(no_shell);
+            // Its memory and user-level instructions, read-only (SPEC-652 MEM-001).
+            *guard = crate::memory_guard::claude_guard(&dir, &config, &config, &folder)?;
         }
         let reader = self.spawn_shell(runtime, &plan).await?;
         self.save_shell(runtime)?;
@@ -374,6 +380,7 @@ impl App {
                 .collect(),
             identity: None,
             join: None,
+            guard: Vec::new(),
         }
     }
 

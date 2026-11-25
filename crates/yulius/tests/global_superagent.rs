@@ -548,10 +548,36 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
         binds,
         identity,
         join,
+        guard,
     } = &plan.containment
     else {
         return Err("not contained".into());
     };
+    // Its memory and user-level instructions, read-only from its own folder (SPEC-652 MEM-001).
+    let config = own.join(".claude");
+    let guarded: Vec<_> = guard
+        .iter()
+        .filter(|p| p.kind != yulius_contracts::ptyhost::GuardKind::Pin)
+        .map(|p| (p.anchor.as_str(), p.dest.clone()))
+        .collect();
+    let own_text = own.to_string_lossy();
+    assert_eq!(guarded.len(), 3, "{guard:?}");
+    assert!(
+        guarded
+            .iter()
+            .all(|(anchor, dest)| *anchor == own_text && Path::new(dest).starts_with(&config))
+    );
+    // The memory folder it reads is the one its guard binds (review round 1).
+    let memory = guard
+        .iter()
+        .find(|p| {
+            p.kind == yulius_contracts::ptyhost::GuardKind::Dir && p.dest.ends_with("/memory")
+        })
+        .ok_or("a guarded memory folder")?;
+    assert_eq!(
+        auto_memory_dir(&plan).as_deref(),
+        Some(memory.dest.as_str())
+    );
     assert_eq!(sandbox_root, &own);
     assert_eq!(home, &own);
     assert!(writable.is_empty(), "{writable:?}");
@@ -1015,4 +1041,80 @@ async fn the_global_superagent_s_images_folder_refuses_links_and_disabled_accoun
     assert!(!folder.join("late.png").exists());
     f.h.app.end_all_shells().await;
     Ok(())
+}
+
+/// SPEC-652 MEM-001: a person's Superagent in a sandbox guards its memory and user-level
+/// instructions, opened from the person's home on the host and bound where the session sees them
+/// (`/home/<login>/.claude`), keyed by the sandbox's repository; its memory folder is made first.
+#[tokio::test]
+async fn a_contained_superagent_guards_its_memory_in_the_persons_home() -> TestResult {
+    use yulius_app::ports::session::Containment;
+    use yulius_contracts::ptyhost::GuardKind;
+
+    let host = std::sync::Arc::new(RecordingHost::default());
+    let h = support::harness_with(support::HarnessOptions {
+        session_host: Some(host.clone()),
+        configure: Some(Box::new(|config| config.contained = true)),
+        ..support::HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    insert_account(&h, "acc-1", "token-1", 5.0).await?;
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(&repo)?;
+
+    let resp = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit",
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(!resp.status.is_success(), "{:?}", resp.body);
+    let plan = host
+        .plans
+        .lock()
+        .map_err(|_| "poisoned")?
+        .first()
+        .cloned()
+        .ok_or("nothing spawned")?;
+    let Containment::Bubblewrap { home, guard, .. } = &plan.containment else {
+        return Err("not contained".into());
+    };
+    let home_host = data.join("users/u-alice/home");
+    let key = yulius_app::memory_guard::claude_key(&repo);
+    let at = |p: PathBuf| p.to_string_lossy().into_owned();
+    let shown: Vec<(String, String, GuardKind)> = guard
+        .iter()
+        .map(|p| (p.relative.clone(), p.dest.clone(), p.kind))
+        .collect();
+    let memory = format!(".claude/projects/{key}/memory");
+    assert!(
+        shown.contains(&(memory.clone(), at(home.join(&memory)), GuardKind::Dir)),
+        "{shown:?}"
+    );
+    assert!(shown.contains(&(
+        ".claude/CLAUDE.md".into(),
+        at(home.join(".claude/CLAUDE.md")),
+        GuardKind::File
+    )));
+    assert!(guard.iter().all(|p| p.anchor == at(home_host.clone())));
+    assert!(home_host.join(&memory).is_dir(), "made before the session");
+    // The memory folder it reads is the one its guard binds (review round 1).
+    assert_eq!(auto_memory_dir(&plan), Some(at(home.join(&memory))));
+    Ok(())
+}
+
+/// The `autoMemoryDirectory` of a Superagent's plan (its inline `--settings`).
+fn auto_memory_dir(plan: &yulius_app::ports::session::LaunchPlan) -> Option<String> {
+    let settings = plan
+        .argv
+        .windows(2)
+        .find(|w| w[0] == "--settings")
+        .map(|w| w[1].clone())?;
+    let settings: serde_json::Value = serde_json::from_str(&settings).ok()?;
+    settings["autoMemoryDirectory"].as_str().map(str::to_owned)
 }

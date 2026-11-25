@@ -379,7 +379,25 @@ async fn agent(iso: &Iso, sandbox: &str) -> Result<TaskId, Box<dyn std::error::E
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
     let id = TaskId::parse(created.body["id"].as_str().ok_or("task id")?)?;
-    wait_screen(iso, &id, "FAKE-AGENT READY", WAIT).await?;
+    if let Err(err) = wait_screen(iso, &id, "FAKE-AGENT READY", WAIT).await {
+        // Why it did not start: the task, and each attempt's end and its host's record.
+        let task = iso.h.app.deps.store.task(&id).await?;
+        let mut why = format!("{err}\ntask: {task:?}\n");
+        for attempt in iso.h.app.deps.store.attempts(&id).await? {
+            why.push_str(&format!(
+                "attempt {:?} {:?}: exit {:?}\n",
+                attempt.state, attempt.exit_reason, attempt.exit_code
+            ));
+            for name in ["exit.json", "status.json"] {
+                let path = Path::new(&attempt.run_dir).join(name);
+                why.push_str(&format!(
+                    "{name}: {}\n",
+                    std::fs::read_to_string(path).unwrap_or_default()
+                ));
+            }
+        }
+        return Err(why.into());
+    }
     Ok(id)
 }
 
@@ -630,6 +648,15 @@ async fn end_to_end(iso: &Iso, forward: u16, blocked: u16) -> TestResult {
     assert!(!Path::new("/usr/games/cowsay").exists(), "not on the host");
     eprintln!("other sandbox:\n{}", out.trim());
 
+    // SPEC-652: a note in the memory folder every session of s1 reads, before its agent starts.
+    let s1 = iso.data.join("sandboxes/s1");
+    let memory = s1
+        .join("home/.claude/projects")
+        .join(yulius_app::memory_guard::claude_key(&s1.join("repo")))
+        .join("memory");
+    std::fs::create_dir_all(&memory)?;
+    std::fs::write(memory.join("MEMORY.md"), "existing note\n")?;
+
     // An agent's session in s1: same system layer, root, IS_SANDBOX, its own apt install.
     let task = agent(iso, "s1").await?;
     let screen = agent_sh(
@@ -649,6 +676,41 @@ async fn end_to_end(iso: &Iso, forward: u16, blocked: u16) -> TestResult {
     ] {
         assert!(screen.contains(expected), "{expected}: {screen}");
     }
+    // SPEC-652 in a joined run (the holder's namespaces, its seccomp filter, the run's
+    // capabilities): the agent's shell reads the note and cannot write, add, delete or rename
+    // away its memory, nor write its user instructions.
+    let m = memory.display();
+    let screen = agent_sh(
+        iso,
+        &task,
+        &format!(
+            "(echo x >> {m}/MEMORY.md) 2>/dev/null && echo mem-append-wrote || echo mem-append-refused; (echo n > {m}/new.md) 2>/dev/null && echo mem-create-wrote || echo mem-create-refused; rm -f {m}/MEMORY.md 2>/dev/null && echo mem-delete-wrote || echo mem-delete-refused; mv {m} {m}.x 2>/dev/null && echo mem-rename-wrote || echo mem-rename-refused; (echo r >> $HOME/.claude/CLAUDE.md) 2>/dev/null && echo claude-md-wrote || echo claude-md-refused; echo mem-read=$(cat {m}/MEMORY.md); echo MEM-$((40+2))-DONE"
+        ),
+        "MEM-42-DONE",
+        WAIT,
+    )
+    .await?;
+    eprintln!("guarded memory:\n{}", screen.trim());
+    for expected in [
+        "mem-append-refused",
+        "mem-create-refused",
+        "mem-delete-refused",
+        "mem-rename-refused",
+        "claude-md-refused",
+        "mem-read=existing note",
+    ] {
+        assert!(screen.contains(expected), "{expected}: {screen}");
+    }
+    // A result line, not the echoed command (which names every outcome).
+    assert!(
+        !screen.lines().any(|line| line.trim().ends_with("-wrote")),
+        "{screen}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(memory.join("MEMORY.md"))?,
+        "existing note\n"
+    );
+    assert_eq!(std::fs::read_dir(&memory)?.count(), 1);
     // Attachments and the worktree are at their host paths; host secrets are not.
     let attachment = iso
         .data
@@ -1124,6 +1186,37 @@ async fn docker_end_to_end(
     .await?;
     assert!(!out.contains("seen-"), "{out}");
     assert!(out.contains("hidden-master.key"), "{out}");
+
+    // SPEC-652 MEM-010: a container's `-v` of the home's `.claude` (or of the home above it)
+    // finds an empty folder, and nothing it writes there reaches the sandbox's files.
+    let claude = iso.data.join("sandboxes/s1/home/.claude");
+    let memory = claude.join("projects/-k/memory");
+    std::fs::create_dir_all(&memory)?;
+    std::fs::write(memory.join("MEMORY.md"), "existing note\n")?;
+    let out = run(
+        &mut sh,
+        &format!(
+            "docker run --rm -v {c}:/c -v {h}:/h busybox sh -c 'echo c-entries=$(ls -A /c | wc -l) h-claude=$(ls -A /h/.claude | wc -l); mkdir -p /c/projects/-k/memory 2>/dev/null; echo x >> /c/projects/-k/memory/MEMORY.md 2>/dev/null; echo x >> /h/.claude/CLAUDE.md 2>/dev/null; echo mask-done'",
+            c = claude.display(),
+            h = claude.parent().ok_or("home")?.display()
+        ),
+        APT_WAIT,
+    )
+    .await?;
+    eprintln!("masked from containers:\n{}", out.trim());
+    assert!(out.contains("c-entries=0 h-claude=0"), "{out}");
+    assert!(out.contains("mask-done"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(memory.join("MEMORY.md"))?,
+        "existing note\n"
+    );
+    // An agent session's guard may have left an empty `CLAUDE.md` as its mount point: nothing
+    // the container wrote is in it.
+    assert_eq!(
+        std::fs::read_to_string(claude.join("CLAUDE.md")).unwrap_or_default(),
+        "",
+        "{out}"
+    );
 
     // `--privileged` stays inside the sandbox: its user namespace, no nested one, and even in the
     // engine's cgroup namespace (`--cgroupns=host`) only the engine's tree, not the sandbox's

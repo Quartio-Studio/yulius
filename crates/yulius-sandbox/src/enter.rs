@@ -87,12 +87,13 @@ fn join_namespaces(_join: &SandboxJoin) -> io::Result<()> {
 /// filter (where the architecture has one). Returns only on failure.
 #[must_use]
 pub fn exec_bwrap(argv: &[OsString]) -> io::Error {
-    exec_bwrap_with(argv, crate::seccomp::Profile::Run)
+    exec_bwrap_with(argv, Some(crate::seccomp::Profile::Run))
 }
 
-/// As [`exec_bwrap`] with `profile`'s filter (`sandbox-exec --engine`: the engine's, ADR-0151).
+/// As [`exec_bwrap`] with `profile`'s filter (`sandbox-exec --engine`: the engine's, ADR-0151);
+/// `None`: no filter (`sandbox-exec --no-filter`, a run outside a holder with a memory guard).
 #[must_use]
-pub fn exec_bwrap_with(argv: &[OsString], profile: crate::seccomp::Profile) -> io::Error {
+pub fn exec_bwrap_with(argv: &[OsString], profile: Option<crate::seccomp::Profile>) -> io::Error {
     use std::os::unix::process::CommandExt as _;
 
     let Some((program, rest)) = argv.split_first() else {
@@ -109,7 +110,7 @@ pub fn exec_bwrap_with(argv: &[OsString], profile: crate::seccomp::Profile) -> i
     let mut command = std::process::Command::new(program);
     // Kept open until exec replaces this process.
     let mut filter = None;
-    if let Some(bytes) = crate::seccomp::program_bytes_for(profile) {
+    if let Some(bytes) = profile.and_then(crate::seccomp::program_bytes_for) {
         let pipe = cloexec_pipe().and_then(|(read, write)| {
             let mut writer = std::fs::File::from(write);
             writer.write_all(&bytes)?;
@@ -145,7 +146,7 @@ mod tests {
             vec![OsString::from("yulius-no-such-bwrap")],
             vec!["./yulius-no-such-dir/bwrap".into(), "--version".into()],
         ] {
-            let error = exec_bwrap_with(&argv, crate::seccomp::Profile::Run);
+            let error = exec_bwrap_with(&argv, Some(crate::seccomp::Profile::Run));
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
             assert!(error.to_string().contains("absolute path"), "{error}");
         }

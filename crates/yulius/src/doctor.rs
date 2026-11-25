@@ -73,6 +73,34 @@ fn version_of(program: &Path, args: &[&str]) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The bubblewrap line: its version, and on a contained server whether it binds an open
+/// descriptor (`--ro-bind-fd`, bubblewrap 0.10.0 or a distribution's backport), which every
+/// contained session needs to guard its harness's memory (SPEC-652 MEM-004).
+fn bubblewrap_check(version: Option<String>, help: Option<&str>, contained: bool) -> Check {
+    match (version, contained) {
+        (Some(v), true) if !help.is_some_and(|text| text.contains("--ro-bind-fd")) => check(
+            "bubblewrap",
+            Level::Fail,
+            format!(
+                "{v} cannot bind an open descriptor (`--ro-bind-fd`): contained sessions cannot \
+                 start. Install bubblewrap 0.10.0 or later, or the distribution's update that \
+                 adds it (Ubuntu 24.04: 0.9.0-1ubuntu0.1; Debian 12: 0.8.0-2+deb12u1)"
+            ),
+        ),
+        (Some(v), _) => check("bubblewrap", Level::Ok, v),
+        (None, true) => check(
+            "bubblewrap",
+            Level::Fail,
+            "containment requested but `bwrap` is not available",
+        ),
+        (None, false) => check(
+            "bubblewrap",
+            Level::Warn,
+            "not available; runs are not contained",
+        ),
+    }
+}
+
 fn data_dir_checks(data_dir: &Path) -> Vec<Check> {
     use std::os::unix::fs::PermissionsExt;
     let mut checks = Vec::new();
@@ -175,19 +203,8 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
         ),
     });
     let bwrap = version_of(Path::new(yulius_ptyhost::BWRAP_PROGRAM), &["--version"]);
-    checks.push(match (bwrap, contained) {
-        (Some(v), _) => check("bubblewrap", Level::Ok, v),
-        (None, true) => check(
-            "bubblewrap",
-            Level::Fail,
-            "containment requested but `bwrap` is not available",
-        ),
-        (None, false) => check(
-            "bubblewrap",
-            Level::Warn,
-            "not available; runs are not contained",
-        ),
-    });
+    let help = output_of(Path::new(yulius_ptyhost::BWRAP_PROGRAM), &["--help"]);
+    checks.push(bubblewrap_check(bwrap, help.as_deref(), contained));
     checks.push(match yulius_browser::discover_chromium() {
         Ok(path) => check("Chromium", Level::Ok, path.display().to_string()),
         Err(_) => check(
@@ -811,6 +828,23 @@ pub fn doctor(
 
 #[cfg(test)]
 mod tests {
+    /// Review round 1 of SPEC-652: a contained server's bubblewrap must bind open descriptors;
+    /// an older one fails the check with what to install, an uncontained server does not mind.
+    #[test]
+    fn a_contained_server_needs_a_bubblewrap_that_binds_descriptors() {
+        use super::{Level, bubblewrap_check};
+        let new =
+            "usage: bwrap [OPTIONS...]\n    --ro-bind-fd FD DEST  Bind open directory or path fd";
+        let old = "usage: bwrap [OPTIONS...]\n    --ro-bind SRC DEST";
+        let ok = bubblewrap_check(Some("bubblewrap 0.11.1".into()), Some(new), true);
+        assert!(matches!(ok.level, Level::Ok), "{}", ok.detail);
+        let fail = bubblewrap_check(Some("bubblewrap 0.9.0".into()), Some(old), true);
+        assert!(matches!(fail.level, Level::Fail));
+        assert!(fail.detail.contains("--ro-bind-fd") && fail.detail.contains("0.10.0"));
+        let uncontained = bubblewrap_check(Some("bubblewrap 0.9.0".into()), Some(old), false);
+        assert!(matches!(uncontained.level, Level::Ok));
+    }
+
     use super::{
         GH_INSTALL_URL, Level, docker_checks, github_cli_check, namespaces_check,
         proxy_secret_check, restart_check, run_checks, version_of, visible_when_contained,

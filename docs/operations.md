@@ -18,7 +18,7 @@ been performed or verified** as part of the implementation work.
 | Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves, each checked for Yulius's default model first: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
 | Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). If the panel says a file dialog may still be open after the policy takes effect, choose **Restart browser** beside the message. This restarts just that sandbox’s Chrome, keeps its profile and reopens its web tabs. If Chrome reports too many tabs, close excess tabs and retry. The managed policy applies to every Chrome on the host: no file dialogs, downloads, printing or extension installs, and only web addresses (no `file:` or `chrome:` pages, no links to other programs). |
-| bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. |
+| bubblewrap (`bwrap`) ≥ 0.10.0, or a distribution update with `--ro-bind-fd` | containment (`--contained`); every contained session binds its harness's memory through open descriptors ([ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. Ubuntu 24.04's `0.9.0-1ubuntu0.1` and Debian 12's `0.8.0-2+deb12u1` carry `--ro-bind-fd`; an older one fails every contained start, and `yulius doctor` fails its "bubblewrap" line. |
 | An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
 | `slirp4netns` | sandbox egress (isolation) | `yulius host setup` installs it. |
@@ -867,6 +867,31 @@ stay private to the sandbox. Two sandboxes can both use 3000 inside.
 
 **Without the prerequisites** (`yulius doctor` lists what is missing), contained runs keep the
 previous containment: read-only host system, the host's network, no limits.
+
+#### Harness memory is read-only
+
+Every contained session (task runs of each harness, a person's Superagent, the Global Superagent)
+sees its harness's memory and user-level instruction files read-only
+([ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)): its edit
+tools, shell and scripts cannot add, change or delete them, and what is there still loads. The
+sandbox's Docker engine (so every container's `-v`), its CI jobs and its script watches see the
+home's `.claude` and the Codex homes as empty read-only folders; a sandbox's engine started
+before the update is replaced by a masked one once it is not running (it stops when idle). The
+limits are in the decision record. On the host they are ordinary files, which a person with access to the host edits in
+place:
+
+| Session | Claude Code memory and instructions | Codex | Antigravity |
+| --- | --- | --- | --- |
+| Task run | `<data>/sandboxes/<id>/home/.claude/projects/<key>/memory/`, `…/home/.claude/CLAUDE.md`, `…/home/.claude/rules/` | `<data>/sandboxes/<id>/codex/<account>/{AGENTS.md,AGENTS.override.md,memories/}` | none kept: each run's `.gemini` is new |
+| A person's Superagent | `<data>/users/<user>/home/.claude/…` (the same three) | | |
+| Global Superagent | `<data>/users/<user>/superagent/.claude/…` | | |
+
+`<key>` is the sandbox repository's path (`<data>/sandboxes/<id>/repo`, the key of every task and
+Superagent session of the sandbox) with every character outside `a-z`, `A-Z`, `0-9` written as
+`-` (for example `-var-lib-yulius-sandboxes-<id>-repo`). A protected path that is a symbolic link
+or of the wrong kind is moved aside to `<name>.yulius-moved-<ms>` before a session starts, and a
+missing one shows as an empty read-only folder or file. An uncontained server (development) has
+no namespace: only Claude Code's deny rules hold there.
 
 ### Subscription rebalance
 

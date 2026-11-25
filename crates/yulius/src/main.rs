@@ -142,6 +142,13 @@ enum Command {
         /// `yulius doctor --docker-smoke`).
         #[arg(long)]
         join: Option<std::path::PathBuf>,
+        /// The run's guarded paths (SPEC-652): a JSON list of `GuardPath`, opened without
+        /// following a link and handed to bwrap through its argument descriptors.
+        #[arg(long)]
+        guard: Option<String>,
+        /// Start bwrap without the seccomp filter (a run that does not join a sandbox's holder).
+        #[arg(long)]
+        no_filter: bool,
         /// `bwrap` and its arguments, after `--`.
         #[arg(last = true, required = true)]
         argv: Vec<std::ffi::OsString>,
@@ -795,8 +802,19 @@ fn main() -> ExitCode {
             engine,
             cgroup,
             join,
+            guard,
+            no_filter,
             argv,
-        } => yulius::sandbox_cli::exec(engine, cgroup.as_deref(), join.as_deref(), &argv),
+        } => yulius::sandbox_cli::exec(
+            yulius::sandbox_cli::Exec {
+                engine,
+                cgroup: cgroup.as_deref(),
+                join: join.as_deref(),
+                guard: guard.as_deref(),
+                filter: !no_filter,
+            },
+            &argv,
+        ),
         Command::SandboxBase { action } => yulius::sandbox_cli::base(action),
         Command::Login { server } => yulius::cli::login(&server),
         Command::Onboard {

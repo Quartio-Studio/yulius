@@ -1572,6 +1572,7 @@ mod tests {
                 binds: Vec::new(),
                 identity: None,
                 join: None,
+                guard: Vec::new(),
             },
             argv: Vec::new(),
             cwd: "/data/sandboxes/s1/repo".into(),
@@ -1616,6 +1617,7 @@ mod tests {
             binds: Vec::new(),
             identity: None,
             join: None,
+            guard: Vec::new(),
         };
         bind_read_only(&mut contained, std::slice::from_ref(&file));
         let Containment::Bubblewrap { readonly, .. } = &contained else {
