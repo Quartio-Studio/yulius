@@ -1664,7 +1664,7 @@ impl App {
     /// request for the merge-first environment, answered with where it stands.
     ///
     /// # Errors
-    /// `NotFound` without access, every refusal of [`App::staging_ask`].
+    /// `NotFound` without access, every refusal of `App::staging_ask`.
     pub async fn cd_staging_ask(
         self: &Arc<Self>,
         ctx: &crate::auth::AuthContext,
