@@ -55,8 +55,13 @@ production authorization, not staging.
   - A green head (its full gate passed) is deployed, then verified, in revision order.
   - A head whose gate is queued or running waits. A head with no run gets one candidate run
     (SPEC-575 MFS-003).
-  - A person's request for a revision that already has a pending task-less request answers with
-    that request. Nothing is recorded twice.
+  - A person's request for a revision that already has a pending request of a person or the
+    schedule answers with that request. Nothing is recorded twice.
+  - A succeeded one answers only while staging still contains the revision. After a rollback, a
+    failed deploy or a cancel, a new request is recorded for the one asking now. A failed request
+    is never made ready again by the queue, so a person's cancel stands.
+  - "A person's or the schedule's" is read from `requested_by` (`user:<id>`, `yulius:schedule`).
+    A deleted task's request also has no task id, and stays a task's.
   - The plain deploy (`POST …/deploy`) of the merge-first target stays refused (it answers a
     CD run, which a request is not). Its refusal names what works: "Deploy <env> on the CD page
     or a Superagent's cd_deploy".
@@ -67,7 +72,10 @@ production authorization, not staging.
   - Once the integration head moves past it, Yulius records one task-less request for the new
     head (the same requester). Once a revision containing it is verified, the waiting request
     is `included`.
-  - At most one pending task-less request exists per revision, so nothing loops.
+  - One carried request at a time: nothing is carried while a newer request is testing, ready or
+    deploying, or for a revision staging already serves. Nothing is carried to a head that has a
+    request of a person or the schedule in any state, so a failed follow-up never loops.
+  - A waiting request moves on once a rerun of its revision passes the full gate.
 - **PST-003 Who a task-less deploy acts for.**
   - A person's request deploys as that person (`requested_by` = `user:<id>`), while they are
     active with write access, checked again when the deploy starts.

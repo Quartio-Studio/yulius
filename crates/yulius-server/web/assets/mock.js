@@ -4194,6 +4194,11 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   if (['deploy', 'rollback', 'promote', 'onboard'].includes(request.view.action)) {
     if (!body.approve) return { outcome: 'declined' };
     db.superagentReleases = [...(db.superagentReleases || []), { action: request.view.action, confirm: body.confirm ?? null }];
+    // The merge-first staging target's deploy records the person's request (SPEC-650 PST-004).
+    const env = request.view.options && request.view.options.environment;
+    if (request.view.action === 'deploy' && env === 'staging') {
+      return { outcome: 'approved', staging: { id: 'sr_panel', revision: '9f3c2a1b7e4d5f6a', state: 'testing', asked_by: db.me.user.login, waiting: 'Waiting for green tests on 9f3c2a1' }, note: 'The person approved.' };
+    }
     return { outcome: 'approved', note: 'The person approved.' };
   }
   // A decision the Superagent left to its person (SPEC-487 XRQ-005): the answer is kept for it.
