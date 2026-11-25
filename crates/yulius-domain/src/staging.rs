@@ -249,6 +249,66 @@ pub fn follow_up(requests: &[Facts], head: u64, current: Option<u64>) -> Option<
     (!held).then_some(waiting)
 }
 
+/// How a project's merge-first target moves on by itself (SPEC-650 PST-006): `serve_every_minutes`
+/// and `serve_after_merges` of its table (`0`: that trigger is off).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Schedule {
+    /// Minutes staging may stay behind the integration head.
+    pub every_minutes: u32,
+    /// First-parent commits the head may be ahead of what staging serves.
+    pub after_merges: u32,
+}
+
+/// Where staging stands against the integration head, for [`due`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Behind {
+    /// First-parent commits from what staging serves to the head (0: it serves the head).
+    pub merges_ahead: u64,
+    /// Milliseconds since the environment's last staging request or run.
+    pub idle_ms: u64,
+    /// A request is on its way (testing, inherited, ready or deploying).
+    pub pending: bool,
+}
+
+/// Why the schedule asks for the head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// This many merged revisions are ahead of staging.
+    Merges(u64),
+    /// Staging has been behind for the configured minutes.
+    Minutes(u32),
+}
+
+impl Trigger {
+    /// The scheduled request's note.
+    #[must_use]
+    pub fn note(self) -> String {
+        match self {
+            Self::Merges(n) => {
+                format!("Yulius's schedule: {n} merged revisions since what staging serves")
+            }
+            Self::Minutes(m) => format!(
+                "Yulius's schedule: staging has been behind the integration head for {m} minutes"
+            ),
+        }
+    }
+}
+
+/// Whether the schedule asks staging for the integration head now (SPEC-650 PST-006): staging is
+/// behind it, nothing is on its way, and the merges or the minutes reached the project's setting.
+#[must_use]
+pub fn due(schedule: Schedule, behind: Behind) -> Option<Trigger> {
+    if behind.merges_ahead == 0 || behind.pending {
+        return None;
+    }
+    if schedule.after_merges > 0 && behind.merges_ahead >= u64::from(schedule.after_merges) {
+        return Some(Trigger::Merges(behind.merges_ahead));
+    }
+    let every_ms = u64::from(schedule.every_minutes) * 60_000;
+    (schedule.every_minutes > 0 && behind.idle_ms >= every_ms)
+        .then_some(Trigger::Minutes(schedule.every_minutes))
+}
+
 /// What the staging queue does next.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Pick {
@@ -674,6 +734,50 @@ mod tests {
         assert_eq!(
             follow_up(std::slice::from_ref(&waiting), 6, Some(2)).map(|f| f.id.as_str()),
             Some("p")
+        );
+    }
+
+    /// SPEC-650 PST-006: staging behind the head and nothing on its way: due after the merges
+    /// or the minutes the project set; never while a request is pending; `0` turns a trigger off.
+    #[test]
+    fn the_schedule_asks_for_the_head_when_staging_is_behind() {
+        let at = |merges_ahead: u64, minutes_idle: u64| Behind {
+            merges_ahead,
+            idle_ms: minutes_idle * 60_000,
+            pending: false,
+        };
+        let every = Schedule {
+            every_minutes: 60,
+            after_merges: 5,
+        };
+        assert_eq!(due(every, at(0, 999)), None, "staging serves the head");
+        assert_eq!(due(every, at(4, 59)), None);
+        assert_eq!(due(every, at(5, 0)), Some(Trigger::Merges(5)));
+        assert_eq!(due(every, at(1, 60)), Some(Trigger::Minutes(60)));
+        assert_eq!(due(every, at(7, 90)), Some(Trigger::Merges(7)), "merges first");
+        let pending = Behind {
+            pending: true,
+            ..at(9, 999)
+        };
+        assert_eq!(due(every, pending), None, "a request is on its way");
+        let off = Schedule {
+            every_minutes: 0,
+            after_merges: 0,
+        };
+        assert_eq!(due(off, at(999, 99_999)), None);
+        let time_only = Schedule {
+            every_minutes: 30,
+            after_merges: 0,
+        };
+        assert_eq!(due(time_only, at(999, 29)), None);
+        assert_eq!(due(time_only, at(1, 30)), Some(Trigger::Minutes(30)));
+        assert_eq!(
+            Trigger::Merges(7).note(),
+            "Yulius's schedule: 7 merged revisions since what staging serves"
+        );
+        assert_eq!(
+            Trigger::Minutes(60).note(),
+            "Yulius's schedule: staging has been behind the integration head for 60 minutes"
         );
     }
 
