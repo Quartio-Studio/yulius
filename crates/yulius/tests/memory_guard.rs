@@ -286,23 +286,25 @@ fn bwrap_usable() -> Result<(), String> {
 }
 
 /// What a refused attempt's error says: a read-only mount, a mount point, a cross-mount link, or
-/// a mount call refused in a nested namespace.
-const REFUSALS: [&str; 6] = [
+/// a mount call refused in a nested namespace (`umount` words `EINVAL` on a locked mount as "not
+/// mounted"; a guard that is missing shows as writes that went through).
+const REFUSALS: [&str; 7] = [
     "Read-only file system",
     "Device or resource busy",
     "Operation not permitted",
     "Invalid cross-device link",
     "ermission denied",
     "Invalid argument",
+    "not mounted",
 ];
 
 /// The shell script a guarded run executes: every attempt prints `<name>=wrote` or
-/// `<name>=refused:<its error's last line>` into `$RESULTS`, each read `<name>=<what it read>`, and
+/// `<name>=refused:<its error, on one line>` into `$RESULTS`, each read `<name>=<what it read>`, and
 /// a missing tool `tools=missing <tool>`.
 const ATTEMPTS: &str = r#"
 r="$RESULTS"
 for tool in python3 unshare mount umount ln; do command -v "$tool" >/dev/null || echo "tools=missing $tool" >>"$r"; done
-try() { name=$1; shift; if out=$("$@" 2>&1 >/dev/null); then echo "$name=wrote" >>"$r"; else echo "$name=refused:$(printf '%s' "$out" | tail -n 1)" >>"$r"; fi; }
+try() { name=$1; shift; if out=$("$@" 2>&1 >/dev/null); then echo "$name=wrote" >>"$r"; else echo "$name=refused:$(printf '%s' "$out" | tr '\n' ' ')" >>"$r"; fi; }
 py() { try "$1" python3 -c "$2" "$3"; }
 for f in "$CLAUDE_MEMORY/MEMORY.md" "$CLAUDE_CONFIG/CLAUDE.md" "$CODEX_HOME/AGENTS.md" "$GEMINI/config/AGENTS.md"; do
   n=$(echo "$f" | tr -c 'a-zA-Z0-9\n' _)
