@@ -128,3 +128,37 @@ Confirmed against `dev` at 1770c1b30.
   (SPEC-463); a dialog uses `openModal`'s settled behaviour.
 - **No reminder before a charge** (a notice or a Telegram message a day before). The request is to
   see the date; a reminder is a later feature if asked for.
+
+## Review
+
+Round 1 (yulius-reviewer, head `1be35c8b1`): request changes. Each finding and its answer:
+
+1. Major, own code: the e2e file did not hold the shown date, the toast's date, the day count or
+   the forward count; three mutations survived. Fixed test-first: the page's clock is held at
+   noon on 10 Feb 2027 and the tests assert whole dates (formatted by the browser's own locale)
+   and exact counts for today, tomorrow, yesterday's charge (next month), a 31st (28 Feb), a
+   yearly 29 Feb (28 Feb 2027), a yearly charge 303 days ahead, and the toast's date. They failed
+   first because the page counted from the wall clock (`new Date()`), not its `Date.now`, which
+   the page now reads. The reviewer's three mutations (a fixed date, a count 3 days off, no move
+   to the next period in the mock) each fail the file now.
+2. Minor, own code: no test for a server refusal kept in the dialog, focus after Save and
+   Remove, or nothing sent on an empty date. Added to the first e2e test (a `1999-12-31` refusal,
+   `aria-label` of the focused control after Save, "Set charge date" focused after Remove, the
+   mock's `sent` count).
+3. Minor, own code: BIL-004 unheld at `publish_account_id` and the usage, token, relogin and
+   import answers. New test `every_update_and_answer_about_a_subscription_carries_its_charge_date`
+   holds the background round's email update (`publish_account_id`), the usage refresh's answer,
+   a pasted token's answer, and the `null` published after a removal; the 422 bodies now assert
+   the `invalid` code. Reverting `publish_account_id` or the usage refresh to `account_view`
+   fails it.
+4. Minor, own code: ADR-0478's "never show a past date" was inexact. Reworded: east of UTC a card
+   shows yesterday's charge for as many hours as the offset, its count clamped at "today"; west of
+   UTC the next period's date shows that many hours early.
+5. Minor, pre-existing: a list redraw under an open dialog sends the keyboard to the page heading
+   on close; "Paste a new token" does the same on `dev`. Filed as #1758.
+6. Nits, own code: `change_billing` now reads the subscription again after the write; the mock no
+   longer leaks `billing_cycle` and all its `account.updated` events carry `billing`; a yearly
+   29 Feb reads "Every year on 29 Feb, or 28 Feb in other years"; the Goal's weekday is Thursday.
+   One unreadable `account_billing` row failing every account view is kept: it is consistent with
+   how every other store read treats a bad column (`bad_column`), and the API cannot write one
+   (`BillingCycle::parse` checks every value, the table's `CHECK` the period).
