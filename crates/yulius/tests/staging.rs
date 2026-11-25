@@ -3886,3 +3886,115 @@ async fn an_unreadable_head_fails_the_automatic_promotion() -> TestResult {
     assert!(!git_contains(&f, "main", &r1)?, "nothing was promoted");
     Ok(())
 }
+
+/// A person asks the merge-first target for the integration head (SPEC-650 PST-001).
+async fn person_asks(f: &Fixture, who: &crate::support::Creds) -> BoxResult<Value> {
+    let answer = crate::support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/cd/staging/staging",
+        Some(json!({})),
+        who,
+    )
+    .await?;
+    assert_eq!(answer.status, axum::http::StatusCode::OK, "{}", answer.body);
+    Ok(answer.body)
+}
+
+/// The staging section of the CD page.
+async fn staging_view(f: &Fixture) -> BoxResult<Value> {
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    Ok(overview["environments"]
+        .as_array()
+        .ok_or("environments")?
+        .iter()
+        .find(|env| env["name"] == "staging")
+        .ok_or("staging")?["staging"]
+        .clone())
+}
+
+/// SPEC-650 PST-001, PST-002, PST-005: with no task finishing anything, a person's request
+/// deploys the green head; a red head waits, in plain words, and the next green head deploys
+/// and includes it.
+#[tokio::test]
+async fn a_persons_request_deploys_the_green_head_and_a_red_one_waits_for_the_next_green()
+-> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    let first = person_asks(&f, &f.alice).await?;
+    assert_eq!(first["revision"], r1.as_str(), "{first}");
+    assert_eq!(first["asked_by"], "alice", "{first}");
+    assert_eq!(first["task_number"], Value::Null, "{first}");
+    settle(&f).await?;
+    let one = request(&f, first["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(one.state, StagingState::Verified, "{one:?}");
+    assert_eq!(one.requested_by, "user:u-alice");
+    assert_eq!(serving(&f)?, r1);
+
+    // A red head: the request waits for the next green revision, and the page says so.
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    let ci2 = gate(&f, &r2, RunState::Failed).await?;
+    let second = person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let two = request(&f, second["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(two.state, StagingState::Inherited, "{two:?}");
+    let note = two.note.clone().unwrap_or_default();
+    assert!(note.contains("waiting for green tests") && note.contains(&ci2), "{note}");
+    let view = staging_view(&f).await?;
+    assert_eq!(
+        view["waiting"],
+        format!(
+            "Waiting for green tests: {} failed; the next merged revision is tested",
+            &r2[..7]
+        ),
+        "{view}"
+    );
+    assert_eq!(serving(&f)?, r1, "a red head never deploys");
+    // Asking again answers with the waiting request.
+    assert_eq!(person_asks(&f, &f.alice).await?["id"], second["id"]);
+
+    // The next merged revision is green: it is asked for by itself, deploys, includes the wait.
+    let r3 = f.push("dev", &[("three.txt", Some("3"))])?;
+    gate(&f, &r3, RunState::Passed).await?;
+    settle(&f).await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r3);
+    assert_eq!(deployed(&f).await?, [r1.clone(), r3.clone()]);
+    let two = request(&f, &two.id).await?;
+    assert_eq!(two.state, StagingState::Included, "{two:?}");
+    let view = staging_view(&f).await?;
+    let newest = &view["requests"][0];
+    assert_eq!(newest["revision"], r3.as_str(), "{view}");
+    assert_eq!(newest["state"], "verified", "{view}");
+    assert_eq!(newest["asked_by"], "alice", "{view}");
+    assert_eq!(view["waiting"], Value::Null, "{view}");
+    // Nobody's session hears a request of no task.
+    assert!(f.h.store.untold_staging_requests().await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-650 PST-001, PST-005: while the head's full gate runs, a person's request waits for it
+/// and the page says so; the plain deploy of the target names the request that works.
+#[tokio::test]
+async fn a_persons_request_waits_while_the_heads_gate_runs() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Running).await?;
+    let asked = person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let waiting = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(waiting.state, StagingState::Testing, "{waiting:?}");
+    assert_eq!(
+        staging_view(&f).await?["waiting"],
+        format!("Waiting for green tests on {}", &r1[..7])
+    );
+    assert!(deployed(&f).await?.is_empty());
+    let direct = f.deploy(&f.alice, "staging", None).await?;
+    let text = direct.body.to_string();
+    assert!(
+        text.contains("Deploy staging on the CD page") && text.contains("Superagent's cd_deploy"),
+        "{text}"
+    );
+    Ok(())
+}

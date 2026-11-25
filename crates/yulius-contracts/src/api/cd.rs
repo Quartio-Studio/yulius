@@ -92,6 +92,10 @@ pub struct CdStaging {
     pub verified: Option<String>,
     /// The newest requests, newest first.
     pub requests: Vec<CdStagingRequest>,
+    /// What the newest pending request of no task waits for, in plain words ("Waiting for green
+    /// tests on 1a2b3c4"; SPEC-650 PST-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
 }
 
 /// One staging request (SPEC-575 MFS-004 to MFS-008).
@@ -102,6 +106,9 @@ pub struct CdStagingRequest {
     /// The task it delivers, by number.
     #[serde(default)]
     pub task_number: Option<u32>,
+    /// Who asked when no task did: a person's login, or `Yulius's schedule` (SPEC-650).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_by: Option<String>,
     /// The integration branch's commit it deploys.
     pub revision: String,
     /// `testing`, `ready`, `deploying`, `verified`, `included`, `gate_failed`, `inherited`, `deploy_failed` or

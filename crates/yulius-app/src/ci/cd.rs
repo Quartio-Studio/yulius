@@ -1583,7 +1583,7 @@ impl App {
         // through its queue (SPEC-575 MFS-003, MFS-004): never to whatever the head is now.
         if target.merge_first && revision.is_none() {
             return Err(AppError::Conflict(format!(
-                "nothing ran: [cd.{env}] is the merge-first staging target; it changes only to a merged revision whose full gate passed, when a task asks with cd_deploy (roll it back on the CD page)"
+                "nothing ran: [cd.{env}] is the merge-first staging target; it changes only to a merged revision whose full gate passed: ask for the integration head with Deploy {env} on the CD page or a Superagent's cd_deploy, or a task's merged revision with its cd_deploy (roll it back on the CD page)"
             )));
         }
         // Production waits for a proven rollback of what it deploys (SPEC-415 RBK-031); a dev
@@ -2597,7 +2597,7 @@ fn cache_name(name: &str, stage: CdStage) -> String {
 }
 
 /// What a request naming no environment is told.
-const UNKNOWN_ENV: &str = "the environment is a [cd.<name>] of yulius.toml: dev, prod or another \
+pub(super) const UNKNOWN_ENV: &str = "the environment is a [cd.<name>] of yulius.toml: dev, prod or another \
     name of lowercase letters, digits and '-'";
 
 pub(super) fn running_refusal(env: &str) -> AppError {
