@@ -2,7 +2,7 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar, pollPaused } from '../dom.js';
+import { h, icon, iconButton, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar, pollPaused } from '../dom.js';
 import { href } from '../router.js';
 import { openSandboxDialog } from '../actions.js';
 import { claudeConnected, CONNECT_PATH } from '../claude.js';
@@ -130,6 +130,89 @@ function tokenTotals(account) {
   };
   const rows = [row('Last 24 h', account.tokens_24h), row('Last 7 days', account.tokens_7d)].filter(Boolean);
   return rows.length ? h('div', { class: 'stack-sm token-totals' }, h('div', { class: 'muted xs' }, `Observed by ${BRAND.name}`), rows) : null;
+}
+
+// ---------------------------------------------------------------- billing (SPEC-651)
+
+/** A `YYYY-MM-DD` date as a `Date` at its UTC midnight. */
+const utcDay = (iso) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+};
+/** 1st, 2nd, 3rd, 4th … 11th, 12th, 13th … 21st. */
+const ordinal = (n) => {
+  const teen = n % 100 >= 11 && n % 100 <= 13;
+  return `${n}${teen ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th'}`;
+};
+/** How far a charge is from the page's today: never in the past (the server counts in UTC). */
+function chargeIn(iso, now = new Date()) {
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((utcDay(iso).getTime() - today) / 86_400_000);
+  if (days <= 0) return 'today';
+  return days === 1 ? 'tomorrow' : `in ${days} days`;
+}
+/** How a cycle repeats (BIL-006): "Every month on the 24th", "Every year on 24 Nov". */
+function chargeRepeats(billing) {
+  const anchor = utcDay(billing.anchor);
+  if (billing.period === 'year') return `Every year on ${anchor.toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' })}`;
+  const day = anchor.getUTCDate();
+  return `Every month on the ${ordinal(day)}${day > 28 ? ', or the month’s last day' : ''}`;
+}
+
+/**
+ * When the subscription charges its card (SPEC-651 BIL-006): the next charge, how far it is and
+ * how it repeats, or "Not set"; its button opens the dialog (BIL-007). The person gives the date:
+ * no provider tells Yulius when it bills (ADR-0478).
+ */
+function billingLine(ctx, account, onSaved) {
+  const billing = account.billing;
+  const open = () => chargeDateDialog(ctx, account, onSaved);
+  const focusKey = `account:${account.id}:billing`;
+  const date = billing ? utcDay(billing.next_charge_on).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : null;
+  return h('div', { class: 'stack-sm account-billing' },
+    h('div', { class: 'kv-line' },
+      h('span', { class: 'muted' }, 'Next charge'),
+      billing ? [h('strong', null, date), h('span', { class: 'muted' }, `· ${chargeIn(billing.next_charge_on)}`)] : h('span', { class: 'muted' }, 'Not set'),
+      h('span', { class: 'spacer' }),
+      billing
+        ? iconButton('pencil', `Change the charge date of ${account.label}`, open, { dataset: { focusKey } })
+        : h('button', { type: 'button', class: 'btn btn-sm', dataset: { focusKey }, onClick: open }, 'Set charge date')),
+    billing ? h('span', { class: 'muted xs' }, chargeRepeats(billing)) : null);
+}
+
+/** The dialog that sets or removes a subscription's charge date (SPEC-651 BIL-007). */
+function chargeDateDialog(ctx, account, onSaved) {
+  const billing = account.billing;
+  const date = h('input', { class: 'input', type: 'date', min: '2000-01-01', max: '2100-12-31', value: billing ? billing.anchor : '' });
+  const period = billing ? billing.period : 'month';
+  const choice = (value, text) => h('label', null, h('input', { type: 'radio', name: 'charge-period', value, checked: value === period }), text);
+  const periods = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Charged' }, choice('month', 'Every month'), choice('year', 'Every year'));
+  const saved = (fresh, message) => {
+    Object.assign(account, fresh);
+    toast(message, { kind: 'ok' });
+    onSaved();
+    return true;
+  };
+  openModal({
+    title: `Charge date · ${account.label}`,
+    body: h('div', { class: 'stack' },
+      field('A charge date', date, `The day this subscription charges your card: the last charge or the next one, from your receipt or bank statement. ${BRAND.name} counts the next charges from it.`),
+      h('div', { class: 'field' }, h('span', { class: 'field-label', 'aria-hidden': 'true' }, 'Charged'), periods)),
+    actions: [
+      { label: 'Cancel', value: false },
+      ...(billing ? [{ label: 'Remove', kind: 'quiet-danger', run: async () => {
+        const fresh = await ctx.api.del(`/api/admin/accounts/${enc(account.id)}/billing`);
+        return saved(fresh, `Charge date of ${account.label} removed.`);
+      } }] : []),
+      { label: 'Save', kind: 'primary', run: async () => {
+        if (!date.value) return invalid(date, 'Pick the date of a charge.');
+        const picked = periods.querySelector('input:checked');
+        const fresh = await ctx.api.put(`/api/admin/accounts/${enc(account.id)}/billing`, { anchor: date.value, period: picked ? picked.value : 'month' });
+        const next = fresh.billing ? utcDay(fresh.billing.next_charge_on).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '';
+        return saved(fresh, `Next charge of ${account.label}: ${next}.`);
+      } },
+    ],
+  });
 }
 
 /** Superadmin recovery code (ACC-011): status and a password-confirmed regeneration. */
@@ -719,9 +802,12 @@ export function mountAccountsPage(ctx, route) {
         read(account.id, false).then((outcome) => { if (!gone && outcome.fresh) loadCapacity(); });
       }
       const usageHost = h('div', { dataset: { account: account.id } }, accountUsage(account, { rename, setEmail, showEmail: true, refresh: refreshing, note: () => notes.get(account.id) || null }), tokenTotals(account));
+      // When it charges the card (SPEC-651): drawn again with the list once it changes.
+      const charges = billingLine(ctx, account, reload);
       const broken = needsSignIn(account);
       return h('div', { class: 'card card-pad stack' },
         usageHost,
+        charges,
         h('div', { class: 'row-wrap' },
           h('span', { class: 'spacer' }),
           // A broken credential is repaired with Claude's sign-in; there is nothing else to set.

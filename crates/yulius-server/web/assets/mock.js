@@ -4459,7 +4459,7 @@ route('PATCH', `/api/admin/users/${ID}`, ({ db, p, body }) => {
 route('GET', '/api/admin/accounts', ({ db }) => {
   adminOnly(db);
   const totals = (k, runs) => ({ runs, tasks: Math.max(1, runs - 1), ...poolSpend(k) });
-  return db.accounts.map((a, i) => (a.status === 'pending_login' ? a : { ...a, tokens_24h: totals(0.3 / (i + 1), 2), tokens_7d: totals(2 / (i + 1), 9) }));
+  return db.accounts.map((a, i) => withBilling(a.status === 'pending_login' ? a : { ...a, tokens_24h: totals(0.3 / (i + 1), 2), tokens_7d: totals(2 / (i + 1), 9) }));
 });
 /**
  * A pasted token, as the server checks it (SPEC-502 TKP-003, TKP-004): the shape `claude
@@ -4541,7 +4541,55 @@ route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   // A typed email is marked, so nothing says Claude confirmed it (EML-006).
   if (given('email')) Object.assign(account, { email: email || null, email_typed: Boolean(email) });
   emit(db, { type: 'account.updated', account });
-  return account;
+  return withBilling(account);
+});
+/**
+ * The first charge of a billing cycle on or after today, as the server counts it (SPEC-651
+ * BIL-002): the anchor's day each month (or year), the month's last day when it has none. Today
+ * is the page's own date here, so a test reads the same day the page shows.
+ */
+function nextCharge(anchor, period, now = Date.now()) {
+  const [, am, ad] = anchor.split('-').map(Number);
+  const t = new Date(now);
+  const [ty, tm, td] = [t.getFullYear(), t.getMonth(), t.getDate()];
+  const last = (y, m) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const on = (y, m) => [y, m, Math.min(ad, last(y, m))];
+  const month = period === 'year' ? am - 1 : tm;
+  let [y, m, d] = on(ty, month);
+  if (Date.UTC(y, m, d) < Date.UTC(ty, tm, td)) [y, m, d] = period === 'year' ? on(ty + 1, month) : on(tm === 11 ? ty + 1 : ty, (tm + 1) % 12);
+  return `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+/** `billing` as the server gives it: the cycle and its next charge, counted now (BIL-004). */
+function withBilling(account) {
+  const cycle = account.billing_cycle;
+  return { ...account, billing: cycle ? { ...cycle, next_charge_on: nextCharge(cycle.anchor, cycle.period) } : null };
+}
+// When a subscription charges its card (SPEC-651 BIL-003): a real `YYYY-MM-DD` in 2000..2100 and
+// `month` or `year`; DELETE removes it, also when none is set.
+route('PUT', `/api/admin/accounts/${ID}/billing`, ({ db, p, body }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  if (!body || Object.keys(body).some((key) => key !== 'anchor' && key !== 'period')) fail(422, 'invalid', 'the body must be JSON like {"anchor": "2026-11-24", "period": "month"}');
+  const anchor = typeof body.anchor === 'string' ? body.anchor : '';
+  const [y, m, d] = anchor.split('-').map(Number);
+  const real = /^\d{4}-\d{2}-\d{2}$/.test(anchor) && new Date(Date.UTC(y, m - 1, d)).getUTCDate() === d && m >= 1 && m <= 12;
+  if (!real) fail(422, 'invalid', 'the charge date must be a calendar date written YYYY-MM-DD');
+  if (y < 2000 || y > 2100) fail(422, 'invalid', 'the charge date must be between the years 2000 and 2100');
+  if (body.period !== 'month' && body.period !== 'year') fail(422, 'invalid', 'the period must be `month` or `year`');
+  account.billing_cycle = { anchor, period: body.period };
+  const view = withBilling(account);
+  emit(db, { type: 'account.updated', account: view });
+  return view;
+});
+route('DELETE', `/api/admin/accounts/${ID}/billing`, ({ db, p }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  delete account.billing_cycle;
+  const view = withBilling(account);
+  emit(db, { type: 'account.updated', account: view });
+  return view;
 });
 route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   adminOnly(db);
