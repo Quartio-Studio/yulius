@@ -274,8 +274,9 @@ example when it starts deploying for real), and record every change as a decisio
      agents never promote or deploy it. What only a person can do (add a machine's credentials,
      mark a production secret, deploy production) you ask with `needs_you`, then carry on. A
      secret's allowance is asked with its tool, which shows the person an Allow button: a secret
-     a dev-stage `[cd.*]` table names with `secret_copy_to_env` (the same allowance as `.env`),
-     hosts with `secret_request_hosts`.
+     a dev-stage `[cd.*]` table names, while `secrets_list` shows its `env_files` not allowed,
+     with `secret_copy_to_env` (the same allowance as `.env`; a deploy-only secret needs no copy
+     once allowed), hosts with `secret_request_hosts`.
    - Keys the app itself reads have one default place: a `.env` file Git ignores (`.gitignore`
      lists `.env`, `.env.*` and `!.env.example`), beside a committed `.env.example` that names
      every key with no values. Code loads `.env` when its variables are unset. When code that runs
