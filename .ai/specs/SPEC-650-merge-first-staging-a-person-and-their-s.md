@@ -57,8 +57,9 @@ production authorization, not staging.
     (SPEC-575 MFS-003).
   - A person's request for a revision that already has a pending task-less request answers with
     that request. Nothing is recorded twice.
-  - The page's plain deploy (`POST …/deploy`) of the merge-first target records the same request
-    instead of refusing.
+  - The plain deploy (`POST …/deploy`) of the merge-first target stays refused (it answers a
+    CD run, which a request is not). Its refusal names what works: "Deploy <env> on the CD page
+    or a Superagent's cd_deploy".
 - **PST-002 A red head queues for the next green revision.**
   - A task-less request whose revision's full gate failed becomes `inherited`, not
     `gate_failed`. Its note names the failed run and says it waits for green tests on a newer
@@ -71,8 +72,9 @@ production authorization, not staging.
   - A person's request deploys as that person (`requested_by` = `user:<id>`), while they are
     active with write access, checked again when the deploy starts.
   - A scheduled request (`yulius:schedule`) deploys as the project's creator. If the creator
-    cannot (disabled, no write access), it deploys as the owner of the newest task that landed on
-    the integration branch and still has write access. With neither, it fails with why.
+    cannot (disabled, no write access), it deploys as the newest requester in the environment's
+    queue (a person, or a task's owner) who still has write access. With neither, it fails with
+    why.
   - A failed deploy of a task-less request restores staging as a task's does (SPEC-575 MFS-007).
 - **PST-004 The Superagent asks on its panel.**
   - The Superagent's `cd_deploy` of the merge-first environment becomes a request on its panel,
@@ -121,7 +123,7 @@ production authorization, not staging.
 - [ ] Spec, ADR-0477 and the plan of three pull requests
 - [ ] Person staging requests in the domain: a red task-less request waits as inherited, admission of a person's repeat
 - [ ] The queue deploys task-less requests as their requester and carries a red one forward to the next head
-- [ ] Person's ask: App::staging_ask, POST /cd/{env}/staging and the page's plain deploy routed to it
+- [ ] Person's ask: App::staging_ask and POST /cd/{env}/staging; the plain deploy's refusal names it
 - [ ] The Superagent's cd_deploy of staging waits on its panel and records the person's request
 - [ ] CD page: Deploy dev enabled for writers, staging waits in plain words, e2e
 - [ ] Docs, changes entry and the independent review of pull request 1
@@ -184,7 +186,8 @@ production authorization, not staging.
   anything stop stalling. Each scheduled request costs at most one full gate run on a revision
   that has none.
 - **The project's creator deploys a scheduled request.** A deploy needs a person whose write
-  access is checked. The creator is fixed and known. The newest landing's owner is the fallback.
+  access is checked. The creator is fixed and known. The fallback is the newest requester in the
+  queue: a person who works with staging now.
 - **The server decides the deploy control.** One function says whether "Deploy <env>" is
   enabled for a given access level, and both the page and `needs_you` use it. So guidance and
   the UI cannot disagree.
