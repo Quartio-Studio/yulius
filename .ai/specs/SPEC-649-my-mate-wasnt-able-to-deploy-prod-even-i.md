@@ -79,10 +79,10 @@ they created.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] The GitHub client grants a person a repository role, with its port and fakes
-- [ ] A project created in an organization makes its creator a repository admin; an invitation or refusal is audited and shown
-- [ ] Docs, ADR-0476 and the changes entry true to the fix
+- [x] Write the fix spec and the regression test that fails
+- [x] The GitHub client grants a person a repository role, with its port and fakes
+- [x] A project created in an organization makes its creator a repository admin; an invitation or refusal is audited and shown
+- [x] Docs, ADR-0476 and the changes entry true to the fix
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -118,4 +118,27 @@ they created.
 
 ## Evidence
 
-To be filled.
+- Reproduced on dev (`4299f0eac`, test only): `scripts/cargo nextest run -p yulius -E
+  'binary_id(yulius::main) & test(/^projects::the_creator_of_a_project/)'` failed with
+  `"access": String("write")` for the creator of `new-shop` (left: "write", right: "admin").
+- With the fix: `projects::` 36 of 36 passed (the regression test, the invitation and refusal
+  test, the creation test without its pre-grant, the personal account test asserting no grant);
+  `scripts/cargo nextest run -p yulius -p yulius-app --no-fail-fast`: 4223 passed, 26 skipped;
+  `scripts/cargo nextest run -p yulius-github --all-features`: 66 passed, including
+  `client::a_collaborator_is_added_or_invited_with_a_role` (AC-4).
+- e2e: `npx e2e run tests/home.e2e.ts` 5 of 5 passed, including "a created project its creator is
+  not admin of says why its production is not theirs yet" (CRA-003).
+- Mutation checks by hand: skipping the grant (`if false && is_org`) failed
+  `the_creator_of_a_project_is_its_admin_and_may_deploy_production`,
+  `create_from_template_pushes_a_validating_scaffold_with_rulesets` and
+  `an_invited_or_refused_creator_still_gets_the_project_and_the_reason`; dropping the "already
+  admin" check after a refusal failed the last one ("an organization owner is its admin
+  already"); removing the page's warning failed the e2e test. Each line restored.
+- `scripts/cargo clippy --locked -p yulius-github -p yulius-app -p yulius --all-targets
+  --all-features -- -D warnings`: clean. `scripts/dev quick`: passed.
+- Vidoc: `yulius security-scan` answered "Security scan disabled: Vidoc is turned off in Yulius,
+  for this project or the whole instance; nothing was scanned": not run, not passed.
+- Not testable here: GitHub's real answer to `PUT …/collaborators/{login}` for this organization
+  (the sandbox's installation token reaches only `Quartio-Studio/yulius`; GitHub documents 204 for
+  an organization member and 201 for an invitation). The mate's existing project keeps its GitHub
+  roles: an owner of the organization grants him admin there (Settings → Collaborators and teams).
