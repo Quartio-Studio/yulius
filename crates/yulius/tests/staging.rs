@@ -5041,3 +5041,35 @@ async fn a_needs_you_card_never_sends_its_owner_to_a_disabled_deploy() -> TestRe
     );
     Ok(())
 }
+
+/// Review round 1 of PR 3: a card may ask a person it names (`who`) to press a Deploy button
+/// that works for them, though not for the task's owner.
+#[tokio::test]
+async fn a_needs_you_card_may_ask_a_named_person_who_can_press_the_deploy() -> TestResult {
+    let toml = staging_toml().replace(
+        "[cd.prod]\nabout = \"nothing yet\"\n",
+        "[cd.prod]\ndeploy = \"true\"\nverify = \"true\"\nrollback = \"true\"\n\
+         migrations = \"none: the test app keeps no data\"\n",
+    );
+    assert!(toml.contains("[cd.prod]\ndeploy"), "{toml}");
+    let f = fixture(&toml).await?;
+    agent(&f, "t1").await?;
+    let card = |who: Value| {
+        let f = &f;
+        async move {
+            support::mcp_tool(
+                &f.h,
+                &token("t1"),
+                "needs_you",
+                json!({"action": "Press Deploy production on the CD page", "who": who}),
+            )
+            .await
+        }
+    };
+    let alone = card(json!([])).await?;
+    assert_eq!(alone["isError"], true, "{alone}");
+    assert!(alone.to_string().contains("an administrator of this project deploys it"));
+    let bob = card(json!(["bob"])).await?;
+    assert_eq!(bob["isError"], false, "{bob}");
+    Ok(())
+}
