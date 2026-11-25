@@ -1,11 +1,11 @@
 ---
 yulius-task: f044786c-a9a7-4102-9b19-9623a7bd41f3
-status: in-progress
+status: done
 ---
 
 # SPEC-652: Agents cannot write their harness's memory; every session starts with it read-only
 
-Status: in-progress
+Status: done
 Date: 2026-11-25
 Owner: Yulius task #636
 Scope authorization: task #636 (`/goal`, the owner's decision of 2026-11-25): "an agent that
@@ -135,7 +135,7 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - [x] Independent review of the guarantee approved
 - [x] The refusal sentence for edit tools, shell results and the Antigravity start
 - [x] The update's host check clears the stopgap's immutable flags
-- [ ] Independent review of the refusal messages and the stopgap clean-up approved
+- [x] Independent review of the refusal messages and the stopgap clean-up approved
 
 ## Acceptance criteria
 
