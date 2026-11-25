@@ -3940,7 +3940,10 @@ async fn a_persons_request_deploys_the_green_head_and_a_red_one_waits_for_the_ne
     let two = request(&f, second["id"].as_str().ok_or("id")?).await?;
     assert_eq!(two.state, StagingState::Inherited, "{two:?}");
     let note = two.note.clone().unwrap_or_default();
-    assert!(note.contains("waiting for green tests") && note.contains(&ci2), "{note}");
+    assert!(
+        note.contains("waiting for green tests") && note.contains(&ci2),
+        "{note}"
+    );
     let view = staging_view(&f).await?;
     assert_eq!(
         view["waiting"],
@@ -4041,17 +4044,30 @@ async fn the_superagents_staging_deploy_waits_on_the_panel_then_asks_the_queue()
     assert!(!f.h.app.superagent_production(&alices, "staging").await?);
 
     // Declined: nothing is recorded.
-    let declined = f.ask_release(&alices, CrossAction::Deploy, json!({"environment": "staging"}));
+    let declined = f.ask_release(
+        &alices,
+        CrossAction::Deploy,
+        json!({"environment": "staging"}),
+    );
     let card = f.panel(&f.alice, 1).await?.remove(0);
     assert_eq!(card["action"], "deploy", "{card}");
     assert_eq!(card["options"]["environment"], "staging", "{card}");
     alice_answers(&f, &card["id"], false).await??;
     let answer = declined.await??;
     assert_eq!(answer["outcome"], "declined", "{answer}");
-    assert!(staging_view(&f).await?["requests"].as_array().ok_or("requests")?.is_empty());
+    assert!(
+        staging_view(&f).await?["requests"]
+            .as_array()
+            .ok_or("requests")?
+            .is_empty()
+    );
 
     // Approved with the typed slug: the person's request, deployed once its gate passed.
-    let asking = f.ask_release(&alices, CrossAction::Deploy, json!({"environment": "staging"}));
+    let asking = f.ask_release(
+        &alices,
+        CrossAction::Deploy,
+        json!({"environment": "staging"}),
+    );
     let card = f.panel(&f.alice, 1).await?.remove(0);
     alice_answers(&f, &card["id"], true).await??;
     let answer = asking.await??;

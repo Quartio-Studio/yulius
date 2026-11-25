@@ -590,7 +590,11 @@ mod tests {
             task: None,
             ..req("p", "-", "aaa", StagingState::Inherited, 3)
         };
-        assert_eq!(follow_up(std::slice::from_ref(&waiting), 3), None, "the head is still red");
+        assert_eq!(
+            follow_up(std::slice::from_ref(&waiting), 3),
+            None,
+            "the head is still red"
+        );
         assert_eq!(
             follow_up(std::slice::from_ref(&waiting), 5).map(|f| f.id.as_str()),
             Some("p")
@@ -605,16 +609,28 @@ mod tests {
             Some("p"),
             "the newest waiting request is carried"
         );
-        for on_its_way in [StagingState::Testing, StagingState::Ready, StagingState::Deploying] {
+        for on_its_way in [
+            StagingState::Testing,
+            StagingState::Ready,
+            StagingState::Deploying,
+        ] {
             let task = req("t", "t1", "ccc", on_its_way, 5);
-            assert_eq!(follow_up(&[waiting.clone(), task], 5), None, "{on_its_way:?}");
+            assert_eq!(
+                follow_up(&[waiting.clone(), task], 5),
+                None,
+                "{on_its_way:?}"
+            );
         }
         let carried = Facts {
             id: "n".into(),
             position: Some(5),
             ..waiting.clone()
         };
-        assert_eq!(follow_up(&[waiting.clone(), carried], 5), None, "never twice");
+        assert_eq!(
+            follow_up(&[waiting.clone(), carried], 5),
+            None,
+            "never twice"
+        );
         let tasks_own = req("t", "t1", "aaa", StagingState::Inherited, 3);
         assert_eq!(follow_up(&[tasks_own], 5), None, "a task asks for itself");
         let off = Facts {

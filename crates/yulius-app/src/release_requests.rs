@@ -351,9 +351,7 @@ impl App {
                     .await
                     .is_ok_and(|cd| is_staging(&cd, &asked.environment))
                 {
-                    let request = self
-                        .cd_staging_ask(person, sid, &asked.environment)
-                        .await?;
+                    let request = self.cd_staging_ask(person, sid, &asked.environment).await?;
                     return Ok(json!({
                         "outcome": "approved",
                         "staging": record(&request)?,

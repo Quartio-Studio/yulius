@@ -1043,7 +1043,10 @@ async fn a_redeployed_release_keeps_its_barrier() -> TestResult {
 }
 
 /// Bob's (an administrator's) or alice's (a writer's) Superagent in `app`.
-pub(crate) fn superagent(user: &str, login: &str) -> BoxResult<yulius_app::coordination::ProjectCaller> {
+pub(crate) fn superagent(
+    user: &str,
+    login: &str,
+) -> BoxResult<yulius_app::coordination::ProjectCaller> {
     Ok(yulius_app::coordination::ProjectCaller {
         sandbox: yulius_domain::ids::SandboxId::parse("s1")?,
         user: yulius_domain::ids::UserId::parse(user)?,

@@ -1338,10 +1338,7 @@ impl App {
     }
 
     /// Who asked for `request` with write access now: its task's owner or the person.
-    async fn staging_asker(
-        &self,
-        request: &StagingRequestRecord,
-    ) -> AppResult<Option<UserRecord>> {
+    async fn staging_asker(&self, request: &StagingRequestRecord) -> AppResult<Option<UserRecord>> {
         if let Some(task) = &request.task_id {
             return match self.deps.store.task(task).await? {
                 Some(task) => self.staging_owner(&task).await,
@@ -1626,41 +1623,41 @@ impl App {
         request: &StagingRequestRecord,
     ) -> AppResult<yulius_contracts::api::cd::CdStagingRequest> {
         let store = &self.deps.store;
-            let task_number = match &request.task_id {
-                Some(task) => store.task(task).await?.map(|t| t.number),
-                None => None,
-            };
-            let asked_by = match &request.task_id {
-                Some(_) => None,
-                None if request.requested_by == SCHEDULE_REQUESTER => {
-                    Some("Yulius's schedule".to_owned())
-                }
-                None => match request
-                    .requested_by
-                    .strip_prefix(PERSON_REQUESTER)
-                    .and_then(|id| yulius_domain::ids::UserId::parse(id).ok())
-                {
-                    Some(id) => Some(
-                        store
-                            .user(&id)
-                            .await?
-                            .map_or_else(|| "a removed person".to_owned(), |u| u.label()),
-                    ),
-                    None => Some(request.requested_by.clone()),
-                },
-            };
-            Ok(yulius_contracts::api::cd::CdStagingRequest {
-                id: request.id.clone(),
-                task_number,
-                asked_by,
-                revision: request.revision.clone(),
-                state: request.state.as_str().to_owned(),
-                ci_run_id: request.ci_run_id.clone(),
-                cd_run_id: request.cd_run_id.clone(),
-                note: request.note.clone(),
-                waiting: staging_wait_text(request.state, &request.revision),
-                updated_at: crate::auth::rfc3339(request.updated_at),
-            })
+        let task_number = match &request.task_id {
+            Some(task) => store.task(task).await?.map(|t| t.number),
+            None => None,
+        };
+        let asked_by = match &request.task_id {
+            Some(_) => None,
+            None if request.requested_by == SCHEDULE_REQUESTER => {
+                Some("Yulius's schedule".to_owned())
+            }
+            None => match request
+                .requested_by
+                .strip_prefix(PERSON_REQUESTER)
+                .and_then(|id| yulius_domain::ids::UserId::parse(id).ok())
+            {
+                Some(id) => Some(
+                    store
+                        .user(&id)
+                        .await?
+                        .map_or_else(|| "a removed person".to_owned(), |u| u.label()),
+                ),
+                None => Some(request.requested_by.clone()),
+            },
+        };
+        Ok(yulius_contracts::api::cd::CdStagingRequest {
+            id: request.id.clone(),
+            task_number,
+            asked_by,
+            revision: request.revision.clone(),
+            state: request.state.as_str().to_owned(),
+            ci_run_id: request.ci_run_id.clone(),
+            cd_run_id: request.cd_run_id.clone(),
+            note: request.note.clone(),
+            waiting: staging_wait_text(request.state, &request.revision),
+            updated_at: crate::auth::rfc3339(request.updated_at),
+        })
     }
 
     /// `POST /api/sandboxes/{sid}/cd/{env}/staging` (write; SPEC-650 PST-001): the person's
@@ -1674,7 +1671,8 @@ impl App {
         sandbox_id: &str,
         environment: &str,
     ) -> AppResult<yulius_contracts::api::cd::CdStagingRequest> {
-        let sid = yulius_domain::ids::SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
+        let sid =
+            yulius_domain::ids::SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
         let (sandbox, _) = self.require_for(ctx, &sid, Action::Work).await?;
         let env = yulius_domain::cd::env_name(environment)
             .ok_or_else(|| AppError::Invalid(super::cd::UNKNOWN_ENV.into()))?;
