@@ -204,9 +204,18 @@ mod tests {
             "Never deploy production",
             "not defined",
             "empty",
+            // SPEC-654: a secret waiting for allowance is asked with the tool that shows the
+            // person an Allow button, not with a `needs_you` card.
+            "`secret_copy_to_env`",
+            "Allow button",
         ] {
             assert!(deploy.prompt.contains(wording), "{wording}");
         }
+        assert!(
+            !deploy.prompt.contains("allow on the Secrets page"),
+            "{}",
+            deploy.prompt
+        );
         Ok(())
     }
 

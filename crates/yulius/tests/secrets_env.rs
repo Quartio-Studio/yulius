@@ -740,7 +740,15 @@ async fn secrets_list_teaches_the_env_default() -> TestResult {
         support::tool_text(&support::mcp_tool(&w.h, TOKEN, "secrets_list", json!({})).await?);
     assert_eq!(listed["secrets"][0]["env_files"], "no", "{listed}");
     let advice = listed["how_to_use"].to_string();
-    for needle in [".env.example", "secret_copy_to_env", "git-ignored .env"] {
+    // SPEC-654 AAB-002: the same allowance is what dev-stage deploys need, asked with the tool.
+    for needle in [
+        ".env.example",
+        "secret_copy_to_env",
+        "git-ignored .env",
+        "Allow button",
+        "Dev-stage deploys",
+        "[cd.dev] secrets",
+    ] {
         assert!(advice.contains(needle), "{needle}: {advice}");
     }
     Ok(())
