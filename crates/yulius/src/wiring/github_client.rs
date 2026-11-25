@@ -8,12 +8,12 @@ use yulius_app::model::Secret;
 use yulius_app::ports::github::{
     BranchGuard, ChecksReport, ChecksSource, ChecksState, GhIssue, GhPull, GhRepo, GhUser,
     GhUserToken, GitHubAppConfig, GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess,
-    RulesetRequest, STATUS_PERMISSION_MISSING,
+    RoleGrant, RulesetRequest, STATUS_PERMISSION_MISSING,
 };
 use yulius_github::{
-    AppCredentials, CheckSource, ChecksSummary, CommitStatus, CreateRepo, GitHubClient,
-    GitHubConfig, GitHubError, MergeMethod, OwnerKind, PullFilter, PullRequest, PullState, Repo,
-    RulesetSpec, Secret as GhSecret, Url,
+    AppCredentials, CheckSource, ChecksSummary, CollaboratorAdded, CommitStatus, CreateRepo,
+    GitHubClient, GitHubConfig, GitHubError, MergeMethod, OwnerKind, PullFilter, PullRequest,
+    PullState, Repo, RulesetSpec, Secret as GhSecret, Url,
 };
 
 /// GitHub adapter with one cached client per App id (keeps installation tokens warm).
@@ -469,6 +469,24 @@ impl GitHubPort for GitHubAdapter {
             .await
             .map(|_| ())
             .map_err(map_err)
+    }
+
+    async fn grant_admin(
+        &self,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+        login: &str,
+    ) -> AppResult<RoleGrant> {
+        match self
+            .for_token(token)
+            .add_collaborator(&gh(token), owner, name, login, "admin")
+            .await
+            .map_err(map_err)?
+        {
+            CollaboratorAdded::Added => Ok(RoleGrant::Added),
+            CollaboratorAdded::Invited => Ok(RoleGrant::Invited),
+        }
     }
 
     fn app_manifest(&self, public_url: &str, owner_login: &str) -> serde_json::Value {

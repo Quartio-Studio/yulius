@@ -20,7 +20,7 @@ use yulius_app::model::{GitHubTokenRecord, Secret, UserRecord, WebSessionRecord}
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, ReferenceBundle};
 use yulius_app::ports::github::{
     BranchGuard, ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
-    GitHubPort, NewIssue, NewPull, RepoAccess, RulesetRequest,
+    GitHubPort, NewIssue, NewPull, RepoAccess, RoleGrant, RulesetRequest,
 };
 use yulius_app::ports::store::{InstanceStore, SessionStore, UserStore};
 use yulius_domain::ids::UserId;
@@ -587,6 +587,11 @@ pub struct RepoGitHub {
     pub sizes: Mutex<HashMap<String, u64>>,
     /// Asking which rules guard a branch fails with this error.
     pub fail_branch_guard: Mutex<Option<AppError>>,
+    /// Admin roles asked for: (repository, login, token).
+    pub grants: Mutex<Vec<(String, String, String)>>,
+    /// How GitHub answers a grant: `None` adds the person at once (a member of the organization),
+    /// as `Some(Ok(Added))` does; an invitation changes nothing yet.
+    pub grant_answer: Mutex<Option<AppResult<RoleGrant>>>,
 }
 
 impl RepoGitHub {
@@ -605,6 +610,18 @@ impl RepoGitHub {
     /// Recorded rulesets.
     pub fn rulesets(&self) -> Vec<(String, RulesetRequest, String)> {
         self.rulesets.lock().map(|r| r.clone()).unwrap_or_default()
+    }
+
+    /// Recorded admin grants: (repository, login, token).
+    pub fn grants(&self) -> Vec<(String, String, String)> {
+        self.grants.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// How GitHub answers the next grants (`None`: it adds the person).
+    pub fn answer_grants(&self, answer: Option<AppResult<RoleGrant>>) {
+        if let Ok(mut slot) = self.grant_answer.lock() {
+            *slot = answer;
+        }
     }
 }
 
@@ -781,6 +798,37 @@ impl GitHubPort for RepoGitHub {
             deletion_restricted: guarded,
         })
     }
+    async fn grant_admin(
+        &self,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+        login: &str,
+    ) -> AppResult<RoleGrant> {
+        let repo = format!("{owner}/{name}");
+        self.grants.lock().map_err(AppError::internal)?.push((
+            repo.clone(),
+            login.to_owned(),
+            token.expose().to_owned(),
+        ));
+        let answer = self
+            .grant_answer
+            .lock()
+            .map_err(AppError::internal)?
+            .clone()
+            .unwrap_or(Ok(RoleGrant::Added))?;
+        if answer == RoleGrant::Added {
+            let admin = GitHubPermissions {
+                admin: true,
+                maintain: true,
+                push: true,
+                triage: true,
+                pull: true,
+            };
+            self.base.set_perm(login, &repo, admin);
+        }
+        Ok(answer)
+    }
     async fn create_ruleset(
         &self,
         token: &Secret,
@@ -929,6 +977,8 @@ impl World {
             transferred: Mutex::new(HashMap::new()),
             sizes: Mutex::new(HashMap::new()),
             fail_branch_guard: Mutex::new(None),
+            grants: Mutex::new(Vec::new()),
+            grant_answer: Mutex::new(None),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(
