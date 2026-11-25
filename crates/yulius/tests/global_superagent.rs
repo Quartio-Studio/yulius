@@ -1105,6 +1105,17 @@ async fn a_contained_superagent_guards_its_memory_in_the_persons_home() -> TestR
     assert!(home_host.join(&memory).is_dir(), "made before the session");
     // The memory folder it reads is the one its guard binds (review round 1).
     assert_eq!(auto_memory_dir(&plan), Some(at(home.join(&memory))));
+    // Its hooks learn the read-only paths, to say why a write there fails (MEM-006).
+    let readonly = plan
+        .env
+        .iter()
+        .find(|(k, _)| k == "YULIUS_READONLY_PATHS")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    assert!(
+        readonly.lines().any(|l| l == at(home.join(&memory))),
+        "{readonly}"
+    );
     Ok(())
 }
 

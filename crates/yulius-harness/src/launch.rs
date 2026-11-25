@@ -683,6 +683,43 @@ fn memory_settings(
         .or_insert_with(|| Value::Object(Map::new()));
     if let Value::Object(env) = env {
         env.insert(MEMORY_PATH_OVERRIDE_ENV.into(), json!(memory));
+        // Claude Code's memory instructions say it from the start (MEM-006).
+        env.insert(
+            MEMORY_GUIDELINES_ENV.into(),
+            json!(yulius_contracts::hooks::MEMORY_READ_ONLY_SENTENCE),
+        );
+    }
+    Ok(())
+}
+
+/// Claude Code's variable whose text it adds to its memory instructions (2.1.332).
+pub const MEMORY_GUIDELINES_ENV: &str = "CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES";
+
+/// Adds `yulius hook claude MemoryGuard` before the edit tools and after `Bash` to the hooks of
+/// a Claude Code session whose memory is read-only (SPEC-652 MEM-006): a refused write is said
+/// why in one sentence.
+fn memory_guard_hooks(hooks: &mut Map<String, Value>, exe: &Path) -> Result<(), LaunchError> {
+    let command = hook_line(exe, "claude", yulius_contracts::hooks::MEMORY_GUARD_EVENT)?;
+    for (event, matcher) in [
+        (
+            "PreToolUse",
+            crate::guard_client::EDIT_TOOLS
+                .map(|(tool, _)| tool)
+                .join("|"),
+        ),
+        ("PostToolUse", "Bash".to_owned()),
+        // A command that fails runs these instead (2.1.332).
+        ("PostToolUseFailure", "Bash".to_owned()),
+    ] {
+        let entry = json!({ "matcher": matcher, "hooks": [{
+            "type": "command",
+            "command": command,
+            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+        }] });
+        match hooks.entry(event).or_insert_with(|| json!([])) {
+            Value::Array(entries) => entries.push(entry),
+            other => *other = json!([entry]),
+        }
     }
     Ok(())
 }
@@ -792,6 +829,9 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     }
     if let (Some(memory), Some(settings)) = (&request.claude_memory_dir, settings.as_object_mut()) {
         memory_settings(settings, memory, &config_dir, &request.worktree)?;
+        if let Some(Value::Object(hooks)) = settings.get_mut("hooks") {
+            memory_guard_hooks(hooks, &request.yulius_exe)?;
+        }
     }
 
     // Yulius's own tools go through `yulius mcp`, a stdio bridge to `${YULIUS_URL}/mcp` that
@@ -1022,6 +1062,16 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         json!([{ "matcher": "^Bash$", "hooks": [{
             "type": "command",
             "command": hook_command(request, "codex", "PreToolUse")?,
+            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+        }] }]),
+    );
+    // A shell result refused on its read-only instruction files or memories is said why
+    // (SPEC-652 MEM-006).
+    hooks.insert(
+        "PostToolUse".to_owned(),
+        json!([{ "matcher": ".*", "hooks": [{
+            "type": "command",
+            "command": hook_command(request, "codex", yulius_contracts::hooks::MEMORY_GUARD_EVENT)?,
             "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
         }] }]),
     );
@@ -1586,6 +1636,13 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
     }
     if let Some(memory) = &request.claude_memory_dir {
         memory_settings(&mut settings, memory, &request.config_dir, &request.cwd)?;
+        // A Superagent with tools (not the Global one) is said why a write fails (MEM-006).
+        if let (Some(exe), None) = (&request.redaction_exe, &request.only_yulius) {
+            let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
+            if let Value::Object(hooks) = hooks {
+                memory_guard_hooks(hooks, exe)?;
+            }
+        }
     }
     if !settings.is_empty() {
         argv.extend(["--settings".into(), Value::Object(settings).to_string()]);

@@ -20,9 +20,25 @@ use yulius_contracts::ptyhost::{GuardKind, GuardPath};
 use crate::error::{AppError, AppResult};
 
 /// The one sentence a refused write is explained with (SPEC-652 MEM-006).
-pub const READ_ONLY_SENTENCE: &str = "Yulius keeps this harness's memory and user-level \
-     instructions read-only (the owner's decision of 2026-11-25): put lasting knowledge in the \
-     repository through a pull request.";
+pub const READ_ONLY_SENTENCE: &str = yulius_contracts::hooks::MEMORY_READ_ONLY_SENTENCE;
+
+/// The run variable that tells the session's hooks its read-only paths (SPEC-652 MEM-006): the
+/// guard's read-only folders and files inside the namespace, one per line; `None` for a guard
+/// with none.
+#[must_use]
+pub fn readonly_paths_env(guard: &[GuardPath]) -> Option<(String, String)> {
+    let paths: Vec<&str> = guard
+        .iter()
+        .filter(|p| matches!(p.kind, GuardKind::Dir | GuardKind::File))
+        .map(|p| p.dest.as_str())
+        .collect();
+    (!paths.is_empty()).then(|| {
+        (
+            yulius_contracts::hooks::READONLY_PATHS_ENV.to_owned(),
+            paths.join("\n"),
+        )
+    })
+}
 
 /// Longest Claude Code key kept whole; a longer one is cut there and ends in a hash (2.1.332).
 const CLAUDE_KEY_MAX: usize = 200;

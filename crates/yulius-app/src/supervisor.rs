@@ -3452,6 +3452,12 @@ impl App {
         } else {
             Containment::None
         };
+        // Its hooks say why a write of its read-only paths fails (SPEC-652 MEM-006).
+        if let Containment::Bubblewrap { guard, .. } = &launch.containment
+            && let Some(var) = crate::memory_guard::readonly_paths_env(guard)
+        {
+            launch.env.push(var);
+        }
         // `gh` in the agent's shell acts as the task's owner, like its Git (F 2026-10-11).
         self.add_agent_gh(&mut launch)?;
         let earlier = store.attempts(&task.id).await?;

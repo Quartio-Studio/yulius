@@ -89,6 +89,12 @@ pub fn run_hook_with(
     env: &dyn Fn(&str) -> Option<String>,
     hold: HoldPolicy,
 ) -> i32 {
+    // Why a write of harness memory fails, said in the sandbox (SPEC-652 MEM-006).
+    if (harness == "claude" || harness == "codex")
+        && event == yulius_contracts::hooks::MEMORY_GUARD_EVENT
+    {
+        return crate::memory_hook::run(input, output, env);
+    }
     // Antigravity's hooks are translated to Claude Code's and back (SPEC-505 AGY-006).
     if harness == "antigravity" {
         return crate::antigravity_hooks::run(event, input, output, env, hold);
