@@ -1,6 +1,6 @@
 ---
 yulius-task: e0b4ff5b-4c92-4a3f-b6ad-06b153e65e77
-status: in-progress
+status: done
 ---
 
 # SPEC-653: Staging: the full gate judges the newest waiting revision first and skips revisions a green one contains
@@ -105,7 +105,7 @@ schedule's requests), ADR-0410, ADR-0411, ADR-0477.
 - [x] Gate history waits for a narrowing run before naming a repair owner
 - [x] SPEC-575, ADR-0480, architecture and changes updated
 - [x] Review round 1: findings fixed test-first
-- [ ] Independent review of the change approved
+- [x] Independent review of the change approved
 
 ## Acceptance criteria
 
@@ -162,3 +162,59 @@ schedule's requests), ADR-0410, ADR-0411, ADR-0477.
   did before (they never had runs), so the queue tells tasks no less than today.
 - ADR: [0480](../../docs/decisions/0480-the-full-gate-judges-the-newest-waiting-revision-first.md)
   (supersedes ADR-0411's "the full gate on exactly that commit" ordering).
+
+## Evidence
+
+Pull request #1763, reviewed in a fresh session by `yulius-reviewer` (Fable 5.2):
+
+- **Round 1 (`def3dc671`):** request changes. Two majors and four minors were fixed test-first in `b9a18bb2e`.
+  - A covered request had nothing to deploy it. Fixed by `stg::serves_green`.
+  - The `inherited` texts claimed a failure.
+  - Skipped jobs were counted as failures.
+  - A cancelled candidate under a red revision was not failed.
+  - Several tests were missing, and several texts were stale.
+  - Found while fixing: the judging window never read the floor below the lowest request.
+- **Round 2 (`e28e2e9b7`):** approve, with one minor. A round interrupted after the move left the request stranded. Fixed in `2e22fbac4`, which also lets a person's carry go first.
+- **Round 3 (`2e22fbac4`):** approve, no findings.
+
+Tests (each new integration test failed before its fix):
+
+- `scripts/cargo test -p yulius-domain --lib staging`: 17 passed. These include:
+  - `staging_gate`: covered, newest first, red without a new failure, narrowing of the oldest range first, the bisection bound and finding the breaking merge for k = 1..20;
+  - `morning::newest_first_reports_the_new_failures_one_run_after_their_merge`: runs only on `867dfe486`, `2adf189d8`, `d2bffda38`, `5d1294696` and `d40122574`, with no run on `0d26f0ad9` or `3346ca6a5`. `867dfe486` is reported at 05:52:18 and `5d1294696` at 06:51:36;
+  - `morning::the_old_order_reproduces_the_mornings_runs`: the old order's eight runs start within 2 minutes of the real 05:35 to 07:22 runs, and the reports come at about 06:21 and 07:21;
+  - `serves_green`.
+- `scripts/cargo nextest run -p yulius-domain -p yulius-app -p yulius --no-fail-fast` at `e28e2e9b7`: 4925 passed.
+- At `2e22fbac4`, the staging, CD, delivery and gate integration tests: 273 passed. This includes:
+  - `a_request_under_a_green_newer_revision_gets_no_run` (with a red head above and nobody asking for the green revision);
+  - `a_persons_request_under_a_green_newer_revision_says_so_and_is_included`;
+  - `the_newest_goes_first_and_a_new_failure_is_narrowed_to_its_merge`;
+  - `no_repair_owner_is_named_before_a_new_failure_is_narrowed`;
+  - `a_cancelled_candidate_fails_its_gate_under_a_red_revision`;
+  - `a_request_between_red_revisions_with_the_same_failure_gets_no_run`;
+  - `a_covered_request_left_by_an_interrupted_round_is_still_served`.
+- Unit tests in `gate_history`: `a_verdict_names_the_failures_attribution_reads` and `unresolved_ranges_name_the_red_revision_above_a_waiting_request`.
+- `scripts/dev quick` passed, and clippy with `-D warnings` and `cargo doc` with `-D warnings` were clean.
+
+Mutations checked by hand (each line undone, the tests failed, then restored):
+
+- Covered rule removed: `a_request_under_a_green_newer_revision_gets_no_run`, `narrowing_is_logarithmic_and_finds_the_breaking_merge` and `morning::newest_first…` fail.
+- Oldest instead of newest: `the_newest_goes_first_among_several` and `morning::newest_first…` fail.
+- New failure treated as inherited: four `staging_gate` tests fail.
+- Bisection from the oldest instead of the middle: `narrowing_is_logarithmic…` and `a_new_failure_narrows…` fail.
+- Cancel check skipped: `a_cancelled_candidate_fails_its_gate_under_a_red_revision` fails.
+- Floor read skipped: `a_request_between_red_revisions_with_the_same_failure_gets_no_run` fails.
+
+Security scan: disabled. Vidoc is switched off for this project in Yulius, so nothing was scanned.
+
+Not tested here:
+
+- The replay rebuilds 2026-11-25 from quartio-v2's first-parent merge times; its request times and verdicts are reconstructed from that morning's report, not read from records:
+  - each request is asked 30 s after its merge;
+  - the requests are the eight revisions that got runs that morning;
+  - one full run takes 15 minutes, with 30 s before the next start;
+  - `5d1294696` brings a failure of its own.
+
+  The quartio-v2 CI and staging records are not readable from this project.
+- No integration test reaches the 512-revision bound of the window.
+- The real effect on quartio-v2 shows after the instance is updated.
