@@ -1108,18 +1108,21 @@ impl App {
         if self.is_github_admin(user, owner, name).await {
             return (
                 format!(
-                    "GitHub refused to make {login} an admin of {repo} ({reason}); they are its \
+                    "GitHub did not make {login} an admin of {repo} ({reason}); they are its \
                      admin already"
                 ),
                 None,
             );
         }
-        if matches!(err, AppError::Upstream(_)) {
+        // A rate limit (`Capacity`) is a failure too, asked once.
+        if matches!(err, AppError::Upstream(_) | AppError::Capacity(_)) {
+            let tries = if attempt > 1 {
+                format!(" after {attempt} attempts")
+            } else {
+                String::new()
+            };
             (
-                format!(
-                    "GitHub could not make {login} an admin of {repo} after {GRANT_ATTEMPTS} \
-                     attempts: {reason}"
-                ),
+                format!("GitHub could not make {login} an admin of {repo}{tries}: {reason}"),
                 Some("failed"),
             )
         } else {

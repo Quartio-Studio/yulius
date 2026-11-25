@@ -121,6 +121,16 @@ fn map_err(err: GitHubError) -> AppError {
     }
 }
 
+/// [`map_refusal`] for a collaborator grant (#1749), which is asked again after `Upstream`: a
+/// rate limit becomes `Capacity`, waited out instead of asked into.
+fn map_grant(err: GitHubError) -> AppError {
+    let limited = matches!(err, GitHubError::RateLimited { .. });
+    match map_refusal(err) {
+        AppError::Upstream(text) if limited => AppError::Capacity(text),
+        other => other,
+    }
+}
+
 /// [`map_err`] for a write whose refusal must not read as a failure that may pass: GitHub's
 /// 4xx answers (a validation error, a missing permission) leave `Upstream`, which keeps a rate
 /// limit, a 5xx, a timeout, the network and an unreadable answer (SPEC-069 BPL-008).
@@ -482,7 +492,7 @@ impl GitHubPort for GitHubAdapter {
             .for_token(token)
             .add_collaborator(&gh(token), owner, name, login, "admin")
             .await
-            .map_err(map_refusal)?
+            .map_err(map_grant)?
         {
             CollaboratorAdded::Added => Ok(RoleGrant::Added),
             CollaboratorAdded::Invited => Ok(RoleGrant::Invited),

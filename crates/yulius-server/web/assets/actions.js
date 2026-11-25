@@ -1136,6 +1136,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
  * (`admin_grant`, ADR-0476), or null.
  */
 function adminGrantWarning(sandbox) {
+  if (!sandbox.admin_grant) return null;
   const owner = sandbox.repo.owner;
   const repo = `${owner}/${sandbox.repo.name}`;
   const ask = `ask an owner of ${owner} to make you its admin on GitHub to deploy its production`;
