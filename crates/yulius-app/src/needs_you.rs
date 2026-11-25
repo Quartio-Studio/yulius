@@ -255,6 +255,15 @@ impl App {
                 )));
             }
         };
+        self.refuse_a_disabled_deploy(
+            ctx,
+            &[
+                Some(action.as_str()),
+                happened.as_deref(),
+                problem.as_deref(),
+            ],
+        )
+        .await?;
         let who = self
             .named_people(&ctx.task, args.who.as_deref().unwrap_or_default())
             .await?;
@@ -303,6 +312,62 @@ impl App {
             "cause": cause,
             "next": next,
         }))
+    }
+
+    /// Refuses a card that sends the task's owner to a CD page Deploy button that is disabled
+    /// for them (SPEC-650 PST-007), read from the same decision the page renders
+    /// (`CdEnvironment.deploy_action` for the owner), with what works instead.
+    ///
+    /// # Errors
+    /// `Invalid` with the button, why it is disabled and what works.
+    async fn refuse_a_disabled_deploy(
+        &self,
+        ctx: &AgentContext,
+        texts: &[Option<&str>],
+    ) -> AppResult<()> {
+        let texts: Vec<&str> = texts.iter().flatten().copied().collect();
+        if !texts.iter().any(|t| t.contains("Deploy ")) {
+            return Ok(());
+        }
+        let Some(owner) = self.deps.store.user(&ctx.task.owner).await? else {
+            return Ok(());
+        };
+        let person = crate::auth::AuthContext {
+            user: owner.clone(),
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        // A page that cannot be read now leaves the card as it is.
+        let Ok(cd) = self
+            .cd_overview(&person, ctx.task.sandbox_id.as_str())
+            .await
+        else {
+            return Ok(());
+        };
+        for env in &cd.environments {
+            let button = env.deploy_action.label.trim_end_matches('…');
+            if env.deploy_action.enabled || !texts.iter().any(|t| names_button(t, button)) {
+                continue;
+            }
+            let works = if env.stage == "prod" {
+                "only an administrator of this project deploys it: say that one does (`who` names them), without asking the owner to press it".to_owned()
+            } else if env.state != "ready" {
+                format!(
+                    "[cd.{}] has nothing to deploy yet: its table in yulius.toml comes first",
+                    env.name
+                )
+            } else {
+                "a dev-stage environment is yours to deploy with cd_deploy (the merge-first staging target's asks its queue)".to_owned()
+            };
+            return Err(AppError::Invalid(format!(
+                "nothing was asked: this card tells {} to press {} on the CD page, which is unavailable to them ({}). Say instead what works: {works}",
+                owner.label(),
+                env.deploy_action.label,
+                env.deploy_action.why.as_deref().unwrap_or("disabled"),
+            )));
+        }
+        Ok(())
     }
 
     /// The logins `asked` names, cleaned (`@`, case, the owner and repeats dropped), each a person
@@ -673,8 +738,34 @@ impl App {
     }
 }
 
+/// Whether `text` names the button `label` ("Deploy dev"), not a longer word ("Deploy devices").
+fn names_button(text: &str, label: &str) -> bool {
+    text.match_indices(label).any(|(at, _)| {
+        text[at + label.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '-' || c == '_'))
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_button_is_named_by_its_whole_label() {
+        assert!(super::names_button(
+            "Press Deploy dev on the CD page",
+            "Deploy dev"
+        ));
+        assert!(super::names_button("press “Deploy dev”.", "Deploy dev"));
+        assert!(super::names_button("Deploy dev", "Deploy dev"));
+        assert!(!super::names_button("Deploy devices first", "Deploy dev"));
+        assert!(!super::names_button("Deploy dev-tools", "Deploy dev"));
+        assert!(
+            !super::names_button("deploy dev", "Deploy dev"),
+            "a button's own capital"
+        );
+    }
+
     use super::*;
 
     #[test]

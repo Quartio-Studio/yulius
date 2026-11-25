@@ -4930,3 +4930,68 @@ async fn a_project_without_a_merge_first_target_is_rechecked_hourly() -> TestRes
     assert!(reads()? > 0, "rechecked after an hour");
     Ok(())
 }
+
+/// SPEC-650 PST-007 (cards told people to "press Deploy dev on the CD page" while it was
+/// disabled): the CD page's Deploy buttons are decided by the server for their reader, and a
+/// `needs_you` card that sends the task's owner to one that is disabled for them is refused,
+/// naming what works; one that names a working button, or no button, is asked.
+#[tokio::test]
+async fn a_needs_you_card_never_sends_its_owner_to_a_disabled_deploy() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    // Alice, the task's owner, may write but not administer.
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let action = |name: &str| -> BoxResult<Value> {
+        Ok(overview["environments"]
+            .as_array()
+            .ok_or("environments")?
+            .iter()
+            .find(|env| env["name"] == name)
+            .ok_or("env")?["deploy_action"]
+            .clone())
+    };
+    assert_eq!(action("staging")?["label"], "Deploy staging");
+    assert_eq!(action("staging")?["enabled"], true);
+    assert_eq!(action("prod")?["label"], "Deploy production…");
+    assert_eq!(action("prod")?["enabled"], false);
+    assert_eq!(action("dev")?["why"], "Nothing to deploy yet");
+    let ask = |text: &'static str| {
+        let f = &f;
+        async move { support::mcp_tool(&f.h, &token("t1"), "needs_you", json!({"action": text})).await }
+    };
+    for (text, says) in [
+        (
+            "Press Deploy production… on the CD page",
+            "Only an administrator deploys production",
+        ),
+        (
+            "Click Deploy dev on the CD page to test it",
+            "Nothing to deploy yet",
+        ),
+    ] {
+        let refused = ask(text).await?;
+        assert_eq!(refused["isError"], true, "{text}: {refused}");
+        let said = refused.to_string();
+        assert!(
+            said.contains(says) && said.contains("alice") && said.contains("instead"),
+            "{text}: {said}"
+        );
+    }
+    {
+        use yulius_app::ports::store_ext::NeedsYouStore as _;
+        assert!(
+            f.h.store
+                .task_needs_you(&TaskId::parse("t1")?)
+                .await?
+                .is_none()
+        );
+    }
+    for text in [
+        "Press Deploy staging on the CD page to put the head on staging",
+        "Ask an administrator of this project to deploy production",
+    ] {
+        let asked = ask(text).await?;
+        assert_eq!(asked["isError"], false, "{text}: {asked}");
+    }
+    Ok(())
+}
