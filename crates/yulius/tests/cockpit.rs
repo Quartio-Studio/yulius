@@ -2385,16 +2385,30 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
     for value in [SECRET_VALUE, LITERAL_BEARER] {
         assert!(!mcp_text.contains(value), "a value in argv: {mcp_text}");
     }
-    // The redaction hook is the only hook; the wrapper runs Bash, hooks and stdio servers.
+    // The redaction hook comes first; besides it only the read-only memory's explanation runs
+    // (SPEC-652 MEM-006). The wrapper runs Bash, hooks and stdio servers.
     let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
     let hooks = settings["hooks"].as_object().ok_or("hooks")?;
-    assert_eq!(hooks.keys().collect::<Vec<_>>(), ["PostToolUse"]);
+    assert_eq!(
+        hooks.keys().collect::<Vec<_>>(),
+        ["PostToolUse", "PostToolUseFailure", "PreToolUse"]
+    );
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let hook = format!("'{}' hook claude PostToolUse", exe.display());
     assert_eq!(
         settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
         hook
     );
+    let memory_guard = format!("'{}' hook claude MemoryGuard", exe.display());
+    for (event, entries) in hooks {
+        for entry in entries.as_array().into_iter().flatten() {
+            let command = entry["hooks"][0]["command"].as_str().unwrap_or_default();
+            assert!(
+                command == hook || command == memory_guard,
+                "{event}: {command}"
+            );
+        }
+    }
     // One program, as Claude Code spawns the prefix itself for a stdio MCP server (SPEC-358).
     let prefix = PathBuf::from(std::fs::read_to_string(config.join("launch-shell-prefix"))?);
     assert!(

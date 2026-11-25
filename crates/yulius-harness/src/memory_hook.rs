@@ -3,7 +3,7 @@
 //! lasting knowledge goes. The namespace refuses the write whatever this says; this only explains
 //! it. It never asks Yulius, and a failure lets the agent go on.
 //!
-//! - `PreToolUse` of an edit tool ([`EDIT_TOOLS`]) on a read-only path: denied with the sentence,
+//! - `PreToolUse` of an edit tool (`yulius_contracts::hooks::EDIT_TOOLS`) on a read-only path: denied with the sentence,
 //!   before the tool runs.
 //! - `PostToolUse` or `PostToolUseFailure` (a failed tool, Claude Code 2.1.332) whose result says
 //!   "Read-only file system" or "Device or resource busy" and names a read-only path (in the

@@ -886,6 +886,12 @@ place:
 | A person's Superagent | `<data>/users/<user>/home/.claude/…` (the same three) | | |
 | Global Superagent | `<data>/users/<user>/superagent/.claude/…` | | |
 
+A write refused there is explained to the agent in one sentence (Yulius keeps the harness's
+memory and user-level instructions read-only; lasting knowledge goes into the repository through
+a pull request): Claude Code's edit tools are denied with it and a failed shell command gets it,
+through `yulius hook claude MemoryGuard`, Codex's tool results through `yulius hook codex
+MemoryGuard`, and an Antigravity session hears it at its start.
+
 `<key>` is the sandbox repository's path (`<data>/sandboxes/<id>/repo`, the key of every task and
 Superagent session of the sandbox) with every character outside `a-z`, `A-Z`, `0-9` written as
 `-` (for example `-var-lib-yulius-sandboxes-<id>-repo`). A protected path that is a symbolic link
@@ -3150,6 +3156,15 @@ a minute old and systemd says its service ended; the move is continued or aborte
 with the command.
 
 ### Notes for specific upgrades
+
+- Upgrading to read-only harness memory (SPEC-652, ADR-0479, 2026-11-25). Nothing to do by hand.
+  Sessions started after the update see their harness's memory and user instructions read-only.
+  The update helper's host check (root) then clears the immutable flag that the stopgap of
+  2026-11-25 set on `sandboxes/*/home/.claude/projects/*/memory` and
+  `users/*/home/.claude/projects/*/memory` (its line "memory stopgap"), so a removed sandbox's
+  purge and a person's hand edits work again. The first line of each `MEMORY.md` and the
+  `permissions.deny` rules in the homes' `settings.json` are left as they are: they do no harm,
+  and the owner may remove them.
 
 - Upgrading to fixed redaction fingerprints (SPEC-483, ADR-0313, 2026-11-13). Nothing to do
   before the update. Sessions that are running across it keep the wrapper they started with (a

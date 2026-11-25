@@ -152,7 +152,29 @@ pub trait Host {
     /// # Errors
     /// Why it did not start.
     fn run(&mut self, cmd: &Cmd) -> Result<Out, String>;
+    /// Names of the folders in a directory, links not followed (empty when unreadable).
+    fn dirs(&self, _dir: &Path) -> Vec<String> {
+        Vec::new()
+    }
+    /// Whether a path (not followed when a link) has the immutable flag; `None` when that
+    /// cannot be read.
+    fn immutable(&self, _path: &Path) -> Option<bool> {
+        None
+    }
+    /// Clears a path's immutable flag.
+    ///
+    /// # Errors
+    /// Why not.
+    fn clear_immutable(&mut self, _path: &Path) -> Result<(), String> {
+        Err("not supported here".into())
+    }
 }
+
+/// The line of the stopgap's immutable memory folders (SPEC-652 MEM-009).
+pub const STOPGAP: &str = "memory stopgap";
+
+/// Most paths of memory folders the stopgap line looks at.
+const STOPGAP_MAX_PATHS: usize = 100_000;
 
 /// Options of a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -544,6 +566,7 @@ impl<'a> Run<'a> {
     }
 
     fn instance_part(&mut self) {
+        self.memory_stopgap();
         self.service_unit();
         // Before the sessions unit: its adopt unit runs this binary as root (SPEC-458 HST-003).
         self.binary();
@@ -559,6 +582,88 @@ impl<'a> Run<'a> {
             self.contained_doctor();
             self.smoke(docker_ok);
         }
+    }
+
+    /// Only the stopgap's line (tests).
+    #[cfg(test)]
+    pub(crate) fn stopgap(mut self) -> Vec<HostLine> {
+        self.memory_stopgap();
+        self.lines
+    }
+
+    /// The memory folders of the homes of `<data>/sandboxes/*` and `<data>/users/*`
+    /// (`home/.claude/projects/*/memory`) with every folder and file in them, links not followed.
+    fn memory_paths(&self) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for group in ["sandboxes", "users"] {
+            let root = self.opts.data_dir.join(group);
+            for owner in self.host.dirs(&root) {
+                let projects = root.join(owner).join("home/.claude/projects");
+                for project in self.host.dirs(&projects) {
+                    let memory = projects.join(project).join("memory");
+                    let mut pending = vec![memory];
+                    while let Some(dir) = pending.pop() {
+                        if found.len() >= STOPGAP_MAX_PATHS {
+                            return found;
+                        }
+                        let subdirs = self.host.dirs(&dir);
+                        let is_dir = !subdirs.is_empty()
+                            || self.host.stat(&dir).is_some()
+                            || self.host.immutable(&dir) == Some(true);
+                        if !is_dir {
+                            continue;
+                        }
+                        for name in self.host.list(&dir) {
+                            if !subdirs.contains(&name) {
+                                found.push(dir.join(name));
+                            }
+                        }
+                        pending.extend(subdirs.iter().map(|name| dir.join(name)));
+                        found.push(dir);
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// SPEC-652 MEM-009: the immutable flag the stopgap of 2026-11-25 set on harness memory
+    /// folders (`chattr -R +i`) is cleared, since every session sees them read-only now and the
+    /// flag only stops a removed sandbox's purge and a person's hand edits. A root run (the setup,
+    /// the update helper's re-check) can; a flag that cannot be cleared fails the line.
+    fn memory_stopgap(&mut self) {
+        let flagged: Vec<PathBuf> = self
+            .memory_paths()
+            .into_iter()
+            .filter(|path| self.host.immutable(path) == Some(true))
+            .collect();
+        if flagged.is_empty() {
+            return self.ok(STOPGAP, "no harness memory folder is immutable");
+        }
+        let folders = flagged
+            .iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == "memory"))
+            .count();
+        let what = format!(
+            "the immutable flag of {} paths in {folders} memory folders (the stopgap of \
+             2026-11-25; every session sees memory read-only, ADR-0479)",
+            flagged.len()
+        );
+        if !self.may(true) {
+            return self.changed(STOPGAP, "", &format!("clear {what}"));
+        }
+        for path in &flagged {
+            if let Err(why) = self.host.clear_immutable(path) {
+                return self.failed(
+                    STOPGAP,
+                    format!(
+                        "cannot clear the immutable flag of {}: {why}",
+                        path.display()
+                    ),
+                );
+            }
+        }
+        self.changed(STOPGAP, &format!("cleared {what}"), "");
     }
 
     /// Only the service user and its subordinate ids, for `yulius instance import` (SPEC-329

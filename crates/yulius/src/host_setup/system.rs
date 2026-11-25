@@ -60,6 +60,49 @@ impl Host for RealHost {
         names
     }
 
+    fn dirs(&self, dir: &Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            // The entry's own type: a link to a folder is not one.
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn immutable(&self, path: &Path) -> Option<bool> {
+        #[cfg(target_os = "linux")]
+        {
+            let file = open_flags_target(path).ok()?;
+            let flags = rustix::fs::ioctl_getflags(&file).ok()?;
+            Some(flags.contains(rustix::fs::IFlags::IMMUTABLE))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = path;
+            None
+        }
+    }
+
+    fn clear_immutable(&mut self, path: &Path) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let file = open_flags_target(path).map_err(|e| e.to_string())?;
+            let flags = rustix::fs::ioctl_getflags(&file).map_err(|e| e.to_string())?;
+            rustix::fs::ioctl_setflags(&file, flags - rustix::fs::IFlags::IMMUTABLE)
+                .map_err(|e| e.to_string())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = path;
+            Err("not supported here".into())
+        }
+    }
+
     fn stat(&self, path: &Path) -> Option<(u32, u32)> {
         std::fs::symlink_metadata(path)
             .ok()
@@ -194,4 +237,15 @@ mod tests {
         assert!(!why.contains("/proc"), "{why}");
         Ok(())
     }
+}
+
+/// `path` opened to read or change its inode flags: read-only, without following a link and
+/// without waiting on a FIFO (a link or a FIFO has no flags to clear).
+#[cfg(target_os = "linux")]
+fn open_flags_target(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
+        .open(path)
 }

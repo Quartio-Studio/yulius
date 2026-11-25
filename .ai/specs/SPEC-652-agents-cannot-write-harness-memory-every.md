@@ -133,7 +133,7 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - [x] Joined runs and the Docker mask proven on a guest
 - [x] Independent review of the guarantee approved
 - [x] The refusal sentence for edit tools, shell results and the Antigravity start
-- [ ] The update's host check clears the stopgap's immutable flags
+- [x] The update's host check clears the stopgap's immutable flags
 - [ ] Independent review of the refusal messages and the stopgap clean-up approved
 
 ## Acceptance criteria
@@ -274,6 +274,22 @@ clean-up, MEM-006 and MEM-009, follow in the second).
   - `scripts/cargo nextest run` on the five library crates: 1447 passed; `-p yulius` outside the
     main binary plus its files `memory_guard`, `global_superagent`, `playground`, `cockpit`,
     `local_ci`, `watches`: 1018 passed.
+- Second pull request (MEM-006, MEM-009):
+  - Real CLI, Claude Code 2.1.332 against a scripted stub API with the `MemoryGuard` hooks and
+    `YULIUS_READONLY_PATHS`: a `Write` of a new file in the guarded folder came back as
+    "PreToolUse:Write hook error: Yulius keeps this harness's memory and user-level instructions
+    read-only (…): put lasting knowledge in the repository through a pull request." and no file
+    was made; a `Bash` write to a read-only mount came back "Read-only file system" with
+    "PostToolUseFailure:Bash hook additional context: Yulius keeps …". Found on the way: a failed
+    command runs `PostToolUseFailure`, not `PostToolUse` (both are registered), and an existing
+    file is refused by Claude Code's own "read it first" before any hook.
+  - Codex 0.170.0: its `PostToolUse` schema (in the binary) has `tool_name`, `cwd` and
+    `hookSpecificOutput.additionalContext`; no live Codex session was run (no account here).
+  - Real host, Ubuntu 26.04 guest as root: two memory folders (one with a sub-folder) under
+    `chattr -R +i`; `rm -rf` of the sandbox failed ("Operation not permitted"); `yulius host check`
+    said "changed memory stopgap cleared the immutable flag of 8 paths in 2 memory folders";
+    `lsattr` showed no `i`; a second check said "ok … no harness memory folder is immutable";
+    `rm -rf` then removed the sandbox.
 - `scripts/cargo clippy … --all-targets -D warnings` on the touched crates, `scripts/dev macos`,
   `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` on the touched crates and `scripts/dev quick`:
   clean.
