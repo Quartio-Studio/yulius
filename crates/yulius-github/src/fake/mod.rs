@@ -250,6 +250,8 @@ struct FakeRepo {
     rulesets: Vec<Value>,
     labels: BTreeSet<String>,
     issues: Vec<Value>,
+    /// Pending invitations to collaborate: login → role.
+    invitations: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +283,8 @@ struct FakeState {
     /// App permissions the App does not have (`checks`, `statuses`, `actions`): their
     /// endpoints answer 403 "Resource not accessible by integration" to every token.
     withheld: HashSet<String>,
+    /// Members of organizations: (organization, login), both lowercase.
+    org_members: HashSet<(String, String)>,
     faults: Vec<FakeFault>,
     requests: VecDeque<RecordedRequest>,
 }
@@ -353,6 +357,7 @@ impl FakeGitHub {
             narrowed_tokens: HashMap::new(),
             repos: HashMap::new(),
             withheld: HashSet::new(),
+            org_members: HashSet::new(),
             faults: Vec::new(),
             requests: VecDeque::new(),
         }));
@@ -552,6 +557,24 @@ impl FakeGitHub {
             repo.permissions
                 .insert(login.to_ascii_lowercase(), permissions);
         }
+    }
+
+    /// Makes `login` a member of the organization `org`: GitHub adds a member as a repository's
+    /// collaborator at once instead of inviting them.
+    pub fn add_org_member(&self, org: &str, login: &str) {
+        lock(&self.state)
+            .org_members
+            .insert((org.to_ascii_lowercase(), login.to_ascii_lowercase()));
+    }
+
+    /// Pending invitations to collaborate on a repository: (login, role).
+    #[must_use]
+    pub fn invitations(&self, owner: &str, repo: &str) -> Vec<(String, String)> {
+        lock(&self.state)
+            .repos
+            .get(&key(owner, repo))
+            .map(|r| r.invitations.clone().into_iter().collect())
+            .unwrap_or_default()
     }
 
     /// Adds a commit with `parents` and returns its generated id.
@@ -1428,7 +1451,9 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
     } = *request;
     let need = match (method.as_str(), tail) {
         ("GET", _) => Need::Read,
-        ("POST", ["rulesets"]) | ("PUT" | "DELETE", ["rulesets", _]) => Need::Admin,
+        ("POST", ["rulesets"])
+        | ("PUT" | "DELETE", ["rulesets", _])
+        | ("PUT", ["collaborators", _]) => Need::Admin,
         _ => Need::Write,
     };
     let permissions = match authorize(state, identity, repo, need) {
@@ -1460,6 +1485,12 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
     }
     match (method.as_str(), tail) {
         ("GET", []) => reply(200, repo_json(state, repo, permissions)),
+        ("PUT", ["collaborators", login]) => {
+            if !state.users.contains_key(&login.to_ascii_lowercase()) {
+                return error(404, "Not Found");
+            }
+            add_collaborator(&state.org_members, &mut state.next_id, repo, login, body)
+        }
         ("POST", ["rulesets"]) => {
             let id = FakeGitHub::next_id(state);
             let mut stored = body.clone();
@@ -1844,6 +1875,63 @@ const RULE_VIOLATION: &str =
 
 /// The repository admin role, as rulesets name it among bypass actors.
 const ADMIN_ROLE_ID: u64 = 5;
+
+/// `PUT /repos/{owner}/{repo}/collaborators/{login}`: a member of the owning organization or a
+/// collaborator gets the role at once (204); anyone else is invited (201).
+fn add_collaborator(
+    members: &HashSet<(String, String)>,
+    next_id: &mut u64,
+    repo: &mut FakeRepo,
+    login: &str,
+    body: &Value,
+) -> Response {
+    let role = body["permission"].as_str().unwrap_or("push");
+    let permissions = match role {
+        "admin" => GitHubPermissions {
+            admin: true,
+            maintain: true,
+            push: true,
+            triage: true,
+            pull: true,
+        },
+        "maintain" => GitHubPermissions {
+            maintain: true,
+            push: true,
+            triage: true,
+            pull: true,
+            ..GitHubPermissions::default()
+        },
+        "push" => GitHubPermissions {
+            push: true,
+            triage: true,
+            pull: true,
+            ..GitHubPermissions::default()
+        },
+        "triage" => GitHubPermissions {
+            triage: true,
+            pull: true,
+            ..GitHubPermissions::default()
+        },
+        "pull" => GitHubPermissions {
+            pull: true,
+            ..GitHubPermissions::default()
+        },
+        _ => return error(422, "Validation Failed"),
+    };
+    let login = login.to_ascii_lowercase();
+    let member = members.contains(&(repo.owner.to_ascii_lowercase(), login.clone()));
+    if member || repo.permissions.contains_key(&login) {
+        repo.permissions.insert(login, permissions);
+        return no_content();
+    }
+    *next_id += 1;
+    let id = *next_id;
+    repo.invitations.insert(login.clone(), role.to_owned());
+    reply(
+        201,
+        json!({"id": id, "invitee": {"login": login}, "permissions": role}),
+    )
+}
 
 /// An empty 204 answer.
 fn no_content() -> Response {

@@ -1199,7 +1199,10 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
   const sandbox = {
     id: `sb_${db.nextId}`, slug: repoName.toLowerCase(), name: repoName,
     repo: { owner: 'Quartio-Studio', name: repoName, url: `https://github.com/Quartio-Studio/${repoName}` },
-    access: 'admin', default_branch: 'main',
+    // #1749: the server makes a project's creator its admin on GitHub; `createGrant` (`invited`,
+    // `refused`, `failed`) stands in for a grant that left them what the organization gives.
+    access: body.mode === 'create' && db.createGrant ? 'write' : 'admin', default_branch: 'main',
+    ...(body.mode === 'create' && db.createGrant ? { admin_grant: db.createGrant } : {}),
     // SPEC-338 VOF-004: added switched off when the person unchecked Vidoc.
     profile: { ...clone(PRESETS.standard), vidoc: body.vidoc !== false },
     // Like the server, a project added switched off is audited as its first change.

@@ -560,6 +560,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0474 -->
 - [0475](0475-browser-fill-secret-types-real-key-presses.md): `browser_fill_secret` types real key presses like `browser_type` (a secret reaches a terminal); a tab or control character is refused before typing; supersedes the secret part of 0471 (SPEC-648, #1740)
 <!-- ADR 0475 -->
+- [0476](0476-the-creator-of-a-project-is-made-its-admin-on-github.md): Creating a project in an organization gives its creator the `admin` role on the new GitHub repository (installation token, `PUT …/collaborators/{login}`, to the login their own token names for their account), as creating it on GitHub would; failures are asked again, every outcome is audited as `sandbox.creator_admin`, and an invitation, refusal or failure keeps the project and the answer's `admin_grant` tells the page (SPEC-649, #1749)
 <!-- ADR 0476 -->
 - [0477](0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md): A person (CD page, or their Superagent after the panel's confirmation) and a per-project schedule (`serve_every_minutes`, `serve_after_merges`) ask merge-first staging for the gated integration head; a red head waits for the next green one; the server decides each deploy control (SPEC-650, task #634)
 <!-- ADR 0477 -->

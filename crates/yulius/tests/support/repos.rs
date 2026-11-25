@@ -2,7 +2,7 @@
 //! local bare repositories standing in for GitHub remotes, a GitHub fake extension for
 //! installation repositories, repository creation and rulesets, and a harness built on both.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
@@ -20,7 +20,7 @@ use yulius_app::model::{GitHubTokenRecord, Secret, UserRecord, WebSessionRecord}
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, ReferenceBundle};
 use yulius_app::ports::github::{
     BranchGuard, ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
-    GitHubPort, NewIssue, NewPull, RepoAccess, RulesetRequest,
+    GitHubPort, NewIssue, NewPull, RepoAccess, RoleGrant, RulesetRequest,
 };
 use yulius_app::ports::store::{InstanceStore, SessionStore, UserStore};
 use yulius_domain::ids::UserId;
@@ -587,6 +587,14 @@ pub struct RepoGitHub {
     pub sizes: Mutex<HashMap<String, u64>>,
     /// Asking which rules guard a branch fails with this error.
     pub fail_branch_guard: Mutex<Option<AppError>>,
+    /// Admin roles asked for: (repository, login, token).
+    pub grants: Mutex<Vec<(String, String, String)>>,
+    /// GitHub's next answers to grants, in order; with none left it adds the person at once (a
+    /// member of the organization). An invitation changes nothing yet.
+    pub grant_answers: Mutex<VecDeque<AppResult<RoleGrant>>>,
+    /// The GitHub account a person's token names now (token → account), when it is not the one
+    /// they signed in as: a renamed account, or a login someone else took.
+    pub accounts: Mutex<HashMap<String, GhUser>>,
 }
 
 impl RepoGitHub {
@@ -605,6 +613,33 @@ impl RepoGitHub {
     /// Recorded rulesets.
     pub fn rulesets(&self) -> Vec<(String, RulesetRequest, String)> {
         self.rulesets.lock().map(|r| r.clone()).unwrap_or_default()
+    }
+
+    /// Recorded admin grants: (repository, login, token).
+    pub fn grants(&self) -> Vec<(String, String, String)> {
+        self.grants.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// GitHub's next answers to grants, in order (then it adds the person).
+    pub fn answer_grants(&self, answers: Vec<AppResult<RoleGrant>>) {
+        if let Ok(mut queue) = self.grant_answers.lock() {
+            queue.extend(answers);
+        }
+    }
+
+    /// The GitHub account `token` names from now on.
+    pub fn token_names(&self, token: &str, id: u64, login: &str) {
+        if let Ok(mut accounts) = self.accounts.lock() {
+            accounts.insert(
+                token.to_owned(),
+                GhUser {
+                    id,
+                    login: login.to_owned(),
+                    name: None,
+                    avatar_url: None,
+                },
+            );
+        }
     }
 }
 
@@ -648,7 +683,16 @@ impl GitHubPort for RepoGitHub {
         self.base.refresh_token(app, refresh).await
     }
     async fn current_user(&self, token: &Secret) -> AppResult<GhUser> {
-        self.base.current_user(token).await
+        let named = self
+            .accounts
+            .lock()
+            .map_err(AppError::internal)?
+            .get(token.expose())
+            .cloned();
+        match named {
+            Some(account) => Ok(account),
+            None => self.base.current_user(token).await,
+        }
     }
     /// An installation token sees the installation's repositories (with no person's
     /// permissions); a person's token goes to the fake.
@@ -780,6 +824,37 @@ impl GitHubPort for RepoGitHub {
             updates_restricted: guarded,
             deletion_restricted: guarded,
         })
+    }
+    async fn grant_admin(
+        &self,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+        login: &str,
+    ) -> AppResult<RoleGrant> {
+        let repo = format!("{owner}/{name}");
+        self.grants.lock().map_err(AppError::internal)?.push((
+            repo.clone(),
+            login.to_owned(),
+            token.expose().to_owned(),
+        ));
+        let answer = self
+            .grant_answers
+            .lock()
+            .map_err(AppError::internal)?
+            .pop_front()
+            .unwrap_or(Ok(RoleGrant::Added))?;
+        if answer == RoleGrant::Added {
+            let admin = GitHubPermissions {
+                admin: true,
+                maintain: true,
+                push: true,
+                triage: true,
+                pull: true,
+            };
+            self.base.set_perm(login, &repo, admin);
+        }
+        Ok(answer)
     }
     async fn create_ruleset(
         &self,
@@ -929,6 +1004,9 @@ impl World {
             transferred: Mutex::new(HashMap::new()),
             sizes: Mutex::new(HashMap::new()),
             fail_branch_guard: Mutex::new(None),
+            grants: Mutex::new(Vec::new()),
+            grant_answers: Mutex::new(VecDeque::new()),
+            accounts: Mutex::new(HashMap::new()),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(
@@ -1007,6 +1085,10 @@ impl World {
             disabled_at: None,
         };
         self.h.store.insert_user(&user).await?;
+        // GitHub knows the account its token names.
+        self.h
+            .github
+            .add_user(&format!("code-{login}"), github_id, login);
         let sealed = self
             .h
             .app

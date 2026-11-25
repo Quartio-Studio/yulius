@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use yulius_domain::time::Timestamp;
 use yulius_github::fake::{FakeActor, FakeCheckRun, FakeFault, FakeGitHub, FakeStatus};
 use yulius_github::{
-    AccessLevel, CheckSource, ChecksSummary, Clock, CommitStatus, CompareStatus, CreateRepo,
-    GitHubClient, GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewIssue, NewPull,
-    OwnerKind, PullFilter, PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret, SystemClock,
-    Url,
+    AccessLevel, CheckSource, ChecksSummary, Clock, CollaboratorAdded, CommitStatus, CompareStatus,
+    CreateRepo, GitHubClient, GitHubConfig, GitHubError, GitHubPermissions, MergeMethod, NewIssue,
+    NewPull, OwnerKind, PullFilter, PullState, RepoAccess, RetryPolicy, RulesetSpec, Secret,
+    SystemClock, Url,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -593,6 +593,100 @@ async fn a_refused_repository_creation_names_the_accepted_permissions() -> TestR
         return Err("expected a 403".into());
     };
     assert_eq!(accepted_permissions, None);
+    Ok(())
+}
+
+/// #1749: the App gives the person who created an organization's repository its admin role: a
+/// member of the organization has it at once (204), anyone else is invited (201), a login GitHub
+/// does not know is 404; a login or role GitHub would not take is refused before anything is sent,
+/// and a token that cannot administer the repository is refused by GitHub.
+#[tokio::test]
+async fn a_collaborator_is_added_or_invited_with_a_role() -> TestResult {
+    let (fake, client) = setup().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    let token = client.create_installation_token(installation).await?.token;
+    client
+        .create_org_repo(&token, "acme", &CreateRepo::private("new-app"))
+        .await?;
+    fake.add_user("bart", None);
+    fake.add_org_member("acme", "bart");
+    let bart = fake.issue_user_token("bart");
+    assert_eq!(
+        client.repo_permissions(&bart, "acme", "new-app").await?,
+        RepoAccess::NoAccess,
+        "the App created it: GitHub made nobody its admin"
+    );
+    assert_eq!(
+        client
+            .add_collaborator(&token, "acme", "new-app", "bart", "admin")
+            .await?,
+        CollaboratorAdded::Added
+    );
+    let request = fake
+        .requests()
+        .into_iter()
+        .find(|r| r.path == "/repos/acme/new-app/collaborators/bart")
+        .ok_or("no collaborator request")?;
+    assert_eq!(request.method, "PUT");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&request.body)?,
+        serde_json::json!({"permission": "admin"})
+    );
+    assert_eq!(
+        client
+            .repo_permissions(&bart, "acme", "new-app")
+            .await?
+            .level(),
+        AccessLevel::Admin
+    );
+
+    fake.add_user("guest", None);
+    assert_eq!(
+        client
+            .add_collaborator(&token, "acme", "new-app", "guest", "admin")
+            .await?,
+        CollaboratorAdded::Invited
+    );
+    assert_eq!(
+        fake.invitations("acme", "new-app"),
+        vec![("guest".to_owned(), "admin".to_owned())]
+    );
+    // A login GitHub does not know: 404, nobody is invited.
+    assert!(matches!(
+        client
+            .add_collaborator(&token, "acme", "new-app", "nobody-here", "admin")
+            .await,
+        Err(GitHubError::NotFound)
+    ));
+    assert_eq!(fake.invitations("acme", "new-app").len(), 1);
+
+    let sent = fake.requests().len();
+    for (login, role) in [("bad login", "admin"), ("bart", "owner"), ("-bart", "push")] {
+        assert!(
+            matches!(
+                client
+                    .add_collaborator(&token, "acme", "new-app", login, role)
+                    .await,
+                Err(GitHubError::InvalidInput { .. })
+            ),
+            "{login} {role}"
+        );
+    }
+    assert_eq!(
+        fake.requests().len(),
+        sent,
+        "nothing sent for invalid input"
+    );
+
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "new-app", "dev", writer());
+    let weak = fake.issue_user_token("dev");
+    assert!(matches!(
+        client
+            .add_collaborator(&weak, "acme", "new-app", "guest", "admin")
+            .await,
+        Err(GitHubError::Forbidden { .. })
+    ));
     Ok(())
 }
 

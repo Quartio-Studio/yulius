@@ -56,8 +56,9 @@ pub use reqwest::Url;
 pub use secret::Secret;
 pub use statuses::{CommitStatus, MAX_STATUS_CONTEXT_BYTES, MAX_STATUS_DESCRIPTION_CHARS};
 pub use types::{
-    BranchGuard, CheckSource, ChecksReport, ChecksSummary, CompareStatus, Comparison, CreateRepo,
-    GitHubUser, InstallationToken, IssueRef, MergeMethod, MergeOutcome, NewIssue, NewPull,
-    PullFilter, PullRequest, PullState, Repo, RepoAccess, RulesetSpec, UserToken,
+    BranchGuard, CheckSource, ChecksReport, ChecksSummary, CollaboratorAdded, CompareStatus,
+    Comparison, CreateRepo, GitHubUser, InstallationToken, IssueRef, MergeMethod, MergeOutcome,
+    NewIssue, NewPull, PullFilter, PullRequest, PullState, Repo, RepoAccess, RulesetSpec,
+    UserToken,
 };
 pub use yulius_domain::permission::{AccessLevel, GitHubPermissions};

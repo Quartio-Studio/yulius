@@ -6,7 +6,7 @@ use crate::client::GitHubClient;
 use crate::error::GitHubError;
 use crate::http::Call;
 use crate::secret::Secret;
-use crate::types::{BranchGuard, CreateRepo, Repo, RepoAccess, RulesetSpec};
+use crate::types::{BranchGuard, CollaboratorAdded, CreateRepo, Repo, RepoAccess, RulesetSpec};
 use crate::validate;
 use crate::wire::{WireBranchRule, WireId, WireRepo, WireRuleset};
 
@@ -43,6 +43,45 @@ impl GitHubClient {
             permissions: permissions.unwrap_or_default(),
             repo,
         })
+    }
+
+    /// Gives `login` the role `permission` (`pull`, `triage`, `push`, `maintain` or `admin`) on
+    /// `owner/repo` (App permission Administration: write). GitHub adds a member of the owning
+    /// organization or a collaborator at once (204) and invites anyone else (201).
+    ///
+    /// # Errors
+    /// [`GitHubError::InvalidInput`] for a login or role GitHub would not take, before anything
+    /// is sent; typed GitHub errors (a refusal by GitHub or by the organization's policy, 404
+    /// for a login GitHub does not know); [`GitHubError::Upstream`] for another 2xx status.
+    pub async fn add_collaborator(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        login: &str,
+        permission: &str,
+    ) -> Result<CollaboratorAdded, GitHubError> {
+        validate::owner(owner)?;
+        validate::repo_name(repo)?;
+        validate::owner(login)?;
+        if !matches!(
+            permission,
+            "pull" | "triage" | "push" | "maintain" | "admin"
+        ) {
+            return Err(GitHubError::InvalidInput {
+                what: "repository role",
+                reason: format!("{permission:?} is not pull, triage, push, maintain or admin"),
+            });
+        }
+        let url = self.api_url(&["repos", owner, repo, "collaborators", login])?;
+        let call = Call::new(Method::PUT, url, Some(token.expose()))
+            .json(serde_json::json!({ "permission": permission }));
+        let reply = self.send_ok(call).await?;
+        match reply.status {
+            204 => Ok(CollaboratorAdded::Added),
+            201 => Ok(CollaboratorAdded::Invited),
+            other => Err(GitHubError::Upstream(other)),
+        }
     }
 
     /// Creates a repository in organization `org` with an installation token.
