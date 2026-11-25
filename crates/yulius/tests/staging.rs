@@ -5367,3 +5367,36 @@ async fn a_request_between_red_revisions_with_the_same_failure_gets_no_run() -> 
     );
     Ok(())
 }
+
+/// SPEC-653 NWF-001 (review round 2): a round that moved a covered request to `inherited` and
+/// ended before it asked for the green revision (an error, a restart) is made good by a later
+/// round, although no request is testing any more.
+#[tokio::test]
+async fn a_covered_request_left_by_an_interrupted_round_is_still_served() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "older").await?;
+    let older = land(&f, "older", "older").await?;
+    let newer = f.push("dev", &[("newer", Some("newer"))])?;
+    let judging = gate(&f, &newer, RunState::Running).await?;
+    let asked = ask(&f, "older").await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &older).await?, None, "the lane is held");
+    // The interrupted round: covered, and nothing asked for the green revision.
+    finish(&f, &judging, RunState::Passed, &[]).await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE staging_requests SET state = 'inherited', \
+             note = 'the full gate passed on revision {}, which contains it' WHERE id = '{id}'",
+            &newer[..12]
+        ))
+        .await?;
+    for _ in 0..3 {
+        f.h.app.staging_advance(&sandbox, "staging").await?;
+    }
+    settle(&f).await?;
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&newer));
+    assert_eq!(request(&f, &id).await?.state, StagingState::Included);
+    Ok(())
+}

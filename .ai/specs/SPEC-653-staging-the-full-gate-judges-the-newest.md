@@ -56,9 +56,10 @@ schedule's requests), ADR-0410, ADR-0411, ADR-0477.
   verdict, if one exists, is not reported to its task.
   - When no request at or above the newest green revision is testing, ready or deploying,
     Yulius asks for that green revision itself (`stg::serves_green`, as the schedule's request),
-    so a covered request never waits for an unrelated later request. A green revision whose
-    request was already tried (deploy failed, cancelled) is not asked for again, as for the
-    schedule.
+    so a covered request does not wait for an unrelated later request, except when that green
+    revision was already tried (deploy failed, cancelled): it is not asked for again, as for the
+    schedule. A person's red request carried to the head (SPEC-650 PST-002) goes first. A later
+    round asks too when only inherited requests wait (a round interrupted after the move).
   - The CD page and `cd_status` say "Tests passed on a newer revision containing `<sha>`: it
     deploys with that revision" instead of a failure; the state's label reads "waiting for a
     verified revision".

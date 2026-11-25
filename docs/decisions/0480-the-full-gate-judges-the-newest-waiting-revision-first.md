@@ -84,3 +84,8 @@ again after a median of 97 minutes.
   usual case) it reports at its own verdict.
 - A request's own verdict that would have failed on a transient failure fixed below a later green
   revision is never seen. The green revision is what staging deploys.
+- A covered request depends on the deploy of the green revision containing it. If that deploy
+  fails, or a person cancels it, the request waits for a newer green revision (a task's, a
+  person's or the schedule's request), as an inherited request already did for a red one. When
+  Yulius itself asked for that revision, the failed deploy shows on the CD page, and no task's
+  session hears it.

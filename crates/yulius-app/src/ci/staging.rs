@@ -781,24 +781,6 @@ impl App {
             }
         }
         let (current, served) = self.staging_current(sandbox, &target, &head).await?;
-        // A green revision containing waiting requests deploys although nobody asked for it, unless
-        // a request at or above it is on its way (SPEC-653 NWF-001, review round 1 finding 1).
-        if let Some((green, at)) = green
-            && current.is_none_or(|served| at > served)
-        {
-            let facts: Vec<Facts> = pending.iter().map(|r| facts_of(r, &positions)).collect();
-            if stg::serves_green(&facts, at) {
-                let note = format!(
-                    "Yulius: the full gate passed on {}, which contains waiting requests",
-                    short(&green)
-                );
-                let asking = Asking::Yulius(note);
-                self.staging_record_task_less(sandbox, &target, &green, SCHEDULE_REQUESTER, asking)
-                    .await?;
-                // The recorded request kicks the next round, which judges and deploys it.
-                return Ok(());
-            }
-        }
         let (pending, positions) = if self
             .staging_carry_forward(sandbox, &target, (&head, current), &pending, &positions)
             .await?
@@ -811,6 +793,28 @@ impl App {
         } else {
             (pending, positions)
         };
+        // A green revision containing waiting requests deploys although nobody asked for it, unless
+        // a request at or above it is on its way (a person's carried one first) (SPEC-653 NWF-001, review round 1 finding 1).
+        if let Some((green, at)) = green
+            && current.is_none_or(|served| at > served)
+        {
+            let facts: Vec<Facts> = pending.iter().map(|r| facts_of(r, &positions)).collect();
+            if stg::serves_green(&facts, at) {
+                let note = format!(
+                    "Yulius: the full gate passed on {}, which contains waiting requests",
+                    short(&green)
+                );
+                let asking = Asking::Yulius(note);
+                // A recorded request kicks the next round, which judges and deploys it.
+                if self
+                    .staging_record_task_less(sandbox, &target, &green, SCHEDULE_REQUESTER, asking)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+            }
+        }
         let facts: Vec<Facts> = pending.iter().map(|r| facts_of(r, &positions)).collect();
         let pick = stg::pick(&facts, current);
         for id in &pick.included {
@@ -897,7 +901,14 @@ impl App {
             .collect();
         testing.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
         testing.truncate(MAX_PENDING);
-        let Some(lowest) = testing.iter().map(|(at, _)| *at).min() else {
+        // An inherited request alone still reads the window: the green revision containing it is
+        // asked for by a later round too (review round 2).
+        let inherited = pending
+            .iter()
+            .filter(|r| r.state == StagingState::Inherited);
+        let inherited =
+            inherited.filter_map(|r| positions.iter().find(|(sha, _)| sha == &r.revision)?.1);
+        let Some(lowest) = testing.iter().map(|(at, _)| *at).chain(inherited).min() else {
             return Ok(None);
         };
         // The window reaches below the lowest request down to a settled verdict: the floor its
