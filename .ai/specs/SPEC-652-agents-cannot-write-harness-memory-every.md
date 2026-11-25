@@ -131,7 +131,7 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - [x] Containers, CI jobs and script watches see the harness folders masked
 - [x] Memory key from the sandbox's repository; ancestors' instructions excluded; guard errors fail the start
 - [x] Joined runs and the Docker mask proven on a guest
-- [ ] Independent review of the guarantee approved
+- [x] Independent review of the guarantee approved
 - [ ] The refusal sentence for edit tools, shell results and the Antigravity start
 - [ ] The update's host check clears the stopgap's immutable flags
 - [ ] Independent review of the refusal messages and the stopgap clean-up approved
