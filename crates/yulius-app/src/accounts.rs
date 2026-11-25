@@ -712,10 +712,9 @@ impl App {
         let store = &self.deps.store;
         if let (Ok(Some(account)), Ok(live)) =
             (store.account(id).await, self.working_attempts().await)
+            && let Ok(view) = self.account_view_with_billing(&account, &live).await
         {
-            if let Ok(view) = self.account_view_with_billing(&account, &live).await {
-                self.publish_account(view);
-            }
+            self.publish_account(view);
         }
     }
 
