@@ -1853,6 +1853,35 @@ mod tests {
         );
     }
 
+    /// SPEC-654 AAB-001, AAB-002: a task that named an existing secret in `[cd.dev] secrets` asked
+    /// "allow it for [cd.dev] deploys" with `needs_you`, as its description told it, so the person
+    /// got a card without the Allow button `secret_copy_to_env` would have put on the Secrets page.
+    #[test]
+    fn needs_you_routes_a_secrets_allowance_to_the_tool_with_the_allow_button() {
+        let description = |name: &str| {
+            tool_descriptors()
+                .into_iter()
+                .find(|t| t.name == name)
+                .map(|t| t.description)
+                .unwrap_or_default()
+        };
+        let needs_you = description("needs_you");
+        assert!(!needs_you.contains("allow a secret"), "{needs_you}");
+        for named in [
+            "Allow button",
+            "secret_request_hosts",
+            "secret_copy_to_env",
+            "secret_request_copy",
+            "dev-stage deploys",
+        ] {
+            assert!(needs_you.contains(named), "`{named}`: {needs_you}");
+        }
+        let copy = description("secret_copy_to_env");
+        for named in ["dev-stage deploys", "[cd.", "Allow button"] {
+            assert!(copy.contains(named), "`{named}`: {copy}");
+        }
+    }
+
     /// SPEC-188 OSP-002: `task_create` names the supertask's examples as the start menu does.
     #[test]
     fn task_create_names_the_supertask_examples_of_the_start_menu() {
