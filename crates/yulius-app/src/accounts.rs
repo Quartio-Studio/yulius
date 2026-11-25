@@ -418,6 +418,7 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         in_use_by: in_use_count(&account.id, live),
         tokens_24h: None,
         tokens_7d: None,
+        billing: None,
         usage_read: None,
     }
 }
@@ -576,7 +577,7 @@ fn human_duration(d: Duration) -> String {
     }
 }
 
-fn actor(ctx: &AuthContext) -> String {
+pub(crate) fn actor(ctx: &AuthContext) -> String {
     ctx.user.label()
 }
 
@@ -697,7 +698,7 @@ impl App {
         self.config.data_dir.join("logins")
     }
 
-    fn publish_account(&self, view: AccountView) {
+    pub(crate) fn publish_account(&self, view: AccountView) {
         self.events.publish(
             None,
             true,
@@ -712,11 +713,13 @@ impl App {
         if let (Ok(Some(account)), Ok(live)) =
             (store.account(id).await, self.working_attempts().await)
         {
-            self.publish_account(account_view(&account, &live));
+            if let Ok(view) = self.account_view_with_billing(&account, &live).await {
+                self.publish_account(view);
+            }
         }
     }
 
-    async fn load_account(&self, id: &str) -> AppResult<AccountRecord> {
+    pub(crate) async fn load_account(&self, id: &str) -> AppResult<AccountRecord> {
         let id = AccountId::parse(id).map_err(|_| AppError::NotFound)?;
         self.deps
             .store
@@ -755,6 +758,7 @@ impl App {
         let day = store.account_tokens(now.plus_millis(-DAY_MS)).await?;
         let week = store.account_tokens(now.plus_millis(-7 * DAY_MS)).await?;
         let runs = store.token_runs(now.plus_millis(-7 * DAY_MS)).await?;
+        let mut billing = self.billing_views().await?;
         let find = |list: &[crate::model::AccountTokens], id: &str| {
             list.iter().find(|t| t.account_id == id).cloned()
         };
@@ -764,6 +768,7 @@ impl App {
             .iter()
             .map(|a| {
                 let mut view = account_view(a, &live);
+                view.billing = billing.remove(&a.id);
                 let cost = |days: i64| account_cost(&runs, &a.id, now.plus_millis(-days * DAY_MS));
                 view.tokens_24h = Some(TokenTotalsView {
                     cost_usd: cost(1),
@@ -818,7 +823,9 @@ impl App {
         };
         let usage_read = refreshed.map_err(|failure| AppError::Upstream(failure.message))?;
         let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
-        let mut view = account_view(&updated, &self.working_attempts().await?);
+        let mut view = self
+            .account_view_with_billing(&updated, &self.working_attempts().await?)
+            .await?;
         view.usage_read = Some(usage_read);
         let now = self.now();
         view.tokens_24h = Some(totals_view(
@@ -1521,7 +1528,9 @@ impl App {
         }
         self.capacity_changed();
         let account = store.account(id).await?.ok_or(AppError::NotFound)?;
-        let view = account_view(&account, &self.working_attempts().await?);
+        let view = self
+            .account_view_with_billing(&account, &self.working_attempts().await?)
+            .await?;
         self.publish_account(view.clone());
         let app = Arc::clone(self);
         let id = account.id.clone();
@@ -1579,7 +1588,9 @@ impl App {
             .account(&account.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let view = account_view(&updated, &self.working_attempts().await?);
+        let view = self
+            .account_view_with_billing(&updated, &self.working_attempts().await?)
+            .await?;
         self.publish_account(view.clone());
         Ok(view)
     }
@@ -1766,7 +1777,9 @@ impl App {
             )
             .await?;
         let account = self.load_account(account.id.as_str()).await?;
-        let view = account_view(&account, &self.working_attempts().await?);
+        let view = self
+            .account_view_with_billing(&account, &self.working_attempts().await?)
+            .await?;
         self.publish_account(view.clone());
         self.capacity_changed();
         Ok(AccountLoginStarted {
@@ -1798,7 +1811,9 @@ impl App {
             )
             .await?;
         Ok(AccountLoginStarted {
-            account: account_view(&account, &self.working_attempts().await?),
+            account: self
+                .account_view_with_billing(&account, &self.working_attempts().await?)
+                .await?,
             login_id: Some(session.id.clone()),
         })
     }

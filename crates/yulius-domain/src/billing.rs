@@ -207,12 +207,33 @@ mod tests {
     /// BIL-003: only `YYYY-MM-DD` calendar dates in 2000..=2100 and the two periods.
     #[test]
     fn only_real_dates_in_range_and_known_periods_make_a_cycle() {
-        for bad in ["2026-02-30", "24.11.2026", "2026-1-24", "2026-11-24 ", "+026-11-24", "2026-13-01", ""] {
-            assert_eq!(BillingCycle::parse(bad, "month"), Err(BillingError::Date), "{bad:?}");
+        for bad in [
+            "2026-02-30",
+            "24.11.2026",
+            "2026-1-24",
+            "2026-11-24 ",
+            "+026-11-24",
+            "2026-13-01",
+            "",
+        ] {
+            assert_eq!(
+                BillingCycle::parse(bad, "month"),
+                Err(BillingError::Date),
+                "{bad:?}"
+            );
         }
-        assert_eq!(BillingCycle::parse("1999-12-31", "month"), Err(BillingError::Year));
-        assert_eq!(BillingCycle::parse("2101-01-01", "year"), Err(BillingError::Year));
-        assert_eq!(BillingCycle::parse("2026-11-24", "week"), Err(BillingError::Period));
+        assert_eq!(
+            BillingCycle::parse("1999-12-31", "month"),
+            Err(BillingError::Year)
+        );
+        assert_eq!(
+            BillingCycle::parse("2101-01-01", "year"),
+            Err(BillingError::Year)
+        );
+        assert_eq!(
+            BillingCycle::parse("2026-11-24", "week"),
+            Err(BillingError::Period)
+        );
         assert!(BillingCycle::parse("2000-01-01", "month").is_ok());
         assert!(BillingCycle::parse("2100-12-31", "year").is_ok());
     }
