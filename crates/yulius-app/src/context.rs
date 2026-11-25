@@ -358,6 +358,8 @@ pub struct App {
     pub(crate) agent_cli: OnceLock<crate::claude_code::AgentCliServices>,
     /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
     pub(crate) terminal_scan_after: Mutex<HashMap<SandboxId, TaskId>>,
+    /// When each project's staging schedule was last checked (SPEC-650 PST-006), in ms.
+    pub(crate) staging_schedule_checked: Mutex<HashMap<SandboxId, i64>>,
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
     /// Local Git checks can outlive the page read that requested them.
     pub(crate) parked_git: Arc<tokio::sync::Semaphore>,
@@ -477,6 +479,7 @@ impl App {
             isolation: OnceLock::new(),
             agent_cli: OnceLock::new(),
             terminal_scan_after: Mutex::default(),
+            staging_schedule_checked: Mutex::default(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
             parked_git: Arc::new(tokio::sync::Semaphore::new(crate::sandboxes::PARKED_READS)),
             parked_git_app: app.clone(),

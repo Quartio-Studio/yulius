@@ -2624,10 +2624,16 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
                        verify = \"v\"\nrollback = \"r\"\nmigrations = \"none: stateless\"\n";
         let target = |extra: &str| -> Result<CdTarget, FormatError> {
             let cd = parse_yulius_toml_cd(&format!("[cd.dev]\n[cd.prod]\n{staging}{extra}"))?;
-            Ok(cd.target("staging").cloned().unwrap_or_else(|| CdTarget::new("x", CdStage::Dev)))
+            Ok(cd
+                .target("staging")
+                .cloned()
+                .unwrap_or_else(|| CdTarget::new("x", CdStage::Dev)))
         };
         let plain = target("")?;
-        assert_eq!((plain.serve_every_minutes, plain.serve_after_merges), (60, 5));
+        assert_eq!(
+            (plain.serve_every_minutes, plain.serve_after_merges),
+            (60, 5)
+        );
         let set = target("serve_every_minutes = 30\nserve_after_merges = 0\n")?;
         assert_eq!((set.serve_every_minutes, set.serve_after_merges), (30, 0));
         for bad in [

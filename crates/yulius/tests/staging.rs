@@ -4515,3 +4515,158 @@ async fn a_deleted_tasks_inherited_request_is_not_carried() -> TestResult {
     assert_eq!(at_head[0]["asked_by"], "alice", "{view}");
     Ok(())
 }
+
+/// The schedule of `[cd.staging]` (`staging_toml` with the two keys appended to its table).
+fn scheduled_toml(every_minutes: u32, after_merges: u32) -> String {
+    format!(
+        "{}serve_every_minutes = {every_minutes}\nserve_after_merges = {after_merges}\n",
+        staging_toml()
+    )
+}
+
+/// SPEC-650 PST-006 (the stall of 2026-11-24/25: a dozen merges, no task finished its plan):
+/// once the head is `serve_after_merges` merged revisions ahead of staging and nothing is on its
+/// way, Yulius asks for the head by itself; it deploys as the project's creator, once.
+#[tokio::test]
+async fn the_schedule_asks_for_the_head_after_the_configured_merges() -> TestResult {
+    let f = fixture(&scheduled_toml(0, 2)).await?;
+    let project = sandbox(&f).await?;
+    // Nothing served yet: the first green head is asked for at once.
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    let first = f.h.app.staging_schedule(&project).await?.ok_or("first")?;
+    assert_eq!(first.requested_by, "yulius:schedule");
+    assert_eq!(first.revision, r1);
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+    assert!(
+        f.h.app.staging_schedule(&project).await?.is_none(),
+        "it serves the head"
+    );
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    assert!(
+        f.h.app.staging_schedule(&project).await?.is_none(),
+        "one merge ahead"
+    );
+    let r3 = f.push("dev", &[("three.txt", Some("3"))])?;
+    gate(&f, &r3, RunState::Passed).await?;
+    let asked = f.h.app.staging_schedule(&project).await?.ok_or("asked")?;
+    assert_eq!(asked.revision, r3);
+    assert!(
+        asked
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("2 merged revisions")),
+        "{asked:?}"
+    );
+    assert!(
+        f.h.app.staging_schedule(&project).await?.is_none(),
+        "never a second while one is on its way"
+    );
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r3);
+    assert_eq!(
+        deploys_by(&f).await?,
+        [
+            (r1.clone(), "alice".to_owned()),
+            (r3.clone(), "alice".to_owned())
+        ]
+    );
+    let view = staging_view(&f).await?;
+    assert_eq!(view["requests"][0]["scheduled"], true, "{view}");
+    assert_eq!(view["requests"][0]["asked_by"], Value::Null, "{view}");
+    Ok(())
+}
+
+/// SPEC-650 PST-006: with only the timer on, staging behind the head is asked for once it has
+/// not changed for `serve_every_minutes`; `0` for both keys never asks.
+#[tokio::test]
+async fn the_schedule_asks_for_the_head_on_its_timer() -> TestResult {
+    let f = fixture(&scheduled_toml(30, 0)).await?;
+    let project = sandbox(&f).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    f.h.app.staging_schedule(&project).await?.ok_or("first")?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    let minutes = |m: i64| {
+        f.h.clock
+            .0
+            .fetch_add(m * 60_000, std::sync::atomic::Ordering::SeqCst);
+    };
+    minutes(29);
+    assert!(f.h.app.staging_schedule(&project).await?.is_none());
+    minutes(2);
+    let asked = f.h.app.staging_schedule(&project).await?.ok_or("asked")?;
+    assert_eq!(asked.revision, r2);
+    assert!(
+        asked
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("30 minutes")),
+        "{asked:?}"
+    );
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r2);
+
+    let off = fixture(&scheduled_toml(0, 0)).await?;
+    let r1 = off.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&off, &r1, RunState::Passed).await?;
+    off.h
+        .clock
+        .0
+        .fetch_add(24 * 60 * 60_000, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        off.h
+            .app
+            .staging_schedule(&sandbox(&off).await?)
+            .await?
+            .is_none()
+    );
+    Ok(())
+}
+
+/// SPEC-650 PST-006: the background tick checks each project's schedule, at most every 5
+/// minutes (each check reads the head from GitHub).
+#[tokio::test]
+async fn the_staging_tick_checks_the_schedule_at_most_every_5_minutes() -> TestResult {
+    let f = fixture(&scheduled_toml(0, 1)).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    f.h.app.staging_tick().await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while staging_view(&f).await?["requests"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+    {
+        if tokio::time::Instant::now() > deadline {
+            return Err("the tick recorded no scheduled request".into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+    // One merge ahead is due, but the project was checked a moment ago.
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    f.h.clock
+        .0
+        .fetch_add(4 * 60_000, std::sync::atomic::Ordering::SeqCst);
+    f.h.app.staging_tick().await;
+    assert_eq!(
+        staging_view(&f).await?["requests"].as_array().map(Vec::len),
+        Some(1)
+    );
+    f.h.clock
+        .0
+        .fetch_add(60_000, std::sync::atomic::Ordering::SeqCst);
+    f.h.app.staging_tick().await;
+    assert_eq!(
+        staging_view(&f).await?["requests"][0]["revision"],
+        r2.as_str()
+    );
+    Ok(())
+}

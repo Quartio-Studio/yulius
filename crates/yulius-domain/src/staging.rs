@@ -253,7 +253,7 @@ pub fn follow_up(requests: &[Facts], head: u64, current: Option<u64>) -> Option<
 /// and `serve_after_merges` of its table (`0`: that trigger is off).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Schedule {
-    /// Minutes staging may stay behind the integration head.
+    /// Minutes staging may go without a request or run while the head is ahead of it.
     pub every_minutes: u32,
     /// First-parent commits the head may be ahead of what staging serves.
     pub after_merges: u32,
@@ -275,7 +275,7 @@ pub struct Behind {
 pub enum Trigger {
     /// This many merged revisions are ahead of staging.
     Merges(u64),
-    /// Staging has been behind for the configured minutes.
+    /// Staging has not changed (no request, no run) for the configured minutes.
     Minutes(u32),
 }
 
@@ -288,7 +288,7 @@ impl Trigger {
                 format!("Yulius's schedule: {n} merged revisions since what staging serves")
             }
             Self::Minutes(m) => format!(
-                "Yulius's schedule: staging has been behind the integration head for {m} minutes"
+                "Yulius's schedule: staging has not changed for {m} minutes, and the integration head is ahead"
             ),
         }
     }
@@ -754,7 +754,11 @@ mod tests {
         assert_eq!(due(every, at(4, 59)), None);
         assert_eq!(due(every, at(5, 0)), Some(Trigger::Merges(5)));
         assert_eq!(due(every, at(1, 60)), Some(Trigger::Minutes(60)));
-        assert_eq!(due(every, at(7, 90)), Some(Trigger::Merges(7)), "merges first");
+        assert_eq!(
+            due(every, at(7, 90)),
+            Some(Trigger::Merges(7)),
+            "merges first"
+        );
         let pending = Behind {
             pending: true,
             ..at(9, 999)
@@ -777,7 +781,7 @@ mod tests {
         );
         assert_eq!(
             Trigger::Minutes(60).note(),
-            "Yulius's schedule: staging has been behind the integration head for 60 minutes"
+            "Yulius's schedule: staging has not changed for 60 minutes, and the integration head is ahead"
         );
     }
 
