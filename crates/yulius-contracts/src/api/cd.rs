@@ -79,6 +79,22 @@ pub struct CdEnvironment {
     /// The merge-first staging target's queue (SPEC-575); `None` for every other environment.
     #[serde(default)]
     pub staging: Option<CdStaging>,
+    /// Its Deploy button for the person reading it (SPEC-650 PST-007): the one place that
+    /// decides whether it works for them, which the CD page and guidance both follow.
+    #[serde(default)]
+    pub deploy_action: CdDeployAction,
+}
+
+/// An environment's Deploy button for one person (SPEC-650 PST-007).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdDeployAction {
+    /// What it says: `Deploy dev`, `Deploy production…`.
+    pub label: String,
+    /// It works for them now.
+    pub enabled: bool,
+    /// Why it does not, in words the page shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// A merge-first staging target's queue (SPEC-575, ADR-0411).

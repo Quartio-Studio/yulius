@@ -217,16 +217,15 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       rows.push(h('p', { class: 'small muted' }, `Last run ${relLong(run.started_at)} by ${run.requested_by}: ${stateOf(run.state).label.toLowerCase()}`, run.reason ? ` · ${run.reason}` : ''));
     }
     const prod = isProd(env);
-    const allowed = prod ? overview.can_deploy_prod : overview.can_deploy_dev;
     const ready = env.state === 'ready';
-    const running = (overview.runs || []).some((r) => r.environment === env.name && r.state === 'running');
     const waiting = prod && env.rollback ? env.rollback.waiting : null;
-    // A merge-first staging target takes a request whatever runs: its queue orders it (SPEC-650).
-    const why = !allowed ? (prod ? 'Only an administrator deploys production' : 'Requires write access')
-      : !ready ? 'Nothing to deploy yet' : running && !env.staging ? 'A deploy is running' : waiting || null;
+    // The server decides whether Deploy works for this person and why not (SPEC-650 PST-007):
+    // the same decision `needs_you` checks guidance against.
+    const action = env.deploy_action || { label: prod ? `Deploy ${word(env.name)}…` : `Deploy ${word(env.name)}`, enabled: false, why: 'Unavailable' };
+    const why = action.enabled ? null : action.why || 'Unavailable';
     // Dev's deploy is the card's main action only when it can run; production's colour is a warning.
     const deploy = h('button', { type: 'button', class: ['btn', prod ? 'btn-danger' : !why && 'btn-primary'], disabled: Boolean(why), title: why, onClick: () => (prod ? deployProd(env, overview) : env.staging ? askStaging(env) : deployDev(env)) },
-      icon('upload', { size: 16 }), prod ? `Deploy ${word(env.name)}…` : `Deploy ${word(env.name)}`);
+      icon('upload', { size: 16 }), action.label);
     // A disabled button says why in words, not only on hover (SPEC-650 PST-005); the badge says
     // "Nothing to deploy yet" already.
     if (why && ready && why !== waiting) rows.push(h('p', { class: 'small muted' }, `Deploy ${word(env.name)} unavailable: ${why}.`));

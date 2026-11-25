@@ -2507,7 +2507,7 @@ function seedCd() {
           rollback: cdRollback('scripts/cd/rollback.sh prod', [
             cdRelease('v41', '4be81c0d2a9f1e2d', 26 * 60, 'mkarp'),
             cdRelease('v39', '6f7e8d9c0b1a2f3e', 5 * 24 * 60, 'mkarp'),
-          ], { drill: cdSummary(drill), blocked: 'rollback is not proven for this commit: the last rollback drill of dev ran at 3c5a7e9; deploy dev at this commit first: its rollback drill follows by itself' }) },
+          ], { drill: cdSummary(drill), blocked: 'rollback is not proven for this commit: the last rollback drill of dev ran at 3c5a7e9; get it deployed on dev first with Deploy dev on the CD page (a merge-first dev asks for the integration head): its rollback drill follows by itself' }) },
       ],
       runs: [
         drill,
@@ -2545,6 +2545,20 @@ function progressCd(run, ms = 15000) {
 
 const cdSummary = (run) => ({ ...run, created: undefined, output: undefined });
 
+/** An environment's Deploy button for the caller, as the server decides it (SPEC-650 PST-007). */
+function cdDeployAction(env, sandbox, runs) {
+  const prod = env.stage ? env.stage === 'prod' : env.name === 'prod';
+  const word = env.name === 'prod' ? 'production' : env.name;
+  const rank = RANK[sandbox.access] || 0;
+  const running = runs.some((r) => r.environment === env.name && r.state === 'running');
+  const why = prod && rank < RANK.admin ? 'Only an administrator deploys production'
+    : rank < RANK.write ? 'Requires write access'
+      : env.state !== 'ready' ? 'Nothing to deploy yet'
+        : running && !env.staging ? 'A deploy is running'
+          : prod ? ((env.rollback || {}).waiting || null) : null;
+  return { label: prod ? `Deploy ${word}…` : `Deploy ${word}`, enabled: !why, ...(why ? { why } : {}) };
+}
+
 function cdOverview(db, sid) {
   const sandbox = sandboxOf(db, sid);
   const cd = cdOf(db, sid);
@@ -2554,7 +2568,7 @@ function cdOverview(db, sid) {
     environments: cdNotNeeded(cd.environments).map((env) => {
       const mine = runs.filter((r) => r.environment === env.name);
       const deployed = mine.find((r) => r.state === 'passed');
-      return { ...clone(env), deployed: deployed ? deployed.commit : null, last_run: mine.length ? cdSummary(mine[0]) : null };
+      return { ...clone(env), deployed: deployed ? deployed.commit : null, last_run: mine.length ? cdSummary(mine[0]) : null, deploy_action: cdDeployAction(env, sandbox, runs) };
     }),
     runs: runs.map(cdSummary),
     can_deploy_dev: (RANK[sandbox.access] || 0) >= RANK.write,

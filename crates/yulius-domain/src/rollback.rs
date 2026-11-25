@@ -485,8 +485,11 @@ pub fn production_gate(target: &CdTarget, drill: Option<&DrillSeen>) -> Option<S
         ));
     }
     let drill_env = target.drill_env();
-    let again =
-        format!("deploy {drill_env} at this commit first: its rollback drill follows by itself");
+    let again = format!(
+        "get it deployed on {drill_env} first with Deploy {drill_env} on the CD page (a \
+             merge-first {drill_env} asks for the integration head): its rollback drill follows by \
+             itself"
+    );
     match drill {
         None => Some(format!(
             "rollback is not proven yet: no rollback drill of {drill_env} has run ({drill_env} \
@@ -816,6 +819,16 @@ mod tests {
         assert!(
             production_gate(&target, None)
                 .is_some_and(|why| why.contains("no rollback drill of dev"))
+        );
+        // SPEC-650 PST-007: it names the control that works for a person with write access,
+        // also on a merge-first dev (where Deploy asks staging for the integration head).
+        assert!(
+            production_gate(&target, Some(&seen(true, false))).is_some_and(|why| why.contains(
+                "get it deployed on dev first with Deploy dev on the CD page (a merge-first dev \
+                 asks for the integration head)"
+            )),
+            "{:?}",
+            production_gate(&target, Some(&seen(true, false)))
         );
         assert!(
             production_gate(&target, Some(&seen(false, true)))
