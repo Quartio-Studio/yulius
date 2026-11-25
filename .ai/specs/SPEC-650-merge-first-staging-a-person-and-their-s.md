@@ -147,7 +147,7 @@ production authorization, not staging.
 - [x] Independent review of pull request 1 approved
 - [x] Scheduled serving: serve_every_minutes and serve_after_merges in [cd.<name>]
 - [x] The staging tick records a scheduled request when staging is behind
-- [ ] Docs and the independent review of pull request 2
+- [x] Docs and the independent review of pull request 2
 - [ ] Server-side deploy_action for each environment, rendered by the CD page
 - [ ] Refusal and production-gate texts name the working action; needs_you refuses a disabled control
 - [ ] Docs and the independent review of pull request 3
