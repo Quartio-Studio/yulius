@@ -5010,15 +5010,24 @@ async fn a_needs_you_card_never_sends_its_owner_to_a_disabled_deploy() -> TestRe
     )
     .await?;
     assert_eq!(told["isError"], false, "{told}");
-    // A named person for whom the button works may be asked to press it.
+    // A named person who cannot press it either: the refusal gives their reason and names them
+    // (review round 2 of PR 3), never "ask an administrator" for an administrator.
     let named = support::mcp_tool(
         &f.h,
         &token("t1"),
         "needs_you",
-        json!({"action": "Press Deploy staging on the CD page", "who": ["bob"]}),
+        json!({"action": "Deploy production on the CD page", "who": ["bob"]}),
     )
     .await?;
-    assert_eq!(named["isError"], false, "{named}");
+    assert_eq!(named["isError"], true, "{named}");
+    let said = named.to_string();
+    assert!(
+        said.contains("bob")
+            && said.contains("Nothing to deploy yet")
+            && said.contains("[cd.prod] has nothing to deploy yet")
+            && !said.contains("an administrator of this project deploys it"),
+        "{said}"
+    );
 
     // An administrator owner: production's button is disabled for another reason, with its own
     // advice, never "ask an administrator".

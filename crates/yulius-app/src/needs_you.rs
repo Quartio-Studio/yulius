@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use yulius_contracts::api::cd::CdDeployAction;
 use yulius_contracts::api::tasks::NeedsYouView;
 use yulius_domain::ids::TaskId;
 use yulius_domain::time::Timestamp;
@@ -335,32 +336,51 @@ impl App {
         }) else {
             return Ok(());
         };
+        // A named person may press it for the owner; otherwise the refusal gives the reason of
+        // a named person whose button is disabled for more than access (review round 2 of PR 3).
+        let access = [CdDeployAction::ADMINISTRATOR, CdDeployAction::WRITE];
+        let mut blocked = (owner.label(), env.deploy_action.clone());
         for login in who {
-            if let Some(user) = self.deps.store.user_by_login(login).await?
-                && let Some(theirs) = self.deploy_buttons_of(&user, &ctx.task.sandbox_id).await
-                && theirs
-                    .environments
-                    .iter()
-                    .any(|e| e.name == env.name && e.deploy_action.enabled)
-            {
+            let Some(user) = self.deps.store.user_by_login(login).await? else {
+                continue;
+            };
+            let Some(theirs) = self
+                .deploy_buttons_of(&user, &ctx.task.sandbox_id)
+                .await
+                .and_then(|cd| cd.environments.into_iter().find(|e| e.name == env.name))
+            else {
+                continue;
+            };
+            if theirs.deploy_action.enabled {
                 return Ok(());
             }
+            if !access.contains(&theirs.deploy_action.reason.as_deref().unwrap_or_default())
+                && access.contains(&blocked.1.reason.as_deref().unwrap_or_default())
+            {
+                blocked = (user.label(), theirs.deploy_action);
+            }
         }
-        let works = match env.deploy_action.reason.as_deref() {
-            Some("administrator") => "an administrator of this project deploys it: say that one does and name them in `who`, without asking the owner to press it".to_owned(),
-            Some("nothing") => format!(
+        let (whose, button) = blocked;
+        let works = match button.reason.as_deref() {
+            Some(CdDeployAction::ADMINISTRATOR) => "an administrator of this project deploys it: say that one does and name them in `who`, without asking the owner to press it".to_owned(),
+            Some(CdDeployAction::NOTHING) => format!(
                 "[cd.{}] has nothing to deploy yet: its table in yulius.toml comes first",
                 env.name
             ),
-            Some("running") => "a deploy of it is running: wait for it (`yulius wait`), then say how it ended".to_owned(),
-            Some("waiting") => "it deploys by itself once the rollback drill it waits for passes: say so".to_owned(),
+            Some(CdDeployAction::RUNNING) => "a deploy of it is running: wait for it (`yulius wait`), then say how it ended".to_owned(),
+            Some(CdDeployAction::WAITING) => "it deploys by itself once the rollback drill it waits for passes: say so".to_owned(),
             _ => "name a person with write access in `who`, or say what they should decide".to_owned(),
         };
         Err(AppError::Invalid(format!(
-            "nothing was asked: this card tells {} to press {} on the CD page, which is unavailable to them ({}). Say instead what works: {works}",
+            "nothing was asked: this card tells {}{} to press {} on the CD page, which is unavailable to {whose} ({}). Say instead what works: {works}",
             owner.label(),
-            env.deploy_action.label,
-            env.deploy_action.why.as_deref().unwrap_or("disabled"),
+            if who.is_empty() {
+                String::new()
+            } else {
+                format!(" (and {})", who.join(", "))
+            },
+            button.label,
+            button.why.as_deref().unwrap_or("disabled"),
         )))
     }
 

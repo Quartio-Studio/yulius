@@ -2873,19 +2873,20 @@ pub(crate) fn deploy_action(
     } else {
         env.name.as_str()
     };
+    use yulius_contracts::api::cd::CdDeployAction as A;
     let blocked = if prod && !level.allows(Action::Administer) {
         Some((
-            "administrator",
+            A::ADMINISTRATOR,
             "Only an administrator deploys production".to_owned(),
         ))
     } else if !level.allows(Action::Work) {
-        Some(("write", "Requires write access".to_owned()))
+        Some((A::WRITE, "Requires write access".to_owned()))
     } else if env.state != "ready" {
-        Some(("nothing", "Nothing to deploy yet".to_owned()))
+        Some((A::NOTHING, "Nothing to deploy yet".to_owned()))
     } else if running && env.staging.is_none() {
-        Some(("running", "A deploy is running".to_owned()))
+        Some((A::RUNNING, "A deploy is running".to_owned()))
     } else if prod {
-        env.rollback.waiting.clone().map(|why| ("waiting", why))
+        env.rollback.waiting.clone().map(|why| (A::WAITING, why))
     } else {
         None
     };

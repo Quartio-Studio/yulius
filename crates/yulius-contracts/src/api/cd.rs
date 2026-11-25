@@ -100,6 +100,19 @@ pub struct CdDeployAction {
     pub reason: Option<String>,
 }
 
+impl CdDeployAction {
+    /// `reason`: only an administrator deploys a production-stage environment.
+    pub const ADMINISTRATOR: &'static str = "administrator";
+    /// `reason`: the reader has no write access.
+    pub const WRITE: &'static str = "write";
+    /// `reason`: the environment has nothing to deploy (empty or not defined).
+    pub const NOTHING: &'static str = "nothing";
+    /// `reason`: a deploy of it is running.
+    pub const RUNNING: &'static str = "running";
+    /// `reason`: production waits for the rollback drill it asked for.
+    pub const WAITING: &'static str = "waiting";
+}
+
 /// A merge-first staging target's queue (SPEC-575, ADR-0411).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CdStaging {
