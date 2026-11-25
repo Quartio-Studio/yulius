@@ -16,8 +16,8 @@ ih he was an admin, fix"). Issue [#1749](https://github.com/Quartio-Studio/yuliu
 An instance administrator who creates a project in Yulius (New project → Create, from a template)
 in the instance owner's organization is an admin of the new GitHub repository, as GitHub makes the
 creator of a repository its admin, so they can deploy its production on the CD page. When GitHub
-only invites them or refuses the grant, the project is still created, the refusal is audited and the
-page tells them why they are not an admin yet and what to do.
+only invites them, refuses or fails, the project is still created, the outcome is audited and the
+page tells them which and what to do.
 
 ## Context
 
@@ -28,21 +28,26 @@ page tells them why they are not an admin yet and what to do.
 - Access mirrors GitHub (ACC-007): `App::access_level` asks GitHub for the person's repository
   permissions with their own token; only the superadmin is an exception (ACC-012). Instance
   administration grants no repository access (ACC-009).
-- Both people of the team are admins of `Quartio-Studio/yulius` on GitHub (`GET
-  /repos/Quartio-Studio/yulius/collaborators/<login>/permission` → `admin` for both), and every
-  production deploy on record was made by the organization's owner. The mate's attempt left no
-  promotion pull request and no release branch: it was refused before the promotion, at the
-  administrator check.
-- `create_repository` (`crates/yulius-app/src/projects.rs`) creates an organization repository
+- The report names no project, and this task cannot read the instance's audit log or users. On
+  `Quartio-Studio/yulius` both people of the team are admins on GitHub today
+  (`GET /repos/Quartio-Studio/yulius/collaborators/<login>/permission` → `admin` for both); every
+  production deploy on record was made by the organization's owner, and no promotion pull request
+  or release branch of anyone else exists. A GitHub admin passes the administrator check, so on
+  that project the mate met another refusal (the rollback gate, the staging-verified revision,
+  secrets, an update under way) or was not admin at the time. Which one is not confirmed.
+- What this task confirmed in the code is a defect that produces exactly the reported symptom for an
+  instance administrator ("an admin" in Yulius's Users page) on a project they created:
+  `create_repository` (`crates/yulius-app/src/projects.rs`) creates an organization repository
   with the GitHub App's installation token, so on GitHub the App is its creator, and grants no role
-  to anyone. The person who created the project gets only the organization's base permission
-  (write or read; none hides it), while an organization owner is admin of every repository. So an
-  instance administrator who is not an owner creates a project they cannot administer.
+  to anyone. The person who created the project gets only the organization's base permission (read
+  by GitHub's default, often write; none hides it), while an organization owner is admin of every
+  repository. So an instance administrator who is not an owner creates a project they cannot
+  administer or deploy.
 
 ## Root cause
 
 Symptom: an instance administrator creates a project and cannot deploy its production (nor remove
-it or change its delivery profile): Yulius rates them `write`.
+it or change its delivery profile): Yulius rates them below admin.
 
 Code path: `create_sandbox` → `create_repository` → `GitHubPort::create_repo(installation token,
 owner, is_org = true, …)`; nothing grants the creator a role. Later `access_level` → `repo_access`
@@ -56,7 +61,8 @@ the fake GitHub answers as if the creation had made them admin.
 What else the cause breaks: every Administer action of the new sandbox for its creator (remove it,
 delivery profile, production protection, Vidoc switch on its CI/CD page, production rollback and
 cancel); a creator whom the organization gives no base permission does not even see the project
-they created.
+they created. The "created but unreachable" advice to import the repository has the same gap for a
+non-owner creator (#1751, outside this change).
 
 ## Requirements
 
@@ -64,17 +70,25 @@ they created.
   `admin` role on the new repository right after GitHub creates it, with the installation token
   (`PUT /repos/{owner}/{repo}/collaborators/{login}` with `{"permission":"admin"}`, App permission
   Administration: write, which the App already has for repository creation and rulesets).
-- CRA-002: GitHub's answer 204 means they are a collaborator now; 201 means GitHub invited them
-  (not a member of the organization) and they are admin once they accept. Neither, nor a refusal,
-  stops the creation: the project is created as before, and an invitation or a refusal is audited
-  (`sandbox.creator_admin`, with GitHub's reason) and logged.
-- CRA-003: The creation's answer carries the creator's access as before (`access`); when it is not
-  `admin`, the page says, beside "Created", that GitHub gives them that access, not admin, and that
-  they accept GitHub's invitation or ask an owner of the organization to make them its admin to
-  deploy production.
+- CRA-002: GitHub's 204 means they are its admin now; 201 means GitHub invited them (not a member
+  of the organization) and they are admin once they accept; any other status is not GitHub's
+  documented answer. None of these, nor a refusal or a failure, stops the creation. Every outcome is
+  audited as `sandbox.creator_admin` about `owner/name` when it happens (also when setting up the
+  project fails afterwards), and a refusal or failure is logged.
+- CRA-003: The creation's answer carries the creator's access as before (`access`) and, when they
+  are not made its admin, `admin_grant`: `invited`, `refused` or `failed`. The page words each
+  beside "Created": accept GitHub's invitation, or ask an owner of the organization to make them
+  its admin to deploy production. A creator made admin, a refusal to someone who is its admin
+  anyway (an organization owner) and a personal account carry no `admin_grant` and show no warning.
 - CRA-004: Unchanged: the superadmin without a GitHub identity (admin through ACC-012, no grant
   asked), a personal owner account (the repository is created with the owner's own token, the owner
-  is its admin), imports and playground moves (the person already has access on GitHub).
+  is its only admin), imports and playground moves (the person already has access on GitHub).
+- CRA-005: The role goes to the login the creator's own GitHub token names now, and only while that
+  token names the account they signed in as (`github_id`): GitHub frees a renamed account's login
+  for anyone (#653). An account that cannot be confirmed gets nobody the role (`failed`).
+- CRA-006: A grant that fails in a way that may pass (a 5xx, a timeout, the network; the adapter's
+  `map_refusal` keeps those `Upstream`) is asked again, at most 3 times in all, with a short pause;
+  a refusal (a 4xx) is asked once.
 
 ## Plan
 
@@ -87,58 +101,72 @@ they created.
 
 ## Acceptance criteria
 
-- AC-1 (CRA-001): an instance administrator who is not given the repository by anyone creates
-  `new-shop` in the organization: GitHub received one grant of `admin` to them with the
-  installation token, their `access` to the sandbox is `admin`, the CD overview says
-  `can_deploy_prod: true` and their production deploy is not refused for administrator access.
-- AC-2 (CRA-002): GitHub answers the grant with an invitation, or refuses it: the project is
-  created, the creator's access is what GitHub gives, and the audit has `sandbox.creator_admin`
-  with the reason.
-- AC-3 (CRA-004): a project created in a personal owner account asks for no grant.
-- AC-4 (CRA-001): the client sends `PUT /repos/{o}/{r}/collaborators/{login}` with the permission,
-  reads 204 as added and 201 as invited, and refuses an invalid login before sending.
+- AC-1 (CRA-001): an instance administrator whom the organization gives write creates `new-shop`:
+  GitHub received one grant of `admin` to them with the installation token, their `access` is
+  `admin` with no `admin_grant`, the audit says "alice is an admin of Quartio-Studio/new-shop", the
+  CD overview says `can_deploy_prod: true`, and their production deploy passes the administrator
+  check (it stops at the promotion, which the fake GitHub cannot serve: 409 "branch 'dev' does not
+  exist on GitHub").
+- AC-2 (CRA-002, CRA-003, CRA-006): an invitation, a 403 refusal (asked once), three 5xx in a row
+  (asked 3 times) each create the project with `access` `write`, `admin_grant` `invited`,
+  `refused`, `failed` and the matching audit sentence; one 5xx then success makes them admin; a
+  refusal to an organization owner is audited as "they are its admin already" with no
+  `admin_grant`.
+- AC-3 (CRA-004): a project created in a personal owner account asks for no grant and carries no
+  `admin_grant`; the creator who is not its owner has what GitHub gives (`none`).
+- AC-4 (CRA-001, CRA-002): the client sends `PUT /repos/{o}/{r}/collaborators/{login}` with the
+  role, reads 204 as added and 201 as invited, gets 404 for a login GitHub does not know, refuses an
+  invalid login or role before sending, and a token that cannot administer is refused.
+- AC-5 (CRA-005): a creator renamed on GitHub since signing in is granted under the new login; a
+  token naming another account gets nobody the role, `admin_grant` `failed` and an audit saying so.
+- AC-6 (CRA-003): the page shows each outcome's warning (invited, refused, failed) and none for a
+  creator made admin.
 
 ## Test plan
 
 - `crates/yulius/tests/projects.rs`: the creation test no longer grants the creator before the
-  repository exists; a regression test where the creator has no role until the grant asserts AC-1
-  (access, `can_deploy_prod`), and variants for the invitation and the refusal (AC-2). The personal
-  account test asserts no grant (AC-3). Run the whole `yulius::main` file `projects`, and `cd`.
-- `crates/yulius-github/tests/client.rs`: the client's grant against the fake GitHub (AC-4).
-- The page: the created toast's wording when `access` is not `admin` (e2e of the New project
-  dialog if one covers creation; otherwise by reading the code path).
+  repository exists; `the_creator_of_a_project_is_its_admin_and_may_deploy_production` (AC-1),
+  `an_invited_refused_or_failed_creator_still_gets_the_project_and_the_reason` (AC-2),
+  `the_admin_role_goes_to_the_creators_current_login_only` (AC-5), the personal account test
+  without its pre-grant (AC-3). Run the whole `yulius::main` binary.
+- `crates/yulius-github/tests/client.rs`: `a_collaborator_is_added_or_invited_with_a_role` (AC-4).
+- `e2e/tests/home.e2e.ts`: the three warnings and the admin case without one (AC-6).
 
 ## Decisions
 
 - The creator's admin role comes from GitHub, not from Yulius: ACC-007 and ACC-009 stay (instance
   administration grants no repository access), and a production deploy acts as the person on GitHub
   (the promotion merges as them), so a Yulius-only admin would fail there instead (ADR-0476).
-- A refused or pending grant never undoes the creation: the repository exists on GitHub by then, and
-  an organization owner can grant the role later; the person is told instead.
+- A refused, pending or failed grant never undoes the creation: the repository exists on GitHub by
+  then, and an organization owner can grant the role later; the person is told instead.
+- The outcome reaches the page as an optional `admin_grant` on the creation's `Sandbox` answer
+  (absent everywhere else), rather than a new response type: one producer sets it, and readers that
+  do not know it are unaffected.
+- The reported case is not confirmed; the fix is delivered for the confirmed defect and says so in
+  the changes entry and the pull request.
 
 ## Evidence
+
+Round 0 (head `222aca159`):
 
 - Reproduced on dev (`4299f0eac`, test only): `scripts/cargo nextest run -p yulius -E
   'binary_id(yulius::main) & test(/^projects::the_creator_of_a_project/)'` failed with
   `"access": String("write")` for the creator of `new-shop` (left: "write", right: "admin").
-- With the fix: `projects::` 36 of 36 passed (the regression test, the invitation and refusal
-  test, the creation test without its pre-grant, the personal account test asserting no grant);
-  `scripts/cargo nextest run -p yulius -p yulius-app --no-fail-fast`: 4223 passed, 26 skipped;
-  `scripts/cargo nextest run -p yulius-github --all-features`: 66 passed, including
-  `client::a_collaborator_is_added_or_invited_with_a_role` (AC-4).
-- e2e: `npx e2e run tests/home.e2e.ts` 5 of 5 passed, including "a created project its creator is
-  not admin of says why its production is not theirs yet" (CRA-003).
-- Mutation checks by hand: skipping the grant (`if false && is_org`) failed
-  `the_creator_of_a_project_is_its_admin_and_may_deploy_production`,
-  `create_from_template_pushes_a_validating_scaffold_with_rulesets` and
-  `an_invited_or_refused_creator_still_gets_the_project_and_the_reason`; dropping the "already
-  admin" check after a refusal failed the last one ("an organization owner is its admin
-  already"); removing the page's warning failed the e2e test. Each line restored.
-- `scripts/cargo clippy --locked -p yulius-github -p yulius-app -p yulius --all-targets
-  --all-features -- -D warnings`: clean. `scripts/dev quick`: passed.
-- Vidoc: `yulius security-scan` answered "Security scan disabled: Vidoc is turned off in Yulius,
-  for this project or the whole instance; nothing was scanned": not run, not passed.
-- Not testable here: GitHub's real answer to `PUT …/collaborators/{login}` for this organization
-  (the sandbox's installation token reaches only `Quartio-Studio/yulius`; GitHub documents 204 for
-  an organization member and 201 for an invitation). The mate's existing project keeps its GitHub
-  roles: an owner of the organization grants him admin there (Settings → Collaborators and teams).
+- `scripts/cargo nextest run -p yulius -p yulius-app --no-fail-fast`: 4223 passed, 26 skipped.
+  Yulius CI run `9236c909` on `222aca1`: passed (the full suite runs on the merged revision).
+- Mutation checks by hand: skipping the grant (`if false && is_org`) failed the regression test,
+  the creation test and the invitation test; dropping the "already admin" check after a refusal
+  failed the invitation test; removing the page's warning failed the e2e test. Each restored.
+
+Review round 1 (findings answered in the pull request):
+
+- The new tests failed on `ee478fb7f` against the round-0 code: no `admin_grant` (`left:
+  (String("write"), Null)`), the audit on the sandbox instead of the repository, and the stale
+  login granted (`left: [("Quartio-Studio/renamed", "alice", "inst-7")]`).
+- To be completed with the round-1 runs.
+
+Not testable here: GitHub's real answer to `PUT …/collaborators/{login}` for this organization (the
+sandbox's installation token reaches only `Quartio-Studio/yulius`; GitHub documents 204 for an
+organization member or collaborator and 201 for an invitation). The mate's existing project, if he
+created it, keeps its GitHub roles: an owner of the organization grants him admin there (Settings →
+Collaborators and teams).

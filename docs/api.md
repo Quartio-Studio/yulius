@@ -180,9 +180,13 @@ meanwhile, only what onboarding will do and its button (SPEC-096). Create mode
 (instance admins) creates a private repository, pushes the template scaffold to `main` and `dev`,
 and adds rulesets requiring pull requests on both. In an organization the App creates it, so Yulius
 then gives the creator the `admin` role on it (`PUT /repos/{owner}/{repo}/collaborators/{login}`
-with the installation token, ADR-0476): GitHub's invitation (a creator outside the organization)
-or refusal still creates the project, audited as `sandbox.creator_admin` with the reason, and the
-answer's `access` is what GitHub gives them (the web UI then says why it is not `admin`).
+with the installation token, to the login their own GitHub token names now and only for the
+account they signed in as; a 5xx or timeout is asked again, at most 3 times; ADR-0476). Every
+outcome is audited as `sandbox.creator_admin` about `owner/name` when it happens. An invitation (a
+creator outside the organization), a refusal or a failure still creates the project: the answer's
+`access` is what GitHub gives them and its `admin_grant` says `invited`, `refused` or `failed`
+(the web UI words it with what to do); without it the creator is the repository's admin, or the
+project is in a personal account, where no grant is asked.
 
 ```json
 Sandbox = {
@@ -192,7 +196,8 @@ Sandbox = {
   "profile": Profile,
   "onboarding": "not_needed|pending|preparing|ready|skipped",
   "port_base": 20000, "port_count": 20,
-  "counts": {"running": 1, "needs_attention": 0, "queued": 0}
+  "counts": {"running": 1, "needs_attention": 0, "queued": 0},
+  "admin_grant": "invited|refused|failed"
 }
 Profile = {"preset": "standard|product|studio|custom", "integration_branch": "dev",
            "production_branch": "main", "merge": "squash|merge|rebase",
