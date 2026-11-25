@@ -261,3 +261,209 @@ fn a_contained_antigravity_run_guards_its_rules() -> TestResult {
     }
     Ok(())
 }
+
+/// Whether bubblewrap can make namespaces here (not in a task's sandbox, nor where unprivileged
+/// user namespaces are off); `Err` is why not.
+fn bwrap_usable() -> Result<(), String> {
+    let probe = std::process::Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+        ])
+        .args(["--", "/bin/true"])
+        .output()
+        .map_err(|e| format!("bwrap not runnable: {e}"))?;
+    if probe.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&probe.stderr).trim().to_owned())
+    }
+}
+
+/// The shell script a guarded run executes: every attempt prints `<name>=wrote` or
+/// `<name>=refused` into `$RESULTS`, each read `<name>=<what it read>`.
+const ATTEMPTS: &str = r#"
+r="$RESULTS"
+try() { name=$1; shift; if "$@" >/dev/null 2>&1; then echo "$name=wrote" >>"$r"; else echo "$name=refused" >>"$r"; fi; }
+py() { command -v python3 >/dev/null || { echo "$1=refused" >>"$r"; return; }; try "$1" python3 -c "$2" "$3"; }
+for f in "$CLAUDE_MEMORY/MEMORY.md" "$CLAUDE_CONFIG/CLAUDE.md" "$CODEX_HOME/AGENTS.md" "$GEMINI/config/AGENTS.md"; do
+  n=$(echo "$f" | tr -c 'a-zA-Z0-9\n' _)
+  try "append$n" sh -c 'echo note >>"$1"' _ "$f"
+  try "replace$n" sh -c 'printf note >"$1.new" && mv -f "$1.new" "$1"' _ "$f"
+  try "truncate$n" sh -c ': >"$1"' _ "$f"
+  try "delete$n" rm -f "$f"
+  try "link$n" ln -f "$f" "$HOME/hardlink"
+  py "pyappend$n" 'import sys; open(sys.argv[1], "a").write("note")' "$f"
+  py "pyunlink$n" 'import os, sys; os.unlink(sys.argv[1])' "$f"
+done
+for d in "$CLAUDE_MEMORY" "$CLAUDE_CONFIG/rules" "$CODEX_HOME/memories" "$GEMINI/config/rules"; do
+  n=$(echo "$d" | tr -c 'a-zA-Z0-9\n' _)
+  try "create$n" sh -c 'echo note >"$1/new.md"' _ "$d"
+  try "mkdir$n" mkdir "$d/sub"
+  py "pycreate$n" 'import sys; open(sys.argv[1] + "/py.md", "w").write("note")' "$d"
+  try "rmdir$n" rm -rf "$d"
+done
+try rename_memory mv "$CLAUDE_MEMORY" "$CLAUDE_MEMORY.away"
+try rename_key mv "$(dirname "$CLAUDE_MEMORY")" "$(dirname "$CLAUDE_MEMORY").away"
+try rename_projects mv "$CLAUDE_CONFIG/projects" "$CLAUDE_CONFIG/projects.away"
+try rename_config mv "$CLAUDE_CONFIG" "$CLAUDE_CONFIG.away"
+try remount_rw unshare -Urm sh -c 'mount -o remount,bind,rw "$1" && echo note >>"$1/MEMORY.md"' _ "$CLAUDE_MEMORY"
+try umount_memory unshare -Urm sh -c 'umount "$1" && echo note >>"$1/MEMORY.md"' _ "$CLAUDE_MEMORY"
+echo "read_memory=$(cat "$CLAUDE_MEMORY/MEMORY.md")" >>"$r"
+echo "read_claude=$(cat "$CLAUDE_CONFIG/CLAUDE.md")" >>"$r"
+echo "read_codex=$(cat "$CODEX_HOME/AGENTS.md")" >>"$r"
+echo "read_agy=$(cat "$GEMINI/config/AGENTS.md")" >>"$r"
+echo "read_link=$(cat "$CODEX_HOME/AGENTS.override.md")" >>"$r"
+echo "read_rules=$(ls -A "$CLAUDE_CONFIG/rules")" >>"$r"
+echo "fds=$(for fd in /proc/self/fd/*; do readlink "$fd"; done | grep -v -e '^/dev/' -e '^pipe:' -e "^/proc/" | tr '\n' ' ')" >>"$r"
+try worktree_still_writable sh -c 'echo ok >"$1/work.txt"' _ "$PWD"
+echo done >>"$r"
+"#;
+
+/// SPEC-652 AC-2, AC-3, AC-6 in a real namespace, the whole path a session takes (`yulius
+/// ptyhost` → `yulius sandbox-exec --guard` → bwrap): with the layouts of a Claude Code, a Codex
+/// and an Antigravity session at once, every append, replace, truncate, create, hard link and
+/// delete of a memory or instruction file by the shell and by Python fails, so do renaming the
+/// memory folder or its parents and remounting it; the notes still read; a link shows an empty
+/// placeholder, never its target; no descriptor of the guard reaches the run; the worktree stays
+/// writable; and the sandbox with its notes is removed afterwards. Skipped where bubblewrap cannot
+/// make namespaces (a task's sandbox); run on a guest for SPEC-652's Evidence.
+#[tokio::test]
+async fn a_guarded_session_cannot_write_its_memory_but_reads_it() -> TestResult {
+    use yulius_app::ports::session::{Bind, SessionHost as _};
+    if let Err(reason) = bwrap_usable() {
+        eprintln!("SKIPPED a_guarded_session_cannot_write_its_memory_but_reads_it: {reason}");
+        return Ok(());
+    }
+    let dir = tempfile::Builder::new().prefix("yg").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let root = data.join("sandboxes/s1");
+    let home = root.join("home");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(repo.join(".git"))?;
+    let config = home.join(".claude");
+    let key = yulius_app::memory_guard::claude_key(&repo);
+    let memory = config.join("projects").join(&key).join("memory");
+    std::fs::create_dir_all(&memory)?;
+    std::fs::write(memory.join("MEMORY.md"), "existing note")?;
+    std::fs::write(config.join("CLAUDE.md"), "user rule")?;
+    let codex = root.join("codex/a1");
+    std::fs::create_dir_all(&codex)?;
+    std::fs::write(codex.join("AGENTS.md"), "codex rule")?;
+    let secret = data.join("secret.txt");
+    std::fs::write(&secret, "HOST SECRET")?;
+    std::os::unix::fs::symlink(&secret, codex.join("AGENTS.override.md"))?;
+    std::os::unix::fs::symlink(data.join("runs"), config.join("rules"))?;
+    let run_home = data.join("runs/r1/antigravity-home");
+    std::fs::create_dir_all(run_home.join(".gemini/config"))?;
+    std::fs::write(run_home.join(".gemini/config/AGENTS.md"), "agy rule")?;
+    let mut guard = yulius_app::memory_guard::claude_guard(&root, &config, &config, &repo, &root);
+    guard.extend(yulius_app::memory_guard::codex_guard(&root, &codex));
+    guard.extend(yulius_app::memory_guard::antigravity_guard(
+        &run_home,
+        &home.join(".gemini"),
+    ));
+    let results = root.join("results.txt");
+    let script = data.join("attempts.sh");
+    std::fs::write(&script, ATTEMPTS)?;
+    let at = |p: &Path| p.to_string_lossy().into_owned();
+    let plan = LaunchPlan {
+        argv: vec!["/bin/sh".into(), at(&script)],
+        cwd: repo.clone(),
+        env: vec![
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("HOME".into(), at(&home)),
+            ("RESULTS".into(), at(&results)),
+            ("CLAUDE_CONFIG".into(), at(&config)),
+            ("CLAUDE_MEMORY".into(), at(&memory)),
+            ("CODEX_HOME".into(), at(&codex)),
+            ("GEMINI".into(), at(&home.join(".gemini"))),
+        ],
+        secret_env: Vec::new(),
+        files: Vec::new(),
+        containment: Containment::Bubblewrap {
+            sandbox_root: root.clone(),
+            home: home.clone(),
+            writable: Vec::new(),
+            readonly: vec![script.clone()],
+            binds: vec![Bind {
+                source: run_home.join(".gemini"),
+                dest: home.join(".gemini"),
+                writable: true,
+            }],
+            identity: None,
+            join: None,
+            guard,
+        },
+    };
+    let host =
+        yulius::wiring::session::PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius")));
+    host.spawn(
+        &data.join("runs/run"),
+        "att-guard",
+        "task-guard",
+        &plan,
+        &[5; 32],
+        (80, 24),
+    )
+    .await?;
+    let finished = wait_for("the attempts", Duration::from_secs(60), || async {
+        std::fs::read_to_string(&results).is_ok_and(|text| text.ends_with("done\n"))
+    })
+    .await;
+    if let Err(err) = finished {
+        let run = data.join("runs/run");
+        let mut why = String::new();
+        for name in ["exit.json", "host.log", "status.json"] {
+            why.push_str(&format!(
+                "{name}: {}\n",
+                std::fs::read_to_string(run.join(name)).unwrap_or_default()
+            ));
+        }
+        let partial = std::fs::read_to_string(&results).unwrap_or_default();
+        return Err(format!("{err}\n{why}results so far:\n{partial}").into());
+    }
+    let text = std::fs::read_to_string(&results)?;
+    eprintln!("{text}");
+    let mut wrote = Vec::new();
+    for line in text.lines() {
+        let (name, value) = line.split_once('=').unwrap_or((line, ""));
+        match name {
+            "read_memory" => assert_eq!(value, "existing note"),
+            "read_claude" => assert_eq!(value, "user rule"),
+            "read_codex" => assert_eq!(value, "codex rule"),
+            "read_agy" => assert_eq!(value, "agy rule"),
+            "read_link" | "read_rules" => assert_eq!(value, "", "{name}: a link's target"),
+            "fds" => assert_eq!(value.trim(), "", "descriptors reached the run: {value}"),
+            "worktree_still_writable" => assert_eq!(value, "wrote"),
+            "done" => {}
+            _ if value != "refused" => wrote.push(line.to_owned()),
+            _ => {}
+        }
+    }
+    assert!(
+        wrote.is_empty(),
+        "writes that went through: {wrote:?}\n{text}"
+    );
+    assert!(text.contains("rename_config=refused"), "{text}");
+    // Nothing changed on the host, and the sandbox with its notes is removed.
+    assert_eq!(
+        std::fs::read_to_string(memory.join("MEMORY.md"))?,
+        "existing note"
+    );
+    assert_eq!(std::fs::read_dir(&memory)?.count(), 1);
+    assert_eq!(
+        std::fs::read_to_string(config.join("CLAUDE.md"))?,
+        "user rule"
+    );
+    assert_eq!(std::fs::read_to_string(&secret)?, "HOST SECRET");
+    assert!(!codex.join("memories/new.md").exists());
+    std::fs::remove_dir_all(&root)?;
+    assert!(!root.exists());
+    Ok(())
+}

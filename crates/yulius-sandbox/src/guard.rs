@@ -104,6 +104,82 @@ pub fn nul_separated(args: &[String]) -> Vec<u8> {
     bytes
 }
 
+/// Most names tried when moving an entry aside.
+#[cfg(target_os = "linux")]
+const ASIDE_TRIES: u32 = 100;
+
+/// Moves aside every link or entry of the wrong kind at a guarded path or on the way to it
+/// (MEM-003): bwrap cannot mount a placeholder on a link whose target the namespace lacks, nor a
+/// folder on a file, and following a link would put the bind on its target. Each walk starts at
+/// the path's anchor and opens one folder at a time without following a link; an entry is moved
+/// to `<name>.yulius-moved-<ms>` in its own folder, never replacing anything. Returns the moved
+/// paths (relative to their anchors).
+///
+/// # Errors
+/// An anchor that cannot be opened, or a move that fails.
+#[cfg(target_os = "linux")]
+pub fn clear_ways(paths: &[GuardPath]) -> io::Result<Vec<String>> {
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags, RenameFlags, openat, renameat_with, statat};
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let mut moved = Vec::new();
+    for path in paths {
+        let mut dir = rustix::fs::open(
+            path.anchor.as_str(),
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let parts: Vec<&std::ffi::OsStr> = Path::new(&path.relative).iter().collect();
+        for (index, part) in parts.iter().enumerate() {
+            let last = index + 1 == parts.len();
+            let kind = match statat(&dir, *part, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat) => FileType::from_raw_mode(stat.st_mode),
+                Err(rustix::io::Errno::NOENT) => break,
+                Err(err) => return Err(err.into()),
+            };
+            let fits = match (last, path.kind) {
+                (true, GuardKind::File) => kind == FileType::RegularFile,
+                _ => kind == FileType::Directory,
+            };
+            if !fits {
+                let shown = Path::new(&path.relative)
+                    .iter()
+                    .take(index + 1)
+                    .collect::<std::path::PathBuf>();
+                let mut tries = 0;
+                loop {
+                    let suffix = if tries == 0 {
+                        String::new()
+                    } else {
+                        format!("-{tries}")
+                    };
+                    let mut aside = part.to_os_string();
+                    aside.push(format!(".yulius-moved-{now}{suffix}"));
+                    match renameat_with(&dir, *part, &dir, &aside, RenameFlags::NOREPLACE) {
+                        Ok(()) => break,
+                        Err(rustix::io::Errno::EXIST) if tries < ASIDE_TRIES => tries += 1,
+                        Err(err) => return Err(err.into()),
+                    }
+                }
+                moved.push(shown.to_string_lossy().into_owned());
+                break;
+            }
+            if last {
+                break;
+            }
+            dir = openat(
+                &dir,
+                *part,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?;
+        }
+    }
+    Ok(moved)
+}
+
 /// The guard, opened: the descriptors `bwrap` binds and the two argument pipes, kept open until
 /// this process execs `bwrap`.
 #[cfg(target_os = "linux")]
@@ -128,6 +204,12 @@ pub fn open(paths: &[GuardPath]) -> io::Result<Opened> {
     use rustix::io::{FdFlags, fcntl_setfd};
 
     check(paths)?;
+    for moved in clear_ways(paths)? {
+        eprintln!(
+            "yulius: moved {moved} aside: a protected memory or instruction path cannot be a \
+             link or of another kind (SPEC-652)"
+        );
+    }
     let mut opened = Opened {
         pins: Vec::new(),
         binds: Vec::new(),
@@ -346,6 +428,49 @@ mod tests {
         assert_eq!(expect("/in/linked/memory").ok_or("linked")?.0, "--tmpfs");
         assert_eq!(expect("/in/cfg/rules").ok_or("rules")?.0, "--tmpfs");
         assert!(named.iter().all(|(_, _, target)| target != &outside));
+        Ok(())
+    }
+
+    /// MEM-003: a link or an entry of the wrong kind at a guarded path, or on the way to it, is
+    /// moved aside without following it, so the bind lands on that path and the session starts;
+    /// the link's target is untouched.
+    #[test]
+    fn links_and_wrong_kinds_are_moved_aside() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let anchor = root.path().join("anchor");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(anchor.join("cfg"))?;
+        std::fs::create_dir_all(&outside)?;
+        std::fs::write(outside.join("note"), "kept")?;
+        std::os::unix::fs::symlink(outside.join("note"), anchor.join("cfg/CLAUDE.md"))?;
+        std::fs::write(anchor.join("cfg/rules"), "a file, not a folder")?;
+        std::os::unix::fs::symlink(&outside, anchor.join("linked"))?;
+        std::fs::create_dir_all(anchor.join("cfg/memory"))?;
+        let paths = [
+            path(&anchor, "cfg/CLAUDE.md", GuardKind::File),
+            path(&anchor, "cfg/rules", GuardKind::Dir),
+            path(&anchor, "linked/memory", GuardKind::Dir),
+            path(&anchor, "cfg/memory", GuardKind::Dir),
+        ];
+        let moved = clear_ways(&paths)?;
+        assert_eq!(moved.len(), 3, "{moved:?}");
+        let names: Vec<String> = std::fs::read_dir(anchor.join("cfg"))?
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.contains(&"CLAUDE.md".to_owned()), "{names:?}");
+        assert!(!names.contains(&"rules".to_owned()), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with("CLAUDE.md.yulius-moved-"))
+        );
+        assert!(names.iter().any(|n| n.starts_with("rules.yulius-moved-")));
+        assert!(names.contains(&"memory".to_owned()), "a real folder stays");
+        assert!(std::fs::symlink_metadata(anchor.join("linked")).is_err());
+        assert_eq!(std::fs::read_to_string(outside.join("note"))?, "kept");
+        // Nothing left to move the second time.
+        assert!(clear_ways(&paths)?.is_empty());
         Ok(())
     }
 
