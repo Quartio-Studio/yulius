@@ -3719,7 +3719,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
     ids.
   - Each environment's Deploy button is decided once, for its reader (`deploy_action` in
     `ci/cd.rs`, `CdEnvironment.deploy_action`). The CD page renders it, and `needs_you` refuses a
-    card that names a button disabled for the task's owner (`refuse_a_disabled_deploy`), so
+    card whose to-do names a button disabled for the task's owner and for everyone it names in
+    `who` (`refuse_a_disabled_deploy`), with advice for the reason (`deploy_action.reason`), so
     guidance never sends a person to a control they cannot press. The production gate names
     "Deploy <drill env> on the CD page", which works on a merge-first dev too (SPEC-650 PST-007).
   - A production CD deploy selects the verified staging revision through the CD mirror.

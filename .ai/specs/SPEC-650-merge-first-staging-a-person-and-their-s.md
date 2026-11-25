@@ -134,9 +134,14 @@ production authorization, not staging.
   - A plain head deploy refused on the merge-first target (an automation's, a task's
     `cd_deploy` outside the staging path) names the working action: "Deploy dev on the CD page,
     or the Superagent's cd_deploy".
-  - An agent's `needs_you` naming a CD page deploy control ("Deploy <env>") that is disabled for
-    the task's owner is refused. The refusal gives the control's reason and says what works (a
-    dev-stage environment: the agent's own `cd_deploy`; production: a person who may deploy it).
+  - An agent's `needs_you` whose to-do (`action`) names a CD page deploy control ("Deploy <env>")
+    that is disabled for the task's owner, and for every person the card names in `who`, is
+    refused. The refusal gives the control's reason and what works for that reason
+    (`deploy_action.reason`): an administrator deploys production; an environment with nothing to
+    deploy needs its table; a running deploy is waited for; a drill's wait ends by itself.
+    `happened` and `problem` may name a button: they say what happened.
+  - The texts that send agents to `needs_you` for production name who deploys it: an
+    administrator of this project, named in `who`.
 
 ## Plan
 
