@@ -1,11 +1,11 @@
 ---
 yulius-task: 96417217-47ba-402b-807a-8c67f4647150
-status: in-progress
+status: done
 ---
 
 # SPEC-651: Each subscription card says when it next charges the card
 
-Status: in-progress
+Status: done
 Date: 2026-11-25
 Owner: Yulius task #635
 Scope authorization: task #635 (`/goal`, with a screenshot of the Subscriptions page: three cards
@@ -71,8 +71,8 @@ Confirmed against `dev` at 1770c1b30.
 - [x] PUT and DELETE /api/admin/accounts/{id}/billing, and the next charge in every account view
 - [x] Each Subscriptions card shows its next charge and sets it in a dialog
 - [x] ADR-0478, API reference, architecture and product say where the charge date comes from
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -156,9 +156,47 @@ Round 1 (yulius-reviewer, head `1be35c8b1`): request changes. Each finding and i
    UTC the next period's date shows that many hours early.
 5. Minor, pre-existing: a list redraw under an open dialog sends the keyboard to the page heading
    on close; "Paste a new token" does the same on `dev`. Filed as #1758.
-6. Nits, own code: `change_billing` now reads the subscription again after the write; the mock no
-   longer leaks `billing_cycle` and all its `account.updated` events carry `billing`; a yearly
+6. Nits, own code: `change_billing` now reads the subscription again after the write; the mock's
+   `account.updated` events and billing answers carry `billing` without `billing_cycle`; a yearly
    29 Feb reads "Every year on 29 Feb, or 28 Feb in other years"; the Goal's weekday is Thursday.
    One unreadable `account_billing` row failing every account view is kept: it is consistent with
    how every other store read treats a bad column (`bad_column`), and the API cannot write one
    (`BillingCycle::parse` checks every value, the table's `CHECK` the period).
+
+Round 2 (the same reviewer, head `a78a58e0e`): approve. It re-ran six mutations of the page and
+the mock (each fails the billing e2e file) and the billing API tests 15 times under stress. One
+nit is left, answered here: the mock's usage, import, relogin and token answers still return the
+raw account (no `billing`, and `billing_cycle` when one is set). The page reads no billing from
+those answers, so nothing shows; it was left so as not to change the approved head.
+
+## Evidence
+
+- Domain: `scripts/cargo nextest run -p yulius-domain -E 'test(/billing::/)'`: 4/4 passed. Hand
+  mutations: dropping the month-end clamp, and `this >= today` → `this > today`, each fail 2 of
+  the 4.
+- Store: `scripts/cargo nextest run -p yulius-store`: 179/179 passed (the cycle's round trip,
+  replace, removal, kept across a new credential and a rename, removed with its subscription;
+  schema version 95 pinned).
+- API: `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^(account_billing|account_email|account_token|account_usage)::/)'`: 36/36 passed. Hand
+  mutations: the list without `billing`, `publish_account_id` and the usage refresh built with
+  `account_view`, each fail an `account_billing` test.
+- `scripts/cargo nextest run -p yulius-app -p yulius-server -p yulius-contracts -p
+  yulius-domain`: 1473/1473 passed (head `1be35c8b1`).
+- e2e (`cd e2e && npx e2e run …`): subscriptions, subscription-names, subscription-billing,
+  codex, antigravity, subscription-touch, claude-connect, subscription-agent, model-fallback,
+  consistency, loading-shapes: 151/151 passed at `a78a58e0e`. `subscription-names.e2e.ts`
+  needed one change: the control after Claude #3's email is now its "Set charge date" button.
+  The reviewer's three round-1 mutations now each fail `subscription-billing.e2e.ts`.
+- `scripts/dev quick` and `scripts/dev lint` pass; `RUSTDOCFLAGS=-D warnings cargo doc` of the
+  touched crates passes.
+- Looked at in real Chromium against the mock (desktop and 390 px): the card reads "Next charge
+  Thu, Dec 24, 2026 · in 29 days" over "Every month on the 24th", and the dialog shows the date
+  field, Every month / Every year, Cancel, Remove, Save. Nothing overflows at 390 px.
+- Yulius CI on `1be35c8b1` (run `56507631`): passed. `security` was skipped because Vidoc is
+  switched off, so nothing was scanned.
+- Not tested here: a real Claude or Codex sign-in. The charge date does not come from the
+  provider, so none is needed.
+- Filed outside the change: #1758, a pre-existing focus loss when a list redraws under an open
+  dialog.
+
