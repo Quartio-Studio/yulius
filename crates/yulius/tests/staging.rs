@@ -5068,7 +5068,11 @@ async fn a_needs_you_card_may_ask_a_named_person_who_can_press_the_deploy() -> T
     };
     let alone = card(json!([])).await?;
     assert_eq!(alone["isError"], true, "{alone}");
-    assert!(alone.to_string().contains("an administrator of this project deploys it"));
+    assert!(
+        alone
+            .to_string()
+            .contains("an administrator of this project deploys it")
+    );
     let bob = card(json!(["bob"])).await?;
     assert_eq!(bob["isError"], false, "{bob}");
     Ok(())
