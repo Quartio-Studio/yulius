@@ -867,6 +867,34 @@ mod tests {
         ));
     }
 
+    /// #1749 review round 2: a collaborator grant asks again only after a failure that may pass
+    /// (`Upstream`); a rate limit is waited out, never asked into, and a 4xx is a refusal.
+    #[test]
+    fn a_grant_is_asked_again_only_after_a_failure_that_may_pass() {
+        let limited = map_grant(GitHubError::RateLimited {
+            retry_after: Some(std::time::Duration::from_secs(60)),
+        });
+        assert!(
+            matches!(&limited, AppError::Capacity(text) if text.contains("rate limit")),
+            "{limited:?}"
+        );
+        assert!(matches!(
+            map_grant(GitHubError::RateLimited { retry_after: None }),
+            AppError::Capacity(_)
+        ));
+        assert!(matches!(
+            map_grant(GitHubError::Upstream(502)),
+            AppError::Upstream(_)
+        ));
+        assert!(matches!(
+            map_grant(GitHubError::Forbidden {
+                message: "Resource not accessible by integration".into(),
+                accepted_permissions: None,
+            }),
+            AppError::Forbidden(_)
+        ));
+    }
+
     /// SPEC-069 BPL-008: only failures that may pass by themselves stay `Upstream`, so a title
     /// GitHub refused stops the merge and a rate limit or an outage only delays it.
     #[test]

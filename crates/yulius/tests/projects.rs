@@ -1245,13 +1245,34 @@ async fn an_invited_refused_or_failed_creator_still_gets_the_project_and_the_rea
     );
     assert_eq!(w.github.grants().len(), 5);
 
+    // A rate limit is waited out, never asked into again.
+    w.grant("alice", "limited", "push");
+    w.github.answer_grants(vec![Err(AppError::Capacity(
+        "GitHub rate limit reached. Waiting until 2026-11-25T08:00:00Z.".into(),
+    ))]);
+    let limited = create_project(&w, &alice, "limited").await?;
+    assert_eq!(limited.status, StatusCode::CREATED, "{:?}", limited.body);
+    assert_eq!(limited.body["admin_grant"], "failed", "{:?}", limited.body);
+    assert_eq!(
+        creator_admin_audit(&w, "limited").await?,
+        vec![format!(
+            "GitHub could not make alice an admin of {OWNER}/limited: GitHub rate limit \
+             reached. Waiting until 2026-11-25T08:00:00Z."
+        )]
+    );
+    assert_eq!(
+        w.github.grants().len(),
+        6,
+        "a rate limit is not asked again"
+    );
+
     w.grant("alice", "flaky", "push");
     w.github.answer_grants(vec![down()]);
     let flaky = create_project(&w, &alice, "flaky").await?;
     assert_eq!(flaky.status, StatusCode::CREATED, "{:?}", flaky.body);
     assert_eq!(flaky.body["access"], "admin", "{:?}", flaky.body);
     assert!(flaky.body.get("admin_grant").is_none(), "{:?}", flaky.body);
-    assert_eq!(w.github.grants().len(), 7);
+    assert_eq!(w.github.grants().len(), 8);
 
     w.grant("alice", "owned", "admin");
     w.github.answer_grants(vec![Err(AppError::Invalid(
@@ -1264,7 +1285,7 @@ async fn an_invited_refused_or_failed_creator_still_gets_the_project_and_the_rea
     assert_eq!(
         creator_admin_audit(&w, "owned").await?,
         vec![format!(
-            "GitHub refused to make alice an admin of {OWNER}/owned (GitHub: validation \
+            "GitHub did not make alice an admin of {OWNER}/owned (GitHub: validation \
              failed); they are its admin already"
         )],
         "an organization owner is its admin already"
@@ -1311,6 +1332,30 @@ async fn the_admin_role_goes_to_the_creators_current_login_only() -> TestResult 
         vec![format!(
             "alice could not be confirmed as the GitHub account that created {OWNER}/other \
              (their GitHub sign-in names another account); nobody was made its admin"
+        )]
+    );
+    Ok(())
+}
+
+/// #1749 review round 2: the grant is audited when it happens, so an invitation GitHub sent stays
+/// on record when setting up the project fails afterwards (here the App's installation cannot
+/// reach the new repository) and no sandbox is made.
+#[tokio::test]
+async fn a_grant_is_audited_when_setup_fails_after_it() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", true).await?;
+    w.github
+        .selected_only
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    w.github.answer_grants(vec![Ok(RoleGrant::Invited)]);
+    let refused = create_project(&w, &alice, "unreached").await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert!(w.h.store.sandboxes().await?.is_empty());
+    assert_eq!(
+        creator_admin_audit(&w, "unreached").await?,
+        vec![format!(
+            "GitHub invited alice to be an admin of {OWNER}/unreached; they are its admin \
+             once they accept the invitation"
         )]
     );
     Ok(())
