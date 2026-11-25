@@ -125,9 +125,9 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - [x] Claude Code run settings pin the memory folder and deny edits there
 - [x] Real-bwrap proof on a guest: writes refused per harness, reads kept, purge works
 - [x] Architecture, operations and changes updated
-- [ ] Containers, CI jobs and script watches see the harness folders masked
-- [ ] Memory key from the sandbox's repository; ancestors' instructions excluded; guard errors fail the start
-- [ ] Joined runs and the Docker mask proven on a guest
+- [x] Containers, CI jobs and script watches see the harness folders masked
+- [x] Memory key from the sandbox's repository; ancestors' instructions excluded; guard errors fail the start
+- [x] Joined runs and the Docker mask proven on a guest
 - [ ] Independent review of the guarantee approved
 - [ ] The refusal sentence for edit tools, shell results and the Antigravity start
 - [ ] The update's host check clears the stopgap's immutable flags
@@ -232,6 +232,29 @@ clean-up, MEM-006 and MEM-009, follow in the second).
   passed. Main binary, files `memory_guard`, `global_superagent`, `playground`, `cockpit`,
   `codex`, `antigravity`, `supervision`, `shells`, `isolation`, `docker_smoke`, `live_display`:
   267 passed (the real-namespace test skips in a task's sandbox: "Creating new namespace failed").
+- Review round 1 (request changes; every finding answered in code):
+  - Real CLI, Claude Code 2.1.332 against the stub API: a `CLAUDE.md` and a `.claude/rules` file
+    in a folder above the working folder load (1 request each); with `claudeMdExcludes` naming
+    them in `--settings`, neither does (0).
+  - Real host, Ubuntu 26.04 QEMU guest after `yulius host setup` (service user `yulius`,
+    subordinate ids, AppArmor rule, base-1, Docker 29.10.1; the doctor's new line: "ok
+    bubblewrap 0.11.1"), the isolation suite as the service user in a delegated transient unit:
+    - `isolation_end_to_end` passed: in a joined agent run (the holder's namespaces, seccomp
+      filter, reduced capabilities) `mem-append`, `mem-create`, `mem-delete`, `mem-rename` and
+      `claude-md` were refused and `mem-read=existing note`.
+    - `isolation_docker`: `docker run -v <home>/.claude:/c -v <home>:/h` saw `c-entries=0
+      h-claude=0`; writing `/h/.claude/CLAUDE.md` gave "Read-only file system"; the host note
+      was unchanged. With the engine's masks removed by hand the same check saw 5 entries and
+      failed. The test then stopped at its existing `--privileged` step ("error mounting sysfs"),
+      which fails the same way without the masks: #1765.
+  - The hardened real-namespace test (tools required, every refusal's whole message checked) on
+    the guest as root and as the service user: 1 passed each, 50 refusals each (19 "Read-only
+    file system", 13 "Device or resource busy", 4 "Invalid cross-device link", the rest Python's
+    and `mount`'s "permission denied" and `umount`'s "not mounted" of a locked mount).
+  - `scripts/cargo nextest run` on the five touched library crates: 1443 passed; `-p yulius`
+    outside the main binary: 707 passed; main binary files `memory_guard`, `global_superagent`,
+    `playground`, `cockpit`, `codex`, `antigravity`, `supervision`, `shells`, `isolation`,
+    `docker_smoke`, `live_display`, `local_ci`, `watches`: 420 passed.
 - `scripts/cargo clippy … --all-targets -D warnings` on the touched crates, `scripts/dev macos`,
   `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` on the touched crates and `scripts/dev quick`:
   clean.
