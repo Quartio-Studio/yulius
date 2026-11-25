@@ -5,6 +5,7 @@ use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::AppResult;
 use yulius_app::model::{AccountChange, AccountRecord, AccountStatus, Sealed};
 use yulius_app::ports::store::AccountStore;
+use yulius_domain::billing::BillingCycle;
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
@@ -296,6 +297,12 @@ impl AccountStore for SqliteStore {
         let id = id.as_str().to_owned();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
+            // Its billing cycle goes with it (SPEC-651 BIL-005; the key cascades too).
+            tx.execute(
+                "DELETE FROM account_billing WHERE account_id = ?1",
+                [id.as_str()],
+            )
+            .map_err(db)?;
             tx.execute("DELETE FROM accounts WHERE id = ?1", [id.as_str()])
                 .map_err(db)?;
             // A pin to it ends with it (SPEC-629 RBL-005).
@@ -306,6 +313,60 @@ impl AccountStore for SqliteStore {
             .map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn set_account_billing(
+        &self,
+        id: &AccountId,
+        cycle: Option<BillingCycle>,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            match cycle {
+                Some(cycle) => c.execute(
+                    "INSERT INTO account_billing (account_id, anchor, period, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4) ON CONFLICT (account_id) DO UPDATE SET \
+                     anchor = excluded.anchor, period = excluded.period, \
+                     updated_at = excluded.updated_at",
+                    params![
+                        id,
+                        cycle.anchor().to_string(),
+                        cycle.period().as_str(),
+                        at.0
+                    ],
+                ),
+                None => c.execute("DELETE FROM account_billing WHERE account_id = ?1", [id]),
+            }
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn account_billing(&self) -> AppResult<Vec<(AccountId, BillingCycle)>> {
+        self.call(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT account_id, anchor, period FROM account_billing ORDER BY account_id",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let id: String = row.get(0)?;
+                    let anchor: String = row.get(1)?;
+                    let period: String = row.get(2)?;
+                    let cycle = BillingCycle::parse(&anchor, &period)
+                        .map_err(|_| bad_column("billing cycle", &format!("{anchor} {period}")))?;
+                    Ok((
+                        AccountId::parse(&id).map_err(|_| bad_column("account id", &id))?,
+                        cycle,
+                    ))
+                })
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await
     }

@@ -8,6 +8,7 @@
 
 mod support;
 
+mod account_billing;
 mod account_email;
 mod account_token;
 mod account_usage;

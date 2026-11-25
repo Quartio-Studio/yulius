@@ -225,6 +225,10 @@ pub fn public() -> Router<AppState> {
             "/api/admin/accounts/{id}",
             patch(accounts::update).delete(accounts::delete),
         )
+        .route(
+            "/api/admin/accounts/{id}/billing",
+            put(accounts::set_billing).delete(accounts::remove_billing),
+        )
         .route("/api/admin/accounts/{id}/relogin", post(accounts::relogin))
         .route("/api/admin/accounts/{id}/import", post(accounts::import))
         .route(

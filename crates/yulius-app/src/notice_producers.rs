@@ -359,6 +359,7 @@ mod tests {
             in_use_by: 0,
             tokens_24h: None,
             tokens_7d: None,
+            billing: None,
             usage_read: None,
         }
     }

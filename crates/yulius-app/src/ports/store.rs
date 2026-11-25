@@ -729,8 +729,20 @@ pub trait AccountStore: Send + Sync {
     /// Clears an account's last error when it is a note about reading its usage (`usage: …`);
     /// any other error stays.
     async fn clear_usage_error(&self, id: &AccountId, at: Timestamp) -> AppResult<()>;
-    /// Deletes an account.
+    /// Deletes an account, with its billing cycle.
     async fn delete_account(&self, id: &AccountId) -> AppResult<()>;
+    /// Sets the billing cycle a person gave for an account (SPEC-651 BIL-001), or removes it
+    /// (`None`; removing none is no error). A new sign-in or a rename keeps it (BIL-005).
+    async fn set_account_billing(
+        &self,
+        id: &AccountId,
+        cycle: Option<yulius_domain::billing::BillingCycle>,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// The billing cycle of every account that has one.
+    async fn account_billing(
+        &self,
+    ) -> AppResult<Vec<(AccountId, yulius_domain::billing::BillingCycle)>>;
     /// Token totals per account of the runs started at or after `since`.
     async fn account_tokens(&self, since: Timestamp)
     -> AppResult<Vec<crate::model::AccountTokens>>;

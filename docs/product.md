@@ -535,7 +535,10 @@ watching, steering and unblocking.
   shows the weekly total if those runs used Ultrafast. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
   Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude
-  does not share it, they type it in place under the name (SPEC-463). Every card says whose
+  does not share it, they type it in place under the name (SPEC-463). Each card says when the
+  subscription next charges the card ("Next charge Thu, Dec 24, 2026 · in 29 days", "Every month
+  on the 24th") once an administrator gave one charge date and whether it repeats monthly or
+  yearly: no provider tells Yulius its billing date (SPEC-651). Every card says whose
   subscription it is with a badge under its name (Claude, Codex or Antigravity, the vendor on
   hover; SPEC-513). A subscription is connected
   with Claude's own sign-in in a terminal on the page, or by pasting the token

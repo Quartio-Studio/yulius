@@ -564,6 +564,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0476 -->
 - [0477](0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md): A person (CD page, or their Superagent after the panel's confirmation) and a per-project schedule (`serve_every_minutes`, `serve_after_merges`) ask merge-first staging for the gated integration head; a red head waits for the next green one; the server decides each deploy control (SPEC-650, task #634)
 <!-- ADR 0477 -->
+- [0478](0478-a-person-gives-each-subscriptions-charge-date.md): An administrator gives each subscription one charge date and whether it repeats monthly or yearly; Yulius counts the next charge (UTC) and every account view and Subscriptions card shows it, since no provider tells Yulius the billing date (SPEC-651, task #635)
 <!-- ADR 0478 -->
 <!-- ADR 0479 -->
 <!-- ADR 0480 -->

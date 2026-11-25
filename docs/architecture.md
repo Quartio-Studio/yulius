@@ -1133,6 +1133,25 @@ flowchart LR
   DB -->|"label + email (administrators)"| V["Subscriptions page, Status, Dashboard, Task details, analytics"]
 ```
 
+## Subscription charge dates
+
+No provider tells Yulius when a subscription bills its card, so an administrator gives one
+charge date and whether it repeats monthly or yearly
+([SPEC-651](../.ai/specs/SPEC-651-hey-i-subscrbition-page-i-need-to-have-a.md),
+[decision 0478](decisions/0478-a-person-gives-each-subscriptions-charge-date.md)). The cycle is
+its own table, `account_billing` (one row per subscription, removed with it), so credential
+writes never touch it. `yulius_domain::billing::BillingCycle` counts the next charge from today's
+UTC date (the anchor's day, or the month's last day without one), and `App::billing_views` adds it
+to every `AccountView` the server answers or publishes (`billing`, `null` without a cycle).
+
+```mermaid
+flowchart LR
+  A["Administrator: card's charge-date dialog"] -->|"PUT/DELETE /api/admin/accounts/{id}/billing"| APP["App::set_account_billing / remove_account_billing"]
+  APP -->|"BillingCycle::parse; audit account.billing_*"| DB[("account_billing")]
+  DB -->|"account_billing()"| V["App::billing_views: next_charge(today UTC)"]
+  V -->|"AccountView.billing"| P["Subscriptions page, account.updated"]
+```
+
 ## Goal retries after an API error
 
 An API error ends a turn with no Stop hook. With a goal active, Claude Code retries the turn
