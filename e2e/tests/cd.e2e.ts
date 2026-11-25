@@ -877,7 +877,8 @@ test('a needs_you decision reads Decide, and an action alone only To do', async 
 });
 
 // Task #420 (SPEC-438, #1115): "Couldn't deploy production: … the last rollback drill of dev ran
-// at e83c627; deploy dev at this commit first". A production deploy whose rollback is unproven
+// at e83c627; deploy dev at this commit first" (since SPEC-650: "get this commit deployed on dev
+// first (Deploy dev on the CD page, or cd_deploy; …)"). A production deploy whose rollback is unproven
 // only for its commit deploys dev first, says so, and waits for dev's drill; the page shows the
 // wait and offers no second deploy meanwhile.
 test('a production deploy proves its rollback on dev first', async ({ app, browser, screen }) => {

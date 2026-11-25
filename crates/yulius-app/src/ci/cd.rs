@@ -886,12 +886,19 @@ impl App {
                 last_run,
                 rollback,
                 staging,
+                deploy_action: yulius_contracts::api::cd::CdDeployAction::default(),
             });
         }
         super::rollback::mark_rollback_not_needed(&mut environments, &profile.integration_branch);
         let mut views = Vec::new();
         for run in &runs {
             views.push(self.cd_run_view(run, false).await);
+        }
+        for env in &mut environments {
+            let running = runs
+                .iter()
+                .any(|run| run.environment == env.name && run.state == RunState::Running);
+            env.deploy_action = deploy_action(env, level, running);
         }
         Ok(CdOverview {
             slug: sandbox.slug.clone(),
@@ -2852,10 +2859,150 @@ impl App {
     }
 }
 
+/// An environment's Deploy button for a person with `level` access (SPEC-650 PST-007): the one
+/// decision the CD page renders and `needs_you` checks guidance against. A merge-first staging
+/// target takes a request whatever runs: its queue orders it.
+pub(crate) fn deploy_action(
+    env: &CdEnvironment,
+    level: AccessLevel,
+    running: bool,
+) -> yulius_contracts::api::cd::CdDeployAction {
+    let prod = env.stage == CdStage::Prod.as_str();
+    let word = if env.name == "prod" {
+        "production"
+    } else {
+        env.name.as_str()
+    };
+    use yulius_contracts::api::cd::CdDeployAction as A;
+    let blocked = if prod && !level.allows(Action::Administer) {
+        Some((
+            A::ADMINISTRATOR,
+            "Only an administrator deploys production".to_owned(),
+        ))
+    } else if !level.allows(Action::Work) {
+        Some((A::WRITE, "Requires write access".to_owned()))
+    } else if env.state != "ready" {
+        Some((A::NOTHING, "Nothing to deploy yet".to_owned()))
+    } else if running && env.staging.is_none() {
+        Some((A::RUNNING, "A deploy is running".to_owned()))
+    } else if prod {
+        env.rollback.waiting.clone().map(|why| (A::WAITING, why))
+    } else {
+        None
+    };
+    let (reason, why) = blocked.map_or((None, None), |(code, why)| {
+        (Some(code.to_owned()), Some(why))
+    });
+    yulius_contracts::api::cd::CdDeployAction {
+        label: if prod {
+            format!("Deploy {word}…")
+        } else {
+            format!("Deploy {word}")
+        },
+        enabled: why.is_none(),
+        why,
+        reason,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ports::isolation::SandboxJoin;
+
+    /// SPEC-650 PST-007: who may press an environment's Deploy, and why not, in one place.
+    #[test]
+    fn the_deploy_button_says_who_may_press_it_and_why_not() {
+        use super::{AccessLevel, CdEnvironment, deploy_action};
+        let env = |name: &str, stage: &str, state: &str| CdEnvironment {
+            name: name.into(),
+            label: name.into(),
+            stage: stage.into(),
+            state: state.into(),
+            branch: "dev".into(),
+            head: None,
+            problem: None,
+            about: None,
+            deploy: None,
+            verify: None,
+            promote: false,
+            promotes_from: None,
+            secrets: Vec::new(),
+            states: Vec::new(),
+            deployed: None,
+            last_run: None,
+            rollback: yulius_contracts::api::cd::CdRollback::default(),
+            staging: None,
+            deploy_action: yulius_contracts::api::cd::CdDeployAction::default(),
+        };
+        let dev = env("dev", "dev", "ready");
+        let action = deploy_action(&dev, AccessLevel::Write, false);
+        assert_eq!(
+            (action.label.as_str(), action.enabled),
+            ("Deploy dev", true)
+        );
+        assert_eq!(
+            deploy_action(&dev, AccessLevel::Read, false).why.as_deref(),
+            Some("Requires write access")
+        );
+        assert_eq!(
+            deploy_action(&dev, AccessLevel::Write, true).why.as_deref(),
+            Some("A deploy is running")
+        );
+        let staging = CdEnvironment {
+            staging: Some(yulius_contracts::api::cd::CdStaging::default()),
+            ..env("staging", "dev", "ready")
+        };
+        assert!(
+            deploy_action(&staging, AccessLevel::Write, true).enabled,
+            "the staging queue takes a request while a deploy runs"
+        );
+        assert_eq!(
+            deploy_action(&env("dev", "dev", "empty"), AccessLevel::Admin, false)
+                .why
+                .as_deref(),
+            Some("Nothing to deploy yet")
+        );
+        let prod = env("prod", "prod", "ready");
+        let writer = deploy_action(&prod, AccessLevel::Write, false);
+        assert_eq!(writer.label, "Deploy production…");
+        assert_eq!(
+            writer.why.as_deref(),
+            Some("Only an administrator deploys production")
+        );
+        assert!(deploy_action(&prod, AccessLevel::Admin, false).enabled);
+        // The reason as a code, for the advice `needs_you` gives (review round 1 of PR 3).
+        let code = |action: yulius_contracts::api::cd::CdDeployAction| action.reason;
+        assert_eq!(code(writer).as_deref(), Some("administrator"));
+        assert_eq!(
+            code(deploy_action(&dev, AccessLevel::Read, false)).as_deref(),
+            Some("write")
+        );
+        assert_eq!(
+            code(deploy_action(&dev, AccessLevel::Write, true)).as_deref(),
+            Some("running")
+        );
+        assert_eq!(
+            code(deploy_action(
+                &env("dev", "dev", "empty"),
+                AccessLevel::Admin,
+                false
+            ))
+            .as_deref(),
+            Some("nothing")
+        );
+        assert_eq!(code(deploy_action(&dev, AccessLevel::Write, false)), None);
+        let waiting = CdEnvironment {
+            rollback: yulius_contracts::api::cd::CdRollback {
+                waiting: Some("Production deploys at abc once the drill passes".into()),
+                ..Default::default()
+            },
+            ..prod
+        };
+        let held = deploy_action(&waiting, AccessLevel::Admin, false);
+        assert!(!held.enabled);
+        assert_eq!(held.reason.as_deref(), Some("waiting"));
+    }
 
     /// #704 (SPEC-237): `cd_status` tells an agent what a production secret agents use means.
     #[test]
@@ -2888,6 +3035,7 @@ mod tests {
             last_run: None,
             rollback: yulius_contracts::api::cd::CdRollback::default(),
             staging: None,
+            deploy_action: Default::default(),
         };
         let mut text = String::new();
         environment_text(&mut text, &env);
@@ -2923,6 +3071,7 @@ mod tests {
             last_run: None,
             rollback: yulius_contracts::api::cd::CdRollback::default(),
             staging: None,
+            deploy_action: Default::default(),
         };
         let mut text = String::new();
         environment_text(&mut text, &env);

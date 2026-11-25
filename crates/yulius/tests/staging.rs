@@ -4930,3 +4930,159 @@ async fn a_project_without_a_merge_first_target_is_rechecked_hourly() -> TestRes
     assert!(reads()? > 0, "rechecked after an hour");
     Ok(())
 }
+
+/// SPEC-650 PST-007 (cards told people to "press Deploy dev on the CD page" while it was
+/// disabled): the CD page's Deploy buttons are decided by the server for their reader, and a
+/// `needs_you` card that sends the task's owner to one that is disabled for them is refused,
+/// naming what works; one that names a working button, or no button, is asked.
+#[tokio::test]
+async fn a_needs_you_card_never_sends_its_owner_to_a_disabled_deploy() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    // Alice, the task's owner, may write but not administer.
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let action = |name: &str| -> BoxResult<Value> {
+        Ok(overview["environments"]
+            .as_array()
+            .ok_or("environments")?
+            .iter()
+            .find(|env| env["name"] == name)
+            .ok_or("env")?["deploy_action"]
+            .clone())
+    };
+    assert_eq!(action("staging")?["label"], "Deploy staging");
+    assert_eq!(action("staging")?["enabled"], true);
+    assert_eq!(action("prod")?["label"], "Deploy production…");
+    assert_eq!(action("prod")?["enabled"], false);
+    assert_eq!(action("dev")?["why"], "Nothing to deploy yet");
+    let ask = |text: &'static str| {
+        let f = &f;
+        async move { support::mcp_tool(&f.h, &token("t1"), "needs_you", json!({"action": text})).await }
+    };
+    // Each refusal says why and the advice for that reason (review round 1 of PR 3).
+    for (text, says, works) in [
+        (
+            "Press Deploy production… on the CD page",
+            "Only an administrator deploys production",
+            "an administrator of this project deploys it",
+        ),
+        (
+            "Deploy production on the CD page, please",
+            "Only an administrator deploys production",
+            "an administrator of this project deploys it",
+        ),
+        (
+            "Click Deploy dev on the CD page to test it",
+            "Nothing to deploy yet",
+            "[cd.dev] has nothing to deploy yet",
+        ),
+    ] {
+        let refused = ask(text).await?;
+        assert_eq!(refused["isError"], true, "{text}: {refused}");
+        let said = refused.to_string();
+        assert!(
+            said.contains(says) && said.contains("alice") && said.contains(works),
+            "{text}: {said}"
+        );
+    }
+    {
+        use yulius_app::ports::store_ext::NeedsYouStore as _;
+        assert!(
+            f.h.store
+                .task_needs_you(&TaskId::parse("t1")?)
+                .await?
+                .is_none()
+        );
+    }
+    for text in [
+        "Press Deploy staging on the CD page to put the head on staging",
+        "Ask an administrator of this project to deploy production",
+    ] {
+        let asked = ask(text).await?;
+        assert_eq!(asked["isError"], false, "{text}: {asked}");
+    }
+    // Only the to-do is read: what happened may name a button.
+    let told = support::mcp_tool(
+        &f.h,
+        &token("t1"),
+        "needs_you",
+        json!({"action": "Read the run", "happened": "Deploy dev has nothing to deploy yet"}),
+    )
+    .await?;
+    assert_eq!(told["isError"], false, "{told}");
+    // A named person who cannot press it either: the refusal gives their reason and names them
+    // (review round 2 of PR 3), never "ask an administrator" for an administrator.
+    let named = support::mcp_tool(
+        &f.h,
+        &token("t1"),
+        "needs_you",
+        json!({"action": "Deploy production on the CD page", "who": ["bob"]}),
+    )
+    .await?;
+    assert_eq!(named["isError"], true, "{named}");
+    let said = named.to_string();
+    assert!(
+        said.contains("bob")
+            && said.contains("Nothing to deploy yet")
+            && said.contains("[cd.prod] has nothing to deploy yet")
+            && !said.contains("an administrator of this project deploys it"),
+        "{said}"
+    );
+
+    // An administrator owner: production's button is disabled for another reason, with its own
+    // advice, never "ask an administrator".
+    support::seed_task(&f.h, "t2", "s1", "u-bob", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t2", &token("t2")).await?;
+    let admin = support::mcp_tool(
+        &f.h,
+        &token("t2"),
+        "needs_you",
+        json!({"action": "Press Deploy production on the CD page"}),
+    )
+    .await?;
+    assert_eq!(admin["isError"], true, "{admin}");
+    let said = admin.to_string();
+    assert!(
+        said.contains("Nothing to deploy yet")
+            && said.contains("[cd.prod] has nothing to deploy yet")
+            && !said.contains("an administrator of this project deploys it"),
+        "{said}"
+    );
+    Ok(())
+}
+
+/// Review round 1 of PR 3: a card may ask a person it names (`who`) to press a Deploy button
+/// that works for them, though not for the task's owner.
+#[tokio::test]
+async fn a_needs_you_card_may_ask_a_named_person_who_can_press_the_deploy() -> TestResult {
+    let toml = staging_toml().replace(
+        "[cd.prod]\nabout = \"nothing yet\"\n",
+        "[cd.prod]\ndeploy = \"true\"\nverify = \"true\"\nrollback = \"true\"\n\
+         migrations = \"none: the test app keeps no data\"\n",
+    );
+    assert!(toml.contains("[cd.prod]\ndeploy"), "{toml}");
+    let f = fixture(&toml).await?;
+    agent(&f, "t1").await?;
+    let card = |who: Value| {
+        let f = &f;
+        async move {
+            support::mcp_tool(
+                &f.h,
+                &token("t1"),
+                "needs_you",
+                json!({"action": "Press Deploy production on the CD page", "who": who}),
+            )
+            .await
+        }
+    };
+    let alone = card(json!([])).await?;
+    assert_eq!(alone["isError"], true, "{alone}");
+    assert!(
+        alone
+            .to_string()
+            .contains("an administrator of this project deploys it")
+    );
+    let bob = card(json!(["bob"])).await?;
+    assert_eq!(bob["isError"], false, "{bob}");
+    Ok(())
+}
