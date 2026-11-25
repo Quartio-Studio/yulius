@@ -5,7 +5,10 @@
 Accepted. Specified in [SPEC-575](../../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)
 (MFS-003 to MFS-009); task #561. Builds on
 [0410](0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md)
-(the full suite on the merged revision). Keeps
+(the full suite on the merged revision). The order in which the full gate judges waiting requests
+(one candidate run each, oldest first) is superseded by
+[0480](0480-the-full-gate-judges-the-newest-waiting-revision-first.md): the newest first, and none
+for a request a judged revision above it answers. Keeps
 [0109](0109-cd-runs-verified-commits-out-of-the-agents-reach.md) (CD runs verified commits) and
 [0110](0110-only-a-person-deploys-production.md) (only a person deploys production).
 

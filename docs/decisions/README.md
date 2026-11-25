@@ -568,6 +568,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0478 -->
 - [0479](0479-harness-memory-is-read-only-in-every-session-yulius-starts.md): Every session Yulius starts sees its harness's memory and user-level instruction files bound read-only over themselves (opened without following links, handed to bwrap as descriptors), so no tool, shell or script of the agent writes them while they still load; a person edits them on the host (SPEC-652, task #636)
 <!-- ADR 0479 -->
+- [0480](0480-the-full-gate-judges-the-newest-waiting-revision-first.md): The merge-first queue's full gate judges the newest waiting revision first; a request a green revision contains needs no run, one under a red revision only to narrow a new failure to its merge, by bisection over the waiting requests; one full-gate run at a time (SPEC-653, task #637; supersedes 0411's order)
 <!-- ADR 0480 -->
 <!-- ADR 0481 -->
 <!-- ADR 0482 -->

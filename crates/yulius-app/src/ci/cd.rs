@@ -2830,7 +2830,7 @@ impl App {
                     env_label(&env),
                     request.state.as_str(),
                     request.note.as_deref().unwrap_or(
-                        "Yulius runs the full gate on exactly that merged revision, then deploys and verifies it in revision order"
+                        "Yulius runs the full gate on that merged revision (or a newer one containing it, newest first), then deploys and verifies it in revision order"
                     ),
                 )
             } else {
