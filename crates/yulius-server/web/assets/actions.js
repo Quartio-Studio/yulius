@@ -1119,18 +1119,32 @@ export function openSandboxDialog(ctx, mode = 'import') {
         const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
         const verb = tabImport.checked ? 'Imported' : tabPlayground.checked ? 'Started the playground' : 'Created';
         toast(`${verb} ${sandbox.name}${preparing ? ' — it needs preparation before tasks can start' : ''}`, { kind: 'ok' });
-        // #1749: Yulius makes the creator the new repository's admin on GitHub; an invitation or a
-        // refusal leaves them less, so they learn why production is not theirs to deploy yet.
-        if (verb === 'Created' && sandbox.access !== 'admin') {
-          const repo = sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name;
-          toast(`GitHub gives you ${sandbox.access} access to ${repo}, not admin: accept GitHub’s invitation to it, or ask an owner of ${sandbox.repo ? sandbox.repo.owner : 'the organization'} to make you its admin, to deploy its production.`, { kind: 'warn', timeout: 0 });
-        }
+        // #1749 (ADR-0476): the server makes the creator of an organization's repository its admin
+        // on GitHub and says when it did not, so they learn why production is not theirs yet.
+        const grant = adminGrantWarning(sandbox);
+        if (grant) toast(grant, { kind: 'warn', timeout: 0 });
         ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
       } },
     ],
   });
   closeDialog = () => modal.close(true);
   switchMode();
+}
+
+/**
+ * What a created project's answer says when its creator was not made its GitHub admin
+ * (`admin_grant`, ADR-0476), or null.
+ */
+function adminGrantWarning(sandbox) {
+  const owner = sandbox.repo.owner;
+  const repo = `${owner}/${sandbox.repo.name}`;
+  const ask = `ask an owner of ${owner} to make you its admin on GitHub to deploy its production`;
+  switch (sandbox.admin_grant) {
+    case 'invited': return `GitHub invited you to be an admin of ${repo}: accept the invitation (GitHub emails it and shows it on the repository) to deploy its production.`;
+    case 'refused': return `GitHub refused to make you an admin of ${repo}: ${ask}.`;
+    case 'failed': return `${BRAND.name} could not make you an admin of ${repo}: ${ask}.`;
+    default: return null;
+  }
 }
 
 /**

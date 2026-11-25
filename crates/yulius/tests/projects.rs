@@ -1134,7 +1134,20 @@ async fn the_creator_of_a_project_is_its_admin_and_may_deploy_production() -> Te
         &alice,
     )
     .await?;
-    assert_eq!(deploy.status, StatusCode::FORBIDDEN, "{:?}", deploy.body);
+    // Past the administrator check (403 "deploying production needs administrator access to the
+    // project") to the promotion, which reads the branches this fake GitHub does not keep.
+    assert_eq!(
+        (
+            deploy.status,
+            text(&deploy.body["error"]["message"]).to_owned()
+        ),
+        (
+            StatusCode::CONFLICT,
+            "branch 'dev' does not exist on GitHub".to_owned()
+        ),
+        "{:?}",
+        deploy.body
+    );
     Ok(())
 }
 

@@ -30,6 +30,11 @@ pub struct Sandbox {
     pub port_count: u16,
     /// Live task counters.
     pub counts: SandboxCounts,
+    /// Only in the answer to creating a project in an organization, when its creator is not made
+    /// its admin on GitHub by it (ADR-0476): `invited` (once they accept GitHub's invitation),
+    /// `refused` (by GitHub or the organization) or `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_grant: Option<String>,
 }
 
 /// GitHub repository reference.

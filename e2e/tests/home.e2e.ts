@@ -76,18 +76,36 @@ test('with no sandbox the home screen offers a playground, then to import or cre
 });
 
 // #1749 ("my mate wasnt able to deploy prod even if he was an admin"): Yulius makes the creator of
-// a project its admin on GitHub; when GitHub only invites them or refuses, the page says why
-// production is not theirs to deploy yet, and the warning stays until it is dismissed.
-test('a created project its creator is not admin of says why its production is not theirs yet', async ({ app, browser, screen }) => {
-  await app.open(mock('/', '&sandboxes=0'));
-  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { createAccess?: string } }).__yuliusMock.createAccess = 'write'; });
+// an organization's project its admin on GitHub; when GitHub only invites them, refuses or fails,
+// the page says which and what to do, and the warning stays until it is dismissed. A creator made
+// admin reads no warning.
+async function createShop(browser: Parameters<Parameters<typeof test>[1]>[0]['browser'], screen: Parameters<Parameters<typeof test>[1]>[0]['screen'], grant: string | null) {
+  await browser.evaluate((g) => { (window as unknown as { __yuliusMock: { createGrant?: string | null } }).__yuliusMock.createGrant = g; }, grant);
   await screen.getByRole('button', 'Create from template').click();
   const dialog = screen.getByRole('dialog', 'Add sandbox');
   await expect(dialog.getByRole('radio', 'Create from template')).toBeChecked();
   await dialog.getByRole('textbox', /^Repository name/).fill('shop');
   await dialog.getByRole('button', 'Create').click();
   await expect.poll(() => browser.evaluate(() => location.hash)).toBe('#/s/shop');
-  const warning = browser.locator('.toast-warn:has-text("GitHub gives you write access to Quartio-Studio/shop, not admin")');
-  await expect(warning).toContainText('ask an owner of Quartio-Studio to make you its admin, to deploy its production');
-  expect(await axeViolations(browser)).toEqual([]);
+}
+
+test('a created project its creator is not admin of says why its production is not theirs yet', async ({ app, browser, screen }) => {
+  for (const [grant, says] of [
+    ['invited', 'GitHub invited you to be an admin of Quartio-Studio/shop: accept the invitation'],
+    ['refused', 'GitHub refused to make you an admin of Quartio-Studio/shop: ask an owner of Quartio-Studio to make you its admin on GitHub to deploy its production'],
+    ['failed', 'could not make you an admin of Quartio-Studio/shop: ask an owner of Quartio-Studio'],
+  ]) {
+    await app.open(mock('/', '&sandboxes=0'));
+    await createShop(browser, screen, grant);
+    await expect(browser.locator(`.toast-warn:has-text("${says}")`)).toBeVisible();
+    expect(await axeViolations(browser)).toEqual([]);
+  }
+});
+
+test('a created project its creator is admin of shows no warning', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&sandboxes=0'));
+  await createShop(browser, screen, null);
+  await expect(browser.locator('.toast-ok:has-text("Created shop")')).toBeVisible();
+  // Looked at once the success toast is up: the warning would come with it.
+  expect(await browser.locator('.toast-warn').count()).toBe(0);
 });
