@@ -2614,8 +2614,6 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
         Ok(())
     }
 
-    /// SPEC-575 MFS-001: one dev-stage environment may be the merge-first staging target; it
-    /// deploys, verifies and rolls back, and is the only one.
     /// SPEC-650 PST-006: staging moves on by itself on a timer and after a number of merges,
     /// configurable on the merge-first target; `0` turns either off.
     #[test]
@@ -2636,6 +2634,11 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
         );
         let set = target("serve_every_minutes = 30\nserve_after_merges = 0\n")?;
         assert_eq!((set.serve_every_minutes, set.serve_after_merges), (30, 0));
+        let most = target("serve_every_minutes = 10080\nserve_after_merges = 1000\n")?;
+        assert_eq!(
+            (most.serve_every_minutes, most.serve_after_merges),
+            (10_080, 1_000)
+        );
         for bad in [
             "serve_every_minutes = 10081\n",
             "serve_after_merges = 1001\n",
@@ -2653,6 +2656,8 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
         Ok(())
     }
 
+    /// SPEC-575 MFS-001: one dev-stage environment may be the merge-first staging target; it
+    /// deploys, verifies and rolls back, and is the only one.
     #[test]
     fn a_dev_stage_environment_is_the_merge_first_target() -> TestResult {
         let staging = "[cd.staging]\nstage = \"dev\"\nmerge_first = true\ndeploy = \"d\"\n\

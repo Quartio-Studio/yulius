@@ -1923,6 +1923,10 @@ merged revision of `dev`.
   roll staging back there.
 - **Staging follows `dev` by itself** (SPEC-650) with the defaults: once it is 5 merges behind, or
   60 minutes without a staging change while `dev` is ahead. It deploys as the project's creator.
+  A person's rollback, cancel or a failed deploy stands for that revision: the schedule asks only
+  for a newer head. Where the delivery profile promotes automatically, a verified scheduled
+  deploy is promoted as any verified staging revision is. Set both `serve_*` keys to `0` to keep
+  staging where people put it.
 - A red `dev` leaves staging on the verified release. A new failure records `gate_failed`.
   An inherited failure records its original revision and task. One working task owns the repair.
   If none is working, project CI and Status list each test with its introducing revision and task.

@@ -104,13 +104,20 @@ production authorization, not staging.
   - A disabled deploy button always shows its reason as visible text, not only in a tooltip.
 - **PST-006 Staging never stalls on one task.**
   - `[cd.<name>]` with `merge_first = true` takes `serve_every_minutes` (default 60, `0` turns
-    it off) and `serve_after_merges` (default 5, `0` turns it off).
-  - Once a minute (at most every 5 minutes per project), Yulius checks each project with a
-    merge-first target. When the integration head is ahead of what staging serves and no
-    request is pending, it records a scheduled task-less request for the head (`yulius:schedule`,
-    note naming the trigger). The triggers:
+    it off) and `serve_after_merges` (default 5, `0` turns it off), refused on any other table.
+  - The staging tick checks each project at most every 5 minutes (a project whose last check
+    found no merge-first target, once an hour), after the repair notices.
+  - When the integration head is ahead of what staging serves and no request is on its way
+    (testing, ready or deploying; an inherited one waits for others), Yulius records a scheduled
+    request for the head (`yulius:schedule`, note naming the trigger). The triggers:
+    - staging serves no revision of the branch yet;
     - at least `serve_after_merges` first-parent commits since staging's revision;
-    - at least `serve_every_minutes` since the environment's last staging request or run.
+    - at least `serve_every_minutes` since the environment's last staging request or run
+      (deploy, rollback or drill).
+  - It never asks for a head any request already tried, a task's included: a failed deploy, a
+    person's cancel or rollback stands until a newer head lands.
+  - A verified scheduled deploy is promoted where the delivery profile promotes automatically, as
+    any verified staging revision is.
   - A task's own request keeps its rules ("a task's whole delivery once", one successful deploy
     per task) for its own verification bookkeeping. It never gates staging any more.
 - **PST-007 Guidance names a working action.**

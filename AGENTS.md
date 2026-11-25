@@ -26,8 +26,10 @@ revision and installs it there with its store kept,
 [operations](docs/operations.md#yuliuss-own-staging-vm); the merge-first staging target) and `[cd.prod]` (promotion of `dev` to `main`) in `yulius.toml`; another target would be a `[cd.<name>]` with its `stage`
 ([ADR-0195](docs/decisions/0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md)). Yulius runs them from the protected branches
 ([ADR-0109](docs/decisions/0109-cd-runs-verified-commits-out-of-the-agents-reach.md)); a merge
-deploys nothing by itself (a shared staging target uses merge-first staging via `cd_deploy` after
-the merged revision passes the full gate,
+deploys nothing directly (a shared staging target uses merge-first staging: a task's `cd_deploy`,
+a person's Deploy or their Superagent's, or Yulius's schedule after `serve_after_merges` merges or
+`serve_every_minutes`, deploys a merged revision once it passes the full gate,
+[ADR-0477](docs/decisions/0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md),
 [SPEC-575](.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md),
 [ADR-0410](docs/decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
 [ADR-0411](docs/decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
