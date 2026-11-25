@@ -3717,6 +3717,11 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
     (`staging_note`).
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
+  - Each environment's Deploy button is decided once, for its reader (`deploy_action` in
+    `ci/cd.rs`, `CdEnvironment.deploy_action`). The CD page renders it, and `needs_you` refuses a
+    card that names a button disabled for the task's owner (`refuse_a_disabled_deploy`), so
+    guidance never sends a person to a control they cannot press. The production gate names
+    "Deploy <drill env> on the CD page", which works on a merge-first dev too (SPEC-650 PST-007).
   - A production CD deploy selects the verified staging revision through the CD mirror.
     If the integration branch has advanced, a fast-forward uses the selected SHA and a
     merge-commit release uses a same-repository pull request pinned to it. CD checks the

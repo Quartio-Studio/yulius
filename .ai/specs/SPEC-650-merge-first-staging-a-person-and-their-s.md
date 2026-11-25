@@ -124,9 +124,13 @@ production authorization, not staging.
 - **PST-007 Guidance names a working action.**
   - The server decides each environment's deploy control for the viewer
     (`CdEnvironment.deploy_action`: label, enabled, why). The CD page renders it as it is.
-  - The production gate's "deploy dev at this commit first" names the merge-first wording
-    ("ask staging for the newest green revision: Deploy dev on the CD page") only where that
-    control is enabled for a person with write access.
+  - The production gate's "deploy dev at this commit first" names the control instead: "get it
+    deployed on dev first with Deploy dev on the CD page (a merge-first dev asks for the
+    integration head)". Since PST-001 that button works on a merge-first dev for a person with
+    write access, and production's deploy needs an administrator, who has it.
+  - A `needs_you` card names a button by its label with its capital ("Deploy dev",
+    "Deploy production"), as the page shows it; prose such as "ask an administrator to deploy
+    production" names no button and is asked.
   - A plain head deploy refused on the merge-first target (an automation's, a task's
     `cd_deploy` outside the staging path) names the working action: "Deploy dev on the CD page,
     or the Superagent's cd_deploy".
@@ -149,7 +153,7 @@ production authorization, not staging.
 - [x] The staging tick records a scheduled request when staging is behind
 - [x] Docs and the independent review of pull request 2
 - [x] Server-side deploy_action for each environment, rendered by the CD page
-- [ ] Refusal and production-gate texts name the working action; needs_you refuses a disabled control
+- [x] Refusal and production-gate texts name the working action; needs_you refuses a disabled control
 - [ ] Docs and the independent review of pull request 3
 
 ## Acceptance criteria

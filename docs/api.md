@@ -1095,7 +1095,7 @@ restart is recorded as `error` and never run again by itself.
 
 | Method and path | Access | Result |
 | --- | --- | --- |
-| `GET /api/sandboxes/{sid}/cd` | read | `CdOverview` |
+| `GET /api/sandboxes/{sid}/cd` | read | `CdOverview`; each environment's `deploy_action` `{label, enabled, why?}` is its Deploy button for the caller ("Deploy dev", "Deploy production…"), decided once on the server: the page renders it, and a task's `needs_you` card that names a button disabled for the task's owner is refused (422) with why and what works (SPEC-650 PST-007) |
 | `POST /api/sandboxes/{sid}/cd/{env}/deploy`, a dev-stage `env` | write | the running `CdRun` |
 | `POST /api/sandboxes/{sid}/cd/{env}/deploy`, a production-stage `env` (`production` is `prod`) | admin, `{"confirm": "<slug>", "expect": "<sha>", "confirm_ms": 4200}` | the running `CdRun` after the promotion |
 | `POST /api/sandboxes/{sid}/cd/{env}/staging`, the merge-first staging target | write | `CdStagingRequest` (`asked_by`, `scheduled`, `waiting`): a person's request for the verified integration head, deployed once its full gate passed or, when it is red, the next green revision (or a passing rerun of it); a repeat answers with the pending request, or with a verified one while staging still contains that revision, and otherwise (a failed deploy, a cancel, a rollback) records a new request, deployed as the one asking now (SPEC-650). The target's plain `…/deploy` is refused (409) naming it |
