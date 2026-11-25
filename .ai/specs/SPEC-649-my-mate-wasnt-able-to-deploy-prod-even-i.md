@@ -1,11 +1,11 @@
 ---
 yulius-task: 7be7a1a2-8398-48a1-b076-c86c2442d2cf
-status: in-progress
+status: done
 ---
 
 # SPEC-649: The person who creates a project is its admin on GitHub, so they can deploy its production
 
-Status: in-progress
+Status: done
 Date: 2026-11-25
 Owner: Yulius task #633
 Scope authorization: the person's request of 2026-11-25 ("my mate wasnt able to deploy prod even
@@ -97,7 +97,7 @@ non-owner creator (#1751, outside this change).
 - [x] The GitHub client grants a person a repository role, with its port and fakes
 - [x] A project created in an organization makes its creator a repository admin; an invitation or refusal is audited and shown
 - [x] Docs, ADR-0476 and the changes entry true to the fix
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -175,6 +175,16 @@ Review round 1 (findings answered in the pull request):
   `an_invited_refused_or_failed_creator_still_gets_the_project_and_the_reason` (the `flaky` case).
 - Vidoc: `yulius security-scan` answered "Security scan disabled: Vidoc is turned off in Yulius,
   for this project or the whole instance; nothing was scanned": not run, not passed.
+
+Review round 2 (approved `b3368ec59`; its minors and nits fixed after the approval):
+
+- The new tests (`6b8254e00`) failed as intended: `map_grant` missing (compile error in
+  `wiring::github_client::tests`), then with the mapping alone the rate-limited case read
+  `admin_grant` `refused` instead of `failed`. With the fix: `projects::` 38 of 38 and
+  `wiring::github_client::tests` pass (41 tests), including
+  `a_grant_is_audited_when_setup_fails_after_it`; clippy on `yulius-app` and `yulius` clean;
+  e2e `home` and `playground` 15 of 15; `scripts/dev quick` passed.
+- The non-owner creator in a personal account (pre-existing) is #1753.
 
 Not testable here: GitHub's real answer to `PUT …/collaborators/{login}` for this organization (the
 sandbox's installation token reaches only `Quartio-Studio/yulius`; GitHub documents 204 for an
