@@ -880,7 +880,8 @@ watching, steering and unblocking.
 ## Principles
 
 Agents are real CLIs; sessions outlive the server; GitHub is the authority for permissions (a playground's guests, let
-in through an expiring link, are the one exception);
+in through an expiring link, are the one exception), and the person who creates a project of an organization in
+Yulius is made its repository's admin there ([decision 0476](decisions/0476-the-creator-of-a-project-is-made-its-admin-on-github.md));
 coordination goes through one MCP and hook protocol; every queue, stream, retry and wait is
 bounded and owned; features have specs, research and questions do not; a defect a request
 reports is fixed in its task, also when it is asked as a question, never filed and left

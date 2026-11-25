@@ -8,12 +8,12 @@ use yulius_app::model::Secret;
 use yulius_app::ports::github::{
     BranchGuard, ChecksReport, ChecksSource, ChecksState, GhIssue, GhPull, GhRepo, GhUser,
     GhUserToken, GitHubAppConfig, GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess,
-    RulesetRequest, STATUS_PERMISSION_MISSING,
+    RoleGrant, RulesetRequest, STATUS_PERMISSION_MISSING,
 };
 use yulius_github::{
-    AppCredentials, CheckSource, ChecksSummary, CommitStatus, CreateRepo, GitHubClient,
-    GitHubConfig, GitHubError, MergeMethod, OwnerKind, PullFilter, PullRequest, PullState, Repo,
-    RulesetSpec, Secret as GhSecret, Url,
+    AppCredentials, CheckSource, ChecksSummary, CollaboratorAdded, CommitStatus, CreateRepo,
+    GitHubClient, GitHubConfig, GitHubError, MergeMethod, OwnerKind, PullFilter, PullRequest,
+    PullState, Repo, RulesetSpec, Secret as GhSecret, Url,
 };
 
 /// GitHub adapter with one cached client per App id (keeps installation tokens warm).
@@ -118,6 +118,16 @@ fn map_err(err: GitHubError) -> AppError {
             ))
         }
         other => AppError::Upstream(format!("GitHub: {other}")),
+    }
+}
+
+/// [`map_refusal`] for a collaborator grant (#1749), which is asked again after `Upstream`: a
+/// rate limit becomes `Capacity`, waited out instead of asked into.
+fn map_grant(err: GitHubError) -> AppError {
+    let limited = matches!(err, GitHubError::RateLimited { .. });
+    match map_refusal(err) {
+        AppError::Upstream(text) if limited => AppError::Capacity(text),
+        other => other,
     }
 }
 
@@ -469,6 +479,24 @@ impl GitHubPort for GitHubAdapter {
             .await
             .map(|_| ())
             .map_err(map_err)
+    }
+
+    async fn grant_admin(
+        &self,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+        login: &str,
+    ) -> AppResult<RoleGrant> {
+        match self
+            .for_token(token)
+            .add_collaborator(&gh(token), owner, name, login, "admin")
+            .await
+            .map_err(map_grant)?
+        {
+            CollaboratorAdded::Added => Ok(RoleGrant::Added),
+            CollaboratorAdded::Invited => Ok(RoleGrant::Invited),
+        }
     }
 
     fn app_manifest(&self, public_url: &str, owner_login: &str) -> serde_json::Value {
@@ -846,6 +874,34 @@ mod tests {
                 message: "name already exists on this account".into()
             }),
             AppError::Upstream(_)
+        ));
+    }
+
+    /// #1749 review round 2: a collaborator grant asks again only after a failure that may pass
+    /// (`Upstream`); a rate limit is waited out, never asked into, and a 4xx is a refusal.
+    #[test]
+    fn a_grant_is_asked_again_only_after_a_failure_that_may_pass() {
+        let limited = map_grant(GitHubError::RateLimited {
+            retry_after: Some(std::time::Duration::from_secs(60)),
+        });
+        assert!(
+            matches!(&limited, AppError::Capacity(text) if text.contains("rate limit")),
+            "{limited:?}"
+        );
+        assert!(matches!(
+            map_grant(GitHubError::RateLimited { retry_after: None }),
+            AppError::Capacity(_)
+        ));
+        assert!(matches!(
+            map_grant(GitHubError::Upstream(502)),
+            AppError::Upstream(_)
+        ));
+        assert!(matches!(
+            map_grant(GitHubError::Forbidden {
+                message: "Resource not accessible by integration".into(),
+                accepted_permissions: None,
+            }),
+            AppError::Forbidden(_)
         ));
     }
 

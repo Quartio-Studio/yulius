@@ -3839,6 +3839,13 @@ and `gh` get `App::agent_git_credential`: an installation token restricted to th
 to the agent permissions (`AGENT_TOKEN_PERMISSIONS`, no Administration or Workflows), never a
 person's. The production ruleset (`rulesets_for`: restrict updates and deletions, block force
 pushes, repository admins the only bypass) makes GitHub refuse that token on the branch.
+A project created from a template in an organization is created by the App, so
+`App::grant_creator_admin` gives its creator that admin role (`GitHubPort::grant_admin`, `PUT
+…/collaborators/{login}` with the installation token, to the login the creator's own token names
+for the account they signed in as; failures that may pass asked again, at most 3 times; every
+outcome audited as `sandbox.creator_admin`): without it only the organization's owners, or people
+an owner made its admins, could promote or deploy its production
+([ADR-0476](decisions/0476-the-creator-of-a-project-is-made-its-admin-on-github.md)).
 `App::production_branch_warning` asks GitHub, with an agent token, which rules apply to the
 production branch and whether that token may bypass them (`GitHubPort::branch_guard`), and
 onboarding reports a branch the agents could write. The preparation agent then calls
