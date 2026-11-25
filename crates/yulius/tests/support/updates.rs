@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use yulius::wiring::pending::UnavailableSessionHost;
+use crate::support::pending::UnavailableSessionHost;
 use yulius_app::error::AppResult;
 use yulius_app::model::Secret;
 use yulius_app::ports::session::{
