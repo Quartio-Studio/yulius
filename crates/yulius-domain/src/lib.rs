@@ -11,6 +11,7 @@
 pub mod agent_cli;
 pub mod agent_endpoint;
 pub mod auto_choice;
+pub mod billing;
 pub mod automation_format;
 pub mod branch_policy;
 pub mod briefing;
