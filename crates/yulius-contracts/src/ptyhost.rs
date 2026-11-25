@@ -436,7 +436,7 @@ pub struct BubblewrapSpec {
     /// Paths the run sees read-only (or pinned) through descriptors opened without following a
     /// link (SPEC-652): the harness's memory and user-level instruction files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guard: Option<Guard>,
+    pub guard: Option<Box<Guard>>,
 }
 
 /// The read-only memory guard of a contained run (SPEC-652 MEM-001, MEM-004): `exe sandbox-exec

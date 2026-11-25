@@ -12,9 +12,9 @@
 use std::io;
 use std::path::{Component, Path};
 
-use yulius_contracts::ptyhost::{
-    GUARD_ARGS_FD, GUARD_MAX_PATHS, GUARD_PIN_ARGS_FD, GuardKind, GuardPath,
-};
+#[cfg(target_os = "linux")]
+use yulius_contracts::ptyhost::{GUARD_ARGS_FD, GUARD_PIN_ARGS_FD};
+use yulius_contracts::ptyhost::{GUARD_MAX_PATHS, GuardKind, GuardPath};
 
 /// What a guarded path turned out to be when it was opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

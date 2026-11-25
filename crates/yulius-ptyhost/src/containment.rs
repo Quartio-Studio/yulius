@@ -617,13 +617,13 @@ mod tests {
                 writable: false,
             },
         ];
-        c.guard = Some(Guard {
+        c.guard = Some(Box::new(Guard {
             exe: "/usr/local/bin/yulius".into(),
             paths: vec![
                 path(".claude", GuardKind::Pin),
                 path(".claude/projects/-k/memory", GuardKind::Dir),
             ],
-        });
+        }));
     }
 
     /// SPEC-652 MEM-004: the pins' descriptor comes after the bind of the home they are in and

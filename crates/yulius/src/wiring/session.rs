@@ -91,9 +91,11 @@ pub fn wire_containment(containment: &Containment, exe: &Path) -> wire::Containm
                         .map(|p| p.to_string_lossy().into_owned()),
                 })
             }),
-            guard: (!guard.is_empty()).then(|| wire::Guard {
-                exe: exe.to_string_lossy().into_owned(),
-                paths: guard.clone(),
+            guard: (!guard.is_empty()).then(|| {
+                Box::new(wire::Guard {
+                    exe: exe.to_string_lossy().into_owned(),
+                    paths: guard.clone(),
+                })
             }),
         }),
     }

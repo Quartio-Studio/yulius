@@ -1291,10 +1291,10 @@ mod tests {
             dest: "/s/home/.claude/CLAUDE.md".into(),
             kind: GuardKind::File,
         }];
-        spec.guard = Some(Guard {
+        spec.guard = Some(Box::new(Guard {
             exe: "/opt/yulius".into(),
             paths: paths.clone(),
-        });
+        }));
         let prefix = shim_prefix(&spec)?;
         let encoded = serde_json::to_string(&paths)?;
         assert_eq!(
