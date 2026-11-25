@@ -72,7 +72,26 @@ pub(crate) async fn recorded_gate(
     full: RunState,
     failures: Option<&str>,
 ) -> BoxResult<String> {
-    let id = format!("ci-{}", &sha[..12]);
+    recorded_gate_as(
+        app,
+        sandbox,
+        sha,
+        full,
+        failures,
+        format!("ci-{}", &sha[..12]),
+    )
+    .await
+}
+
+/// [`recorded_gate`] as run `id` (a rerun of the same revision).
+async fn recorded_gate_as(
+    app: &yulius_app::context::App,
+    sandbox: &SandboxId,
+    sha: &str,
+    full: RunState,
+    failures: Option<&str>,
+    id: String,
+) -> BoxResult<String> {
     let state = if full == RunState::Passed {
         RunState::Passed
     } else {
@@ -3884,5 +3903,615 @@ async fn an_unreadable_head_fails_the_automatic_promotion() -> TestResult {
     );
     assert!(rows("delivery.promote.waiting").await?.is_empty());
     assert!(!git_contains(&f, "main", &r1)?, "nothing was promoted");
+    Ok(())
+}
+
+/// A person asks the merge-first target for the integration head (SPEC-650 PST-001).
+async fn person_asks(f: &Fixture, who: &crate::support::Creds) -> BoxResult<Value> {
+    let answer = crate::support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/cd/staging/staging",
+        Some(json!({})),
+        who,
+    )
+    .await?;
+    assert_eq!(answer.status, axum::http::StatusCode::OK, "{}", answer.body);
+    Ok(answer.body)
+}
+
+/// The staging section of the CD page.
+async fn staging_view(f: &Fixture) -> BoxResult<Value> {
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    Ok(overview["environments"]
+        .as_array()
+        .ok_or("environments")?
+        .iter()
+        .find(|env| env["name"] == "staging")
+        .ok_or("staging")?["staging"]
+        .clone())
+}
+
+/// SPEC-650 PST-001, PST-002, PST-005: with no task finishing anything, a person's request
+/// deploys the green head; a red head waits, in plain words, and the next green head deploys
+/// and includes it.
+#[tokio::test]
+async fn a_persons_request_deploys_the_green_head_and_a_red_one_waits_for_the_next_green()
+-> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    let first = person_asks(&f, &f.alice).await?;
+    assert_eq!(first["revision"], r1.as_str(), "{first}");
+    assert_eq!(first["asked_by"], "alice", "{first}");
+    assert_eq!(first["task_number"], Value::Null, "{first}");
+    settle(&f).await?;
+    let one = request(&f, first["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(one.state, StagingState::Verified, "{one:?}");
+    assert_eq!(one.requested_by, "user:u-alice");
+    assert_eq!(serving(&f)?, r1);
+
+    // A red head: the request waits for the next green revision, and the page says so.
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    let ci2 = gate(&f, &r2, RunState::Failed).await?;
+    let second = person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let two = request(&f, second["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(two.state, StagingState::Inherited, "{two:?}");
+    let note = two.note.clone().unwrap_or_default();
+    assert!(
+        note.contains("waiting for green tests") && note.contains(&ci2),
+        "{note}"
+    );
+    let view = staging_view(&f).await?;
+    assert_eq!(
+        view["waiting"],
+        format!(
+            "Waiting for green tests: {} failed; the next merged revision is tested",
+            &r2[..7]
+        ),
+        "{view}"
+    );
+    assert_eq!(serving(&f)?, r1, "a red head never deploys");
+    // Asking again answers with the waiting request.
+    assert_eq!(person_asks(&f, &f.alice).await?["id"], second["id"]);
+
+    // The next merged revision is green: it is asked for by itself, deploys, includes the wait.
+    let r3 = f.push("dev", &[("three.txt", Some("3"))])?;
+    gate(&f, &r3, RunState::Passed).await?;
+    settle(&f).await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r3);
+    assert_eq!(deployed(&f).await?, [r1.clone(), r3.clone()]);
+    let two = request(&f, &two.id).await?;
+    assert_eq!(two.state, StagingState::Included, "{two:?}");
+    let view = staging_view(&f).await?;
+    let newest = &view["requests"][0];
+    assert_eq!(newest["revision"], r3.as_str(), "{view}");
+    assert_eq!(newest["state"], "verified", "{view}");
+    assert_eq!(newest["asked_by"], "alice", "{view}");
+    assert_eq!(view["waiting"], Value::Null, "{view}");
+    // Nobody's session hears a request of no task.
+    assert!(f.h.store.untold_staging_requests().await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-650 PST-001, PST-005: while the head's full gate runs, a person's request waits for it
+/// and the page says so; the plain deploy of the target names the request that works.
+#[tokio::test]
+async fn a_persons_request_waits_while_the_heads_gate_runs() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Running).await?;
+    let asked = person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let waiting = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(waiting.state, StagingState::Testing, "{waiting:?}");
+    assert_eq!(
+        staging_view(&f).await?["waiting"],
+        format!("Waiting for green tests on {}", &r1[..7])
+    );
+    assert!(deployed(&f).await?.is_empty());
+    let direct = f.deploy(&f.alice, "staging", None).await?;
+    let text = direct.body.to_string();
+    assert!(
+        text.contains("Deploy staging on the CD page") && text.contains("Superagent's cd_deploy"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// Alice answers her Superagent's request `id` as from her browser, typing `confirm`.
+async fn alice_answers(
+    f: &Fixture,
+    id: &Value,
+    approve: bool,
+) -> BoxResult<yulius_app::error::AppResult<Value>> {
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let ctx = yulius_app::auth::AuthContext {
+        user: f.h.store.user(&alice).await?.ok_or("alice")?,
+        csrf_token: Some("csrf".into()),
+        session_hash: None,
+        token: None,
+    };
+    let answer = if approve {
+        yulius_app::cross_sandbox::RequestAnswer {
+            confirm: Some("app".into()),
+            ..yulius_app::cross_sandbox::RequestAnswer::approve()
+        }
+    } else {
+        yulius_app::cross_sandbox::RequestAnswer::default()
+    };
+    Ok(f.h
+        .app
+        .superagent_request_answer(&ctx, "s1", id.as_str().ok_or("id")?, &answer)
+        .await)
+}
+
+/// SPEC-650 PST-004: the Superagent's `cd_deploy` of the merge-first target waits on its panel
+/// as a production deploy does, for a person with write access; approved with the slug, it
+/// records the person's staging request; declined, nothing.
+#[tokio::test]
+async fn the_superagents_staging_deploy_waits_on_the_panel_then_asks_the_queue() -> TestResult {
+    use yulius_app::cross_sandbox::CrossAction;
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Passed).await?;
+    let alices = crate::cd_rollback::superagent("u-alice", "alice")?;
+    assert!(f.h.app.superagent_staging(&alices, "staging").await?);
+    assert!(!f.h.app.superagent_staging(&alices, "dev").await?);
+    assert!(!f.h.app.superagent_production(&alices, "staging").await?);
+
+    // Declined: nothing is recorded.
+    let declined = f.ask_release(
+        &alices,
+        CrossAction::Deploy,
+        json!({"environment": "staging"}),
+    );
+    let card = f.panel(&f.alice, 1).await?.remove(0);
+    assert_eq!(card["action"], "deploy", "{card}");
+    assert_eq!(card["options"]["environment"], "staging", "{card}");
+    alice_answers(&f, &card["id"], false).await??;
+    let answer = declined.await??;
+    assert_eq!(answer["outcome"], "declined", "{answer}");
+    assert!(
+        staging_view(&f).await?["requests"]
+            .as_array()
+            .ok_or("requests")?
+            .is_empty()
+    );
+
+    // Approved with the typed slug: the person's request, deployed once its gate passed.
+    let asking = f.ask_release(
+        &alices,
+        CrossAction::Deploy,
+        json!({"environment": "staging"}),
+    );
+    let card = f.panel(&f.alice, 1).await?.remove(0);
+    alice_answers(&f, &card["id"], true).await??;
+    let answer = asking.await??;
+    assert_eq!(answer["outcome"], "approved", "{answer}");
+    assert_eq!(answer["staging"]["revision"], r1.as_str(), "{answer}");
+    assert_eq!(answer["staging"]["asked_by"], "alice", "{answer}");
+    let note = answer["note"].as_str().unwrap_or_default();
+    assert!(note.contains("Waiting for green tests on"), "{note}");
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+    Ok(())
+}
+
+/// A person's staging request recorded as the queue would, without kicking a round: the tests
+/// that change who may deploy before its deploy starts.
+async fn recorded_ask(
+    f: &Fixture,
+    id: &str,
+    revision: &str,
+    requested_by: &str,
+    task: Option<&str>,
+) -> BoxResult<StagingRequestRecord> {
+    let now = f.h.app.now();
+    let record = StagingRequestRecord {
+        id: id.to_owned(),
+        sandbox_id: SandboxId::parse("s1")?,
+        environment: "staging".into(),
+        task_id: task.map(TaskId::parse).transpose()?,
+        revision: revision.to_owned(),
+        state: StagingState::Testing,
+        ci_run_id: None,
+        cd_run_id: None,
+        attempts: 0,
+        note: None,
+        requested_by: requested_by.to_owned(),
+        told: true,
+        created_at: now,
+        updated_at: now,
+    };
+    assert!(f.h.store.insert_staging_request(&record).await?);
+    Ok(record)
+}
+
+/// The CD runs of `[cd.staging]` that deployed, with who asked, oldest first.
+async fn deploys_by(f: &Fixture) -> BoxResult<Vec<(String, String)>> {
+    let mut runs: Vec<_> = f
+        .h
+        .store
+        .cd_runs(&SandboxId::parse("s1")?, 100)
+        .await?
+        .into_iter()
+        .filter(|run| {
+            run.environment == "staging" && run.kind == yulius_domain::rollback::CdRunKind::Deploy
+        })
+        .collect();
+    runs.reverse();
+    Ok(runs
+        .into_iter()
+        .map(|run| (run.sha, run.requested_by))
+        .collect())
+}
+
+/// Review round 1, findings 1 and 7: a red head's follow-up whose deploy failed is never deployed
+/// again by the queue (a person's cancel and a failed script stand); staging is restored to its
+/// last verified release. A person who asks again gets a new request, deployed as them.
+#[tokio::test]
+async fn a_carried_request_whose_deploy_failed_is_not_deployed_again() -> TestResult {
+    let f = fixture(&restoring_toml()).await?;
+    let r1 = f.push(
+        "dev",
+        &[
+            ("scripts/cd/rollback.sh", Some(ROLLBACK)),
+            ("scripts/cd/staging-verify.sh", Some(STAGING_VERIFY)),
+        ],
+    )?;
+    gate(&f, &r1, RunState::Passed).await?;
+    person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Failed).await?;
+    let waiting = person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    // r3 is green, and its deploy fails (the deploy script exits on `fail`).
+    let r3 = f.push("dev", &[("fail", Some("x"))])?;
+    gate(&f, &r3, RunState::Passed).await?;
+    for _ in 0..4 {
+        settle(&f).await?;
+    }
+    let view = staging_view(&f).await?;
+    let carried = view["requests"]
+        .as_array()
+        .ok_or("requests")?
+        .iter()
+        .find(|r| r["revision"] == r3.as_str())
+        .ok_or("the follow-up")?
+        .clone();
+    assert_eq!(carried["state"], "deploy_failed", "{view}");
+    // Review round 2, nit: the page says the failed deploy waits for a press, not for tests.
+    assert_eq!(
+        view["waiting"],
+        format!(
+            "The deploy of {} failed: Deploy asks for it again",
+            &r3[..7]
+        ),
+        "{view}"
+    );
+    assert_eq!(
+        deployed(&f).await?,
+        [r1.clone(), r3.clone()],
+        "the failed follow-up deployed once"
+    );
+    assert_eq!(
+        request(&f, waiting["id"].as_str().ok_or("id")?)
+            .await?
+            .state,
+        StagingState::Inherited
+    );
+    assert_eq!(serving(&f)?, r1, "restored to its last verified release");
+    assert!(f.marks.join("restores").exists(), "a restore ran");
+    // Bob asks for the same head: a new request, deployed as him.
+    let again = person_asks(&f, &f.bob).await?;
+    assert_ne!(again["id"], carried["id"], "{again}");
+    assert_eq!(again["asked_by"], "bob", "{again}");
+    settle(&f).await?;
+    let by = deploys_by(&f).await?;
+    assert_eq!(by.len(), 3, "{by:?}");
+    assert_eq!(by[2], (r3.clone(), "bob".to_owned()), "{by:?}");
+    Ok(())
+}
+
+/// Review round 1, finding 4: after a rollback of staging, a person's ask for the head deploys
+/// it again instead of answering with its old verified request.
+#[tokio::test]
+async fn a_persons_ask_after_a_rollback_deploys_the_head_again() -> TestResult {
+    let f = fixture(&restoring_toml()).await?;
+    let r1 = f.push(
+        "dev",
+        &[
+            ("scripts/cd/rollback.sh", Some(ROLLBACK)),
+            ("scripts/cd/staging-verify.sh", Some(STAGING_VERIFY)),
+        ],
+    )?;
+    gate(&f, &r1, RunState::Passed).await?;
+    person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    let first = person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r2);
+    // Asking again while staging serves it answers with the verified request.
+    assert_eq!(person_asks(&f, &f.alice).await?["id"], first["id"]);
+    let back = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/cd/staging/rollback",
+        Some(json!({})),
+        &f.alice,
+    )
+    .await?;
+    assert!(back.status.is_success(), "{}", back.body);
+    f.ended(back.body["run_id"].as_str().ok_or("run")?).await?;
+    assert_eq!(serving(&f)?, r1);
+    let again = person_asks(&f, &f.alice).await?;
+    assert_ne!(again["id"], first["id"], "{again}");
+    assert_eq!(again["revision"], r2.as_str());
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r2, "the head is deployed again");
+    Ok(())
+}
+
+/// Review round 1, finding 2: a deleted task's request (its task id cleared, `task:<n>` kept)
+/// stays a task's: its red gate fails as a task's does, nothing is carried for it, it never
+/// answers a person's ask, and the page names a deleted task.
+#[tokio::test]
+async fn a_deleted_tasks_request_is_never_taken_for_a_persons() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    let orphan = recorded_ask(&f, "sr-orphan", &r1, "task:12", None).await?;
+    gate(&f, &r1, RunState::Failed).await?;
+    settle(&f).await?;
+    assert_eq!(
+        request(&f, &orphan.id).await?.state,
+        StagingState::GateFailed
+    );
+    let view = staging_view(&f).await?;
+    assert_eq!(view["requests"][0]["asked_by"], Value::Null, "{view}");
+    assert_eq!(view["requests"][0]["task_number"], Value::Null, "{view}");
+    assert_eq!(view["waiting"], Value::Null, "{view}");
+    // A person's ask at that head is a request of its own.
+    let asked = person_asks(&f, &f.alice).await?;
+    assert_ne!(asked["id"], orphan.id.as_str(), "{asked}");
+    settle(&f).await?;
+    assert_eq!(
+        staging_view(&f).await?["requests"].as_array().map(Vec::len),
+        Some(2)
+    );
+    // The head moves: only the person's waiting request is carried.
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Running).await?;
+    settle(&f).await?;
+    let view = staging_view(&f).await?;
+    let requests = view["requests"].as_array().ok_or("requests")?;
+    assert_eq!(requests.len(), 3, "{view}");
+    assert_eq!(requests[0]["revision"], r2.as_str(), "{view}");
+    assert_eq!(requests[0]["asked_by"], "alice", "{view}");
+    Ok(())
+}
+
+/// Review round 1, finding 6: a person's red request moves on once a rerun of its revision
+/// passed the full gate, without a new merge.
+#[tokio::test]
+async fn a_persons_red_request_deploys_once_a_rerun_passes() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Failed).await?;
+    let asked = person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let id = asked["id"].as_str().ok_or("id")?;
+    assert_eq!(request(&f, id).await?.state, StagingState::Inherited);
+    recorded_gate_as(
+        &f.h.app,
+        &SandboxId::parse("s1")?,
+        &r1,
+        RunState::Passed,
+        None,
+        "ci-rerun".into(),
+    )
+    .await?;
+    settle(&f).await?;
+    settle(&f).await?;
+    let done = request(&f, id).await?;
+    assert_eq!(done.state, StagingState::Verified, "{done:?}");
+    assert_eq!(done.ci_run_id.as_deref(), Some("ci-rerun"));
+    assert_eq!(serving(&f)?, r1);
+    Ok(())
+}
+
+/// Review round 1, finding 7: who may ask, and who a request deploys as.
+/// - A reader is refused, and so is an environment that is not the target.
+/// - A second person's ask answers the pending request.
+/// - A request whose asker lost write access before its deploy fails, saying why; the next
+///   person's ask deploys as them.
+/// - The Superagent of a person without write access is refused before a card.
+#[tokio::test]
+async fn who_asks_for_staging_and_who_it_deploys_as() -> TestResult {
+    use yulius_app::cross_sandbox::CrossAction;
+    let f = fixture(&staging_toml()).await?;
+    let carol = support::seed_github_user(&f.h, "u-carol", "carol").await?;
+    f.h.github
+        .set_perm("carol", "acme/app", support::perms("read"));
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Running).await?;
+    let path = "/api/sandboxes/s1/cd/staging/staging";
+    let read = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        path,
+        Some(json!({})),
+        &carol,
+    )
+    .await?;
+    assert!(
+        matches!(read.status.as_u16(), 403 | 404),
+        "{}: {}",
+        read.status,
+        read.body
+    );
+    let dev = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/cd/dev/staging",
+        Some(json!({})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(dev.status.as_u16(), 409, "{}", dev.body);
+    assert!(
+        dev.body
+            .to_string()
+            .contains("not the merge-first staging target"),
+        "{}",
+        dev.body
+    );
+    let carols = crate::cd_rollback::superagent("u-carol", "carol")?;
+    let refused = f
+        .ask_release(
+            &carols,
+            CrossAction::Deploy,
+            json!({"environment": "staging"}),
+        )
+        .await?;
+    assert!(refused.is_err(), "{refused:?}");
+    f.panel(&carol, 0).await?;
+    assert!(
+        f.h.app
+            .superagent_on_panel(
+                &crate::cd_rollback::superagent("u-alice", "alice")?,
+                CrossAction::Deploy,
+                "staging"
+            )
+            .await?,
+        "the Superagent's staging deploy waits on its panel"
+    );
+
+    // Alice's pending request answers Bob's ask; it deploys once r1's gate passed.
+    let alices = person_asks(&f, &f.alice).await?;
+    assert_eq!(person_asks(&f, &f.bob).await?["id"], alices["id"]);
+    recorded_gate_as(
+        &f.h.app,
+        &SandboxId::parse("s1")?,
+        &r1,
+        RunState::Passed,
+        None,
+        "ci-r1-passed".into(),
+    )
+    .await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+
+    // Next head: alice's recorded request, and she loses write access before it deploys.
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    f.h.github
+        .set_perm("alice", "acme/app", support::perms("read"));
+    f.h.clock.0.fetch_add(
+        f.h.app.config.permission_ttl_ms + 1,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let lost = recorded_ask(&f, "sr-lost", &r2, "user:u-alice", None).await?;
+    settle(&f).await?;
+    let lost = request(&f, &lost.id).await?;
+    assert_eq!(lost.state, StagingState::DeployFailed, "{lost:?}");
+    assert!(
+        lost.note
+            .as_deref()
+            .is_some_and(|n| n.contains("no longer active or lost write access")),
+        "{lost:?}"
+    );
+    let bobs = person_asks(&f, &f.bob).await?;
+    assert_ne!(bobs["id"], lost.id.as_str());
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r2);
+    assert_eq!(
+        deploys_by(&f).await?.last().map(|(_, by)| by.as_str()),
+        Some("bob")
+    );
+    Ok(())
+}
+
+/// Review round 2, finding 1: a rerun that passes with a skipped job moves a person's red request
+/// on when nothing is left open in that job, as a first verdict does; a rerun that skipped the
+/// job that failed leaves it waiting.
+#[tokio::test]
+async fn a_rerun_with_a_skipped_job_moves_a_red_request_only_when_nothing_is_open() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Failed).await?;
+    let asked = person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let id = asked["id"].as_str().ok_or("id")?;
+    assert_eq!(request(&f, id).await?.state, StagingState::Inherited);
+    let sandbox = SandboxId::parse("s1")?;
+    let rerun = |id: &'static str, skipped: &'static str| {
+        let f = &f;
+        let sandbox = sandbox.clone();
+        let r1 = r1.clone();
+        async move {
+            recorded_gate_as(&f.h.app, &sandbox, &r1, RunState::Passed, None, id.into()).await?;
+            f.h.store
+                .execute_for_tests(&format!(
+                    "UPDATE ci_jobs SET state='skipped' WHERE id='{id}-{skipped}'"
+                ))
+                .await?;
+            BoxResult::Ok(())
+        }
+    };
+    // The failed job itself was skipped: its failure is still open.
+    rerun("ci-skipped-full", "full").await?;
+    settle(&f).await?;
+    assert_eq!(request(&f, id).await?.state, StagingState::Inherited);
+    // The failed job passed; only a job that never failed was skipped.
+    rerun("ci-skipped-quick", "quick").await?;
+    settle(&f).await?;
+    settle(&f).await?;
+    let done = request(&f, id).await?;
+    assert_eq!(done.state, StagingState::Verified, "{done:?}");
+    assert_eq!(done.ci_run_id.as_deref(), Some("ci-skipped-quick"));
+    Ok(())
+}
+
+/// Review round 2, finding 2: a deleted task's inherited request is never carried for a person;
+/// only the person's own waiting request is.
+#[tokio::test]
+async fn a_deleted_tasks_inherited_request_is_not_carried() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Failed).await?;
+    person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Failed).await?;
+    let orphan = recorded_ask(&f, "sr-orphan", &r2, "task:12", None).await?;
+    f.h.store
+        .move_staging_request(
+            &orphan.id,
+            StagingState::Testing,
+            StagingState::Inherited,
+            &StagingChange::default(),
+            f.h.app.now(),
+        )
+        .await?;
+    let r3 = f.push("dev", &[("three.txt", Some("3"))])?;
+    gate(&f, &r3, RunState::Running).await?;
+    settle(&f).await?;
+    let view = staging_view(&f).await?;
+    let at_head: Vec<&Value> = view["requests"]
+        .as_array()
+        .ok_or("requests")?
+        .iter()
+        .filter(|r| r["revision"] == r3.as_str())
+        .collect();
+    assert_eq!(at_head.len(), 1, "{view}");
+    assert_eq!(at_head[0]["asked_by"], "alice", "{view}");
     Ok(())
 }

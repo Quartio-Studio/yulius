@@ -452,6 +452,21 @@ test('an amended request is drawn again and approved as drawn', async ({ app, br
   expect(created[created.length - 1].prompt).toBe('Rewrite the README and the guide');
 });
 
+// SPEC-650 PST-004: the merge-first staging target's deploy takes the same card and typed slug;
+// approved, it asks staging for the integration head, and the toast says what that waits for.
+test('a staging deploy asked by the Superagent says what staging waits for', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'deploy', options: { environment: 'staging' } });
+  const card = screen.getByRole('group', 'Your Superagent asks to deploy staging in studio');
+  await expect(card).toBeVisible();
+  await browser.locator('.agent-request input[aria-label="Type studio to confirm"]').fill('studio');
+  await screen.getByRole('button', 'Deploy').click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Asked staging for the integration head in studio. Waiting for green tests on 9f3c2a1.")')).toBeVisible();
+  await expect(browser.locator('.toast:has-text("Deploy started")')).toHaveCount(0);
+});
+
 // SPEC-487 REL-001 (the person's decision of 2026-11-13): a production release the Superagent
 // asks for waits on its panel, and its button takes a click only once the project's slug is
 // typed, as the CD page's confirmation does; Decline needs none. Onboarding is a plain click.

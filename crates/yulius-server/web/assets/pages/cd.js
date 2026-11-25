@@ -3,7 +3,8 @@
 // the integration branch, [cd.prod] and the other production-stage ones from what production
 // deploys), what each runs, the secrets it needs, what is deployed, and the runs with their output.
 // A dev-stage environment deploys after a confirmation (people with write access; agents use
-// cd_deploy); a production-stage one only by an administrator who types the project's slug.
+// cd_deploy); a production-stage one only by an administrator who types the project's slug. The
+// merge-first staging target's Deploy asks its queue for the integration head (SPEC-650).
 // A run opens in place of the environments and runs at `?section=cd&run=<id>` (SPEC-238: a view,
 // not a dialog). A confirmed deploy shows that view at once, saying what starts, while the server
 // checks and promotes (SPEC-189); the same view then shows the run.
@@ -220,12 +221,15 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const ready = env.state === 'ready';
     const running = (overview.runs || []).some((r) => r.environment === env.name && r.state === 'running');
     const waiting = prod && env.rollback ? env.rollback.waiting : null;
+    // A merge-first staging target takes a request whatever runs: its queue orders it (SPEC-650).
     const why = !allowed ? (prod ? 'Only an administrator deploys production' : 'Requires write access')
-      : !ready ? 'Nothing to deploy yet' : running ? 'A deploy is running'
-        : env.staging ? 'Staging deploys a task’s merged revision once its full gate passed: the task asks with cd_deploy' : waiting || null;
+      : !ready ? 'Nothing to deploy yet' : running && !env.staging ? 'A deploy is running' : waiting || null;
     // Dev's deploy is the card's main action only when it can run; production's colour is a warning.
-    const deploy = h('button', { type: 'button', class: ['btn', prod ? 'btn-danger' : !why && 'btn-primary'], disabled: Boolean(why), title: why, onClick: () => (prod ? deployProd(env, overview) : deployDev(env)) },
+    const deploy = h('button', { type: 'button', class: ['btn', prod ? 'btn-danger' : !why && 'btn-primary'], disabled: Boolean(why), title: why, onClick: () => (prod ? deployProd(env, overview) : env.staging ? askStaging(env) : deployDev(env)) },
       icon('upload', { size: 16 }), prod ? `Deploy ${word(env.name)}…` : `Deploy ${word(env.name)}`);
+    // A disabled button says why in words, not only on hover (SPEC-650 PST-005); the badge says
+    // "Nothing to deploy yet" already.
+    if (why && ready && why !== waiting) rows.push(h('p', { class: 'small muted' }, `Deploy ${word(env.name)} unavailable: ${why}.`));
     // A named environment says which stage's rules it follows (ADR-0195).
     const stage = env.name === 'dev' || env.name === 'prod' ? null : badge(prod ? 'production stage' : 'dev stage', '');
     return h('section', { class: 'card card-pad stack-sm cd-env', 'aria-label': `${title(env)} environment` },
@@ -246,11 +250,14 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       h('div', { class: 'small muted' }, 'Staging queue'),
       h('p', { class: 'small' }, staging.verified
         ? ['Serves ', h('code', null, shortSha(staging.verified)), ', its last verified revision. A failing candidate leaves it there.']
-        : 'Nothing verified yet. A task’s merged revision deploys once its full gate passed.'),
+        : 'Nothing verified yet. A merged revision deploys once its full gate passed.'),
+      // What a person's or the schedule's request waits for, in the server's words (SPEC-650).
+      staging.waiting ? h('div', { class: 'banner banner-info', role: 'status' }, icon('refresh', { size: 16 }), h('span', { class: 'banner-text' }, `${staging.waiting}.`)) : null,
+      h('p', { class: 'small muted' }, `Deploy ${word(env.name)} asks for the integration head: it deploys once its full gate passed, or the next green revision if it is red.`),
       requests.length === 0 ? null : h('ul', { class: 'cd-secrets' }, requests.map((r) => {
         const st = STAGING_STATE[r.state] || { label: r.state, tone: '' };
         return h('li', null,
-          h('span', null, r.task_number == null ? 'A deleted task' : `Task #${r.task_number}`), ' ',
+          h('span', null, r.asked_by ? `Asked by ${r.asked_by}` : r.scheduled ? `${BRAND.name}’s schedule` : r.task_number == null ? 'A deleted task' : `Task #${r.task_number}`), ' ',
           h('code', null, shortSha(r.revision)), ' ', badge(st.label, st.tone),
           r.ci_run_id ? h('span', { class: 'muted small' }, ` CI ${r.ci_run_id}`) : null,
           r.cd_run_id ? h('span', { class: 'muted small' }, ` CD ${r.cd_run_id}`) : null,
@@ -402,6 +409,27 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       confirmLabel: `Deploy ${word(env.name)}`,
     });
     if (ok) await start(env, null, null, env.head);
+  }
+
+  /** A person's request for the merge-first staging target (SPEC-650 PST-001): no run starts now. */
+  let asking = false;
+  async function askStaging(env) {
+    if (asking) return;
+    asking = true;
+    const what = word(env.name);
+    try {
+      const request = await ctx.api.post(`${base}/cd/${enc(env.name)}/staging`, {});
+      if (destroyed) return;
+      reload({ quiet: true });
+      // The server words the wait (SPEC-650 PST-005); a request already served says so.
+      const said = request.waiting || (request.state === 'verified' || request.state === 'included' ? `${shortSha(request.revision)} is on ${what} already` : request.note || request.state);
+      toast(`Asked ${what} for the integration head. ${String(said).replace(/\.$/, '')}.`, { kind: 'ok' });
+    } catch (error) {
+      errorToast(error, `Couldn’t ask ${what} for the integration head`);
+      if (!destroyed) reload({ quiet: true });
+    } finally {
+      asking = false;
+    }
   }
 
   async function deployProd(env, overview) {

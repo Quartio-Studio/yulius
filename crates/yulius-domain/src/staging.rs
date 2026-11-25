@@ -4,7 +4,8 @@
 //! - **Admission**: a request names a revision of the integration branch. A task gets at most
 //!   one successful staging deployment per environment; a repeated request answers with the one
 //!   already recorded.
-//! - **Verdict**: a request waits for the full gate's verdict on exactly its revision.
+//! - **Verdict**: a request waits for the full gate's verdict on exactly its revision. A request
+//!   of no task (a person's or the schedule's) whose head is red waits for the next green one.
 //! - **Pick**: staging only moves forward along the integration branch's first-parent history.
 //!   Yulius deploys the newest ready revision above the last verified one, never passes over an
 //!   older request still testing, and counts each older request included in that deploy.
@@ -206,6 +207,46 @@ pub fn after_verdict(verdict: Option<RunState>) -> Option<StagingState> {
         RunState::Failed | RunState::Error => Some(StagingState::GateFailed),
         RunState::Queued | RunState::Running | RunState::Cancelled | RunState::Skipped => None,
     }
+}
+
+/// The state a request's failed full gate leaves it in (SPEC-575 MFS-007; SPEC-650 PST-002): a
+/// task's request fails unless the failure is inherited from earlier revisions; a request of no
+/// task (a person's or the schedule's, for the head) waits for the next green revision.
+#[must_use]
+pub fn after_failed_gate(task_less: bool, inherited: bool) -> StagingState {
+    if task_less || inherited {
+        StagingState::Inherited
+    } else {
+        StagingState::GateFailed
+    }
+}
+
+/// The waiting request of no task to carry to the integration head at `head` (SPEC-650 PST-002):
+/// the newest inherited request of no task below the head and above what staging serves
+/// (`current`). None while a request above it is on its way (testing, ready or deploying, any
+/// task's), or a request of no task already waits at or above the head: one carried request at a
+/// time. The caller also records nothing when the head has a request of no task in any state.
+#[must_use]
+pub fn follow_up(requests: &[Facts], head: u64, current: Option<u64>) -> Option<&Facts> {
+    let waiting = requests
+        .iter()
+        .filter(|r| {
+            r.task.is_none()
+                && r.state == StagingState::Inherited
+                && r.position
+                    .is_some_and(|at| at < head && current.is_none_or(|served| at > served))
+        })
+        .max_by_key(|r| r.position)?;
+    let below = waiting.position;
+    let held = requests.iter().any(|r| {
+        (r.position > below
+            && matches!(
+                r.state,
+                StagingState::Testing | StagingState::Ready | StagingState::Deploying
+            ))
+            || (r.task.is_none() && r.state.is_pending() && r.position.is_some_and(|at| at >= head))
+    });
+    (!held).then_some(waiting)
 }
 
 /// What the staging queue does next.
@@ -532,6 +573,108 @@ mod tests {
         assert_eq!(before.deploy.as_deref(), Some("fix"));
         assert!(before.included.is_empty());
         assert_eq!(pick(&requests, Some(5)).included, ["first", "later", "fix"]);
+    }
+
+    /// SPEC-650 PST-002: a person's or the schedule's request (no task) whose head is red waits
+    /// for the next green revision; a task's red request fails unless the failure is inherited.
+    #[test]
+    fn a_task_less_red_request_waits_for_the_next_green_revision() {
+        assert_eq!(after_failed_gate(true, false), StagingState::Inherited);
+        assert_eq!(after_failed_gate(true, true), StagingState::Inherited);
+        assert_eq!(after_failed_gate(false, false), StagingState::GateFailed);
+        assert_eq!(after_failed_gate(false, true), StagingState::Inherited);
+    }
+
+    /// SPEC-650 PST-002: a waiting task-less request is carried to a newer head once, and never
+    /// while a newer request is on its way.
+    #[test]
+    fn a_waiting_task_less_request_is_carried_to_the_newer_head_once() {
+        let waiting = Facts {
+            task: None,
+            ..req("p", "-", "aaa", StagingState::Inherited, 3)
+        };
+        assert_eq!(
+            follow_up(std::slice::from_ref(&waiting), 3, None),
+            None,
+            "the head is still red"
+        );
+        assert_eq!(
+            follow_up(std::slice::from_ref(&waiting), 5, None).map(|f| f.id.as_str()),
+            Some("p")
+        );
+        let older = Facts {
+            id: "o".into(),
+            position: Some(2),
+            ..waiting.clone()
+        };
+        assert_eq!(
+            follow_up(&[older.clone(), waiting.clone()], 5, None).map(|f| f.id.as_str()),
+            Some("p"),
+            "the newest waiting request is carried"
+        );
+        for on_its_way in [
+            StagingState::Testing,
+            StagingState::Ready,
+            StagingState::Deploying,
+        ] {
+            let task = req("t", "t1", "ccc", on_its_way, 5);
+            assert_eq!(
+                follow_up(&[waiting.clone(), task], 5, None),
+                None,
+                "{on_its_way:?}"
+            );
+        }
+        let carried = Facts {
+            id: "n".into(),
+            position: Some(5),
+            ..waiting.clone()
+        };
+        assert_eq!(
+            follow_up(&[waiting.clone(), carried], 5, None),
+            None,
+            "never twice"
+        );
+        let tasks_own = req("t", "t1", "aaa", StagingState::Inherited, 3);
+        assert_eq!(
+            follow_up(&[tasks_own], 5, None),
+            None,
+            "a task asks for itself"
+        );
+        let off = Facts {
+            position: None,
+            ..waiting.clone()
+        };
+        assert_eq!(follow_up(&[off], 5, None), None);
+
+        // Review round 1, finding 5: one carried request at a time, and nothing staging serves.
+        let on_its_way = Facts {
+            id: "n".into(),
+            state: StagingState::Testing,
+            position: Some(5),
+            ..waiting.clone()
+        };
+        assert_eq!(
+            follow_up(&[waiting.clone(), on_its_way], 6, None),
+            None,
+            "its follow-up is still on its way: no second one for a later head"
+        );
+        let between = req("t", "t1", "ccc", StagingState::Testing, 4);
+        assert_eq!(follow_up(&[waiting.clone(), between], 6, None), None);
+        let failed_between = req("t", "t1", "ccc", StagingState::GateFailed, 4);
+        assert_eq!(
+            follow_up(&[waiting.clone(), failed_between], 6, None).map(|f| f.id.as_str()),
+            Some("p"),
+            "a failed request holds nothing back"
+        );
+        assert_eq!(
+            follow_up(std::slice::from_ref(&waiting), 6, Some(3)),
+            None,
+            "staging serves it already"
+        );
+        assert_eq!(
+            follow_up(std::slice::from_ref(&waiting), 6, Some(2)).map(|f| f.id.as_str()),
+            Some("p")
+        );
     }
 
     /// MFS-007, MFS-008: a passed deploy verifies, a failed one stays failed, a lost one is

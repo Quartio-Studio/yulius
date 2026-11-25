@@ -3652,8 +3652,21 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 `yulius_domain::staging`, rows in `staging_requests`, migration 0078).
 
 - **Request.** A task's agent's `cd_deploy` of that environment records a request for the
-  task's newest landing (`task_merges`), under the owner's write access. A plain deploy of it is
-  refused in `cd_prepare`.
+  task's newest landing (`task_merges`), under the owner's write access. A person's Deploy on the
+  CD page (`POST …/cd/{env}/staging`, `App::staging_ask`) records a request of no task for the
+  verified integration head (`requested_by` `user:<id>`). So does their Superagent's `cd_deploy`
+  once approved on its panel with the slug typed (write access is enough). A plain deploy of it
+  is refused in `cd_prepare`, naming those
+  ([decision 0477](decisions/0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md)).
+- **Waiting for green.** A request of no task whose gate failed is `inherited`
+  (`stg::after_failed_gate`). Once the head moves past it, one request of no task is recorded
+  for the new head (`stg::follow_up`): one carried request at a time, none for what staging
+  serves, and none for a head that already has a person's or the schedule's request in any
+  state (a failed one is never deployed again by the queue). A passing rerun of its revision
+  makes it ready. It is `included` when a verified deploy contains it. "A person's or the
+  schedule's" is read from `requested_by` (`is_asked`): a deleted task's request also has no
+  task id and stays a task's. `CdStaging.waiting` and each request's `waiting` say in words what
+  it waits for.
 - **Candidate gate.** The integration branch's run of that exact commit, or a
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
@@ -3673,7 +3686,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   - Requests staging already contains are `included`.
 - **Deploy.**
   - `CdRequest::DeployRevision` deploys exactly that commit with the task owner's access; the
-    run is the task's (`CdActor::ForTask`, requested by `task:<n>`).
+    run is the task's (`CdActor::ForTask`, requested by `task:<n>`). A request of no task deploys
+    as the person who asked, while they have write access (`staging_person`).
   - One deploy per environment (unique index). It waits, costing no attempt, while another
     run of it goes on or an update holds deploys.
   - A lost or errored run is retried up to 3 attempts, and a person's cancel stands.

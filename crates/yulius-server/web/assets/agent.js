@@ -677,6 +677,11 @@ function createRequests(ctx, sandbox, onCount) {
           const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
           const said = asked.done ? `${asked.done} in ${answer.sandbox || slug}.` : `Created #${answer.task.number} in ${answer.sandbox || slug}.`;
           toast(said, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
+        } else if (approve && answer && answer.staging) {
+          // SPEC-650 PST-004: staging was asked for the integration head; nothing started yet.
+          const env = (request.options && request.options.environment) || 'staging';
+          const wait = answer.staging.waiting || `the request is ${String(answer.staging.state).replace(/_/g, ' ')}`;
+          toast(`Asked ${env} for the integration head in ${slug}. ${wait.replace(/\.$/, '')}.`, { kind: 'ok' });
         } else if (asked.answer) {
           toast(approve ? `${asked.done}.` : 'Answered no.', { kind: approve ? 'ok' : 'info' });
         } else if (approve && asked.done) {

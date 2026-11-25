@@ -27,6 +27,15 @@ pub async fn deploy(
     Ok(Json(app.cd_deploy(&ctx, &sid, &env, &req).await?))
 }
 
+/// A person's request for the merge-first staging target (SPEC-650 PST-001).
+pub async fn staging(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, env)): Path<(String, String)>,
+) -> ApiResult<Json<yulius_contracts::api::cd::CdStagingRequest>> {
+    Ok(Json(app.cd_staging_ask(&ctx, &sid, &env).await?))
+}
+
 pub async fn rollback(
     State(app): State<AppState>,
     Auth(ctx): Auth,
