@@ -87,11 +87,11 @@ schedule's requests), ADR-0410, ADR-0411, ADR-0477.
 ## Plan
 
 - [x] Spec SPEC-653 and the plan
-- [ ] Domain: the judging plan (covered, inherited, newest first, narrowing) with unit tests
-- [ ] Domain: the morning of 2026-11-25 replayed at its real times
-- [ ] App: staging_judge reads the first-parent window and applies the plan, with integration tests
-- [ ] Gate history waits for a narrowing run before naming a repair owner
-- [ ] SPEC-575, ADR-0480, architecture and changes updated
+- [x] Domain: the judging plan (covered, inherited, newest first, narrowing) with unit tests
+- [x] Domain: the morning of 2026-11-25 replayed at its real times
+- [x] App: staging_judge reads the first-parent window and applies the plan, with integration tests
+- [x] Gate history waits for a narrowing run before naming a repair owner
+- [x] SPEC-575, ADR-0480, architecture and changes updated
 - [ ] Independent review of the change approved
 
 ## Acceptance criteria
