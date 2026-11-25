@@ -103,6 +103,7 @@ schedule's requests), ADR-0410, ADR-0411, ADR-0477.
 - [x] App: staging_judge reads the first-parent window and applies the plan, with integration tests
 - [x] Gate history waits for a narrowing run before naming a repair owner
 - [x] SPEC-575, ADR-0480, architecture and changes updated
+- [x] Review round 1: findings fixed test-first
 - [ ] Independent review of the change approved
 
 ## Acceptance criteria
