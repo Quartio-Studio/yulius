@@ -95,7 +95,8 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
   knowledge in the repository through a pull request." Claude Code's edit tools on a protected
   path are denied with it (a `PreToolUse` hook, before the tool runs) and its run settings deny
   `Edit(...)` on those paths; a shell result that fails with "Read-only file system" on a
-  protected path gets it as added context (Claude Code and Codex `PostToolUse`); an Antigravity
+  protected path gets it as added context (Claude Code's `PostToolUse` and, for a failed command,
+  `PostToolUseFailure`; Codex's `PostToolUse`); an Antigravity
   session gets it with its start context (its CLI has no hook after a tool). Claude Code's memory
   instructions say it (`CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES`).
 - **MEM-007** Removing and purging a sandbox that has notes works: the protection is only in each
@@ -290,6 +291,17 @@ clean-up, MEM-006 and MEM-009, follow in the second).
     said "changed memory stopgap cleared the immutable flag of 8 paths in 2 memory folders";
     `lsattr` showed no `i`; a second check said "ok … no harness memory folder is immutable";
     `rm -rf` then removed the sandbox.
+  - Review round 1 of part 2 (request changes; answered): the host check's walk resolved paths
+    by name, so a link an agent put at `projects/x/memory` was followed by root. It now opens
+    every component by descriptor with `O_NOFOLLOW` and reads and clears each flag on that
+    descriptor (`walk_memory`, `the_stopgap_walk_never_follows_a_link` on a real folder tree with
+    links at `memory`, `projects`, `home` and a file); a failed clear no longer stops the others,
+    and a walk cut at its bound fails the line. Guest rerun: the same 8 paths cleared, and with a
+    link `projects/x/memory -> /root/outside` the immutable `/root/outside/kept.conf` kept its
+    flag while the real memory folder's 2 paths were cleared. Wiring tests: `MemoryGuard` through
+    `run_hook_with` for Claude Code and Codex (fails without the dispatch, checked by hand),
+    Antigravity's start through `run_hook_with` with and without the paths, and the stopgap line
+    through the whole check (`run(…).all()`) in Setup, Check and DryRun.
 - `scripts/cargo clippy … --all-targets -D warnings` on the touched crates, `scripts/dev macos`,
   `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` on the touched crates and `scripts/dev quick`:
   clean.

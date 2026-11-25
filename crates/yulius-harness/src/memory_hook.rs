@@ -73,9 +73,14 @@ pub fn answer(event: &Value, guarded: &[PathBuf]) -> Option<Value> {
             let result = format!("{}{}", event["tool_response"], event["error"]);
             let input = event["tool_input"].to_string();
             let refused = REFUSED.iter().any(|r| result.contains(r));
+            // Named in the result or the input, or the tool ran inside a read-only folder
+            // (a relative path; review of part 2).
+            let cwd = event["cwd"].as_str().and_then(|cwd| absolute(cwd, None));
             let named = guarded.iter().any(|g| {
-                let g = g.to_string_lossy();
-                result.contains(g.as_ref()) || input.contains(g.as_ref())
+                let text = g.to_string_lossy();
+                result.contains(text.as_ref())
+                    || input.contains(text.as_ref())
+                    || cwd.as_ref().is_some_and(|cwd| cwd.starts_with(g))
             });
             (refused && named).then(|| {
                 json!({ "hookSpecificOutput": {
@@ -211,6 +216,13 @@ mod tests {
             reply["hookSpecificOutput"]["additionalContext"],
             MEMORY_READ_ONLY_SENTENCE
         );
+        // A relative path from a working folder inside the memory folder (review of part 2).
+        let relative = json!({
+            "hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "cwd": MEMORY,
+            "tool_input": { "command": "echo x >> MEMORY.md" },
+            "error": "Exit code 1\n/bin/bash: MEMORY.md: Read-only file system",
+        });
+        assert!(answer(&relative, &guarded()).is_some());
         let other_path = json!({
             "hook_event_name": "PostToolUse", "tool_name": "Bash",
             "tool_input": { "command": "touch /usr/x" },

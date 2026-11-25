@@ -1425,3 +1425,61 @@ cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
     assert!(answer(&oversized).is_empty());
     Ok(())
 }
+
+/// SPEC-652 MEM-006 (review of part 2): `yulius hook <claude|codex> MemoryGuard` is answered in the
+/// sandbox, without Yulius (no `YULIUS_URL`), from the run's read-only paths; an Antigravity
+/// session with them hears the sentence at its start even when Yulius cannot be reached.
+#[test]
+fn the_memory_guard_answers_in_the_sandbox() {
+    let sentence = yulius_contracts::hooks::MEMORY_READ_ONLY_SENTENCE;
+    let env = |name: &str| {
+        (name == "YULIUS_READONLY_PATHS").then(|| "/s/home/.claude/projects/-k/memory".to_owned())
+    };
+    let write = serde_json::json!({
+        "hook_event_name": "PreToolUse", "tool_name": "Write",
+        "tool_input": { "file_path": "/s/home/.claude/projects/-k/memory/x.md" },
+    })
+    .to_string();
+    for harness in ["claude", "codex"] {
+        let mut out = Vec::new();
+        let code = run_hook_with(
+            harness,
+            "MemoryGuard",
+            &mut write.as_bytes(),
+            &mut out,
+            &env,
+            HoldPolicy::NEVER,
+        );
+        assert_eq!(code, 0);
+        let reply: serde_json::Value = serde_json::from_slice(&out).unwrap_or_default();
+        assert_eq!(
+            reply["hookSpecificOutput"]["permissionDecisionReason"], sentence,
+            "{harness}"
+        );
+    }
+    let start = serde_json::json!({ "conversationId": "c1", "cwd": "/s/worktrees/t1" }).to_string();
+    let mut out = Vec::new();
+    run_hook_with(
+        "antigravity",
+        "SessionStart",
+        &mut start.as_bytes(),
+        &mut out,
+        &env,
+        HoldPolicy::NEVER,
+    );
+    let reply: serde_json::Value = serde_json::from_slice(&out).unwrap_or_default();
+    assert_eq!(
+        reply["injectSteps"][0]["systemMessage"]["systemMessage"], sentence,
+        "{reply}"
+    );
+    let mut quiet = Vec::new();
+    run_hook_with(
+        "antigravity",
+        "SessionStart",
+        &mut start.as_bytes(),
+        &mut quiet,
+        &|_| None,
+        HoldPolicy::NEVER,
+    );
+    assert!(!String::from_utf8_lossy(&quiet).contains(sentence));
+}

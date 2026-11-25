@@ -6,7 +6,8 @@
 //! reason it is not automatic) or `failed`. [`Mode::Setup`] fixes everything it safely can,
 //! installs packages and builds the base; [`Mode::Check`] (the update helper's re-check, HST-012)
 //! applies only the safe, idempotent fixes (the needrestart rule, the host's Docker units, the
-//! modules file and loading, the binary's owner) and reports the rest (the AppArmor rule of
+//! modules file and loading, the binary's owner, the stopgap's immutable memory folders of
+//! SPEC-652) and reports the rest (the AppArmor rule of
 //! "bwrap namespaces" among it, SPEC-456: the helper cannot write it); [`Mode::DryRun`] changes
 //! nothing and says what setup would change. The last line is the "sandbox Docker" verdict
 //! (`yulius_sandbox::docker_status`), the doctor's words.
@@ -152,29 +153,37 @@ pub trait Host {
     /// # Errors
     /// Why it did not start.
     fn run(&mut self, cmd: &Cmd) -> Result<Out, String>;
-    /// Names of the folders in a directory, links not followed (empty when unreadable).
-    fn dirs(&self, _dir: &Path) -> Vec<String> {
-        Vec::new()
-    }
-    /// Whether a path (not followed when a link) has the immutable flag; `None` when that
-    /// cannot be read.
-    fn immutable(&self, _path: &Path) -> Option<bool> {
-        None
-    }
-    /// Clears a path's immutable flag.
-    ///
-    /// # Errors
-    /// Why not.
-    fn clear_immutable(&mut self, _path: &Path) -> Result<(), String> {
-        Err("not supported here".into())
+    /// The immutable flags of the stopgap of 2026-11-25 on the harness memory folders below
+    /// `data_dir` (`{sandboxes,users}/*/home/.claude/projects/*/memory` and everything in them),
+    /// walked by descriptor without following a link; with `clear`, each flag is cleared on the
+    /// descriptor it was read from (SPEC-652 MEM-009). The default finds none.
+    fn memory_stopgap(&mut self, _data_dir: &Path, _clear: bool) -> StopgapScan {
+        StopgapScan::default()
     }
 }
 
 /// The line of the stopgap's immutable memory folders (SPEC-652 MEM-009).
 pub const STOPGAP: &str = "memory stopgap";
 
-/// Most paths of memory folders the stopgap line looks at.
-const STOPGAP_MAX_PATHS: usize = 100_000;
+/// Most paths of memory folders the stopgap walk opens.
+pub const STOPGAP_MAX_PATHS: usize = 100_000;
+
+/// What the stopgap walk found and did ([`Host::memory_stopgap`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StopgapScan {
+    /// Paths with the immutable flag.
+    pub flagged: usize,
+    /// Memory folders holding at least one of them.
+    pub folders: usize,
+    /// Flags cleared.
+    pub cleared: usize,
+    /// Flags that could not be cleared.
+    pub failed: usize,
+    /// The first failure, `<path>: <why>`.
+    pub first_failure: Option<String>,
+    /// The walk stopped at [`STOPGAP_MAX_PATHS`]: folders beyond it were not looked at.
+    pub cut: bool,
+}
 
 /// Options of a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -584,84 +593,49 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Only the stopgap's line (tests).
-    #[cfg(test)]
-    pub(crate) fn stopgap(mut self) -> Vec<HostLine> {
-        self.memory_stopgap();
-        self.lines
-    }
-
-    /// The memory folders of the homes of `<data>/sandboxes/*` and `<data>/users/*`
-    /// (`home/.claude/projects/*/memory`) with every folder and file in them, links not followed.
-    fn memory_paths(&self) -> Vec<PathBuf> {
-        let mut found = Vec::new();
-        for group in ["sandboxes", "users"] {
-            let root = self.opts.data_dir.join(group);
-            for owner in self.host.dirs(&root) {
-                let projects = root.join(owner).join("home/.claude/projects");
-                for project in self.host.dirs(&projects) {
-                    let memory = projects.join(project).join("memory");
-                    let mut pending = vec![memory];
-                    while let Some(dir) = pending.pop() {
-                        if found.len() >= STOPGAP_MAX_PATHS {
-                            return found;
-                        }
-                        let subdirs = self.host.dirs(&dir);
-                        let is_dir = !subdirs.is_empty()
-                            || self.host.stat(&dir).is_some()
-                            || self.host.immutable(&dir) == Some(true);
-                        if !is_dir {
-                            continue;
-                        }
-                        for name in self.host.list(&dir) {
-                            if !subdirs.contains(&name) {
-                                found.push(dir.join(name));
-                            }
-                        }
-                        pending.extend(subdirs.iter().map(|name| dir.join(name)));
-                        found.push(dir);
-                    }
-                }
-            }
-        }
-        found
-    }
-
     /// SPEC-652 MEM-009: the immutable flag the stopgap of 2026-11-25 set on harness memory
     /// folders (`chattr -R +i`) is cleared, since every session sees them read-only now and the
     /// flag only stops a removed sandbox's purge and a person's hand edits. A root run (the setup,
-    /// the update helper's re-check) can; a flag that cannot be cleared fails the line.
+    /// the update helper's re-check) can. The walk follows no link an agent put in a home; a flag
+    /// that cannot be cleared, or a walk cut at its bound, fails the line.
     fn memory_stopgap(&mut self) {
-        let flagged: Vec<PathBuf> = self
-            .memory_paths()
-            .into_iter()
-            .filter(|path| self.host.immutable(path) == Some(true))
-            .collect();
-        if flagged.is_empty() {
-            return self.ok(STOPGAP, "no harness memory folder is immutable");
+        let data_dir = self.opts.data_dir.clone();
+        let scan = self.host.memory_stopgap(&data_dir, self.may(true));
+        let cut = scan.cut.then(|| {
+            format!(
+                "; the walk stopped after {STOPGAP_MAX_PATHS} paths, so memory folders beyond \
+                 them were not looked at"
+            )
+        });
+        if scan.flagged == 0 {
+            return match cut {
+                Some(cut) => self.failed(STOPGAP, format!("no immutable path found{cut}")),
+                None => self.ok(STOPGAP, "no harness memory folder is immutable"),
+            };
         }
-        let folders = flagged
-            .iter()
-            .filter(|p| p.file_name().is_some_and(|n| n == "memory"))
-            .count();
         let what = format!(
-            "the immutable flag of {} paths in {folders} memory folders (the stopgap of \
-             2026-11-25; every session sees memory read-only, ADR-0479)",
-            flagged.len()
+            "the immutable flag of {} paths in {} memory folders (the stopgap of 2026-11-25; \
+             every session sees memory read-only, ADR-0479)",
+            scan.flagged, scan.folders
         );
         if !self.may(true) {
             return self.changed(STOPGAP, "", &format!("clear {what}"));
         }
-        for path in &flagged {
-            if let Err(why) = self.host.clear_immutable(path) {
-                return self.failed(
-                    STOPGAP,
-                    format!(
-                        "cannot clear the immutable flag of {}: {why}",
-                        path.display()
-                    ),
-                );
-            }
+        if scan.failed > 0 || cut.is_some() {
+            let first = scan
+                .first_failure
+                .map(|first| format!(", first {first}"))
+                .unwrap_or_default();
+            return self.failed(
+                STOPGAP,
+                format!(
+                    "cleared {} of {what}; {} of {} could not be cleared{first}{}",
+                    scan.cleared,
+                    scan.failed,
+                    scan.flagged,
+                    cut.unwrap_or_default()
+                ),
+            );
         }
         self.changed(STOPGAP, &format!("cleared {what}"), "");
     }

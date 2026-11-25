@@ -86,7 +86,8 @@ namespace binds).
   stopgap": the guarantee does not need them, and they stopped a removed sandbox's purge.
 - A person with access to the host edits memory in place; a person's own terminal in a sandbox
   writes it as before.
-- An uncontained server (development) has no namespace: only the deny rules and hooks hold there.
+- An uncontained server (development) has no namespace: only Claude Code's deny rules hold there,
+  and its hooks say nothing (the read-only paths are set for a contained run only).
 - Limits, none tried in a real session:
   - Renaming the whole home (or a Codex home) away and copying it back (`mv ~ ~.old && cp -a
     ~.old ~`) leaves a writable copy at the same path, which the next session guards with
