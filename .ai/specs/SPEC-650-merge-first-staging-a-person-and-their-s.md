@@ -120,10 +120,10 @@ production authorization, not staging.
 
 ## Plan
 
-- [ ] Spec, ADR-0477 and the plan of three pull requests
-- [ ] Person staging requests in the domain: a red task-less request waits as inherited, admission of a person's repeat
-- [ ] The queue deploys task-less requests as their requester and carries a red one forward to the next head
-- [ ] Person's ask: App::staging_ask and POST /cd/{env}/staging; the plain deploy's refusal names it
+- [x] Spec, ADR-0477 and the plan of three pull requests
+- [x] Person staging requests in the domain: a red task-less request waits as inherited, admission of a person's repeat
+- [x] The queue deploys task-less requests as their requester and carries a red one forward to the next head
+- [x] Person's ask: App::staging_ask and POST /cd/{env}/staging; the plain deploy's refusal names it
 - [ ] The Superagent's cd_deploy of staging waits on its panel and records the person's request
 - [ ] CD page: Deploy dev enabled for writers, staging waits in plain words, e2e
 - [ ] Docs, changes entry and the independent review of pull request 1
