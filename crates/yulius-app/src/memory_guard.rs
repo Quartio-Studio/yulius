@@ -63,6 +63,13 @@ pub fn claude_key(base: &Path) -> String {
     format!("{cut}-{}", digits.iter().rev().collect::<String>())
 }
 
+/// The memory key of a Claude Code session started in `cwd` within the sandbox (or folder)
+/// `within`: [`claude_key`] of [`claude_project_base`].
+#[must_use]
+pub fn claude_session_key(cwd: &Path, within: &Path) -> String {
+    claude_key(&claude_project_base(cwd, within))
+}
+
 /// Reads a small file without following a link at its last component.
 fn read_pointer(path: &Path) -> Option<String> {
     use std::io::Read as _;
@@ -227,6 +234,31 @@ impl ClaudeConfig<'_> {
             .collect();
         crate::files::open_dirs_below(self.anchor, &parts, true).map(drop)
     }
+}
+
+/// The guard of a Claude Code session started in `cwd` within `within`, whose configuration is
+/// `outer` beneath `anchor` (`inner` inside the namespace): its memory folder made first, so its
+/// parents are pinned from the first session; one that cannot be made (a link on the way) gets a
+/// placeholder (MEM-003).
+#[must_use]
+pub fn claude_guard(
+    anchor: &Path,
+    outer: &Path,
+    inner: &Path,
+    cwd: &Path,
+    within: &Path,
+) -> Vec<GuardPath> {
+    let key = claude_session_key(cwd, within);
+    let config = ClaudeConfig {
+        anchor,
+        outer,
+        inner,
+        key: &key,
+    };
+    if let Err(err) = config.prepare() {
+        tracing::warn!(config = %outer.display(), error = %err, "the memory folder could not be made; the session gets a placeholder");
+    }
+    config.guard()
 }
 
 /// The guarded paths of a Codex home `codex_home` beneath `anchor`, bound at the same path.

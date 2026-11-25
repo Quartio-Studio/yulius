@@ -2216,6 +2216,33 @@ impl App {
         self.sandbox_dir(sandbox).join("home")
     }
 
+    /// The memory guard of a contained task run (SPEC-652 MEM-001): Claude Code's memory folder,
+    /// `CLAUDE.md` and `rules` in the sandbox home's `.claude`, Codex's instruction files and
+    /// memories in its home, or Antigravity's rules in the run's own home.
+    fn task_memory_guard(
+        &self,
+        sandbox: &SandboxId,
+        harness: Harness,
+        home: &Path,
+        worktree: &Path,
+        codex_home: Option<&Path>,
+        antigravity_home: Option<&Path>,
+    ) -> Vec<yulius_contracts::ptyhost::GuardPath> {
+        let root = self.sandbox_dir(sandbox);
+        match harness {
+            Harness::ClaudeCode => {
+                let config = home.join(".claude");
+                crate::memory_guard::claude_guard(&root, &config, &config, worktree, &root)
+            }
+            Harness::Codex => codex_home
+                .map(|codex| crate::memory_guard::codex_guard(&root, codex))
+                .unwrap_or_default(),
+            Harness::Antigravity => antigravity_home
+                .map(|agy| crate::memory_guard::antigravity_guard(agy, &home.join(".gemini")))
+                .unwrap_or_default(),
+        }
+    }
+
     /// The sandbox's Codex sessions, shared by its Codex homes (SPEC-503 CDX-003).
     pub(crate) fn codex_sessions(&self, sandbox: &SandboxId) -> PathBuf {
         self.sandbox_dir(sandbox).join("codex").join("sessions")
@@ -3413,7 +3440,14 @@ impl App {
                     .collect(),
                 identity: None,
                 join: join.map(Box::new),
-                guard: Vec::new(),
+                guard: self.task_memory_guard(
+                    &sandbox.id,
+                    harness,
+                    &home,
+                    &worktree,
+                    codex_home.as_ref().map(|(path, _)| path.as_path()),
+                    antigravity_home.as_deref(),
+                ),
             }
         } else {
             Containment::None

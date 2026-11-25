@@ -248,6 +248,10 @@ pub struct LaunchRequest {
     /// Plugins of the sandbox home (`name@marketplace`) this run switches off whatever a settings
     /// file says: the ones that bring a language server (SPEC-485 LSP-003, ADR-0327).
     pub disabled_plugins: Vec<String>,
+    /// Claude Code's auto-memory folder of the session, which Yulius keeps read-only (SPEC-652
+    /// MEM-002, MEM-006): the run settings name it as `autoMemoryDirectory` and deny edits there,
+    /// to `CLAUDE.md` and to `rules` in the configuration folder. `None`: neither.
+    pub claude_memory_dir: Option<PathBuf>,
 }
 
 /// A config file the supervisor writes before spawning.
@@ -623,6 +627,33 @@ fn reviewer_agents() -> Value {
     Value::Object(agents)
 }
 
+/// Run settings that keep a Claude Code session to the memory folder Yulius protects (SPEC-652
+/// MEM-002, MEM-006): `autoMemoryDirectory` names it, so the session reads exactly the folder its
+/// namespace binds read-only, and `permissions.deny` refuses Claude Code's own edits there and to
+/// `CLAUDE.md` and `rules` in `config_dir` (an absolute path in a rule starts with `//`).
+fn memory_settings(
+    settings: &mut Map<String, Value>,
+    memory_dir: &Path,
+    config_dir: &Path,
+) -> Result<(), LaunchError> {
+    let memory = utf8(memory_dir, "claude_memory_dir")?;
+    let config = utf8(config_dir, "config_dir")?;
+    check(
+        memory_dir.is_absolute() && config_dir.is_absolute(),
+        "claude_memory_dir",
+    )?;
+    settings.insert("autoMemoryDirectory".into(), json!(memory));
+    settings.insert(
+        "permissions".into(),
+        json!({ "deny": [
+            format!("Edit(/{memory}/**)"),
+            format!("Edit(/{config}/CLAUDE.md)"),
+            format!("Edit(/{config}/rules/**)"),
+        ] }),
+    );
+    Ok(())
+}
+
 fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     let Credential::ClaudeOauthToken(token) = &request.credential else {
         return Err(LaunchError::CredentialMismatch(request.harness));
@@ -709,6 +740,9 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         settings.as_object_mut(),
     ) {
         settings.insert(ENABLED_PLUGINS.into(), off);
+    }
+    if let (Some(memory), Some(settings)) = (&request.claude_memory_dir, settings.as_object_mut()) {
+        memory_settings(settings, memory, &config_dir)?;
     }
 
     // Yulius's own tools go through `yulius mcp`, a stdio bridge to `${YULIUS_URL}/mcp` that
@@ -1338,6 +1372,10 @@ pub struct CockpitRequest {
     /// Plugins of the config dir (`name@marketplace`) this session switches off whatever a
     /// settings file says: the ones that bring a language server (SPEC-485 LSP-003, ADR-0327).
     pub disabled_plugins: Vec<String>,
+    /// Claude Code's auto-memory folder of the session, which Yulius keeps read-only (SPEC-652
+    /// MEM-002, MEM-006): the run settings name it as `autoMemoryDirectory` and deny edits there,
+    /// to `CLAUDE.md` and to `rules` in the configuration folder. `None`: neither.
+    pub claude_memory_dir: Option<PathBuf>,
 }
 
 /// The Yulius MCP server of a Cockpit (SPEC-037 MGT-004).
@@ -1496,6 +1534,9 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
     }
     if let Some(off) = plugins_off(&request.disabled_plugins) {
         settings.insert(ENABLED_PLUGINS.into(), off);
+    }
+    if let Some(memory) = &request.claude_memory_dir {
+        memory_settings(&mut settings, memory, &request.config_dir)?;
     }
     if !settings.is_empty() {
         argv.extend(["--settings".into(), Value::Object(settings).to_string()]);

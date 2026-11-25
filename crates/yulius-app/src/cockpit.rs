@@ -1364,6 +1364,17 @@ impl App {
         env.append(&mut plan.env);
         plan.env = env;
         plan.containment = space.containment.clone();
+        // Its memory and user-level instructions, read-only (SPEC-652 MEM-001).
+        if let crate::ports::session::Containment::Bubblewrap { guard, .. } = &mut plan.containment
+        {
+            *guard = crate::memory_guard::claude_guard(
+                &space.home_host,
+                &space.home_host.join(".claude"),
+                &space.home.join(".claude"),
+                &folder,
+                &self.sandbox_dir(&record.id),
+            );
+        }
         // Behind the egress proxy as a task run is, with its own bearer (SPEC-186 SAV-001).
         self.vault_superagent_setup(record, &user.id, &runtime.run_dir, &bearer, &mut plan)
             .await?;
