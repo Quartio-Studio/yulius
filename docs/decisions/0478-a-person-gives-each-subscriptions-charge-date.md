@@ -52,8 +52,9 @@ the Subscriptions page shows).
 - **A day of the month only** ("the 24th"). Rejected: it cannot say "every year on 24 Nov", and a
   date copied from a receipt needs no arithmetic from the person.
 - **Count the next charge in the browser**, in the person's own day. Rejected: one count in the
-  domain serves the page, the API and the Superagent alike. The page clamps "in N days" at
-  "today", so the few hours around midnight where the UTC day differs never show a past date.
+  domain serves the page, the API and the Superagent alike. For as many hours as a
+  person is east of UTC, after midnight their card still shows yesterday's charge, its count
+  clamped at "today"; west of UTC, the next period's date shows that many hours early.
 - **A column on `accounts`.** Rejected: `AccountRecord` is built by hand in about 40 test files,
   and a credential write must not be able to touch the cycle.
 - **A reminder before each charge** (a notice or a Telegram message). Not built: the request is to

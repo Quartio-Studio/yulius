@@ -17,7 +17,7 @@ to do it and do it the best way". Amends SPEC-001 ROT-009 (the Subscriptions pag
 ## Goal
 
 Every card on the Subscriptions page can say when its subscription charges the card next, for
-example "Next charge Wed 24 Dec 2026 · in 29 days", with how often it is charged, so a person
+example "Next charge Thu 24 Dec 2026 · in 29 days", with how often it is charged, so a person
 keeps track of the charges of every Claude, Codex and Antigravity subscription in one place.
 
 ## Context
@@ -59,7 +59,7 @@ Confirmed against `dev` at 1770c1b30.
 | BIL-003 | `PUT /api/admin/accounts/{id}/billing` with `{"anchor": "YYYY-MM-DD", "period": "month"\|"year"}` sets the cycle and answers the `Account`; `DELETE` on the same path removes it and answers the `Account` (also when none was set). An anchor that is not a real calendar date in that exact form, a year before 2000 or after 2100, another period, a missing or unknown field is 422 `invalid`, nothing written. Instance administrators only (403 otherwise); 404 for an unknown subscription. Audited `account.billing_set` with `anchor=… period=…`, or `account.billing_removed`. |
 | BIL-004 | Every `Account` the server gives (the list, every answer of an account route, the `account.updated` event) carries `billing`: `null` without a cycle, else `{"anchor", "period", "next_charge_on"}` (dates `YYYY-MM-DD`), so an update never drops it. |
 | BIL-005 | Removing a subscription removes its cycle. A cycle stays across sign-ins, token pastes, imports and renames: it belongs to the subscription the person pays, not to its credential. |
-| BIL-006 | Each Subscriptions card has a "Next charge" line under the observed tokens. Set: the date with its weekday in the browser's locale and how far it is ("today", "tomorrow", "in 29 days"), and under it how it repeats ("Every month on the 24th", "Every month on the 31st, or the month's last day", "Every year on 24 Nov"), with a pencil button "Change the charge date of *name*". Not set: "Not set" and a button "Set charge date". |
+| BIL-006 | Each Subscriptions card has a "Next charge" line under the observed tokens. Set: the date with its weekday in the browser's locale and how far it is ("today", "tomorrow", "in 29 days"), and under it how it repeats ("Every month on the 24th", "Every month on the 31st, or the month's last day", "Every year on 24 Nov", "Every year on 29 Feb, or 28 Feb in other years"), with a pencil button "Change the charge date of *name*". Not set: "Not set" and a button "Set charge date". |
 | BIL-007 | The pencil or the button opens a dialog "Charge date · *name*": a date field "A charge date" (prefilled with the anchor, empty when none), with the hint "The day this subscription charges your card: the last charge or the next one, from your receipt or bank statement. Yulius counts the next charges from it."; a choice "Charged" of Every month (the default) or Every year; Cancel, Save, and Remove when a cycle is set. Save without a date is refused under the field ("Pick the date of a charge.") and sends nothing. A saved or removed cycle shows on the card at once, with a toast ("Next charge of *name*: *date*." / "Charge date of *name* removed."). A refusal from the server stays in the dialog. |
 | BIL-008 | The Status panel, the Dashboard and the task views do not show the charge date: it is for the people who manage the subscriptions (instance administrators), where they manage them. |
 

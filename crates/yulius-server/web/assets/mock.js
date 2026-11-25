@@ -4477,7 +4477,7 @@ function signedInByPaste(db, account) {
   db.unsignedAccounts.delete(account.id);
   // An email a person typed stays (SPEC-463 EML-004); one Claude gave was the old sign-in's.
   Object.assign(account, { status: 'ok', last_error: null, email: account.email_typed ? account.email : null });
-  emit(db, { type: 'account.updated', account });
+  emit(db, { type: 'account.updated', account: withBilling(account) });
 }
 // 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
 // With a pasted `token` it is `ok` at once and there is no `login_id` (SPEC-502 TKP-001).
@@ -4513,7 +4513,7 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
   if (immediate) {
     // A key's subscription has no usage windows to read (SPEC-503 CDX-008, SPEC-505).
     if (body.api_key) db.codexKeyAccounts.add(account.id);
-    emit(db, { type: 'account.updated', account });
+    emit(db, { type: 'account.updated', account: withBilling(account) });
     return json(201, { account });
   }
   db.unsignedAccounts.add(account.id);
@@ -4540,7 +4540,7 @@ route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   }
   // A typed email is marked, so nothing says Claude confirmed it (EML-006).
   if (given('email')) Object.assign(account, { email: email || null, email_typed: Boolean(email) });
-  emit(db, { type: 'account.updated', account });
+  emit(db, { type: 'account.updated', account: withBilling(account) });
   return withBilling(account);
 });
 /**
@@ -4561,8 +4561,8 @@ function nextCharge(anchor, period, now = Date.now()) {
 }
 /** `billing` as the server gives it: the cycle and its next charge, counted now (BIL-004). */
 function withBilling(account) {
-  const cycle = account.billing_cycle;
-  return { ...account, billing: cycle ? { ...cycle, next_charge_on: nextCharge(cycle.anchor, cycle.period) } : null };
+  const { billing_cycle: cycle, ...view } = account;
+  return { ...view, billing: cycle ? { ...cycle, next_charge_on: nextCharge(cycle.anchor, cycle.period) } : null };
 }
 // When a subscription charges its card (SPEC-651 BIL-003): a real `YYYY-MM-DD` in 2000..2100 and
 // `month` or `year`; DELETE removes it, also when none is set.
@@ -4673,7 +4673,7 @@ route('POST', `/api/admin/accounts/${ID}/import`, ({ db, p, body }) => {
   db.codexKeyAccounts.delete(account.id);
   db.unsignedAccounts.delete(account.id);
   Object.assign(account, { status: 'ok', last_error: null });
-  emit(db, { type: 'account.updated', account });
+  emit(db, { type: 'account.updated', account: withBilling(account) });
   return json(200, { account });
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
@@ -7353,7 +7353,7 @@ class LoginSession {
         if (working) account.last_error = `re-login failed: ${SIGN_IN_FAILED}`;
         else if (account.status === 'relogin') account.last_error = account.last_error || SIGN_IN_FAILED;
         else Object.assign(account, { status: 'error', last_error: SIGN_IN_FAILED });
-        emit(this.db, { type: 'account.updated', account });
+        emit(this.db, { type: 'account.updated', account: withBilling(account) });
       }
       this.end('error', 1, SIGN_IN_FAILED);
       return;
@@ -7376,12 +7376,12 @@ class LoginSession {
     if (account) {
       this.db.unsignedAccounts.delete(account.id);
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
-      emit(this.db, { type: 'account.updated', account });
+      emit(this.db, { type: 'account.updated', account: withBilling(account) });
       // Like the server, the email of the Claude account is read right after the sign-in ended
       // and arrives as a later update (SPEC-244 SUB-003).
       setTimeout(() => {
         if (!account.email) account.email = 'signed-in@example.com';
-        emit(this.db, { type: 'account.updated', account });
+        emit(this.db, { type: 'account.updated', account: withBilling(account) });
       }, 300);
     }
     this.end('ok', 0);
@@ -7883,7 +7883,7 @@ export function createMockTransport(params) {
     db.nextId += 1;
     const account = { id: `acc_${db.nextId}`, provider: 'openai', label: 'Codex', email: null, status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
     db.accounts.push(account);
-    emit(db, { type: 'account.updated', account });
+    emit(db, { type: 'account.updated', account: withBilling(account) });
   };
   if (params.get('codex') === '1') db.connectCodex();
   // An Antigravity account signed in elsewhere (`connectAntigravity()`, SPEC-505).
@@ -7894,13 +7894,13 @@ export function createMockTransport(params) {
       usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0,
     };
     db.accounts.push(account);
-    emit(db, { type: 'account.updated', account });
+    emit(db, { type: 'account.updated', account: withBilling(account) });
   };
   db.connectClaude = () => {
     db.nextId += 1;
     const account = { id: `acc_${db.nextId}`, provider: 'anthropic', label: 'Claude', email: 'signed-in@example.com', status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
     db.accounts.push(account);
-    emit(db, { type: 'account.updated', account });
+    emit(db, { type: 'account.updated', account: withBilling(account) });
   };
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
   // announced like the server does, unless `announce` is false (a change Yulius did not see).

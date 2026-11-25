@@ -125,8 +125,10 @@ impl App {
         store
             .audit(now, &actor(ctx), action, Some(account.id.as_str()), detail)
             .await?;
+        // Read again, so the view says what the subscription is now.
+        let account = self.load_account(account.id.as_str()).await?;
         let view = self
-            .account_view_with_billing(account, &self.working_attempts().await?)
+            .account_view_with_billing(&account, &self.working_attempts().await?)
             .await?;
         self.publish_account(view.clone());
         Ok(view)

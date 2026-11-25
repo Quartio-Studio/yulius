@@ -144,8 +144,11 @@ const ordinal = (n) => {
   const teen = n % 100 >= 11 && n % 100 <= 13;
   return `${n}${teen ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th'}`;
 };
-/** How far a charge is from the page's today: never in the past (the server counts in UTC). */
-function chargeIn(iso, now = new Date()) {
+/**
+ * How far a charge is from the page's today (its `Date.now`): the count is never below "today",
+ * though the server counts in UTC.
+ */
+function chargeIn(iso, now = new Date(Date.now())) {
   const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
   const days = Math.round((utcDay(iso).getTime() - today) / 86_400_000);
   if (days <= 0) return 'today';
@@ -154,7 +157,12 @@ function chargeIn(iso, now = new Date()) {
 /** How a cycle repeats (BIL-006): "Every month on the 24th", "Every year on 24 Nov". */
 function chargeRepeats(billing) {
   const anchor = utcDay(billing.anchor);
-  if (billing.period === 'year') return `Every year on ${anchor.toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' })}`;
+  const dayMonth = (date) => date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  if (billing.period === 'year') {
+    // A 29 February is charged on 28 February in other years (BIL-002).
+    const leapDay = anchor.getUTCMonth() === 1 && anchor.getUTCDate() === 29;
+    return `Every year on ${dayMonth(anchor)}${leapDay ? `, or ${dayMonth(new Date(Date.UTC(2027, 1, 28)))} in other years` : ''}`;
+  }
   const day = anchor.getUTCDate();
   return `Every month on the ${ordinal(day)}${day > 28 ? ', or the month’s last day' : ''}`;
 }
