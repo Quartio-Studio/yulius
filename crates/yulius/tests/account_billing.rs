@@ -3,20 +3,25 @@
 
 use crate::support;
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{
     HarnessOptions, TestResult, admit_and_sign_in, call, configure_github_app, harness_with,
     setup_superadmin_creds,
 };
-use yulius_app::model::{AccountRecord, AccountStatus};
+use yulius_app::model::{AccountRecord, AccountStatus, Secret};
 use yulius_app::ports::store::{AccountStore, AuditStore as _};
+use yulius_app::ports::usage::{UsageFailure, UsageProbe};
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
+use yulius_domain::usage::AccountUsage;
 
 /// One day in milliseconds.
 const DAY_MS: i64 = 86_400_000;
@@ -199,6 +204,7 @@ async fn a_charge_date_is_refused_unless_an_administrator_gives_a_real_one() -> 
             "{bad}: {}",
             r.body
         );
+        assert_eq!(r.body["error"]["code"], "invalid", "{bad}: {}", r.body);
     }
     let ok = json!({"anchor": "2026-11-24", "period": "month"});
     let refused = call(&h.router, Method::PUT, path, Some(ok.clone()), &member).await?;
@@ -221,5 +227,83 @@ async fn a_charge_date_is_refused_unless_an_administrator_gives_a_real_one() -> 
     assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.body);
     let missing = call(&h.router, Method::DELETE, unknown, None, &admin).await?;
     assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.body);
+    Ok(())
+}
+
+/// Claude shares no usage, and the email `pawel@example.com` for every sign-in.
+struct EmailOnly;
+
+#[async_trait]
+impl UsageProbe for EmailOnly {
+    async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
+        Err(UsageFailure::not_shared())
+    }
+
+    async fn account_email(&self, _: Provider, _: &Secret) -> Result<Option<String>, UsageFailure> {
+        Ok(Some("pawel@example.com".into()))
+    }
+}
+
+/// SPEC-651 BIL-004: an update or answer about a subscription for another reason still carries
+/// its charge date: the email the background round reads (`publish_account_id`), a usage
+/// refresh, a pasted token; a removal publishes `null`.
+#[tokio::test]
+async fn every_update_and_answer_about_a_subscription_carries_its_charge_date() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(EmailOnly)),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    subscription(&h, "a-max").await?;
+    let billing = "/api/admin/accounts/a-max/billing";
+    let set = call(
+        &h.router,
+        Method::PUT,
+        billing,
+        Some(json!({"anchor": "2026-11-24", "period": "month"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.body);
+    let expected = set.body["billing"].clone();
+    assert!(!expected.is_null(), "{}", set.body);
+
+    // The background round reads the email and publishes the subscription again.
+    let mut events = h.app.events.subscribe();
+    h.app.refresh_usage_round(&mut HashMap::new()).await;
+    let read = account_event(&mut events, "a-max", |a| !a["email"].is_null()).await?;
+    assert_eq!(read["billing"], expected, "{read}");
+
+    let refreshed = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/accounts/a-max/usage",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.body);
+    assert_eq!(refreshed.body["billing"], expected, "{}", refreshed.body);
+
+    let token = concat!(
+        "sk-ant-oat01-",
+        "SYNTHETICbilling0123456789abcdefghijklmnopqrstu-test"
+    );
+    let pasted = call(
+        &h.router,
+        Method::PUT,
+        "/api/admin/accounts/a-max/token",
+        Some(json!({"token": token})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(pasted.status, StatusCode::OK, "{}", pasted.body);
+    assert_eq!(pasted.body["billing"], expected, "a new sign-in keeps it");
+
+    let mut events = h.app.events.subscribe();
+    let removed = call(&h.router, Method::DELETE, billing, None, &admin).await?;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    let event = account_event(&mut events, "a-max", |_| true).await?;
+    assert_eq!(event["billing"], Value::Null, "{event}");
     Ok(())
 }
