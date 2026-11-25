@@ -136,7 +136,7 @@ production authorization, not staging.
 - [x] CD page: Deploy dev enabled for writers, staging waits in plain words, e2e
 - [x] Docs and changes entry for pull request 1
 - [x] Review round 1 of pull request 1: findings fixed test-first
-- [ ] Independent review of pull request 1 approved
+- [x] Independent review of pull request 1 approved
 - [ ] Scheduled serving: serve_every_minutes and serve_after_merges in [cd.<name>]
 - [ ] The staging tick records a scheduled request when staging is behind
 - [ ] Docs and the independent review of pull request 2
