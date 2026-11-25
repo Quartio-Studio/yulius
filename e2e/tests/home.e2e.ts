@@ -74,3 +74,20 @@ test('with no sandbox the home screen offers a playground, then to import or cre
   await expect(screen.getByRole('button', 'Create from template')).toBeEnabled();
   expect(await axeViolations(browser)).toEqual([]);
 });
+
+// #1749 ("my mate wasnt able to deploy prod even if he was an admin"): Yulius makes the creator of
+// a project its admin on GitHub; when GitHub only invites them or refuses, the page says why
+// production is not theirs to deploy yet, and the warning stays until it is dismissed.
+test('a created project its creator is not admin of says why its production is not theirs yet', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&sandboxes=0'));
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { createAccess?: string } }).__yuliusMock.createAccess = 'write'; });
+  await screen.getByRole('button', 'Create from template').click();
+  const dialog = screen.getByRole('dialog', 'Add sandbox');
+  await expect(dialog.getByRole('radio', 'Create from template')).toBeChecked();
+  await dialog.getByRole('textbox', /^Repository name/).fill('shop');
+  await dialog.getByRole('button', 'Create').click();
+  await expect.poll(() => browser.evaluate(() => location.hash)).toBe('#/s/shop');
+  const warning = browser.locator('.toast-warn:has-text("GitHub gives you write access to Quartio-Studio/shop, not admin")');
+  await expect(warning).toContainText('ask an owner of Quartio-Studio to make you its admin, to deploy its production');
+  expect(await axeViolations(browser)).toEqual([]);
+});

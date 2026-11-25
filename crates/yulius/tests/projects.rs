@@ -7,10 +7,12 @@ use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::repos::{OWNER, World, git};
 use support::{TestResult, call};
+use yulius_app::error::AppError;
 use yulius_app::model::{
     AccountRecord, AccountStatus, AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord,
 };
-use yulius_app::ports::store::{AccountStore, CoordinationStore};
+use yulius_app::ports::github::RoleGrant;
+use yulius_app::ports::store::{AccountStore, AuditStore, CoordinationStore};
 use yulius_app::ports::store::{InstanceStore, SandboxStore, TaskFieldUpdate, TaskStore};
 use yulius_app::supervisor::RunStart;
 use yulius_domain::harness::Harness;
@@ -927,7 +929,6 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
     let w = World::new("org").await?;
     let (_, admin) = w.user("alice", true).await?;
     let (_, bob) = w.user("bob", false).await?;
-    w.grant("alice", "new-shop", "admin");
     let body = json!({"mode": "create", "name": "new-shop", "template": "web", "description": "Demo shop"});
 
     let denied = call(
@@ -977,7 +978,18 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
     assert_eq!(sandbox["onboarding"], "not_needed");
     assert_eq!(sandbox["profile"]["preset"], "standard");
     assert_eq!(sandbox["default_branch"], "main");
-    assert_eq!(sandbox["access"], "admin");
+    assert_eq!(
+        sandbox["access"], "admin",
+        "the creator is made its admin (#1749)"
+    );
+    assert_eq!(
+        w.github.grants(),
+        vec![(
+            format!("{OWNER}/new-shop"),
+            "alice".to_owned(),
+            "inst-7".to_owned()
+        )]
+    );
 
     let created_repos = w.github.created();
     assert_eq!(created_repos.len(), 1);
@@ -1083,7 +1095,22 @@ async fn the_creator_of_a_project_is_its_admin_and_may_deploy_production() -> Te
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
     assert_eq!(created.body["access"], "admin", "{:?}", created.body);
+    assert_eq!(
+        w.github.grants(),
+        vec![(
+            format!("{OWNER}/new-shop"),
+            "alice".to_owned(),
+            "inst-7".to_owned()
+        )],
+        "the installation gives the creator the admin role"
+    );
     let sid = text(&created.body["id"]).to_owned();
+    assert!(
+        w.h.store
+            .audit_details(&sid, "sandbox.creator_admin", 5)
+            .await?
+            .is_empty()
+    );
     let cd = call(
         &w.h.router,
         Method::GET,
@@ -1107,6 +1134,75 @@ async fn the_creator_of_a_project_is_its_admin_and_may_deploy_production() -> Te
         "{:?}",
         deploy.body
     );
+    Ok(())
+}
+
+/// #1749: GitHub invites a creator who is not a member of the organization, or refuses the grant:
+/// the project is still created, its creator has what GitHub gives them, and the audit says why
+/// they are not its admin. A refusal for an organization owner, admin of every repository
+/// anyway, is not one.
+#[tokio::test]
+async fn an_invited_or_refused_creator_still_gets_the_project_and_the_reason() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", true).await?;
+    let create = |name: &'static str| {
+        call(
+            &w.h.router,
+            Method::POST,
+            "/api/sandboxes",
+            Some(json!({"mode": "create", "name": name, "template": "empty"})),
+            &alice,
+        )
+    };
+
+    w.grant("alice", "invited", "push");
+    w.github.answer_grants(Some(Ok(RoleGrant::Invited)));
+    let invited = create("invited").await?;
+    assert_eq!(invited.status, StatusCode::CREATED, "{:?}", invited.body);
+    assert_eq!(invited.body["access"], "write");
+    let notes =
+        w.h.store
+            .audit_details(text(&invited.body["id"]), "sandbox.creator_admin", 5)
+            .await?;
+    assert_eq!(
+        notes,
+        vec![format!(
+            "GitHub invited alice to be an admin of {OWNER}/invited; they are its admin once \
+             they accept the invitation"
+        )]
+    );
+
+    w.grant("alice", "refused", "push");
+    w.github.answer_grants(Some(Err(AppError::Forbidden(
+        "GitHub refused the request (HTTP 403): Resource not accessible by integration".into(),
+    ))));
+    let refused = create("refused").await?;
+    assert_eq!(refused.status, StatusCode::CREATED, "{:?}", refused.body);
+    assert_eq!(refused.body["access"], "write");
+    let notes =
+        w.h.store
+            .audit_details(text(&refused.body["id"]), "sandbox.creator_admin", 5)
+            .await?;
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].starts_with(&format!(
+            "GitHub refused to make alice an admin of {OWNER}/refused: "
+        )) && notes[0].contains("Resource not accessible by integration"),
+        "{notes:?}"
+    );
+
+    w.grant("alice", "owned", "admin");
+    let owned = create("owned").await?;
+    assert_eq!(owned.status, StatusCode::CREATED, "{:?}", owned.body);
+    assert_eq!(owned.body["access"], "admin");
+    assert!(
+        w.h.store
+            .audit_details(text(&owned.body["id"]), "sandbox.creator_admin", 5)
+            .await?
+            .is_empty(),
+        "an organization owner is its admin already"
+    );
+    assert_eq!(w.github.grants().len(), 3);
     Ok(())
 }
 
@@ -1141,6 +1237,10 @@ async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
     assert_eq!(repos.len(), 1);
     assert!(!repos[0].is_org);
     assert_eq!(repos[0].token, format!("token-{OWNER}"));
+    assert!(
+        w.github.grants().is_empty(),
+        "the owner created it: GitHub made them its admin"
+    );
     assert!(
         w.github
             .rulesets()

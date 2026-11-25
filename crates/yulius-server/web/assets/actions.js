@@ -1119,6 +1119,12 @@ export function openSandboxDialog(ctx, mode = 'import') {
         const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
         const verb = tabImport.checked ? 'Imported' : tabPlayground.checked ? 'Started the playground' : 'Created';
         toast(`${verb} ${sandbox.name}${preparing ? ' — it needs preparation before tasks can start' : ''}`, { kind: 'ok' });
+        // #1749: Yulius makes the creator the new repository's admin on GitHub; an invitation or a
+        // refusal leaves them less, so they learn why production is not theirs to deploy yet.
+        if (verb === 'Created' && sandbox.access !== 'admin') {
+          const repo = sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name;
+          toast(`GitHub gives you ${sandbox.access} access to ${repo}, not admin: accept GitHub’s invitation to it, or ask an owner of ${sandbox.repo ? sandbox.repo.owner : 'the organization'} to make you its admin, to deploy its production.`, { kind: 'warn', timeout: 0 });
+        }
         ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
       } },
     ],

@@ -26,7 +26,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, TaskRecord, UserRecord};
-use crate::ports::github::{GhRepo, GitHubAppConfig, RepoAccess, RulesetRequest};
+use crate::ports::github::{GhRepo, GitHubAppConfig, RepoAccess, RoleGrant, RulesetRequest};
 
 /// First port of the first sandbox range (PRJ-010).
 pub const PORT_RANGE_START: u16 = 20_000;
@@ -894,6 +894,14 @@ impl App {
         } else {
             repo.name.clone()
         };
+        // The App created an organization's repository, so GitHub made nobody its admin: its
+        // creator becomes its admin, as creating it on GitHub would make them (#1749).
+        let creator_note = if is_org {
+            self.grant_creator_admin(&ctx.user, &install_token, &repo_owner, &repo_name)
+                .await
+        } else {
+            None
+        };
         let profile = DeliveryProfile::standard();
         let id = SandboxId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let dir = self.sandbox_dir(&id);
@@ -979,8 +987,62 @@ impl App {
                 )),
             )
             .await?;
+        if let Some(note) = creator_note {
+            store
+                .audit(
+                    self.now(),
+                    &self.login_of(&ctx.user.id).await,
+                    "sandbox.creator_admin",
+                    Some(record.id.as_str()),
+                    Some(&note),
+                )
+                .await?;
+        }
         self.publish_resync(Some(record.id.clone()));
         Ok(record)
+    }
+
+    /// Makes `user`, who created the organization's repository `owner/name` through the App, its
+    /// admin on GitHub (#1749): access mirrors GitHub (ACC-007), and GitHub made nobody admin of a
+    /// repository the App created. Returns what the audit says when they are not its admin by
+    /// it: GitHub invited them, or refused while they are no admin otherwise (an organization
+    /// owner is one of every repository).
+    async fn grant_creator_admin(
+        &self,
+        user: &UserRecord,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+    ) -> Option<String> {
+        // The superadmin has no GitHub identity and administers every sandbox (ACC-012).
+        let login = user.github_login.as_deref()?;
+        let refused = match self
+            .deps
+            .github
+            .grant_admin(token, owner, name, login)
+            .await
+        {
+            Ok(RoleGrant::Added) => return None,
+            Ok(RoleGrant::Invited) => {
+                return Some(format!(
+                    "GitHub invited {login} to be an admin of {owner}/{name}; they are its admin \
+                     once they accept the invitation"
+                ));
+            }
+            Err(err) => err,
+        };
+        if let Ok(own) = self.user_github_token(user).await
+            && let Ok(RepoAccess::Access { permissions, .. }) =
+                self.deps.github.repo_access(&own, owner, name).await
+            && permissions.admin
+        {
+            return None;
+        }
+        tracing::warn!(repo = %format!("{owner}/{name}"), login, error = %refused, "GitHub refused to make the creator of a project its admin");
+        Some(format!(
+            "GitHub refused to make {login} an admin of {owner}/{name}: {}",
+            refused.public_message()
+        ))
     }
 
     /// Clones the new (empty) repository into a scratch directory, commits the scaffold on the
