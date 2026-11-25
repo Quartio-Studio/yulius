@@ -1065,6 +1065,51 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
     Ok(())
 }
 
+/// #1749: the App creates an organization's repository, so GitHub makes nobody its admin; the
+/// person who created the project is made its admin, so they deploy its production. Here the
+/// organization gives its members write on every repository, as GitHub's base permission does.
+#[tokio::test]
+async fn the_creator_of_a_project_is_its_admin_and_may_deploy_production() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", true).await?;
+    w.grant("alice", "new-shop", "push");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "new-shop", "template": "web"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["access"], "admin", "{:?}", created.body);
+    let sid = text(&created.body["id"]).to_owned();
+    let cd = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sid}/cd"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(cd.status, StatusCode::OK, "{:?}", cd.body);
+    assert_eq!(cd.body["can_deploy_prod"], true, "{:?}", cd.body);
+    let deploy = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/cd/prod/deploy"),
+        Some(json!({"confirm": "new-shop"})),
+        &alice,
+    )
+    .await?;
+    assert!(
+        !text(&deploy.body["error"]["message"]).contains("administrator"),
+        "{:?}",
+        deploy.body
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
     let w = World::new("user").await?;
