@@ -20,6 +20,7 @@ pub mod guard_client;
 pub mod hook_client;
 pub mod launch;
 pub mod login;
+pub mod memory_hook;
 pub mod observe;
 pub mod paths;
 pub mod recount;

@@ -2073,6 +2073,12 @@ reads them where `bwrap_argv` put `--args 198` (before the first bind beneath a 
 the host becomes immutable: a person with access to the host edits these files in place, and a
 removed sandbox is purged with its notes.
 
+A refused write is explained in one sentence: the launch puts the guarded read-only paths in
+`YULIUS_READONLY_PATHS`, and `yulius hook <claude|codex> MemoryGuard` (`memory_hook.rs`, in the
+sandbox, never asking the server) denies Claude Code's edit tools there and adds the sentence to a
+refused shell or Codex tool result; an Antigravity session gets it with its start. The update's
+host check clears the immutable flags of the stopgap of 2026-11-25 (its line "memory stopgap").
+
 ```mermaid
 flowchart LR
     S["supervisor / Superagent launch"] -->|"guard: anchor + relative + dest"| P["yulius ptyhost"]

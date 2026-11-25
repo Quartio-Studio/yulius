@@ -208,7 +208,25 @@ fn a_contained_claude_run_guards_its_memory() -> TestResult {
         .ok_or("run settings")?;
     let settings: serde_json::Value = serde_json::from_slice(&settings.contents)?;
     assert_eq!(settings["autoMemoryDirectory"], at(&memory));
+    // Its hooks learn the read-only paths, to say why a write there fails (MEM-006).
+    assert_eq!(
+        readonly_paths(&plan),
+        [
+            at(&memory),
+            at(&config.join("CLAUDE.md")),
+            at(&config.join("rules"))
+        ]
+    );
     Ok(())
+}
+
+/// The run's `YULIUS_READONLY_PATHS`, one path per line.
+fn readonly_paths(plan: &LaunchPlan) -> Vec<String> {
+    plan.env
+        .iter()
+        .find(|(k, _)| k == "YULIUS_READONLY_PATHS")
+        .map(|(_, v)| v.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 /// A Codex task run guards `AGENTS.md`, `AGENTS.override.md` and `memories` in its Codex home.
@@ -231,6 +249,10 @@ fn a_contained_codex_run_guards_its_instructions() -> TestResult {
             (at("AGENTS.override.md"), GuardKind::File),
             (at("memories"), GuardKind::Dir),
         ]
+    );
+    assert_eq!(
+        readonly_paths(&plan),
+        [at("AGENTS.md"), at("AGENTS.override.md"), at("memories")]
     );
     Ok(())
 }

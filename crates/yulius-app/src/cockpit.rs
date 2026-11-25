@@ -1375,6 +1375,10 @@ impl App {
                 &space.home.join(".claude"),
                 &memory_base,
             )?;
+            // Its hooks say why a write there fails (MEM-006).
+            if let Some(var) = crate::memory_guard::readonly_paths_env(guard) {
+                plan.env.push(var);
+            }
         }
         // Behind the egress proxy as a task run is, with its own bearer (SPEC-186 SAV-001).
         self.vault_superagent_setup(record, &user.id, &runtime.run_dir, &bearer, &mut plan)

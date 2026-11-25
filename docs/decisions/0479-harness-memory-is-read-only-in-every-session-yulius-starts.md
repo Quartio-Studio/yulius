@@ -76,11 +76,18 @@ namespace binds).
 
 ## Consequences
 
-- A refused write fails with "Read-only file system" or "Device or resource busy"; the hooks say
-  why (SPEC-652 MEM-006).
+- A refused write fails with "Read-only file system" or "Device or resource busy", and the agent
+  is told why in one sentence (SPEC-652 MEM-006): `yulius hook <claude|codex> MemoryGuard`,
+  answered in the sandbox from the run's `YULIUS_READONLY_PATHS`, denies Claude Code's edit tools
+  there with it and adds it to a refused shell result (`PostToolUse`, and `PostToolUseFailure`
+  for a failed command); Claude Code's memory instructions carry it
+  (`CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES`); an Antigravity session gets it at its start.
+- The stopgap's immutable flags are cleared by the update's host check (root), its line "memory
+  stopgap": the guarantee does not need them, and they stopped a removed sandbox's purge.
 - A person with access to the host edits memory in place; a person's own terminal in a sandbox
   writes it as before.
-- An uncontained server (development) has no namespace: only the deny rules and hooks hold there.
+- An uncontained server (development) has no namespace: only Claude Code's deny rules hold there,
+  and its hooks say nothing (the read-only paths are set for a contained run only).
 - Limits, none tried in a real session:
   - Renaming the whole home (or a Codex home) away and copying it back (`mv ~ ~.old && cp -a
     ~.old ~`) leaves a writable copy at the same path, which the next session guards with

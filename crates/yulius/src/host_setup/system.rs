@@ -60,6 +60,46 @@ impl Host for RealHost {
         names
     }
 
+    fn memory_stopgap(&mut self, data_dir: &Path, clear: bool) -> super::StopgapScan {
+        #[cfg(target_os = "linux")]
+        {
+            use rustix::fs::IFlags;
+            let mut scan = super::StopgapScan::default();
+            let mut folders = std::collections::BTreeSet::new();
+            scan.cut = walk_memory(data_dir, super::STOPGAP_MAX_PATHS, &mut |path, fd| {
+                let Ok(flags) = rustix::fs::ioctl_getflags(fd) else {
+                    return;
+                };
+                if !flags.contains(IFlags::IMMUTABLE) {
+                    return;
+                }
+                scan.flagged += 1;
+                if let Some(folder) = memory_folder_of(path) {
+                    folders.insert(folder);
+                }
+                if !clear {
+                    return;
+                }
+                // On the descriptor the flag was read from: what it names cannot be swapped.
+                match rustix::fs::ioctl_setflags(fd, flags - IFlags::IMMUTABLE) {
+                    Ok(()) => scan.cleared += 1,
+                    Err(err) => {
+                        scan.failed += 1;
+                        scan.first_failure
+                            .get_or_insert_with(|| format!("{}: {err}", path.display()));
+                    }
+                }
+            });
+            scan.folders = folders.len();
+            scan
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (data_dir, clear);
+            super::StopgapScan::default()
+        }
+    }
+
     fn stat(&self, path: &Path) -> Option<(u32, u32)> {
         std::fs::symlink_metadata(path)
             .ok()
@@ -182,6 +222,53 @@ impl Host for RealHost {
 mod tests {
     use super::*;
 
+    /// Review of SPEC-652 part 2: the stopgap walk opens every folder by descriptor without
+    /// following a link, from the data directory down to the memory folders and everything in
+    /// them: a link an agent put at `memory`, `projects` or `home` is never entered, and a walk
+    /// past its bound says it was cut.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_stopgap_walk_never_follows_a_link() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let data = root.path().join("data");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(outside.join("deep"))?;
+        std::fs::write(outside.join("secret.conf"), "x")?;
+        std::fs::write(outside.join("deep/more.conf"), "x")?;
+        let memory = data.join("sandboxes/s1/home/.claude/projects/-k/memory");
+        std::fs::create_dir_all(memory.join("sub"))?;
+        std::fs::write(memory.join("MEMORY.md"), "- a note")?;
+        std::fs::write(memory.join("sub/topic.md"), "- a topic")?;
+        std::os::unix::fs::symlink(outside.join("secret.conf"), memory.join("link.md"))?;
+        let planted = data.join("sandboxes/s1/home/.claude/projects/x");
+        std::fs::create_dir_all(&planted)?;
+        std::os::unix::fs::symlink(&outside, planted.join("memory"))?;
+        std::fs::create_dir_all(data.join("sandboxes/s2/home/.claude"))?;
+        std::os::unix::fs::symlink(&outside, data.join("sandboxes/s2/home/.claude/projects"))?;
+        std::fs::create_dir_all(data.join("users/u1"))?;
+        std::os::unix::fs::symlink(&outside, data.join("users/u1/home"))?;
+        let mut seen = Vec::new();
+        let cut = walk_memory(&data, 100, &mut |path, _| seen.push(path.to_path_buf()));
+        seen.sort();
+        assert!(!cut);
+        assert_eq!(
+            seen,
+            [
+                memory.clone(),
+                memory.join("MEMORY.md"),
+                memory.join("sub"),
+                memory.join("sub/topic.md"),
+            ]
+        );
+        let mut few = 0;
+        assert!(
+            walk_memory(&data, 2, &mut |_, _| few += 1),
+            "cut at its bound"
+        );
+        assert!(few <= 2);
+        Ok(())
+    }
+
     /// A failed write names no path: the item's own words name the file (`cannot write <file>:`),
     /// so the operator reads it once (#674).
     #[test]
@@ -194,4 +281,130 @@ mod tests {
         assert!(!why.contains("/proc"), "{why}");
         Ok(())
     }
+}
+
+/// The memory folder a path found by [`walk_memory`] is in (the path up to `…/memory`).
+#[cfg(target_os = "linux")]
+fn memory_folder_of(path: &Path) -> Option<std::path::PathBuf> {
+    path.ancestors()
+        .find(|p| p.file_name().is_some_and(|n| n == "memory"))
+        .map(Path::to_path_buf)
+}
+
+/// Walks the harness memory folders below `data_dir`
+/// (`{sandboxes,users}/*/home/.claude/projects/*/memory` and every folder and regular file in
+/// them), opening each component from its folder's descriptor with `O_NOFOLLOW`, so a link an
+/// agent put anywhere below the data directory is never entered (SPEC-652 MEM-009, review of part
+/// 2). `visit` gets each folder and regular file with an open descriptor of it, `O_RDONLY` (a
+/// FIFO or device is never opened for reading). Returns whether the walk stopped at `bound`
+/// opened paths.
+#[cfg(target_os = "linux")]
+pub(crate) fn walk_memory(
+    data_dir: &Path,
+    bound: usize,
+    visit: &mut dyn FnMut(&Path, &std::os::fd::OwnedFd),
+) -> bool {
+    use rustix::fs::{Mode, OFlags};
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let open_dir = |dir: &std::os::fd::OwnedFd, name: &str| {
+        rustix::fs::openat(dir, name, dir_flags, Mode::empty()).ok()
+    };
+    let names = |dir: &std::os::fd::OwnedFd| -> Vec<String> {
+        // The folder the descriptor names, whatever its path became meanwhile.
+        std::fs::read_dir(format!(
+            "/proc/self/fd/{}",
+            std::os::fd::AsRawFd::as_raw_fd(dir)
+        ))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+    };
+    let Ok(data) = rustix::fs::open(
+        data_dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) else {
+        return false;
+    };
+    let mut opened = 0_usize;
+    for group in ["sandboxes", "users"] {
+        let Some(group_fd) = open_dir(&data, group) else {
+            continue;
+        };
+        for owner in names(&group_fd) {
+            let mut dir = open_dir(&group_fd, &owner);
+            for part in ["home", ".claude", "projects"] {
+                dir = dir.and_then(|d| open_dir(&d, part));
+            }
+            let Some(projects) = dir else {
+                continue;
+            };
+            let base = data_dir
+                .join(group)
+                .join(&owner)
+                .join("home/.claude/projects");
+            for key in names(&projects) {
+                let Some(memory) = open_dir(&projects, &key).and_then(|d| open_dir(&d, "memory"))
+                else {
+                    continue;
+                };
+                let mut pending = vec![(base.join(&key).join("memory"), memory)];
+                while let Some((path, fd)) = pending.pop() {
+                    if opened >= bound {
+                        return true;
+                    }
+                    opened += 1;
+                    for name in names(&fd) {
+                        if let Some(sub) = open_dir(&fd, &name) {
+                            pending.push((path.join(&name), sub));
+                            continue;
+                        }
+                        // Not a folder: a regular file only, never a link, FIFO or device.
+                        let Ok(file) = rustix::fs::openat(
+                            &fd,
+                            name.as_str(),
+                            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                            Mode::empty(),
+                        ) else {
+                            continue;
+                        };
+                        let regular = rustix::fs::fstat(&file).is_ok_and(|st| {
+                            rustix::fs::FileType::from_raw_mode(st.st_mode)
+                                == rustix::fs::FileType::RegularFile
+                        });
+                        if !regular {
+                            continue;
+                        }
+                        let Ok(readable) = rustix::fs::openat(
+                            &fd,
+                            name.as_str(),
+                            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                            Mode::empty(),
+                        ) else {
+                            continue;
+                        };
+                        // The same file as was checked, not one swapped in between.
+                        let same = match (rustix::fs::fstat(&file), rustix::fs::fstat(&readable)) {
+                            (Ok(a), Ok(b)) => (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino),
+                            _ => false,
+                        };
+                        if !same {
+                            continue;
+                        }
+                        if opened >= bound {
+                            return true;
+                        }
+                        opened += 1;
+                        visit(&path.join(&name), &readable);
+                    }
+                    visit(&path, &fd);
+                }
+            }
+        }
+    }
+    false
 }

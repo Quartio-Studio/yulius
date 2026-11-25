@@ -2247,3 +2247,68 @@ fn a_claude_run_keeps_to_its_read_only_memory_folder() -> TestResult {
     );
     Ok(())
 }
+
+/// The `MemoryGuard` hook entries of one event in a settings or `hooks.json` document.
+fn memory_guard_entries(hooks: &Value, event: &str) -> Vec<(String, String)> {
+    hooks[event]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let command = entry["hooks"][0]["command"].as_str()?;
+            command.ends_with(" MemoryGuard").then(|| {
+                (
+                    entry["matcher"].as_str().unwrap_or_default().to_owned(),
+                    command.to_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+/// SPEC-652 MEM-006: a Claude Code run with a guarded memory folder runs `yulius hook claude
+/// MemoryGuard` before its edit tools and after its `Bash`, and its memory instructions carry the
+/// sentence; a Codex run runs `yulius hook codex MemoryGuard` after its tools.
+#[test]
+fn a_refused_memory_write_is_explained() -> TestResult {
+    let mut request = claude_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        true,
+    );
+    request.claude_memory_dir = Some(PathBuf::from(
+        "/data/sandboxes/s1/home/.claude/projects/-k/memory",
+    ));
+    let settings = json_of(file(&plan_launch(&request)?, "claude-settings.json")?)?;
+    let before = memory_guard_entries(&settings["hooks"], "PreToolUse");
+    assert_eq!(before.len(), 1, "{before:?}");
+    assert_eq!(before[0].0, "Edit|MultiEdit|Write|NotebookEdit");
+    assert!(before[0].1.contains("hook claude MemoryGuard"));
+    for event in ["PostToolUse", "PostToolUseFailure"] {
+        let after = memory_guard_entries(&settings["hooks"], event);
+        assert_eq!(after.len(), 1, "{event}: {after:?}");
+        assert_eq!(after[0].0, "Bash");
+    }
+    assert_eq!(
+        settings["env"]["CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES"],
+        yulius_contracts::hooks::MEMORY_READ_ONLY_SENTENCE
+    );
+    request.claude_memory_dir = None;
+    let settings = json_of(file(&plan_launch(&request)?, "claude-settings.json")?)?;
+    assert!(memory_guard_entries(&settings["hooks"], "PreToolUse").is_empty());
+
+    let codex = plan_launch(&codex_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        true,
+    ))?;
+    let hooks = json_of(file(&codex, "hooks.json")?)?;
+    let after = memory_guard_entries(&hooks["hooks"], "PostToolUse");
+    assert_eq!(after.len(), 1, "{hooks}");
+    assert!(after[0].1.contains("hook codex MemoryGuard"));
+    Ok(())
+}

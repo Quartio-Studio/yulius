@@ -1,11 +1,11 @@
 ---
 yulius-task: f044786c-a9a7-4102-9b19-9623a7bd41f3
-status: in-progress
+status: done
 ---
 
 # SPEC-652: Agents cannot write their harness's memory; every session starts with it read-only
 
-Status: in-progress
+Status: done
 Date: 2026-11-25
 Owner: Yulius task #636
 Scope authorization: task #636 (`/goal`, the owner's decision of 2026-11-25): "an agent that
@@ -95,7 +95,8 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
   knowledge in the repository through a pull request." Claude Code's edit tools on a protected
   path are denied with it (a `PreToolUse` hook, before the tool runs) and its run settings deny
   `Edit(...)` on those paths; a shell result that fails with "Read-only file system" on a
-  protected path gets it as added context (Claude Code and Codex `PostToolUse`); an Antigravity
+  protected path gets it as added context (Claude Code's `PostToolUse` and, for a failed command,
+  `PostToolUseFailure`; Codex's `PostToolUse`); an Antigravity
   session gets it with its start context (its CLI has no hook after a tool). Claude Code's memory
   instructions say it (`CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES`).
 - **MEM-007** Removing and purging a sandbox that has notes works: the protection is only in each
@@ -132,9 +133,9 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - [x] Memory key from the sandbox's repository; ancestors' instructions excluded; guard errors fail the start
 - [x] Joined runs and the Docker mask proven on a guest
 - [x] Independent review of the guarantee approved
-- [ ] The refusal sentence for edit tools, shell results and the Antigravity start
-- [ ] The update's host check clears the stopgap's immutable flags
-- [ ] Independent review of the refusal messages and the stopgap clean-up approved
+- [x] The refusal sentence for edit tools, shell results and the Antigravity start
+- [x] The update's host check clears the stopgap's immutable flags
+- [x] Independent review of the refusal messages and the stopgap clean-up approved
 
 ## Acceptance criteria
 
@@ -274,6 +275,33 @@ clean-up, MEM-006 and MEM-009, follow in the second).
   - `scripts/cargo nextest run` on the five library crates: 1447 passed; `-p yulius` outside the
     main binary plus its files `memory_guard`, `global_superagent`, `playground`, `cockpit`,
     `local_ci`, `watches`: 1018 passed.
+- Second pull request (MEM-006, MEM-009):
+  - Real CLI, Claude Code 2.1.332 against a scripted stub API with the `MemoryGuard` hooks and
+    `YULIUS_READONLY_PATHS`: a `Write` of a new file in the guarded folder came back as
+    "PreToolUse:Write hook error: Yulius keeps this harness's memory and user-level instructions
+    read-only (…): put lasting knowledge in the repository through a pull request." and no file
+    was made; a `Bash` write to a read-only mount came back "Read-only file system" with
+    "PostToolUseFailure:Bash hook additional context: Yulius keeps …". Found on the way: a failed
+    command runs `PostToolUseFailure`, not `PostToolUse` (both are registered), and an existing
+    file is refused by Claude Code's own "read it first" before any hook.
+  - Codex 0.170.0: its `PostToolUse` schema (in the binary) has `tool_name`, `cwd` and
+    `hookSpecificOutput.additionalContext`; no live Codex session was run (no account here).
+  - Real host, Ubuntu 26.04 guest as root: two memory folders (one with a sub-folder) under
+    `chattr -R +i`; `rm -rf` of the sandbox failed ("Operation not permitted"); `yulius host check`
+    said "changed memory stopgap cleared the immutable flag of 8 paths in 2 memory folders";
+    `lsattr` showed no `i`; a second check said "ok … no harness memory folder is immutable";
+    `rm -rf` then removed the sandbox.
+  - Review round 1 of part 2 (request changes; answered): the host check's walk resolved paths
+    by name, so a link an agent put at `projects/x/memory` was followed by root. It now opens
+    every component by descriptor with `O_NOFOLLOW` and reads and clears each flag on that
+    descriptor (`walk_memory`, `the_stopgap_walk_never_follows_a_link` on a real folder tree with
+    links at `memory`, `projects`, `home` and a file); a failed clear no longer stops the others,
+    and a walk cut at its bound fails the line. Guest rerun: the same 8 paths cleared, and with a
+    link `projects/x/memory -> /root/outside` the immutable `/root/outside/kept.conf` kept its
+    flag while the real memory folder's 2 paths were cleared. Wiring tests: `MemoryGuard` through
+    `run_hook_with` for Claude Code and Codex (fails without the dispatch, checked by hand),
+    Antigravity's start through `run_hook_with` with and without the paths, and the stopgap line
+    through the whole check (`run(…).all()`) in Setup, Check and DryRun.
 - `scripts/cargo clippy … --all-targets -D warnings` on the touched crates, `scripts/dev macos`,
   `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` on the touched crates and `scripts/dev quick`:
   clean.
