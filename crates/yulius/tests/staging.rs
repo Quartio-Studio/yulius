@@ -4429,3 +4429,80 @@ async fn who_asks_for_staging_and_who_it_deploys_as() -> TestResult {
     );
     Ok(())
 }
+
+/// Review round 2, finding 1: a rerun that passes with a skipped job moves a person's red request
+/// on when nothing is left open in that job, as a first verdict does; a rerun that skipped the
+/// job that failed leaves it waiting.
+#[tokio::test]
+async fn a_rerun_with_a_skipped_job_moves_a_red_request_only_when_nothing_is_open() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Failed).await?;
+    let asked = person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let id = asked["id"].as_str().ok_or("id")?;
+    assert_eq!(request(&f, id).await?.state, StagingState::Inherited);
+    let sandbox = SandboxId::parse("s1")?;
+    let rerun = |id: &'static str, skipped: &'static str| {
+        let f = &f;
+        let sandbox = sandbox.clone();
+        let r1 = r1.clone();
+        async move {
+            recorded_gate_as(&f.h.app, &sandbox, &r1, RunState::Passed, None, id.into()).await?;
+            f.h.store
+                .execute_for_tests(&format!(
+                    "UPDATE ci_jobs SET state='skipped' WHERE id='{id}-{skipped}'"
+                ))
+                .await?;
+            BoxResult::Ok(())
+        }
+    };
+    // The failed job itself was skipped: its failure is still open.
+    rerun("ci-skipped-full", "full").await?;
+    settle(&f).await?;
+    assert_eq!(request(&f, id).await?.state, StagingState::Inherited);
+    // The failed job passed; only a job that never failed was skipped.
+    rerun("ci-skipped-quick", "quick").await?;
+    settle(&f).await?;
+    settle(&f).await?;
+    let done = request(&f, id).await?;
+    assert_eq!(done.state, StagingState::Verified, "{done:?}");
+    assert_eq!(done.ci_run_id.as_deref(), Some("ci-skipped-quick"));
+    Ok(())
+}
+
+/// Review round 2, finding 2: a deleted task's inherited request is never carried for a person;
+/// only the person's own waiting request is.
+#[tokio::test]
+async fn a_deleted_tasks_inherited_request_is_not_carried() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Failed).await?;
+    person_asks(&f, &f.alice).await?;
+    settle(&f).await?;
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Failed).await?;
+    let orphan = recorded_ask(&f, "sr-orphan", &r2, "task:12", None).await?;
+    f.h.store
+        .move_staging_request(
+            &orphan.id,
+            StagingState::Testing,
+            StagingState::Inherited,
+            &StagingChange::default(),
+            f.h.app.now(),
+        )
+        .await?;
+    let r3 = f.push("dev", &[("three.txt", Some("3"))])?;
+    gate(&f, &r3, RunState::Running).await?;
+    settle(&f).await?;
+    let view = staging_view(&f).await?;
+    let at_head: Vec<&Value> = view["requests"]
+        .as_array()
+        .ok_or("requests")?
+        .iter()
+        .filter(|r| r["revision"] == r3.as_str())
+        .collect();
+    assert_eq!(at_head.len(), 1, "{view}");
+    assert_eq!(at_head[0]["asked_by"], "alice", "{view}");
+    Ok(())
+}
