@@ -875,8 +875,9 @@ sees its harness's memory and user-level instruction files read-only
 ([ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)): its edit
 tools, shell and scripts cannot add, change or delete them, and what is there still loads. The
 sandbox's Docker engine (so every container's `-v`), its CI jobs and its script watches see the
-home's `.claude` and the Codex homes as empty read-only folders. The limits are in the decision
-record. On the host they are ordinary files, which a person with access to the host edits in
+home's `.claude` and the Codex homes as empty read-only folders; a sandbox's engine started
+before the update is replaced by a masked one once it is not running (it stops when idle). The
+limits are in the decision record. On the host they are ordinary files, which a person with access to the host edits in
 place:
 
 | Session | Claude Code memory and instructions | Codex | Antigravity |

@@ -783,12 +783,24 @@ impl Manager {
             .map(|front| (front, crate::docker_front::is_front(front.pid, net_ns)));
         let wanted = self.front_mode(&request, &live.record);
         // Only an engine front that runs is asked for its group: one file read per tick.
-        let moved = current.is_some_and(|(front, running)| running && front.mode == "engine")
+        let engine_front = current.filter(|(front, running)| *running && front.mode == "engine");
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        let moved = engine_front.is_some()
             && engine_group_moved(
-                served_engine_group(&StatePaths::new(self.state_dir(sandbox))).as_deref(),
+                served_engine_group(&paths).as_deref(),
                 &wanted,
                 Path::exists,
             );
+        // An engine front from before the masks is replaced as a moved one is, once its engine
+        // stopped (SPEC-652 MEM-010, review round 2).
+        let moved = moved
+            || engine_front.is_some_and(|(front, _)| {
+                matches!(wanted, DockerServe::Engine { .. })
+                    && engine_unguarded(
+                        served_engine_command(&paths).as_deref(),
+                        crate::front_gate::read_state(&paths.docker_state(), front.pid).as_ref(),
+                    )
+            });
         let serve = match front_action(current, wanted, moved) {
             FrontAction::Keep => {
                 // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
@@ -2598,6 +2610,30 @@ fn front_action(
     }
 }
 
+/// The engine command of the front of `paths`, from the spec it was started with; `None` for a
+/// front that serves no engine of its own, or without a readable spec.
+fn served_engine_command(paths: &StatePaths) -> Option<Vec<String>> {
+    match read_json::<DockerFrontSpec>(&paths.docker_spec())
+        .ok()?
+        .serve
+    {
+        DockerServe::Engine { engine } => Some(engine.command),
+        _ => None,
+    }
+}
+
+/// Whether a front serves an engine started without the masks of the sandbox's harness folders
+/// (its command has no `--guard`: a front from before SPEC-652, which reads its engine command
+/// once at its start) while its engine is neither running nor starting or stopping, as its last
+/// state says: replacing it then cuts nothing, and the next engine starts masked (MEM-010).
+fn engine_unguarded(
+    command: Option<&[String]>,
+    state: Option<&yulius_contracts::sandbox::DockerFrontState>,
+) -> bool {
+    command.is_some_and(|command| !command.iter().any(|arg| arg == "--guard"))
+        && state.is_some_and(|state| !state.engine_running && !state.engine_busy)
+}
+
 /// The group the front of `paths` starts its engine in, from the spec it was started with;
 /// `None` for a front that serves no engine of its own, or without a readable spec.
 fn served_engine_group(paths: &StatePaths) -> Option<String> {
@@ -3935,6 +3971,49 @@ while True:
             front_action(Some((&refusing, true)), refuse("off"), true),
             FrontAction::Keep
         );
+    }
+
+    /// SPEC-652 MEM-010 (review round 2): a front started before the engine's masks (its
+    /// engine command has no `--guard`) is replaced once its engine is not running, so the next
+    /// engine starts masked; a running or busy engine is never cut, and a guarded front stays.
+    #[test]
+    fn an_unguarded_engine_front_is_replaced_once_its_engine_stopped() {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let old = vec![
+            "/y".to_owned(),
+            "sandbox-exec".into(),
+            "--engine".into(),
+            "--".into(),
+        ];
+        let new = vec![
+            "/y".to_owned(),
+            "sandbox-exec".into(),
+            "--engine".into(),
+            "--guard".into(),
+            "[]".into(),
+            "--".into(),
+        ];
+        let state = |running: bool, busy: bool| DockerFrontState {
+            pid: 1,
+            held: 0,
+            max: 8,
+            gave_way: 0,
+            refused: 0,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: None,
+            engine_running: running,
+            engine_busy: busy,
+        };
+        assert!(engine_unguarded(Some(&old), Some(&state(false, false))));
+        assert!(!engine_unguarded(Some(&old), Some(&state(true, false))));
+        assert!(!engine_unguarded(Some(&old), Some(&state(false, true))));
+        assert!(
+            !engine_unguarded(Some(&old), None),
+            "no state: maybe running"
+        );
+        assert!(!engine_unguarded(Some(&new), Some(&state(false, false))));
+        assert!(!engine_unguarded(None, Some(&state(false, false))));
     }
 
     /// SPEC-458 LAY-005: a front's engine group counts as moved only when the front was given

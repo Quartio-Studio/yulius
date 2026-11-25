@@ -41,7 +41,9 @@ namespace binds).
   `<config>/projects/<key>` are bound over themselves, so renaming the memory folder's parents
   away fails (`EBUSY`).
 - **Claude Code reads exactly the protected folder**: its run settings pin
-  `autoMemoryDirectory` to `<config>/projects/<key>/memory` and deny `Edit` there. `<key>` is
+  `autoMemoryDirectory` to `<config>/projects/<key>/memory`, name it also as
+  `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` in their `env` (which Claude Code reads first, and the
+  user's `settings.json` could set otherwise), and deny `Edit` there. `<key>` is
   Claude Code's own key of the sandbox's repository (`<sandbox>/repo`, which is what it uses for
   the repository and every worktree of it), derived from that path alone: nothing the agent writes
   (a worktree's `.git`) steers it or can stall a launch. The folder already used keeps loading.
@@ -50,8 +52,9 @@ namespace binds).
   the session's folder (`claudeMdExcludes`), so a file an agent leaves in the sandbox folder
   loads nowhere.
 - **Every other process of the sandbox that runs code an agent chose** (its Docker engine, so
-  every container's `-v`; its CI jobs; its script watches) sees the home's `.claude` and the Codex
-  homes as empty read-only folders. None of them needs either.
+  a container's `-v`; its CI jobs; its script watches) sees the home's `.claude` and the Codex
+  homes as empty read-only folders. None of them needs either. An engine front started before
+  this change is replaced once its engine is not running.
 - **A start that cannot be guarded does not happen**: a guarded path outside its anchor, or one
   that cannot be opened for another reason than being missing or a link, fails the start.
 
@@ -83,8 +86,16 @@ namespace binds).
     ~.old ~`) leaves a writable copy at the same path, which the next session guards with
     whatever was written into it. Pinning the home would make renames and hard links between the
     home and the rest of the sandbox fail (`EXDEV`: the compiler cache, package stores).
-  - dockerd has every capability in the sandbox's user namespace: a privileged container that
-    binds a folder above `.claude` could unmount the engine's mask inside it.
+  - The engine's masks are submounts in a namespace whose capabilities dockerd holds, so they
+    are not locked: a container that binds a folder above `.claude` without its submounts
+    (`--mount …,bind-recursive=disabled`), or a privileged one that unmounts the mask, reaches
+    the real files. Locking them would mean running dockerd or its containers in a child user
+    namespace, which breaks the sandbox's network and the ownership of bound files; filtering
+    the Docker API is a larger change of its own.
+  - Other user-level settings of Claude Code in `<config>` stay writable: `settings.json` (its
+    hooks run in every later session; its `env` reaches every session, though the run settings
+    name the memory folder's variable themselves), `agents/`, `skills/`, `commands/` and
+    `agent-memory/`.
   - CD runs (reviewed, merged code) and a person's terminals are not masked.
   - Antigravity reads `AGENTS.md` and `GEMINI.md` in folders above its working folder; those
     are not guarded.

@@ -103,7 +103,9 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - **MEM-008** A person with access to the host edits these files in place, as before.
 - **MEM-010** Every other process of a sandbox that runs code an agent chose sees the sandbox
   home's `.claude` and its Codex homes as empty read-only folders: its Docker engine (so a
-  container's `-v` never reaches them), its CI jobs and its script watches.
+  container's recursive `-v` finds them empty), its CI jobs and its script watches. An engine
+  front started before this change is replaced once its engine is not running. A non-recursive
+  or privileged container's way under the mask is a recorded limit (ADR-0479).
 - **MEM-011** A Claude Code session reads no instruction file of a folder above its own
   (`claudeMdExcludes`), so a `CLAUDE.md` an agent leaves in the sandbox folder loads nowhere.
 - **MEM-012** The memory key of every task and Superagent session of a sandbox is Claude Code's
@@ -167,7 +169,8 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - Unit (`yulius-harness`): run settings of Claude Code (task and Superagent) carry
   `autoMemoryDirectory` and the deny rules; the hook client's deny and added context.
 - Opt-in real-namespace test (`YULIUS_ISOLATION_TEST=1`) and a run on a QEMU guest (Ubuntu
-  24.04, this sandbox has no user namespaces): the shell and script attempts of AC-2 and AC-3
+  26.04, this sandbox has no user namespaces; the supported install runs bwrap as the service
+  user, the root runs are extra): the shell and script attempts of AC-2 and AC-3
   through `yulius sandbox-exec`, and a purge of a sandbox with notes.
 
 ## Decisions
@@ -256,6 +259,21 @@ clean-up, MEM-006 and MEM-009, follow in the second).
     outside the main binary: 707 passed; main binary files `memory_guard`, `global_superagent`,
     `playground`, `cockpit`, `codex`, `antigravity`, `supervision`, `shells`, `isolation`,
     `docker_smoke`, `live_display`, `local_ci`, `watches`: 420 passed.
+- Review round 2 (request changes; answered):
+  - Real CLI, Claude Code 2.1.332 against the stub API (the reviewer's `run2.sh` with the run
+    settings' `env` added): with the user's `settings.json` naming another memory folder in
+    `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`, the guarded folder's note loads (1) and the other one
+    does not (0); without it, the same.
+  - The Global Superagent's own `CLAUDE.md` and `rules` are no longer excluded
+    (`a_claude_run_keeps_to_its_read_only_memory_folder`, a configuration beside the working
+    folder).
+  - An engine front from before the masks is replaced once its engine is not running
+    (`an_unguarded_engine_front_is_replaced_once_its_engine_stopped`).
+  - A non-recursive or privileged container under the engine's mask, and the other user-level
+    channels in `<config>`, are recorded limits in ADR-0479 (why they are not closed: there).
+  - `scripts/cargo nextest run` on the five library crates: 1447 passed; `-p yulius` outside the
+    main binary plus its files `memory_guard`, `global_superagent`, `playground`, `cockpit`,
+    `local_ci`, `watches`: 1018 passed.
 - `scripts/cargo clippy … --all-targets -D warnings` on the touched crates, `scripts/dev macos`,
   `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` on the touched crates and `scripts/dev quick`:
   clean.

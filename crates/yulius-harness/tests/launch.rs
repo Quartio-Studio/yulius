@@ -2118,6 +2118,12 @@ fn a_claude_run_keeps_to_its_read_only_memory_folder() -> TestResult {
     request.claude_memory_dir = Some(PathBuf::from(memory));
     let settings = json_of(file(&plan_launch(&request)?, "claude-settings.json")?)?;
     assert_eq!(settings["autoMemoryDirectory"], memory);
+    // The variable that would name another folder first, from the user's settings, names this
+    // one in the run's (review round 2).
+    assert_eq!(
+        settings["env"]["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"],
+        memory
+    );
     assert_eq!(
         settings["permissions"]["deny"],
         serde_json::json!([
@@ -2204,6 +2210,40 @@ fn a_claude_run_keeps_to_its_read_only_memory_folder() -> TestResult {
             .as_array()
             .is_some_and(|e| e.iter().any(|p| p == "/data/sandboxes/s1/CLAUDE.md")),
         "{settings}"
+    );
+    // The Global Superagent's configuration is beside its working folder, in a folder above it:
+    // its own `CLAUDE.md` and `rules` keep loading (review round 2).
+    let global = CockpitRequest {
+        cwd: PathBuf::from("/data/users/u1/superagent/work"),
+        config_dir: PathBuf::from("/data/users/u1/superagent/.claude"),
+        claude_memory_dir: Some(PathBuf::from(
+            "/data/users/u1/superagent/.claude/projects/-k/memory",
+        )),
+        ..cockpit
+    };
+    let plan = plan_cockpit(&global)?;
+    let settings: Value = serde_json::from_str(
+        plan.argv
+            .windows(2)
+            .find(|w| w[0] == "--settings")
+            .map(|w| w[1].as_str())
+            .ok_or("--settings")?,
+    )?;
+    let excludes: Vec<&str> = settings["claudeMdExcludes"]
+        .as_array()
+        .ok_or("claudeMdExcludes")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        excludes.contains(&"/data/users/u1/superagent/CLAUDE.md"),
+        "{excludes:?}"
+    );
+    assert!(
+        !excludes
+            .iter()
+            .any(|e| e.starts_with("/data/users/u1/superagent/.claude/")),
+        "its own configuration still loads: {excludes:?}"
     );
     Ok(())
 }

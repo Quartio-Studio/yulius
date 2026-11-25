@@ -659,6 +659,9 @@ fn memory_settings(
     );
     let mut excludes = Vec::new();
     for folder in project.ancestors().skip(1) {
+        // The session's own configuration folder (the Global Superagent's is beside its working
+        // folder) is not a folder above it: its `CLAUDE.md` and `rules` load (review round 2).
+        let own = folder.join(".claude") == config_dir;
         let folder = glob_escaped(utf8(folder, "worktree")?.trim_end_matches('/'));
         for name in [
             "CLAUDE.md",
@@ -666,12 +669,27 @@ fn memory_settings(
             ".claude/CLAUDE.md",
             ".claude/rules/**",
         ] {
-            excludes.push(Value::String(format!("{folder}/{name}")));
+            if !(own && name.starts_with(".claude/")) {
+                excludes.push(Value::String(format!("{folder}/{name}")));
+            }
         }
     }
     settings.insert("claudeMdExcludes".into(), Value::Array(excludes));
+    // Claude Code takes the memory folder from this variable before `autoMemoryDirectory`, also
+    // from the user's `settings.json` `env`, which the agent can write: the run's own settings
+    // name the guarded folder there, and they outrank the user's (review round 2).
+    let env = settings
+        .entry("env")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Value::Object(env) = env {
+        env.insert(MEMORY_PATH_OVERRIDE_ENV.into(), json!(memory));
+    }
     Ok(())
 }
+
+/// Claude Code's variable that names the auto-memory folder before `autoMemoryDirectory`
+/// (2.1.332).
+pub const MEMORY_PATH_OVERRIDE_ENV: &str = "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE";
 
 /// `path` with picomatch's special characters escaped, so it matches only itself.
 fn glob_escaped(path: &str) -> String {
