@@ -51,7 +51,8 @@ impl GitHubClient {
     ///
     /// # Errors
     /// [`GitHubError::InvalidInput`] for a login or role GitHub would not take, before anything
-    /// is sent; typed GitHub errors (a refusal by GitHub or by the organization's policy).
+    /// is sent; typed GitHub errors (a refusal by GitHub or by the organization's policy, 404
+    /// for a login GitHub does not know); [`GitHubError::Upstream`] for another 2xx status.
     pub async fn add_collaborator(
         &self,
         token: &Secret,
@@ -76,11 +77,11 @@ impl GitHubClient {
         let call = Call::new(Method::PUT, url, Some(token.expose()))
             .json(serde_json::json!({ "permission": permission }));
         let reply = self.send_ok(call).await?;
-        Ok(if reply.status == 201 {
-            CollaboratorAdded::Invited
-        } else {
-            CollaboratorAdded::Added
-        })
+        match reply.status {
+            204 => Ok(CollaboratorAdded::Added),
+            201 => Ok(CollaboratorAdded::Invited),
+            other => Err(GitHubError::Upstream(other)),
+        }
     }
 
     /// Creates a repository in organization `org` with an installation token.

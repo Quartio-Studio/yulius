@@ -482,7 +482,7 @@ impl GitHubPort for GitHubAdapter {
             .for_token(token)
             .add_collaborator(&gh(token), owner, name, login, "admin")
             .await
-            .map_err(map_err)?
+            .map_err(map_refusal)?
         {
             CollaboratorAdded::Added => Ok(RoleGrant::Added),
             CollaboratorAdded::Invited => Ok(RoleGrant::Invited),

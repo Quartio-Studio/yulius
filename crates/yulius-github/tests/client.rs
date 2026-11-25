@@ -597,9 +597,9 @@ async fn a_refused_repository_creation_names_the_accepted_permissions() -> TestR
 }
 
 /// #1749: the App gives the person who created an organization's repository its admin role: a
-/// member of the organization has it at once (204), anyone else is invited (201); a login or role
-/// GitHub would not take is refused before anything is sent, and a token that cannot administer
-/// the repository is refused by GitHub.
+/// member of the organization has it at once (204), anyone else is invited (201), a login GitHub
+/// does not know is 404; a login or role GitHub would not take is refused before anything is sent,
+/// and a token that cannot administer the repository is refused by GitHub.
 #[tokio::test]
 async fn a_collaborator_is_added_or_invited_with_a_role() -> TestResult {
     let (fake, client) = setup().await?;
@@ -651,6 +651,14 @@ async fn a_collaborator_is_added_or_invited_with_a_role() -> TestResult {
         fake.invitations("acme", "new-app"),
         vec![("guest".to_owned(), "admin".to_owned())]
     );
+    // A login GitHub does not know: 404, nobody is invited.
+    assert!(matches!(
+        client
+            .add_collaborator(&token, "acme", "new-app", "nobody-here", "admin")
+            .await,
+        Err(GitHubError::NotFound)
+    ));
+    assert_eq!(fake.invitations("acme", "new-app").len(), 1);
 
     let sent = fake.requests().len();
     for (login, role) in [("bad login", "admin"), ("bart", "owner"), ("-bart", "push")] {

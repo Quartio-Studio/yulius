@@ -1486,6 +1486,9 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
     match (method.as_str(), tail) {
         ("GET", []) => reply(200, repo_json(state, repo, permissions)),
         ("PUT", ["collaborators", login]) => {
+            if !state.users.contains_key(&login.to_ascii_lowercase()) {
+                return error(404, "Not Found");
+            }
             add_collaborator(&state.org_members, &mut state.next_id, repo, login, body)
         }
         ("POST", ["rulesets"]) => {
