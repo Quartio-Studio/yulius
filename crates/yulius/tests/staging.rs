@@ -4185,6 +4185,15 @@ async fn a_carried_request_whose_deploy_failed_is_not_deployed_again() -> TestRe
         .ok_or("the follow-up")?
         .clone();
     assert_eq!(carried["state"], "deploy_failed", "{view}");
+    // Review round 2, nit: the page says the failed deploy waits for a press, not for tests.
+    assert_eq!(
+        view["waiting"],
+        format!(
+            "The deploy of {} failed: Deploy asks for it again",
+            &r3[..7]
+        ),
+        "{view}"
+    );
     assert_eq!(
         deployed(&f).await?,
         [r1.clone(), r3.clone()],

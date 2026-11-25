@@ -3660,8 +3660,13 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   ([decision 0477](decisions/0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md)).
 - **Waiting for green.** A request of no task whose gate failed is `inherited`
   (`stg::after_failed_gate`). Once the head moves past it, one request of no task is recorded
-  for the new head (`stg::follow_up`). It is `included` when a verified deploy contains it.
-  `CdStaging.waiting` and each request's `waiting` say in words what it waits for.
+  for the new head (`stg::follow_up`): one carried request at a time, none for what staging
+  serves, and none for a head that already has a person's or the schedule's request in any
+  state (a failed one is never deployed again by the queue). A passing rerun of its revision
+  makes it ready. It is `included` when a verified deploy contains it. "A person's or the
+  schedule's" is read from `requested_by` (`is_asked`): a deleted task's request also has no
+  task id and stays a task's. `CdStaging.waiting` and each request's `waiting` say in words what
+  it waits for.
 - **Candidate gate.** The integration branch's run of that exact commit, or a
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.

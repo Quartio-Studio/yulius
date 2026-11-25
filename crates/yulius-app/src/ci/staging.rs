@@ -1761,8 +1761,15 @@ impl App {
         let waiting = recent
             .iter()
             .zip(&requests)
-            .find(|(r, _)| is_asked(r) && r.state.is_pending())
-            .and_then(|(_, shown)| shown.waiting.clone());
+            .find(|(r, _)| is_asked(r) && r.state != StagingState::Superseded)
+            .and_then(|(r, shown)| match r.state {
+                // A failed deploy waits for a person's press, not for tests (review round 2).
+                StagingState::DeployFailed => Some(format!(
+                    "The deploy of {} failed: Deploy asks for it again",
+                    r.revision.get(..7).unwrap_or(&r.revision)
+                )),
+                _ => shown.waiting.clone(),
+            });
         Ok(yulius_contracts::api::cd::CdStaging {
             verified,
             requests,
@@ -1809,7 +1816,7 @@ pub(crate) fn staging_text(
             request.id,
             match (&request.asked_by, request.task_number) {
                 (Some(who), _) => format!("asked by {who},"),
-                (None, None) if request.scheduled => "Yulius's schedule,".to_owned(),
+                (None, None) if request.scheduled => "the schedule's,".to_owned(),
                 (None, Some(n)) => format!("task #{n}"),
                 (None, None) => "a deleted task's".to_owned(),
             },
