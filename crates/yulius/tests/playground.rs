@@ -3244,6 +3244,36 @@ async fn a_github_sandbox_s_files_are_purged_and_its_repository_stays() -> TestR
     Ok(())
 }
 
+/// SPEC-652 MEM-007: a sandbox whose homes hold harness memory and instructions, prepared for a
+/// guarded session as a launch prepares it, is purged with all of it: the guard leaves nothing
+/// immutable on the host.
+#[tokio::test]
+async fn a_sandbox_with_memory_notes_is_purged() -> TestResult {
+    let (h, owner) = world().await?;
+    let creator = {
+        use yulius_app::ports::store::UserStore;
+        h.store.superadmin().await?.ok_or("superadmin")?.id
+    };
+    support::seed_sandbox(&h, "s1", "shop", creator.as_str()).await?;
+    let dir = h.app.config.data_dir.join("sandboxes/s1");
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(repo.join(".git"))?;
+    let config = dir.join("home/.claude");
+    let guard = yulius_app::memory_guard::claude_guard(&dir, &config, &config, &repo, &dir);
+    assert!(!guard.is_empty());
+    let key = yulius_app::memory_guard::claude_key(&repo);
+    let memory = config.join("projects").join(key).join("memory");
+    std::fs::write(memory.join("MEMORY.md"), "- a note\n")?;
+    std::fs::write(config.join("CLAUDE.md"), "a rule\n")?;
+    std::fs::create_dir_all(dir.join("codex/a1/memories"))?;
+    std::fs::write(dir.join("codex/a1/AGENTS.md"), "a rule\n")?;
+    let purged = purge(&h, &owner, "s1").await?;
+    assert_eq!(purged.status, StatusCode::OK, "{:?}", purged.body);
+    assert_eq!(purged.body["state"], "purged", "{:?}", purged.body);
+    assert!(!dir.exists(), "its files and notes are gone");
+    Ok(())
+}
+
 /// SPEC-171 PGL-005: only an admin of the playground purges it; a removed playground is purged by
 /// the superadmin only (it is invisible to everyone else).
 #[tokio::test]
