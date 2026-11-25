@@ -1,6 +1,6 @@
 ---
 yulius-task: 84ea1903-0e8e-4141-8d50-e4d01d283b8e
-status: in-progress
+status: done
 ---
 
 # SPEC-650: Merge-first staging: a person and their Superagent deploy staging at the gated head, and staging never stalls
@@ -136,8 +136,9 @@ production authorization, not staging.
     or the Superagent's cd_deploy".
   - An agent's `needs_you` whose to-do (`action`) names a CD page deploy control ("Deploy <env>")
     that is disabled for the task's owner, and for every person the card names in `who`, is
-    refused. The refusal gives the control's reason and what works for that reason
-    (`deploy_action.reason`): an administrator deploys production; an environment with nothing to
+    refused. The refusal gives the control's reason (a named person's when theirs is more than
+    access, else the owner's) and what works for that reason (`deploy_action.reason`): an
+    administrator deploys production; an environment with nothing to
     deploy needs its table; a running deploy is waited for; a drill's wait ends by itself.
     `happened` and `problem` may name a button: they say what happened.
   - The texts that send agents to `needs_you` for production name who deploys it: an
@@ -159,7 +160,9 @@ production authorization, not staging.
 - [x] Docs and the independent review of pull request 2
 - [x] Server-side deploy_action for each environment, rendered by the CD page
 - [x] Refusal and production-gate texts name the working action; needs_you refuses a disabled control
-- [ ] Docs and the independent review of pull request 3
+- [x] Docs and changes entry for pull request 3
+- [x] Review rounds 1 and 2 of pull request 3: findings fixed test-first
+- [x] Independent review of pull request 3 approved
 
 ## Acceptance criteria
 
@@ -219,3 +222,59 @@ production authorization, not staging.
   enabled for a given access level, and both the page and `needs_you` use it. So guidance and
   the UI cannot disagree.
 - ADR: [0477](../../docs/decisions/0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md).
+
+## Evidence
+
+Three pull requests, each merged into `dev` by `delivery_merge` on its own green Yulius CI run
+after an independent review in a fresh session (Fable 5.2) approved it:
+
+- **#1752** (PST-001 to PST-005): a person's and the Superagent's staging request. Review round 1
+  asked for changes (a retry loop, deleted tasks taken for a person's, who a retry deploys as, a
+  repeat after a rollback); round 2 approved `46a2d36e6`. Merged at `04ad705b0` from `693fd7bc9`;
+  `dev`'s full suite on `04ad705` passed (run `4865b775`: both test shards and e2e).
+- **#1754** (PST-006): the schedule. Round 1 asked for changes (an inherited request stalled it,
+  a tried head was deployed again, tests did not hold `pending`); round 2 approved `d8227316d`.
+  Merged at `c2090ba8b` from `5152ea3de`.
+- **#1755** (PST-007): the server-side Deploy button and the `needs_you` guard. Rounds 1 and 2
+  asked for changes (advice by stage instead of reason, untested wording and owners, a named
+  person's reason); round 3 approved `ac7943c98`.
+
+Tests (each new one written before its fix and failing without it; the main fixes were undone by
+hand to watch their test fail, then restored):
+
+- `scripts/cargo nextest run -p yulius-domain -p yulius-app -p yulius-contracts`: 1440 passed.
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^staging::/) | test(/^cd::/) | test(/^cd_rollback::/) | test(/needs_you/) | test(/^cockpit::/) | test(/^local_ci::/) | test(/^merge_train::/) | test(/^bootstrap_upgrade::/))'`:
+  all passed (380 in the widest run). The new ones in `crates/yulius/tests/staging.rs`:
+  - a person's request with the head green deploys it; red, it waits as inherited, the next
+    green head is asked for by itself, deploys and includes it; while the gate runs it says
+    "Waiting for green tests on `<sha>`";
+  - the Superagent's request waits on the panel (declined: nothing; approved with the slug: the
+    person's request), and `superagent_on_panel` routes it;
+  - a failed follow-up is never deployed again, a person's ask after a rollback deploys the head
+    again, a deleted task's request stays a task's, a passing rerun moves a red request on, who
+    may ask and who a request deploys as;
+  - the schedule: after its merges, on its timer, at most every 5 minutes (hourly without a
+    target), never past a request on its way but past an inherited one, never again for a tried
+    head, who a scheduled deploy acts for, and its timer counted from the last request or run;
+  - the `needs_you` guard: refused for a disabled button with the reason's advice (a writer and an
+    administrator owner, the label with and without "…"), asked for a working one, for prose,
+    for a button in `happened`, and when a named person can press it; a named person who cannot
+    gives their reason.
+- Hand mutations, each failing its test: the red-head override in the judge; the follow-up's
+  "already tried" check; `is_asked`; the rerun re-read; `superagent_on_panel`'s staging clause;
+  the schedule's throttle, `pending`, the tried-head check and the last-run operand; the hourly
+  recheck; the button label's "…" trim; the named-person lookup.
+- e2e: `cd.e2e.ts` and `cd-releases.e2e.ts` (30 passed), `superagent-requests.e2e.ts` (21),
+  `quality`, `responsive` and `text-fits` (72).
+- `scripts/dev quick` passed; `cargo clippy -D warnings` on the touched crates is clean.
+- Security scan: Vidoc is switched off for this project in Yulius, so it was not run (disabled,
+  not passed).
+
+Not tested:
+- A `needs_you` card when the CD page cannot be read leaves the card as before this change. Access
+  cannot reach it (a person without permission still reads the page as a reader), and the store,
+  Git or clone failures that would reach it break the task's own call first.
+- The staging tick checking the next project after one project's GitHub read failed. The loop
+  logs the error and goes on, but the fixture has one project.
+- Real staging on a project's VM: the queue's deploys ran against the fixture's scripts. The
+  staging request of this task's own merged delivery is its live run.
