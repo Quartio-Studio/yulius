@@ -647,6 +647,10 @@ watching, steering and unblocking.
       Superagent after confirming on its panel. It deploys once that head's full suite passed. A
       red head waits for the next green one, and the page says so ("Waiting for green tests on
       `<sha>`"). [SPEC-650](../.ai/specs/SPEC-650-merge-first-staging-a-person-and-their-s.md)
+    - Staging also moves on by itself, whoever finishes what. When it is behind the head and
+      nothing is on its way, Yulius asks for the head after 5 merges, or after 60 minutes without
+      a staging change. Each project sets `serve_after_merges` and `serve_every_minutes` (0 turns
+      either off).
     - Working tasks hear the failing tests and their introducing merges. One worker takes the repair.
       With no worker available, project CI and Status name the tests and their introducing merges.
       Writers can rerun the affected revision or start a task in the project.

@@ -73,8 +73,9 @@ production authorization, not staging.
     head (the same requester). Once a revision containing it is verified, the waiting request
     is `included`.
   - One carried request at a time: nothing is carried while a newer request is testing, ready or
-    deploying, or for a revision staging already serves. Nothing is carried to a head that has a
-    request of a person or the schedule in any state, so a failed follow-up never loops.
+    deploying, or for a revision staging already serves. Nothing is carried to a head that has any
+    request (a task's too) in a state but superseded or inherited, so a failed follow-up never
+    loops, and a cancel, rollback or failed deploy there stands.
   - A waiting request moves on once a rerun of its revision passes the full gate.
 - **PST-003 Who a task-less deploy acts for.**
   - A person's request deploys as that person (`requested_by` = `user:<id>`), while they are
@@ -104,13 +105,20 @@ production authorization, not staging.
   - A disabled deploy button always shows its reason as visible text, not only in a tooltip.
 - **PST-006 Staging never stalls on one task.**
   - `[cd.<name>]` with `merge_first = true` takes `serve_every_minutes` (default 60, `0` turns
-    it off) and `serve_after_merges` (default 5, `0` turns it off).
-  - Once a minute (at most every 5 minutes per project), Yulius checks each project with a
-    merge-first target. When the integration head is ahead of what staging serves and no
-    request is pending, it records a scheduled task-less request for the head (`yulius:schedule`,
-    note naming the trigger). The triggers:
+    it off) and `serve_after_merges` (default 5, `0` turns it off), refused on any other table.
+  - The staging tick checks each project at most every 5 minutes (a project whose last check
+    found no merge-first target, once an hour), after the repair notices.
+  - When the integration head is ahead of what staging serves and no request is on its way
+    (testing, ready or deploying; an inherited one waits for others), Yulius records a scheduled
+    request for the head (`yulius:schedule`, note naming the trigger). The triggers:
+    - staging serves no revision of the branch yet;
     - at least `serve_after_merges` first-parent commits since staging's revision;
-    - at least `serve_every_minutes` since the environment's last staging request or run.
+    - at least `serve_every_minutes` since the environment's last staging request or run
+      (deploy, rollback or drill).
+  - It never asks for a head any request already tried, a task's included: a failed deploy, a
+    person's cancel or rollback stands until a newer head lands.
+  - A verified scheduled deploy is promoted where the delivery profile promotes automatically, as
+    any verified staging revision is.
   - A task's own request keeps its rules ("a task's whole delivery once", one successful deploy
     per task) for its own verification bookkeeping. It never gates staging any more.
 - **PST-007 Guidance names a working action.**
@@ -137,9 +145,9 @@ production authorization, not staging.
 - [x] Docs and changes entry for pull request 1
 - [x] Review round 1 of pull request 1: findings fixed test-first
 - [x] Independent review of pull request 1 approved
-- [ ] Scheduled serving: serve_every_minutes and serve_after_merges in [cd.<name>]
-- [ ] The staging tick records a scheduled request when staging is behind
-- [ ] Docs and the independent review of pull request 2
+- [x] Scheduled serving: serve_every_minutes and serve_after_merges in [cd.<name>]
+- [x] The staging tick records a scheduled request when staging is behind
+- [x] Docs and the independent review of pull request 2
 - [ ] Server-side deploy_action for each environment, rendered by the CD page
 - [ ] Refusal and production-gate texts name the working action; needs_you refuses a disabled control
 - [ ] Docs and the independent review of pull request 3

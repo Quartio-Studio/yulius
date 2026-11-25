@@ -318,7 +318,7 @@ impl App {
     }
 
     /// Records a request of no task for `revision` of the integration branch (SPEC-650): a
-    /// person's, the schedule's, or a red one's follow-up (`Asking::FollowUp`). The caller holds
+    /// person's, the schedule's, or a red one's follow-up (`Asking::Yulius`). The caller holds
     /// the queue's lock.
     ///
     /// - A pending request of a person or the schedule for that revision answers instead.
@@ -326,7 +326,8 @@ impl App {
     /// - Otherwise (it failed, or staging was rolled back past it) a new request is recorded,
     ///   for the one asking now (review round 1, findings 3 and 4): a failed one is never made
     ///   ready again, so a person's cancel stands.
-    /// - A follow-up records nothing when that revision has such a request in any state
+    /// - Yulius's own ask records nothing when that revision has any request (a task's too) in
+    ///   any state but superseded
     ///   (finding 1): `None`.
     async fn staging_record_task_less(
         self: &Arc<Self>,
@@ -345,8 +346,27 @@ impl App {
             .filter(|r| is_asked(r) && r.state != StagingState::Superseded)
             .collect();
         let note = match asking {
-            Asking::FollowUp(_) if !own.is_empty() => return Ok(None),
-            Asking::FollowUp(note) => Some(note),
+            Asking::Yulius(_) if !own.is_empty() => return Ok(None),
+            Asking::Yulius(note) => {
+                // Any request of that revision, a task's too, was tried already: a cancel, a
+                // rollback or a failed deploy stands until a new merge or a person asks (review
+                // round 1 of PR 2). An inherited one only waits: a rerun may still green it.
+                let tried = store
+                    .recent_staging_requests(&sandbox.id, env, 200)
+                    .await?
+                    .iter()
+                    .any(|r| {
+                        r.revision == revision
+                            && !matches!(
+                                r.state,
+                                StagingState::Superseded | StagingState::Inherited
+                            )
+                    });
+                if tried {
+                    return Ok(None);
+                }
+                Some(note)
+            }
             Asking::Person => None,
         };
         if let Some(pending) = own.iter().rev().find(|r| r.state.is_pending()) {
@@ -402,7 +422,8 @@ impl App {
 
     /// Carries a red request of no task to the integration head once the head moved past it
     /// (SPEC-650 PST-002): one new request for the head, by the same requester, unless the head
-    /// has one in any state already. `true` when one was recorded.
+    /// has a request (a task's too) in any state but superseded or inherited. `true` when one was
+    /// recorded.
     async fn staging_carry_forward(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
@@ -442,10 +463,148 @@ impl App {
                 target,
                 head,
                 &from.requested_by,
-                Asking::FollowUp(note),
+                Asking::Yulius(note),
             )
             .await?
             .is_some())
+    }
+
+    /// The schedule's request for the integration head (SPEC-650 PST-006): when the project's
+    /// merge-first target is behind the verified head, nothing is on its way, and the merges or
+    /// minutes of its `serve_after_merges` or `serve_every_minutes` were reached. It deploys as the
+    /// project's creator (`staging_person`). `Ok(None)` when nothing was recorded.
+    ///
+    /// # Errors
+    /// GitHub, Git and store failures (tried again at a later tick).
+    pub async fn staging_schedule(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Option<StagingRequestRecord>> {
+        Ok(self.staging_schedule_checked_once(sandbox).await?.1)
+    }
+
+    /// [`App::staging_schedule`], and whether the project has a merge-first target at all.
+    async fn staging_schedule_checked_once(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<(bool, Option<StagingRequestRecord>)> {
+        if sandbox.is_playground()
+            || !self.deps.git.has_cd_mirror()
+            || !self.config.ci.enabled
+            || self.ci_gate(sandbox).await.gate.is_none()
+        {
+            return Ok((false, None));
+        }
+        crate::ports::github::for_purpose(crate::ports::github::GitHubPurpose::Staging, async {
+            let (head, target) = self.staging_target(sandbox).await?;
+            let Some(target) = target else {
+                return Ok((false, None));
+            };
+            let lock = queue_lock(&sandbox.id);
+            let _queue = lock.lock().await;
+            let store = &self.deps.store;
+            let env = target.name.as_str();
+            // An inherited request waits for another's deploy: it is not on its way (review
+            // round 1 of PR 2).
+            let pending = store
+                .pending_staging_requests(&sandbox.id, env)
+                .await?
+                .iter()
+                .any(|r| r.state != StagingState::Inherited);
+            let mirror = self.cd_mirror(&sandbox.id);
+            let Some(head_at) = self
+                .deps
+                .git
+                .first_parent_position(&mirror, &head, &head)
+                .await?
+            else {
+                return Ok((true, None));
+            };
+            let (current, _) = self.staging_current(sandbox, &target, &head).await?;
+            let last_request = store
+                .recent_staging_requests(&sandbox.id, env, 1)
+                .await?
+                .first()
+                .map(|r| r.created_at.0);
+            let mut last_run = None;
+            for kind in [CdRunKind::Deploy, CdRunKind::Rollback, CdRunKind::Drill] {
+                let run = store
+                    .last_cd_run_of_kind(
+                        &sandbox.id,
+                        env,
+                        CdStage::Dev,
+                        kind,
+                        crate::ports::store_ext::CdRunHistory::Latest,
+                    )
+                    .await?;
+                last_run = last_run.max(run.map(|run| run.started_at.0));
+            }
+            let idle_ms = match last_request.max(last_run) {
+                Some(at) => u64::try_from(self.now().0.saturating_sub(at)).unwrap_or(0),
+                None => u64::MAX,
+            };
+            let behind = stg::Behind {
+                merges_ahead: current.map(|at| head_at.saturating_sub(at)),
+                idle_ms,
+                pending,
+            };
+            let schedule = stg::Schedule {
+                every_minutes: target.serve_every_minutes,
+                after_merges: target.serve_after_merges,
+            };
+            let Some(trigger) = stg::due(schedule, behind) else {
+                return Ok((true, None));
+            };
+            let asked = self
+                .staging_record_task_less(
+                    sandbox,
+                    &target,
+                    &head,
+                    SCHEDULE_REQUESTER,
+                    Asking::Yulius(trigger.note()),
+                )
+                .await?;
+            Ok((true, asked))
+        })
+        .await
+    }
+
+    /// Checks each project's staging schedule at most every 5 minutes, and a project whose last
+    /// check found no merge-first target once an hour (each check reads the verified head from
+    /// GitHub).
+    async fn staging_schedules(self: &Arc<Self>, projects: &[SandboxRecord]) {
+        const EVERY_MS: i64 = 5 * 60 * 1000;
+        const NO_TARGET_MS: i64 = 60 * 60 * 1000;
+        let now = self.now().0;
+        for project in projects {
+            if project.is_playground() || project.removed_at.is_some() {
+                continue;
+            }
+            {
+                let mut checked = self
+                    .staging_schedule_checked
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if checked.get(&project.id).is_some_and(|(at, target)| {
+                    now.saturating_sub(*at) < if *target { EVERY_MS } else { NO_TARGET_MS }
+                }) {
+                    continue;
+                }
+                checked.insert(project.id.clone(), (now, true));
+            }
+            match self.staging_schedule_checked_once(project).await {
+                Ok((true, _)) => {}
+                Ok((false, _)) => {
+                    self.staging_schedule_checked
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(project.id.clone(), (now, false));
+                }
+                Err(err) => {
+                    tracing::warn!(sandbox = %project.slug, error = %err, "the staging schedule could not be checked");
+                }
+            }
+        }
     }
 
     /// Advances one sandbox's queue soon, off the caller's path.
@@ -500,14 +659,17 @@ impl App {
         }
         self.tell_staging_outcomes().await;
         if let Ok(projects) = self.deps.store.sandboxes().await {
-            for project in projects {
+            for project in &projects {
                 if !project.is_playground()
                     && project.removed_at.is_none()
-                    && let Err(err) = self.tell_gate_repairs(&project).await
+                    && let Err(err) = self.tell_gate_repairs(project).await
                 {
                     tracing::warn!(sandbox = %project.slug, error = %err, "integration repair notices deferred");
                 }
             }
+            // Staging moves on by itself, whoever finishes what (SPEC-650 PST-006); after the
+            // repair notices, which a slow GitHub must not hold.
+            self.staging_schedules(&projects).await;
         }
     }
 
@@ -1649,8 +1811,9 @@ impl App {
 enum Asking {
     /// A person asks now.
     Person,
-    /// A red request is carried to the head, with this note.
-    FollowUp(String),
+    /// Yulius asks by itself, with this note: a red request carried to the head, or the
+    /// schedule (SPEC-650 PST-002, PST-006).
+    Yulius(String),
 }
 
 /// Whether `request` is a person's or the schedule's (SPEC-650), read from who asked: a deleted

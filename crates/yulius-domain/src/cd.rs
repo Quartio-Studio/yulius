@@ -159,7 +159,18 @@ pub struct CdTarget {
     pub drill: Option<String>,
     /// Dev stage only: the shared staging target of merge-first delivery (SPEC-575 MFS-001).
     pub merge_first: bool,
+    /// Merge-first only: Yulius asks staging for the integration head once it has been this
+    /// many minutes behind it (`0`: never by time; SPEC-650 PST-006).
+    pub serve_every_minutes: u32,
+    /// Merge-first only: Yulius asks staging for the integration head once it is this many
+    /// first-parent commits ahead (`0`: never by count; SPEC-650 PST-006).
+    pub serve_after_merges: u32,
 }
+
+/// The default of `serve_every_minutes` (SPEC-650 PST-006).
+pub const DEFAULT_SERVE_EVERY_MINUTES: u32 = 60;
+/// The default of `serve_after_merges` (SPEC-650 PST-006).
+pub const DEFAULT_SERVE_AFTER_MERGES: u32 = 5;
 
 impl CdTarget {
     /// An empty table.
@@ -180,6 +191,8 @@ impl CdTarget {
             parts: Vec::new(),
             drill: None,
             merge_first: false,
+            serve_every_minutes: DEFAULT_SERVE_EVERY_MINUTES,
+            serve_after_merges: DEFAULT_SERVE_AFTER_MERGES,
         }
     }
 
