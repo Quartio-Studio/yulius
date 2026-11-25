@@ -1576,6 +1576,26 @@ impl App {
         Ok(out)
     }
 
+    /// The revisions the sandbox's `testing` staging requests wait at (SPEC-653 NWF-004).
+    pub(super) async fn staging_testing_revisions(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Vec<String>> {
+        let store = &self.deps.store;
+        let mut revisions = Vec::new();
+        for (id, env) in store.staging_queues(self.now()).await? {
+            if id != sandbox.id {
+                continue;
+            }
+            for request in store.pending_staging_requests(&id, &env).await? {
+                if request.state == StagingState::Testing {
+                    revisions.push(request.revision);
+                }
+            }
+        }
+        Ok(revisions)
+    }
+
     /// Whether a deploy of `env` must wait now: another run of it goes on, or an update holds
     /// new deploys.
     async fn staging_must_wait(&self, sandbox: &SandboxRecord, env: &str) -> AppResult<bool> {

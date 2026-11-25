@@ -5215,3 +5215,57 @@ async fn the_newest_goes_first_and_a_new_failure_is_narrowed_to_its_merge() -> T
     assert_eq!(request(&f, &ids[0]).await?.state, StagingState::Verified);
     Ok(())
 }
+
+/// SPEC-653 NWF-004: while a red revision's range still holds a waiting request, nobody is
+/// named as the breaker, even when the lane is busy and the narrowing run cannot start yet.
+/// Once it is narrowed, the notice names the merge that brought the failure.
+#[tokio::test]
+async fn no_repair_owner_is_named_before_a_new_failure_is_narrowed() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b", "c"] {
+        agent(&f, task).await?;
+    }
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    gate(&f, &base, RunState::Passed).await?;
+    let a = land(&f, "a", "a").await?;
+    let b = land(&f, "b", "b").await?;
+    let c = land(&f, "c", "c").await?;
+    // The integration branch's run judges c while they ask.
+    let judging_c = gate(&f, &c, RunState::Running).await?;
+    let mut ids = Vec::new();
+    for task in ["a", "b", "c"] {
+        ids.push(ask(&f, task).await?["id"].as_str().ok_or("id")?.to_owned());
+    }
+    let sandbox = sandbox(&f).await?;
+    // A later merge's run holds the lane when c fails with a new failure.
+    let d = f.push("dev", &[("d", Some("d"))])?;
+    let judging_d = gate(&f, &d, RunState::Running).await?;
+    finish(&f, &judging_c, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &b).await?, None, "the lane is busy");
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    let notices = || async {
+        BoxResult::Ok(f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone())
+    };
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(notices().await?, json!([]), "c may not be the breaker");
+    assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Testing);
+
+    finish(&f, &judging_d, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let middle = candidate(&f, &b).await?.ok_or("the narrowing run")?;
+    finish(&f, &middle, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(notices().await?, json!([]), "a may still be the breaker");
+    let oldest = candidate(&f, &a).await?.ok_or("the older half")?;
+    finish(&f, &oldest, RunState::Passed, &[]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let notices = notices().await?;
+    assert_eq!(notices[0]["test"], "gate::x", "{notices}");
+    assert_eq!(notices[0]["revision"], b.as_str(), "{notices}");
+    assert_eq!(request(&f, &ids[1]).await?.state, StagingState::GateFailed);
+    assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Inherited);
+    Ok(())
+}

@@ -11,7 +11,7 @@ use yulius_contracts::api::ci::GateNotice;
 use yulius_domain::ci::RunState;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::TaskId;
-use yulius_domain::staging_gate::Gate;
+use yulius_domain::staging_gate::{Gate, Point, judging};
 
 use crate::context::App;
 use crate::delivery::delivery_profile;
@@ -263,6 +263,42 @@ impl GateFailures {
     }
 }
 
+/// The red revisions among `walked` (first-parent, newest first) whose range still holds a
+/// revision of `asked` that nothing judged (SPEC-653 NWF-004); `history` holds their verdicts,
+/// newest admission first, and `green` the full pass the walk stopped at.
+fn unresolved_ranges(
+    walked: &[String],
+    history: &[GateVerdict],
+    green: Option<&str>,
+    asked: &[String],
+) -> BTreeSet<String> {
+    if asked.is_empty() {
+        return BTreeSet::new();
+    }
+    let count = walked.len() as u64;
+    let points: Vec<Point> = walked
+        .iter()
+        .zip((1..=count).rev())
+        .map(|(sha, position)| Point {
+            position,
+            gate: if green == Some(sha.as_str()) {
+                Some(Gate::Passed)
+            } else {
+                history
+                    .iter()
+                    .find(|v| &v.sha == sha)
+                    .and_then(GateVerdict::gate)
+            },
+            asked: asked.contains(sha),
+        })
+        .collect();
+    judging(&points)
+        .unresolved
+        .into_iter()
+        .filter_map(|at| walked.get(usize::try_from(count - at).ok()?).cloned())
+        .collect()
+}
+
 impl App {
     /// Replay the branch's retained verdicts since its last full pass in first-parent order.
     pub(super) async fn gate_failures_at(
@@ -279,30 +315,40 @@ impl App {
             } else {
                 GateRead::History
             };
+            let asked = self.staging_testing_revisions(sandbox).await?;
             let mut revisions = vec![head.to_owned()];
+            let mut walked = Vec::new();
             let mut history = Vec::new();
+            let mut green = None;
             while let Some(oldest) = revisions.last() {
                 let verdicts = self
                     .deps
                     .store
                     .integration_verdicts(&sandbox.id, &branch, &revisions, read)
                     .await?;
-                let mut passed = false;
+                walked.extend(revisions.iter().cloned());
                 for verdict in verdicts {
                     if verdict.state == RunState::Passed && !verdict.jobs.iter().any(|j| j.skipped)
                     {
-                        passed = true;
+                        green = Some(verdict.sha);
                         break;
                     }
                     history.push(verdict);
                 }
-                if passed {
+                if green.is_some() {
                     break;
                 }
                 revisions = self.deps.git.preceding_commits(repo, oldest).await?;
             }
+            // A failure whose range still holds a waiting staging request is not attributed
+            // before that request is judged (SPEC-653 NWF-004).
+            let unresolved = unresolved_ranges(&walked, &history, green.as_deref(), &asked);
             let mut failures = GateFailures::default();
             for verdict in history.into_iter().rev() {
+                if unresolved.contains(&verdict.sha) {
+                    failures.waiting = true;
+                    break;
+                }
                 if settled_only && verdict.state.is_active() {
                     // A preceding revision has no settled verdict yet. The next tick can
                     // attribute the newer failures once that revision is known.
