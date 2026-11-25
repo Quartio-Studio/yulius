@@ -89,6 +89,7 @@ pub fn wire_containment(containment: &Containment) -> wire::Containment {
                         .map(|p| p.to_string_lossy().into_owned()),
                 })
             }),
+            guard: None,
         }),
     }
 }

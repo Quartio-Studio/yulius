@@ -269,6 +269,28 @@ pub fn host_program(name: &str, path: Option<&std::ffi::OsStr>) -> Result<String
         .ok_or_else(|| HostError::Spawn(format!("{name} was not found on the host's PATH")))
 }
 
+/// What runs before `bwrap`: `yulius sandbox-exec` hands it the seccomp filter of a joined run
+/// and the memory guard's descriptors (SPEC-652 MEM-004), then execs it (same pid); nothing when
+/// neither applies.
+fn shim_prefix(spec: &yulius_contracts::ptyhost::BubblewrapSpec) -> Result<Vec<String>, HostError> {
+    let filter_shim = spec.join.as_ref().and_then(|j| j.exec_shim.clone());
+    let guard = spec.guard.as_ref().filter(|g| !g.paths.is_empty());
+    let Some(shim) = filter_shim.clone().or_else(|| guard.map(|g| g.exe.clone())) else {
+        return Ok(Vec::new());
+    };
+    let mut prefix = vec![shim, "sandbox-exec".to_owned()];
+    if let Some(guard) = guard {
+        let paths = serde_json::to_string(&guard.paths)
+            .map_err(|e| HostError::Spawn(format!("cannot encode the memory guard: {e}")))?;
+        prefix.extend(["--guard".to_owned(), paths]);
+        if filter_shim.is_none() {
+            prefix.push("--no-filter".to_owned());
+        }
+    }
+    prefix.push("--".to_owned());
+    Ok(prefix)
+}
+
 /// Builds the child command: launch argv (inside bwrap when contained), cleared environment plus
 /// the launch env and the named secrets from the host's own environment.
 fn prepare_command(launch: &LaunchSpec) -> Result<CommandBuilder, HostError> {
@@ -294,10 +316,7 @@ fn prepare_command(launch: &LaunchSpec) -> Result<CommandBuilder, HostError> {
             if let Some(program) = argv.first_mut() {
                 *program = host_program(program, std::env::var_os("PATH").as_deref())?;
             }
-            // `yulius sandbox-exec` hands bwrap the seccomp filter and execs it (same pid).
-            if let Some(shim) = spec.join.as_ref().and_then(|j| j.exec_shim.as_ref()) {
-                argv.splice(0..0, [shim.clone(), "sandbox-exec".into(), "--".into()]);
-            }
+            argv.splice(0..0, shim_prefix(spec)?);
             (argv, "/".to_owned())
         }
     };
@@ -1256,6 +1275,64 @@ impl ClientQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-652 MEM-004: a guarded run starts bwrap through `sandbox-exec --guard`: with the
+    /// holder's seccomp shim when it joins one, else the guard's own `yulius` without a filter;
+    /// an unguarded run keeps its shim or none.
+    #[test]
+    fn a_guarded_run_starts_through_sandbox_exec() -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::ptyhost::{BubblewrapSpec, Guard, GuardKind, GuardPath};
+        let mut spec: BubblewrapSpec =
+            serde_json::from_str(r#"{"sandbox_root":"/s","home":"/s/home"}"#)?;
+        assert!(shim_prefix(&spec)?.is_empty());
+        let paths = vec![GuardPath {
+            anchor: "/s".into(),
+            relative: "home/.claude/CLAUDE.md".into(),
+            dest: "/s/home/.claude/CLAUDE.md".into(),
+            kind: GuardKind::File,
+        }];
+        spec.guard = Some(Guard {
+            exe: "/opt/yulius".into(),
+            paths: paths.clone(),
+        });
+        let prefix = shim_prefix(&spec)?;
+        let encoded = serde_json::to_string(&paths)?;
+        assert_eq!(
+            prefix,
+            [
+                "/opt/yulius",
+                "sandbox-exec",
+                "--guard",
+                &encoded,
+                "--no-filter",
+                "--"
+            ]
+        );
+        let mut join: yulius_contracts::ptyhost::SandboxJoin = serde_json::from_str(
+            r#"{"holder_pid":1,"user_ns":1,"net_ns":1,"mnt_ns":1,"system_root":"/r","hostname":"h","exec_shim":"/usr/local/bin/yulius"}"#,
+        )?;
+        spec.join = Some(Box::new(join.clone()));
+        let prefix = shim_prefix(&spec)?;
+        assert_eq!(
+            prefix,
+            [
+                "/usr/local/bin/yulius",
+                "sandbox-exec",
+                "--guard",
+                &encoded,
+                "--"
+            ]
+        );
+        spec.guard = None;
+        assert_eq!(
+            shim_prefix(&spec)?,
+            ["/usr/local/bin/yulius", "sandbox-exec", "--"]
+        );
+        join.exec_shim = None;
+        spec.join = Some(Box::new(join));
+        assert!(shim_prefix(&spec)?.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn forced_termination_reclaims_only_the_recorded_attempt()

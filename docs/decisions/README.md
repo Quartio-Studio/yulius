@@ -566,6 +566,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0477 -->
 - [0478](0478-a-person-gives-each-subscriptions-charge-date.md): An administrator gives each subscription one charge date and whether it repeats monthly or yearly; Yulius counts the next charge (UTC) and every account view and Subscriptions card shows it, since no provider tells Yulius the billing date (SPEC-651, task #635)
 <!-- ADR 0478 -->
+- [0479](0479-harness-memory-is-read-only-in-every-session-yulius-starts.md): Every session Yulius starts sees its harness's memory and user-level instruction files bound read-only over themselves (opened without following links, handed to bwrap as descriptors), so no tool, shell or script of the agent writes them while they still load; a person edits them on the host (SPEC-652, task #636)
 <!-- ADR 0479 -->
 <!-- ADR 0480 -->
 <!-- ADR 0481 -->

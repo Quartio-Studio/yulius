@@ -433,6 +433,58 @@ pub struct BubblewrapSpec {
     /// cgroup, a reduced capability set and the seccomp filter. `None`: the previous containment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join: Option<Box<SandboxJoin>>,
+    /// Paths the run sees read-only (or pinned) through descriptors opened without following a
+    /// link (SPEC-652): the harness's memory and user-level instruction files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<Guard>,
+}
+
+/// The read-only memory guard of a contained run (SPEC-652 MEM-001, MEM-004): `exe sandbox-exec
+/// --guard <paths>` opens each path from its anchor without following a link and hands `bwrap`
+/// the binds of those descriptors through the [`GUARD_PIN_ARGS_FD`] and [`GUARD_ARGS_FD`]
+/// argument descriptors that `bwrap_argv` places.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Guard {
+    /// The `yulius` executable that opens the paths (`sandbox-exec`) and execs `bwrap`.
+    pub exe: String,
+    /// The guarded paths, pins first.
+    pub paths: Vec<GuardPath>,
+}
+
+/// Descriptor from which `bwrap` reads the pins' binds (`--args`), placed before the first bind
+/// beneath a pin.
+pub const GUARD_PIN_ARGS_FD: i32 = 198;
+/// Descriptor from which `bwrap` reads the read-only binds and placeholders (`--args`), placed
+/// after every bind.
+pub const GUARD_ARGS_FD: i32 = 199;
+/// Most guarded paths of one run.
+pub const GUARD_MAX_PATHS: usize = 32;
+
+/// What a guarded path is (SPEC-652).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardKind {
+    /// A folder bound read-only; an empty read-only folder when it is missing or not a folder.
+    Dir,
+    /// A file bound read-only; an empty read-only file when it is missing or not a file.
+    File,
+    /// A folder bound writable over itself, so it cannot be renamed or removed (`EBUSY`); nothing
+    /// when it is missing or not a folder.
+    Pin,
+}
+
+/// One guarded path: `relative` below `anchor` (opened from it without following a link), bound
+/// at `dest` inside the namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuardPath {
+    /// A folder Yulius made, in the view `bwrap` starts in (never one an agent can replace).
+    pub anchor: String,
+    /// Relative path below `anchor`: plain components, no `.` or `..`.
+    pub relative: String,
+    /// Where it is bound inside the namespace.
+    pub dest: String,
+    /// Its kind.
+    pub kind: GuardKind,
 }
 
 /// The sandbox namespace holder a contained run joins (SPEC-002 ADR-22).
@@ -1747,6 +1799,7 @@ mod tests {
                 host_system: None,
                 docker_dir: None,
             })),
+            guard: None,
         });
         spec.validate()?;
         let json = serde_json::to_string(&spec)?;
@@ -1808,6 +1861,7 @@ mod tests {
                         binds: vec![],
                         identity: None,
                         join: None,
+                        guard: None,
                     });
                 },
                 "containment.sandbox_root",
@@ -1835,6 +1889,7 @@ mod tests {
                             host_system: None,
                             docker_dir: None,
                         })),
+                        guard: None,
                     });
                 },
                 "containment.join",

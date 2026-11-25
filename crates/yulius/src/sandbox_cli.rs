@@ -182,13 +182,26 @@ pub fn host(action: HostAction) -> ExitCode {
 /// the sandbox of `join` (still single-threaded), then execs `bwrap` with the run's seccomp
 /// filter, or the engine's (ADR-0151).
 #[must_use]
-pub fn exec(
-    engine: bool,
-    cgroup: Option<&Path>,
-    join: Option<&Path>,
-    argv: &[OsString],
-) -> ExitCode {
-    if let Some(path) = join {
+/// What `yulius sandbox-exec` does before it execs `bwrap`.
+#[derive(Debug, Clone, Copy)]
+pub struct Exec<'a> {
+    /// The sandbox's container engine: its seccomp profile (ADR-0151).
+    pub engine: bool,
+    /// Join this cgroup directory first.
+    pub cgroup: Option<&'a Path>,
+    /// Join the sandbox described by this file first.
+    pub join: Option<&'a Path>,
+    /// The run's guarded paths, a JSON list (SPEC-652 MEM-004).
+    pub guard: Option<&'a str>,
+    /// Hand bwrap the seccomp filter.
+    pub filter: bool,
+}
+
+/// `yulius sandbox-exec`: joins what it is asked to, opens the guarded paths, and execs `argv`
+/// (bwrap) with the seccomp filter unless it is turned off.
+#[must_use]
+pub fn exec(how: Exec<'_>, argv: &[OsString]) -> ExitCode {
+    if let Some(path) = how.join {
         let joined =
             yulius_sandbox::holder::read_json::<yulius_contracts::ptyhost::SandboxJoin>(path)
                 .map_err(|e| e.to_string())
@@ -197,18 +210,35 @@ pub fn exec(
             return fail(&format!("cannot join the sandbox: {error}"));
         }
     }
-    if let Some(cgroup) = cgroup
+    if let Some(cgroup) = how.cgroup
         && let Err(error) = yulius_sandbox::cgroup::join(cgroup)
     {
         return fail(&format!("cannot join {}: {error}", cgroup.display()));
     }
-    let profile = if engine {
-        yulius_sandbox::seccomp::Profile::Engine
-    } else {
-        yulius_sandbox::seccomp::Profile::Run
+    // Opened here, in the view bwrap starts in, and kept open until the exec (SPEC-652).
+    #[cfg(target_os = "linux")]
+    let _guard = match how.guard.map(open_guard).transpose() {
+        Ok(opened) => opened,
+        Err(error) => return fail(&format!("cannot guard the run's memory: {error}")),
+    };
+    #[cfg(not(target_os = "linux"))]
+    if how.guard.is_some() {
+        return fail("the memory guard needs Linux");
+    }
+    let profile = match (how.filter, how.engine) {
+        (false, _) => None,
+        (true, true) => Some(yulius_sandbox::seccomp::Profile::Engine),
+        (true, false) => Some(yulius_sandbox::seccomp::Profile::Run),
     };
     let error = yulius_sandbox::enter::exec_bwrap_with(argv, profile);
     fail(&format!("cannot start bwrap: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn open_guard(paths: &str) -> Result<yulius_sandbox::guard::Opened, String> {
+    let paths: Vec<yulius_contracts::ptyhost::GuardPath> =
+        serde_json::from_str(paths).map_err(|e| e.to_string())?;
+    yulius_sandbox::guard::open(&paths).map_err(|e| e.to_string())
 }
 
 fn mapper_for(data_dir: &Path, exe: &Path) -> Result<Mapper, String> {

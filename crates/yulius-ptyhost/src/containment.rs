@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use yulius_contracts::ptyhost::BubblewrapSpec;
+use yulius_contracts::ptyhost::{BubblewrapSpec, GUARD_ARGS_FD, GUARD_PIN_ARGS_FD, GuardKind};
 
 /// Program name of bubblewrap. The process host starts it by its path on the host's own `PATH`,
 /// never through the run's.
@@ -102,16 +102,7 @@ pub fn bwrap_argv(c: &BubblewrapSpec, inner_argv: &[String], cwd: &str) -> Vec<S
     if !home_mounted && !Path::new(&c.home).starts_with(&c.sandbox_root) {
         push_bind(&mut argv, "--bind", &c.home);
     }
-    for path in &c.writable {
-        push_bind(&mut argv, "--bind", path);
-    }
-    for path in &c.readonly {
-        push_bind(&mut argv, "--ro-bind", path);
-    }
-    for bind in &c.binds {
-        let option = if bind.writable { "--bind" } else { "--ro-bind" };
-        argv.extend([option.to_owned(), bind.source.clone(), bind.dest.clone()]);
-    }
+    push_binds(&mut argv, c);
     argv.extend(["--setenv".into(), "HOME".into(), c.home.clone()]);
     argv.extend(["--chdir".into(), cwd.to_owned()]);
     argv.push(if c.share_net {
@@ -256,16 +247,7 @@ fn joined_argv(
     if !home_mounted && !Path::new(&c.home).starts_with(&c.sandbox_root) {
         push_bind(&mut argv, "--bind", &c.home);
     }
-    for path in &c.writable {
-        push_bind(&mut argv, "--bind", path);
-    }
-    for path in &c.readonly {
-        push_bind(&mut argv, "--ro-bind", path);
-    }
-    for bind in &c.binds {
-        let option = if bind.writable { "--bind" } else { "--ro-bind" };
-        argv.extend([option.to_owned(), bind.source.clone(), bind.dest.clone()]);
-    }
+    push_binds(&mut argv, c);
     if let Some(resolver) = &join.host_system
         && let Some(target) = resolver_target(Path::new(RESOLV_CONF))
     {
@@ -276,6 +258,57 @@ fn joined_argv(
     argv.push("--".into());
     argv.extend(inner_argv.iter().cloned());
     argv
+}
+
+/// The writable, read-only and other binds of `c`, in that order, with the memory guard's
+/// argument descriptors (SPEC-652 MEM-004): `--args` [`GUARD_PIN_ARGS_FD`] before the first bind
+/// beneath a pinned folder (so the pin does not cover it), else after the binds, and `--args`
+/// [`GUARD_ARGS_FD`] after every bind (so its read-only binds cover what is beneath them).
+fn push_binds(argv: &mut Vec<String>, c: &BubblewrapSpec) {
+    let mut binds: Vec<[String; 3]> = Vec::new();
+    for path in &c.writable {
+        binds.push(["--bind".into(), path.clone(), path.clone()]);
+    }
+    for path in &c.readonly {
+        binds.push(["--ro-bind".into(), path.clone(), path.clone()]);
+    }
+    for bind in &c.binds {
+        let option = if bind.writable { "--bind" } else { "--ro-bind" };
+        binds.push([option.into(), bind.source.clone(), bind.dest.clone()]);
+    }
+    let guard = c.guard.as_ref().filter(|g| !g.paths.is_empty());
+    let pins: Vec<&str> = guard
+        .iter()
+        .flat_map(|g| g.paths.iter())
+        .filter(|p| p.kind == GuardKind::Pin)
+        .map(|p| p.dest.as_str())
+        .collect();
+    let beneath_pin = |dest: &str| {
+        pins.iter()
+            .any(|pin| Path::new(dest) != Path::new(pin) && Path::new(dest).starts_with(pin))
+    };
+    let pin_at = (!pins.is_empty()).then(|| {
+        binds
+            .iter()
+            .position(|[_, _, dest]| beneath_pin(dest))
+            .unwrap_or(binds.len())
+    });
+    for (index, bind) in binds.iter().enumerate() {
+        if pin_at == Some(index) {
+            push_args_fd(argv, GUARD_PIN_ARGS_FD);
+        }
+        argv.extend(bind.iter().cloned());
+    }
+    if pin_at == Some(binds.len()) {
+        push_args_fd(argv, GUARD_PIN_ARGS_FD);
+    }
+    if guard.is_some() {
+        push_args_fd(argv, GUARD_ARGS_FD);
+    }
+}
+
+fn push_args_fd(argv: &mut Vec<String>, fd: i32) {
+    argv.extend(["--args".to_owned(), fd.to_string()]);
 }
 
 fn push_bind(argv: &mut Vec<String>, option: &str, path: &str) {
@@ -311,6 +344,7 @@ mod tests {
             binds: Vec::new(),
             identity: None,
             join: None,
+            guard: None,
         }
     }
 
@@ -560,6 +594,74 @@ mod tests {
             !argv.contains(&"--share-net".to_owned())
                 && !argv.contains(&"--unshare-net".to_owned())
         );
+    }
+
+    fn guarded(c: &mut BubblewrapSpec) {
+        use yulius_contracts::ptyhost::{Guard, GuardPath};
+        let path = |relative: &str, kind| GuardPath {
+            anchor: "/data/users/u1/home".into(),
+            relative: relative.into(),
+            dest: format!("/home/alice/{relative}"),
+            kind,
+        };
+        c.home = "/home/alice".into();
+        c.binds = vec![
+            yulius_contracts::ptyhost::BindMount {
+                source: "/data/users/u1/home".into(),
+                dest: "/home/alice".into(),
+                writable: true,
+            },
+            yulius_contracts::ptyhost::BindMount {
+                source: "/data/runs/r1/plugins".into(),
+                dest: "/home/alice/.claude/plugins".into(),
+                writable: false,
+            },
+        ];
+        c.guard = Some(Guard {
+            exe: "/usr/local/bin/yulius".into(),
+            paths: vec![
+                path(".claude", GuardKind::Pin),
+                path(".claude/projects/-k/memory", GuardKind::Dir),
+            ],
+        });
+    }
+
+    /// SPEC-652 MEM-004: the pins' descriptor comes after the bind of the home they are in and
+    /// before a bind beneath them (which a pin would cover); the read-only binds' after every
+    /// bind, so they cover what lies beneath them. Joined runs too.
+    #[test]
+    fn the_guard_descriptors_sit_between_and_after_the_binds() -> Result<(), String> {
+        for mut c in [spec(), joined(None, None)] {
+            guarded(&mut c);
+            let argv = bwrap_argv(&c, &["claude".into()], "/data/sandboxes/s1/repo");
+            let home = position(&argv, &["--bind", "/data/users/u1/home", "/home/alice"])
+                .ok_or("home bind")?;
+            let beneath =
+                position(&argv, &["--ro-bind", "/data/runs/r1/plugins"]).ok_or("plugins bind")?;
+            let pins = position(&argv, &["--args", "198"]).ok_or("pins")?;
+            let binds = position(&argv, &["--args", "199"]).ok_or("binds")?;
+            let end = position(&argv, &["--setenv", "HOME"]).ok_or("setenv")?;
+            assert!(home < pins && pins < beneath, "{argv:?}");
+            assert!(beneath < binds && binds < end, "{argv:?}");
+        }
+        // Without a bind beneath a pin, the pins come right after the binds; without a pin, only
+        // the read-only binds' descriptor; without a guard, neither.
+        let mut c = spec();
+        guarded(&mut c);
+        c.binds.truncate(1);
+        let argv = bwrap_argv(&c, &["claude".into()], "/w");
+        let pins = position(&argv, &["--args", "198"]).ok_or("pins")?;
+        assert_eq!(position(&argv, &["--args", "199"]), Some(pins + 2));
+        if let Some(guard) = c.guard.as_mut() {
+            guard.paths.retain(|p| p.kind != GuardKind::Pin);
+        }
+        let argv = bwrap_argv(&c, &["claude".into()], "/w");
+        assert_eq!(position(&argv, &["--args", "198"]), None);
+        assert!(position(&argv, &["--args", "199"]).is_some());
+        c.guard = None;
+        let argv = bwrap_argv(&c, &["claude".into()], "/w");
+        assert!(!argv.contains(&"--args".to_owned()), "{argv:?}");
+        Ok(())
     }
 
     fn joined(docker_dir: Option<&str>, host_system: Option<&str>) -> BubblewrapSpec {
