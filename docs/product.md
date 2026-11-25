@@ -548,6 +548,12 @@ watching, steering and unblocking.
   the onboarding gate show Connect Claude, and every start a person asks for is refused at once
   with a link to Subscriptions; tasks started by a chain, a rule or an automation wait and say why
   (SPEC-246).
+- **Harness memory is read-only** (SPEC-652, [ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)): an agent never saves a standing note
+  that steers later tasks. Every contained session sees its harness's memory and user-level
+  instructions (Claude Code's auto memory, `CLAUDE.md` and `rules`; Codex's `AGENTS.md` and
+  memories; Antigravity's rules) read-only, whatever tool, shell or script it uses, and still
+  reads what is there; lasting knowledge goes into the repository through a pull request, and a
+  person edits memory by hand on the host.
 - **Delivery discipline**: spec when it matters (a task that needs one is refused code edits with
   Claude Code's edit tools until its spec has a Plan, SPEC-426; Bash edits and the spec's validity
   are the turn-end gate's),

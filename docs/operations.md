@@ -868,6 +868,26 @@ stay private to the sandbox. Two sandboxes can both use 3000 inside.
 **Without the prerequisites** (`yulius doctor` lists what is missing), contained runs keep the
 previous containment: read-only host system, the host's network, no limits.
 
+#### Harness memory is read-only
+
+Every contained session (task runs of each harness, a person's Superagent, the Global Superagent)
+sees its harness's memory and user-level instruction files read-only
+([ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)): an agent
+cannot add, change or delete them by any means, and what is there still loads. On the host they
+are ordinary files, which a person with access to the host edits in place:
+
+| Session | Claude Code memory and instructions | Codex | Antigravity |
+| --- | --- | --- | --- |
+| Task run | `<data>/sandboxes/<id>/home/.claude/projects/<key>/memory/`, `…/home/.claude/CLAUDE.md`, `…/home/.claude/rules/` | `<data>/sandboxes/<id>/codex/<account>/{AGENTS.md,AGENTS.override.md,memories/}` | none kept: each run's `.gemini` is new |
+| A person's Superagent | `<data>/users/<user>/home/.claude/…` (the same three) | | |
+| Global Superagent | `<data>/users/<user>/superagent/.claude/…` | | |
+
+`<key>` is the repository's path with every character outside `a-z`, `A-Z`, `0-9` written as
+`-` (for example `-var-lib-yulius-sandboxes-<id>-repo`). A protected path that is a symbolic link
+or of the wrong kind is moved aside to `<name>.yulius-moved-<ms>` before a session starts, and a
+missing one shows as an empty read-only folder or file. An uncontained server (development) has
+no namespace: only Claude Code's deny rules hold there.
+
 ### Subscription rebalance
 
 Every 2 minutes Yulius moves idle tasks off a subscription past its harness's rebalance threshold
