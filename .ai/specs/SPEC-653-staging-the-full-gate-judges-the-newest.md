@@ -54,6 +54,14 @@ schedule's requests), ADR-0410, ADR-0411, ADR-0477.
   with a note naming the green revision and its run. `pick` then includes it once staging
   verifies a revision containing it, and it holds no newer ready request back. Its own failing
   verdict, if one exists, is not reported to its task.
+  - When no request at or above the newest green revision is testing, ready or deploying,
+    Yulius asks for that green revision itself (`stg::serves_green`, as the schedule's request),
+    so a covered request never waits for an unrelated later request. A green revision whose
+    request was already tried (deploy failed, cancelled) is not asked for again, as for the
+    schedule.
+  - The CD page and `cd_status` say "Tests passed on a newer revision containing `<sha>`: it
+    deploys with that revision" instead of a failure; the state's label reads "waiting for a
+    verified revision".
 - **NWF-002 The newest is judged first.** When several `testing` requests wait for a run, the
   candidate run goes to the newest one above every revision the full gate judged or is judging.
 - **NWF-003 Under a red revision.** A `testing` request without a verdict of its own, whose
@@ -76,12 +84,15 @@ schedule's requests), ADR-0410, ADR-0411, ADR-0477.
 - **NWF-005 One full-gate run at a time per project.** A candidate run is still queued only while
   no candidate or integration-branch run of the sandbox is active. A running candidate is never
   cancelled for a newer request.
-- **NWF-006 What is kept.** A request whose own verdict settled and that no green newer revision
+- **NWF-006 What is kept.** A request whose own candidate a person cancelled fails its gate,
+  whatever the plan says. A request whose own verdict settled and that no green newer revision
   covers is decided as today (ready, gate failed with its new failures, or inherited with the
   failures' origins; SPEC-612, SPEC-650 PST-002). A cancelled candidate still fails its request's
   gate. Without a CI gate in force, a request still fails its gate instead of holding newer ones.
-- **NWF-007 Bounds.** The queue reads at most 512 first-parent revisions below the verified head
-  per round, and at most `MAX_PENDING` requests. A request below that window is still decided by
+- **NWF-007 Bounds.** The queue reads the first-parent revisions from the verified head down to
+  the lowest waiting request, then 128 more at a time until one below that request has a settled
+  verdict (the floor a red revision's failures are compared with), at most 512 per round, and at
+  most `MAX_PENDING` requests. A request below that window is still decided by
   its own verdict and by the judged revisions in the window above it.
 
 ## Plan
@@ -108,7 +119,7 @@ schedule's requests), ADR-0410, ADR-0411, ADR-0477.
 
 ## Test plan
 
-- **Domain unit tests** (`yulius_domain::staging`): a request below a green revision is covered;
+- **Domain unit tests** (`yulius_domain::staging_gate`, `yulius_domain::staging::serves_green`; `GateVerdict::gate` and `unresolved_ranges` in `yulius_app::ci::gate_history`): a request below a green revision is covered;
   the newest of several is judged first; a request under a red revision with only inherited
   failures needs no run; a new failure narrows its range by bisection, oldest range first, before
   newer requests; an active run anywhere above holds a request; the 2026-11-25 replay, and the

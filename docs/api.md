@@ -1035,8 +1035,10 @@ The merge-first environment changes only through its staging queue (ADR-0411):
   the integration branch. It answers with the request: `id`, `revision`, `state`, `ci_run_id`,
   `cd_run_id`, `note`.
 - The request moves through these states:
-  - `testing`: the full gate on exactly that commit;
-  - `inherited` waits for a verified descendant and names the original failure in `note`;
+  - `testing`: the full gate on that commit, newest waiting revision first (ADR-0480);
+  - `inherited` waits for a verified descendant. Its `note` names the original failure, or the
+    newer revision whose full gate answered it without a run of its own (passed, or failed only
+    on earlier merges' failures); its `waiting` says which;
   - `ready`;
   - `deploying`;
   - `verified`, or `included` in a verified deploy that contains it;

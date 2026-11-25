@@ -28,7 +28,9 @@ again after a median of 97 minutes.
   passed (no job skipped) needs no run. When that revision is not its own, the request becomes
   `inherited` with that revision and run in its note, so `pick` never deploys its untested
   revision and includes it with the next verified deploy containing it. Its own failing verdict,
-  if it had one, is not reported.
+  if it had one, is not reported. When no request at or above the newest green revision is on
+  its way, Yulius asks for that revision itself (as the schedule's request), so the covered
+  request does not wait for an unrelated later request.
 - **Newest first.** The candidate run goes to the newest request above every revision the full
   gate judged or is judging.
 - **Older requests under a red revision.** One whose red revision above brings no failure the

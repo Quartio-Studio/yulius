@@ -55,6 +55,8 @@ const MAX_PENDING: usize = 200;
 /// Most first-parent revisions below the verified head the full gate's judging reads in one
 /// round (SPEC-653 NWF-007).
 const WINDOW: usize = 512;
+/// How far one more step of that read reaches below the lowest waiting request.
+const BATCH: u64 = 128;
 /// A task view or browser handoff that is busy yields to the staging queue.
 pub(super) const TASK_VIEW_BUDGET: Duration = Duration::from_millis(750);
 
@@ -68,6 +70,12 @@ const AWAITED_OUTCOME: &str = "This task's work is finished: if a background com
 pub(crate) const PERSON_REQUESTER: &str = "user:";
 /// The schedule's requests' requester (SPEC-650 PST-006).
 pub(crate) const SCHEDULE_REQUESTER: &str = "yulius:schedule";
+
+/// How the note of a request a newer green revision contains starts (SPEC-653 NWF-001).
+const COVERED_NOTE: &str = "the full gate passed on revision";
+/// How the note of a request under a red revision with only earlier failures starts (NWF-003).
+const CONTAINED_RED_NOTE: &str =
+    "the full gate failed only on failures from earlier merges on revision";
 
 /// How a staging deploy's run note starts: the queue knows its own runs by it.
 const DEPLOY_NOTE: &str = "merge-first staging: request";
@@ -460,7 +468,7 @@ impl App {
             return Ok(false);
         };
         let note = format!(
-            "asked again for the newer head: the full gate failed on {}",
+            "asked again for the newer head: {} waits for a green revision containing it",
             short(&from.revision)
         );
         Ok(self
@@ -748,7 +756,8 @@ impl App {
         let positions = self
             .staging_positions(sandbox, &head, pending.iter().map(|r| r.revision.as_str()))
             .await?;
-        self.staging_judge(sandbox, &head, &positions, &pending)
+        let green = self
+            .staging_judge(sandbox, &head, &positions, &pending)
             .await?;
         let pending = store.pending_staging_requests(&sandbox.id, env).await?;
         // A Git failure ends the round, to be tried again: it never reads as "not on the branch".
@@ -772,6 +781,24 @@ impl App {
             }
         }
         let (current, served) = self.staging_current(sandbox, &target, &head).await?;
+        // A green revision containing waiting requests deploys although nobody asked for it, unless
+        // a request at or above it is on its way (SPEC-653 NWF-001, review round 1 finding 1).
+        if let Some((green, at)) = green
+            && current.is_none_or(|served| at > served)
+        {
+            let facts: Vec<Facts> = pending.iter().map(|r| facts_of(r, &positions)).collect();
+            if stg::serves_green(&facts, at) {
+                let note = format!(
+                    "Yulius: the full gate passed on {}, which contains waiting requests",
+                    short(&green)
+                );
+                let asking = Asking::Yulius(note);
+                self.staging_record_task_less(sandbox, &target, &green, SCHEDULE_REQUESTER, asking)
+                    .await?;
+                // The recorded request kicks the next round, which judges and deploys it.
+                return Ok(());
+            }
+        }
         let (pending, positions) = if self
             .staging_carry_forward(sandbox, &target, (&head, current), &pending, &positions)
             .await?
@@ -819,14 +846,14 @@ impl App {
 
     /// The full gate's verdicts on the testing requests' revisions, and the next candidate run:
     /// the newest waiting revision first, none for one a judged revision above answers
-    /// (SPEC-575 MFS-003, SPEC-653).
+    /// (SPEC-575 MFS-003, SPEC-653). Answers the newest green revision it read and its position.
     async fn staging_judge(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
         head: &str,
         positions: &[(String, Option<u64>)],
         pending: &[StagingRequestRecord],
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<(String, u64)>> {
         let integration = delivery_profile(sandbox).integration_branch;
         // A person's or the schedule's red request is green again once a rerun of its revision
         // passed the full gate (review round 1, finding 6).
@@ -871,25 +898,42 @@ impl App {
         testing.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
         testing.truncate(MAX_PENDING);
         let Some(lowest) = testing.iter().map(|(at, _)| *at).min() else {
-            return Ok(());
+            return Ok(None);
         };
-        let mut window = self.staging_window(sandbox, head, lowest).await?;
-        for (at, request) in &testing {
-            if !window.iter().any(|(sha, _)| sha == &request.revision) {
-                window.push((request.revision.clone(), *at));
+        // The window reaches below the lowest request down to a settled verdict: the floor its
+        // red revisions' failures are compared with (review round 1). One more batch at a time,
+        // within the window's bound.
+        let mut floor = lowest;
+        let (window, verdicts) = loop {
+            let mut window = self.staging_window(sandbox, head, floor).await?;
+            for (at, request) in &testing {
+                if !window.iter().any(|(sha, _)| sha == &request.revision) {
+                    window.push((request.revision.clone(), *at));
+                }
             }
-        }
-        let revisions: Vec<String> = window.iter().map(|(sha, _)| sha.clone()).collect();
-        let verdicts = self
-            .deps
-            .store
-            .integration_verdicts(
-                &sandbox.id,
-                &integration,
-                &revisions,
-                super::GateRead::Latest,
-            )
-            .await?;
+            let revisions: Vec<String> = window.iter().map(|(sha, _)| sha.clone()).collect();
+            let verdicts = self
+                .deps
+                .store
+                .integration_verdicts(
+                    &sandbox.id,
+                    &integration,
+                    &revisions,
+                    super::GateRead::Latest,
+                )
+                .await?;
+            let settled_below = window.iter().any(|(sha, at)| {
+                *at < lowest
+                    && verdicts
+                        .iter()
+                        .any(|v| &v.sha == sha && !v.state.is_active() && v.gate().is_some())
+            });
+            let bottom = window.iter().map(|(_, at)| *at).min().unwrap_or(0);
+            if settled_below || bottom <= 1 || bottom > floor || window.len() >= WINDOW {
+                break (window, verdicts);
+            }
+            floor = bottom.saturating_sub(BATCH).max(1);
+        };
         let verdict = |sha: &str| verdicts.iter().find(|v| v.sha == sha);
         let points: Vec<judge::Point> = window
             .iter()
@@ -900,6 +944,14 @@ impl App {
             })
             .collect();
         let plan = judge::judging(&points);
+        let green = points
+            .iter()
+            .filter(|p| p.gate == Some(judge::Gate::Passed))
+            .max_by_key(|p| p.position)
+            .and_then(|p| {
+                let sha = window.iter().find(|(_, at)| *at == p.position)?;
+                Some(sha.clone())
+            });
         let named = |position: u64| {
             let sha = window
                 .iter()
@@ -909,17 +961,24 @@ impl App {
             (short(sha.unwrap_or("?")), run.unwrap_or("?"))
         };
         for (at, request) in &testing {
+            // A person's cancel of its own candidate stands (NWF-006, review round 1).
+            if let Some(run) = verdict(&request.revision)
+                && run.state == RunState::Cancelled
+            {
+                self.staging_verdict(sandbox, request, run).await?;
+                continue;
+            }
             let answered = plan.covered.iter().map(|(p, green)| (p, green, true));
             let answered = answered.chain(plan.inherited.iter().map(|(p, red)| (p, red, false)));
             if let Some((_, above, green)) = answered.into_iter().find(|(p, _, _)| *p == at) {
                 let (revision, run) = named(*above);
                 let verdict = if green {
-                    "passed on"
+                    COVERED_NOTE
                 } else {
-                    "failed only on failures from earlier merges on"
+                    CONTAINED_RED_NOTE
                 };
                 let note = format!(
-                    "the full gate {verdict} revision {revision}, which contains it: run {run}; it needs no run of its own, and staging deploys it with a verified revision containing it"
+                    "{verdict} {revision}, which contains it: run {run}; it needs no run of its own, and staging deploys it with a verified revision containing it"
                 );
                 let change = StagingChange {
                     note: Some(note),
@@ -939,7 +998,7 @@ impl App {
                 .find(|(p, r)| *p == at && verdict(&r.revision).is_none())
         });
         let Some((_, request)) = next else {
-            return Ok(());
+            return Ok(green);
         };
         let gate = self
             .ci_gate(sandbox)
@@ -959,7 +1018,7 @@ impl App {
                 self.staging_move(request, StagingState::GateFailed, change)
                     .await?;
             }
-            return Ok(());
+            return Ok(green);
         };
         // CI inventory holds the same scheduling lock while it takes its snapshot and records
         // branch runs. A concurrent inventory cannot double-admit this SHA. One full-gate run at a
@@ -983,7 +1042,7 @@ impl App {
                         || matches!(&r.reference, CiRef::Branch(branch) if branch == &integration))
             })
         {
-            return Ok(());
+            return Ok(green);
         }
         let run = self
             .ci_record_placed(
@@ -1005,7 +1064,7 @@ impl App {
         self.staging_move(request, StagingState::Testing, change)
             .await?;
         self.ci_wake();
-        Ok(())
+        Ok(green)
     }
 
     /// The first-parent revisions of the verified head from the head down to position `lowest`,
@@ -2014,7 +2073,7 @@ impl App {
             ci_run_id: request.ci_run_id.clone(),
             cd_run_id: request.cd_run_id.clone(),
             note: request.note.clone(),
-            waiting: staging_wait_text(request.state, &request.revision),
+            waiting: staging_wait_text(request.state, &request.revision, request.note.as_deref()),
             updated_at: crate::auth::rfc3339(request.updated_at),
         })
     }
@@ -2078,10 +2137,24 @@ impl App {
 }
 
 /// What a pending request of no task waits for, in plain words (SPEC-650 PST-005).
-pub(crate) fn staging_wait_text(state: StagingState, revision: &str) -> Option<String> {
+pub(crate) fn staging_wait_text(
+    state: StagingState,
+    revision: &str,
+    note: Option<&str>,
+) -> Option<String> {
     let sha = revision.get(..7).unwrap_or(revision);
+    let note = note.unwrap_or("");
     Some(match state {
         StagingState::Testing => format!("Waiting for green tests on {sha}"),
+        // SPEC-653: no run of its own judged it.
+        StagingState::Inherited if note.starts_with(COVERED_NOTE) => {
+            format!(
+                "Tests passed on a newer revision containing {sha}: it deploys with that revision"
+            )
+        }
+        StagingState::Inherited if note.starts_with(CONTAINED_RED_NOTE) => format!(
+            "Waiting for green tests: a newer revision containing {sha} failed; the next merged revision is tested"
+        ),
         StagingState::Inherited => {
             format!("Waiting for green tests: {sha} failed; the next merged revision is tested")
         }
@@ -2098,7 +2171,7 @@ pub(crate) fn staging_text(
     staging: &yulius_contracts::api::cd::CdStaging,
 ) {
     text.push_str(&format!(
-        "  staging queue of [cd.{env}] (merge-first: a task's cd_deploy asks for its merged revision, a person's Deploy on the CD page or their Superagent's cd_deploy for the integration head; the full gate runs on exactly it first): verified revision {}\n",
+        "  staging queue of [cd.{env}] (merge-first: a task's cd_deploy asks for its merged revision, a person's Deploy on the CD page or their Superagent's cd_deploy for the integration head; the full gate judges it or a newer revision containing it first): verified revision {}\n",
         staging.verified.as_deref().map_or("none yet", short)
     ));
     if let Some(waiting) = &staging.waiting {

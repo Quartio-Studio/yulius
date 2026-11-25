@@ -4,8 +4,9 @@
 //! - **Admission**: a request names a revision of the integration branch. A task gets at most
 //!   one successful staging deployment per environment; a repeated request answers with the one
 //!   already recorded.
-//! - **Verdict**: a request waits for the full gate's verdict on exactly its revision. A request
-//!   of no task (a person's or the schedule's) whose head is red waits for the next green one.
+//! - **Verdict**: a request waits for the full gate's verdict on its revision, or on a newer
+//!   revision containing it ([`crate::staging_gate`], SPEC-653). A request of no task (a person's
+//!   or the schedule's) whose head is red waits for the next green one.
 //! - **Pick**: staging only moves forward along the integration branch's first-parent history.
 //!   Yulius deploys the newest ready revision above the last verified one, never passes over an
 //!   older request still testing, and counts each older request included in that deploy.
@@ -27,7 +28,8 @@ pub const MAX_DEPLOY_ATTEMPTS: u32 = 3;
 pub enum StagingState {
     /// Waiting for the full gate's verdict on its revision.
     Testing,
-    /// Its failing tests belong to earlier revisions. A verified descendant serves it.
+    /// Its failing tests belong to earlier revisions, or a newer revision's full gate answered
+    /// it without a run of its own (SPEC-653). A verified descendant serves it.
     Inherited,
     /// Its full gate passed: waiting for its turn on staging.
     Ready,
@@ -86,7 +88,7 @@ impl StagingState {
     pub fn task_wait_label(self) -> &'static str {
         match self {
             Self::Testing => "Waiting for the merged revision’s full suite",
-            Self::Inherited => "Waiting for staging to verify the fix",
+            Self::Inherited => "Waiting for staging to verify a revision containing it",
             Self::Ready => "Waiting for the staging deployment to start",
             Self::Deploying => "Waiting for staging to deploy and verify",
             Self::Verified
@@ -248,6 +250,23 @@ pub fn follow_up(requests: &[Facts], head: u64, current: Option<u64>) -> Option<
             || (r.task.is_none() && r.state.is_pending() && r.position.is_some_and(|at| at >= head))
     });
     (!held).then_some(waiting)
+}
+
+/// Whether Yulius asks for the green revision at `green` itself (SPEC-653 NWF-001): an inherited
+/// request waits at or below it, and no request at or above it is testing, ready or deploying.
+/// Otherwise nothing would deploy a revision that already passed its full gate.
+#[must_use]
+pub fn serves_green(requests: &[Facts], green: u64) -> bool {
+    let waiting = requests
+        .iter()
+        .any(|r| r.state == StagingState::Inherited && r.position.is_some_and(|at| at <= green));
+    let coming = requests.iter().any(|r| {
+        matches!(
+            r.state,
+            StagingState::Testing | StagingState::Ready | StagingState::Deploying
+        ) && r.position.is_some_and(|at| at >= green)
+    });
+    waiting && !coming
 }
 
 /// How a project's merge-first target moves on by itself (SPEC-650 PST-006): `serve_every_minutes`
@@ -821,6 +840,49 @@ mod tests {
             Trigger::Minutes(60).note(),
             "Yulius's schedule: staging has not changed for 60 minutes, and the integration head is ahead"
         );
+    }
+
+    /// SPEC-653 NWF-001: a green revision nobody's request deploys is asked for while an
+    /// inherited request waits at or below it.
+    #[test]
+    fn a_green_revision_containing_a_waiting_request_is_asked_for() {
+        let waiting = req("w", "a", "aaa", StagingState::Inherited, 3);
+        assert!(serves_green(std::slice::from_ref(&waiting), 5));
+        assert!(
+            serves_green(std::slice::from_ref(&waiting), 3),
+            "its own position"
+        );
+        assert!(!serves_green(std::slice::from_ref(&waiting), 2), "below it");
+        assert!(!serves_green(&[], 5), "nothing waits");
+        for state in [
+            StagingState::Testing,
+            StagingState::Ready,
+            StagingState::Deploying,
+        ] {
+            let coming = req("c", "b", "bbb", state, 5);
+            assert!(
+                !serves_green(&[waiting.clone(), coming.clone()], 5),
+                "{state:?} at the green revision"
+            );
+            let above = req("c", "b", "ccc", state, 6);
+            assert!(
+                !serves_green(&[waiting.clone(), above], 5),
+                "{state:?} above"
+            );
+            let below = req("c", "b", "ddd", state, 4);
+            assert!(
+                serves_green(&[waiting.clone(), below], 5),
+                "{state:?} below"
+            );
+        }
+        for done in [
+            StagingState::DeployFailed,
+            StagingState::Superseded,
+            StagingState::GateFailed,
+        ] {
+            let tried = req("t", "b", "bbb", done, 5);
+            assert!(serves_green(&[waiting.clone(), tried], 5), "{done:?}");
+        }
     }
 
     /// MFS-007, MFS-008: a passed deploy verifies, a failed one stays failed, a lost one is

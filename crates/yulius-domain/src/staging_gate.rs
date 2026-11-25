@@ -639,13 +639,19 @@ mod tests {
                 None,
                 "2adf189d8's verdict answered it"
             );
-            let old = replay(false);
-            assert!(
-                new.runs.len() < old.runs.len(),
-                "{:?} vs {:?}",
-                new.runs,
-                old.runs
+            let judged: Vec<&str> = new.runs.iter().map(|(sha, _)| *sha).collect();
+            assert_eq!(
+                judged,
+                [
+                    "867dfe486",
+                    "2adf189d8",
+                    "d2bffda38",
+                    "5d1294696",
+                    "d40122574"
+                ],
+                "5 runs by 07:37"
             );
+            assert_eq!(replay(false).runs.len(), 8);
         }
     }
 }

@@ -5122,7 +5122,8 @@ async fn finish(f: &Fixture, id: &str, full: RunState, tests: &[&str]) -> TestRe
 }
 
 /// SPEC-653 NWF-001: a request below a newer revision whose full gate passed gets no run of its
-/// own; staging deploys the green revision and includes it.
+/// own. Nobody asked for the green revision and a red head sits above it, yet Yulius asks for the
+/// green revision itself, deploys it and includes the request (review round 1, finding 1).
 #[tokio::test]
 async fn a_request_under_a_green_newer_revision_gets_no_run() -> TestResult {
     let f = fixture(&staging_toml()).await?;
@@ -5131,9 +5132,10 @@ async fn a_request_under_a_green_newer_revision_gets_no_run() -> TestResult {
     let older = land(&f, "older", "older").await?;
     let newer = land(&f, "newer", "newer").await?;
     let green = gate(&f, &newer, RunState::Passed).await?;
+    let red = f.push("dev", &[("red", Some("red"))])?;
+    named_gate(&f, &red, &["gate::red"]).await?;
     let asked = ask(&f, "older").await?;
     let sandbox = sandbox(&f).await?;
-    f.h.app.staging_advance(&sandbox, "staging").await?;
     f.h.app.staging_advance(&sandbox, "staging").await?;
     assert_eq!(candidate(&f, &older).await?, None, "no run of its own");
     let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
@@ -5143,11 +5145,53 @@ async fn a_request_under_a_green_newer_revision_gets_no_run() -> TestResult {
         note.contains(&newer[..12]) && note.contains(&green) && note.contains("no run of its own"),
         "{note}"
     );
-    ask(&f, "newer").await?;
+    for _ in 0..3 {
+        f.h.app.staging_advance(&sandbox, "staging").await?;
+    }
     settle(&f).await?;
     assert_eq!(deployed(&f).await?, std::slice::from_ref(&newer));
     let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
     assert_eq!(row.state, StagingState::Included, "{row:?}");
+    assert_eq!(candidate(&f, &newer).await?, None, "its own pass judged it");
+    Ok(())
+}
+
+/// SPEC-653 NWF-001 for a person's request (review round 1, finding 2): covered by a newer green
+/// revision, it says so instead of a failure, and the green revision deploys and includes it.
+#[tokio::test]
+async fn a_persons_request_under_a_green_newer_revision_says_so_and_is_included() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Running).await?;
+    let asked = person_asks(&f, &f.alice).await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(request(&f, &id).await?.state, StagingState::Inherited);
+    let view = staging_view(&f).await?;
+    let mine = view["requests"]
+        .as_array()
+        .ok_or("requests")?
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .ok_or("the request")?
+        .clone();
+    assert_eq!(
+        mine["waiting"],
+        format!(
+            "Tests passed on a newer revision containing {}: it deploys with that revision",
+            &r1[..7]
+        ),
+        "{view}"
+    );
+    for _ in 0..3 {
+        f.h.app.staging_advance(&sandbox, "staging").await?;
+    }
+    settle(&f).await?;
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&r2));
+    assert_eq!(request(&f, &id).await?.state, StagingState::Included);
     Ok(())
 }
 
@@ -5267,5 +5311,59 @@ async fn no_repair_owner_is_named_before_a_new_failure_is_narrowed() -> TestResu
     assert_eq!(notices[0]["revision"], b.as_str(), "{notices}");
     assert_eq!(request(&f, &ids[1]).await?.state, StagingState::GateFailed);
     assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Inherited);
+    Ok(())
+}
+
+/// SPEC-653 NWF-006 (review round 1): a person's cancel of a request's own candidate stands,
+/// also when a newer red revision with only earlier failures would answer it without a run.
+#[tokio::test]
+async fn a_cancelled_candidate_fails_its_gate_under_a_red_revision() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "a").await?;
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    named_gate(&f, &base, &["gate::x"]).await?;
+    let a = land(&f, "a", "a").await?;
+    let asked = ask(&f, "a").await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let own = candidate(&f, &a).await?.ok_or("its own candidate")?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET state = 'cancelled' WHERE id = '{own}'; \
+             UPDATE ci_jobs SET state = 'cancelled' WHERE run_id = '{own}'"
+        ))
+        .await?;
+    let later = f.push("dev", &[("later", Some("later"))])?;
+    named_gate(&f, &later, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let row = request(&f, &id).await?;
+    assert_eq!(row.state, StagingState::GateFailed, "{row:?}");
+    assert_eq!(row.ci_run_id.as_deref(), Some(own.as_str()));
+    Ok(())
+}
+
+/// SPEC-653 NWF-003 (review round 1): a request between two red revisions with the same failure
+/// needs no run. The queue reads below the lowest request down to the judged revision whose
+/// failures the newer red one is compared with.
+#[tokio::test]
+async fn a_request_between_red_revisions_with_the_same_failure_gets_no_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "a").await?;
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    named_gate(&f, &base, &["gate::x"]).await?;
+    let a = land(&f, "a", "a").await?;
+    let later = f.push("dev", &[("later", Some("later"))])?;
+    named_gate(&f, &later, &["gate::x"]).await?;
+    let asked = ask(&f, "a").await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &a).await?, None, "no narrowing run");
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::Inherited, "{row:?}");
+    assert!(
+        row.note
+            .is_some_and(|note| note.contains("failed only on failures from earlier merges")),
+    );
     Ok(())
 }

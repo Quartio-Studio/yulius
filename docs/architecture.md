@@ -3706,7 +3706,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   [SPEC-653](../.ai/specs/SPEC-653-staging-the-full-gate-judges-the-newest.md)). Each round reads
   up to 512 first-parent revisions below the verified head and their newest verdicts, and
   `yulius_domain::staging_gate::judging` decides: a `testing` request at or below a green revision
-  needs no run (`inherited`, naming it); the candidate run goes to the newest request above every
+  needs no run (`inherited`, naming it; `stg::serves_green` asks for that revision when no request
+  at or above it is on its way); the candidate run goes to the newest request above every
   judged revision; under a red revision a request needs a run only when that revision brings a
   failure the judged revision below it did not have. Then its range is bisected over its waiting
   requests (middle first, before newer requests), the red revision's own request stays `testing`,
