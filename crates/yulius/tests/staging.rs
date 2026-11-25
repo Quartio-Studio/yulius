@@ -4892,3 +4892,41 @@ async fn the_schedules_timer_counts_from_the_last_request_or_run() -> TestResult
     assert_eq!(asked.revision, r3);
     Ok(())
 }
+
+/// Review round 2 of PR 2: a project without a merge-first target costs the schedule one head
+/// read an hour, not one every 5 minutes.
+#[tokio::test]
+async fn a_project_without_a_merge_first_target_is_rechecked_hourly() -> TestResult {
+    let toml = "[[ci.jobs]]\nname = \"quick\"\ncommand = \"true\"\n\n\
+                [cd.dev]\nabout = \"no dev machine\"\n\n[cd.prod]\nabout = \"nothing yet\"\n";
+    let f = fixture(toml).await?;
+    f.push("dev", &[("one.txt", Some("1"))])?;
+    let reads = || -> BoxResult<usize> {
+        let mut seen =
+            f.h.github
+                .branch_read_purposes
+                .lock()
+                .map_err(|_| "purposes")?;
+        let staging = seen
+            .iter()
+            .filter(|p| **p == yulius_app::ports::github::GitHubPurpose::Staging)
+            .count();
+        seen.clear();
+        Ok(staging)
+    };
+    let minutes = |m: i64| {
+        f.h.clock
+            .0
+            .fetch_add(m * 60_000, std::sync::atomic::Ordering::SeqCst);
+    };
+    reads()?;
+    f.h.app.staging_tick().await;
+    assert!(reads()? > 0, "the first check reads the head");
+    minutes(6);
+    f.h.app.staging_tick().await;
+    assert_eq!(reads()?, 0, "no target: not again within the hour");
+    minutes(55);
+    f.h.app.staging_tick().await;
+    assert!(reads()? > 0, "rechecked after an hour");
+    Ok(())
+}

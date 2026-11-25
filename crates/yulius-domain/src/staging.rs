@@ -225,7 +225,8 @@ pub fn after_failed_gate(task_less: bool, inherited: bool) -> StagingState {
 /// the newest inherited request of no task below the head and above what staging serves
 /// (`current`). None while a request above it is on its way (testing, ready or deploying, any
 /// task's), or a request of no task already waits at or above the head: one carried request at a
-/// time. The caller also records nothing when the head has a request of no task in any state.
+/// time. The caller also records nothing when the head has any request (a task's too) in a
+/// state but superseded or inherited.
 #[must_use]
 pub fn follow_up(requests: &[Facts], head: u64, current: Option<u64>) -> Option<&Facts> {
     let waiting = requests

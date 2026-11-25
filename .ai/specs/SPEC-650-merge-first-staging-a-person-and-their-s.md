@@ -73,8 +73,9 @@ production authorization, not staging.
     head (the same requester). Once a revision containing it is verified, the waiting request
     is `included`.
   - One carried request at a time: nothing is carried while a newer request is testing, ready or
-    deploying, or for a revision staging already serves. Nothing is carried to a head that has a
-    request of a person or the schedule in any state, so a failed follow-up never loops.
+    deploying, or for a revision staging already serves. Nothing is carried to a head that has any
+    request (a task's too) in a state but superseded or inherited, so a failed follow-up never
+    loops, and a cancel, rollback or failed deploy there stands.
   - A waiting request moves on once a rerun of its revision passes the full gate.
 - **PST-003 Who a task-less deploy acts for.**
   - A person's request deploys as that person (`requested_by` = `user:<id>`), while they are

@@ -350,12 +350,18 @@ impl App {
             Asking::Yulius(note) => {
                 // Any request of that revision, a task's too, was tried already: a cancel, a
                 // rollback or a failed deploy stands until a new merge or a person asks (review
-                // round 1 of PR 2).
+                // round 1 of PR 2). An inherited one only waits: a rerun may still green it.
                 let tried = store
                     .recent_staging_requests(&sandbox.id, env, 200)
                     .await?
                     .iter()
-                    .any(|r| r.revision == revision && r.state != StagingState::Superseded);
+                    .any(|r| {
+                        r.revision == revision
+                            && !matches!(
+                                r.state,
+                                StagingState::Superseded | StagingState::Inherited
+                            )
+                    });
                 if tried {
                     return Ok(None);
                 }
@@ -416,7 +422,8 @@ impl App {
 
     /// Carries a red request of no task to the integration head once the head moved past it
     /// (SPEC-650 PST-002): one new request for the head, by the same requester, unless the head
-    /// has one in any state already. `true` when one was recorded.
+    /// has a request (a task's too) in any state but superseded or inherited. `true` when one was
+    /// recorded.
     async fn staging_carry_forward(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,

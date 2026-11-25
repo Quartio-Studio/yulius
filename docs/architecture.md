@@ -3668,13 +3668,17 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   task id and stays a task's. `CdStaging.waiting` and each request's `waiting` say in words what
   it waits for.
 - **Schedule.** Staging never waits for one task to finish its plan. The staging tick checks each
-  project at most every 5 minutes (`staging_schedules`, one verified-head read). When the
-  merge-first target is behind the head and nothing is pending, `stg::due` asks for the head
-  (`requested_by` `yulius:schedule`, `CdStagingRequest.scheduled`): after `serve_after_merges`
-  first-parent commits (default 5), or once staging has had no request or run for
-  `serve_every_minutes` (default 60). It deploys as the project's creator, else the newest
-  requester with write access. A task's own request keeps "its whole delivery once" for its own
-  bookkeeping.
+  project after its repair notices, at most every 5 minutes, and a project whose last check found
+  no merge-first target once an hour (`staging_schedules`, one verified-head read). When the
+  merge-first target is behind the head and nothing is on its way (testing, ready or deploying;
+  an inherited request waits for others), `stg::due` asks for the head (`requested_by`
+  `yulius:schedule`, `CdStagingRequest.scheduled`): when staging serves no revision of the branch
+  yet, after `serve_after_merges` first-parent commits (default 5), or once staging has had no
+  request or run (deploy, rollback or drill) for `serve_every_minutes` (default 60). It never asks
+  for a head any request already tried (a task's too; superseded and inherited ones do not
+  count), so a cancel, rollback or failed deploy stands until a newer head. It deploys as the
+  project's creator, else the newest requester with write access. A task's own request keeps
+  "its whole delivery once" for its own bookkeeping.
 - **Candidate gate.** The integration branch's run of that exact commit, or a
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
