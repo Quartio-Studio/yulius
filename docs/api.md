@@ -178,7 +178,11 @@ preparation task (created then, resting, when the sandbox has none yet), and it 
 imported session are 409 (U-08, IMP-010). The web UI's new-task page shows no task input
 meanwhile, only what onboarding will do and its button (SPEC-096). Create mode
 (instance admins) creates a private repository, pushes the template scaffold to `main` and `dev`,
-and adds rulesets requiring pull requests on both.
+and adds rulesets requiring pull requests on both. In an organization the App creates it, so Yulius
+then gives the creator the `admin` role on it (`PUT /repos/{owner}/{repo}/collaborators/{login}`
+with the installation token, ADR-0476): GitHub's invitation (a creator outside the organization)
+or refusal still creates the project, audited as `sandbox.creator_admin` with the reason, and the
+answer's `access` is what GitHub gives them (the web UI then says why it is not `admin`).
 
 ```json
 Sandbox = {

@@ -560,6 +560,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0474 -->
 - [0475](0475-browser-fill-secret-types-real-key-presses.md): `browser_fill_secret` types real key presses like `browser_type` (a secret reaches a terminal); a tab or control character is refused before typing; supersedes the secret part of 0471 (SPEC-648, #1740)
 <!-- ADR 0475 -->
+- [0476](0476-the-creator-of-a-project-is-made-its-admin-on-github.md): Creating a project in an organization gives its creator the `admin` role on the new GitHub repository (installation token, `PUT …/collaborators/{login}`), as creating it on GitHub would; an invitation or a refusal keeps the project, is audited as `sandbox.creator_admin` and the page says what to do (SPEC-649, #1749)
 <!-- ADR 0476 -->
 <!-- ADR 0477 -->
 <!-- ADR 0478 -->
