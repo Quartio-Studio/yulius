@@ -354,7 +354,6 @@ impl App {
                     let request = self
                         .cd_staging_ask(person, sid, &asked.environment)
                         .await?;
-                    let waiting = crate::ci::staging::wait_text(&request);
                     return Ok(json!({
                         "outcome": "approved",
                         "staging": record(&request)?,
@@ -363,7 +362,7 @@ impl App {
                             request.id,
                             request.revision.get(..12).unwrap_or(&request.revision),
                             request.state,
-                            waiting.map_or_else(String::new, |w| format!(" ({w})")),
+                            request.waiting.as_deref().map_or_else(String::new, |w| format!(" ({w})")),
                         ),
                     }));
                 }

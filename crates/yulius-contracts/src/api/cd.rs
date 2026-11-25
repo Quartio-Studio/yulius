@@ -123,6 +123,9 @@ pub struct CdStagingRequest {
     /// What its state means.
     #[serde(default)]
     pub note: Option<String>,
+    /// What it waits for while on its way, in plain words (SPEC-650 PST-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
     /// Its last change (RFC 3339).
     pub updated_at: String,
 }

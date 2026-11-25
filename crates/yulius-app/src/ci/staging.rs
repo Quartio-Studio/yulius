@@ -1658,6 +1658,7 @@ impl App {
                 ci_run_id: request.ci_run_id.clone(),
                 cd_run_id: request.cd_run_id.clone(),
                 note: request.note.clone(),
+                waiting: staging_wait_text(request.state, &request.revision),
                 updated_at: crate::auth::rfc3339(request.updated_at),
             })
     }
@@ -1700,8 +1701,9 @@ impl App {
         let verified = self.staging_verified_revision(sandbox, target).await?;
         let waiting = recent
             .iter()
-            .find(|r| r.task_id.is_none() && r.state.is_pending())
-            .and_then(|r| staging_wait_text(r.state, &r.revision));
+            .zip(&requests)
+            .find(|(r, _)| r.task_id.is_none() && r.state.is_pending())
+            .and_then(|(_, shown)| shown.waiting.clone());
         Ok(yulius_contracts::api::cd::CdStaging {
             verified,
             requests,
@@ -1709,11 +1711,6 @@ impl App {
             github_wait: self.github_wait(),
         })
     }
-}
-
-/// What a request shown to a person waits for, in plain words (SPEC-650 PST-005).
-pub(crate) fn wait_text(request: &yulius_contracts::api::cd::CdStagingRequest) -> Option<String> {
-    staging_wait_text(StagingState::parse(&request.state)?, &request.revision)
 }
 
 /// What a pending request of no task waits for, in plain words (SPEC-650 PST-005).

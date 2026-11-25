@@ -2560,6 +2560,21 @@ function cdOverview(db, sid) {
 }
 
 route('GET', `/api/sandboxes/${ID}/cd`, ({ db, p }) => cdOverview(db, p[0]));
+// SPEC-650 PST-001: a person's request for the merge-first staging target, for its head; it waits
+// for green tests (a test moves it on by editing the queue).
+route('POST', `/api/sandboxes/${ID}/cd/${ID}/staging`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  const env = cdOf(db, p[0]).environments.find((e) => e.name === p[1]);
+  if (!env || !env.staging) fail(409, 'conflict', `[cd.${p[1]}] is not the merge-first staging target: deploy it with its Deploy button or cd_deploy`);
+  const existing = env.staging.requests.find((r) => r.revision === env.head && r.task_number == null && r.state !== 'superseded');
+  if (existing) return existing;
+  db.nextId += 1;
+  const request = { id: `sr_${db.nextId}`, task_number: null, asked_by: db.me.user.login, revision: env.head, state: 'testing', ci_run_id: null, cd_run_id: null, note: null, waiting: `Waiting for green tests on ${String(env.head).slice(0, 7)}`, updated_at: new Date().toISOString() };
+  env.staging.requests.unshift(request);
+  env.staging.waiting = request.waiting;
+  return request;
+});
 route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   const cd = cdOf(db, p[0]);
