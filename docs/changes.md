@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-25
+
+- A person can ask the merge-first staging target for the integration head (#634). On the CD page, Deploy on that card is enabled for writers and records a staging request of no task for the verified head. It is no longer disabled with only "the branch has moved on" to see. The Superagent's `cd_deploy` of that target waits on its panel with the slug typed, as a production deploy does (write access is enough), then records the same request. It deploys once that revision's full gate passed. A head whose gate is still running waits ("Waiting for green tests on `<sha>`"). A red one waits for the next green revision: one request for the newer head is recorded by itself, deployed, and the waiting one is included. A disabled deploy button says why in words. The plain deploy's refusal names what works. [ADR-0477](decisions/0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md), [SPEC-650](../.ai/specs/SPEC-650-merge-first-staging-a-person-and-their-s.md)
+
 ## 2026-11-24
 
 - The parking test `an_unrelated_or_merged_pr_releases_the_original_candidate_owner` keeps its 30 s park deadline and says where it stalled (#1649). The wait checked its deadline only between whole park passes, and one pass waits on GitHub reads, four Git verifications (each bounded only at 120 s) and the launch lock, so "30 s" could last minutes with a message naming no PR case or stage. The wait now cancels a pass still running at its deadline and names the last park stage the task reached (new test-only points `ParkVerifying` and `ParkPrsVerified`, read passively through `race::last_reached`). Each PR condition (fork, merged, head branch, base branch) is its own test, and the candidate fixture bounds seeding, restart, check and cleanup, naming the case and phase on failure ([SPEC-646](../.ai/specs/SPEC-646-the-obsolete-pr-owner-parking-fixture-st.md)).
