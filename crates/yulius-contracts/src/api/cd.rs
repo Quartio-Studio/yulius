@@ -95,6 +95,9 @@ pub struct CdDeployAction {
     /// Why it does not, in words the page shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// Why it does not, as a code: `administrator`, `write`, `nothing`, `running` or `waiting`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// A merge-first staging target's queue (SPEC-575, ADR-0411).

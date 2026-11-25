@@ -7596,7 +7596,7 @@ impl App {
                 evidence
             }),
             "profile": profile_to_contract(&profile),
-            "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, and run each command-verified integration environment with delivery_deploy. The same checks a person's action needs apply. Production (promotion and its deploys) is always a person's (ADR-0110): ask one with needs_you; CD runs are cd_status and cd_deploy.",
+            "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, and run each command-verified integration environment with delivery_deploy. The same checks a person's action needs apply. Production (promotion and its deploys) is always a person's (ADR-0110): ask an administrator of this project with needs_you, naming them in `who`; CD runs are cd_status and cd_deploy.",
         }))
     }
 }

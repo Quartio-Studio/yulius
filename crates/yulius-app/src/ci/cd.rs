@@ -2873,19 +2873,25 @@ pub(crate) fn deploy_action(
     } else {
         env.name.as_str()
     };
-    let why = if prod && !level.allows(Action::Administer) {
-        Some("Only an administrator deploys production".to_owned())
+    let blocked = if prod && !level.allows(Action::Administer) {
+        Some((
+            "administrator",
+            "Only an administrator deploys production".to_owned(),
+        ))
     } else if !level.allows(Action::Work) {
-        Some("Requires write access".to_owned())
+        Some(("write", "Requires write access".to_owned()))
     } else if env.state != "ready" {
-        Some("Nothing to deploy yet".to_owned())
+        Some(("nothing", "Nothing to deploy yet".to_owned()))
     } else if running && env.staging.is_none() {
-        Some("A deploy is running".to_owned())
+        Some(("running", "A deploy is running".to_owned()))
     } else if prod {
-        env.rollback.waiting.clone()
+        env.rollback.waiting.clone().map(|why| ("waiting", why))
     } else {
         None
     };
+    let (reason, why) = blocked.map_or((None, None), |(code, why)| {
+        (Some(code.to_owned()), Some(why))
+    });
     yulius_contracts::api::cd::CdDeployAction {
         label: if prod {
             format!("Deploy {word}…")
@@ -2894,11 +2900,15 @@ pub(crate) fn deploy_action(
         },
         enabled: why.is_none(),
         why,
+        reason,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::ports::isolation::SandboxJoin;
+
     /// SPEC-650 PST-007: who may press an environment's Deploy, and why not, in one place.
     #[test]
     fn the_deploy_button_says_who_may_press_it_and_why_not() {
@@ -2960,6 +2970,27 @@ mod tests {
             Some("Only an administrator deploys production")
         );
         assert!(deploy_action(&prod, AccessLevel::Admin, false).enabled);
+        // The reason as a code, for the advice `needs_you` gives (review round 1 of PR 3).
+        let code = |action: yulius_contracts::api::cd::CdDeployAction| action.reason;
+        assert_eq!(code(writer).as_deref(), Some("administrator"));
+        assert_eq!(
+            code(deploy_action(&dev, AccessLevel::Read, false)).as_deref(),
+            Some("write")
+        );
+        assert_eq!(
+            code(deploy_action(&dev, AccessLevel::Write, true)).as_deref(),
+            Some("running")
+        );
+        assert_eq!(
+            code(deploy_action(
+                &env("dev", "dev", "empty"),
+                AccessLevel::Admin,
+                false
+            ))
+            .as_deref(),
+            Some("nothing")
+        );
+        assert_eq!(code(deploy_action(&dev, AccessLevel::Write, false)), None);
         let waiting = CdEnvironment {
             rollback: yulius_contracts::api::cd::CdRollback {
                 waiting: Some("Production deploys at abc once the drill passes".into()),
@@ -2967,11 +2998,10 @@ mod tests {
             },
             ..prod
         };
-        assert!(!deploy_action(&waiting, AccessLevel::Admin, false).enabled);
+        let held = deploy_action(&waiting, AccessLevel::Admin, false);
+        assert!(!held.enabled);
+        assert_eq!(held.reason.as_deref(), Some("waiting"));
     }
-
-    use super::*;
-    use crate::ports::isolation::SandboxJoin;
 
     /// #704 (SPEC-237): `cd_status` tells an agent what a production secret agents use means.
     #[test]

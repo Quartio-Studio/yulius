@@ -486,9 +486,9 @@ pub fn production_gate(target: &CdTarget, drill: Option<&DrillSeen>) -> Option<S
     }
     let drill_env = target.drill_env();
     let again = format!(
-        "get it deployed on {drill_env} first with Deploy {drill_env} on the CD page (a \
-             merge-first {drill_env} asks for the integration head): its rollback drill follows by \
-             itself"
+        "get this commit deployed on {drill_env} first (Deploy {drill_env} on the CD page, or \
+         cd_deploy; a merge-first {drill_env} asks for the integration head): its rollback drill \
+         follows by itself"
     );
     match drill {
         None => Some(format!(
@@ -824,8 +824,8 @@ mod tests {
         // also on a merge-first dev (where Deploy asks staging for the integration head).
         assert!(
             production_gate(&target, Some(&seen(true, false))).is_some_and(|why| why.contains(
-                "get it deployed on dev first with Deploy dev on the CD page (a merge-first dev \
-                 asks for the integration head)"
+                "get this commit deployed on dev first (Deploy dev on the CD page, or cd_deploy; \
+                 a merge-first dev asks for the integration head)"
             )),
             "{:?}",
             production_gate(&target, Some(&seen(true, false)))

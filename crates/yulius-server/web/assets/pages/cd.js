@@ -221,8 +221,8 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const waiting = prod && env.rollback ? env.rollback.waiting : null;
     // The server decides whether Deploy works for this person and why not (SPEC-650 PST-007):
     // the same decision `needs_you` checks guidance against.
-    const action = env.deploy_action || { label: prod ? `Deploy ${word(env.name)}…` : `Deploy ${word(env.name)}`, enabled: false, why: 'Unavailable' };
-    const why = action.enabled ? null : action.why || 'Unavailable';
+    const action = env.deploy_action || { label: prod ? `Deploy ${word(env.name)}…` : `Deploy ${word(env.name)}`, enabled: false, why: 'Reload the page' };
+    const why = action.enabled ? null : action.why || 'Reload the page';
     // Dev's deploy is the card's main action only when it can run; production's colour is a warning.
     const deploy = h('button', { type: 'button', class: ['btn', prod ? 'btn-danger' : !why && 'btn-primary'], disabled: Boolean(why), title: why, onClick: () => (prod ? deployProd(env, overview) : env.staging ? askStaging(env) : deployDev(env)) },
       icon('upload', { size: 16 }), action.label);

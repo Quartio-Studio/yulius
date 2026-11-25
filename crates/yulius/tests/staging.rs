@@ -4959,21 +4959,29 @@ async fn a_needs_you_card_never_sends_its_owner_to_a_disabled_deploy() -> TestRe
         let f = &f;
         async move { support::mcp_tool(&f.h, &token("t1"), "needs_you", json!({"action": text})).await }
     };
-    for (text, says) in [
+    // Each refusal says why and the advice for that reason (review round 1 of PR 3).
+    for (text, says, works) in [
         (
             "Press Deploy production… on the CD page",
             "Only an administrator deploys production",
+            "an administrator of this project deploys it",
+        ),
+        (
+            "Deploy production on the CD page, please",
+            "Only an administrator deploys production",
+            "an administrator of this project deploys it",
         ),
         (
             "Click Deploy dev on the CD page to test it",
             "Nothing to deploy yet",
+            "[cd.dev] has nothing to deploy yet",
         ),
     ] {
         let refused = ask(text).await?;
         assert_eq!(refused["isError"], true, "{text}: {refused}");
         let said = refused.to_string();
         assert!(
-            said.contains(says) && said.contains("alice") && said.contains("instead"),
+            said.contains(says) && said.contains("alice") && said.contains(works),
             "{text}: {said}"
         );
     }
@@ -4993,5 +5001,43 @@ async fn a_needs_you_card_never_sends_its_owner_to_a_disabled_deploy() -> TestRe
         let asked = ask(text).await?;
         assert_eq!(asked["isError"], false, "{text}: {asked}");
     }
+    // Only the to-do is read: what happened may name a button.
+    let told = support::mcp_tool(
+        &f.h,
+        &token("t1"),
+        "needs_you",
+        json!({"action": "Read the run", "happened": "Deploy dev has nothing to deploy yet"}),
+    )
+    .await?;
+    assert_eq!(told["isError"], false, "{told}");
+    // A named person for whom the button works may be asked to press it.
+    let named = support::mcp_tool(
+        &f.h,
+        &token("t1"),
+        "needs_you",
+        json!({"action": "Press Deploy staging on the CD page", "who": ["bob"]}),
+    )
+    .await?;
+    assert_eq!(named["isError"], false, "{named}");
+
+    // An administrator owner: production's button is disabled for another reason, with its own
+    // advice, never "ask an administrator".
+    support::seed_task(&f.h, "t2", "s1", "u-bob", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t2", &token("t2")).await?;
+    let admin = support::mcp_tool(
+        &f.h,
+        &token("t2"),
+        "needs_you",
+        json!({"action": "Press Deploy production on the CD page"}),
+    )
+    .await?;
+    assert_eq!(admin["isError"], true, "{admin}");
+    let said = admin.to_string();
+    assert!(
+        said.contains("Nothing to deploy yet")
+            && said.contains("[cd.prod] has nothing to deploy yet")
+            && !said.contains("an administrator of this project deploys it"),
+        "{said}"
+    );
     Ok(())
 }

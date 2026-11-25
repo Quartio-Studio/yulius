@@ -2507,7 +2507,7 @@ function seedCd() {
           rollback: cdRollback('scripts/cd/rollback.sh prod', [
             cdRelease('v41', '4be81c0d2a9f1e2d', 26 * 60, 'mkarp'),
             cdRelease('v39', '6f7e8d9c0b1a2f3e', 5 * 24 * 60, 'mkarp'),
-          ], { drill: cdSummary(drill), blocked: 'rollback is not proven for this commit: the last rollback drill of dev ran at 3c5a7e9; get it deployed on dev first with Deploy dev on the CD page (a merge-first dev asks for the integration head): its rollback drill follows by itself' }) },
+          ], { drill: cdSummary(drill), blocked: 'rollback is not proven for this commit: the last rollback drill of dev ran at 3c5a7e9; get this commit deployed on dev first (Deploy dev on the CD page, or cd_deploy; a merge-first dev asks for the integration head): its rollback drill follows by itself' }) },
       ],
       runs: [
         drill,

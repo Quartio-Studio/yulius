@@ -522,7 +522,8 @@ impl App {
         if env.after == yulius_domain::delivery::Stage::Production {
             return Err(AppError::Forbidden(format!(
                 "environment '{name}' follows production, and only a person deploys production \
-                 (ADR-0110): ask one with needs_you"
+                 (ADR-0110): ask an administrator of this project with needs_you, naming them in \
+                 `who`"
             )));
         }
         if env.command.is_none() || env.verify != yulius_domain::delivery::Verify::Command {

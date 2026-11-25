@@ -395,7 +395,7 @@ pub enum Requester<'a> {
 pub enum CdRefusal {
     /// Agents never deploy production (ADR-0110).
     #[error(
-        "only a person deploys production: ask one with needs_you (they deploy it on the CD page)"
+        "only a person deploys production: an administrator of this project, on the CD page; ask one with needs_you, naming them in `who`"
     )]
     ProductionIsAPersons,
     /// Production needs administrator access.
