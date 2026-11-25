@@ -1868,6 +1868,7 @@ mod tests {
         let needs_you = description("needs_you");
         assert!(!needs_you.contains("allow a secret"), "{needs_you}");
         for named in [
+            "Not for an allowance a tool requests",
             "Allow button",
             "secret_request_hosts",
             "secret_copy_to_env",
@@ -1877,7 +1878,14 @@ mod tests {
             assert!(needs_you.contains(named), "`{named}`: {needs_you}");
         }
         let copy = description("secret_copy_to_env");
-        for named in ["dev-stage deploys", "[cd.", "Allow button"] {
+        // Only for one not allowed yet, and a deploy-only secret needs no copy afterwards.
+        for named in [
+            "dev-stage deploys",
+            "[cd.",
+            "Allow button",
+            "env_files not allowed",
+            "no second call",
+        ] {
             assert!(copy.contains(named), "`{named}`: {copy}");
         }
     }
