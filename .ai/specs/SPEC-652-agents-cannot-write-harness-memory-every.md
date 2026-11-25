@@ -77,9 +77,11 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - **MEM-002** What exists there still loads: the paths are bound read-only over themselves, so
   their contents are unchanged. Claude Code's run settings pin `autoMemoryDirectory` to the
   protected folder, so the session reads and would write exactly the folder that is protected.
-- **MEM-003** A path that does not exist, or is a symbolic link or of the wrong kind, gets an
-  empty read-only placeholder at that path (an empty folder or file): never a link's target, and
-  a session never fails to start because a path is missing.
+- **MEM-003** A protected path, or a folder on the way to it, that is a symbolic link or of the
+  wrong kind is moved aside to `<name>.yulius-moved-<ms>` (without following it) before the
+  session starts; a path that does not exist then gets an empty read-only placeholder (an empty
+  folder or file). A session never shows a link's target and never fails to start because of
+  what an agent put at such a path.
 - **MEM-004** No bind source is resolved by name inside a folder the agent writes. The launch
   opens each protected path from a server-made anchor (the sandbox folder, the person's home, the
   Global Superagent's folder, the run's own folder) without following a link, and hands bwrap the
@@ -112,8 +114,8 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - [x] `sandbox-exec` opens the protected paths without following links and starts bwrap
 - [x] Task runs, a person's Superagent and the Global Superagent launch with the guard
 - [x] Claude Code run settings pin the memory folder and deny edits there
-- [ ] Real-bwrap proof on a guest: writes refused per harness, reads kept, purge works
-- [ ] Architecture, operations and changes updated
+- [x] Real-bwrap proof on a guest: writes refused per harness, reads kept, purge works
+- [x] Architecture, operations and changes updated
 - [ ] Independent review of the guarantee approved
 - [ ] The refusal sentence for edit tools, shell results and the Antigravity start
 - [ ] The update's host check clears the stopgap's immutable flags
@@ -180,4 +182,38 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 
 ## Evidence
 
-Pending.
+First pull request (MEM-001 to MEM-005, MEM-007, MEM-008; the refusal sentence and the stopgap's
+clean-up, MEM-006 and MEM-009, follow in the second).
+
+- Real CLIs. Claude Code 2.1.332 against a local stub API (`claude -p` with `--settings`):
+  a note in the default `projects/<key>/memory` loads (1 request holds it); with
+  `autoMemoryDirectory` naming another folder, that folder's note loads and the default one does
+  not, so pinning it keeps reading on the guarded folder. Codex 0.170.0 `codex debug
+  prompt-input`: with an empty `AGENTS.override.md`, `AGENTS.md`'s text is in the instructions;
+  with text in the override, the override's. `codex features list`: `memories` stable, off.
+  Antigravity 1.5.12 (`strings`): rules from `~/.gemini/config/{rules/,GEMINI.md,AGENTS.md}` and
+  `~/.gemini/GEMINI.md`; no local memory folder.
+- Real namespace, Ubuntu 26.04 QEMU guest (kernel 7.0.0-43, bubblewrap 0.11.1), test
+  `memory_guard::a_guarded_session_cannot_write_its_memory_but_reads_it` through `yulius ptyhost`
+  → `yulius sandbox-exec --guard` → bwrap, with a Claude Code, a Codex and an Antigravity layout:
+  as root and as an unprivileged user (bwrap making the user namespace), 1 passed each; 50
+  attempts refused each (append, replace by rename, truncate, delete, hard link, Python
+  `open`/`unlink` on `MEMORY.md`, `CLAUDE.md`, Codex `AGENTS.md`, Antigravity `AGENTS.md`; create,
+  `mkdir`, Python create and `rm -rf` in the memory folder, `rules`, Codex `memories` and
+  Antigravity `rules`; renaming the memory folder, its key folder, `projects` and `.claude`;
+  `unshare -Urm` remount read-write and `umount`), every note read back, a link to a host file
+  and a link to a folder read empty, no descriptor reached the run, the worktree stayed writable,
+  and the sandbox with its notes was removed.
+- Mutation by hand: without the read-only binds' `--args 199` the same guest test failed with 32
+  writes that went through; restored.
+- Placeholders found on the guest first: a link whose target the namespace lacks, at a guarded
+  path, made bwrap refuse to start (`Can't create file at …`); fixed test-first by moving such an
+  entry aside (`guard::tests::links_and_wrong_kinds_are_moved_aside`).
+- `scripts/cargo nextest run -p yulius-contracts -p yulius-sandbox -p yulius-ptyhost -p
+  yulius-harness -p yulius-app`: 1439 passed, 2 skipped. `-p yulius` outside the main binary: 706
+  passed. Main binary, files `memory_guard`, `global_superagent`, `playground`, `cockpit`,
+  `codex`, `antigravity`, `supervision`, `shells`, `isolation`, `docker_smoke`, `live_display`:
+  267 passed (the real-namespace test skips in a task's sandbox: "Creating new namespace failed").
+- `scripts/cargo clippy … --all-targets -D warnings` on the touched crates, `scripts/dev macos`,
+  `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` on the touched crates and `scripts/dev quick`:
+  clean.
