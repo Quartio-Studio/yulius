@@ -1292,7 +1292,7 @@ pub struct StagingRequestRecord {
     pub attempts: u32,
     /// What its state means for people (the failed jobs, why it was refused or superseded).
     pub note: Option<String>,
-    /// Who asked: `task:<number>`.
+    /// Who asked: `task:<number>`, a person (`user:<id>`) or `yulius:schedule` (SPEC-650).
     pub requested_by: String,
     /// Whether its outcome was told to its task's session.
     pub told: bool,

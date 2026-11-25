@@ -221,29 +221,32 @@ pub fn after_failed_gate(task_less: bool, inherited: bool) -> StagingState {
     }
 }
 
-/// The waiting task-less request to carry to the integration head at `head` (SPEC-650 PST-002):
-/// the newest inherited request of no task below the head, unless a request at or above the
-/// head is already on its way (any task's, or a task-less one in any pending state).
+/// The waiting request of no task to carry to the integration head at `head` (SPEC-650 PST-002):
+/// the newest inherited request of no task below the head and above what staging serves
+/// (`current`). None while a request above it is on its way (testing, ready or deploying, any
+/// task's), or a request of no task already waits at or above the head: one carried request at a
+/// time. The caller also records nothing when the head has a request of no task in any state.
 #[must_use]
-pub fn follow_up(requests: &[Facts], head: u64) -> Option<&Facts> {
-    let newer = requests.iter().any(|r| {
-        r.position.is_some_and(|at| at >= head)
-            && (matches!(
-                r.state,
-                StagingState::Testing | StagingState::Ready | StagingState::Deploying
-            ) || (r.task.is_none() && r.state.is_pending()))
-    });
-    if newer {
-        return None;
-    }
-    requests
+pub fn follow_up(requests: &[Facts], head: u64, current: Option<u64>) -> Option<&Facts> {
+    let waiting = requests
         .iter()
         .filter(|r| {
             r.task.is_none()
                 && r.state == StagingState::Inherited
-                && r.position.is_some_and(|at| at < head)
+                && r.position
+                    .is_some_and(|at| at < head && current.is_none_or(|served| at > served))
         })
-        .max_by_key(|r| r.position)
+        .max_by_key(|r| r.position)?;
+    let below = waiting.position;
+    let held = requests.iter().any(|r| {
+        (r.position > below
+            && matches!(
+                r.state,
+                StagingState::Testing | StagingState::Ready | StagingState::Deploying
+            ))
+            || (r.task.is_none() && r.state.is_pending() && r.position.is_some_and(|at| at >= head))
+    });
+    (!held).then_some(waiting)
 }
 
 /// What the staging queue does next.
@@ -591,12 +594,12 @@ mod tests {
             ..req("p", "-", "aaa", StagingState::Inherited, 3)
         };
         assert_eq!(
-            follow_up(std::slice::from_ref(&waiting), 3),
+            follow_up(std::slice::from_ref(&waiting), 3, None),
             None,
             "the head is still red"
         );
         assert_eq!(
-            follow_up(std::slice::from_ref(&waiting), 5).map(|f| f.id.as_str()),
+            follow_up(std::slice::from_ref(&waiting), 5, None).map(|f| f.id.as_str()),
             Some("p")
         );
         let older = Facts {
@@ -605,7 +608,7 @@ mod tests {
             ..waiting.clone()
         };
         assert_eq!(
-            follow_up(&[older.clone(), waiting.clone()], 5).map(|f| f.id.as_str()),
+            follow_up(&[older.clone(), waiting.clone()], 5, None).map(|f| f.id.as_str()),
             Some("p"),
             "the newest waiting request is carried"
         );
@@ -616,7 +619,7 @@ mod tests {
         ] {
             let task = req("t", "t1", "ccc", on_its_way, 5);
             assert_eq!(
-                follow_up(&[waiting.clone(), task], 5),
+                follow_up(&[waiting.clone(), task], 5, None),
                 None,
                 "{on_its_way:?}"
             );
@@ -627,17 +630,51 @@ mod tests {
             ..waiting.clone()
         };
         assert_eq!(
-            follow_up(&[waiting.clone(), carried], 5),
+            follow_up(&[waiting.clone(), carried], 5, None),
             None,
             "never twice"
         );
         let tasks_own = req("t", "t1", "aaa", StagingState::Inherited, 3);
-        assert_eq!(follow_up(&[tasks_own], 5), None, "a task asks for itself");
+        assert_eq!(
+            follow_up(&[tasks_own], 5, None),
+            None,
+            "a task asks for itself"
+        );
         let off = Facts {
             position: None,
-            ..waiting
+            ..waiting.clone()
         };
-        assert_eq!(follow_up(&[off], 5), None);
+        assert_eq!(follow_up(&[off], 5, None), None);
+
+        // Review round 1, finding 5: one carried request at a time, and nothing staging serves.
+        let on_its_way = Facts {
+            id: "n".into(),
+            state: StagingState::Testing,
+            position: Some(5),
+            ..waiting.clone()
+        };
+        assert_eq!(
+            follow_up(&[waiting.clone(), on_its_way], 6, None),
+            None,
+            "its follow-up is still on its way: no second one for a later head"
+        );
+        let between = req("t", "t1", "ccc", StagingState::Testing, 4);
+        assert_eq!(follow_up(&[waiting.clone(), between], 6, None), None);
+        let failed_between = req("t", "t1", "ccc", StagingState::GateFailed, 4);
+        assert_eq!(
+            follow_up(&[waiting.clone(), failed_between], 6, None).map(|f| f.id.as_str()),
+            Some("p"),
+            "a failed request holds nothing back"
+        );
+        assert_eq!(
+            follow_up(std::slice::from_ref(&waiting), 6, Some(3)),
+            None,
+            "staging serves it already"
+        );
+        assert_eq!(
+            follow_up(std::slice::from_ref(&waiting), 6, Some(2)).map(|f| f.id.as_str()),
+            Some("p")
+        );
     }
 
     /// MFS-007, MFS-008: a passed deploy verifies, a failed one stays failed, a lost one is

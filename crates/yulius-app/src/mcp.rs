@@ -1235,9 +1235,9 @@ impl App {
                 .and_then(Value::as_str)
                 .unwrap_or("");
             // Production and the merge-first staging target wait for the person (SPEC-650 PST-004).
-            if !self.superagent_production(caller, environment).await?
-                && !(action == CrossAction::Deploy
-                    && self.superagent_staging(caller, environment).await?)
+            if !self
+                .superagent_on_panel(caller, action, environment)
+                .await?
             {
                 return self.cockpit_person_tool(caller, name, args).await;
             }

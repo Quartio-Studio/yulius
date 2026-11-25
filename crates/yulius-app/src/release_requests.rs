@@ -245,6 +245,23 @@ impl App {
             .is_ok_and(|cd| is_staging(&cd, &env)))
     }
 
+    /// Whether the Superagent's `cd_deploy` or `cd_rollback` of `environment` waits on its
+    /// panel (REL-003; SPEC-650 PST-004): a production-stage environment, and a deploy of the
+    /// merge-first staging target. Anything else runs at once as the person's project tool.
+    ///
+    /// # Errors
+    /// The person no longer works in the project; store failures.
+    pub async fn superagent_on_panel(
+        &self,
+        caller: &ProjectCaller,
+        action: CrossAction,
+        environment: &str,
+    ) -> AppResult<bool> {
+        Ok(self.superagent_production(caller, environment).await?
+            || (action == CrossAction::Deploy
+                && self.superagent_staging(caller, environment).await?))
+    }
+
     /// Refuses before anyone is asked what the page would refuse the person now (REL-002).
     pub(crate) async fn checked_release(
         &self,

@@ -229,7 +229,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       icon('upload', { size: 16 }), prod ? `Deploy ${word(env.name)}…` : `Deploy ${word(env.name)}`);
     // A disabled button says why in words, not only on hover (SPEC-650 PST-005); the badge says
     // "Nothing to deploy yet" already.
-    if (why && ready) rows.push(h('p', { class: 'small muted' }, `Deploy ${word(env.name)} unavailable: ${why}.`));
+    if (why && ready && why !== waiting) rows.push(h('p', { class: 'small muted' }, `Deploy ${word(env.name)} unavailable: ${why}.`));
     // A named environment says which stage's rules it follows (ADR-0195).
     const stage = env.name === 'dev' || env.name === 'prod' ? null : badge(prod ? 'production stage' : 'dev stage', '');
     return h('section', { class: 'card card-pad stack-sm cd-env', 'aria-label': `${title(env)} environment` },
@@ -257,7 +257,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       requests.length === 0 ? null : h('ul', { class: 'cd-secrets' }, requests.map((r) => {
         const st = STAGING_STATE[r.state] || { label: r.state, tone: '' };
         return h('li', null,
-          h('span', null, r.asked_by ? `Asked by ${r.asked_by}` : r.task_number == null ? 'A deleted task' : `Task #${r.task_number}`), ' ',
+          h('span', null, r.asked_by ? `Asked by ${r.asked_by}` : r.scheduled ? 'Yulius’s schedule' : r.task_number == null ? 'A deleted task' : `Task #${r.task_number}`), ' ',
           h('code', null, shortSha(r.revision)), ' ', badge(st.label, st.tone),
           r.ci_run_id ? h('span', { class: 'muted small' }, ` CI ${r.ci_run_id}`) : null,
           r.cd_run_id ? h('span', { class: 'muted small' }, ` CD ${r.cd_run_id}`) : null,
@@ -412,7 +412,10 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
   }
 
   /** A person's request for the merge-first staging target (SPEC-650 PST-001): no run starts now. */
+  let asking = false;
   async function askStaging(env) {
+    if (asking) return;
+    asking = true;
     const what = word(env.name);
     try {
       const request = await ctx.api.post(`${base}/cd/${enc(env.name)}/staging`, {});
@@ -420,10 +423,12 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       reload({ quiet: true });
       // The server words the wait (SPEC-650 PST-005); a request already served says so.
       const said = request.waiting || (request.state === 'verified' || request.state === 'included' ? `${shortSha(request.revision)} is on ${what} already` : request.note || request.state);
-      toast(`Asked ${what} for the integration head. ${said}.`, { kind: 'ok' });
+      toast(`Asked ${what} for the integration head. ${String(said).replace(/\.$/, '')}.`, { kind: 'ok' });
     } catch (error) {
       errorToast(error, `Couldn’t ask ${what} for the integration head`);
       if (!destroyed) reload({ quiet: true });
+    } finally {
+      asking = false;
     }
   }
 

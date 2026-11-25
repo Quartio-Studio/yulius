@@ -106,9 +106,12 @@ pub struct CdStagingRequest {
     /// The task it delivers, by number.
     #[serde(default)]
     pub task_number: Option<u32>,
-    /// Who asked when no task did: a person's login, or `Yulius's schedule` (SPEC-650).
+    /// The person who asked when no task did, by login (SPEC-650).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked_by: Option<String>,
+    /// Yulius's schedule asked (SPEC-650 PST-006).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scheduled: bool,
     /// The integration branch's commit it deploys.
     pub revision: String,
     /// `testing`, `ready`, `deploying`, `verified`, `included`, `gate_failed`, `inherited`, `deploy_failed` or

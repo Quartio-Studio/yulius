@@ -310,56 +310,59 @@ impl App {
             let lock = queue_lock(&sandbox.id);
             let _queue = lock.lock().await;
             let requester = format!("{PERSON_REQUESTER}{}", user.id.as_str());
-            self.staging_record_task_less(sandbox, &target, &head, &requester, None)
-                .await
+            self.staging_record_task_less(sandbox, &target, &head, &requester, Asking::Person)
+                .await?
+                .ok_or_else(|| AppError::internal("a person's request is always answered"))
         })
         .await
     }
 
     /// Records a request of no task for `revision` of the integration branch (SPEC-650): a
-    /// person's, the schedule's, or a red one's follow-up. A request of no task for the same
-    /// revision answers instead (a failed deploy of it is tried again). The caller holds the
-    /// queue's lock.
+    /// person's, the schedule's, or a red one's follow-up (`Asking::FollowUp`). The caller holds
+    /// the queue's lock.
+    ///
+    /// - A pending request of a person or the schedule for that revision answers instead.
+    /// - One that succeeded answers while staging still contains the revision.
+    /// - Otherwise (it failed, or staging was rolled back past it) a new request is recorded,
+    ///   for the one asking now (review round 1, findings 3 and 4): a failed one is never made
+    ///   ready again, so a person's cancel stands.
+    /// - A follow-up records nothing when that revision has such a request in any state
+    ///   (finding 1): `None`.
     async fn staging_record_task_less(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
         target: &CdTarget,
         revision: &str,
         requested_by: &str,
-        note: Option<String>,
-    ) -> AppResult<StagingRequestRecord> {
+        asking: Asking,
+    ) -> AppResult<Option<StagingRequestRecord>> {
         let store = &self.deps.store;
         let env = target.name.as_str();
-        let own = store
+        let own: Vec<StagingRequestRecord> = store
             .staging_requests_of(&sandbox.id, env, None, revision)
-            .await?;
-        let facts: Vec<Facts> = own.iter().map(|r| facts_of(r, &[])).collect();
+            .await?
+            .into_iter()
+            .filter(|r| is_asked(r) && r.state != StagingState::Superseded)
+            .collect();
+        let note = match asking {
+            Asking::FollowUp(_) if !own.is_empty() => return Ok(None),
+            Asking::FollowUp(note) => Some(note),
+            Asking::Person => None,
+        };
+        if let Some(pending) = own.iter().rev().find(|r| r.state.is_pending()) {
+            return Ok(Some(pending.clone()));
+        }
         let contained = self.staging_contained(sandbox, target, revision).await?;
+        if contained.is_some()
+            && let Some(done) = own.iter().rev().find(|r| r.state.is_success())
+        {
+            return Ok(Some(done.clone()));
+        }
         let now = self.now();
-        let state = match stg::admit(revision, &facts, contained.is_some()) {
-            Admission::Existing(id) => {
-                return store.staging_request(&id).await?.ok_or(AppError::NotFound);
-            }
-            Admission::Retry(id) => {
-                let change = StagingChange {
-                    attempts: Some(0),
-                    note: Some("asked again after its deploy failed".into()),
-                    ..StagingChange::default()
-                };
-                store
-                    .move_staging_request(
-                        &id,
-                        StagingState::DeployFailed,
-                        StagingState::Ready,
-                        &change,
-                        now,
-                    )
-                    .await?;
-                self.staging_kick(sandbox, env);
-                return store.staging_request(&id).await?.ok_or(AppError::NotFound);
-            }
-            Admission::Refused(why) => return Err(AppError::Conflict(why)),
-            Admission::New { state, .. } => state,
+        let state = if contained.is_some() {
+            StagingState::Included
+        } else {
+            StagingState::Testing
         };
         let record = StagingRequestRecord {
             id: self.deps.crypto.new_id(),
@@ -394,23 +397,23 @@ impl App {
         )
         .await;
         self.staging_kick(sandbox, env);
-        Ok(record)
+        Ok(Some(record))
     }
 
     /// Carries a red request of no task to the integration head once the head moved past it
-    /// (SPEC-650 PST-002): one new request for the head, by the same requester. `true` when one
-    /// was recorded.
+    /// (SPEC-650 PST-002): one new request for the head, by the same requester, unless the head
+    /// has one in any state already. `true` when one was recorded.
     async fn staging_carry_forward(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
         target: &CdTarget,
-        head: &str,
+        (head, current): (&str, Option<u64>),
         pending: &[StagingRequestRecord],
         positions: &[(String, Option<u64>)],
     ) -> AppResult<bool> {
         if !pending
             .iter()
-            .any(|r| r.task_id.is_none() && r.state == StagingState::Inherited)
+            .any(|r| is_asked(r) && r.state == StagingState::Inherited)
         {
             return Ok(false);
         }
@@ -423,7 +426,7 @@ impl App {
             return Ok(false);
         };
         let facts: Vec<Facts> = pending.iter().map(|r| facts_of(r, positions)).collect();
-        let Some(waiting) = stg::follow_up(&facts, at) else {
+        let Some(waiting) = stg::follow_up(&facts, at, current) else {
             return Ok(false);
         };
         let Some(from) = pending.iter().find(|r| r.id == waiting.id) else {
@@ -433,9 +436,16 @@ impl App {
             "asked again for the newer head: the full gate failed on {}",
             short(&from.revision)
         );
-        self.staging_record_task_less(sandbox, target, head, &from.requested_by, Some(note))
-            .await?;
-        Ok(true)
+        Ok(self
+            .staging_record_task_less(
+                sandbox,
+                target,
+                head,
+                &from.requested_by,
+                Asking::FollowUp(note),
+            )
+            .await?
+            .is_some())
     }
 
     /// Advances one sandbox's queue soon, off the caller's path.
@@ -594,7 +604,7 @@ impl App {
         }
         let (current, served) = self.staging_current(sandbox, &target, &head).await?;
         let (pending, positions) = if self
-            .staging_carry_forward(sandbox, &target, &head, &pending, &positions)
+            .staging_carry_forward(sandbox, &target, (&head, current), &pending, &positions)
             .await?
         {
             let pending = store.pending_staging_requests(&sandbox.id, env).await?;
@@ -646,6 +656,40 @@ impl App {
         positions: &[(String, Option<u64>)],
         pending: &[StagingRequestRecord],
     ) -> AppResult<()> {
+        let integration = delivery_profile(sandbox).integration_branch;
+        // A person's or the schedule's red request is green again once a rerun of its revision
+        // passed the full gate (review round 1, finding 6).
+        for request in pending
+            .iter()
+            .filter(|r| is_asked(r) && r.state == StagingState::Inherited)
+            .take(MAX_PENDING)
+        {
+            let verdict = self
+                .deps
+                .store
+                .integration_verdicts(
+                    &sandbox.id,
+                    &integration,
+                    std::slice::from_ref(&request.revision),
+                    super::GateRead::Latest,
+                )
+                .await?
+                .into_iter()
+                .next();
+            if let Some(run) = verdict
+                && run.state == RunState::Passed
+                && !run.jobs.iter().any(|j| j.skipped)
+                && request.ci_run_id.as_deref() != Some(run.run.as_str())
+            {
+                let change = StagingChange {
+                    ci_run_id: Some(run.run.clone()),
+                    note: Some(format!("the full gate passed on a rerun: run {}", run.run)),
+                    ..StagingChange::default()
+                };
+                self.staging_move(request, StagingState::Ready, change)
+                    .await?;
+            }
+        }
         let testing = pending.iter().filter(|r| r.state == StagingState::Testing);
         let mut ordered: Vec<_> = testing
             .filter_map(|r| {
@@ -657,7 +701,6 @@ impl App {
             })
             .collect();
         ordered.sort_by_key(|(at, _)| *at);
-        let integration = delivery_profile(sandbox).integration_branch;
         for (_, request) in ordered.into_iter().take(MAX_PENDING) {
             let verdicts = self
                 .deps
@@ -712,8 +755,8 @@ impl App {
                     }
                     // A person's or the schedule's request waits for the next green revision
                     // (SPEC-650 PST-002).
-                    if request.task_id.is_none() && next != StagingState::Ready {
-                        next = stg::after_failed_gate(true, false);
+                    if is_asked(request) && next != StagingState::Ready {
+                        next = stg::after_failed_gate(true, next == StagingState::Inherited);
                         note = format!(
                             "waiting for green tests: the full gate failed on {} (run {}); the next merged revision is tested and deployed once green",
                             short(&request.revision),
@@ -1602,10 +1645,31 @@ impl App {
     }
 }
 
+/// How a request of no task is recorded.
+enum Asking {
+    /// A person asks now.
+    Person,
+    /// A red request is carried to the head, with this note.
+    FollowUp(String),
+}
+
+/// Whether `request` is a person's or the schedule's (SPEC-650), read from who asked: a deleted
+/// task's request has no task either, and stays a task's (review round 1, finding 2).
+pub(crate) fn is_asked(request: &StagingRequestRecord) -> bool {
+    request.task_id.is_none()
+        && (request.requested_by.starts_with(PERSON_REQUESTER)
+            || request.requested_by == SCHEDULE_REQUESTER)
+}
+
 fn facts_of(request: &StagingRequestRecord, positions: &[(String, Option<u64>)]) -> Facts {
     Facts {
         id: request.id.clone(),
-        task: request.task_id.as_ref().map(|t| t.as_str().to_owned()),
+        // A deleted task's request is still a task's to the decisions (finding 2).
+        task: match &request.task_id {
+            Some(task) => Some(task.as_str().to_owned()),
+            None if is_asked(request) => None,
+            None => Some(request.requested_by.clone()),
+        },
         revision: request.revision.clone(),
         state: request.state,
         position: positions
@@ -1627,29 +1691,26 @@ impl App {
             Some(task) => store.task(task).await?.map(|t| t.number),
             None => None,
         };
-        let asked_by = match &request.task_id {
-            Some(_) => None,
-            None if request.requested_by == SCHEDULE_REQUESTER => {
-                Some("Yulius's schedule".to_owned())
-            }
-            None => match request
-                .requested_by
-                .strip_prefix(PERSON_REQUESTER)
-                .and_then(|id| yulius_domain::ids::UserId::parse(id).ok())
-            {
-                Some(id) => Some(
-                    store
-                        .user(&id)
-                        .await?
-                        .map_or_else(|| "a removed person".to_owned(), |u| u.label()),
-                ),
-                None => Some(request.requested_by.clone()),
-            },
+        // A person's login; the schedule and a deleted task's request name nobody (finding 2).
+        let asked_by = match request
+            .requested_by
+            .strip_prefix(PERSON_REQUESTER)
+            .filter(|_| request.task_id.is_none())
+            .and_then(|id| yulius_domain::ids::UserId::parse(id).ok())
+        {
+            Some(id) => Some(
+                store
+                    .user(&id)
+                    .await?
+                    .map_or_else(|| "a removed person".to_owned(), |u| u.label()),
+            ),
+            None => None,
         };
         Ok(yulius_contracts::api::cd::CdStagingRequest {
             id: request.id.clone(),
             task_number,
             asked_by,
+            scheduled: request.task_id.is_none() && request.requested_by == SCHEDULE_REQUESTER,
             revision: request.revision.clone(),
             state: request.state.as_str().to_owned(),
             ci_run_id: request.ci_run_id.clone(),
@@ -1700,7 +1761,7 @@ impl App {
         let waiting = recent
             .iter()
             .zip(&requests)
-            .find(|(r, _)| r.task_id.is_none() && r.state.is_pending())
+            .find(|(r, _)| is_asked(r) && r.state.is_pending())
             .and_then(|(_, shown)| shown.waiting.clone());
         Ok(yulius_contracts::api::cd::CdStaging {
             verified,
@@ -1748,6 +1809,7 @@ pub(crate) fn staging_text(
             request.id,
             match (&request.asked_by, request.task_number) {
                 (Some(who), _) => format!("asked by {who},"),
+                (None, None) if request.scheduled => "Yulius's schedule,".to_owned(),
                 (None, Some(n)) => format!("task #{n}"),
                 (None, None) => "a deleted task's".to_owned(),
             },
