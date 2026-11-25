@@ -965,8 +965,7 @@ impl App {
         user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: FillArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: FillArgs = super::parse_args(args)?;
         let field = args.field.as_deref().unwrap_or("value");
         if !matches!(field, "value" | "password" | "username" | "totp") {
             return Err(AppError::Invalid(
@@ -974,31 +973,9 @@ impl App {
             ));
         }
         let record = self
-            .resolved_agent_secrets(user.sandbox(), user.holder())
-            .await?
-            .into_iter()
-            .find(|r| r.name == args.secret.trim())
-            .ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "no agent secret named {:?} applies to this project (see secrets_list)",
-                    args.secret
-                ))
-            })?;
-        if matches!(record.scope(), AgentScope::Personal(_)) {
-            return Err(AppError::Forbidden(format!(
-                "{}: {}",
-                record.name,
-                super::PERSONAL_SECRET_BROWSER
-            )));
-        }
-        // A production secret is no agent's, by any way (ADR-0324).
-        if record.cd_prod {
-            return Err(AppError::Forbidden(format!(
-                "{}: {}",
-                record.name,
-                super::PRODUCTION_SECRET
-            )));
-        }
+            .named_agent_secret(user.sandbox(), user.holder(), &args.secret)
+            .await?;
+        super::refuse_personal_or_prod(&record, super::PERSONAL_SECRET_BROWSER)?;
         let browser = self.browser_session(user.sandbox()).await?;
         let tab = browser
             .tabs()
