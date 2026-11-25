@@ -1015,6 +1015,9 @@ stage = "prod"                      # "dev" or "prod" (fixed for [cd.dev] and [c
 stage = "dev"
 merge_first = true                  # at most one; needs deploy, verify and rollback; moves the
                                     #   after_merge jobs off pull requests (SPEC-575, ADR-0410)
+serve_every_minutes = 60            # merge-first only (SPEC-650): Yulius asks for the head when
+serve_after_merges = 5              #   staging is behind it and has not changed for 60 minutes,
+                                    #   or 5 merges ahead (the defaults; 0 turns either off)
 ```
 
 A task-local deployment (SPEC-575 MFS-010, ADR-0415) is one table:

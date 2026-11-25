@@ -1921,6 +1921,8 @@ merged revision of `dev`.
   they confirm on its panel (SPEC-650). It deploys once that head's full suite passed. A red head
   waits for the next green revision, and the page says what it waits for. A person can still
   roll staging back there.
+- **Staging follows `dev` by itself** (SPEC-650) with the defaults: once it is 5 merges behind, or
+  60 minutes without a staging change while `dev` is ahead. It deploys as the project's creator.
 - A red `dev` leaves staging on the verified release. A new failure records `gate_failed`.
   An inherited failure records its original revision and task. One working task owns the repair.
   If none is working, project CI and Status list each test with its introducing revision and task.
