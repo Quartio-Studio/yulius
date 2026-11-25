@@ -125,6 +125,7 @@ Confirmed against `dev` at ecb57ae03 and the pinned CLIs.
 - [x] Claude Code run settings pin the memory folder and deny edits there
 - [x] Real-bwrap proof on a guest: writes refused per harness, reads kept, purge works
 - [x] Architecture, operations and changes updated
+- [x] Review round 1 of the guarantee answered
 - [x] Containers, CI jobs and script watches see the harness folders masked
 - [x] Memory key from the sandbox's repository; ancestors' instructions excluded; guard errors fail the start
 - [x] Joined runs and the Docker mask proven on a guest
