@@ -1471,6 +1471,48 @@ async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
     Ok(())
 }
 
+/// Discovery read only the first 500 directory entries, in directory order, so in a specs
+/// directory of 600+ files a task lost its spec. The task's two specs are written before and after
+/// 700 others, so one of them lies past the first 500 whether the directory lists oldest or newest
+/// first. Discovery lists every name and reads the one named with the task's branch slug first.
+#[tokio::test]
+async fn a_spec_among_hundreds_is_found_and_the_slug_named_one_wins() -> TestResult {
+    let f = fixture().await?;
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    std::fs::write(
+        f.worktree.join("yulius.toml"),
+        "[docs]\nspecs_dir = \"docs/plans\"\n",
+    )?;
+    let plans = f.worktree.join("docs/plans");
+    std::fs::create_dir_all(&plans)?;
+    let spec = "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout API\n\n\
+         ## Goal\n\nCustomers can pay.\n\n## Context\n\nNo checkout yet.\n\n\
+         ## Requirements\n\n- Card payments.\n\n## Plan\n\n- [x] Write spec\n- [ ] Implement API\n\n\
+         ## Acceptance Criteria\n\nA test order succeeds.\n\n## Test plan\n\n```sh\ncargo test\n```\n\n\
+         ## Decisions\n\n- Hosted payment page.\n";
+    // The branch is `feat/1-x`: `SPEC-900-x.md` is named with its slug, `0-old-copy.md` sorts first.
+    std::fs::write(plans.join("0-old-copy.md"), spec)?;
+    for n in 1..=700 {
+        std::fs::write(
+            plans.join(format!("SPEC-{n:03}-other.md")),
+            "---\nyulius-task: someone-else\nstatus: done\n---\n",
+        )?;
+    }
+    std::fs::write(plans.join("SPEC-900-x.md"), spec)?;
+    let body = hook(&f, "Stop", json!({})).await?;
+    assert!(body.is_null(), "the spec is found: {body:?}");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.spec_path.as_deref(), Some("docs/plans/SPEC-900-x.md"));
+
+    // Renamed again, without the slug: still found among the 700.
+    std::fs::remove_file(plans.join("SPEC-900-x.md"))?;
+    let body = hook(&f, "Stop", json!({})).await?;
+    assert!(body.is_null(), "the renamed spec is found: {body:?}");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.spec_path.as_deref(), Some("docs/plans/0-old-copy.md"));
+    Ok(())
+}
+
 /// SPEC-140 HKS-001 (#404): the hook client gives up after `HOOK_TIMEOUT` and lets the agent go on
 /// (fail-open), closing its connection, and hyper then drops the request's handler. A hook Yulius
 /// received is still applied to its end, whatever becomes of its handler. Here a notice that asks a

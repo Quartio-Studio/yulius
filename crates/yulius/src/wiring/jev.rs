@@ -125,10 +125,7 @@ impl JevClient {
     }
 
     fn build(key: JevKey, endpoint: String, https_only: bool) -> Result<Self, String> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
-            .redirect(reqwest::redirect::Policy::none())
+        let http = super::http::client_builder()
             .https_only(https_only)
             .timeout(MAX_DEADLINE)
             .build()
@@ -183,18 +180,9 @@ impl JevClient {
         if !response.status().is_success() {
             return Err(JevFailure::Unavailable);
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
+        super::http::read_bounded(&mut response, MAX_RESPONSE_BYTES)
             .await
-            .map_err(|_| JevFailure::Invalid("body"))?
-        {
-            if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err(JevFailure::Invalid("body"));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(bytes)
+            .map_err(|_| JevFailure::Invalid("body"))
     }
 }
 
