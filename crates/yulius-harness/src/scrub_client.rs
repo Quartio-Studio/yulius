@@ -427,26 +427,15 @@ pub fn run_scrub_exec(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> 
 
 /// Redacts every string inside `value`; returns whether anything changed.
 fn redact_value(value: &mut Value, matcher: &dyn Matcher, names: &mut Vec<String>) -> bool {
-    match value {
-        Value::String(text) => {
-            let (redacted, found) =
-                yulius_domain::vault::redact::redact_text(matcher, text.as_str());
-            if found.is_empty() {
-                false
-            } else {
-                *text = redacted;
-                names.extend(found);
-                true
-            }
+    yulius_contracts::redact::redact_json_strings(value, &mut |_, text| {
+        let (redacted, found) = yulius_domain::vault::redact::redact_text(matcher, text.as_str());
+        if found.is_empty() {
+            return false;
         }
-        Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
-            redact_value(item, matcher, names) | changed
-        }),
-        Value::Object(map) => map.values_mut().fold(false, |changed, item| {
-            redact_value(item, matcher, names) | changed
-        }),
-        _ => false,
-    }
+        *text = redacted;
+        names.extend(found);
+        true
+    })
 }
 
 fn replacement(output: &mut dyn Write, tool_output: &Value) -> i32 {

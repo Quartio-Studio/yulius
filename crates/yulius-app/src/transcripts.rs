@@ -16,6 +16,7 @@ use std::path::Path;
 
 use serde_json::Value;
 use yulius_contracts::api::sessions::{DiffHunk, TranscriptBlock, TranscriptDiff, TranscriptEntry};
+use yulius_contracts::redact::redact_json_strings;
 use yulius_domain::harness::is_codex_injected_context;
 use yulius_domain::redact::{
     is_env_file, is_secret_name, mentions_env_file, redact, redact_env, redact_named,
@@ -87,23 +88,16 @@ fn one_line(text: &str) -> String {
 
 /// Redacts every string of a JSON value; secret-named keys lose their literal values.
 fn redact_value(value: &mut Value, env: bool) {
-    match value {
-        Value::String(text) => *text = clean(text, env),
-        Value::Array(items) => items.iter_mut().for_each(|item| redact_value(item, env)),
-        Value::Object(map) => {
-            for (key, item) in map.iter_mut() {
-                if let Value::String(text) = item
-                    && is_secret_name(key)
-                    && let Some(redacted) = redact_named(key, text)
-                {
-                    *text = redacted.text;
-                    continue;
-                }
-                redact_value(item, env);
-            }
-        }
-        _ => {}
-    }
+    redact_json_strings(value, &mut |key, text| {
+        *text = match key
+            .filter(|key| is_secret_name(key))
+            .and_then(|key| redact_named(key, text))
+        {
+            Some(redacted) => redacted.text,
+            None => clean(text, env),
+        };
+        true
+    });
 }
 
 fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -705,12 +699,10 @@ fn is_code_mode_result(value: &Value) -> bool {
 
 /// Every string of a JSON value redacted as dotenv content.
 fn redact_strings_as_env(value: &mut Value) {
-    match value {
-        Value::String(text) => *text = clean(text, true),
-        Value::Array(items) => items.iter_mut().for_each(redact_strings_as_env),
-        Value::Object(map) => map.values_mut().for_each(redact_strings_as_env),
-        _ => {}
-    }
+    redact_json_strings(value, &mut |_, text| {
+        *text = clean(text, true);
+        true
+    });
 }
 
 /// Texts one after another, each on its own line.
