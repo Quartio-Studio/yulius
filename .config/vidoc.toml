@@ -773,14 +773,14 @@ reason = "every value unit_text formats passes unit_safe first (no newline, spac
 # holding one (valid_path); Request::opening is the only producer of the pastes. Pinned by
 # request.rs a_typed_first_message_carries_no_control_character (a prompt with ESC [201~).
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/typing.rs"
 title = "Terminal injection via unescaped paste end delimiter"
 reason = "Request::parse drops every control character but tab and newline from text and refuses paths holding one, so no paste holds ESC; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #752)"
 
 # #818 (duplicate of #752): each paste is bracketed (opening_pastes), so a newline in it is text and
 # Enter is written separately; control bytes are removed as for #752.
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/typing.rs"
 title = "Unvalidated paste bytes typed directly into the agent TUI"
 reason = "each paste is bracketed and Request::parse already dropped its control characters but tab and newline; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #818, #752)"
 
@@ -1144,7 +1144,7 @@ reason = "the operator sets the server's PATH, which no agent can; isolated runs
 # directory, a contained run sees only its generated files bound read-only, and an uncontained
 # agent already runs as the service user (#715).
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/typing.rs"
 function = "save_screen"
 title = "Predictable temporary file name in save_screen"
 reason = "the run directory is 0700 under a 0700 data directory and hidden from contained runs; an uncontained agent already is the service user (SPEC-408, #698)"
