@@ -19,12 +19,10 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
-use crate::first_message::{
-    data_dir, hooked, new_task, runtime, screen, start_hosted, start_with, wait_for,
-};
+use crate::first_message::{data_dir, hooked, new_task, runtime, screen, start_hosted, start_with};
 use crate::pool_supervision::{ScriptedUsage, seed};
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::{TestResult, eventually};
 use crate::task_message::superagent;
 
 mod armed_notice;
@@ -163,11 +161,11 @@ async fn answered(app: &Arc<App>, data: &Path) -> Result<(TaskId, ProjectCaller)
         TaskMode::Prompt,
     )
     .await?;
-    wait_for("the first answer", Duration::from_secs(30), || async {
+    eventually("the first answer", Duration::from_secs(30), || async {
         screen(app, &id).contains("ECHO: Budget: answer with an echo")
     })
     .await?;
-    wait_for("the turn's end", Duration::from_secs(30), || async {
+    eventually("the turn's end", Duration::from_secs(30), || async {
         status_of(app, &id).await.1 == Some(Activity::Waiting)
     })
     .await?;
@@ -555,7 +553,7 @@ async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> Tes
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the occupied session", Duration::from_secs(30), || async {
+        eventually("the occupied session", Duration::from_secs(30), || async {
             screen(&app, &peer).contains("ECHO: Keep this session occupied")
         })
         .await?;
@@ -583,7 +581,7 @@ async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> Tes
         });
         assert!(result.is_ok(), "{result:?}");
     });
-    wait_for(
+    eventually(
         "the park with a capacity hold",
         Duration::from_secs(20),
         || async { app.park_idle_sessions_now().await == 1 },
@@ -749,7 +747,7 @@ async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> Tes
 /// Waits until the task's state is older than a 1 ms grace period, so a pass that parks
 /// nothing says so because of what it checks, not because the grace is not over yet.
 async fn past_the_grace(app: &App, id: &TaskId) -> TestResult {
-    wait_for("the grace period", Duration::from_secs(10), || async {
+    eventually("the grace period", Duration::from_secs(10), || async {
         app.deps
             .store
             .task_times(id)
@@ -822,7 +820,7 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
             Some("Waiting for a free session: 1 of 1 in use")
         );
         parked(&app, &first).await?;
-        wait_for(
+        eventually(
             "the queued task to start",
             Duration::from_secs(60),
             || async { screen(&app, &second).contains("ECHO: Second: answer with an echo") },
@@ -950,14 +948,10 @@ fn replaced_parked_message(checkpoint: Point, while_restoring: bool) -> TestResu
             .tool_task_message(&caller, &json!({"number": 1, "text": "Intervening turn"}))
             .await?;
         assert_eq!(accepted["delivered"], "resumed");
-        wait_for(
-            "the intervening answer",
-            Duration::from_secs(20),
-            || async {
+        eventually("the intervening answer", Duration::from_secs(20), || async {
                 screen(&app, &id).contains("Intervening turn")
                     && status_of(&app, &id).await.1 == Some(Activity::Waiting)
-            },
-        )
+            })
         .await?;
         let restore = if while_restoring {
             let (recorded, restore) = pause_watch_or_queue(Point::ParkStateRecorded, &id);
@@ -1014,7 +1008,7 @@ async fn park_through_terminal_exit(app: &Arc<App>, id: &TaskId) -> TestResult {
 async fn request_one_park(app: &Arc<App>) -> TestResult {
     // Issue one successful park request, then observe its completion. Looking for the final
     // status by running more parking passes could overlap this run's exit reader.
-    wait_for("the parking request", Duration::from_secs(30), || async {
+    eventually("the parking request", Duration::from_secs(30), || async {
         app.park_idle_sessions_now().await == 1
     })
     .await?;
@@ -1152,7 +1146,7 @@ fn losing_exit_reader(before_finalization: bool) -> TestResult {
         });
         let accepted = if before_finalization {
             let accepted = (&mut message).await??;
-            wait_for(
+            eventually(
                 "the second run's answer",
                 Duration::from_secs(10),
                 || async { screen(&app, &id).contains("Text for the second run only") },
@@ -1264,7 +1258,7 @@ fn a_message_resumes_a_parked_task_in_its_own_session() -> TestResult {
         restore_screen.notify_one();
         let answer = message.await??;
         assert_eq!(answer["delivered"], "resumed");
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Blue: answer with an echo")
         })
         .await?;
@@ -1298,7 +1292,7 @@ fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResul
         parked(&app, &id).await?;
         app.continue_task(&ctx, id.as_str(), &serde_json::from_value(json!({}))?)
             .await?;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             status_of(&app, &id).await.0 == Some(TaskStatus::Running)
                 && app
                     .deps
@@ -1312,7 +1306,7 @@ fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResul
         let runs = app.deps.store.attempts(&id).await?;
         assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
         // Parked again, then archived: closed.
-        wait_for("the turn's end", Duration::from_secs(30), || async {
+        eventually("the turn's end", Duration::from_secs(30), || async {
             status_of(&app, &id).await.1.is_some_and(Activity::is_idle)
         })
         .await?;
@@ -1328,7 +1322,7 @@ fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResul
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("its turn's end", Duration::from_secs(30), || async {
+        eventually("its turn's end", Duration::from_secs(30), || async {
             status_of(&app, &other).await.1 == Some(Activity::Waiting)
         })
         .await?;
@@ -1426,7 +1420,7 @@ fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> Test
             )
             .await?;
         assert_eq!(again["delivered"], "resumed");
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Late: answer with an echo")
         })
         .await?;
@@ -1493,7 +1487,7 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
                 if why.contains("is parking its idle session")),
             "{early:?}"
         );
-        wait_for("the task to park", Duration::from_secs(30), || async {
+        eventually("the task to park", Duration::from_secs(30), || async {
             status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
         })
         .await?;
@@ -1504,12 +1498,12 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
             )
             .await?;
         assert_eq!(resumed["delivered"], "resumed");
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Late: answer with an echo")
         })
         .await?;
         // Counted once the resumed turn ended, so a later second delivery would show.
-        wait_for(
+        eventually(
             "the resumed turn's end",
             Duration::from_secs(30),
             || async {
@@ -1560,7 +1554,7 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
         }
         past_the_grace(&app, &id).await?;
         app.park_idle_sessions_now().await;
-        wait_for("the task to rest", Duration::from_secs(30), || async {
+        eventually("the task to rest", Duration::from_secs(30), || async {
             matches!(status_of(&app, &id).await.0, Some(TaskStatus::Stopped(_)))
         })
         .await?;
@@ -1636,7 +1630,7 @@ fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
             .set_task_needs_you(&id, None, app.now())
             .await?;
         app.advance_all_chains().await;
-        wait_for(
+        eventually(
             "the chained task to leave its chain",
             Duration::from_secs(30),
             || async {
@@ -1692,7 +1686,7 @@ fn a_parked_task_keeps_its_claims() -> TestResult {
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("its first answer", Duration::from_secs(30), || async {
+        eventually("its first answer", Duration::from_secs(30), || async {
             screen(&app, &b).contains("ECHO: Feature: answer with an echo")
         })
         .await?;
@@ -1806,7 +1800,7 @@ fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
             TaskMode::Prompt,
         )
         .await?;
-        wait_for(
+        eventually(
             "the second task's answer",
             Duration::from_secs(30),
             || async { screen(&app, &second).contains("ECHO: Busy: answer with an echo") },
@@ -1821,7 +1815,7 @@ fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
         assert_eq!(answer["delivered"], "resumed");
         assert_eq!(status_of(&app, &first).await.0, Some(TaskStatus::Queued));
         app.stop_task_now(&second).await?;
-        wait_for("the queued resume", Duration::from_secs(60), || async {
+        eventually("the queued resume", Duration::from_secs(60), || async {
             screen(&app, &first).contains("Later: answer with an echo")
         })
         .await?;
@@ -1872,7 +1866,7 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
         past_the_grace(&app, &id).await?;
         assert_eq!(app.park_idle_sessions_now().await, 1);
         host.shutdown_refused().await;
-        wait_for("the park to give up", Duration::from_secs(30), || async {
+        eventually("the park to give up", Duration::from_secs(30), || async {
             app.tool_task_message(
                 &caller,
                 &json!({"number": 1, "text": "Still here: answer with an echo"}),
@@ -1956,7 +1950,7 @@ async fn queued_park_screen(
     data: &Path,
     caller: &ProjectCaller,
 ) -> TestResult {
-    wait_for(
+    eventually(
         "the committed park screen",
         Duration::from_secs(10),
         || async { screen(app, id).contains("Yulius parked") },
@@ -2366,7 +2360,7 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
                 move || {
                     tokio::task::block_in_place(|| {
                         handle.block_on(async {
-                            let _ = wait_for("the loss", Duration::from_secs(20), || async {
+                            let _ = eventually("the loss", Duration::from_secs(20), || async {
                                 app.deps
                                     .store
                                     .attempt(&run)
@@ -2460,7 +2454,7 @@ fn host_loss_with_request(
             tokio::time::timeout(bound, observed).await??,
             "reader held until loss"
         );
-        wait_for("the task to settle after loss", bound, || async {
+        eventually("the task to settle after loss", bound, || async {
             status_of(&app, &id)
                 .await
                 .0
@@ -2640,7 +2634,7 @@ fn an_unfinished_goal_keeps_its_session() -> TestResult {
                 .ok_or("task")?;
             Ok::<_, Error>(app.task_summary(&task).await?)
         };
-        wait_for(
+        eventually(
             "the failed goal's turn end",
             Duration::from_secs(90),
             || async {
@@ -2717,7 +2711,7 @@ fn a_named_persons_answer_resumes_a_parked_task() -> TestResult {
         };
         app.answer_needs_you(&ctx, id.as_str(), "M1: yes", Some(1))
             .await?;
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Answer from bob")
         })
         .await?;
@@ -2800,7 +2794,7 @@ fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
             )
             .await?;
         assert_eq!(sent["delivered"], "answered", "{sent}");
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Answer from bob")
         })
         .await?;
@@ -2901,7 +2895,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
             false,
         )
         .await?;
-        wait_for("terminal wake echo", Duration::from_secs(30), || async {
+        eventually("terminal wake echo", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Wake from terminal: answer with an echo")
         })
         .await?;
@@ -2919,7 +2913,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
 
         // Park again and verify oversized ContinueTask.prompt (> 64 KiB) is rejected with Invalid
         // while keeping the task Parked, then wake cleanly via `continue_task` with a bounded prompt.
-        wait_for("idle again", Duration::from_secs(30), || async {
+        eventually("idle again", Duration::from_secs(30), || async {
             status_of(&app, &id).await.1 == Some(Activity::Waiting)
         })
         .await?;
@@ -2953,7 +2947,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
             },
         )
         .await?;
-        wait_for("reply wake echo", Duration::from_secs(30), || async {
+        eventually("reply wake echo", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Wake from reply: answer with an echo")
         })
         .await?;
@@ -2964,7 +2958,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
 
         // Operator stop boundary: an explicitly stopped task MUST NOT wake on terminal input.
         app.stop_task_now(&id).await?;
-        wait_for("stopped", Duration::from_secs(30), || async {
+        eventually("stopped", Duration::from_secs(30), || async {
             matches!(status_of(&app, &id).await.0, Some(TaskStatus::Stopped(_)))
         })
         .await?;
@@ -3054,7 +3048,7 @@ fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResu
             &json!({"number": 1, "text":"CI pending: answer with an echo"}),
         )
         .await?;
-        wait_for(
+        eventually(
             "the author to finish its turn while CI is pending",
             Duration::from_secs(30),
             || async {
@@ -3501,7 +3495,7 @@ fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> Tes
             &yulius_contracts::api::tasks::ContinueTask::default(),
         )
         .await?;
-        wait_for(
+        eventually(
             "resumed for second repair",
             Duration::from_secs(30),
             || async {
@@ -3686,7 +3680,7 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
         .await?;
         let prompt = format!("Budget {DIGEST_SECRET}: answer with an echo");
         let id = new_task(&app, &sandbox, &user, &prompt, TaskMode::Prompt).await?;
-        wait_for("the turn's end", Duration::from_secs(30), || async {
+        eventually("the turn's end", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Budget")
                 && status_of(&app, &id).await.1 == Some(Activity::Waiting)
         })
@@ -3710,7 +3704,7 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
         past_the_grace(&app, &id).await?;
         let run = app.send_digests_now(Some(1)).await;
         assert_eq!((run.sent, run.parked), (1, 1));
-        wait_for("the digest's park", Duration::from_secs(30), || async {
+        eventually("the digest's park", Duration::from_secs(30), || async {
             status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
         })
         .await?;
@@ -3742,7 +3736,7 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
             )
             .await?;
         assert_eq!(answer["delivered"], "resumed");
-        wait_for("the resumed message", Duration::from_secs(60), || async {
+        eventually("the resumed message", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Go on: answer with an echo")
         })
         .await?;
@@ -3774,7 +3768,7 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
         let mut ids = Vec::new();
         for prompt in ["Held worker", "Repair worker", "Other worker"] {
             let id = new_task(&app, &project.id, &caller.user, prompt, TaskMode::Prompt).await?;
-            wait_for("worker ready", Duration::from_secs(30), || async {
+            eventually("worker ready", Duration::from_secs(30), || async {
                 status_of(&app, &id).await.1 == Some(Activity::Waiting)
             })
             .await?;
@@ -3785,8 +3779,8 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
             .join("sandboxes")
             .join(project.id.as_str())
             .join("repo");
-        let sha = crate::cd::git(&repo, &["rev-parse", "HEAD"])?;
-        crate::cd::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
+        let sha = crate::support::git(&repo, &["rev-parse", "HEAD"])?;
+        crate::support::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
         let landing = Landing {
             branch: "dev".into(),
             head: sha.clone(),
@@ -3818,7 +3812,7 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
             .await?;
         let messages = || async { app.tell_gate_repairs(&project).await };
         assert_eq!(messages().await?, 2);
-        wait_for(
+        eventually(
             "workers saw their assignments",
             Duration::from_secs(30),
             || async {
@@ -3853,7 +3847,7 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
             .set_activity(&ids[1], Some(Activity::Done), app.now())
             .await?;
         assert_eq!(messages().await?, 1);
-        wait_for(
+        eventually(
             "remaining worker took over",
             Duration::from_secs(30),
             || async { screen(&app, &ids[2]).contains("You own this repair") },
@@ -3973,7 +3967,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
         assert_eq!(tokio::time::timeout(Duration::from_secs(10), check).await??, 0,
             "a busy browser defers the outcome to another tick");
         assert_eq!(app.deps.store.untold_staging_requests().await?.len(), 1);
-        wait_for("the outcome told", Duration::from_secs(30), || async {
+        eventually("the outcome told", Duration::from_secs(30), || async {
             app.tell_staging_outcomes().await;
             let shown = screen(&app, &id);
             shown.contains("staging request sr_1 for revision 0123456789ab")
@@ -3988,7 +3982,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
         // The outcome typed above starts a turn in the live session, and that turn's prompt hook
         // can mark the task Working after the Done below (#1712). The task is finished once that
         // turn has ended, so it is marked Done again until the read sees the subscription free.
-        wait_for(
+        eventually(
             "a finished task releases its subscription once its outcome has been delivered",
             Duration::from_secs(30),
             || async {
@@ -4054,7 +4048,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
         assert_eq!(check.await?, 0, "the previous failure cannot consume the retry's wake");
         assert!(!screen(&app, &id).contains("first-deploy"));
         assert_eq!(store.task_staging_wait(&id).await?, Some(Verified));
-        wait_for("the verified retry told", Duration::from_secs(30), || async {
+        eventually("the verified retry told", Duration::from_secs(30), || async {
             app.tell_staging_outcomes().await;
             screen(&app, &id).contains("retry-run")
         }).await?;
@@ -4150,7 +4144,7 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
             app.now(),
         )
         .await?;
-        wait_for("the outcome told", Duration::from_secs(30), || async {
+        eventually("the outcome told", Duration::from_secs(30), || async {
             app.tell_handoff_outcomes().await;
             let shown = screen(&app, &id);
             shown.contains(&format!(
@@ -4340,7 +4334,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         crate::pr_watch::leave_verification_step(&app, &id).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let worktree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
-        let head = crate::pr_watch::git(worktree, &["rev-parse", "HEAD"])?;
+        let head = crate::support::git(worktree, &["rev-parse", "HEAD"])?;
         open_pull_at(&app, &github, &id, previously_seen.unwrap_or(1481), &head).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
@@ -4661,7 +4655,7 @@ fn a_busy_terminal_writer_leaves_the_armed_notice_unheard() -> TestResult {
         let (id, caller) = answered(&app, &data).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
-        let head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        let head = crate::support::git(tree, &["rev-parse", "HEAD"])?;
         open_pull_at(&app, &github, &id, 1481, &head).await?;
         app.deps
             .store
@@ -4735,7 +4729,7 @@ fn a_busy_terminal_writer_leaves_the_armed_notice_unheard() -> TestResult {
         let current = app.watch_prs(&WatchBounds::default()).await;
         assert_eq!(current.len(), 1, "{current:?}");
         assert!(current[0].1.contains("held-writer-ci"));
-        wait_for(
+        eventually(
             "the agent received the CI notice",
             Duration::from_secs(10),
             || async { screen(&app, &id).contains("held-writer-ci") },

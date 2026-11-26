@@ -5,9 +5,11 @@
 use crate::cockpit::{
     Fixture, ORIGIN, answer_record, attach, cockpit_id, cockpit_tool, conversation, fixture,
     fixture_with, insert_account, limited_conversation, mcp, predate_launch_digest, printed,
-    project_of, prompt_record, read_message, read_until, task_rests, wait_for,
+    project_of, prompt_record, read_message, read_until, task_rests,
 };
 use crate::support;
+use crate::support::eventually;
+use std::future::ready;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -420,9 +422,11 @@ async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
     )
     .await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
-    wait_for("the Global Superagent to end with its host", || {
-        globals(&f).is_empty()
-    })
+    eventually(
+        "the Global Superagent to end with its host",
+        crate::cockpit::WAIT,
+        || ready(globals(&f).is_empty()),
+    )
     .await?;
 
     let again = global_id(&f, &f.alice).await?;
@@ -721,13 +725,19 @@ async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> Test
     let exit = read_message(&mut socket, "exit").await?;
     assert_eq!(exit["status"], "switched", "{exit}");
     let mut again = None;
-    wait_for("the Global Superagent on another subscription", || {
-        again = globals(&f)
-            .into_iter()
-            .map(|(_, id)| id)
-            .find(|other| *other != id);
-        again.is_some()
-    })
+    eventually(
+        "the Global Superagent on another subscription",
+        crate::cockpit::WAIT,
+        || {
+            ready({
+                again = globals(&f)
+                    .into_iter()
+                    .map(|(_, id)| id)
+                    .find(|other| *other != id);
+                again.is_some()
+            })
+        },
+    )
     .await?;
     let again = again.ok_or("moved")?;
     let mut socket = attach(served.addr, &again, &f.alice).await?;
@@ -772,13 +782,19 @@ async fn a_global_superagent_started_before_an_update_restarts_as_global() -> Te
     let served = serve(g.h.router.clone()).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
     let mut again = None;
-    wait_for("the Global Superagent to start again", || {
-        again = globals(&g)
-            .into_iter()
-            .map(|(_, other)| other)
-            .find(|other| *other != id);
-        again.is_some()
-    })
+    eventually(
+        "the Global Superagent to start again",
+        crate::cockpit::WAIT,
+        || {
+            ready({
+                again = globals(&g)
+                    .into_iter()
+                    .map(|(_, other)| other)
+                    .find(|other| *other != id);
+                again.is_some()
+            })
+        },
+    )
     .await?;
     let again = again.ok_or("restarted")?;
     let mut socket = attach(served.addr, &again, &g.alice).await?;

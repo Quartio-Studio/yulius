@@ -15,13 +15,14 @@ use super::antigravity::{
     tokened_servers_left_out,
 };
 use super::codex::{CodexLeftover, write_codex_files};
+use super::placement::{Placed, model_change_notice, switched_back_notice};
 use super::start::IdleRest;
 use super::typing::{
     CLAUDE_CREDENTIAL_DIGEST, GOAL_COMMAND, InputReady, LAUNCH_GOAL_FILE, OPENING_PENDING_FILE,
     PERSONAL_MCP_FILE, PendingGoal, TYPED_GOAL_FILE, TYPED_GOAL_OPENS, sets_goal,
     write_private_file,
 };
-use super::{Placed, PromptReceipts, RunStart, model_change_notice, switched_back_notice};
+use super::{PromptReceipts, RunStart};
 use crate::auth::hex_token;
 use crate::context::App;
 use crate::error::{AppError, AppResult};

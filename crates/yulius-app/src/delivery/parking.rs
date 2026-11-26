@@ -957,11 +957,8 @@ impl App {
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
     /// shell runs, and the goal is achieved or no declared work is left with the change merged.
     pub(crate) async fn task_is_done_locally(&self, task: &TaskRecord) -> bool {
-        use yulius_domain::task::{Activity, TaskStatus};
-        if task.status != TaskStatus::Running
-            || !task.activity.is_some_and(Activity::is_idle)
-            || self.background_shells_of(&task.id).unwrap_or(0) > 0
-        {
+        use yulius_domain::task::Activity;
+        if !self.agent_idle(task) {
             return false;
         }
         // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
@@ -989,12 +986,8 @@ impl App {
         &self,
         task: TaskRecord,
     ) -> Option<(TaskRecord, Option<DeliveryRecord>)> {
-        use yulius_domain::task::{Activity, TaskStatus};
-        if task.status != TaskStatus::Running
-            || !task.activity.is_some_and(Activity::is_idle)
-            || self.background_shells_of(&task.id).unwrap_or(0) > 0
-            || self.delivery_will_wake_task(&task.id).await
-        {
+        use yulius_domain::task::Activity;
+        if !self.agent_idle(&task) || self.delivery_will_wake_task(&task.id).await {
             return None;
         }
         crate::race::reached(

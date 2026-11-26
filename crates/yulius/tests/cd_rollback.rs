@@ -690,7 +690,7 @@ async fn a_waiting_production_deploy_honours_what_was_asked() -> TestResult {
 
 /// `branch` on the origin contains `sha`.
 fn git_contains(f: &Fixture, branch: &str, sha: &str) -> TestResult {
-    crate::cd::git(&f.origin, &["merge-base", "--is-ancestor", sha, branch])?;
+    crate::support::git(&f.origin, &["merge-base", "--is-ancestor", sha, branch])?;
     Ok(())
 }
 

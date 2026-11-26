@@ -4,9 +4,9 @@
 //! decisions on a held prompt. Jev and Claude are fakes: no real call is made.
 
 use crate::support;
+use crate::support::git;
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1366,22 +1366,6 @@ async fn a_skip_with_no_chosen_step_says_so() -> TestResult {
     );
     let steps = i.h.store.steps(&task).await?;
     assert!(steps.iter().all(|s| s.status == "pending"), "{steps:?}");
-    Ok(())
-}
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
     Ok(())
 }
 

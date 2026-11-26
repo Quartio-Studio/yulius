@@ -2,28 +2,13 @@
 //! (clone of empty and existing repositories, worktrees on new and existing branches, commits on
 //! unborn branches, explicit push refspecs, bundle import names, the pre-push guard).
 
-use std::path::Path;
+use crate::support::git;
 use std::process::Command;
 
 use yulius_app::model::Secret;
 use yulius_app::ports::git::GitPort;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
 
 fn token() -> Secret {
     Secret("unused-for-local-remotes".into())

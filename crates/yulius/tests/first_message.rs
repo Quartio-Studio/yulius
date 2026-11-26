@@ -9,11 +9,12 @@
 
 use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support;
+use crate::support::eventually;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use support::TestResult;
 use support::agents::{FakeAgentHarness, FakeAgentOptions};
@@ -301,21 +302,6 @@ pub(crate) async fn new_task(
         .id)
 }
 
-pub(crate) async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if check().await {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 pub(crate) fn screen(app: &App, id: &TaskId) -> String {
     app.runtime(id).hub.screen_text()
 }
@@ -343,7 +329,7 @@ pub(crate) fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) ->
 
 pub(crate) async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
     app.stop_task_now(id).await?;
-    wait_for("the stop", Duration::from_secs(30), || async {
+    eventually("the stop", Duration::from_secs(30), || async {
         TaskStore::task(app.deps.store.as_ref(), id)
             .await
             .ok()
@@ -379,7 +365,7 @@ async fn goal_in_a_continued_turn(
 ) -> Result<(TaskId, AuthContext, yulius_app::terminal::TerminalAttach), BoxError> {
     let (sandbox, user) = seed(app, data, &["a-first", "b-second"]).await?;
     let id = new_task(app, &sandbox, &user, "Make the header blue", TaskMode::Goal).await?;
-    wait_for("the first goal's turn", Duration::from_secs(60), || async {
+    eventually("the first goal's turn", Duration::from_secs(60), || async {
         app.goal_is_open(&id) && activity(app, &id).await == Some(Activity::Working)
     })
     .await?;
@@ -399,7 +385,7 @@ async fn goal_in_a_continued_turn(
     )
     .await?;
     // The new run's screen replaced the first one's: its opening turn runs, no goal yet.
-    wait_for("the continued turn", Duration::from_secs(60), || async {
+    eventually("the continued turn", Duration::from_secs(60), || async {
         let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
         attempts.len() == 2
             && attempts[1].state == AttemptState::Live
@@ -444,7 +430,7 @@ fn focus_and_mouse_reports_do_not_keep_the_goal_out() -> TestResult {
         ] {
             app.terminal_input(&ctx, &attach, report, false).await?;
         }
-        wait_for("the goal", Duration::from_secs(90), || async {
+        eventually("the goal", Duration::from_secs(90), || async {
             screen(&app, &id).contains("GOAL SET")
         })
         .await?;
@@ -472,7 +458,7 @@ fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
         let mut watch = app.runtime(&id).hub.watch();
         app.terminal_input(&ctx, &attach, b"my own draft", false)
             .await?;
-        wait_for("the flag", Duration::from_secs(60), || async {
+        eventually("the flag", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -524,7 +510,7 @@ fn a_trust_prompt_answered_before_the_goal_keeps_the_goal() -> TestResult {
         )
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
-        wait_for("the trust prompt", Duration::from_secs(60), || async {
+        eventually("the trust prompt", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Yes, I trust this folder")
         })
         .await?;
@@ -540,7 +526,7 @@ fn a_trust_prompt_answered_before_the_goal_keeps_the_goal() -> TestResult {
         // Longer than the goal's quiet time: a Yulius that typed into the prompt would have now.
         tokio::time::sleep(Duration::from_secs(3)).await;
         app.terminal_input(&ctx, &attach, b"2\r", false).await?;
-        wait_for("the goal", Duration::from_secs(90), || async {
+        eventually("the goal", Duration::from_secs(90), || async {
             screen(&app, &id).contains("GOAL SET")
         })
         .await?;
@@ -589,7 +575,7 @@ fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestRes
         )
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
-        wait_for("the flag", Duration::from_secs(60), || async {
+        eventually("the flag", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -681,7 +667,7 @@ fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
         )
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
-        wait_for("the trust prompt", Duration::from_secs(60), || async {
+        eventually("the trust prompt", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Yes, I trust this folder")
         })
         .await?;
@@ -699,7 +685,7 @@ fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
             .await?;
         app.terminal_input(&ctx, &attach, b"2\r", false).await?;
 
-        wait_for("the flag", Duration::from_secs(60), || async {
+        eventually("the flag", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -779,7 +765,7 @@ fn trust_words_after_the_session_started_are_no_trust_prompt() -> TestResult {
         let mut watch = app.runtime(&id).hub.watch();
         app.terminal_input(&ctx, &attach, b"Yes, I trust this folder", false)
             .await?;
-        wait_for("the flag", Duration::from_secs(60), || async {
+        eventually("the flag", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -819,7 +805,7 @@ fn a_launch_goal_never_taken_flags_the_task() -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Tidy the parser", TaskMode::Goal).await?;
         let mut watch = app.runtime(&id).hub.watch();
-        wait_for("the flag", Duration::from_secs(45), || async {
+        eventually("the flag", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -877,7 +863,7 @@ fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the session", Duration::from_secs(60), || async {
+        eventually("the session", Duration::from_secs(60), || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         })
         .await?;
@@ -894,7 +880,7 @@ fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
         app.terminal_input(&ctx, &attach, b"my draft", false)
             .await?;
         app.terminal_input(&ctx, &attach, b" more", false).await?;
-        wait_for("the first message", Duration::from_secs(60), || async {
+        eventually("the first message", Duration::from_secs(60), || async {
             {
                 let shown = screen(&app, &id);
                 // The image is pasted where it sits: after the text (SPEC-124).
@@ -915,7 +901,7 @@ fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
         assert_eq!(told, 1, "{said:?}");
         // Sent: the person types into the session again.
         app.terminal_input(&ctx, &attach, b"after\r", false).await?;
-        wait_for("the person's message", Duration::from_secs(30), || async {
+        eventually("the person's message", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: after")
         })
         .await?;
@@ -951,7 +937,7 @@ fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult 
         )
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
-        wait_for("the trust prompt", Duration::from_secs(60), || async {
+        eventually("the trust prompt", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Yes, I trust this folder")
         })
         .await?;
@@ -965,7 +951,7 @@ fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult 
             .terminal_open(&ctx, id.as_str(), Some((120, 40)))
             .await?;
         app.terminal_input(&ctx, &attach, b"2\r", false).await?;
-        wait_for("the first message", Duration::from_secs(60), || async {
+        eventually("the first message", Duration::from_secs(60), || async {
             {
                 let shown = screen(&app, &id);
                 // The image is pasted where it sits: after the text (SPEC-124).
@@ -1022,7 +1008,7 @@ fn an_unanswered_trust_prompt_before_a_typed_first_message_flags_the_task() -> T
         )
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
-        wait_for("the flag", Duration::from_secs(60), || async {
+        eventually("the flag", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -1078,7 +1064,7 @@ fn a_first_message_cut_by_a_restart_flags_the_task() -> TestResult {
         // The image's paste reached the terminal (its echo); the text and Enter come after the
         // paste settled, at least 500 ms later (`PASTE_QUIET`). A test that missed that window
         // would fail (the message echoed), never pass falsely.
-        wait_for("the image's paste", Duration::from_secs(60), || async {
+        eventually("the image's paste", Duration::from_secs(60), || async {
             screen(&app, &id).contains("/srv/shot.png")
         })
         .await?;
@@ -1092,7 +1078,7 @@ fn a_first_message_cut_by_a_restart_flags_the_task() -> TestResult {
         let (app, _) = start(&data, &fake, hooked(), port, probe).await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
-        wait_for("the flag", Duration::from_secs(20), || async {
+        eventually("the flag", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -1145,7 +1131,7 @@ fn first_message_held_by_an_update(
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the run", Duration::from_secs(30), || async {
+        eventually("the run", Duration::from_secs(30), || async {
             matches!(app.deps.store.live_attempt(&id).await, Ok(Some(_)))
         })
         .await?;
@@ -1170,7 +1156,7 @@ fn first_message_held_by_an_update(
             .await?;
         app.restore_update_hold().await;
         let marker = Path::new(&attempt.run_dir).join("opening-pending");
-        wait_for("the held submit", Duration::from_secs(60), || async {
+        eventually("the held submit", Duration::from_secs(60), || async {
             std::fs::read(&marker).is_ok_and(|m| !m.is_empty())
         })
         .await?;
@@ -1193,7 +1179,7 @@ fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestR
         let (app, _) = start(&data, &fake, hooked(), port, probe).await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
-        wait_for("the first message", Duration::from_secs(60), || async {
+        eventually("the first message", Duration::from_secs(60), || async {
             {
                 let shown = screen(&app, &id);
                 // The image is pasted where it sits: after the text (SPEC-124).
@@ -1234,7 +1220,7 @@ fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResu
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Make it blue", TaskMode::Goal).await?;
         // The goal turn ended (its Stop clears a pending first message, so it comes first).
-        wait_for("the goal turn's end", Duration::from_secs(60), || async {
+        eventually("the goal turn's end", Duration::from_secs(60), || async {
             screen(&app, &id).contains("GOAL SET")
                 && !matches!(activity(&app, &id).await, Some(Activity::Working) | None)
         })
@@ -1255,7 +1241,7 @@ fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResu
         let (app, _) = start(&data, &fake, unjudged(), port, probe).await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
-        wait_for("the flag", Duration::from_secs(20), || async {
+        eventually("the flag", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -1303,7 +1289,7 @@ fn a_key_just_before_the_goal_keeps_it_out_and_is_said() -> TestResult {
                 move || app.record_typing(&id, &person),
             );
         }
-        wait_for("the flag", Duration::from_secs(60), || async {
+        eventually("the flag", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -1363,7 +1349,7 @@ fn nothing_is_typed_between_the_goal_and_its_enter() -> TestResult {
                 },
             );
         }
-        wait_for("the typed goal", Duration::from_secs(60), || async {
+        eventually("the typed goal", Duration::from_secs(60), || async {
             screen(&app, &id).contains("GOAL SET")
         })
         .await?;
@@ -1438,7 +1424,7 @@ fn restart_before_goal_is_typed(agent: FakeAgentOptions) -> Result<bool, BoxErro
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         // The opening turn ends under the new server: its Stop is answered.
         let stop_answered = Path::new(&attempt.run_dir).join("stop-answered");
-        wait_for(
+        eventually(
             "the opening turn's end",
             Duration::from_secs(60),
             || async { stop_answered.exists() },
@@ -1449,7 +1435,7 @@ fn restart_before_goal_is_typed(agent: FakeAgentOptions) -> Result<bool, BoxErro
         assert!(notices(&mut watch).iter().all(|n| !n.contains("goal")));
         // The watch ends once, whether it observed a verdict or flagged the missing goal.
         let marker = typed_goal_marker(&attempt.run_dir);
-        wait_for("the marker's removal", Duration::from_secs(45), || async {
+        eventually("the marker's removal", Duration::from_secs(45), || async {
             !marker.exists()
         })
         .await?;
@@ -1486,11 +1472,11 @@ fn a_typed_goal_recorded_before_a_restart_is_not_flagged() -> TestResult {
         let (id, _ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         let marker = typed_goal_marker(&attempt.run_dir);
-        wait_for("the typed goal", Duration::from_secs(60), || async {
+        eventually("the typed goal", Duration::from_secs(60), || async {
             screen(&app, &id).contains("GOAL SET")
         })
         .await?;
-        wait_for("the marker's removal", Duration::from_secs(20), || async {
+        eventually("the marker's removal", Duration::from_secs(20), || async {
             !marker.exists()
         })
         .await?;
@@ -1510,7 +1496,7 @@ fn a_typed_goal_recorded_before_a_restart_is_not_flagged() -> TestResult {
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
-        wait_for("the marker's removal", Duration::from_secs(30), || async {
+        eventually("the marker's removal", Duration::from_secs(30), || async {
             !marker.exists()
         })
         .await?;
@@ -1537,11 +1523,11 @@ fn a_typed_goal_that_was_taken_leaves_no_marker() -> TestResult {
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         let marker = typed_goal_marker(&attempt.run_dir);
         assert!(marker.is_file());
-        wait_for("the typed goal", Duration::from_secs(60), || async {
+        eventually("the typed goal", Duration::from_secs(60), || async {
             screen(&app, &id).contains("GOAL SET")
         })
         .await?;
-        wait_for("the marker's removal", Duration::from_secs(20), || async {
+        eventually("the marker's removal", Duration::from_secs(20), || async {
             !marker.exists()
         })
         .await?;
@@ -1579,7 +1565,7 @@ fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
         let id = new_task(&app, &sandbox, &user, "Tidy the parser", TaskMode::Goal).await?;
         // The run is up, not only recorded: a server stopped while it spawns leaves no run the
         // next server can reattach, so that server ends it as lost instead of watching it (#514).
-        wait_for("the run", Duration::from_secs(30), || async {
+        eventually("the run", Duration::from_secs(30), || async {
             matches!(
                 app.deps.store.live_attempt(&id).await,
                 Ok(Some(attempt)) if attempt.state == AttemptState::Live
@@ -1602,7 +1588,7 @@ fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
-        wait_for("the flag", Duration::from_secs(45), || async {
+        eventually("the flag", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -1615,7 +1601,7 @@ fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
         // Flagged once: no later restart flags it again (GWR-001).
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         let marker = launch_goal_marker(&attempt.run_dir);
-        wait_for("the marker's removal", Duration::from_secs(10), || async {
+        eventually("the marker's removal", Duration::from_secs(10), || async {
             !marker.exists()
         })
         .await?;
@@ -1639,13 +1625,13 @@ fn a_launch_goal_recorded_before_a_restart_is_not_watched_again() -> TestResult 
         let (app, port) = start(&data, &fake, unjudged(), 0, probe).await?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Make it blue", TaskMode::Goal).await?;
-        wait_for("the goal", Duration::from_secs(60), || async {
+        eventually("the goal", Duration::from_secs(60), || async {
             screen(&app, &id).contains("GOAL SET")
         })
         .await?;
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         let marker = launch_goal_marker(&attempt.run_dir);
-        wait_for("the marker's removal", Duration::from_secs(60), || async {
+        eventually("the marker's removal", Duration::from_secs(60), || async {
             !marker.exists()
         })
         .await?;
@@ -1667,7 +1653,7 @@ fn a_launch_goal_recorded_before_a_restart_is_not_watched_again() -> TestResult 
         let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
         // The watch ended: its outcome is decided.
-        wait_for("the watch's end", Duration::from_secs(45), || async {
+        eventually("the watch's end", Duration::from_secs(45), || async {
             !marker.exists()
         })
         .await?;
@@ -1700,14 +1686,14 @@ async fn first_message_held_for_capacity(
         TaskMode::Prompt,
     )
     .await?;
-    wait_for("the run on a-first", Duration::from_secs(30), || async {
+    eventually("the run on a-first", Duration::from_secs(30), || async {
         matches!(app.deps.store.live_attempt(&id).await, Ok(Some(_)))
     })
     .await?;
     // a-first runs out before the first message is typed: it is held at its submit.
     probe.set("a-first", usage(99.0, 4 * HOUR, 30.0, 100));
     refresh(app, &user, "a-first").await?;
-    wait_for(
+    eventually(
         "the held first message",
         Duration::from_secs(60),
         || async {
@@ -1727,12 +1713,12 @@ async fn first_message_held_for_capacity(
 /// The task moved to b-second as a fresh session that typed the task's own opening there, the
 /// image pasted, not the held prompt's text.
 async fn typed_again_on_b_second(app: &Arc<App>, id: &TaskId) -> TestResult {
-    wait_for("the run on b-second", Duration::from_secs(60), || async {
+    eventually("the run on b-second", Duration::from_secs(60), || async {
         let attempts = app.deps.store.attempts(id).await.unwrap_or_default();
         attempts.len() == 2 && attempts[1].state == AttemptState::Live
     })
     .await?;
-    wait_for("the first message", Duration::from_secs(60), || async {
+    eventually("the first message", Duration::from_secs(60), || async {
         {
             let shown = screen(app, id);
             // The image is pasted where it sits: after the text (SPEC-124).
@@ -1845,13 +1831,13 @@ fn a_restored_prompt_goal_waits_at_stop_before_attach() -> TestResult {
         .await?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "initial turn", TaskMode::Prompt).await?;
-        wait_for("the initial Stop", Duration::from_secs(30), || async {
+        eventually("the initial Stop", Duration::from_secs(30), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
         crate::pool_supervision::add_account(&app, "b-second").await?;
         app.send_input(&id, b"/goal keep the header blue\r").await?;
-        wait_for("the idle open goal", Duration::from_secs(30), || async {
+        eventually("the idle open goal", Duration::from_secs(30), || async {
             app.goal_is_open(&id) && activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
@@ -1869,7 +1855,7 @@ fn a_restored_prompt_goal_waits_at_stop_before_attach() -> TestResult {
             .await?
             .ok_or("live resume")?;
         assert_eq!(resumed.launch_kind, LaunchKind::Resume);
-        wait_for(
+        eventually(
             "the resumed turn's Stop answer before attach",
             Duration::from_secs(30),
             || async { Path::new(&resumed.run_dir).join("stop-answered").exists() },
@@ -1882,7 +1868,7 @@ fn a_restored_prompt_goal_waits_at_stop_before_attach() -> TestResult {
             Some(Activity::Working),
             "Stop waits through attach"
         );
-        wait_for(
+        eventually(
             "the same Stop's deadline after attach",
             Duration::from_secs(30),
             || async { activity(&app, &id).await == Some(Activity::Waiting) },

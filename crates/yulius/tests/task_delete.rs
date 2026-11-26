@@ -2,6 +2,7 @@
 //! their records and directories; live tasks and read users are refused.
 
 use crate::support;
+use crate::support::eventually;
 
 use axum::http::{Method, StatusCode};
 use serde_json::json;
@@ -303,22 +304,6 @@ fn harness_on(
     })
 }
 
-/// Waits (bounded) until `check` holds.
-async fn until<F, Fut>(what: &str, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if check().await {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 /// Waits (bounded) for a terminal notice of the task that contains `needle`.
 async fn notice(
     frames: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFrame>,
@@ -370,13 +355,17 @@ async fn a_stopped_run_whose_host_cannot_be_terminated_stays_live_and_blocks_del
     // The host can be terminated now: stopping again ends the run.
     host.fails.store(false, std::sync::atomic::Ordering::SeqCst);
     h.app.stop_task_now(&id).await?;
-    until("the run to end", || async {
-        h.store.live_attempt(&id).await.is_ok_and(|a| a.is_none())
-            && h.store
-                .task(&id)
-                .await
-                .is_ok_and(|t| t.is_some_and(|t| !t.status.is_live()))
-    })
+    eventually(
+        "the run to end",
+        std::time::Duration::from_secs(10),
+        || async {
+            h.store.live_attempt(&id).await.is_ok_and(|a| a.is_none())
+                && h.store
+                    .task(&id)
+                    .await
+                    .is_ok_and(|t| t.is_some_and(|t| !t.status.is_live()))
+        },
+    )
     .await?;
     assert!(host.calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
     Ok(())

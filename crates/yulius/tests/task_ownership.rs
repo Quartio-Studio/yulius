@@ -780,7 +780,7 @@ async fn a_hand_over_moves_the_commit_identity() -> TestResult {
     h.github.set_perm("alice", "acme/repo", perms("write"));
     h.github.set_perm("bob", "acme/repo", perms("write"));
     let worktree = tempfile::tempdir()?;
-    crate::support::repos::git(worktree.path(), &["init", "-q"])?;
+    crate::support::git_stdout(worktree.path(), &["init", "-q"])?;
     seed_task(
         &h,
         "t1",
@@ -802,7 +802,7 @@ async fn a_hand_over_moves_the_commit_identity() -> TestResult {
         assert_eq!(r.status, 200, "{rest}: {}", r.body);
     }
     let config =
-        |key: &str| crate::support::repos::git(worktree.path(), &["config", "--worktree", key]);
+        |key: &str| crate::support::git_stdout(worktree.path(), &["config", "--worktree", key]);
     assert_eq!(config("user.name")?.trim(), "BOB");
     assert_eq!(config("user.email")?.trim(), "bob@users.noreply.github.com");
     Ok(())

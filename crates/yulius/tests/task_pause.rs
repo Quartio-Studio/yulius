@@ -2,6 +2,8 @@
 //! update freezes it (ADR-0131), or held at its turn boundary when it cannot be frozen; the pause
 //! is stored, survives an update and a restart, and every way Yulius ends the run thaws it first.
 
+use crate::support::eventually;
+use std::future::ready;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -89,17 +91,6 @@ async fn hook(f: &Fixture, event: &str) -> Result<u16, Box<dyn std::error::Error
         .await?
         .status()
         .as_u16())
-}
-
-/// Waits (bounded) until `check` holds.
-async fn eventually(mut check: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if check() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    false
 }
 
 /// AC-PER-1: the owner pauses the running task: its run is frozen, the pause stored and shown;
@@ -247,11 +238,11 @@ async fn a_freeze_that_never_settles_falls_back_to_the_turn_boundary() -> TestRe
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["pause"]["pending"], true, "not confirmed yet");
     let host = f.host.clone();
-    assert!(
-        eventually(|| host.thawed() == vec![RUN.to_owned()]).await,
-        "thawed after its passes: {:?}",
-        host.thawed()
-    );
+    eventually("thawed after its passes", Duration::from_secs(5), || {
+        ready(host.thawed() == vec![RUN.to_owned()])
+    })
+    .await
+    .map_err(|err| format!("{err}: {:?}", host.thawed()))?;
     assert_eq!(pause_of(&f).await?["pending"], true, "its turn goes on");
     assert_eq!(hook(&f, "Stop").await?, 202, "held at its turn boundary");
     assert_eq!(pause_of(&f).await?["pending"], false);

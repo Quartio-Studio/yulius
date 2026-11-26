@@ -3,6 +3,7 @@
 //! check-in -> Needs You escalation for stalled armed green PRs.
 
 use crate::support;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,29 +42,6 @@ const YULIUS_TOML: &str = r#"[[ci.jobs]]
 name = "check"
 command = 'echo ok'
 "#;
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
 
 fn git_ok(dir: &Path, args: &[&str]) -> Option<String> {
     git(dir, args).ok()
@@ -904,6 +882,13 @@ async fn stalled_armed_green_pr_checks_in_then_escalates_to_needs_you_and_auto_c
         !notice.action.is_empty() && !notice.link.is_empty(),
         "notice must include concrete action and link: {notice:?}"
     );
+    assert!(
+        notice
+            .problem
+            .as_deref()
+            .is_some_and(|p| p.contains("Yulius still sees the agent's turn as working")),
+        "notice must say why the PR waits: {notice:?}"
+    );
 
     // Verify tasks_list and task_get parity (SPEC-578).
     let caller = yulius_app::coordination::ProjectCaller {
@@ -1185,8 +1170,9 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
 #[test]
 fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestResult {
     use crate::pool_supervision::{
-        ScriptedUsage, build_served_tuned, new_task, runtime, screen, seed, stop, temp, wait_for,
+        ScriptedUsage, build_served_tuned, new_task, runtime, screen, seed, stop, temp,
     };
+    use crate::support::eventually;
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::model::Secret;
     use yulius_app::ports::github::{GitHubPort, NewPull};
@@ -1236,7 +1222,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         git(&repo, &["fetch", "-q", "origin"])?;
 
         let id = new_task(&app, &sandbox, &user, "ArmedStall").await?;
-        wait_for("first answer", Duration::from_secs(30), || {
+        eventually("first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: ArmedStall: answer with an echo") }
         })
@@ -1369,7 +1355,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
             sent.contains("has been green for") && sent.contains("Your armed merge"),
             "unexpected check-in text: {sent}"
         );
-        wait_for("check-in echoed on screen", Duration::from_secs(15), || {
+        eventually("check-in echoed on screen", Duration::from_secs(15), || {
             let shown = screen(&app, &id);
             async move { shown.contains("Your armed merge") }
         })
@@ -1699,6 +1685,57 @@ async fn disarmed_pr_on_deferred_pass_resets_stall_clock_before_rearm() -> TestR
     assert!(
         summary_after.needs_you.is_none() && summary_after.needs_you_notice.is_none(),
         "re-arming the same head after a deferred disarm must not immediately re-escalate: {summary_after:?}"
+    );
+    Ok(())
+}
+
+/// An armed green pull request whose worktree Git cannot read is waiting for the same reason as a
+/// dirty one: the merge queue does not touch a branch it cannot read, and the Needs You notice
+/// says so instead of a generic sentence (audit L2 F2: one default for a failed read, dirty).
+#[tokio::test]
+async fn stalled_armed_green_pr_with_an_unreadable_worktree_says_uncommitted() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f
+        .task_with(
+            1,
+            Harness::Antigravity,
+            Activity::Waiting,
+            &[("a.txt", "x\n")],
+        )
+        .await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &head).await?;
+    f.advance_origin_dev("other.txt", "moved\n", true)?;
+    // A corrupt index: `git status` fails, so whether anything is uncommitted cannot be read.
+    let index = git(
+        &worktree,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    )?;
+    std::fs::write(&index, "not an index")?;
+    assert!(git(&worktree, &["status", "--porcelain"]).is_err());
+    let id = TaskId::parse("t1")?;
+
+    let bounds = WatchBounds::default();
+    let _ = app.watch_prs(&bounds).await;
+    f.h.clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+    f.h.clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+
+    let task = app.deps.store.task(&id).await?.ok_or("t1")?;
+    let summary = app.task_summary(&task).await?;
+    let notice = summary
+        .needs_you_notice
+        .as_ref()
+        .ok_or("expected a Needs You notice after the armed-PR stall bound")?;
+    assert!(
+        notice
+            .problem
+            .as_deref()
+            .is_some_and(|p| p.contains("Uncommitted changes remain in the task worktree")),
+        "a worktree Git cannot read counts as uncommitted: {notice:?}"
     );
     Ok(())
 }
