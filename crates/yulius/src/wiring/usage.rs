@@ -26,6 +26,7 @@
 
 use std::time::Duration;
 
+use crate::wiring::http::{BodyError, read_bounded};
 use async_trait::async_trait;
 use serde_json::Value;
 use yulius_app::model::Secret;
@@ -36,14 +37,6 @@ use yulius_domain::usage::{
     AccountUsage, LimitScope, ModelAnswer, ReportedLimit, SESSION_WINDOW_MINUTES, UsageWindow,
     WEEKLY_WINDOW_MINUTES,
 };
-
-fn now() -> Timestamp {
-    Timestamp(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
-    )
-}
 
 const CLAUDE_API: &str = "https://api.anthropic.com";
 const CODEX_API: &str = "https://chatgpt.com/backend-api";
@@ -75,11 +68,8 @@ impl ProviderUsage {
     /// # Errors
     /// When the HTTP client cannot be built.
     pub fn new() -> Result<Self, String> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
+        let http = super::http::client_builder()
             .timeout(TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("usage client setup failed: {e}"))?;
         Ok(Self {
@@ -125,17 +115,12 @@ impl ProviderUsage {
 
 /// Keep at most the usage probe's byte budget, including for chunked responses.
 async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, UsageFailure> {
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| {
-        tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
-        UsageFailure::new(TRY_AGAIN)
-    })? {
-        if chunk.len() > MAX_BODY - bytes.len() {
-            return Err(UsageFailure::new(TRY_AGAIN));
+    read_bounded(&mut response, MAX_BODY).await.map_err(|e| {
+        if let BodyError::Read(e) = e {
+            tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
         }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
+        UsageFailure::new(TRY_AGAIN)
+    })
 }
 
 /// The failure an HTTP status means (`None` for success): 403 is a sign-in without the
@@ -544,7 +529,7 @@ impl UsageProbe for ProviderUsage {
                         UsageFailureKind::NotShared => UsageFailure::of(f.kind, CODEX_NOT_SHARED),
                         _ => f,
                     })?;
-                    parse_codex(&body, now()).map_err(UsageFailure::new)
+                    parse_codex(&body, super::clock::now()).map_err(UsageFailure::new)
                 }
             },
             // No usage source of an Antigravity subscription was verified: its limits come from

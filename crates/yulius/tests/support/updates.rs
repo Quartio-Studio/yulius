@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::support::pending::UnavailableSessionHost;
 use async_trait::async_trait;
-use yulius::wiring::pending::UnavailableSessionHost;
 use yulius_app::error::AppResult;
 use yulius_app::model::Secret;
 use yulius_app::ports::session::{
