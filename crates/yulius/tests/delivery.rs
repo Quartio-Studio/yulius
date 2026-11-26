@@ -1214,6 +1214,64 @@ async fn set_steps(f: &Fixture, task: &str, statuses: &[&str]) -> BoxResult<()> 
 
 // ---------------------------------------------------------------- tests
 
+/// Whether a pull request conflicts with its base is asked two ways: `merge_base` + `adds_to`
+/// (the watch's and delivery's check) and `preview_merge` (the armed-merge pass's). On the real
+/// Git, with the repository's merge drivers, they agree in every shape a pull request takes.
+#[tokio::test]
+async fn preview_merge_and_adds_to_agree_on_conflicts() -> TestResult {
+    use yulius_app::ports::git::TrainStep;
+    let real = support::confined_git();
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "dev"])?;
+    commit_file(repo, ".gitattributes", "changes.md merge=union\n", "attributes")?;
+    commit_file(repo, "a.txt", "one\n", "a")?;
+    commit_file(repo, "changes.md", "# Changes\n", "changes")?;
+    // (shape, the head's commits, then the base's commits, whether it conflicts)
+    let shapes: [(&str, &[(&str, &str)], &[(&str, &str)], bool); 6] = [
+        ("apart", &[("b.txt", "head\n")], &[("c.txt", "base\n")], false),
+        ("conflict", &[("a.txt", "head\n")], &[("a.txt", "base\n")], true),
+        (
+            "union",
+            &[("changes.md", "# Changes\nhead\n")],
+            &[("changes.md", "# Changes\nbase\n")],
+            false,
+        ),
+        ("up-to-date", &[("d.txt", "head\n")], &[], false),
+        ("behind", &[], &[("e.txt", "base\n")], false),
+        ("same-change", &[("f.txt", "same\n")], &[("f.txt", "same\n")], false),
+    ];
+    for (shape, head_files, base_files, conflicts) in shapes {
+        let branch = format!("head-{shape}");
+        git(repo, &["checkout", "-q", "-b", &branch, "dev"])?;
+        for (path, text) in head_files {
+            commit_file(repo, path, text, shape)?;
+        }
+        git(repo, &["checkout", "-q", "dev"])?;
+        for (path, text) in base_files {
+            commit_file(repo, path, text, shape)?;
+        }
+        let base = git(repo, &["rev-parse", "dev"])?;
+        let head = git(repo, &["rev-parse", &branch])?;
+        let since = real.merge_base(repo, &base, &head).await?.ok_or("merge base")?;
+        let by_adds_to = real.adds_to(repo, &base, &since, &head).await?.is_none();
+        let by_preview = matches!(
+            real.preview_merge(repo, &base, &head).await?,
+            TrainStep::Conflict(_)
+        );
+        assert_eq!(by_adds_to, conflicts, "{shape}: adds_to");
+        assert_eq!(by_preview, conflicts, "{shape}: preview_merge");
+    }
+    // A head with no history in common has no merge base: neither check can tell, so the
+    // callers ask GitHub instead.
+    git(repo, &["checkout", "-q", "--orphan", "head-unrelated"])?;
+    commit_file(repo, "g.txt", "alone\n", "unrelated")?;
+    let head = git(repo, &["rev-parse", "head-unrelated"])?;
+    let base = git(repo, &["rev-parse", "dev"])?;
+    assert_eq!(real.merge_base(repo, &base, &head).await?, None);
+    Ok(())
+}
+
 /// AC-DSC-2, AC-GIT-1: the PR is refused until the task has a valid committed spec, which is
 /// discovered and registered; the Git page shows the branch facts, the PR and its checks.
 #[tokio::test]
