@@ -46,8 +46,8 @@ lines, as `scripts/dev ci` does.
 Delivery follows the task briefing and the bundled `delivery-pipeline` skill; this repository's
 settings are in [Git workflow](docs/engineering/git.md). The whole gate is Yulius CI's. A pull
 request merges on `quality`, `lint`, `macos`, `docs`, `deps`, `security`, the affected
-`file-contracts` tests and any job it adds or changes; the two partitions of `test` and `e2e` run
-on the merged revision. Before review, run the whole test binary you touched, including its other
+`file-contracts` tests and any job it adds or changes; `test` and `e2e` run on
+the merged revision. Before review, run the whole test binary you touched, including its other
 tests, and the e2e specs your change touches.
 
 ## Commands

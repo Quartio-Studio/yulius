@@ -105,7 +105,7 @@ impl crate::context::App {
         envelope: &Envelope,
         reach: &mut Reach,
     ) -> bool {
-        if envelope.admin_only && !(user.is_superadmin || user.is_instance_admin) {
+        if envelope.admin_only && !user.is_admin() {
             return false;
         }
         // A person's own event (their notepad, SPEC-103) reaches no one else.

@@ -48,9 +48,8 @@ On the instance, bootstrap installs the optional pinned mbx executable. A fresh 
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
 | `scripts/dev macos` | Clippy with warnings denied on every target for `aarch64-apple-darwin`; on Linux the vendored C (ring, SQLite) is compiled by the pinned zig. Type-checks only: nothing is linked |
-| `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets. With `YULIUS_CI_MATRIX=i/n` (an individual matrix shard) only hash partition i of n, and the doctests in shard 1 (ADR-0358) |
+| `scripts/dev test` | nextest workspace tests with zero retries, leaving out the tests Yulius CI quarantined; doctests for eligible library targets. The CI `test` job runs it on each merged revision |
 | `scripts/dev docs` | Locked workspace rustdoc build with warnings denied |
-| `scripts/dev test-shard` | Both CI matrix jobs use one nextest archive of their run. They run their own hash partitions concurrently when both have a slot. The first partition runs doctests |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, quick, check, lint, macos, test, deps, then rustdoc with warnings denied; the checker's Python tests run beside the gates after quick, their output in a `checker-tests` stage at the end (ADR-0363) |
 | `scripts/dev checks` | Local aggregate of the five CI quality passes |

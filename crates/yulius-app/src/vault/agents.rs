@@ -102,11 +102,6 @@ pub(super) struct NewAgentSecret<'a> {
     pub(super) env_files: bool,
 }
 
-/// Whether the caller administers the instance.
-fn is_admin(ctx: &AuthContext) -> bool {
-    ctx.user.is_superadmin || ctx.user.is_instance_admin
-}
-
 /// What a project's list says about a secret there (MAN-005).
 #[derive(Default)]
 pub(super) struct Here {
@@ -186,7 +181,7 @@ impl App {
                 .await
                 .map(|_| ()),
             AgentScope::Global => {
-                if is_admin(ctx) {
+                if ctx.user.is_admin() {
                     Ok(())
                 } else {
                     Err(AppError::Forbidden(
@@ -278,7 +273,7 @@ impl App {
     ) -> AppResult<Vec<AgentSecretView>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         let (_, level) = self.require_for(ctx, &sid, Action::View).await?;
-        let admin = is_admin(ctx);
+        let admin = ctx.user.is_admin();
         let me = &ctx.user.id;
         let store = &self.deps.store;
         let on: std::collections::HashSet<String> =
