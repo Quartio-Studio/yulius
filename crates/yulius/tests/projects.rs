@@ -1886,10 +1886,10 @@ async fn subscription(w: &World) -> TestResult {
 
 /// The remote's branches, `name sha` per line.
 fn remote_heads(remote: &std::path::Path) -> Result<String, Error> {
-    Ok(git_stdout(
+    git_stdout(
         remote,
         &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
-    )?)
+    )
 }
 
 // SPEC-241 EMP-001: an empty clone's HEAD names the host's local default (here `master`), not

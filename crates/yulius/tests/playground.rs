@@ -226,7 +226,7 @@ async fn upload(h: &Harness, creds: &Creds, name: &str, body: Vec<u8>) -> BoxRes
 }
 
 fn file_at(repo: &Path, rev: &str, path: &str) -> BoxResult<String> {
-    Ok(git_stdout(repo, &["show", &format!("{rev}:{path}")])?)
+    git_stdout(repo, &["show", &format!("{rev}:{path}")])
 }
 
 /// PLY-001, PLY-003: a folder with `.git` keeps its branches, tags and history; its uncommitted
@@ -2759,10 +2759,7 @@ fn laptop(dir: &Path) -> BoxResult<(PathBuf, PathBuf, PathBuf)> {
 
 /// Every ref of a repository with its commit, sorted.
 fn refs(repo: &Path) -> BoxResult<String> {
-    Ok(git_stdout(
-        repo,
-        &["for-each-ref", "--format=%(refname) %(objectname)"],
-    )?)
+    git_stdout(repo, &["for-each-ref", "--format=%(refname) %(objectname)"])
 }
 
 /// The playgrounds a person made, as the store keeps them (not removed).
