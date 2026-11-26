@@ -31,6 +31,7 @@ use crate::automations::{CreatedVia, templates};
 use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
+use crate::mcp_args::{flag_arg, opt_str, text_arg};
 use crate::model::{TaskOrigin, TaskRecord, UserRecord};
 
 /// Most tasks tools may create per project in a rolling hour (MGT-003).
@@ -75,22 +76,6 @@ impl ToolTaskWindow {
         {
             times.remove(index);
         }
-    }
-}
-
-fn flag_arg(args: &Value, key: &str) -> AppResult<bool> {
-    match args.get(key) {
-        None | Some(Value::Null) => Ok(false),
-        Some(Value::Bool(flag)) => Ok(*flag),
-        Some(_) => Err(AppError::Invalid(format!("`{key}` must be true or false"))),
-    }
-}
-
-fn opt_str(args: &Value, key: &str) -> AppResult<Option<String>> {
-    match args.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) => Ok(Some(text.trim().to_owned()).filter(|t| !t.is_empty())),
-        Some(_) => Err(AppError::Invalid(format!("`{key}` must be a string"))),
     }
 }
 
@@ -319,10 +304,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
-        let prompt = args
-            .get("prompt")
-            .and_then(Value::as_str)
-            .ok_or_else(|| AppError::Invalid("missing string argument `prompt`".into()))?;
+        let prompt = text_arg(args, "prompt")?;
         // Before anything is read for the caller: what `after_all_tasks` answers says how
         // many tasks the project has.
         let user = self.manage_authority(caller).await?;

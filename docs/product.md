@@ -3,7 +3,7 @@
 Yulius is a self-hosted coding workspace for the Quartio team, written in Rust and inspired by
 Cezar and Open Mercato Cloud. It runs native Claude Code sessions, one per task, inside
 contained sandboxes on a single Linux VM, and enforces engineering discipline around them.
-Yulius develops itself with Yulius. Its pull requests get independent results for check, lint, macOS, docs and dependencies. Pull requests and merge trains also run the Rust contracts that read changed repository files. The merged revision runs both Rust test partitions from one build and runs the browser suite. [Decision 0438](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
+Yulius develops itself with Yulius. Its pull requests get independent results for check, lint, macOS, docs and dependencies. Pull requests and merge trains also run the Rust contracts that read changed repository files. The merged revision runs the Rust test suite in one job and runs the browser suite. [Decision 0438](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
 
 Finished tasks keep their last observed pull request state while GitHub is unavailable. The instance shows when merges, CI status updates and staging can use GitHub again. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
 

@@ -9,7 +9,7 @@ use yulius_app::ports::store_ext::{ImportJobRecord, ImportStore};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, to_i64, to_u64};
+use crate::{SqliteStore, bad_column, text_parsed, to_i64, to_u64};
 
 const COLS: &str =
     "id, sandbox_id, user_id, state, manifest, received, result, created_at, updated_at";
@@ -27,7 +27,6 @@ fn received_to_json(map: &BTreeMap<String, u64>) -> String {
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<ImportJobRecord> {
     let sandbox: Option<String> = row.get("sandbox_id")?;
-    let user: String = row.get("user_id")?;
     let received: String = row.get("received")?;
     Ok(ImportJobRecord {
         id: row.get("id")?,
@@ -35,7 +34,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<ImportJobRecord> {
             .as_deref()
             .map(|s| SandboxId::parse(s).map_err(|_| bad_column("sandbox id", s)))
             .transpose()?,
-        user_id: UserId::parse(&user).map_err(|_| bad_column("user id", &user))?,
+        user_id: text_parsed(row, "user_id", "user id", UserId::parse)?,
         state: row.get("state")?,
         manifest: row.get("manifest")?,
         received: received_from_json(&received)?,

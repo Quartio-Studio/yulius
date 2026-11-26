@@ -11,20 +11,19 @@ use yulius_app::ports::store::ReviewStart;
 use yulius_domain::ids::{MessageId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, to_i64, to_u32, to_u64};
+use crate::{SqliteStore, bad_column, opt_ts, text_parsed, to_i64, to_u32, to_u64};
 
 fn step_from_row(row: &Row<'_>) -> rusqlite::Result<StepRecord> {
     let id: String = row.get("id")?;
-    let task: String = row.get("task_id")?;
     Ok(StepRecord {
         id: StepId::parse(&id).map_err(|_| bad_column("step id", &id))?,
-        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         ordinal: to_u32(row.get("ordinal")?),
         title: row.get("title")?,
         status: row.get("status")?,
         note: row.get("note")?,
         updated_by: row.get("updated_by")?,
-        updated_at: row.get::<_, Option<i64>>("updated_at")?.map(Timestamp),
+        updated_at: opt_ts(row, "updated_at")?,
         effort: u8::try_from(row.get::<_, i64>("effort")?.clamp(1, 3)).unwrap_or(1),
     })
 }
@@ -39,11 +38,10 @@ fn opt_task(text: Option<String>) -> rusqlite::Result<Option<TaskId>> {
 
 fn message_from_row(row: &Row<'_>) -> rusqlite::Result<MessageRecord> {
     let id: String = row.get("id")?;
-    let sandbox: String = row.get("sandbox_id")?;
     let from_user: Option<String> = row.get("from_user")?;
     Ok(MessageRecord {
         id: MessageId::parse(&id).map_err(|_| bad_column("message id", &id))?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         from_task: opt_task(row.get("from_task")?)?,
         from_user: from_user
             .as_deref()
@@ -96,10 +94,9 @@ const REVIEW_ROUND_COLS: &str = "id, task_id, round, head, agent, model, reason,
     model_answered, started_at, ended_at, verdict, cut_off, pr_number, merged_at";
 
 fn review_round_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewRoundRecord> {
-    let task: String = row.get("task_id")?;
     Ok(ReviewRoundRecord {
         id: row.get("id")?,
-        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         round: to_u32(row.get("round")?),
         head: row.get("head")?,
         agent: row.get("agent")?,
@@ -108,11 +105,11 @@ fn review_round_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewRoundRecord> {
         subagent_id: row.get("subagent_id")?,
         model_answered: row.get("model_answered")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        ended_at: opt_ts(row, "ended_at")?,
         verdict: row.get("verdict")?,
         cut_off: row.get("cut_off")?,
         pr_number: row.get::<_, Option<i64>>("pr_number")?.map(to_u64),
-        merged_at: row.get::<_, Option<i64>>("merged_at")?.map(Timestamp),
+        merged_at: opt_ts(row, "merged_at")?,
     })
 }
 
@@ -241,11 +238,10 @@ impl CoordinationStore for SqliteStore {
                      FROM step_events WHERE task_id = ?1 GROUP BY step_id",
             )?;
             let rows = stmt.query_map([t], |r| {
-                let id: String = r.get(0)?;
                 Ok(StepTiming {
-                    step_id: StepId::parse(&id).map_err(|_| bad_column("step id", &id))?,
-                    started_at: r.get::<_, Option<i64>>(1)?.map(Timestamp),
-                    finished_at: r.get::<_, Option<i64>>(2)?.map(Timestamp),
+                    step_id: text_parsed(r, 0, "step id", StepId::parse)?,
+                    started_at: opt_ts(r, 1)?,
+                    finished_at: opt_ts(r, 2)?,
                 })
             })?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -671,12 +667,10 @@ impl CoordinationStore for SqliteStore {
                 .prepare("SELECT id, task_id, sandbox_id, pattern, note, created_at FROM scope_claims WHERE sandbox_id = ?1 AND released_at IS NULL ORDER BY created_at")?;
             let rows = stmt
                 .query_map([s], |r| {
-                    let t: String = r.get(1)?;
-                    let sb: String = r.get(2)?;
                     Ok(ScopeClaimRecord {
                         id: r.get(0)?,
-                        task_id: TaskId::parse(&t).map_err(|_| bad_column("task id", &t))?,
-                        sandbox_id: SandboxId::parse(&sb).map_err(|_| bad_column("sandbox id", &sb))?,
+                        task_id: text_parsed(r, 1, "task id", TaskId::parse)?,
+                        sandbox_id: text_parsed(r, 2, "sandbox id", SandboxId::parse)?,
                         pattern: r.get(3)?,
                         note: r.get(4)?,
                         created_at: Timestamp(r.get(5)?),
@@ -729,14 +723,12 @@ impl CoordinationStore for SqliteStore {
                 .prepare("SELECT sandbox_id, dir, prefix, number, task_id, reserved_at FROM record_numbers WHERE sandbox_id = ?1 AND dir = ?2 ORDER BY reserved_at, number")?;
             let rows = stmt
                 .query_map(params![s, d], |r| {
-                    let sb: String = r.get(0)?;
-                    let t: String = r.get(4)?;
                     Ok(RecordReservation {
-                        sandbox_id: SandboxId::parse(&sb).map_err(|_| bad_column("sandbox id", &sb))?,
+                        sandbox_id: text_parsed(r, 0, "sandbox id", SandboxId::parse)?,
                         dir: r.get(1)?,
                         prefix: r.get(2)?,
                         number: to_u64(r.get(3)?),
-                        task_id: TaskId::parse(&t).map_err(|_| bad_column("task id", &t))?,
+                        task_id: text_parsed(r, 4, "task id", TaskId::parse)?,
                         reserved_at: Timestamp(r.get(5)?),
                     })
                 })?;

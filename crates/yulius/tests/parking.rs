@@ -3979,9 +3979,21 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
             app.deps.store.untold_staging_requests().await?.is_empty(),
             "told once"
         );
-        app.deps.store.set_activity(&id, Some(Activity::Done), app.now()).await?;
-        assert_eq!(app.capacity_view(&owner).await?.accounts[0].in_use_by, Some(0),
-            "a finished task releases its subscription once its outcome has been delivered");
+        // The outcome typed above starts a turn in the live session, and that turn's prompt hook
+        // can mark the task Working after the Done below (#1712). The task is finished once that
+        // turn has ended, so it is marked Done again until the read sees the subscription free.
+        wait_for(
+            "a finished task releases its subscription once its outcome has been delivered",
+            Duration::from_secs(30),
+            || async {
+                app.deps.store.set_activity(&id, Some(Activity::Done), app.now()).await.is_ok()
+                    && app
+                        .capacity_view(&owner)
+                        .await
+                        .is_ok_and(|view| view.accounts[0].in_use_by == Some(0))
+            },
+        )
+        .await?;
         // A deploy retry can finish while the old failure notification checks the browser.
         // The old notification must leave this request's new verdict for the next tick.
         use yulius_domain::staging::StagingState::{DeployFailed, Deploying, Ready, Verified};

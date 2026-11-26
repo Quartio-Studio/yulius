@@ -3,6 +3,7 @@
 ## Status
 
 Accepted for the Yulius project. [SPEC-598](../../.ai/specs/SPEC-598-shorten-a-yulius-ci-run-parallel-quality.md)
+The separate quality jobs stand. The shared test build is superseded: Since 2026-11-26 (audit L3 F1) one `test` job with 42 CPUs runs this repository's whole suite and then the doctests: the archive handoff is gone. Unpacking the 2.3 GB archive in each shard filled a bounded temporary directory (ENOSPC on `main`), and the split shortened no run while `e2e` was the full suite's longest job.
 
 ## Context
 

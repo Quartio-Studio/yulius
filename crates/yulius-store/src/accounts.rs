@@ -10,27 +10,23 @@ use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_parsed};
 
 const COLS: &str = "id, provider, label, credential, status, usage, last_error, email, \
                     email_checked_at, email_typed, created_at, updated_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
-    let id: String = row.get("id")?;
-    let provider: String = row.get("provider")?;
     let status: String = row.get("status")?;
     Ok(AccountRecord {
-        id: AccountId::parse(&id).map_err(|_| bad_column("account id", &id))?,
-        provider: Provider::parse(&provider).map_err(|_| bad_column("provider", &provider))?,
+        id: text_parsed(row, "id", "account id", AccountId::parse)?,
+        provider: text_parsed(row, "provider", "provider", Provider::parse)?,
         label: row.get("label")?,
         credential: row.get::<_, Option<Vec<u8>>>("credential")?.map(Sealed),
         status: AccountStatus::parse(&status),
         usage_json: row.get("usage")?,
         last_error: row.get("last_error")?,
         email: row.get("email")?,
-        email_checked_at: row
-            .get::<_, Option<i64>>("email_checked_at")?
-            .map(Timestamp),
+        email_checked_at: opt_ts(row, "email_checked_at")?,
         email_typed: row.get("email_typed")?,
         created_at: Timestamp(row.get("created_at")?),
         updated_at: Timestamp(row.get("updated_at")?),
@@ -331,15 +327,11 @@ impl AccountStore for SqliteStore {
                 "SELECT account_id, anchor, period FROM account_billing ORDER BY account_id",
             )?;
             let rows = stmt.query_map([], |row| {
-                let id: String = row.get(0)?;
                 let anchor: String = row.get(1)?;
                 let period: String = row.get(2)?;
                 let cycle = BillingCycle::parse(&anchor, &period)
                     .map_err(|_| bad_column("billing cycle", &format!("{anchor} {period}")))?;
-                Ok((
-                    AccountId::parse(&id).map_err(|_| bad_column("account id", &id))?,
-                    cycle,
-                ))
+                Ok((text_parsed(row, 0, "account id", AccountId::parse)?, cycle))
             })?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })

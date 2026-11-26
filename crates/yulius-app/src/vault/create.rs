@@ -224,8 +224,7 @@ impl App {
         user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: CreateArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: CreateArgs = super::parse_args(args)?;
         let name = agent_made_name(&args.name)?;
         name.check_assignment().map_err(invalid)?;
         let description = description(args.description.as_deref())?;
