@@ -1422,7 +1422,7 @@ fn a_failed_fresh_codex_spawn_can_retry_its_original_request() -> TestResult {
         let failing = App::new(
             app.config.clone(),
             yulius_app::context::Deps {
-                session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+                session_host: Arc::new(crate::support::pending::UnavailableSessionHost),
                 ..app.deps.clone()
             },
         );

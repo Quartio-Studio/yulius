@@ -1,4 +1,4 @@
-//! Adapters reported as unavailable until their crates are wired (ptyhost: CP2, git: CP4).
+//! Process host and Git adapters for tests that must not start a process or touch a repository.
 //! Every call fails with a clear error; nothing pretends to succeed.
 
 use std::path::Path;

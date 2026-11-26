@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::git::{
@@ -145,12 +146,15 @@ impl GitAdapter {
     }
 
     fn git_with_token(&self, token: &Secret) -> Git {
-        let basic = base64_encode(format!("x-access-token:{}", token.expose()).as_bytes());
-        self.git_with_config(&[(
-            "http.https://github.com/.extraheader",
-            format!("AUTHORIZATION: basic {basic}"),
-        )])
+        self.git_with_config(&[("http.https://github.com/.extraheader", token_header(token))])
     }
+}
+
+/// GitHub's basic-auth header for a token: `x-access-token:<token>` in padded standard base64.
+fn token_header(token: &Secret) -> String {
+    let basic = base64::engine::general_purpose::STANDARD
+        .encode(format!("x-access-token:{}", token.expose()));
+    format!("AUTHORIZATION: basic {basic}")
 }
 
 fn map_err(err: GitError) -> AppError {
@@ -170,29 +174,6 @@ async fn blocking<T: Send + 'static>(
         .await
         .map_err(AppError::internal)?
         .map_err(map_err)
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(char::from(
-                    T[usize::try_from((n >> (18 - 6 * i)) & 63).unwrap_or(0)],
-                ));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 #[async_trait]
@@ -1125,14 +1106,19 @@ const _: () =
 
 #[cfg(test)]
 mod tests {
-    use super::base64_encode;
+    use yulius_app::model::Secret;
+
+    use super::token_header;
 
     #[test]
-    fn base64_matches_rfc4648_vectors() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    fn the_token_header_is_padded_standard_base64() {
+        assert_eq!(
+            token_header(&Secret("?>~~".into())),
+            "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Pz5+fg=="
+        );
+        assert_eq!(
+            token_header(&Secret("ab?>~~".into())),
+            "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46YWI/Pn5+"
+        );
     }
 }

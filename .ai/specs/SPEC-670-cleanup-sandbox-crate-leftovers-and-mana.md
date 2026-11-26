@@ -33,10 +33,10 @@ outside this task's paths, still reach `docker_bind`. F8 and F15 are excluded (t
 - [x] PR A: keep the per-tick restore_leaf (it also re-passes cpu and pids after a restart; under Not done)
 - [x] PR A: update comments and docs that describe the removed code
 - [x] PR A: run the sandbox crate tests and quick checks
-- [ ] PR A: independent review approved, merge armed
-- [ ] PR B: move the Docker front code verbatim into manager/docker.rs
-- [ ] PR B: move the image build code verbatim into manager/build.rs
-- [ ] PR B: move the system-layer code verbatim into system_layer.rs
+- [x] PR A: independent review approved, merge armed
+- [x] PR B: move the Docker front code verbatim into manager/docker.rs
+- [x] PR B: move the image build code verbatim into manager/build.rs
+- [x] PR B: move the system-layer code verbatim into system_layer.rs
 - [ ] PR B: tests, quick checks, review approved, merge armed
 - [ ] PR C: group the front fields of Live into FrontState
 - [ ] PR C: tests, quick checks, review approved, merge armed

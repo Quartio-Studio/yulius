@@ -114,24 +114,32 @@ fn bind_read_only(containment: &mut Containment, files: &[PlannedFile]) {
     }
 }
 
-/// A Superagent's fingerprint file (SPEC-352 SRF-001): `<run_dir>/scrub.json` (0600), named by
-/// `YULIUS_SCRUB_FILE` in place of any inherited one, and bound read-only into a contained session.
-/// The Bash wrapper reads it while Yulius cannot be reached, as a task run's.
+/// A run's fingerprint file, `<run_dir>/scrub.json` (0600), and the `YULIUS_SCRUB_FILE` entry
+/// naming it. The Bash wrapper reads it while Yulius cannot be reached.
+fn plan_scrub_file(
+    run_dir: &Path,
+    fingerprints: &FingerprintSet,
+) -> AppResult<(PlannedFile, (String, String))> {
+    let path = run_dir.join(FINGERPRINTS_FILE);
+    let env = (SCRUB_FILE_ENV.into(), path.to_string_lossy().into_owned());
+    let file = PlannedFile {
+        path,
+        contents: serde_json::to_vec(fingerprints).map_err(AppError::internal)?,
+        mode: 0o600,
+    };
+    Ok((file, env))
+}
+
+/// A Superagent's fingerprint file (SPEC-352 SRF-001): named in place of any inherited one, and
+/// bound read-only into a contained session.
 fn superagent_scrub_file(
     run_dir: &Path,
     fingerprints: &FingerprintSet,
     launch: &mut LaunchPlan,
 ) -> AppResult<()> {
-    let file = PlannedFile {
-        path: run_dir.join(FINGERPRINTS_FILE),
-        contents: serde_json::to_vec(fingerprints).map_err(AppError::internal)?,
-        mode: 0o600,
-    };
+    let (file, env) = plan_scrub_file(run_dir, fingerprints)?;
     launch.env.retain(|(key, _)| key != SCRUB_FILE_ENV);
-    launch.env.push((
-        SCRUB_FILE_ENV.into(),
-        file.path.to_string_lossy().into_owned(),
-    ));
+    launch.env.push(env);
     bind_read_only(&mut launch.containment, std::slice::from_ref(&file));
     launch.files.push(file);
     Ok(())
@@ -557,16 +565,9 @@ impl App {
             }
         }
         let fingerprints = self.scrub_fingerprints_for(&sandbox.id, holder).await?;
-        let scrub_file = run_dir.join(FINGERPRINTS_FILE);
-        launch.files.push(PlannedFile {
-            path: scrub_file.clone(),
-            contents: serde_json::to_vec(&fingerprints).map_err(AppError::internal)?,
-            mode: 0o600,
-        });
-        launch.env.push((
-            SCRUB_FILE_ENV.into(),
-            scrub_file.to_string_lossy().into_owned(),
-        ));
+        let (file, env) = plan_scrub_file(run_dir, &fingerprints)?;
+        launch.files.push(file);
+        launch.env.push(env);
         if let Some((script, prefix)) = self.scrub_shell_prefix(run_dir) {
             launch.files.push(script);
             launch.env.push(prefix);
@@ -965,8 +966,7 @@ impl App {
         user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: FillArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: FillArgs = super::parse_args(args)?;
         let field = args.field.as_deref().unwrap_or("value");
         if !matches!(field, "value" | "password" | "username" | "totp") {
             return Err(AppError::Invalid(
@@ -974,31 +974,9 @@ impl App {
             ));
         }
         let record = self
-            .resolved_agent_secrets(user.sandbox(), user.holder())
-            .await?
-            .into_iter()
-            .find(|r| r.name == args.secret.trim())
-            .ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "no agent secret named {:?} applies to this project (see secrets_list)",
-                    args.secret
-                ))
-            })?;
-        if matches!(record.scope(), AgentScope::Personal(_)) {
-            return Err(AppError::Forbidden(format!(
-                "{}: {}",
-                record.name,
-                super::PERSONAL_SECRET_BROWSER
-            )));
-        }
-        // A production secret is no agent's, by any way (ADR-0324).
-        if record.cd_prod {
-            return Err(AppError::Forbidden(format!(
-                "{}: {}",
-                record.name,
-                super::PRODUCTION_SECRET
-            )));
-        }
+            .named_agent_secret(user.sandbox(), user.holder(), &args.secret)
+            .await?;
+        super::refuse_personal_or_prod(&record, super::PERSONAL_SECRET_BROWSER)?;
         let browser = self.browser_session(user.sandbox()).await?;
         let tab = browser
             .tabs()
