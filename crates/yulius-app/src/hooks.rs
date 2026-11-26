@@ -2254,12 +2254,20 @@ impl App {
             ));
         }
         // Only while the task's owner is enabled and may still work in the project, as for a
-        // person's own git (SPEC-675 L4Q3-001, ADR-0481). The terminal says why, once.
+        // person's own git (SPEC-675 L4Q3-001, ADR-0481). The terminal says why, once per
+        // refusal episode: a credential issued again ends it.
         let (_, sandbox) = match self
             .git_credential_holder(&ctx.task.owner, &ctx.task.sandbox_id)
             .await
         {
-            Ok(holder) => holder,
+            Ok(holder) => {
+                if let Some(runtime) = self.existing_runtime(&ctx.task.id) {
+                    runtime
+                        .credential_refused_said
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+                holder
+            }
             Err(err) => {
                 let runtime = self.runtime(&ctx.task.id);
                 if !runtime

@@ -166,7 +166,7 @@ impl App {
         let login = self.login_of(owner).await;
         for task in &tasks {
             match store.task(&task.id).await {
-                Ok(Some(now)) if now.owner == *owner => {}
+                Ok(Some(current)) if current.owner == *owner => {}
                 Ok(_) => continue,
                 Err(err) => {
                     tracing::warn!(task = %task.id, error = %err, "a disabled owner's task unreadable");

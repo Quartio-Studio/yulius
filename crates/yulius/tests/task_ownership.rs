@@ -2181,9 +2181,47 @@ async fn an_owner_down_to_read_access_has_their_run_refused_a_git_credential() -
     let taken = control(&f, Method::POST, "", &f.bob).await?;
     assert_eq!(taken.status, 200, "{}", taken.body);
     assert_eq!(taken.body["owner"]["login"], "bob");
+    // The refusal notice is the new owner's to see: Bob down to read hears it once, naming him.
+    level(&f, "u-b", "read").await?;
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    let said: Vec<String> = notices(&mut watch)
+        .into_iter()
+        .filter(|n| n.contains("no GitHub credential"))
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("@bob"), "{said:?}");
+    level(&f, "u-b", "write").await?;
     let again = agent_credential(&f.h, "tt").await?;
     assert_eq!(again.status, 200, "{}", again.body);
     assert_eq!(again.body["token"], "agent-inst");
+    // A credential issued again ends the episode: a later loss is said anew.
+    level(&f, "u-b", "read").await?;
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    let said = notices(&mut watch)
+        .into_iter()
+        .filter(|n| n.contains("no GitHub credential"))
+        .count();
+    assert_eq!(said, 1);
+    Ok(())
+}
+
+/// Sets `user`'s access to `acme/repo` to `perm` on GitHub and in the access cache.
+async fn level(f: &Fixture, user: &str, perm: &str) -> TestResult {
+    let login = if user == "u-a" { "alice" } else { "bob" };
+    f.h.github.set_perm(login, "acme/repo", perms(perm));
+    let level = match perm {
+        "read" => yulius_domain::permission::AccessLevel::Read,
+        _ => yulius_domain::permission::AccessLevel::Write,
+    };
+    f.h.store
+        .put_access(
+            &UserId::parse(user)?,
+            &f.task.sandbox_id,
+            level,
+            f.h.app.now(),
+        )
+        .await?;
     Ok(())
 }
 
@@ -2285,6 +2323,9 @@ async fn a_stop_that_fails_on_disable_leaves_the_rest_stopped_and_the_credential
     // A task id of its own: a hook left after this test's runtime ends would fire anywhere.
     seed_task(&f.h, "t-stuck", "s1", "u-a", TaskStatus::Running, None).await?;
     seed_live_attempt(&f.h, "t-stuck", "tt-stuck").await?;
+    // Handled after `t-stuck`: it shows the loop goes on past a failed stop.
+    seed_task(&f.h, "t-after", "s1", "u-a", TaskStatus::Running, None).await?;
+    seed_live_attempt(&f.h, "t-after", "tt-after").await?;
     // Every round of its stop (4, the stop's bound) loses: between its read and its change the
     // task moves between Running and Switching, from both of which a stop goes on.
     for _ in 0..4 {
@@ -2327,12 +2368,15 @@ async fn a_stop_that_fails_on_disable_leaves_the_rest_stopped_and_the_credential
         "{live:?}"
     );
     assert!(audits_of(&f.h, "t-stuck", "task.stopped").await?.is_empty());
-    // Her other live task stops all the same.
-    let other = f.h.store.task(&f.task.id).await?.ok_or("t1")?.status;
-    assert!(
-        other.is_resting() || other == TaskStatus::Stopping,
-        "{other:?}"
-    );
+    // Her other live tasks stop all the same, also the one handled after the failed stop.
+    for id in ["t1", "t-after"] {
+        let other = f.h.store.task(&TaskId::parse(id)?).await?.ok_or(id)?.status;
+        assert!(
+            other.is_resting() || other == TaskStatus::Stopping,
+            "{id}: {other:?}"
+        );
+        assert_eq!(audits_of(&f.h, id, "task.stopped").await?.len(), 1, "{id}");
+    }
     let refused = agent_credential(&f.h, "tt-stuck").await?;
     assert_eq!(refused.status, 401, "{}", refused.body);
     Ok(())
