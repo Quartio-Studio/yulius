@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-26
 
+- The sandbox manager keeps a live holder's Docker front and its upkeep state in one `FrontState` instead of six loose fields (audit L5, F2 part b). Behaviour unchanged.
 - Each delivery and review rule is stated once (audit L10 F2). The bundled skills no longer repeat what Yulius says at run time (the nit bound, resuming a reviewer, its effort and model) and name the one skill that owns each rule: `delivery-pipeline` the local checks, `om-code-review` the review, `test-driven-development` mutation checks, `om-check-and-commit` the quick checks, `git-hygiene` history. Here AGENTS.md shrinks to commands, layout, boundaries and the routing table, and the `yulius-git` repository skill is gone (`git-hygiene` and `delivery-pipeline` cover it). [SPEC-674](../.ai/specs/SPEC-674-cleanup-documents-instructions-spec-adr.md)
 - The vault's MCP tools share one lookup of an agent secret by name, one refusal of personal and production secrets, one argument parser and one fingerprint-file planner (audit L4 F2). Refusal texts and behaviour are unchanged. [SPEC-669](../.ai/specs/SPEC-669-cleanup-secrets-vault-auth-helpers-audit.md)
 - `crates/yulius-sandbox/src/manager.rs` is split without a change of behaviour: the Docker front's methods and helpers are in `manager/docker.rs`, the base build in `manager/build.rs`, and the system-layer readers in `system_layer.rs` (audit L5, F2 part a).
