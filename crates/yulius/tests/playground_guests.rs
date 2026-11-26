@@ -3,6 +3,7 @@
 //! link or its expiry ends it. The fake GitHub, a real store and the harness clock.
 
 use crate::support;
+use crate::support::eventually;
 
 use std::sync::atomic::Ordering;
 
@@ -999,22 +1000,6 @@ async fn a_guests_task_gets_no_configuring_tool() -> TestResult {
     Ok(())
 }
 
-/// Waits (bounded) until `check` holds.
-async fn until<F, Fut>(what: &str, check: F) -> TestResult
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !check().await {
-        if tokio::time::Instant::now() > deadline {
-            return Err(format!("{what} within 10 s").into());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    Ok(())
-}
-
 /// GST-005: revoking a link, or its expiry, also stops what its guests still run: their live and
 /// queued tasks end, so a leaked link keeps nothing working.
 #[tokio::test]
@@ -1081,9 +1066,13 @@ async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {
     )
     .await?;
     assert_eq!(revoked.status, StatusCode::NO_CONTENT);
-    until("Carol's tasks to stop", || async {
-        status("t1").await.is_some_and(stopped) && status("t2").await.is_some_and(stopped)
-    })
+    eventually(
+        "Carol's tasks to stop",
+        std::time::Duration::from_secs(10),
+        || async {
+            status("t1").await.is_some_and(stopped) && status("t2").await.is_some_and(stopped)
+        },
+    )
     .await?;
     // Another link's guest and the maker keep working.
     assert_eq!(status("t3").await, Some(TaskStatus::Running));
@@ -1101,9 +1090,11 @@ async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {
     .await?;
     seed_live_attempt(&w.h, "t5", "guests-run-carol-late-0123456789abcd").await?;
     w.h.app.end_expired_guest_links().await;
-    until("Carol's late task to stop", || async {
-        status("t5").await.is_some_and(stopped)
-    })
+    eventually(
+        "Carol's late task to stop",
+        std::time::Duration::from_secs(10),
+        || async { status("t5").await.is_some_and(stopped) },
+    )
     .await?;
     // Still within that minute, a later pass catches one more.
     seed_task(
@@ -1117,17 +1108,21 @@ async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {
     .await?;
     seed_live_attempt(&w.h, "t6", "guests-run-carol-later-0123456789abc").await?;
     w.h.app.end_expired_guest_links().await;
-    until("Carol's later task to stop", || async {
-        status("t6").await.is_some_and(stopped)
-    })
+    eventually(
+        "Carol's later task to stop",
+        std::time::Duration::from_secs(10),
+        || async { status("t6").await.is_some_and(stopped) },
+    )
     .await?;
 
     // Dana's link expires: the background sweep stops her task too.
     advance(&w.h, 7 * DAY_MS);
     w.h.app.end_expired_guest_links().await;
-    until("Dana's task to stop", || async {
-        status("t3").await.is_some_and(stopped)
-    })
+    eventually(
+        "Dana's task to stop",
+        std::time::Duration::from_secs(10),
+        || async { status("t3").await.is_some_and(stopped) },
+    )
     .await?;
     assert_eq!(
         status("t4").await,
@@ -1305,15 +1300,19 @@ async fn moving_or_removing_the_playground_ends_guest_access() -> TestResult {
         StatusCode::UNAUTHORIZED
     );
     let t1 = yulius_domain::ids::TaskId::parse("t1")?;
-    until("the moved playground's guest task to stop", || async {
-        use yulius_app::ports::store::TaskStore as _;
-        w.h.store
-            .task(&t1)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|t| matches!(t.status, TaskStatus::Stopping | TaskStatus::Stopped(_)))
-    })
+    eventually(
+        "the moved playground's guest task to stop",
+        std::time::Duration::from_secs(10),
+        || async {
+            use yulius_app::ports::store::TaskStore as _;
+            w.h.store
+                .task(&t1)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|t| matches!(t.status, TaskStatus::Stopping | TaskStatus::Stopped(_)))
+        },
+    )
     .await?;
 
     let made = invite(&w, &w.bob, "p2", json!({})).await?;

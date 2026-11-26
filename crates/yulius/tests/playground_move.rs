@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::repos::git;
+use support::git_stdout;
 use support::{Creds, Harness, HarnessOptions, TestResult, call, harness_with};
 use yulius_app::ci::CiRunRecord;
 use yulius_app::model::{AttemptRecord, LaunchKind, StepRecord};
@@ -65,7 +65,7 @@ impl World {
     fn empty_repository(&self, name: &str) -> BoxResult<PathBuf> {
         let path = self.github.join(OWNER).join(format!("{name}.git"));
         std::fs::create_dir_all(&path)?;
-        git(
+        git_stdout(
             &path,
             &["init", "--quiet", "--bare", "--initial-branch=main"],
         )?;
@@ -91,8 +91,8 @@ impl World {
             .data_dir
             .join("playgrounds")
             .join(format!("{}.git", made.body["id"].as_str().ok_or("id")?));
-        git(&origin, &["branch", "feat/1-idea", "dev"])?;
-        git(&origin, &["tag", "v0.1", "main"])?;
+        git_stdout(&origin, &["branch", "feat/1-idea", "dev"])?;
+        git_stdout(&origin, &["tag", "v0.1", "main"])?;
         Ok((made.body, origin))
     }
 
@@ -134,7 +134,7 @@ impl World {
 
 /// Every branch and tag of a repository with its commit, sorted.
 fn refs(repo: &Path) -> BoxResult<Vec<String>> {
-    let out = git(
+    let out = git_stdout(
         repo,
         &[
             "for-each-ref",
@@ -224,10 +224,10 @@ async fn a_playground_moves_into_an_empty_github_repository() -> TestResult {
     assert!(!origin.exists(), "the bare origin on the server is deleted");
     let clone = w.clone_of(&sandbox)?;
     assert_eq!(
-        git(&clone, &["remote", "get-url", "origin"])?.trim(),
+        git_stdout(&clone, &["remote", "get-url", "origin"])?.trim(),
         format!("https://github.com/{OWNER}/alices-lab.git")
     );
-    git(&clone, &["rev-parse", "--verify", "origin/feat/1-idea"])?;
+    git_stdout(&clone, &["rev-parse", "--verify", "origin/feat/1-idea"])?;
     let record = w.record(&sandbox).await?;
     assert!(!record.is_playground());
     assert_eq!(record.github_repo_id, Some(1));
@@ -382,7 +382,7 @@ async fn assert_as_it_was(
     assert!(w.record(sandbox).await?.is_playground());
     assert_eq!(refs(origin)?, refs_before);
     assert_eq!(
-        git(&w.clone_of(sandbox)?, &["remote", "get-url", "origin"])?.trim(),
+        git_stdout(&w.clone_of(sandbox)?, &["remote", "get-url", "origin"])?.trim(),
         origin.to_string_lossy()
     );
     Ok(())
@@ -402,14 +402,14 @@ async fn a_repository_that_is_not_empty_is_refused() -> TestResult {
     );
     // GitHub's "Add a README": one commit of its own on `main`.
     let readme = w.github.join("readme");
-    git(
+    git_stdout(
         &w.github,
         &["init", "--quiet", "--initial-branch=main", "readme"],
     )?;
     std::fs::write(readme.join("README.md"), "# alices-lab\n")?;
-    git(&readme, &["add", "README.md"])?;
-    git(&readme, &["commit", "--quiet", "-m", "Initial commit"])?;
-    git(
+    git_stdout(&readme, &["add", "README.md"])?;
+    git_stdout(&readme, &["commit", "--quiet", "-m", "Initial commit"])?;
+    git_stdout(
         &readme,
         &["push", "--quiet", &github.to_string_lossy(), "main"],
     )?;
@@ -439,7 +439,7 @@ async fn a_failed_push_leaves_the_playground_as_it_was() -> TestResult {
         support::perms("admin"),
     );
     // The receiving side refuses any pack (as GitHub refuses a push over its limits).
-    git(&github, &["config", "receive.maxInputSize", "1"])?;
+    git_stdout(&github, &["config", "receive.maxInputSize", "1"])?;
 
     let failed = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
     assert!(
@@ -466,7 +466,7 @@ async fn a_move_retried_after_its_push_completes() -> TestResult {
         &format!("{OWNER}/alices-lab"),
         support::perms("admin"),
     );
-    git(
+    git_stdout(
         &origin,
         &[
             "push",
@@ -569,7 +569,7 @@ async fn a_retry_after_the_playground_moved_on_fast_forwards() -> TestResult {
         &format!("{OWNER}/alices-lab"),
         support::perms("admin"),
     );
-    git(
+    git_stdout(
         &origin,
         &[
             "push",
@@ -580,8 +580,8 @@ async fn a_retry_after_the_playground_moved_on_fast_forwards() -> TestResult {
         ],
     )?;
     // A merge landed on `dev` since.
-    let tree = git(&origin, &["rev-parse", "dev^{tree}"])?;
-    let next = git(
+    let tree = git_stdout(&origin, &["rev-parse", "dev^{tree}"])?;
+    let next = git_stdout(
         &origin,
         &[
             "commit-tree",
@@ -592,7 +592,7 @@ async fn a_retry_after_the_playground_moved_on_fast_forwards() -> TestResult {
             "feat: landed after",
         ],
     )?;
-    git(&origin, &["update-ref", "refs/heads/dev", next.trim()])?;
+    git_stdout(&origin, &["update-ref", "refs/heads/dev", next.trim()])?;
     let before = refs(&origin)?;
 
     let moved = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
@@ -726,7 +726,7 @@ async fn a_planted_transport_setting_never_steers_the_move() -> TestResult {
     );
     let clone = w.clone_of(&sandbox)?;
     let key = "url./nonexistent/agent/.insteadOf";
-    git(
+    git_stdout(
         &clone,
         &[
             "config",
@@ -738,9 +738,9 @@ async fn a_planted_transport_setting_never_steers_the_move() -> TestResult {
 
     let moved = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
     assert_eq!(moved.status, StatusCode::OK, "{:?}", moved.body);
-    let left = git(&clone, &["config", "--local", "--list", "--name-only"])?;
+    let left = git_stdout(&clone, &["config", "--local", "--list", "--name-only"])?;
     assert!(!left.to_ascii_lowercase().contains("url."), "{left}");
-    git(&clone, &["rev-parse", "--verify", "origin/feat/1-idea"])?;
+    git_stdout(&clone, &["rev-parse", "--verify", "origin/feat/1-idea"])?;
     assert!(!refs(&github)?.is_empty());
     Ok(())
 }
@@ -760,7 +760,7 @@ async fn the_move_never_fetches_github_through_the_clone() -> TestResult {
     );
     let clone = w.clone_of(&sandbox)?;
     // A fetch of the configured `origin` would ask for this missing ref and fail.
-    git(
+    git_stdout(
         &clone,
         &[
             "config",
@@ -773,6 +773,6 @@ async fn the_move_never_fetches_github_through_the_clone() -> TestResult {
 
     let moved = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
     assert_eq!(moved.status, StatusCode::OK, "{:?}", moved.body);
-    git(&clone, &["rev-parse", "--verify", "origin/feat/1-idea"])?;
+    git_stdout(&clone, &["rev-parse", "--verify", "origin/feat/1-idea"])?;
     Ok(())
 }

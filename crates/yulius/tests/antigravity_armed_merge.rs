@@ -3,6 +3,7 @@
 //! check-in -> Needs You escalation for stalled armed green PRs.
 
 use crate::support;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,29 +42,6 @@ const YULIUS_TOML: &str = r#"[[ci.jobs]]
 name = "check"
 command = 'echo ok'
 "#;
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
 
 fn git_ok(dir: &Path, args: &[&str]) -> Option<String> {
     git(dir, args).ok()
@@ -1192,8 +1170,9 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
 #[test]
 fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestResult {
     use crate::pool_supervision::{
-        ScriptedUsage, build_served_tuned, new_task, runtime, screen, seed, stop, temp, wait_for,
+        ScriptedUsage, build_served_tuned, new_task, runtime, screen, seed, stop, temp,
     };
+    use crate::support::eventually;
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::model::Secret;
     use yulius_app::ports::github::{GitHubPort, NewPull};
@@ -1243,7 +1222,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         git(&repo, &["fetch", "-q", "origin"])?;
 
         let id = new_task(&app, &sandbox, &user, "ArmedStall").await?;
-        wait_for("first answer", Duration::from_secs(30), || {
+        eventually("first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: ArmedStall: answer with an echo") }
         })
@@ -1376,7 +1355,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
             sent.contains("has been green for") && sent.contains("Your armed merge"),
             "unexpected check-in text: {sent}"
         );
-        wait_for("check-in echoed on screen", Duration::from_secs(15), || {
+        eventually("check-in echoed on screen", Duration::from_secs(15), || {
             let shown = screen(&app, &id);
             async move { shown.contains("Your armed merge") }
         })

@@ -4,10 +4,11 @@
 
 use crate::pool_supervision::{
     HOUR, ScriptedUsage, build_served_tuned, build_with, new_task, refresh, runtime, screen, seed,
-    stop, task, temp, usage, wait_for,
+    stop, task, temp, usage,
 };
 use crate::subscription_moves::{live_run, notices, ready, run_accounts};
 use crate::support::agents::FakeAgentOptions;
+use crate::support::eventually;
 use crate::support::{FakeGitHub, TestResult};
 
 use std::sync::Arc;
@@ -70,7 +71,7 @@ async fn ctx(app: &App, user: &UserId) -> Result<AuthContext, Box<dyn std::error
 /// The task's turn ended: its live run is up and it waits for input, as the Stop hook of a real
 /// Claude Code records it (the fake agent here runs no hooks).
 async fn idle(app: &App, id: &TaskId) -> TestResult {
-    wait_for("the run", Duration::from_secs(30), || async {
+    eventually("the run", Duration::from_secs(30), || async {
         task(app, id)
             .await
             .is_ok_and(|t| t.status == TaskStatus::Running)
@@ -170,7 +171,7 @@ fn pinned_parked_task_resumes(pin_used: f64) -> TestResult {
                 .map(|a| a.as_str()),
             Some("b-second")
         );
-        wait_for("the park", Duration::from_secs(30), || async {
+        eventually("the park", Duration::from_secs(30), || async {
             app.park_idle_sessions_now().await;
             task(&app, &id)
                 .await
@@ -602,7 +603,7 @@ fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
             assert!(app.deps.store.switches(&id).await?.is_empty(), "no move");
             if parking {
                 assert_eq!(pass.parked, 1, "{pass:?}");
-                wait_for("the park", Duration::from_secs(30), || async {
+                eventually("the park", Duration::from_secs(30), || async {
                     task(&app, &id)
                         .await
                         .is_ok_and(|t| t.status == TaskStatus::Parked)
@@ -612,7 +613,7 @@ fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
                 assert_eq!(told.len(), 1, "{told:?}");
                 assert_eq!(told[0].2, "#1 Idle parked off Claude a-first");
                 // The parked screen says why, for whoever opens the task later (RBL-006).
-                wait_for("the parked screen", Duration::from_secs(30), || async {
+                eventually("the parked screen", Duration::from_secs(30), || async {
                     screen(&app, &id)
                         .replace('\n', "")
                         .contains("because Claude a-first is at 96% of its 5-hour window")

@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::pool_supervision::{
-    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, temp, wait_for,
+    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, temp,
 };
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::{TestResult, eventually};
 use std::sync::Arc;
 use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
@@ -93,7 +93,7 @@ fn a_restart_keeps_a_resumed_run_s_metrics() -> TestResult {
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
         let id = new_task(&app, &sandbox, &user, "Metrics").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -101,7 +101,7 @@ fn a_restart_keeps_a_resumed_run_s_metrics() -> TestResult {
         .await?;
         app.send_input(&id, b"/work 1500 first\r").await?;
         let first_run = attempts(&app, &id).await.first().ok_or("run")?.id.clone();
-        wait_for("the first run's metrics", Duration::from_secs(30), || {
+        eventually("the first run's metrics", Duration::from_secs(30), || {
             let found = saved(&data, &first_run);
             async move { found.is_some_and(|s| s.output.is_some() && s.turns.is_some()) }
         })
@@ -122,7 +122,7 @@ fn a_restart_keeps_a_resumed_run_s_metrics() -> TestResult {
             },
         )
         .await?;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let runs = attempts(&app, &id).await;
             runs.len() == 2 && runs[1].state == AttemptState::Live
         })
@@ -130,14 +130,14 @@ fn a_restart_keeps_a_resumed_run_s_metrics() -> TestResult {
         let runs = attempts(&app, &id).await;
         assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
         let second_run = runs[1].id.clone();
-        wait_for("the resumed agent", Duration::from_secs(30), || {
+        eventually("the resumed agent", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"/work 1500 second\r").await?;
-        wait_for("the second turn", Duration::from_secs(30), || {
+        eventually("the second turn", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("DONE second") }
@@ -162,7 +162,7 @@ fn a_restart_keeps_a_resumed_run_s_metrics() -> TestResult {
                     "usage": {"input_tokens": 3, "output_tokens": 1000}}})
             ),
         )?;
-        wait_for("the second run's metrics", Duration::from_secs(60), || {
+        eventually("the second run's metrics", Duration::from_secs(60), || {
             let found = saved(&data, &second_run);
             async move {
                 found.is_some_and(|s| {
@@ -186,7 +186,7 @@ fn a_restart_keeps_a_resumed_run_s_metrics() -> TestResult {
         let runs = attempts(&app, &id).await;
         let second_run = runs.get(1).ok_or("second run")?.id.clone();
         // The reattached run's first save after the restart.
-        wait_for("a save after the restart", Duration::from_secs(30), || {
+        eventually("a save after the restart", Duration::from_secs(30), || {
             let found = saved(&data, &second_run);
             async move { found.is_some_and(|s| s.at > before_second.at) }
         })
@@ -258,7 +258,7 @@ fn ends_while_down(host_after_exit: HostAfterExit) -> TestResult {
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Metrics").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -266,7 +266,7 @@ fn ends_while_down(host_after_exit: HostAfterExit) -> TestResult {
         .await?;
         app.send_input(&id, b"/work 1500 first\r").await?;
         let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
-        wait_for("the run's metrics", Duration::from_secs(30), || {
+        eventually("the run's metrics", Duration::from_secs(30), || {
             let found = saved(&data, &run.id);
             async move {
                 found.is_some_and(|s| {
@@ -308,7 +308,7 @@ fn ends_while_down(host_after_exit: HostAfterExit) -> TestResult {
     let run_dir = PathBuf::from(&run.run_dir);
     let second = runtime()?;
     second.block_on(async {
-        wait_for("the agent's exit record", Duration::from_secs(30), || {
+        eventually("the agent's exit record", Duration::from_secs(30), || {
             let exited = matches!(
                 yulius_ptyhost::inspect_run_dir(&run_dir),
                 yulius_ptyhost::RunDirState::Exited(_)
@@ -326,14 +326,14 @@ fn ends_while_down(host_after_exit: HostAfterExit) -> TestResult {
 
         let app = build_with(&data, &fake, probe.clone(), agent)?;
         app.reconcile().await?;
-        wait_for("the run's end", Duration::from_secs(30), || async {
+        eventually("the run's end", Duration::from_secs(30), || async {
             attempts(&app, &id)
                 .await
                 .first()
                 .is_some_and(|a| a.state.is_terminal())
         })
         .await?;
-        wait_for("the save at the run's end", Duration::from_secs(30), || {
+        eventually("the save at the run's end", Duration::from_secs(30), || {
             let found = saved(&data, &run.id);
             async move { found.is_some_and(|s| s.at > before.at) }
         })

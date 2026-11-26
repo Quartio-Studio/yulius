@@ -2,7 +2,9 @@
 //! dist-tags, the platform package's version document and a tarball whose `claude` is a script
 //! printing its version.
 
+use crate::support::eventually;
 use std::collections::HashMap;
+use std::future::ready;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +23,9 @@ use yulius::wiring::sandbox::parse_channel;
 use yulius_app::ports::agent_cli::{AgentCli as _, CheckResult, CliSource};
 use yulius_app::ports::session::Bind;
 use yulius_domain::agent_cli::{Channel, HOST_INSTALL, Version};
+
+/// How long a condition may take to hold.
+const WAIT: Duration = Duration::from_secs(30);
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -585,14 +590,6 @@ fn updater_of(s: &Setup) -> Result<ClaudeUpdater, Box<dyn std::error::Error>> {
     )?)
 }
 
-async fn until(what: &str, mut holds: impl FnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while !holds() {
-        assert!(tokio::time::Instant::now() < deadline, "never: {what}");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 /// CCU-001: the loop checks on its own, again after each period; with `off` it asks nothing.
 #[tokio::test]
 async fn the_loop_installs_without_anyone_asking() -> TestResult {
@@ -601,14 +598,17 @@ async fn the_loop_installs_without_anyone_asking() -> TestResult {
     s.stub.release("2.1.311", good("2.1.311")?);
     let service = ClaudeCode::new(updater_of(&s)?, Channel::Stable, false);
     let looping = service.start_every(Duration::ZERO, Duration::from_millis(50));
-    until("installed", || s.updater.current() == Some(v("2.1.311"))).await;
+    eventually("installed", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.311")))
+    })
+    .await?;
     // A later release is picked up by a later round.
     s.stub.tag("stable", "2.1.318");
     s.stub.release("2.1.318", good("2.1.318")?);
-    until("installed the next", || {
-        s.updater.current() == Some(v("2.1.318"))
+    eventually("installed the next", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.318")))
     })
-    .await;
+    .await?;
     looping.abort();
 
     let off = ClaudeCode::new(updater_of(&s)?, Channel::Off, false);
@@ -879,52 +879,55 @@ async fn a_channel_change_and_check_now_take_effect_without_a_restart() -> TestR
     // Stable chosen in Settings: checked at once, and the next run binds Yulius's copy.
     service.set_channel(Channel::Stable, true);
     assert_eq!(service.channel(), (Channel::Stable, true));
-    until("stable installed", || {
-        s.updater.current() == Some(v("2.1.311"))
+    eventually("stable installed", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.311")))
     })
-    .await;
+    .await?;
     assert_eq!(
         service.binds(Some(&s.host)),
         [bind(s.root.join("versions/2.1.311").canonicalize()?)]
     );
-    until("the status file names the channel", || {
-        StatusFile::read(&s.root).is_some_and(|file| {
+    eventually("the status file names the channel", WAIT, || {
+        ready(StatusFile::read(&s.root).is_some_and(|file| {
             file.channel.as_deref() == Some("stable")
                 && file.chosen
                 && file.result.as_deref() == Some("installed")
-        })
+        }))
     })
-    .await;
+    .await?;
 
     // Off again: the next run binds the host's own, whatever is installed.
     service.set_channel(Channel::Off, true);
     assert_eq!(service.binds(Some(&s.host)), [bind(s.host.clone())]);
     assert_eq!(service.version_for_new_runs(), Some(v("2.1.292")));
-    until("off recorded", || {
-        StatusFile::read(&s.root).is_some_and(|file| file.channel.as_deref() == Some("off"))
+    eventually("off recorded", WAIT, || {
+        ready(StatusFile::read(&s.root).is_some_and(|file| file.channel.as_deref() == Some("off")))
     })
-    .await;
+    .await?;
 
     // A channel changed while nothing runs is "checking" from the request to the check's end.
-    until("the check ended", || !service.is_checking()).await;
+    eventually("the check ended", WAIT, || ready(!service.is_checking())).await?;
     service.set_channel(Channel::Off, false);
     assert!(service.is_checking(), "asked for, about to run");
-    until("the off check ended", || !service.is_checking()).await;
+    eventually("the off check ended", WAIT, || {
+        ready(!service.is_checking())
+    })
+    .await?;
 
     // Latest from the configuration, then "Check now" for a release published since.
     service.set_channel(Channel::Latest, false);
-    until("latest installed", || {
-        s.updater.current() == Some(v("2.1.322"))
+    eventually("latest installed", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.322")))
     })
-    .await;
-    until("the check ended", || !service.is_checking()).await;
+    .await?;
+    eventually("the check ended", WAIT, || ready(!service.is_checking())).await?;
     s.stub.tag("latest", "2.1.323");
     s.stub.release("2.1.323", good("2.1.323")?);
     service.check_now();
-    until("the release published since", || {
-        s.updater.current() == Some(v("2.1.323"))
+    eventually("the release published since", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.323")))
     })
-    .await;
+    .await?;
     looping.abort();
 
     // Without an npm install on the host nothing is kept current, and the status says why.
@@ -1249,18 +1252,18 @@ async fn requests_that_arrive_together_do_not_leave_it_checking() -> TestResult 
         service.set_channel(Channel::Stable, true);
         service.set_channel(Channel::Latest, true);
         assert!(service.is_checking());
-        until("the checks ended", || !service.is_checking()).await;
+        eventually("the checks ended", WAIT, || ready(!service.is_checking())).await?;
     }
     assert_eq!(s.updater.current(), Some(v("2.1.322")));
     // Nothing is left pending: a later request is a check again.
     s.stub.tag("latest", "2.1.323");
     s.stub.release("2.1.323", good("2.1.323")?);
     service.check_now();
-    until("the later check", || {
-        s.updater.current() == Some(v("2.1.323"))
+    eventually("the later check", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.323")))
     })
-    .await;
-    until("it ended", || !service.is_checking()).await;
+    .await?;
+    eventually("it ended", WAIT, || ready(!service.is_checking())).await?;
     looping.abort();
     Ok(())
 }
@@ -1374,20 +1377,20 @@ async fn requests_made_while_a_check_runs_are_answered_by_one_more_check() -> Te
     let reads = || s.stub.tag_reads.load(Ordering::SeqCst);
     s.stub.stepped.store(true, Ordering::SeqCst);
     service.check_now();
-    until("the check reads the registry", || reads() == 1).await;
+    eventually("the check reads the registry", WAIT, || ready(reads() == 1)).await?;
     // Meanwhile the channel changes, twice.
     service.set_channel(Channel::Stable, true);
     service.set_channel(Channel::Latest, true);
     s.stub.pass();
-    until("the check that answers them", || reads() == 2).await;
+    eventually("the check that answers them", WAIT, || ready(reads() == 2)).await?;
     s.stub.pass();
-    until("the checks ended", || !service.is_checking()).await;
+    eventually("the checks ended", WAIT, || ready(!service.is_checking())).await?;
     assert_eq!(reads(), 2);
     // The next request is one check.
     service.check_now();
-    until("the check asked for", || reads() == 3).await;
+    eventually("the check asked for", WAIT, || ready(reads() == 3)).await?;
     s.stub.pass();
-    until("it ended", || !service.is_checking()).await;
+    eventually("it ended", WAIT, || ready(!service.is_checking())).await?;
     assert_eq!(reads(), 3);
     looping.abort();
     Ok(())

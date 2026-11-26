@@ -27,10 +27,11 @@ use yulius_app::model::TaskMode;
 
 use crate::first_message::{
     ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
-    start_on_listener, start_with, stop, wait_for,
+    start_on_listener, start_with, stop,
 };
 use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support::agents::FakeAgentOptions;
+use crate::support::eventually;
 use crate::support::{
     self, TestResult, add_sandbox, harness_configured, perms, seed_task, user_with_token,
 };
@@ -79,7 +80,7 @@ async fn running(app: &Arc<App>, data: &Path) -> Result<(TaskId, ProjectCaller),
         TaskMode::Prompt,
     )
     .await?;
-    wait_for("the first answer", Duration::from_secs(30), || async {
+    eventually("the first answer", Duration::from_secs(30), || async {
         screen(app, &id).contains("ECHO: Budget: answer with an echo")
     })
     .await?;
@@ -108,7 +109,7 @@ fn a_message_kept_out_of_a_withheld_screen_flags_the_task_once() -> TestResult {
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         let stop_answered =
             Path::new(&attempt.run_dir).join(yulius_app::outage::STOP_ANSWERED_FILE);
-        wait_for("the opening Stop", Duration::from_secs(30), || async {
+        eventually("the opening Stop", Duration::from_secs(30), || async {
             stop_answered.is_file()
         })
         .await?;
@@ -147,7 +148,7 @@ fn a_message_kept_out_of_a_withheld_screen_flags_the_task_once() -> TestResult {
         // would start a turn of the agent, whose own states (working, then waiting) replace a
         // flag whenever they arrive, before or after the one this test is about.
         app.terminal_input(&ctx, &attach, b"n", false).await?;
-        wait_for("the withheld screen", Duration::from_secs(30), || async {
+        eventually("the withheld screen", Duration::from_secs(30), || async {
             screen(&app, &id).contains("the screen is withheld")
         })
         .await?;
@@ -237,7 +238,7 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
             .tool_task_message(&caller, &json!({"task_id": id.as_str(), "text": text}))
             .await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
-        wait_for("the message", Duration::from_secs(30), || {
+        eventually("the message", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Message from admin") }
@@ -362,7 +363,7 @@ fn a_run_holding_the_owners_personal_server_takes_only_the_owners_answer() -> Te
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the first answer", Duration::from_secs(30), || async {
+        eventually("the first answer", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Budget: answer with an echo")
         })
         .await?;
@@ -387,7 +388,7 @@ fn a_run_holding_the_owners_personal_server_takes_only_the_owners_answer() -> Te
             .answer_needs_you(&owner, id.as_str(), "Frankfurt", None)
             .await?;
         assert!(after.needs_you.is_none());
-        wait_for("the answer", Duration::from_secs(30), || {
+        eventually("the answer", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Answer from admin") }
@@ -439,7 +440,7 @@ fn a_teammate_answers_a_needs_you_without_taking_control() -> TestResult {
             .await?;
         assert_eq!(after.owner.login, "admin");
         assert!(after.needs_you.is_none());
-        wait_for("the answer", Duration::from_secs(30), || {
+        eventually("the answer", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Answer from bob") }
@@ -536,7 +537,7 @@ fn a_remote_message_names_the_persons_own_agent() -> TestResult {
         let result = &answer["result"];
         assert_ne!(result["isError"], true, "{answer}");
         assert_eq!(result["structuredContent"]["delivered"], "sent", "{answer}");
-        wait_for("the message", Duration::from_secs(30), || {
+        eventually("the message", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Message from admin") }
@@ -604,7 +605,7 @@ fn a_global_superagent_message_names_the_superagent() -> TestResult {
             .ok_or("no answer")?;
         let answer = serde_json::to_value(&response)?;
         assert_ne!(answer["result"]["isError"], true, "{answer}");
-        wait_for("the message", Duration::from_secs(30), || {
+        eventually("the message", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Message from admin") }
@@ -729,7 +730,7 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
         let message = json!({"task_id": id.as_str(), "text": "Go on"});
         let Err(refused) = app.tool_task_message(&caller, &message).await else {
             // What the agent read: the person's text and the message, as one prompt.
-            wait_for("what the agent read", Duration::from_secs(30), || async {
+            eventually("what the agent read", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("ECHO: half a thought")
             })
             .await?;
@@ -769,7 +770,7 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
 
         // They send it: the agent reads it alone, and the prompt box is empty again.
         app.terminal_input(&ctx, &attach, b"\r", false).await?;
-        wait_for("the person's prompt", Duration::from_secs(30), || async {
+        eventually("the person's prompt", Duration::from_secs(30), || async {
             read_alone(&app, &id, "half a thought")
         })
         .await?;
@@ -777,7 +778,7 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
         clock.shift(MINUTE + 1_000);
         let answer = app.tool_task_message(&caller, &message).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
-        wait_for("the message", Duration::from_secs(30), || async {
+        eventually("the message", Duration::from_secs(30), || async {
             read_alone(&app, &id, "Message from admin (through their Superagent):")
         })
         .await?;
@@ -914,7 +915,7 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
         );
         // One prompt: their text, a blank line, the labelled message (review round 1, F9: the
         // two used to be glued, "half a thoughtMessage from admin").
-        wait_for(
+        eventually(
             "the draft and the message",
             Duration::from_secs(30),
             || async {
@@ -969,7 +970,7 @@ fn a_message_sent_past_a_draft_from_before_a_restart_ends_that_draft() -> TestRe
         app.terminal_input(&ctx, &attach, b"half a thought", false)
             .await?;
         app.terminal_leave(&attach).await;
-        wait_for(
+        eventually(
             "the screen before the restart",
             Duration::from_secs(60),
             || async { screen(&app, &id).contains("half a thought") },
@@ -986,7 +987,7 @@ fn a_message_sent_past_a_draft_from_before_a_restart_ends_that_draft() -> TestRe
         })
         .await?;
         app.reconcile().await?;
-        wait_for("the reattached screen", Duration::from_secs(30), || async {
+        eventually("the reattached screen", Duration::from_secs(30), || async {
             screen(&app, &id).contains("half a thought")
         })
         .await?;
@@ -1007,7 +1008,7 @@ fn a_message_sent_past_a_draft_from_before_a_restart_ends_that_draft() -> TestRe
         let past = json!({"task_id": id.as_str(), "text": "Go on", "with_draft": true});
         let answer = app.tool_task_message(&caller, &past).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
-        wait_for(
+        eventually(
             "the draft and the message",
             Duration::from_secs(30),
             || async {
@@ -1017,7 +1018,7 @@ fn a_message_sent_past_a_draft_from_before_a_restart_ends_that_draft() -> TestRe
             },
         )
         .await?;
-        let ended = wait_for(
+        let ended = eventually(
             "the draft's mark to go",
             Duration::from_secs(30),
             || async { !mark.exists() },
@@ -1049,13 +1050,13 @@ fn the_owner_closes_out_an_idle_task() -> TestResult {
             session_hash: None,
             token: None,
         };
-        wait_for("the turn's end", Duration::from_secs(30), || async {
+        eventually("the turn's end", Duration::from_secs(30), || async {
             matches!(activity(&app, &id).await, Some(idle) if idle != Activity::Working)
         })
         .await?;
         let summary = app.close_task_for_person(&ctx, id.as_str()).await?;
         assert_eq!(summary.id, id.as_str());
-        wait_for("the task to close", Duration::from_secs(30), || async {
+        eventually("the task to close", Duration::from_secs(30), || async {
             matches!(
                 app.deps.store.task(&id).await,
                 Ok(Some(task)) if task.status == TaskStatus::Closed
@@ -1116,13 +1117,13 @@ fn someone_else_closes_out_an_idle_task_and_is_named() -> TestResult {
             session_hash: None,
             token: None,
         };
-        wait_for("the turn's end", Duration::from_secs(30), || async {
+        eventually("the turn's end", Duration::from_secs(30), || async {
             matches!(activity(&app, &id).await, Some(idle) if idle != Activity::Working)
         })
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.close_task_for_person(&ctx, id.as_str()).await?;
-        wait_for("the task to close", Duration::from_secs(30), || async {
+        eventually("the task to close", Duration::from_secs(30), || async {
             matches!(
                 app.deps.store.task(&id).await,
                 Ok(Some(task)) if task.status == TaskStatus::Closed
@@ -1170,7 +1171,7 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
         let (app, clock) = app_behind(&data, 13 * MINUTE).await?;
         let (id, caller) = running(&app, &data).await?;
         crate::pr_watch::leave_verification_step(&app, &id).await?;
-        wait_for("the first turn's end", Duration::from_secs(30), || async {
+        eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
         .await?;
@@ -1222,11 +1223,11 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
         // They send it: the flag ends with the hold. The minute after their Enter passes, and
         // the next pass types the command.
         app.terminal_input(&ctx, &attach, b"\r", false).await?;
-        wait_for("the person's prompt", Duration::from_secs(30), || async {
+        eventually("the person's prompt", Duration::from_secs(30), || async {
             read_alone(&app, &id, "half a thought")
         })
         .await?;
-        wait_for("the flag's end", Duration::from_secs(30), || async {
+        eventually("the flag's end", Duration::from_secs(30), || async {
             matches!(support::attention(&app, id.as_str()).await, Ok(Value::Null))
         })
         .await?;
@@ -1239,7 +1240,7 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert_eq!(typed, vec![(id.clone(), WatchAction::Reconnect)]);
-        wait_for(
+        eventually(
             "the command read alone",
             Duration::from_secs(30),
             || async { read_alone(&app, &id, RECONNECT_TEXT) },
@@ -1284,7 +1285,7 @@ async fn idle_full_screen(
         .ok_or("run")?
         .run_dir;
     let answered = Path::new(&run_dir).join(yulius_app::outage::STOP_ANSWERED_FILE);
-    wait_for(
+    eventually(
         "the first turn's Stop answered",
         Duration::from_secs(30),
         || async { answered.is_file() },
@@ -1295,11 +1296,11 @@ async fn idle_full_screen(
 
 /// Waits until the turn of `id` ended and its prompt box is drawn empty.
 async fn turn_ended(app: &App, id: &TaskId) -> TestResult {
-    wait_for("the turn's end", Duration::from_secs(30), || async {
+    eventually("the turn's end", Duration::from_secs(30), || async {
         activity(app, id).await.is_some_and(Activity::is_idle)
     })
     .await?;
-    wait_for("the empty prompt box", Duration::from_secs(30), || async {
+    eventually("the empty prompt box", Duration::from_secs(30), || async {
         fixture_box_empty(app, id)
     })
     .await
@@ -1365,11 +1366,11 @@ impl HeldLine {
         app.terminal_input(ctx, attach, format!("{prompt}\r").as_bytes(), false)
             .await?;
         let answer = format!("ECHO: {prompt}");
-        wait_for("the answer", Duration::from_secs(30), || async {
+        eventually("the answer", Duration::from_secs(30), || async {
             screen(app, id).contains(&answer)
         })
         .await?;
-        wait_for("the turn's Stop", Duration::from_secs(30), || async {
+        eventually("the turn's Stop", Duration::from_secs(30), || async {
             yulius_app::outage::stop_answered_at(&run_dir) > stop_before
         })
         .await?;
@@ -1383,7 +1384,7 @@ impl HeldLine {
         let prompts = app.prompts_passed(id);
         let rounds = app.runtime(id).transcript_rounds();
         self.release.send(())?;
-        wait_for("the late line applied", Duration::from_secs(30), || async {
+        eventually("the late line applied", Duration::from_secs(30), || async {
             match self.late {
                 Late::Submit => app.prompts_passed(id) > prompts,
                 // Two more rounds began: the held one ended.
@@ -1412,7 +1413,7 @@ pub(super) async fn full_screen_terminal(
     id: &TaskId,
 ) -> Result<(AuthContext, TerminalAttach), Error> {
     let terminal = terminal(app, caller, id).await?;
-    wait_for("the resized box", Duration::from_secs(30), || async {
+    eventually("the resized box", Duration::from_secs(30), || async {
         fixture_box_empty(app, id) && screen(app, id).contains("120×40")
     })
     .await?;
@@ -1455,7 +1456,7 @@ fn a_key_that_left_nothing_in_the_prompt_box_holds_no_message() -> TestResult {
         clock.shift(-11 * MINUTE);
         let answer = app.tool_task_message(&caller, &message).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
-        wait_for("the message", Duration::from_secs(30), || async {
+        eventually("the message", Duration::from_secs(30), || async {
             read_alone(&app, &id, "Message from admin (through their Superagent):")
         })
         .await?;
@@ -1501,7 +1502,7 @@ fn a_message_of_yulius_is_typed_into_a_box_a_key_left_empty() -> TestResult {
             "attention: {}",
             support::attention(&app, id.as_str()).await?
         );
-        wait_for(
+        eventually(
             "the command read alone",
             Duration::from_secs(30),
             || async { read_alone(&app, &id, RECONNECT_TEXT) },
@@ -1571,7 +1572,7 @@ fn draft_held_until_cleared(late: Late) -> TestResult {
         };
         app.terminal_input(&ctx, &attach, b"half a thought", false)
             .await?;
-        wait_for("the draft in the box", Duration::from_secs(30), || async {
+        eventually("the draft in the box", Duration::from_secs(30), || async {
             screen(&app, &id).contains("❯ half a thought")
         })
         .await?;
@@ -1587,7 +1588,7 @@ fn draft_held_until_cleared(late: Late) -> TestResult {
 
         // They clear it. Half a minute later the command still waits and the flag stands.
         app.terminal_input(&ctx, &attach, b"\x15", false).await?;
-        wait_for("the cleared box", Duration::from_secs(30), || async {
+        eventually("the cleared box", Duration::from_secs(30), || async {
             fixture_box_empty(&app, &id)
         })
         .await?;
@@ -1607,7 +1608,7 @@ fn draft_held_until_cleared(late: Late) -> TestResult {
             app.watch_mcp(&bounds).await,
             vec![(id.clone(), WatchAction::Reconnect)]
         );
-        wait_for(
+        eventually(
             "the command read alone",
             Duration::from_secs(30),
             || async { read_alone(&app, &id, RECONNECT_TEXT) },
@@ -1650,7 +1651,7 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
         crate::pr_watch::leave_verification_step(&app, &id).await?;
         // Without a Stop hook the task never reads idle; the watch asks the transcript whether
         // a turn is open, so its passes are repeated until the first turn has closed.
-        wait_for("the empty prompt box", Duration::from_secs(30), || async {
+        eventually("the empty prompt box", Duration::from_secs(30), || async {
             fixture_box_empty(&app, &id)
         })
         .await?;
@@ -1662,13 +1663,13 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
         };
         app.terminal_input(&ctx, &attach, b"half a thought", false)
             .await?;
-        wait_for("the draft in the box", Duration::from_secs(30), || async {
+        eventually("the draft in the box", Duration::from_secs(30), || async {
             screen(&app, &id).contains("❯ half a thought")
         })
         .await?;
         let mark = draft_mark(&app, &id).await?;
         clock.shift(-2 * MINUTE);
-        wait_for("the flag", Duration::from_secs(30), || async {
+        eventually("the flag", Duration::from_secs(30), || async {
             app.watch_mcp(&bounds).await.is_empty()
                 && matches!(
                     support::attention(&app, id.as_str()).await,
@@ -1679,7 +1680,7 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
         assert!(mark.exists());
 
         app.terminal_input(&ctx, &attach, b"\x15", false).await?;
-        wait_for("the cleared box", Duration::from_secs(30), || async {
+        eventually("the cleared box", Duration::from_secs(30), || async {
             fixture_box_empty(&app, &id)
         })
         .await?;
@@ -1796,19 +1797,19 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
         let (app, port) =
             start_on(&data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
         let (id, caller) = running(&app, &data).await?;
-        wait_for("the first turn's end", Duration::from_secs(30), || async {
+        eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle) && fixture_box_empty(&app, &id)
         })
         .await?;
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
         app.terminal_input(&ctx, &attach, b"draft", false).await?;
-        wait_for("the draft to be drawn", Duration::from_secs(30), || async {
+        eventually("the draft to be drawn", Duration::from_secs(30), || async {
             screen(&app, &id).contains("❯ draft")
         })
         .await?;
         clock.shift(0);
         app.terminal_input(&ctx, &attach, b"\x15", false).await?;
-        wait_for("the cleared box", Duration::from_secs(30), || async {
+        eventually("the cleared box", Duration::from_secs(30), || async {
             fixture_box_empty(&app, &id)
         })
         .await?;
@@ -1833,7 +1834,7 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
         )
         .await?;
         app.reconcile().await?;
-        wait_for(
+        eventually(
             "the idle host snapshot",
             Duration::from_secs(30),
             || async { fixture_box_empty(&app, &id) },
@@ -1850,7 +1851,7 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
         clock.shift(2 * MINUTE);
         let answer = send(&app, &caller, &id).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
-        wait_for("the message", Duration::from_secs(30), || async {
+        eventually("the message", Duration::from_secs(30), || async {
             read_alone(&app, &id, "Message from admin (through their Superagent):")
         })
         .await?;
@@ -1866,7 +1867,7 @@ async fn open_pull_for_news(
     data: &Path,
     task: &yulius_app::model::TaskRecord,
 ) -> Result<String, Error> {
-    use crate::pr_watch::git;
+    use crate::support::git;
     use yulius_app::delivery::DeliveryRecord;
     use yulius_domain::delivery::DeliveryStage;
     let seed_dir = data.join("seed");
@@ -1934,7 +1935,7 @@ async fn codex_with_pr_fixture(
     let (sandbox, user) = seed(&app, data, &[]).await?;
     crate::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#).await?;
     let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
-    wait_for(
+    eventually(
         "first Codex turn ended",
         Duration::from_secs(30),
         || async {
@@ -1993,7 +1994,7 @@ fn reattached_idle_codex_repaints_and_receives_its_ci_notice() -> TestResult {
         );
         let news = app.watch_prs(&WatchBounds::default()).await;
         assert_eq!(news.len(), 1, "{news:?}");
-        wait_for(
+        eventually(
             "PR news read by the reattached child",
             Duration::from_secs(10),
             || async { screen(&app, &id).contains("ECHO: Yulius, about your pull request #7") },
@@ -2061,7 +2062,7 @@ fn restarting_the_server_during_a_codex_repaint_restores_the_childs_size() -> Te
         paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
         let (writing, target) = (Arc::clone(&app), id.clone());
         tokio::spawn(async move { send(&writing, &caller, &target).await });
-        wait_for("temporary width", Duration::from_secs(3), || async {
+        eventually("temporary width", Duration::from_secs(3), || async {
             rt.hub.size() != size
         })
         .await?;
@@ -2096,7 +2097,7 @@ fn restarting_the_server_during_a_codex_repaint_restores_the_childs_size() -> Te
         );
         app.send_input(&id, b"/size\r").await?;
         let expected = format!("SIZE {} {}", size.1, size.0);
-        wait_for(
+        eventually(
             "child's recovered PTY size",
             Duration::from_secs(5),
             || async { screen(&app, &id).contains(&expected) },
@@ -2123,7 +2124,7 @@ async fn codex_idle_through_an_outage(
     // the turn timestamps that make the outage wake eligible.
     let runtime = app.runtime(id);
     let round = runtime.transcript_rounds();
-    wait_for("outage turn replay", Duration::from_secs(15), || async {
+    eventually("outage turn replay", Duration::from_secs(15), || async {
         runtime.transcript_rounds() >= round + 2
     })
     .await?;
@@ -2156,7 +2157,7 @@ fn a_refused_codex_outage_wake_resumes_on_repaint_without_an_owner_resend() -> T
             app.wake_after_outage(down, started, false).await,
             std::slice::from_ref(&id)
         );
-        wait_for("delivered outage wake", Duration::from_secs(5), || async {
+        eventually("delivered outage wake", Duration::from_secs(5), || async {
             screen(&app, &id).contains("ECHO: Yulius is back; continue")
         })
         .await?;
@@ -2209,7 +2210,7 @@ fn a_reconnecting_host_restores_the_width_of_an_interrupted_codex_repaint() -> T
         let mut frames = rt.hub.watch();
         let (writing, target) = (Arc::clone(&app), id.clone());
         let sending = tokio::spawn(async move { send(&writing, &caller, &target).await });
-        wait_for("temporary width", Duration::from_secs(3), || async {
+        eventually("temporary width", Duration::from_secs(3), || async {
             rt.hub.size().0 != cols
         })
         .await?;
@@ -2237,7 +2238,7 @@ fn a_reconnecting_host_restores_the_width_of_an_interrupted_codex_repaint() -> T
         );
         app.send_input(&id, b"/size\r").await?;
         let expected = format!("SIZE {rows} {cols}");
-        wait_for(
+        eventually(
             "child's restored PTY size",
             Duration::from_secs(5),
             || async { screen(&app, &id).contains(&expected) },
@@ -2257,7 +2258,7 @@ fn cancelling_a_codex_message_during_repaint_restores_the_size_without_typing() 
         let original = rt.hub.size();
         let (writing, target) = (Arc::clone(&app), id.clone());
         let sending = tokio::spawn(async move { send(&writing, &caller, &target).await });
-        wait_for(
+        eventually(
             "temporary repaint width",
             Duration::from_secs(3),
             || async { rt.hub.size() != original },
@@ -2265,7 +2266,7 @@ fn cancelling_a_codex_message_during_repaint_restores_the_size_without_typing() 
         .await?;
         sending.abort();
         assert!(sending.await.is_err_and(|error| error.is_cancelled()));
-        wait_for("restored PTY geometry", Duration::from_secs(3), || async {
+        eventually("restored PTY geometry", Duration::from_secs(3), || async {
             rt.hub.size() == original
         })
         .await?;
@@ -2297,7 +2298,7 @@ fn a_viewer_resize_reaches_codex_when_its_size_record_cannot_be_saved() -> TestR
         app.resize_run(&id, 100, 30).await?;
         assert_eq!(app.runtime(&id).hub.size(), (100, 30));
         app.send_input(&id, b"/size\r").await?;
-        wait_for("child's viewer size", Duration::from_secs(5), || async {
+        eventually("child's viewer size", Duration::from_secs(5), || async {
             screen(&app, &id).contains("SIZE 30 100")
         })
         .await?;
@@ -2430,7 +2431,7 @@ fn the_codex_rate_limit_picker_holds_messages_until_it_is_dismissed() -> TestRes
         let news = app.watch_prs(&bounds).await;
         assert_eq!(news.len(), 1, "{news:?}");
         assert_eq!(news[0].0, id);
-        wait_for("deferred PR notice", Duration::from_secs(30), || async {
+        eventually("deferred PR notice", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Yulius, about your pull request #7")
         })
         .await?;
@@ -2711,7 +2712,7 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
             .await?;
         let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
         let caller = superagent(&sandbox, &user, "admin");
-        wait_for("first Codex answer", Duration::from_secs(30), || async {
+        eventually("first Codex answer", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Codex PR news")
                 && activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
@@ -2723,7 +2724,7 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
         let (ctx, attach) = terminal(&app, &caller, &id).await?;
         app.terminal_input(&ctx, &attach, b"draft to erase", false)
             .await?;
-        wait_for("draft echoed", Duration::from_secs(30), || async {
+        eventually("draft echoed", Duration::from_secs(30), || async {
             screen(&app, &id).contains("draft to erase")
         })
         .await?;
@@ -2737,7 +2738,7 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
         );
 
         app.terminal_input(&ctx, &attach, b"\x15", false).await?;
-        wait_for("PTY erased draft", Duration::from_secs(30), || async {
+        eventually("PTY erased draft", Duration::from_secs(30), || async {
             !screen(&app, &id).contains("draft to erase")
         })
         .await?;
@@ -2764,7 +2765,7 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
         };
         assert_eq!(recipient, &id);
         assert!(notice.contains("pull request #7"), "{notice}");
-        wait_for("PR news read alone", Duration::from_secs(30), || async {
+        eventually("PR news read alone", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Yulius, about your pull request #7")
         })
         .await?;
@@ -2804,7 +2805,7 @@ fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
         app.terminal_input(&ctx, &attach, b"half a thought", false)
             .await?;
-        wait_for("the draft in the box", Duration::from_secs(30), || async {
+        eventually("the draft in the box", Duration::from_secs(30), || async {
             screen(&app, &id).contains("❯ half a thought")
         })
         .await?;
@@ -2824,7 +2825,7 @@ fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult
 
         // They clear it and send nothing; past the minute the watch types the news.
         app.terminal_input(&ctx, &attach, b"\x15", false).await?;
-        wait_for("the cleared box", Duration::from_secs(30), || async {
+        eventually("the cleared box", Duration::from_secs(30), || async {
             fixture_box_empty(&app, &id)
         })
         .await?;
@@ -2838,7 +2839,7 @@ fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult
                 .starts_with("Yulius, about your pull request #7: Its Yulius CI run r1 at "),
             "{typed:?}"
         );
-        wait_for("the news read alone", Duration::from_secs(30), || async {
+        eventually("the news read alone", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Yulius, about your pull request #7")
         })
         .await?;
@@ -2849,7 +2850,7 @@ fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult
         // Another reason a person must act still stops the watch, an empty box or not.
         let (again, job) = run(&task.sandbox_id, "r2", &head, RunState::Failed, None, 2);
         app.deps.store.insert_ci_run(&again, &[job]).await?;
-        wait_for("the turn's end", Duration::from_secs(30), || async {
+        eventually("the turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle) && fixture_box_empty(&app, &id)
         })
         .await?;
@@ -2882,7 +2883,7 @@ fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult
         let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
         let (id, caller) = running(&app, &data).await?;
         crate::pr_watch::leave_verification_step(&app, &id).await?;
-        wait_for("the first turn's end", Duration::from_secs(30), || async {
+        eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
         .await?;
@@ -2906,7 +2907,7 @@ fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult
         .await?;
         app.reconcile().await?;
         // Its transcript was read again: its last turn's end is known.
-        wait_for(
+        eventually(
             "the transcript read again",
             Duration::from_secs(30),
             || async { !app.claude_queue_holds(&id) },
@@ -2949,7 +2950,7 @@ fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult
 
         // Their prompt continues the session and ends the flag.
         app.terminal_input(&ctx, &attach, b"\r", false).await?;
-        wait_for("the person's prompt", Duration::from_secs(30), || async {
+        eventually("the person's prompt", Duration::from_secs(30), || async {
             read_alone(&app, &id, "half a thought")
                 && activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
@@ -2984,7 +2985,7 @@ fn a_superagent_message_is_not_typed_into_a_trust_prompt() -> TestResult {
             TaskMode::Goal,
         )
         .await?;
-        wait_for("the trust prompt", Duration::from_secs(60), || async {
+        eventually("the trust prompt", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Yes, I trust this folder")
         })
         .await?;
@@ -3028,7 +3029,7 @@ fn a_session_that_has_not_started_refuses_the_message() -> TestResult {
             TaskMode::Goal,
         )
         .await?;
-        wait_for("the run", Duration::from_secs(30), || async {
+        eventually("the run", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .task(&id)
@@ -3108,13 +3109,13 @@ fn restarted(
                 .await?;
             app.terminal_leave(&attach).await;
         }
-        wait_for(
+        eventually(
             "the screen before the restart",
             Duration::from_secs(60),
             || async { screen(&app, &id).contains(shown) },
         )
         .await?;
-        wait_for("the run's age", Duration::from_secs(30), || async {
+        eventually("the run's age", Duration::from_secs(30), || async {
             match app.deps.store.live_attempt(&id).await {
                 Ok(Some(attempt)) => app.now().0 - attempt.started_at.0 > spawned_for_ms,
                 _ => false,
@@ -3132,7 +3133,7 @@ fn restarted(
         })
         .await?;
         app.reconcile().await?;
-        wait_for("the reattached screen", Duration::from_secs(30), || async {
+        eventually("the reattached screen", Duration::from_secs(30), || async {
             screen(&app, &id).contains(shown)
         })
         .await?;
@@ -3159,7 +3160,7 @@ fn a_run_reattached_after_a_restart_takes_messages() -> TestResult {
     rt.block_on(async {
         let answer = send(&app, &caller, &id).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
-        wait_for("the message", Duration::from_secs(30), || async {
+        eventually("the message", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Message from admin")
         })
         .await?;
@@ -3181,7 +3182,7 @@ fn a_draft_typed_before_a_restart_still_keeps_the_message_out() -> TestResult {
     let (rt, app, id, caller) = restarted(&data, &fake_agent(), before, 0, 600_000, shown)?;
     rt.block_on(async {
         let Err(refused) = send(&app, &caller, &id).await else {
-            wait_for("what the agent read", Duration::from_secs(30), || async {
+            eventually("what the agent read", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("ECHO: half a thought")
             })
             .await?;
@@ -3207,7 +3208,7 @@ fn a_draft_typed_before_a_restart_still_keeps_the_message_out() -> TestResult {
         // They send it: the agent reads it alone, and the mark goes with the draft.
         let (ctx, attach) = terminal(&app, &caller, &id).await?;
         app.terminal_input(&ctx, &attach, b"\r", false).await?;
-        wait_for("the person's prompt", Duration::from_secs(30), || async {
+        eventually("the person's prompt", Duration::from_secs(30), || async {
             read_alone(&app, &id, "half a thought") && !mark.exists()
         })
         .await?;
@@ -3242,7 +3243,7 @@ fn a_stale_mark_leaves_the_run_folder_with_the_next_prompt() -> TestResult {
         app.terminal_input(&ctx, &attach, b"one", false).await?;
         assert!(mark.exists(), "the first key of a draft marks it");
         app.terminal_input(&ctx, &attach, b"\r", false).await?;
-        wait_for("the person's prompt", Duration::from_secs(30), || async {
+        eventually("the person's prompt", Duration::from_secs(30), || async {
             read_alone(&app, &id, "one") && !mark.exists()
         })
         .await?;
@@ -3252,7 +3253,7 @@ fn a_stale_mark_leaves_the_run_folder_with_the_next_prompt() -> TestResult {
         clock.shift(0);
         let answer = send(&app, &caller, &id).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
-        wait_for("the mark's removal", Duration::from_secs(30), || async {
+        eventually("the mark's removal", Duration::from_secs(30), || async {
             !mark.exists()
         })
         .await?;
@@ -3276,7 +3277,7 @@ fn a_mark_ahead_of_the_clock_is_read_as_typed_now() -> TestResult {
         let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
         let (id, caller) = running(&app, &data).await?;
         crate::pr_watch::leave_verification_step(&app, &id).await?;
-        wait_for("the first turn's end", Duration::from_secs(30), || async {
+        eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
         .await?;
@@ -3313,7 +3314,7 @@ fn a_mark_ahead_of_the_clock_is_read_as_typed_now() -> TestResult {
         .await?;
         app.reconcile().await?;
         // Its transcript was read again: the watch knows that no turn is open.
-        wait_for(
+        eventually(
             "the transcript read again",
             Duration::from_secs(30),
             || async {
@@ -3348,7 +3349,7 @@ async fn a_draft_behind_a_held_prompt(
     probe: &ScriptedUsage,
 ) -> Result<(TaskId, ProjectCaller), Error> {
     let (id, caller) = running(app, data).await?;
-    wait_for("the first turn's end", Duration::from_secs(30), || async {
+    eventually("the first turn's end", Duration::from_secs(30), || async {
         activity(app, &id).await.is_some_and(Activity::is_idle)
     })
     .await?;
@@ -3357,7 +3358,7 @@ async fn a_draft_behind_a_held_prompt(
     let (ctx, attach) = terminal(app, &caller, &id).await?;
     app.terminal_input(&ctx, &attach, b"first", false).await?;
     app.terminal_input(&ctx, &attach, b"\r", false).await?;
-    wait_for("the held prompt", Duration::from_secs(60), || async {
+    eventually("the held prompt", Duration::from_secs(60), || async {
         matches!(
             app.deps.store.open_pause(&id).await,
             Ok(Some(pause)) if pause.kind == yulius_app::model::PauseKind::Prompt
@@ -3380,10 +3381,9 @@ async fn the_held_prompt_goes_on(
     probe.set("a-only", usage(0.0, 5 * HOUR, 30.0, 100));
     refresh(app, &caller.user, "a-only").await?;
     let _ = app.resume_round().await;
-    let went_on = wait_for(
+    let went_on = eventually(
         "the held prompt going on",
-        Duration::from_secs(20),
-        // The terminal's echo of "more" stands before the answer, on its line.
+        Duration::from_secs(20), // The terminal's echo of "more" stands before the answer, on its line.
         || async { screen(app, id).contains("moreECHO: first") },
     )
     .await;
@@ -3411,7 +3411,7 @@ async fn the_draft_behind_it_still_holds(
     id: &TaskId,
 ) -> TestResult {
     let Err(refused) = send(app, caller, id).await else {
-        wait_for("what the agent read", Duration::from_secs(30), || async {
+        eventually("what the agent read", Duration::from_secs(30), || async {
             screen(app, id).contains("ECHO: more")
         })
         .await?;
@@ -3482,7 +3482,7 @@ fn a_draft_behind_a_prompt_held_across_a_restart_still_keeps_the_message_out() -
         let probe = Arc::new(ScriptedUsage::default());
         let (app, _) = start(&data, &fake, fake_agent(), port, probe.clone()).await?;
         app.reconcile().await?;
-        wait_for("the reattached screen", Duration::from_secs(30), || async {
+        eventually("the reattached screen", Duration::from_secs(30), || async {
             screen(&app, &id).contains("more")
         })
         .await?;
@@ -3761,7 +3761,7 @@ fn a_named_person_answers_through_their_own_agent() -> TestResult {
             )
             .await?;
         assert_eq!(answer["delivered"], "answered", "{answer}");
-        wait_for("the answer", Duration::from_secs(30), || {
+        eventually("the answer", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Answer from bob") }
@@ -3848,7 +3848,7 @@ async fn restored_draft(submit: &str, response: &str) -> TestResult {
         .await?;
     app.terminal_input(&ctx, &attach, format!("{submit}\r").as_bytes(), false)
         .await?;
-    wait_for(
+    eventually(
         "the CLI to restore its stash",
         Duration::from_secs(30),
         || async {
@@ -3861,7 +3861,7 @@ async fn restored_draft(submit: &str, response: &str) -> TestResult {
     let message = json!({"task_id": id.as_str(), "text": "Go on"});
     let reply = app.tool_task_message(&caller, &message).await;
     if reply.is_ok() {
-        wait_for("the mixed prompt", Duration::from_secs(30), || async {
+        eventually("the mixed prompt", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: my draftMessage from admin")
         })
         .await?;
@@ -3889,7 +3889,7 @@ async fn restored_draft(submit: &str, response: &str) -> TestResult {
         );
     }
     app.terminal_input(&ctx, &attach, b"\r", false).await?;
-    wait_for("the draft alone", Duration::from_secs(30), || async {
+    eventually("the draft alone", Duration::from_secs(30), || async {
         read_alone(&app, &id, "my draft")
     })
     .await?;
@@ -3898,7 +3898,7 @@ async fn restored_draft(submit: &str, response: &str) -> TestResult {
         app.tool_task_message(&caller, &message).await?["delivered"],
         "sent"
     );
-    wait_for(
+    eventually(
         "the sender's message alone",
         Duration::from_secs(30),
         || async { read_alone(&app, &id, "Message from admin (through their Superagent):") },
@@ -3955,10 +3955,9 @@ fn a_new_key_keeps_its_mark_during_draft_cleanup() -> TestResult {
         }
         app.terminal_input(&ctx, &attach, b"older prompt\r", false)
             .await?;
-        wait_for(
+        eventually(
             "the older submit to finish",
-            Duration::from_secs(30),
-            // The PTY echoes the new key on the same row as the agent’s reply.
+            Duration::from_secs(30), // The PTY echoes the new key on the same row as the agent’s reply.
             || async { screen(&app, &id).contains("ECHO: older prompt") },
         )
         .await?;
@@ -4021,7 +4020,7 @@ fn a_key_after_submit_in_the_same_millisecond_keeps_its_draft() -> TestResult {
         app.terminal_input(&ctx, &attach, b"old text\r", false)
             .await?;
         tokio::time::timeout(Duration::from_secs(30), accepted).await????;
-        wait_for(
+        eventually(
             "the older prompt to go on",
             Duration::from_secs(30),
             || async { screen(&app, &id).contains("ECHO: old text") },
@@ -4035,7 +4034,7 @@ fn a_key_after_submit_in_the_same_millisecond_keeps_its_draft() -> TestResult {
         let result = send(&app, &caller, &id).await;
         assert!(matches!(result, Err(AppError::Conflict(why)) if why.contains("prompt box")));
         app.terminal_input(&ctx, &attach, b"\r", false).await?;
-        wait_for(
+        eventually(
             "the new draft to be sent and unmarked",
             Duration::from_secs(30),
             || async { read_alone(&app, &id, "new text") && !mark.exists() },

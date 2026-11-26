@@ -6,10 +6,11 @@
 
 use crate::pool_supervision::{
     HOUR, ScriptedUsage, build_with, has_status, new_fable_task, reading, refresh, runtime, seed,
-    stop, temp, usage, wait_for,
+    stop, temp, usage,
 };
 use crate::subscription_moves::{fable_running_on_first, live_run, notices, ready, run_accounts};
 use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
+use crate::support::eventually;
 use crate::support::{TestResult, hold_point, point_reached};
 
 use std::io::Write as _;
@@ -419,7 +420,7 @@ fn a_limit_reported_during_a_usage_reading_is_kept() -> TestResult {
         point_reached(read).await?;
         app.send_input(&id, b"hello\r").await?;
         point_reached(recording).await?;
-        let written = wait_for("the limit's write", Duration::from_millis(500), || async {
+        let written = eventually("the limit's write", Duration::from_millis(500), || async {
             stored_usage(&app, first)
                 .await
                 .is_ok_and(|(_, usage)| !usage["weekly_fable"].is_null())
@@ -493,12 +494,12 @@ fn a_subscription_refused_while_its_usage_is_stored_stays_refused() -> TestResul
         };
         // Half a second for the refusal to be stored while the usage write is held: unlocked it
         // is, under the lock it waits (a bounded negative check).
-        let written = wait_for("the refusal's write", Duration::from_millis(500), refused)
+        let written = eventually("the refusal's write", Duration::from_millis(500), refused)
             .await
             .is_ok();
         go_on.send(())?;
         reading.await??;
-        wait_for(
+        eventually(
             "the refusal after the usage write",
             Duration::from_secs(10),
             refused,
@@ -549,7 +550,7 @@ fn a_task_paused_for_usage_credits_resumes_at_their_reset_by_itself() -> TestRes
         let started = app.now();
         app.send_input(&id, b"hello\r").await?;
         // The reset Claude named, read while the task waits for it.
-        wait_for("the pause", Duration::from_secs(30), || async {
+        eventually("the pause", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .pauses_since(started)
@@ -622,7 +623,7 @@ fn a_refresh_that_finds_the_model_running_resumes_the_task_that_waits_for_its_re
         ready(&app, &id).await?;
         let started = app.now();
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || async {
+        eventually("the pause", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .pauses_since(started)
@@ -705,7 +706,7 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
             .set_account_credential(&other, &foreign, AccountStatus::Ok, app.now())
             .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the refused move", Duration::from_secs(30), || async {
+        eventually("the refused move", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .switches(&id)
@@ -713,7 +714,7 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
                 .is_ok_and(|s| s.iter().any(|s| s.outcome == "refused"))
         })
         .await?;
-        wait_for("the request", Duration::from_secs(30), || async {
+        eventually("the request", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .task_needs_you(&id)
@@ -738,7 +739,7 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
         // the session) is refused the same way. The request stays as it is, and the task is
         // under Needs you again: it does not read Working at a refusal nobody takes on.
         app.send_input(&id, b"again\r").await?;
-        wait_for("the second refusal", Duration::from_secs(30), || async {
+        eventually("the second refusal", Duration::from_secs(30), || async {
             pauses_audited(&app, &id).await == 2
         })
         .await?;
@@ -848,7 +849,7 @@ async fn refused_twice(
     let id = task_of_model(&app, &sandbox, &user, "No end", Some("claude-opus-5-5")).await?;
     ready(&app, &id).await?;
     app.send_input(&id, b"hello\r").await?;
-    wait_for("the pause", Duration::from_secs(30), || {
+    eventually("the pause", Duration::from_secs(30), || {
         has_status(&app, &id, TaskStatus::WaitingCapacity)
     })
     .await?;
@@ -882,7 +883,7 @@ async fn refused_twice(
 
     let mut watch = app.runtime(&id).hub.watch();
     app.send_input(&id, b"again\r").await?;
-    wait_for("the request", Duration::from_secs(30), || async {
+    eventually("the request", Duration::from_secs(30), || async {
         audited(&app, &id, "task.limit_without_end").await == 1
     })
     .await?;
@@ -1043,7 +1044,7 @@ fn a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person() -> TestR
             .await?;
         app.send_input(&id, b"once more\r").await?;
         // The refused move is recorded after the pause it leads to: both are waited for.
-        wait_for(
+        eventually(
             "the goal pause's request and the refused move",
             Duration::from_secs(30),
             || async {
@@ -1128,7 +1129,7 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_when_the_agent_works_again(
         assert!(limit_request(&app, &id).await?.is_some());
         let transcript = session_transcript(&data, "msg_fake_credits_out").ok_or("transcript")?;
         append_lines(&transcript, "works", &[Line::Work])?;
-        wait_for(
+        eventually(
             "the request to end with the agent's work",
             Duration::from_secs(30),
             || async {
@@ -1175,11 +1176,11 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_when_a_restart_retries_the_
         let app = build_with(&data, &fake, probe, agent)?;
         app.reconcile().await?;
         // The restart reads the refusal again and takes the task on from there: it waits.
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
-        wait_for("the request to end", Duration::from_secs(30), || async {
+        eventually("the request to end", Duration::from_secs(30), || async {
             matches!(app.deps.store.task_needs_you(&id).await, Ok(None))
         })
         .await?;
@@ -1217,12 +1218,12 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_with_work_after_a_restart()
         let app = build_with(&data, &fake, probe, agent)?;
         app.reconcile().await?;
         let runtime = app.runtime(&id);
-        wait_for("the transcript read", Duration::from_secs(30), || async {
+        eventually("the transcript read", Duration::from_secs(30), || async {
             runtime.transcript_rounds() >= 2
         })
         .await?;
         let rounds = runtime.transcript_rounds();
-        wait_for(
+        eventually(
             "the transcript applied",
             Duration::from_secs(20),
             || async { runtime.transcript_rounds() >= rounds + 2 },
@@ -1233,7 +1234,7 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_with_work_after_a_restart()
         assert_eq!(resolved(&app, &id).await, Vec::<String>::new());
 
         append_lines(&transcript, "works", &[Line::Work])?;
-        wait_for(
+        eventually(
             "the request to end with the agent's work",
             Duration::from_secs(30),
             || async {
@@ -1278,7 +1279,7 @@ pub(crate) async fn first_turn_transcript(
     data: &Path,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let mut transcript = None;
-    wait_for("the first turn", Duration::from_secs(30), || {
+    eventually("the first turn", Duration::from_secs(30), || {
         transcript = session_transcript(data, "msg_fake_1");
         let written = transcript.is_some();
         async move { written }
@@ -1304,7 +1305,7 @@ fn a_queued_prompts_own_record_overtakes_its_hold_after_an_interrupt() -> TestRe
         let run = app.runtime(&id);
         append_lines(&transcript, "running", &[Line::Prompt, Line::Work])?;
         let round = run.transcript_rounds();
-        wait_for("the preceding turn", Duration::from_secs(30), || async {
+        eventually("the preceding turn", Duration::from_secs(30), || async {
             run.transcript_rounds() >= round + 2
         })
         .await?;
@@ -1322,7 +1323,7 @@ fn a_queued_prompts_own_record_overtakes_its_hold_after_an_interrupt() -> TestRe
             .await?
             .ok_or("no prompt hold")?;
         assert!(pause.during_turn);
-        wait_for(
+        eventually(
             "a later transcript timestamp",
             Duration::from_secs(2),
             || async { app.now() > pause.started_at },
@@ -1330,7 +1331,7 @@ fn a_queued_prompts_own_record_overtakes_its_hold_after_an_interrupt() -> TestRe
         .await?;
         append_lines(&transcript, "interrupt", &[Line::Interrupt])?;
         let round = run.transcript_rounds();
-        wait_for(
+        eventually(
             "the preceding interruption",
             Duration::from_secs(30),
             || async { run.transcript_rounds() >= round + 2 },
@@ -1341,7 +1342,7 @@ fn a_queued_prompts_own_record_overtakes_its_hold_after_an_interrupt() -> TestRe
             Some(pause.id)
         );
         append_lines(&transcript, "queued", &[Line::Prompt])?;
-        wait_for("the queued prompt's turn", Duration::from_secs(30), || {
+        eventually("the queued prompt's turn", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Running)
         })
         .await?;
@@ -1389,7 +1390,7 @@ async fn goal_pause_then_a_wait(
         "paused",
         &[Line::Prompt, Line::GoalPause, Line::TurnDuration],
     )?;
-    wait_for(
+    eventually(
         "the goal pause's request",
         Duration::from_secs(30),
         || async {
@@ -1414,11 +1415,11 @@ async fn goal_pause_then_a_wait(
         "refused",
         &[Line::Prompt, refusal, Line::TurnDuration],
     )?;
-    wait_for("the pause", Duration::from_secs(30), || {
+    eventually("the pause", Duration::from_secs(30), || {
         has_status(&app, &id, TaskStatus::WaitingCapacity)
     })
     .await?;
-    wait_for(
+    eventually(
         "the goal pause's request to end",
         Duration::from_secs(30),
         || async { resolved(&app, &id).await == [WAITS] },
@@ -1526,7 +1527,7 @@ fn a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with
         assert_eq!(app.deps.store.attempts(&id).await?[0].model, opus);
         app.send_input(&id, b"hello\r").await?;
         let mut transcript = None;
-        wait_for("the first turn", Duration::from_secs(30), || {
+        eventually("the first turn", Duration::from_secs(30), || {
             transcript = session_transcript(&data, "msg_fake_1");
             let written = transcript.is_some();
             async move { written }
@@ -1602,7 +1603,7 @@ fn the_notice_past_a_switched_limit_names_the_model_the_launch_runs() -> TestRes
         ready(&app, &id).await?;
         app.send_input(&id, b"hello\r").await?;
         let mut transcript = None;
-        wait_for("the first turn", Duration::from_secs(30), || {
+        eventually("the first turn", Duration::from_secs(30), || {
             transcript = session_transcript(&data, "msg_fake_1");
             let written = transcript.is_some();
             async move { written }
@@ -1681,7 +1682,7 @@ fn a_switched_limit_that_waits_is_said_when_the_session_goes_on() -> TestResult 
                 Line::TurnDuration,
             ],
         )?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -1775,7 +1776,7 @@ fn a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round() -> TestResu
             sub.join("agent-a73a9170080d69b92.jsonl"),
             format!("{answer}\n{refused}\n"),
         )?;
-        wait_for("the round's notes", Duration::from_secs(30), || async {
+        eventually("the round's notes", Duration::from_secs(30), || async {
             app.deps.store.review_rounds(&id, true).await.is_ok_and(|rounds| {
                 rounds.first().is_some_and(|r| {
                     r.model_answered.as_deref() == Some("claude-fable-5-2") && r.cut_off
@@ -1801,7 +1802,7 @@ fn a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round() -> TestResu
         second["message"]["id"] = json!("msg_rev_3");
         second["message"]["model"] = json!("claude-opus-5-5");
         std::fs::write(sub.join("agent-b2b2b2b2b2.jsonl"), format!("{second}\n"))?;
-        wait_for("the second round's model", Duration::from_secs(30), || async {
+        eventually("the second round's model", Duration::from_secs(30), || async {
             app.deps.store.review_rounds(&id, true).await.is_ok_and(|rounds| {
                 rounds.get(1).is_some_and(|r| r.model_answered.as_deref() == Some("claude-opus-5-5"))
             })
@@ -1917,7 +1918,7 @@ fn review_transcript_at_restart(answered_model: &str, continued_model: Option<&s
     second.block_on(async {
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
         app.reconcile().await?;
-        wait_for(
+        eventually(
             "the round's model and cut-off",
             Duration::from_secs(30),
             || async {
@@ -1981,12 +1982,12 @@ fn a_switched_limit_is_not_said_at_a_later_start() -> TestResult {
                 Line::TurnDuration,
             ],
         )?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
         stop(&app, &id).await?;
-        wait_for("the run's end", Duration::from_secs(30), || async {
+        eventually("the run's end", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .live_attempt(&id)
@@ -2120,7 +2121,7 @@ fn a_goal_pauses_request_gives_way_when_the_last_subscription_is_refused() -> Te
     let rt = runtime()?;
     rt.block_on(async {
         let (app, id) = goal_pause_then_a_wait(&data, &fake, Line::AccessLost).await?;
-        wait_for(
+        eventually(
             "the request for a subscription",
             Duration::from_secs(30),
             || async {
@@ -2160,7 +2161,7 @@ fn a_subscriptions_own_limit_without_a_reset_waits_as_before() -> TestResult {
         let started = app.now();
         let refused = [Line::Prompt, Line::SessionLimit, Line::TurnDuration];
         append_lines(&transcript, "first", &refused)?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -2175,7 +2176,7 @@ fn a_subscriptions_own_limit_without_a_reset_waits_as_before() -> TestResult {
         let _ = app.resume_round().await;
         live_run(&app, &id, 2).await?;
         append_lines(&transcript, "second", &refused)?;
-        wait_for("the second pause", Duration::from_secs(30), || async {
+        eventually("the second pause", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .pauses_since(started)
@@ -2213,7 +2214,7 @@ fn a_task_refused_again_while_it_waits_keeps_its_pause() -> TestResult {
         let (id, _user, transcript) = first_turn(&app, &data, Some("claude-opus-5-5")).await?;
         let started = app.now();
         append_refused_turn(&transcript, "first")?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -2226,7 +2227,7 @@ fn a_task_refused_again_while_it_waits_keeps_its_pause() -> TestResult {
             "second",
             &[Line::CreditsRefusal, Line::TurnDuration],
         )?;
-        wait_for(
+        eventually(
             "the second refusal read",
             Duration::from_secs(20),
             || async { runtime.transcript_rounds() >= rounds + 2 },
@@ -2268,7 +2269,7 @@ fn a_task_waiting_for_capacity_starts_on_a_pasted_subscription_at_once() -> Test
         app.start_capacity_loop();
         let (id, user, transcript) = first_turn(&app, &data, Some("claude-opus-5-5")).await?;
         append_refused_turn(&transcript, "first")?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -2327,7 +2328,7 @@ fn a_limit_after_the_model_answered_again_has_its_own_retry() -> TestResult {
         ready(&app, &id).await?;
         let started = app.now();
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -2338,7 +2339,7 @@ fn a_limit_after_the_model_answered_again_has_its_own_retry() -> TestResult {
 
         // The resumed session answers this message, then is refused again.
         app.send_input(&id, b"again\r").await?;
-        wait_for(
+        eventually(
             "what follows the second refusal",
             Duration::from_secs(30),
             || async {
@@ -2426,7 +2427,7 @@ fn repeated_refusal(refresh_first: bool) -> TestResult {
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
         let started = app.now();
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -2438,7 +2439,7 @@ fn repeated_refusal(refresh_first: bool) -> TestResult {
         live_run(&app, &id, 2).await?;
         assert_eq!(run_accounts(&app, &id).await[1].as_deref(), Some("a-first"));
         app.send_input(&id, b"again\r").await?;
-        wait_for("the second pause", Duration::from_secs(30), || async {
+        eventually("the second pause", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .pauses_since(started)
@@ -2739,7 +2740,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
             .await?;
         app.send_input(&id, b"hello\r").await?;
         let mut transcript = None;
-        wait_for("the first turn", Duration::from_secs(30), || {
+        eventually("the first turn", Duration::from_secs(30), || {
             transcript = session_transcript(&data, "msg_fake_1");
             let written = transcript.is_some();
             async move { written }
@@ -2758,7 +2759,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
         assert_eq!(refused_moves(&app, &id).await, 0);
         app.reconcile().await?;
         // The pause and the refused move reach each other in either order.
-        wait_for("the request", Duration::from_secs(30), || async {
+        eventually("the request", Duration::from_secs(30), || async {
             refused_moves(&app, &id).await == 1
                 && pauses_audited(&app, &id).await == 1
                 && app
@@ -2794,7 +2795,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
                     .await?;
             }
             app.reconcile().await?;
-            wait_for(
+            eventually(
                 "the move refused again",
                 Duration::from_secs(30),
                 || async {
@@ -2821,7 +2822,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
                 // request, read again and not asked anew, ends with the agent's work, and so
                 // does the flag it was put back under (SPEC-469 for a pause at a limit).
                 append_lines(&transcript, "works", &[Line::Work])?;
-                wait_for(
+                eventually(
                     "the request to end with the agent's work",
                     Duration::from_secs(30),
                     || async {
@@ -2941,7 +2942,7 @@ fn a_report_written_while_yulius_was_down_ends_its_round_at_the_replay() -> Test
     second.block_on(async {
         let app = build_with(&data, &fake, probe, agent)?;
         app.reconcile().await?;
-        let ended = wait_for("the replayed report", Duration::from_secs(30), || async {
+        let ended = eventually("the replayed report", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .review_rounds(&id, true)

