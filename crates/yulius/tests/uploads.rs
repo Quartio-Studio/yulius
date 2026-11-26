@@ -11,7 +11,6 @@ use std::future::ready;
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -981,7 +980,7 @@ async fn the_agent_reads_a_dropped_file_by_path_and_git_stays_clean() -> TestRes
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_contained_agent_reads_a_dropped_file_by_its_path() -> TestResult {
-    let probe = Command::new("bwrap")
+    let probe = std::process::Command::new("bwrap")
         .args([
             "--die-with-parent",
             "--unshare-pid",
