@@ -3,10 +3,10 @@
 //! real ptyhost and fake `claude`, and the real Chromium manager with a fake Chromium launcher and
 //! an in-process fake DevTools server.
 
-use crate::cockpit::{
+use crate::support;
+use crate::support::cockpit::{
     Fixture, ORIGIN, attach, cockpit_id, fixture_with_browser, mcp, printed, read_until,
 };
-use crate::support;
 
 use std::path::PathBuf;
 use std::sync::Arc;

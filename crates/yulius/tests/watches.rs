@@ -555,14 +555,14 @@ async fn run_bounds_are_enforced() -> TestResult {
 async fn a_contained_run_uses_the_sandbox_and_secret_placeholders() -> TestResult {
     use yulius_app::ports::session::Containment;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let recording = Arc::new(crate::cd::Recording {
+    let recording = Arc::new(crate::support::cd::Recording {
         inner: PtySessionHost::new(exe),
         seen: std::sync::Mutex::new(Vec::new()),
     });
     let w = world_with(Some(recording.clone()), |_| {}, true).await?;
     assert!(
         w.h.app
-            .set_isolation(Arc::new(crate::cd::Holders::default()))
+            .set_isolation(Arc::new(crate::support::cd::Holders::default()))
     );
     let value = "watch-secret-value-0123456789";
     let created = call(

@@ -9,21 +9,18 @@
 //! through the terminal API a viewer uses; real worktrees.
 
 use crate::support;
+use crate::support::live::Live;
 use crate::support::{eventually, git};
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use support::TestResult;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius::wiring::session::PtySessionHost;
+use support::agents::FakeAgentOptions;
 use yulius_app::auth::AuthContext;
-use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::context::App;
 use yulius_app::intake::IntakeServices;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
@@ -38,44 +35,13 @@ use yulius_domain::intake::{ChoiceAnswer, ChoiceQuestion};
 use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 type BoxError = Box<dyn std::error::Error>;
 
 /// A server: the app and its internal listener, as `yulius serve` starts them. The agents'
 /// hooks reach it there.
 async fn start(data: &Path, fake: &Path, agent: FakeAgentOptions) -> Result<Arc<App>, BoxError> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
-    let listener = socket.listen(64)?;
-    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
-    config.contained = false;
-    let deps = Deps {
-        store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-        clock: Arc::new(SystemClock),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new(support::FakeGitHub::default()),
-        session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: Arc::new(FakeAgentHarness {
-            inner: HarnessAdapter::new(exe.clone(), url),
-            fake: fake.to_path_buf(),
-            options: agent,
-            yulius_exe: exe,
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-    };
-    let app = App::new(config, deps);
-    let internal = yulius_server::internal_router(app.clone())
-        .into_make_service_with_connect_info::<SocketAddr>();
-    tokio::spawn(async move { axum::serve(listener, internal).await });
-    Ok(app)
+    Ok(Live::new(Some(fake), agent).start(data, 0, |_| {}).await?.0)
 }
 
 /// A superadmin, a sandbox whose repository is a clone of a bare origin, and a Claude account.

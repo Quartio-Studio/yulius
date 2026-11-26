@@ -5,431 +5,31 @@
 //! every run on every subscription (MCP-004, AC-MCP-3).
 
 use crate::support;
-use crate::support::{eventually, git};
+use crate::support::eventually;
+use crate::support::live::pool::pool;
+use crate::support::live::pool::{
+    HOUR, ScriptedUsage, add_account, build, build_with, echoed, has_status, hold_pool_move,
+    new_task, now, reading, refresh, runtime, screen, seed, stop, task, temp, usage,
+};
+use crate::support::live::{Live, UNSERVED};
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
-use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
+use support::agents::{FakeAgentOptions, limit_resume_problems};
 use support::{FakeGitHub, TestResult};
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::session::PtySessionHost;
 use yulius_app::auth::AuthContext;
-use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{
-    AccountRecord, AccountStatus, LaunchKind, PauseKind, SandboxRecord, Secret, TaskOrigin,
-    TaskRecord, UserRecord,
-};
-use yulius_app::ports::usage::{UsageFailure, UsageProbe};
+use yulius_app::model::{AccountStatus, LaunchKind, PauseKind, TaskOrigin, UserRecord};
 use yulius_contracts::api::mcp::McpServerInput;
-use yulius_domain::harness::{Harness, Provider};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
-use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, ModelAnswer, UsageWindow};
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
-
-pub(crate) const HOUR: i64 = 3_600_000;
-
-/// A usage probe whose answers the test sets per credential (account id = credential here):
-/// the usage it reads, and what Claude answers when asked about a model on it (SPEC-473).
-#[derive(Default)]
-pub(crate) struct ScriptedUsage(
-    Mutex<HashMap<String, AccountUsage>>,
-    Mutex<HashMap<String, ModelAnswer>>,
-);
-
-impl ScriptedUsage {
-    pub(crate) fn set(&self, account: &str, usage: AccountUsage) {
-        if let Ok(mut map) = self.0.lock() {
-            map.insert(account.to_owned(), usage);
-        }
-    }
-
-    /// What Claude answers a question about a model on `account`.
-    pub(crate) fn answer(&self, account: &str, answer: ModelAnswer) {
-        if let Ok(mut map) = self.1.lock() {
-            map.insert(account.to_owned(), answer);
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl UsageProbe for ScriptedUsage {
-    async fn fetch(
-        &self,
-        _provider: Provider,
-        credential: &Secret,
-    ) -> Result<AccountUsage, UsageFailure> {
-        self.0
-            .lock()
-            .ok()
-            .and_then(|m| m.get(credential.expose()).copied())
-            .ok_or_else(|| UsageFailure::new("no scripted usage"))
-    }
-
-    async fn model_answer(
-        &self,
-        _provider: Provider,
-        credential: &Secret,
-        _model: &str,
-    ) -> Result<ModelAnswer, UsageFailure> {
-        self.1
-            .lock()
-            .ok()
-            .and_then(|m| m.get(credential.expose()).copied())
-            .ok_or_else(|| UsageFailure::new("no scripted answer"))
-    }
-}
-
-fn now() -> Timestamp {
-    Timestamp(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
-    )
-}
-
-/// The 5-hour window at `five` % (resetting in `five_reset_ms`) and the weekly window at `week` %
-/// resetting in `week_reset_h` hours.
-pub(crate) fn usage(five: f64, five_reset_ms: i64, week: f64, week_reset_h: i64) -> AccountUsage {
-    AccountUsage {
-        primary: Some(UsageWindow {
-            used_percent: Some(five),
-            window_minutes: Some(300),
-            resets_at: Some(now().plus_millis(five_reset_ms)),
-        }),
-        secondary: Some(UsageWindow {
-            used_percent: Some(week),
-            window_minutes: Some(10_080),
-            resets_at: Some(now().plus_millis(week_reset_h * HOUR)),
-        }),
-        ..AccountUsage::default()
-    }
-}
-
-fn build(
-    data: &Path,
-    fake: &Path,
-    usage: Arc<ScriptedUsage>,
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_with(
-        data,
-        fake,
-        usage,
-        FakeAgentOptions {
-            transcript: true,
-            ..FakeAgentOptions::default()
-        },
-    )
-}
-
-pub(crate) fn build_with(
-    data: &Path,
-    fake: &Path,
-    usage: Arc<ScriptedUsage>,
-    agent: FakeAgentOptions,
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_with_github(data, fake, usage, agent, Arc::new(FakeGitHub::default()))
-}
-
-/// [`build_with`] answering access from `github`.
-fn build_with_github(
-    data: &Path,
-    fake: &Path,
-    usage: Arc<ScriptedUsage>,
-    agent: FakeAgentOptions,
-    github: Arc<FakeGitHub>,
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_served(data, fake, usage, agent, github, "http://127.0.0.1:9")
-}
-
-/// [`build_with`] whose configuration `tune` changes.
-pub(crate) fn build_tuned(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    tune: impl FnOnce(&mut AppConfig),
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_served_tuned(
-        data,
-        fake,
-        Arc::new(ScriptedUsage::default()),
-        agent,
-        Arc::new(FakeGitHub::default()),
-        "http://127.0.0.1:9",
-        tune,
-    )
-}
-
-/// [`build_with_github`] whose runs reach Yulius at `internal_url` (their `YULIUS_URL`).
-pub(crate) fn build_served(
-    data: &Path,
-    fake: &Path,
-    usage: Arc<ScriptedUsage>,
-    agent: FakeAgentOptions,
-    github: Arc<FakeGitHub>,
-    internal_url: &str,
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_served_tuned(data, fake, usage, agent, github, internal_url, |_| {})
-}
-
-/// [`build_served`] whose configuration `tune` changes.
-pub(crate) fn build_served_tuned(
-    data: &Path,
-    fake: &Path,
-    usage: Arc<ScriptedUsage>,
-    agent: FakeAgentOptions,
-    github: Arc<FakeGitHub>,
-    internal_url: &str,
-    tune: impl FnOnce(&mut AppConfig),
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let store = SqliteStore::open(&data.join("yulius.db"))?;
-    let mut config = AppConfig::new(
-        data.to_path_buf(),
-        "https://yulius.test",
-        internal_url,
-        exe.clone(),
-    );
-    config.contained = false;
-    config.resume_stagger_ms = 1_500;
-    tune(&mut config);
-    let deps = Deps {
-        store: Arc::new(store),
-        clock: Arc::new(SystemClock),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github,
-        session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: Arc::new(FakeAgentHarness {
-            // Runs reach Yulius at `internal_url`, as the instance's own adapter tells them.
-            inner: yulius::wiring::harness::HarnessAdapter::new(exe.clone(), internal_url),
-            ..FakeAgentHarness::new(exe, fake.to_path_buf(), agent)
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage,
-    };
-    Ok(App::new(config, deps))
-}
-
-fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
-    let origin = data.join("origin.git");
-    std::fs::create_dir_all(&origin)?;
-    git(&origin, &["init", "--bare", "-q", "-b", "main"])?;
-    let seed = data.join("seed");
-    std::fs::create_dir_all(&seed)?;
-    git(&seed, &["init", "-q", "-b", "main"])?;
-    std::fs::write(seed.join("README.md"), "# fixture\n")?;
-    git(&seed, &["add", "README.md"])?;
-    git(&seed, &["commit", "-q", "-m", "init"])?;
-    git(
-        &seed,
-        &["remote", "add", "origin", &origin.to_string_lossy()],
-    )?;
-    git(&seed, &["push", "-q", "origin", "main"])?;
-    let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
-    std::fs::create_dir_all(repo.parent().ok_or("no parent")?)?;
-    git(
-        data,
-        &[
-            "clone",
-            "-q",
-            &origin.to_string_lossy(),
-            &repo.to_string_lossy(),
-        ],
-    )?;
-    Ok(())
-}
-
-/// User, sandbox (with its repository) and the given subscriptions (credential = id).
-pub(crate) async fn seed(
-    app: &App,
-    data: &Path,
-    accounts: &[&str],
-) -> Result<(SandboxId, UserId), Box<dyn std::error::Error>> {
-    let store = &app.deps.store;
-    let user = UserRecord {
-        id: UserId::parse("u-admin")?,
-        github_login: Some("admin".into()),
-        github_id: None,
-        display_name: "Admin".into(),
-        avatar_url: None,
-        is_superadmin: true,
-        is_instance_admin: true,
-        password_hash: None,
-        created_at: Timestamp(1),
-        disabled_at: None,
-    };
-    store.insert_user(&user).await?;
-    let sandbox = SandboxRecord {
-        id: SandboxId::parse("s-pool")?,
-        slug: "pool".into(),
-        repo_owner: "acme".into(),
-        repo_name: "pool".into(),
-        github_repo_id: Some(1),
-        default_branch: "main".into(),
-        profile_json: "{}".into(),
-        port_base: 41200,
-        port_count: 10,
-        onboarding_state: "not_needed".into(),
-        onboarding_task_id: None,
-        created_by: user.id.clone(),
-        created_at: Timestamp(1),
-        removed_at: None,
-    };
-    store.insert_sandbox(&sandbox).await?;
-    for id in accounts {
-        add_account(app, id).await?;
-    }
-    seed_repo(data, &sandbox.id)?;
-    Ok((sandbox.id, user.id))
-}
-
-pub(crate) async fn add_account(
-    app: &App,
-    id: &str,
-) -> Result<AccountId, Box<dyn std::error::Error>> {
-    let account = AccountId::parse(id)?;
-    app.deps
-        .store
-        .insert_account(&AccountRecord {
-            id: account.clone(),
-            provider: Provider::Anthropic,
-            label: format!("Claude {id}"),
-            credential: Some(app.deps.crypto.seal(id.as_bytes())?),
-            status: AccountStatus::Ok,
-            usage_json: None,
-            last_error: None,
-            created_at: Timestamp(1),
-            updated_at: Timestamp(1),
-            email: None,
-            email_checked_at: None,
-            email_typed: false,
-        })
-        .await?;
-    Ok(account)
-}
-
-/// A provider's reading of `account` now, as the background round makes it: what a reading
-/// does to the stored usage, with no question about the limits stored for it.
-pub(crate) async fn reading(app: &App, account: &str) -> TestResult {
-    app.read_account_usage(&AccountId::parse(account)?)
-        .await
-        .map_err(|failure| failure.message)?;
-    Ok(())
-}
-
-/// The Subscriptions page's refresh of `account` by an administrator: a reading, then Claude is
-/// asked about each limit stored for it (SPEC-473).
-pub(crate) async fn refresh(app: &App, user: &UserId, account: &str) -> TestResult {
-    let ctx = AuthContext {
-        user: app.deps.store.user(user).await?.ok_or("user")?,
-        csrf_token: None,
-        session_hash: None,
-        token: None,
-    };
-    app.refresh_account_usage(&ctx, account).await?;
-    Ok(())
-}
-
-pub(crate) async fn new_task(
-    app: &Arc<App>,
-    sandbox: &SandboxId,
-    user: &UserId,
-    title: &str,
-) -> Result<TaskId, Box<dyn std::error::Error>> {
-    new_task_of(app, sandbox, user, title, None).await
-}
-
-/// A task a person set to Fable 5.2, started now: the model whose weekly allowance of usage
-/// credits binds it and which falls back to Opus 5.5 (a default task runs Opus 5.5, SPEC-493).
-pub(crate) async fn new_fable_task(
-    app: &Arc<App>,
-    sandbox: &SandboxId,
-    user: &UserId,
-    title: &str,
-) -> Result<TaskId, Box<dyn std::error::Error>> {
-    new_task_of(app, sandbox, user, title, Some("claude-fable-5-2")).await
-}
-
-async fn new_task_of(
-    app: &Arc<App>,
-    sandbox: &SandboxId,
-    user: &UserId,
-    title: &str,
-    model: Option<&str>,
-) -> Result<TaskId, Box<dyn std::error::Error>> {
-    let record = app
-        .create_task_internal(NewTask {
-            sandbox: sandbox.clone(),
-            created_by: user.clone(),
-            prompt: format!("{title}: answer with an echo"),
-            harness: Harness::ClaudeCode,
-            title: Some(title.into()),
-            workflow_id: None,
-            steps: Vec::new(),
-            model: model.map(str::to_owned),
-            effort: None,
-            origin: TaskOrigin::Ui,
-            automation_run: None,
-            start: true,
-            mode: yulius_app::model::TaskMode::Prompt,
-            supertask: false,
-        })
-        .await?;
-    Ok(record.id)
-}
-
-pub(crate) async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn std::error::Error>> {
-    Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
-}
-
-pub(crate) async fn has_status(app: &App, id: &TaskId, status: TaskStatus) -> bool {
-    task(app, id).await.is_ok_and(|t| t.status == status)
-}
-
-pub(crate) fn screen(app: &App, id: &TaskId) -> String {
-    app.runtime(id).hub.screen_text()
-}
-
-/// Every line the fake agent echoed: what the agent received as input.
-pub(crate) fn echoed(app: &App, id: &TaskId) -> Vec<String> {
-    screen(app, id)
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("ECHO: ").map(str::to_owned))
-        .collect()
-}
-
-pub(crate) async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
-    if task(app, id).await?.status.is_resting() {
-        return Ok(());
-    }
-    app.stop_task_now(id).await?;
-    eventually("the stop", Duration::from_secs(30), || async {
-        task(app, id).await.is_ok_and(|t| t.status.is_resting())
-    })
-    .await
-}
-
-pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-}
-
-pub(crate) fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
-    let dir = tempfile::Builder::new().prefix("yp").tempdir_in("/tmp")?;
-    let data = dir.path().canonicalize()?;
-    Ok((dir, data))
-}
 
 /// AC-ROT-9: a new task starts on the subscription whose capacity expires first.
 #[test]
@@ -746,10 +346,10 @@ fn a_manual_move_delivers_saved_fresh_and_resumed_goals_across_harnesses() -> Te
     rt.block_on(Box::pin(async {
         let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
-        let google = crate::antigravity::add_google_account(
+        let google = crate::support::antigravity::add_google_account(
             &app,
             "a-google",
-            &crate::antigravity::api_key()?,
+            &crate::support::antigravity::api_key()?,
         )
         .await?;
         let store = &app.deps.store;
@@ -1432,7 +1032,7 @@ fn a_goal_continuation_budget_resets_when_an_owners_message_is_delivered() -> Te
         app.hook_event(token, "claude", "SessionStart", &Default::default(), None)
             .await?;
         assert_eq!(task(&app, &id).await?.gate_blocks, 1);
-        let caller = crate::task_message::superagent(&sandbox, &user, "admin");
+        let caller = crate::support::task_message::superagent(&sandbox, &user, "admin");
         let sent = app
             .tool_task_message(
                 &caller,
@@ -1865,12 +1465,15 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
     let build = || {
         let github = Arc::new(FakeGitHub::default());
         github.set_perm("bob", "acme/pool", support::perms("write"));
-        build_with_github(
+        pool(
+            Live {
+                usage: Arc::new(ScriptedUsage::default()),
+                github,
+                ..Live::new(Some(&fake), agent())
+            },
             &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent(),
-            github,
+            UNSERVED,
+            |_| {},
         )
     };
     let first = runtime()?;
@@ -1965,12 +1568,15 @@ fn reattach_for_new_owner(revoked: bool) -> TestResult {
         ..FakeAgentOptions::default()
     };
     let build = || {
-        build_with_github(
+        pool(
+            Live {
+                usage: Arc::new(ScriptedUsage::default()),
+                github: Arc::new(FakeGitHub::default()),
+                ..Live::new(Some(&fake), agent())
+            },
             &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent(),
-            Arc::new(FakeGitHub::default()),
+            UNSERVED,
+            |_| {},
         )
     };
     let first = runtime()?;
@@ -1987,9 +1593,9 @@ fn reattach_for_new_owner(revoked: bool) -> TestResult {
         .await?;
         let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         if revoked {
-            crate::subscription_moves::ready(&app, &id).await?;
+            crate::support::subscription_moves::ready(&app, &id).await?;
             app.send_input(&id, b"first turn\r").await?;
-            crate::usage_credits::first_turn_transcript(&data).await?;
+            crate::support::usage_credits::first_turn_transcript(&data).await?;
         }
         let mark = Path::new(&run.run_dir).join("personal-mcp-of");
         assert_eq!(std::fs::read_to_string(&mark)?, admin.as_str());
@@ -2125,12 +1731,15 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
             access_lost: matches!(order, LimitRestartRace::AccessLost),
             ..FakeAgentOptions::default()
         };
-        build_with_github(
+        pool(
+            Live {
+                usage: probe.clone(),
+                github: Arc::new(FakeGitHub::default()),
+                ..Live::new(Some(&fake), agent)
+            },
             &data,
-            &fake,
-            probe.clone(),
-            agent,
-            Arc::new(FakeGitHub::default()),
+            UNSERVED,
+            |_| {},
         )
     };
     let first = runtime()?;
@@ -2160,7 +1769,7 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
         .await?;
         app.send_input(&id, b"hello\r").await?;
         if matches!(order, LimitRestartRace::SwitchedModel) {
-            crate::usage_credits::append_switched_fable_limit(&app, &data).await?;
+            crate::support::usage_credits::append_switched_fable_limit(&app, &data).await?;
         }
         eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
@@ -2295,7 +1904,7 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
         );
         assert_eq!(owner?, admin.as_str());
         if matches!(order, LimitRestartRace::SwitchedModel) {
-            let said = crate::subscription_moves::notices(&mut watch);
+            let said = crate::support::subscription_moves::notices(&mut watch);
             assert!(said.iter().any(|n| n ==
                 "Fable is used up on this subscription: this session goes on with Opus 5.5."),
                 "{said:?}");
@@ -2305,22 +1914,6 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
     Ok(())
-}
-
-/// The delayed task gives its worker back to Tokio so the competing move can finish.
-pub(crate) fn hold_pool_move(
-    point: yulius_app::race::Point,
-    id: &TaskId,
-) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
-    let (ready, reached) = std::sync::mpsc::channel();
-    let (go, release) = std::sync::mpsc::channel();
-    yulius_app::race::on(point, Path::new(id.as_str()), move || {
-        tokio::task::block_in_place(|| {
-            let _ = ready.send(());
-            let _ = release.recv_timeout(Duration::from_secs(60));
-        });
-    });
-    (reached, go)
 }
 
 fn limit_move_finished(id: &TaskId) -> std::sync::mpsc::Receiver<()> {
@@ -2343,8 +1936,8 @@ async fn spend_blind_retry(
     probe: &ScriptedUsage,
 ) -> Result<(usize, TaskStatus), Box<dyn std::error::Error>> {
     for seq in 2..=3 {
-        crate::subscription_moves::live_run(app, id, seq).await?;
-        crate::subscription_moves::ready(app, id).await?;
+        crate::support::subscription_moves::live_run(app, id, seq).await?;
+        crate::support::subscription_moves::ready(app, id).await?;
         let finished = limit_move_finished(id);
         app.send_input(id, b"again\r").await?;
         support::point_reached(finished).await?;
@@ -2383,13 +1976,7 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             transcript: true,
             ..FakeAgentOptions::default()
         };
-        let app = build_with_github(
-            &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent,
-            github,
-        )?;
+        let app = pool(Live { usage: Arc::new(ScriptedUsage::default()), github, ..Live::new(Some(&fake), agent) }, &data, UNSERVED, |_| {})?;
         let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
         let bob = second_person(&app, &admin).await?;
         let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
@@ -2509,12 +2096,15 @@ fn a_hand_over_stops_a_run_holding_personal_mcp_servers_it_cannot_restart() -> T
             transcript: true,
             ..FakeAgentOptions::default()
         };
-        let app = build_with_github(
+        let app = pool(
+            Live {
+                usage: Arc::new(ScriptedUsage::default()),
+                github,
+                ..Live::new(Some(&fake), agent)
+            },
             &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent,
-            github,
+            UNSERVED,
+            |_| {},
         )?;
         let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
         let bob = UserRecord {
@@ -3290,10 +2880,10 @@ fn resume_live_limit(reattach: bool) -> TestResult {
         let app = build()?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        crate::subscription_moves::ready(&app, &id).await?;
+        crate::support::subscription_moves::ready(&app, &id).await?;
         if reattach {
             app.send_input(&id, b"first turn\r").await?;
-            crate::usage_credits::first_turn_transcript(&data).await?;
+            crate::support::usage_credits::first_turn_transcript(&data).await?;
         }
         Ok::<_, Box<dyn std::error::Error>>((app, user, id))
     })?;
@@ -3837,12 +3427,13 @@ fn build_slots(
     agent: FakeAgentOptions,
     queue_max: u32,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_served_tuned(
+    pool(
+        Live {
+            usage,
+            github: Arc::new(FakeGitHub::default()),
+            ..Live::new(Some(fake), agent)
+        },
         data,
-        fake,
-        usage,
-        agent,
-        Arc::new(FakeGitHub::default()),
         "http://127.0.0.1:9",
         |config| {
             config.max_live_sessions = 1;
@@ -4016,7 +3607,7 @@ fn a_continue_on_a_chosen_subscription_keeps_it_through_the_queue() -> TestResul
                 app.now(),
             )
             .await?;
-        crate::parking::ask(&app, &id).await?;
+        crate::support::parking::ask(&app, &id).await?;
         let selected = task(&app, &id).await?;
         probe.set("b-second", usage(100.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;

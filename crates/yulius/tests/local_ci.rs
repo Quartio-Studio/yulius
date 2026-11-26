@@ -3742,7 +3742,7 @@ async fn launched_groups(
     grouping: Grouping,
 ) -> BoxResult<(Vec<PathBuf>, Vec<String>, Vec<(&'static str, String)>)> {
     use yulius_app::ports::session::Containment;
-    let recording = Arc::new(crate::cd::Recording {
+    let recording = Arc::new(crate::support::cd::Recording {
         inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
         seen: std::sync::Mutex::new(Vec::new()),
     });
@@ -7683,14 +7683,14 @@ async fn a_job_relinking_ci_logs_keeps_the_host_file() -> TestResult {
 #[tokio::test]
 async fn a_ci_job_binds_the_agent_cli_of_its_join() -> TestResult {
     use yulius_app::ports::session::{Bind, Containment};
-    let recording = Arc::new(crate::cd::Recording {
+    let recording = Arc::new(crate::support::cd::Recording {
         inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
         seen: std::sync::Mutex::new(Vec::new()),
     });
     let f = fixture_hosted(true, |_| YULIUS_TOML.to_owned(), Some(recording.clone())).await?;
     assert!(
         f.h.app
-            .set_isolation(Arc::new(crate::cd::Holders::default()))
+            .set_isolation(Arc::new(crate::support::cd::Holders::default()))
     );
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;

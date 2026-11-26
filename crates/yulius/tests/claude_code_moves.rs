@@ -3,10 +3,10 @@
 //! `pool_supervision.rs`: the fake agent's transcript names the version a file holds when it
 //! starts, so rewriting the file stands for a newer Claude Code at the session's next start.
 
-use crate::pool_supervision::{
+use crate::support::agents::FakeAgentOptions;
+use crate::support::live::pool::{
     ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, temp,
 };
-use crate::support::agents::FakeAgentOptions;
 use crate::support::{TestResult, eventually};
 
 use std::path::Path;
@@ -459,10 +459,12 @@ fn a_resumed_run_starts_with_an_empty_queue() -> TestResult {
 
 mod moves {
     use super::{TestResult, run_versions};
-    use crate::first_message::{data_dir, hooked, new_task, runtime, screen, start_with, stop};
-    use crate::pool_supervision::{HOUR, ScriptedUsage, add_account, refresh, seed, usage};
     use crate::support::agents::FakeAgentOptions;
     use crate::support::eventually;
+    use crate::support::live::first_message::{
+        data_dir, hooked, new_task, runtime, screen, start_with, stop,
+    };
+    use crate::support::live::pool::{HOUR, ScriptedUsage, add_account, refresh, seed, usage};
 
     use std::os::unix::fs::OpenOptionsExt as _;
     use std::path::{Path, PathBuf};
@@ -923,7 +925,7 @@ mod moves {
         let rt = runtime()?;
         rt.block_on(async {
             let s = server(&data, &version, hooked(), TaskMode::Prompt, "2.1.311").await?;
-            crate::pool_supervision::add_account(&s.app, "b-second").await?;
+            crate::support::live::pool::add_account(&s.app, "b-second").await?;
             turn(&s, "one").await?;
             settled(&s, Activity::Waiting).await?;
             // What a person typed into the old session is no draft in the new one, whose
@@ -1922,7 +1924,8 @@ mod moves {
             std::fs::write(&may_end, "")?;
             says(&s, "QUEUE HELD").await?;
             eventually("the idle turn's end", Duration::from_secs(60), || async {
-                crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Waiting)
+                crate::support::live::first_message::activity(&s.app, &s.id).await
+                    == Some(Activity::Waiting)
             })
             .await?;
             assert!(s.app.claude_queue_holds(&s.id));
@@ -2190,7 +2193,8 @@ mod moves {
                 "attachment":{"type":"goal_status","condition":"build checked","met":true}})
             )?;
             eventually("the achieved goal", Duration::from_secs(30), || async {
-                crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Done)
+                crate::support::live::first_message::activity(&s.app, &s.id).await
+                    == Some(Activity::Done)
             })
             .await?;
             s.app.record_typing(&s.id, &s.user);
@@ -2205,7 +2209,8 @@ mod moves {
                 "the achieved goal after the scheduled turn",
                 Duration::from_secs(30),
                 || async {
-                    crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Done)
+                    crate::support::live::first_message::activity(&s.app, &s.id).await
+                        == Some(Activity::Done)
                 },
             )
             .await?;
@@ -2629,7 +2634,7 @@ mod moves {
             let rt = runtime()?;
             rt.block_on(async {
                 let fake = locate_fake_agent().ok_or("fake-agent")?;
-                let (app, _) = crate::first_message::start(
+                let (app, _) = crate::support::live::first_message::start(
                     &data,
                     &fake,
                     hooked(),

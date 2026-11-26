@@ -2,12 +2,12 @@
 //! tests' fake `claude`: one per person, in a folder of its own without built-in tools, served
 //! every sandbox's tools for its person through its own bearer, outliving its host sandbox.
 
-use crate::cockpit::{
+use crate::support;
+use crate::support::cockpit::{
     Fixture, ORIGIN, answer_record, attach, cockpit_id, cockpit_tool, conversation, fixture,
     fixture_with, insert_account, limited_conversation, mcp, predate_launch_digest, printed,
     project_of, prompt_record, read_message, read_until, task_rests,
 };
-use crate::support;
 use crate::support::eventually;
 use std::future::ready;
 
@@ -424,7 +424,7 @@ async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
     eventually(
         "the Global Superagent to end with its host",
-        crate::cockpit::WAIT,
+        crate::support::cockpit::WAIT,
         || ready(globals(&f).is_empty()),
     )
     .await?;
@@ -684,7 +684,7 @@ async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> Test
     let mut again = None;
     eventually(
         "the Global Superagent on another subscription",
-        crate::cockpit::WAIT,
+        crate::support::cockpit::WAIT,
         || {
             ready({
                 again = globals(&f)
@@ -741,7 +741,7 @@ async fn a_global_superagent_started_before_an_update_restarts_as_global() -> Te
     let mut again = None;
     eventually(
         "the Global Superagent to start again",
-        crate::cockpit::WAIT,
+        crate::support::cockpit::WAIT,
         || {
             ready({
                 again = globals(&g)

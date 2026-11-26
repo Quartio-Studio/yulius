@@ -390,7 +390,7 @@ async fn binding_a_guarded_secret_needs_a_fresh_two_factor_unlock() -> TestResul
         "{}",
         token.body
     );
-    let session = crate::secrets::browser_session(&w.h, "u-alice").await?;
+    let session = crate::support::secrets::browser_session(&w.h, "u-alice").await?;
     let locked = define(&w, "s1", body.clone(), &session).await?;
     assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.body);
     assert_eq!(
@@ -413,7 +413,7 @@ async fn binding_a_guarded_secret_needs_a_fresh_two_factor_unlock() -> TestResul
         listed.body
     );
     // The same session, two-factor set up and unlocked.
-    crate::secrets::enroll(&w.h, &session).await?;
+    crate::support::secrets::enroll(&w.h, &session).await?;
     let made = define(&w, "s1", body, &session).await?;
     assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
     assert_eq!(made.body["secret_ready"], true);
@@ -1161,12 +1161,12 @@ async fn yulius_run_prints_the_run_and_exits_with_its_code() -> TestResult {
 #[tokio::test]
 async fn a_contained_run_joins_the_production_holder_without_docker() -> TestResult {
     let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let recording = std::sync::Arc::new(crate::cd::Recording {
+    let recording = std::sync::Arc::new(crate::support::cd::Recording {
         inner: yulius::wiring::session::PtySessionHost::new(exe),
         seen: std::sync::Mutex::default(),
     });
     let r = runs_world_on(json!({}), Some(recording.clone()), 20_000).await?;
-    let holders = std::sync::Arc::new(crate::cd::Holders::default());
+    let holders = std::sync::Arc::new(crate::support::cd::Holders::default());
     assert!(r.w.h.app.set_isolation(holders.clone()));
     let ran = run_deploy(&r, json!(["status"])).await?;
     assert_eq!(ran["state"], "done", "{ran}");
@@ -1277,7 +1277,7 @@ async fn a_command_changed_or_removed_before_its_run_runs_nothing() -> TestResul
 
 /// A browser session of alice, who manages s1's secrets.
 async fn alice_in_a_browser(r: &Runs) -> Result<Creds, Error> {
-    crate::secrets::browser_session(&r.w.h, "u-alice").await
+    crate::support::secrets::browser_session(&r.w.h, "u-alice").await
 }
 
 /// Waits until task t1's run waits for a person; returns it as the runs list shows it.
@@ -1630,7 +1630,7 @@ async fn who_answers_a_run_and_where() -> TestResult {
     let browser = alice_in_a_browser(&r).await?;
     seed_github_user(&r.w.h, "u-carol", "carol").await?;
     r.w.h.github.set_perm("carol", "acme/app", perms("read"));
-    let carol_browser = crate::secrets::browser_session(&r.w.h, "u-carol").await?;
+    let carol_browser = crate::support::secrets::browser_session(&r.w.h, "u-carol").await?;
     let dave = seed_github_user(&r.w.h, "u-dave", "dave").await?;
     let asked = run_deploy(&r, json!(["status"]));
     let people = async {

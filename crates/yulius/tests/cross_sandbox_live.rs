@@ -15,9 +15,9 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::TaskStatus;
 use yulius_ptyhost::test_support::locate_fake_agent;
 
-use crate::first_message::{data_dir, hooked, runtime, screen, start, stop};
-use crate::pool_supervision::{ScriptedUsage, seed};
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::first_message::{data_dir, hooked, runtime, screen, start, stop};
+use crate::support::live::pool::{ScriptedUsage, seed};
 use crate::support::{TestResult, eventually};
 
 type Error = Box<dyn std::error::Error>;

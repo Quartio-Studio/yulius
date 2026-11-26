@@ -2,10 +2,10 @@
 //! is the merge-first target, the real Git adapter and process host deploying it, tasks' agents
 //! asking through `cd_deploy`, and the full gate's verdicts recorded at exact revisions.
 
+use crate::support::staging::{gate, recorded_gate_as, sandbox, token};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use yulius_app::ci::{CiJobRecord, CiRunRecord};
 use yulius_app::ports::store::{
     AuditStore as _, SandboxStore as _, TaskStore as _, UserStore as _,
 };
@@ -13,14 +13,13 @@ use yulius_app::ports::store_ext::{
     CdStore as _, CiStore as _, DeliveryStore as _, StagingChange, StagingRequestRecord,
     StagingStore as _,
 };
-use yulius_domain::ci::{CiRef, GateSource, RunState};
+use yulius_domain::ci::{CiRef, RunState};
 use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::resources::Need;
 use yulius_domain::staging::StagingState;
 use yulius_domain::task::TaskStatus;
 
-use crate::cd::{BoxResult, Fixture, TestResult, fixture};
 use crate::support;
+use crate::support::cd::{BoxResult, Fixture, TestResult, fixture};
 
 const WAIT: Duration = Duration::from_secs(60);
 
@@ -35,10 +34,6 @@ fn staging_toml() -> String {
      verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
      rollback = \"true\"\nmigrations = \"none: the test app keeps no data\"\n"
         .to_owned()
-}
-
-fn token(task: &str) -> String {
-    format!("staging-task-token-{task}-0123456789abcdef")
 }
 
 /// A task with a live agent.
@@ -58,138 +53,6 @@ async fn land(f: &Fixture, task: &str, file: &str) -> BoxResult<String> {
         ))
         .await?;
     Ok(sha)
-}
-
-/// The integration branch's CI run at `sha`: the quick checks passed, the full suite `full`.
-async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
-    recorded_gate(&f.h.app, &SandboxId::parse("s1")?, sha, full, None).await
-}
-
-pub(crate) async fn recorded_gate(
-    app: &yulius_app::context::App,
-    sandbox: &SandboxId,
-    sha: &str,
-    full: RunState,
-    failures: Option<&str>,
-) -> BoxResult<String> {
-    recorded_gate_as(
-        app,
-        sandbox,
-        sha,
-        full,
-        failures,
-        format!("ci-{}", &sha[..12]),
-    )
-    .await
-}
-
-/// [`recorded_gate`] as run `id` (a rerun of the same revision).
-async fn recorded_gate_as(
-    app: &yulius_app::context::App,
-    sandbox: &SandboxId,
-    sha: &str,
-    full: RunState,
-    failures: Option<&str>,
-    id: String,
-) -> BoxResult<String> {
-    let state = if full == RunState::Passed {
-        RunState::Passed
-    } else {
-        full
-    };
-    let run = CiRunRecord {
-        id: id.clone(),
-        sandbox_id: sandbox.clone(),
-        reference: CiRef::Branch("dev".into()),
-        sha: sha.to_owned(),
-        source: GateSource::ProjectConfig,
-        state,
-        reason: None,
-        requested_by: "yulius".into(),
-        status_for: None,
-        status_note: None,
-        status_attempts: 0,
-        queued_at: app.now(),
-        started_at: Some(app.now()),
-        ended_at: Some(app.now()),
-    };
-    let job = |name: &str, state: RunState| CiJobRecord {
-        id: format!("{id}-{name}"),
-        run_id: id.clone(),
-        ordinal: u32::from(name == "full"),
-        name: name.to_owned(),
-        key: name.to_owned(),
-        command: "true".into(),
-        matrix: None,
-        state,
-        reason: None,
-        exit_code: Some(i32::from(state != RunState::Passed)),
-        output: String::new(),
-        failures: None,
-        started_at: run.started_at,
-        ended_at: run.ended_at,
-        need: Need::default(),
-        timeout_minutes: None,
-        exclusive: false,
-        waited_ms: None,
-    };
-    app.deps
-        .store
-        .insert_ci_run(&run, &[job("quick", RunState::Passed), job("full", full)])
-        .await?;
-    if let Some(failures) = failures {
-        assert!(
-            app.deps
-                .store
-                .transition_ci_job(
-                    &format!("{id}-full"),
-                    &[full],
-                    full,
-                    &yulius_app::ci::CiJobUpdate {
-                        failures: Some(failures.to_owned()),
-                        ..Default::default()
-                    }
-                )
-                .await?
-        );
-    }
-    Ok(id)
-}
-
-/// Whether a new red gate asks people for help in a native-goal session fixture.
-pub(crate) async fn red_gate_needs_people(
-    app: &yulius_app::context::App,
-    project: &SandboxId,
-    owner: &yulius_domain::ids::UserId,
-) -> BoxResult<bool> {
-    let repo = app
-        .config
-        .data_dir
-        .join("sandboxes")
-        .join(project.as_str())
-        .join("repo");
-    let sha = crate::support::git(&repo, &["rev-parse", "HEAD"])?;
-    crate::support::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
-    recorded_gate(
-        app,
-        project,
-        &sha,
-        RunState::Failed,
-        Some("---- gate::test stdout ----"),
-    )
-    .await?;
-    let ctx = yulius_app::auth::AuthContext {
-        user: app.deps.store.user(owner).await?.ok_or("owner")?,
-        csrf_token: None,
-        session_hash: None,
-        token: None,
-    };
-    let status = app.status(&ctx).await?;
-    Ok(status
-        .sandboxes
-        .iter()
-        .flat_map(|s| &s.gate_notices)
-        .any(|n| n.test == "gate::test"))
 }
 
 /// `task`'s agent asks for staging; the request it was given.
@@ -732,7 +595,7 @@ async fn an_inherited_verification_step_waits_and_receives_its_inclusion() -> Te
     let later = land(&f, "verify", "later").await?;
     named_gate(&f, &later, &["delivery::gate"]).await?;
     let task = TaskId::parse("verify")?;
-    crate::pr_watch::leave_verification_step(&f.h.app, &task).await?;
+    crate::support::pr_watch::leave_verification_step(&f.h.app, &task).await?;
     ask(&f, "verify").await?;
     settle(&f).await?;
     assert_eq!(
@@ -798,7 +661,7 @@ async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_ret
     let mut current = String::new();
     for retry in 1..=2 {
         current = format!("rerun-{retry}");
-        let (mut run, mut quick) = crate::pr_watch::run(
+        let (mut run, mut quick) = crate::support::pr_watch::run(
             &project.id,
             &current,
             &sha,
@@ -850,7 +713,7 @@ async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_ret
             );
         }
     }
-    let (mut pass, job) = crate::pr_watch::run(
+    let (mut pass, job) = crate::support::pr_watch::run(
         &project.id,
         "passing-rerun",
         &sha,
@@ -1027,7 +890,7 @@ async fn a_green_rerun_that_skips_an_unresolved_job_keeps_the_notice_and_staging
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
     crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     for id in ["skip-one", "skip-two"] {
-        let (mut run, quick) = crate::pr_watch::run(
+        let (mut run, quick) = crate::support::pr_watch::run(
             &project.id,
             id,
             &sha,
@@ -2440,14 +2303,6 @@ fn git_contains(f: &Fixture, branch: &str, sha: &str) -> BoxResult<bool> {
         .success())
 }
 
-async fn sandbox(f: &Fixture) -> BoxResult<yulius_app::model::SandboxRecord> {
-    Ok(f.h
-        .store
-        .sandbox(&SandboxId::parse("s1")?)
-        .await?
-        .ok_or("s1")?)
-}
-
 /// The agent's `cd_deploy` of staging when it is refused: its error text.
 async fn refused(f: &Fixture, task: &str) -> BoxResult<String> {
     let answer = support::mcp_tool(
@@ -2714,7 +2569,7 @@ async fn a_later_configuration_refusal_invalidates_an_old_candidate_outside_rece
     let sha = f.push("dev", &[("merged", Some("merged"))])?;
     let earlier = gate(&f, &sha, RunState::Failed).await?;
     let project = sandbox(&f).await?;
-    let (mut refusal, job) = crate::pr_watch::run(
+    let (mut refusal, job) = crate::support::pr_watch::run(
         &project.id,
         "refused",
         &sha,
@@ -3252,7 +3107,8 @@ async fn a_busy_task_view_cannot_hold_the_staging_queue() -> TestResult {
         updated_at: f.h.app.now(),
     };
     assert!(f.h.store.insert_staging_request(&staged).await?);
-    let browser = std::sync::Arc::new(crate::delivery::HeldBrowserLookup::for_publication());
+    let browser =
+        std::sync::Arc::new(crate::support::delivery::HeldBrowserLookup::for_publication());
     let mut deps = f.h.app.deps.clone();
     deps.browser = browser.clone();
     let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
@@ -4057,7 +3913,7 @@ async fn the_superagents_staging_deploy_waits_on_the_panel_then_asks_the_queue()
     let f = fixture(&staging_toml()).await?;
     let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
     gate(&f, &r1, RunState::Passed).await?;
-    let alices = crate::cd_rollback::superagent("u-alice", "alice")?;
+    let alices = crate::support::cd_rollback::superagent("u-alice", "alice")?;
     assert!(f.h.app.superagent_staging(&alices, "staging").await?);
     assert!(!f.h.app.superagent_staging(&alices, "dev").await?);
     assert!(!f.h.app.superagent_production(&alices, "staging").await?);
@@ -4373,7 +4229,7 @@ async fn who_asks_for_staging_and_who_it_deploys_as() -> TestResult {
         "{}",
         dev.body
     );
-    let carols = crate::cd_rollback::superagent("u-carol", "carol")?;
+    let carols = crate::support::cd_rollback::superagent("u-carol", "carol")?;
     let refused = f
         .ask_release(
             &carols,
@@ -4386,7 +4242,7 @@ async fn who_asks_for_staging_and_who_it_deploys_as() -> TestResult {
     assert!(
         f.h.app
             .superagent_on_panel(
-                &crate::cd_rollback::superagent("u-alice", "alice")?,
+                &crate::support::cd_rollback::superagent("u-alice", "alice")?,
                 CrossAction::Deploy,
                 "staging"
             )

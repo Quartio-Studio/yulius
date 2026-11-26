@@ -1408,8 +1408,40 @@ pub use wait::eventually;
 /// A bare repository behind the fake GitHub.
 pub mod remote;
 pub use remote::BareRemote;
+/// Fixtures shared with other files, moved from `antigravity`.
+pub mod antigravity;
+/// Fixtures shared with other files, moved from `cd`.
+pub mod cd;
+/// Fixtures shared with other files, moved from `cd_rollback`.
+pub mod cd_rollback;
+/// Fixtures shared with other files, moved from `cockpit`.
+pub mod cockpit;
+/// Fixtures shared with other files, moved from `codex`.
+pub mod codex;
+/// Fixtures shared with other files, moved from `delivery`.
+pub mod delivery;
 /// A process host double answering what a test scripts.
 pub mod host;
+/// Real-process servers (the fake agent behind a real ptyhost).
+pub mod live;
+/// Fixtures shared with other files, moved from `parking`.
+pub mod parking;
+/// Fixtures shared with other files, moved from `pr_watch`.
+pub mod pr_watch;
+/// Fixtures shared with other files, moved from `secrets`.
+pub mod secrets;
+/// Fixtures shared with other files, moved from `secrets_env`.
+pub mod secrets_env;
+/// Fixtures shared with other files, moved from `staging`.
+pub mod staging;
+/// Fixtures shared with other files, moved from `subscription_moves`.
+pub mod subscription_moves;
+/// Fixtures shared with other files, moved from `subscription_pool`.
+pub mod subscription_pool;
+/// Fixtures shared with other files, moved from `task_message`.
+pub mod task_message;
+/// Fixtures shared with other files, moved from `usage_credits`.
+pub mod usage_credits;
 pub use host::ScriptedHost;
 /// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).
 pub mod updates;

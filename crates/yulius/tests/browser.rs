@@ -1326,7 +1326,7 @@ async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult 
         run.id = yulius_domain::ids::AttemptId::parse("browser-goal-run")?;
         run.task_id = task.id.clone();
         run.account_id =
-            Some(crate::pool_supervision::add_account(&f.h.app, "browser-account").await?);
+            Some(crate::support::live::pool::add_account(&f.h.app, "browser-account").await?);
         run.token_hash = f.h.app.deps.crypto.sha256_hex(token.as_bytes());
         let run_dir = tempfile::tempdir()?;
         run.run_dir = run_dir.path().to_string_lossy().into_owned();
@@ -1357,7 +1357,7 @@ async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult 
         // The live tab already owns a human action before the task activity has caught up.
         browser.request_user_action(&tab, "Sign in to the test account", Some(&task.id))?;
         use yulius_app::ports::browser::BrowserPort;
-        let lookup = Arc::new(crate::delivery::HeldBrowserLookup::with_session(
+        let lookup = Arc::new(crate::support::delivery::HeldBrowserLookup::with_session(
             browser.clone(),
         ));
         let (entered, release) = lookup.hold_publication_lookup(&task.id);

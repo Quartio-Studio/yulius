@@ -4,12 +4,12 @@
 //! model it was launched with, a limit binds that model, and Fable is used again at the next
 //! launch once a subscription can run it. Real processes, as in `usage_credits.rs`.
 
-use crate::pool_supervision::{
+use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
+use crate::support::live::pool::{
     HOUR, ScriptedUsage, build_with, has_status, new_fable_task, reading, runtime, seed, stop,
     temp, usage,
 };
-use crate::subscription_moves::{live_run, notices, ready, run_accounts};
-use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
+use crate::support::subscription_moves::{live_run, notices, ready, run_accounts};
 use crate::support::{TestResult, eventually};
 
 use std::path::Path;
@@ -355,7 +355,7 @@ fn named_continue_during_change(change: NamedChange) -> TestResult {
         if matches!(change, NamedChange::ExhaustedModel | NamedChange::Relogin) {
             app.archive_task(&ctx, id.as_str(), true).await?;
         }
-        crate::parking::ask(&app, &id).await?;
+        crate::support::parking::ask(&app, &id).await?;
         let mut question = app
             .deps
             .store
@@ -557,7 +557,7 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
         store_usage(&app, "b-second", false).await?;
         app.send_input(&id, b"hello\r").await?;
         eventually("the turn", Duration::from_secs(30), || async {
-            crate::pool_supervision::echoed(&app, &id)
+            crate::support::live::pool::echoed(&app, &id)
                 .iter()
                 .any(|line| line.contains("hello"))
         })
@@ -835,7 +835,8 @@ fn a_fresh_session_of_a_run_on_the_fallback_goes_where_fable_runs_again() -> Tes
         }
         let id = new_fable_task(&app, &sandbox, &user, "Full").await?;
         eventually("the first answer", Duration::from_secs(30), || async {
-            crate::pool_supervision::screen(&app, &id).contains("ECHO: Full: answer with an echo")
+            crate::support::live::pool::screen(&app, &id)
+                .contains("ECHO: Full: answer with an echo")
         })
         .await?;
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);

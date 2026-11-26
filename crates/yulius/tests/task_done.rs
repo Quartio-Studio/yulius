@@ -6,19 +6,18 @@
 //! server restart that replays the transcripts.
 
 use crate::support;
+use crate::support::live::{Live, listen, serve_internal, url_of};
 use crate::support::{eventually, git};
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use support::TestResult;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
-use yulius::wiring::clock::SystemClock;
+use support::agents::FakeAgentOptions;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius::wiring::session::PtySessionHost;
-use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::context::{App, AppConfig};
 use yulius_app::error::AppResult;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
@@ -49,7 +48,7 @@ async fn start(
     agent: FakeAgentOptions,
     port: u16,
 ) -> Result<(Arc<App>, u16), BoxError> {
-    start_on(data, fake, agent, port, None, None, false, None).await
+    start_holding(data, live(fake, agent), port, |_| {}, Hold::default()).await
 }
 
 /// A session host that connects to a run only once the agent's SessionStart hook was answered, so
@@ -95,45 +94,6 @@ impl SessionHost for AttachAfterSessionStart {
     }
 }
 
-/// [`start`], and with `attach_late` the run is attached only after its SessionStart hook.
-async fn start_with(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    port: u16,
-    attach_late: bool,
-) -> Result<(Arc<App>, u16), BoxError> {
-    start_on(data, fake, agent, port, None, None, attach_late, None).await
-}
-
-/// [`start`] on `host` (default: the real one, attached late with `attach_late`), with the stop
-/// and close escalation shortened to `escalation_ms` and at most `sessions` live sessions.
-#[allow(clippy::too_many_arguments)]
-async fn start_on(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    port: u16,
-    host: Option<Arc<dyn SessionHost>>,
-    escalation_ms: Option<u64>,
-    attach_late: bool,
-    sessions: Option<u32>,
-) -> Result<(Arc<App>, u16), BoxError> {
-    start_holding(
-        data,
-        fake,
-        agent,
-        port,
-        host,
-        (escalation_ms, None),
-        attach_late,
-        sessions,
-        None,
-        None,
-    )
-    .await
-}
-
 /// A `/goal` prompt hook the test server handles only after `hold` and, within 30 s, once a Stop
 /// that arrived meanwhile was answered (not held): the first one once `armed`. `stop_handled`
 /// says that Stop was answered first (the late path), `handled` when the prompt was handled.
@@ -155,74 +115,51 @@ struct TurnHooks {
     prompts_lost: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// [`start_on`], and with `late_goal` the server sees a `/goal` prompt hook (a resumed session's
-/// typed goal) only after its hold, then handles it to its end, as a loaded host does once the
-/// hook client gave up waiting (SPEC-346); with `turn_hooks` the test follows the turn hooks.
-/// The pair shortens the stop and close escalation, and a switch's wait for its old session.
-#[allow(clippy::too_many_arguments)]
+/// The fake agent with `agent`'s options; Bob writes the fixture's repository (a hand-over during
+/// a launch, SPEC-248).
+fn live(fake: &Path, agent: FakeAgentOptions) -> Live {
+    let live = Live::new(Some(fake), agent);
+    live.github
+        .set_perm("bob", "acme/done", support::perms("write"));
+    live
+}
+
+/// How a test's server watches its hooks, beyond what [`Live`] builds.
+#[derive(Default)]
+struct Hold {
+    /// The run is attached only after its SessionStart hook (when `live` names no host).
+    attach_late: bool,
+    /// The server sees a `/goal` prompt hook (a resumed session's typed goal) only after its
+    /// hold, then handles it to its end, as a loaded host does once the hook client gave up
+    /// waiting (SPEC-346).
+    late_goal: Option<LateHook>,
+    /// The test follows the turn hooks.
+    turn_hooks: Option<TurnHooks>,
+}
+
+/// A server built from `live` on `port` (0 = any free port), `tune` applied, its hooks held as
+/// `hold` says; returns its port.
 async fn start_holding(
     data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
+    mut live: Live,
     port: u16,
-    host: Option<Arc<dyn SessionHost>>,
-    (escalation_ms, switch_end_ms): (Option<u64>, Option<u64>),
-    attach_late: bool,
-    sessions: Option<u32>,
-    late_goal: Option<LateHook>,
-    turn_hooks: Option<TurnHooks>,
+    tune: impl FnOnce(&mut AppConfig),
+    Hold {
+        attach_late,
+        late_goal,
+        turn_hooks,
+    }: Hold,
 ) -> Result<(Arc<App>, u16), BoxError> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
-    let listener = socket.listen(64)?;
+    let listener = listen(port)?;
     let port = listener.local_addr()?.port();
-    let url = format!("http://127.0.0.1:{port}");
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
     let (session_started, session_started_rx) = tokio::sync::watch::channel(false);
-    config.contained = false;
-    if let Some(ms) = escalation_ms {
-        config.stop_escalation_ms = ms;
+    if live.host.is_none() && attach_late {
+        live.host = Some(Arc::new(AttachAfterSessionStart {
+            inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
+            session_started: session_started_rx,
+        }));
     }
-    if let Some(ms) = switch_end_ms {
-        config.switch_end_ms = ms;
-    }
-    if let Some(sessions) = sessions {
-        config.max_live_sessions = sessions;
-    }
-    let deps = Deps {
-        store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-        clock: Arc::new(SystemClock),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new({
-            let github = support::FakeGitHub::default();
-            // Bob writes the fixture's repository (a hand-over during a launch, SPEC-248).
-            github.set_perm("bob", "acme/done", support::perms("write"));
-            github
-        }),
-        session_host: if let Some(host) = host {
-            host
-        } else if attach_late {
-            Arc::new(AttachAfterSessionStart {
-                inner: PtySessionHost::new(exe.clone()),
-                session_started: session_started_rx,
-            })
-        } else {
-            Arc::new(PtySessionHost::new(exe.clone()))
-        },
-        harness: Arc::new(FakeAgentHarness {
-            inner: HarnessAdapter::new(exe.clone(), url),
-            fake: fake.to_path_buf(),
-            options: agent,
-            yulius_exe: exe,
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-    };
-    let app = App::new(config, deps);
+    let app = live.app(data, &url_of(&listener)?, tune)?;
     // Says when a SessionStart hook was answered (the hook client waits for that answer).
     let session_start_answered = axum::middleware::from_fn(
         move |request: axum::extract::Request, next: axum::middleware::Next| {
@@ -324,12 +261,12 @@ async fn start_holding(
             }
         },
     );
-    let internal = yulius_server::internal_router(app.clone())
-        .layer(goal_held)
-        .layer(turn_followed)
-        .layer(session_start_answered)
-        .into_make_service_with_connect_info::<SocketAddr>();
-    tokio::spawn(async move { axum::serve(listener, internal).await });
+    serve_internal(&app, listener, |router| {
+        router
+            .layer(goal_held)
+            .layer(turn_followed)
+            .layer(session_start_answered)
+    });
     Ok((app, port))
 }
 
@@ -791,7 +728,17 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
             reap_strays: Some(Box::new(|_| 0)),
             ..support::ScriptedHost::default()
         });
-        let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
+        let (app, _) = start_holding(
+            &data,
+            Live {
+                host: Some(host),
+                ..live(&fake, agent)
+            },
+            0,
+            |_| {},
+            Hold::default(),
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let ctx = yulius_app::auth::AuthContext {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
@@ -1056,15 +1003,13 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
         };
         let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            live(&fake, agent),
             0,
-            None,
-            (None, None),
-            false,
-            None,
-            Some(late.clone()),
-            None,
+            |_| {},
+            Hold {
+                late_goal: Some(late.clone()),
+                ..Hold::default()
+            },
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -1107,15 +1052,13 @@ async fn start_following(
     let hooks = Some(turn.clone());
     let (app, _) = start_holding(
         data,
-        fake,
-        agent,
+        live(fake, agent),
         0,
-        None,
-        (None, None),
-        false,
-        None,
-        None,
-        hooks,
+        |_| {},
+        Hold {
+            turn_hooks: hooks,
+            ..Hold::default()
+        },
     )
     .await?;
     Ok((app, turn, answered))
@@ -1273,7 +1216,17 @@ fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> T
             hooks: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_with(&data, &fake, agent, 0, true).await?;
+        let (app, _) = start_holding(
+            &data,
+            live(&fake, agent),
+            0,
+            |_| {},
+            Hold {
+                attach_late: true,
+                ..Hold::default()
+            },
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = continued_goal_task(&app, &sandbox, &user).await?;
         // Well under the hookless fallback (45 s): the goal follows the hook, not the fallback.
@@ -1395,7 +1348,16 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
             hooks: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(&data, &fake, agent, 0, None, None, false, Some(1)).await?;
+        let (app, _) = start_holding(
+            &data,
+            live(&fake, agent),
+            0,
+            |config| {
+                config.max_live_sessions = 1;
+            },
+            Hold::default(),
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let ctx = yulius_app::auth::AuthContext {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
@@ -2146,7 +2108,16 @@ fn a_done_task_whose_shell_ends_frees_its_slot_at_once() -> TestResult {
             goal_background: Some(10),
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(&data, &fake, agent, 0, None, None, false, Some(1)).await?;
+        let (app, _) = start_holding(
+            &data,
+            live(&fake, agent),
+            0,
+            |config| {
+                config.max_live_sessions = 1;
+            },
+            Hold::default(),
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let first = goal_task(&app, &sandbox, &user, "Start the dev server").await?;
         eventually("Done with its shell", Duration::from_secs(90), || async {
@@ -2448,15 +2419,15 @@ fn a_switch_waits_while_the_background_work_cannot_be_told() -> TestResult {
             goal_delay_ms: Some(3_000),
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, agent)
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -2564,15 +2535,17 @@ fn a_stop_while_the_run_is_launching_ends_it_once_attached() -> TestResult {
             "CARGO_BIN_EXE_yulius"
         ))));
         host.arm();
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            FakeAgentOptions::default(),
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, FakeAgentOptions::default())
+            },
             0,
-            Some(host.clone()),
-            Some(60_000),
-            false,
-            None,
+            |config| {
+                config.stop_escalation_ms = 60_000;
+            },
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -2616,15 +2589,15 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
             hooks: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, agent)
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -2740,7 +2713,17 @@ async fn gated_goal_task(
         hooks: true,
         ..FakeAgentOptions::default()
     };
-    let (app, _) = start_on(data, fake, agent, 0, Some(host.clone()), None, false, None).await?;
+    let (app, _) = start_holding(
+        data,
+        Live {
+            host: Some(host.clone()),
+            ..live(fake, agent)
+        },
+        0,
+        |_| {},
+        Hold::default(),
+    )
+    .await?;
     let (sandbox, user) = seed(&app, data).await?;
     let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
     eventually("the launch goal", Duration::from_secs(60), || {
@@ -2777,15 +2760,18 @@ async fn gated_goal_task_ending_with(
     ))));
     let (app, _) = start_holding(
         data,
-        fake,
-        agent,
+        Live {
+            host: Some(host.clone()),
+            ..live(fake, agent)
+        },
         0,
-        Some(host.clone()),
-        (None, Some(switch_end_ms)),
-        false,
-        None,
-        None,
-        turn_hooks,
+        |config| {
+            config.switch_end_ms = switch_end_ms;
+        },
+        Hold {
+            turn_hooks,
+            ..Hold::default()
+        },
     )
     .await?;
     let (sandbox, user) = seed(&app, data).await?;
@@ -4255,15 +4241,17 @@ async fn continue_on_held_attach(data: &Path, fake: &Path) -> Result<HeldContinu
         hooks: true,
         ..FakeAgentOptions::default()
     };
-    let (app, _) = start_on(
+    let (app, _) = start_holding(
         data,
-        fake,
-        agent,
+        Live {
+            host: Some(host.clone()),
+            ..live(fake, agent)
+        },
         0,
-        Some(host.clone()),
-        Some(5_000),
-        false,
-        None,
+        |config| {
+            config.stop_escalation_ms = 5_000;
+        },
+        Hold::default(),
     )
     .await?;
     let (sandbox, user) = seed(&app, data).await?;
@@ -4620,7 +4608,7 @@ async fn second_server(data: &Path, fake: &Path) -> Result<Arc<App>, BoxError> {
         hooks: true,
         ..FakeAgentOptions::default()
     };
-    let (app, _) = start_on(data, fake, agent, 0, None, None, false, None).await?;
+    let (app, _) = start_holding(data, live(fake, agent), 0, |_| {}, Hold::default()).await?;
     Ok(app)
 }
 
@@ -5520,7 +5508,7 @@ fn a_goal_cleared_while_a_retry_is_armed_leaves_the_task_waiting() -> TestResult
         let seen = activities_until(&app, &id, Activity::Waiting, Duration::from_secs(20)).await?;
         assert_eq!(seen.last(), Some(&Some(Activity::Waiting)));
         assert!(
-            crate::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
+            crate::support::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
             "a cleared goal leaves the red branch with the project"
         );
         stop(&app, &id).await
@@ -7316,7 +7304,17 @@ fn a_done_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
             "CARGO_BIN_EXE_yulius"
         ))));
         host.silence_work_probe(true);
-        let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
+        let (app, _) = start_holding(
+            &data,
+            Live {
+                host: Some(host),
+                ..live(&fake, agent)
+            },
+            0,
+            |_| {},
+            Hold::default(),
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         // The project validates in the sandbox's clone.
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
@@ -7407,15 +7405,15 @@ fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
         let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
             "CARGO_BIN_EXE_yulius"
         ))));
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            FakeAgentOptions::default(),
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, FakeAgentOptions::default())
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -7493,15 +7491,15 @@ fn a_start_onboarding_a_refresh_got_ahead_of_is_audited_as_its_person() -> TestR
         let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
             "CARGO_BIN_EXE_yulius"
         ))));
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            FakeAgentOptions::default(),
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, FakeAgentOptions::default())
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -7768,15 +7766,17 @@ async fn running_task(
     ),
     BoxError,
 > {
-    let (app, _) = start_on(
+    let (app, _) = start_holding(
         data,
-        fake,
-        FakeAgentOptions::default(),
+        Live {
+            host: Some(host),
+            ..live(fake, FakeAgentOptions::default())
+        },
         0,
-        Some(host),
-        Some(300),
-        false,
-        None,
+        |config| {
+            config.stop_escalation_ms = 300;
+        },
+        Hold::default(),
     )
     .await?;
     let (sandbox, user) = seed(&app, data).await?;
@@ -7989,15 +7989,15 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
             transcript: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, agent)
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -8158,15 +8158,15 @@ fn a_hand_over_during_a_launch_restarts_a_run_holding_personal_mcp_servers() -> 
             transcript: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, agent)
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -8299,7 +8299,7 @@ fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8442,7 +8442,7 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8595,7 +8595,7 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,

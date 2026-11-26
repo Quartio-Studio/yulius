@@ -3,7 +3,7 @@
 //! `SubagentStart` and `SubagentStop` link and end it, and a merge closes a pull request's
 //! rounds.
 
-use crate::subscription_pool::{add_account, hook, running_task, seed};
+use crate::support::subscription_pool::{add_account, hook, running_task, seed};
 use crate::support::{TestResult, harness};
 
 use serde_json::{Value, json};
@@ -300,7 +300,7 @@ async fn a_resumed_reviewer_and_other_subagents_change_no_round() -> TestResult 
 /// delivery can neither reopen the completed round nor close the one now running.
 #[tokio::test]
 async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     use crate::support::{confined_git, git_stdout, harness_with_git};
     use std::sync::{Arc, atomic::Ordering};
     use yulius_app::ports::store::TaskFieldUpdate;
@@ -477,7 +477,7 @@ async fn continued_review_counts_each_report_in_merged_analytics() -> TestResult
 /// of a continued reviewer. Its own resume and report must clear them.
 #[tokio::test]
 async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     use std::sync::atomic::Ordering;
     let h = harness()?;
     seed(&h).await?;
@@ -521,7 +521,7 @@ async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResul
 /// Replaying the current round's own start before its cutoff was observed is still a replay.
 #[tokio::test]
 async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     use std::sync::atomic::Ordering;
     let h = harness()?;
     seed(&h).await?;
@@ -1410,14 +1410,14 @@ mod real {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use crate::first_message::{hooked, new_task, start_with};
-    use crate::pool_supervision::{
-        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage,
-    };
-    use crate::subscription_moves::{live_run, ready, run_accounts};
     use crate::support::TestResult;
     use crate::support::agents::FakeAgentOptions;
     use crate::support::eventually;
+    use crate::support::live::first_message::{hooked, new_task, start_with};
+    use crate::support::live::pool::{
+        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage,
+    };
+    use crate::support::subscription_moves::{live_run, ready, run_accounts};
     use yulius_app::model::TaskMode;
     use yulius_domain::usage::UsageWindow;
     use yulius_ptyhost::test_support::locate_fake_agent;
@@ -1867,7 +1867,7 @@ fn reviewer_stop(id: &str, agent: &str, report: &str) -> Value {
 /// stop of another agent type, or one sent before the round started, ends nothing.
 #[tokio::test]
 async fn a_stop_ends_the_round_its_start_came_before() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     let h = harness()?;
     seed(&h).await?;
     let account = add_account(&h, "acc-1", None).await?;
@@ -1957,7 +1957,7 @@ async fn a_stop_of_an_unknown_reviewer_leaves_a_linked_round_alone() -> TestResu
 /// leaves the continuation open, and its second report ends it.
 #[tokio::test]
 async fn a_reviewers_notification_ends_the_round_its_lost_stop_left_open() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     let h = harness()?;
     seed(&h).await?;
     let account = add_account(&h, "acc-1", None).await?;
