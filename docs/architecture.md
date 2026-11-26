@@ -3893,15 +3893,10 @@ branch's verified head. Which release is previous, kept or behind a barrier is
 production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::production_gate`)
 before it obtains secrets or promotes a revision. Rollback must be configured and the drill must
 have passed for the deployed tree. While another dev commit is drilling, the last completed drill
-can prove that tree. A person's production deploy refused only for that proof, where the drill environment can
-deploy the same tree (`yulius_domain::rollback::dev_can_prove`, `App::cd_dev_proof`), deploys that
-environment instead as the same person (`App::cd_start_or_prove`,
-`crates/yulius-app/src/ci/prove.rs`;
-[SPEC-438](../.ai/specs/SPEC-438-something-is-fucked-up-with-deployment-f.md),
-[decision 0282](decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md)). The
-production deploy waits in memory (`CiState::production_waits`) for that deploy and the drill it
-starts, then starts as the person with the commit they confirmed; a wait that ends otherwise
-records an ended production run in `error` saying why. An environment whose table has no `deploy` and no `rollback` (empty, or a production that
+can prove that tree. A refused production deploy says to get its commit deployed on the drill
+environment first; Yulius no longer does that for the person ([decision
+0282](decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md), superseded on
+2026-11-26). An environment whose table has no `deploy` and no `rollback` (empty, or a production that
 only promotes) needs no rollback: `mark_rollback_not_needed`
 (`crates/yulius-app/src/ci/rollback.rs`) sets its `not_needed` reason once per CD overview, which
 `cd_status` and the CD page show, unless a production-stage environment with a deploy command drills

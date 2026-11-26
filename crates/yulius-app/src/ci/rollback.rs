@@ -21,8 +21,8 @@ use yulius_domain::ci::RunState;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
 use yulius_domain::rollback::{
-    CdRunKind, DrillSeen, History, ReleaseKind, ReleaseRecord, RollbackStep, dev_can_prove,
-    drill_steps, earlier_barrier, production_gate, shipped, short_release,
+    CdRunKind, DrillSeen, History, ReleaseKind, ReleaseRecord, RollbackStep, drill_steps,
+    earlier_barrier, production_gate, shipped, short_release,
 };
 
 use super::cd::{
@@ -37,14 +37,6 @@ use crate::delivery::runner::OutputRing;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 use crate::ports::store_ext::CdRunHistory;
-
-/// Why a production deploy is refused for its rollback.
-pub(super) struct GateRefusal {
-    /// What the person reads.
-    pub(super) why: String,
-    /// A deploy of the drill environment at the commit could prove it (SPEC-438).
-    pub(super) provable: bool,
-}
 
 /// The fixed script of a rollback or a drill: output to the log, stdin closed, then for each
 /// step (`part release sha` after the commands) the rollback command with the step in
@@ -402,24 +394,17 @@ impl App {
         })
     }
 
-    /// Why a production deploy of `sha` is refused for its rollback, if it is (RBK-031), and
-    /// whether a dev deploy could prove it (SPEC-438): read against `repo` (the verified mirror
-    /// for a deploy; the clone for the page).
+    /// Why a production deploy of `sha` is refused for its rollback, if it is (RBK-031): read
+    /// against `repo` (the verified mirror for a deploy; the clone for the page).
     pub(super) async fn cd_rollback_gate(
         &self,
         sandbox: &SandboxRecord,
         target: &CdTarget,
         sha: &str,
         repo: &Path,
-    ) -> AppResult<Option<GateRefusal>> {
-        let refused = |seen: Option<&DrillSeen>| {
-            production_gate(target, seen).map(|why| GateRefusal {
-                why,
-                provable: dev_can_prove(target, seen),
-            })
-        };
+    ) -> AppResult<Option<String>> {
         if target.stage != CdStage::Prod || target.deploy.is_none() || target.rollback.is_none() {
-            return Ok(refused(None));
+            return Ok(production_gate(target, None));
         }
         let drill_env = target.drill_env();
         let seen = match self
@@ -457,13 +442,10 @@ impl App {
                 {
                     return Ok(None);
                 }
-                return Ok(Some(GateRefusal {
-                    why: format!(
-                        "the rollback drill of {drill_env} is running: deploy production once it \
-                         passed"
-                    ),
-                    provable: false,
-                }));
+                return Ok(Some(format!(
+                    "the rollback drill of {drill_env} is running: deploy production once it \
+                     passed"
+                )));
             }
             Some(run) => {
                 let git = &self.deps.git;
@@ -476,7 +458,7 @@ impl App {
                 })
             }
         };
-        Ok(refused(seen.as_ref()))
+        Ok(production_gate(target, seen.as_ref()))
     }
 
     /// Records what a run left deployed (RBK-010..012): a passed deploy's shipped releases (its
@@ -663,9 +645,6 @@ impl App {
             source: None,
             steps: Vec::new(),
         };
-        // A production deploy waiting for this deploy waits for its drill now; every way the
-        // drill does not run ends that wait (SPEC-438).
-        self.cd_proof_drilling(deployed, &run.id);
         let records = match self
             .deps
             .store
@@ -685,13 +664,7 @@ impl App {
             run.steps.extend(drill_steps(History(&mine)));
         }
         if run.steps.is_empty() {
-            let why = format!(
-                "no rollback drill of {} followed its deploy at {}: it has no earlier release to go \
-                 back to",
-                run.environment,
-                short_sha(&run.sha)
-            );
-            return self.cd_proof_ended(sandbox, &run.id, &why).await;
+            return;
         }
         let target_name = format!("{}/{}", sandbox.slug, run.environment);
         let started = self.now();
@@ -758,13 +731,6 @@ impl App {
             .await;
         } else if let Err(err) = recorded {
             tracing::warn!(error = %err, "the rollback drill did not start");
-            let why = format!(
-                "the rollback drill of {} at {} could not start: {}",
-                run.environment,
-                short_sha(&run.sha),
-                err.public_message()
-            );
-            self.cd_proof_ended(sandbox, &run.id, &why).await;
         }
     }
 
@@ -784,12 +750,6 @@ impl App {
             tracing::warn!(error = %err, "recording a drill that could not start failed");
         }
         self.dlv_audit("yulius", "cd.drill", &target, &reason).await;
-        let why = format!(
-            "the rollback drill of {} at {} could not start: {why}",
-            ended.environment,
-            short_sha(&ended.sha)
-        );
-        self.cd_proof_ended(sandbox, &ended.id, &why).await;
     }
 
     /// An environment's rollback for the page (RBK-040): its command and migrations line, each
@@ -854,8 +814,7 @@ impl App {
         let blocked = match (stage, deploying) {
             (CdStage::Prod, Some(sha)) => self
                 .cd_rollback_gate(sandbox, target, sha, &self.sandbox_repo(&sandbox.id))
-                .await?
-                .map(|refused| refused.why),
+                .await?,
             (CdStage::Prod, None) => production_gate(target, None),
             (CdStage::Dev, _) => None,
         };
@@ -867,10 +826,6 @@ impl App {
             drill,
             blocked,
             not_needed: None,
-            waiting: match stage {
-                CdStage::Prod => self.cd_production_waiting(&sandbox.id, name),
-                CdStage::Dev => None,
-            },
         })
     }
 
@@ -1042,9 +997,6 @@ pub(super) fn rollback_text(out: &mut String, env: &CdEnvironment) {
             Some(blocked) => out.push_str(&format!("  production deploys refused: {blocked}\n")),
             None => out.push_str("  rollback proven: production may deploy\n"),
         }
-        if let Some(waiting) = &rollback.waiting {
-            out.push_str(&format!("  waiting: {waiting}\n"));
-        }
     }
 }
 
@@ -1124,24 +1076,6 @@ mod tests {
             env("prod", None, true),
         ]);
         assert!(out[0].contains("rollback: not configured"), "{}", out[0]);
-    }
-
-    /// SPEC-438 PDF-004: `cd_status` says a production deploy waits for its proof on dev.
-    #[test]
-    fn a_waiting_production_deploy_is_said() {
-        let mut prod = env("prod", Some("scripts/cd/deploy.sh prod"), true);
-        prod.rollback.command = Some("scripts/cd/rollback.sh".into());
-        prod.rollback.blocked = Some("rollback is not proven for this commit".into());
-        let waiting = "Production deploys at abc1234 once the rollback drill of dev passes \
-                       (asked by bob)";
-        prod.rollback.waiting = Some(waiting.into());
-        let mut out = String::new();
-        rollback_text(&mut out, &prod);
-        assert!(out.contains(&format!("  waiting: {waiting}\n")), "{out}");
-        prod.rollback.waiting = None;
-        let mut out = String::new();
-        rollback_text(&mut out, &prod);
-        assert!(!out.contains("waiting"), "{out}");
     }
 
     /// Review M1 of SPEC-418: an empty dev that a deploying production drills its rollback on
