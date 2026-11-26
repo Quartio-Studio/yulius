@@ -53,9 +53,10 @@ flowchart LR
     DF --> DE["Docker engine (on demand)"]
   end
   subgraph PSB["Production holder (per sandbox; no agent joins it)"]
-    PR["production run, brokered command (host's read-only system)"]
+    PR["production CD run (host's read-only system)"]
     PR -->|"/run/yulius/docker"| PDF["its Docker front"]
     PDF --> PDE["its Docker engine (on demand)"]
+    BC["brokered command (no Docker directory)"]
   end
   AG -->|"MCP (yulius mcp stdio bridge) + hooks"| INT
   AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
@@ -143,11 +144,14 @@ answered Stop, the final screen).
 
 ### Sandbox containment and the namespace holder
 
-Every sandbox has a holder process with its own user, network and mount namespaces and its own
-`slirp4netns` (host loopback off). Agent runs, Superagents, Shells, CI jobs, dev CD runs and script
-watches join it; a contained run (isolated, or the fallback bubblewrap) has its own PID namespace, a
-private tmpfs at `/`, `/tmp`, `/run` and `/dev/shm` (`/tmp` is 1 GiB), the seccomp filter of a
-joined run, and the sandbox directory mounted read-write. A run's own processes end with the run. A
+There are three modes: a sandbox with a holder (the default), the fallback bubblewrap
+(`YULIUS_ISOLATION=legacy` or missing prerequisites), and host mode. The holder is a process with
+its own user, network and mount namespaces and its own `slirp4netns` (host loopback off). Agent
+runs, Superagents, Shells, CI jobs, dev CD runs and script watches join it. A contained run (joined
+or fallback) has its own PID namespace, a private tmpfs at `/`, `/tmp`, `/run` and `/dev/shm`
+(`/tmp` is 1 GiB) and the sandbox directory mounted read-write; a run that joined a holder also gets
+the run seccomp filter, the fallback has none. The process host makes a run-owned directory inside
+the sandbox's disk quota for disposable builds and reclaims it when the run ends. A run's own processes end with the run. A
 process in the sandbox reaches Yulius at `127.0.0.1:8081`, the holder's forward to the server's
 `out.sock` relay. An agent run without containment (host mode) runs as the service user on the host.
 Removing a sandbox retires its holder: a `retired` marker makes `prepare` refuse it, and the upkeep
@@ -172,7 +176,8 @@ admits through 256 places, labels the containers and networks a CI job creates
 end and a 30 s sweep remove its labelled containers and networks. The engine stops when idle; disk
 pressure prunes only a running engine.
 
-Production-stage CD runs and brokered commands never use the sandbox's engine. Each sandbox has a
+Production-stage CD runs never use the sandbox's engine; brokered commands join the same production
+holder without its Docker directory. Each sandbox has a
 second holder, `<sid>.prod`, with its own namespaces, `slirp4netns`, cgroup, system layer over the
 current base and engine storage; its runs join it on the host's read-only system, and nothing of the
 sandbox directory is bound in ([decision
@@ -186,10 +191,11 @@ flowchart LR
     E --> C["containers (engine seccomp, engine/ cgroup)"]
   end
   C --> S["slirp4netns (host loopback off)"] --> I["Internet"]
-  K["server: upkeep tick"] -->|"start / restart the front, bind-docker"| H
+  K["server: upkeep tick"] -->|"start / restart the front"| H
   X["server: job end, 30 s sweep"] -->|"remove the job's labelled containers"| E
   subgraph PNS["Production holder sid.prod"]
-    P["production CD run, brokered command"] --> PF["its front"] --> PE["dockerd of the base"]
+    P["production CD run"] --> PF["its front"] --> PE["dockerd of the base"]
+    B["brokered command: joins without the Docker directory"]
   end
   PE --> PS["its own slirp4netns"] --> I
 ```
@@ -236,7 +242,8 @@ only into a page of one of its hosts, and a screenshot is refused while a page s
 
 - **Sign-ins** (`claude setup-token`, `codex login --device-auth`, the Antigravity TUI) run on the
   host in a server-owned PTY with a fixed argv, new empty home folders and input from instance
-  administrators only; the raw output is one allocation, zeroed once the token is extracted.
+  administrators only; Claude Code's raw output is one allocation, zeroed once the token is
+  extracted, while Codex and Antigravity leave a file in the new home and print no token.
 - **The Global Superagent** runs `claude` with no built-in tools, no MCP server but Yulius, no
   hooks, no settings file, a refusing `no-shell` script as its shell and editor, no agent secret and
   no egress proxy, in a bubblewrap namespace whose only writable root is its own folder.
@@ -385,7 +392,10 @@ pull requests merged in, tested by one run), and a failed candidate is bisected.
 own run always finishes; the queue never restarts it. Every merge goes through the GitHub adapter's
 `merge_pull`. The merge is recorded in one transaction with the task, pull request, accepted head,
 integration branch and landed commit (`task_merges`), and the pull request's review rounds close
-there. Work committed after a merge starts a new pull request of the same task.
+there. Work committed after a merge starts a new pull request of the same task. The GitHub adapter
+keeps GitHub's availability apart from task state: during an outage, task displays use the recorded
+delivery and pull observations, and display reads are shared per credential and revalidated with
+ETags.
 
 The agent does not poll: it waits with `yulius wait` in a background shell (a long poll), and the
 pull request watch types what happens to an open pull request into the session every 20 s, as one
@@ -525,8 +535,8 @@ references, `.env` copies and browser filling never resolve it.
 - **The pipeline**: CI adds the built-in `security` job when the sandbox's applied secrets have the
   key and its CI does not scan already. It is granted `VIDOC_API_KEY` and neither cancels nor is
   cancelled by other jobs. Its findings file, reopen and close GitHub issues by fingerprint.
-- **Switches**: a project's switch (`vidoc: false` in its profile) and the superadmin's instance
-  switch turn scans off: runs get `YULIUS_VIDOC=off`, the key is not applied, no built-in job is
+- **Switches**: a project's switch (`vidoc: false` in its profile, which the sandbox's admins flip on
+  its CI/CD page) and the superadmin's instance switch turn scans off: runs get `YULIUS_VIDOC=off`, the key is not applied, no built-in job is
   added, and the proxy refuses `model.vidocsecurity.com` (403, nothing sent; 503 when it cannot read
   the switch).
 
@@ -743,4 +753,5 @@ section holds the details.
   [moving](archive/architecture-until-2026-11-26.md#moving-an-instance)
 - **Agent primitives.** Skills are APM primitives from `.apm/skills`; a server start refreshes every
   sandbox's skills. [details](archive/architecture-until-2026-11-26.md#agent-primitives)
-- **Runtime.** [details](archive/architecture-until-2026-11-26.md#runtime)
+- **Runtime.** Covered above (process hosts, harness launch).
+  [details](archive/architecture-until-2026-11-26.md#runtime)
