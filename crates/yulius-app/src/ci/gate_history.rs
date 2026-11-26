@@ -362,7 +362,7 @@ fn replay(
 ) -> GateFailures {
     let mut failures = GateFailures::default();
     let mut oldest_first = history.into_iter().rev();
-    while let Some(verdict) = oldest_first.next() {
+    for verdict in oldest_first.by_ref() {
         if unresolved.contains(&verdict.sha) {
             failures.waiting = true;
             failures.hold(&verdict);
