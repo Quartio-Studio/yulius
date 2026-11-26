@@ -9,15 +9,14 @@ use yulius_app::ports::variables::{
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column};
+use crate::{SqliteStore, text_parsed};
 
 const COLS: &str =
     "sandbox_id, name, value, description, created_by, created_at, updated_by, updated_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<ProjectVariableRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
     Ok(ProjectVariableRecord {
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         name: row.get("name")?,
         value: row.get("value")?,
         description: row.get("description")?,

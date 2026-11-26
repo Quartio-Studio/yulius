@@ -11,7 +11,7 @@ use yulius_app::ports::store_ext::McpStore;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column};
+use crate::{DbResult, SqliteStore, bad_column, text_as, text_parsed};
 
 const COLS: &str = "id, sandbox_id, name, transport, command, args, url, env, headers, enabled, \
                     created_at, origin, owner_id";
@@ -19,8 +19,6 @@ const COLS: &str = "id, sandbox_id, name, transport, command, args, url, env, he
 fn from_row(row: &Row<'_>) -> rusqlite::Result<McpServerRecord> {
     let sandbox: Option<String> = row.get("sandbox_id")?;
     let transport: String = row.get("transport")?;
-    let args: String = row.get("args")?;
-    let origin: String = row.get("origin")?;
     let owner: Option<String> = row.get("owner_id")?;
     Ok(McpServerRecord {
         id: row.get("id")?,
@@ -32,13 +30,13 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<McpServerRecord> {
         transport: McpTransport::parse(&transport)
             .ok_or_else(|| bad_column("transport", &transport))?,
         command: row.get("command")?,
-        args: serde_json::from_str(&args).map_err(|_| bad_column("args", &args))?,
+        args: text_parsed(row, "args", "args", |text| serde_json::from_str(text))?,
         url: row.get("url")?,
         env: row.get::<_, Option<Vec<u8>>>("env")?.map(Sealed),
         headers: row.get::<_, Option<Vec<u8>>>("headers")?.map(Sealed),
         enabled: row.get("enabled")?,
         created_at: Timestamp(row.get("created_at")?),
-        origin: McpOrigin::parse(&origin).ok_or_else(|| bad_column("origin", &origin))?,
+        origin: text_as(row, "origin", "origin", McpOrigin::parse)?,
         owner_id: owner
             .as_deref()
             .map(|o| UserId::parse(o).map_err(|_| bad_column("owner id", o)))

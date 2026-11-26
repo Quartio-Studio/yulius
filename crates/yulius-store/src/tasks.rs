@@ -16,7 +16,10 @@ use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{ModelTokens, TokenUsage};
 
-use crate::{DbError, DbResult, SqliteStore, bad_column, to_i64, to_u32, to_u64};
+use crate::{
+    DbError, DbResult, SqliteStore, bad_column, opt_ts, parsed, text_as, text_parsed, to_i64,
+    to_u32, to_u64,
+};
 
 /// The status change of [`TaskStore::transition_task`], with its bookkeeping. A task that
 /// leaves the queue loses the start kept for its wait (SPEC-483 QST-001): a held prompt stays
@@ -96,62 +99,42 @@ const RESUME_ATTEMPT: &str = "CASE WHEN tasks.status IN ('parked', 'closed')
 const ATTEMPT_COLS: &str = "id, task_id, seq, harness, account_id, provider_session_id, launch_kind, \
     state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason, model";
 
-fn parse_id<T>(
-    column: &str,
-    text: &str,
-    f: fn(&str) -> Result<T, yulius_domain::ids::IdError>,
-) -> rusqlite::Result<T> {
-    f(text).map_err(|_| bad_column(column, text))
-}
-
-fn harness(text: &str) -> rusqlite::Result<Harness> {
-    Harness::parse(text).map_err(|_| bad_column("harness", text))
-}
-
 fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
     let id: String = row.get("id")?;
-    let sandbox: String = row.get("sandbox_id")?;
-    let status: String = row.get("status")?;
     let activity: Option<String> = row.get("activity")?;
-    let created_by: String = row.get("created_by")?;
-    let owner: String = row.get("owner_id")?;
     let origin: String = row.get("origin")?;
-    let harness_text: String = row.get("harness")?;
     Ok(TaskRecord {
-        id: parse_id("task id", &id, TaskId::parse)?,
+        id: parsed("task id", &id, TaskId::parse)?,
         resume_attempt_id: row
             .get::<_, Option<String>>("resume_attempt_id")?
             .as_deref()
-            .map(|id| parse_id("resume attempt id", id, AttemptId::parse))
+            .map(|id| parsed("resume attempt id", id, AttemptId::parse))
             .transpose()?,
-        sandbox_id: parse_id("sandbox id", &sandbox, SandboxId::parse)?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         number: to_u32(row.get("number")?),
         title: row.get("title")?,
         prompt: row.get("prompt")?,
-        harness: harness(&harness_text)?,
+        harness: text_parsed(row, "harness", "harness", Harness::parse)?,
         model: row.get("model")?,
         effort: row.get("effort")?,
         workflow_id: row.get("workflow_id")?,
-        status: TaskStatus::parse(&status).ok_or_else(|| bad_column("status", &status))?,
+        status: text_as(row, "status", "status", TaskStatus::parse)?,
         activity: activity.as_deref().and_then(Activity::parse),
         branch: row.get("branch")?,
         worktree_path: row.get("worktree_path")?,
         spec_path: row.get("spec_path")?,
         origin: TaskOrigin::parse(&origin),
         automation_run: row.get("automation_run")?,
-        created_by: parse_id("user id", &created_by, UserId::parse)?,
-        owner: parse_id("user id", &owner, UserId::parse)?,
+        created_by: text_parsed(row, "created_by", "user id", UserId::parse)?,
+        owner: text_parsed(row, "owner_id", "user id", UserId::parse)?,
         created_at: Timestamp(row.get("created_at")?),
         updated_at: Timestamp(row.get("updated_at")?),
-        closed_at: row.get::<_, Option<i64>>("closed_at")?.map(Timestamp),
-        archived_at: row.get::<_, Option<i64>>("archived_at")?.map(Timestamp),
-        queued_at: row.get::<_, Option<i64>>("queued_at")?.map(Timestamp),
+        closed_at: opt_ts(row, "closed_at")?,
+        archived_at: opt_ts(row, "archived_at")?,
+        queued_at: opt_ts(row, "queued_at")?,
         gate_blocks: to_u32(row.get("gate_blocks")?),
         wake_enabled: row.get("wake_enabled")?,
-        mode: {
-            let mode: String = row.get("mode")?;
-            TaskMode::parse(&mode).ok_or_else(|| bad_column("mode", &mode))?
-        },
+        mode: text_as(row, "mode", "mode", TaskMode::parse)?,
         supertask: row.get("supertask")?,
     })
 }
@@ -170,34 +153,31 @@ fn attempt_state(connection: &rusqlite::Connection, id: &str) -> DbResult<Attemp
 
 fn attempt_from_row(row: &Row<'_>) -> rusqlite::Result<AttemptRecord> {
     let id: String = row.get("id")?;
-    let task: String = row.get("task_id")?;
     let account: Option<String> = row.get("account_id")?;
-    let state: String = row.get("state")?;
     let kind: String = row.get("launch_kind")?;
-    let harness_text: String = row.get("harness")?;
     let pid = |name: &str| -> rusqlite::Result<Option<u32>> {
         Ok(row.get::<_, Option<i64>>(name)?.map(to_u32))
     };
     Ok(AttemptRecord {
-        id: parse_id("attempt id", &id, AttemptId::parse)?,
-        task_id: parse_id("task id", &task, TaskId::parse)?,
+        id: parsed("attempt id", &id, AttemptId::parse)?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         seq: to_u32(row.get("seq")?),
-        harness: harness(&harness_text)?,
+        harness: text_parsed(row, "harness", "harness", Harness::parse)?,
         account_id: account
             .as_deref()
-            .map(|a| parse_id("account id", a, AccountId::parse))
+            .map(|a| parsed("account id", a, AccountId::parse))
             .transpose()?,
         provider_session_id: row.get("provider_session_id")?,
         launch_kind: LaunchKind::parse(&kind),
         model: row.get("model")?,
-        state: AttemptState::parse(&state).ok_or_else(|| bad_column("attempt state", &state))?,
+        state: text_as(row, "state", "attempt state", AttemptState::parse)?,
         run_dir: row.get("run_dir")?,
         token_hash: row.get("token_hash")?,
         host_token: yulius_app::model::Sealed(row.get("host_token")?),
         ptyhost_pid: pid("ptyhost_pid")?,
         child_pid: pid("child_pid")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        ended_at: opt_ts(row, "ended_at")?,
         exit_code: row.get("exit_code")?,
         exit_reason: row.get("exit_reason")?,
     })
@@ -768,7 +748,7 @@ impl TaskStore for SqliteStore {
                 |r| {
                     Ok(TaskTimes {
                         state_at: Timestamp(r.get(0)?),
-                        working_since: r.get::<_, Option<i64>>(1)?.map(Timestamp),
+                        working_since: opt_ts(r, 1)?,
                     })
                 },
             )
@@ -1541,14 +1521,11 @@ impl TaskStore for SqliteStore {
                 )?;
             let rows = stmt
                 .query_map([t], |r| {
-                    let sb: String = r.get(1)?;
-                    let tk: String = r.get(2)?;
-                    let h: String = r.get(3)?;
                     Ok(ProviderSessionRecord {
                         id: r.get(0)?,
-                        sandbox_id: parse_id("sandbox id", &sb, SandboxId::parse)?,
-                        task_id: parse_id("task id", &tk, TaskId::parse)?,
-                        harness: harness(&h)?,
+                        sandbox_id: text_parsed(r, 1, "sandbox id", SandboxId::parse)?,
+                        task_id: text_parsed(r, 2, "task id", TaskId::parse)?,
+                        harness: text_parsed(r, 3, "harness", Harness::parse)?,
                         session_id: r.get(4)?,
                         transcript_ref: r.get(5)?,
                         origin: r.get(6)?,
@@ -1690,9 +1667,8 @@ impl TaskStore for SqliteStore {
             let mut stmt =
                 c.prepare("SELECT attempt_id, model, cli_version FROM metrics WHERE task_id = ?1")?;
             let rows = stmt.query_map([t], |r| {
-                let attempt: String = r.get(0)?;
                 Ok(RunFacts {
-                    attempt: parse_id("attempt id", &attempt, AttemptId::parse)?,
+                    attempt: text_parsed(r, 0, "attempt id", AttemptId::parse)?,
                     model: r.get(1)?,
                     cli_version: r.get(2)?,
                 })
@@ -1711,8 +1687,7 @@ impl TaskStore for SqliteStore {
                      ORDER BY a.started_at",
             )?;
             let rows = stmt.query_map([], |r| {
-                let task: String = r.get(0)?;
-                Ok((parse_id("task id", &task, TaskId::parse)?, r.get(1)?))
+                Ok((text_parsed(r, 0, "task id", TaskId::parse)?, r.get(1)?))
             })?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
@@ -1810,10 +1785,9 @@ impl TaskStore for SqliteStore {
                 "SELECT user_id, verdict, comment, at FROM feedback WHERE task_id = ?1 ORDER BY at",
             )?;
             let rows = stmt.query_map([t], |r| {
-                let u: String = r.get(0)?;
                 Ok(FeedbackRecord {
                     task_id: task.clone(),
-                    user_id: parse_id("user id", &u, UserId::parse)?,
+                    user_id: text_parsed(r, 0, "user id", UserId::parse)?,
                     verdict: r.get(1)?,
                     comment: r.get(2)?,
                     at: Timestamp(r.get(3)?),
