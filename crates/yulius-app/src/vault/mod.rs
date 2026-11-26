@@ -229,7 +229,7 @@ every task of this project can read them. Only the proxy sends a personal secret
 code that needs the value outside the proxy needs a project secret";
 
 /// A vault tool's arguments, or the refusal every tool gives for ones it cannot read.
-pub(super) fn parse_args<T: serde::de::DeserializeOwned>(args: &serde_json::Value) -> AppResult<T> {
+fn parse_args<T: serde::de::DeserializeOwned>(args: &serde_json::Value) -> AppResult<T> {
     serde_json::from_value(args.clone())
         .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))
 }
@@ -238,10 +238,7 @@ pub(super) fn parse_args<T: serde::de::DeserializeOwned>(args: &serde_json::Valu
 ///
 /// # Errors
 /// `Invalid` naming `name` as the caller wrote it.
-pub(super) fn named<'a>(
-    records: &'a [VaultSecretRecord],
-    name: &str,
-) -> AppResult<&'a VaultSecretRecord> {
+fn named<'a>(records: &'a [VaultSecretRecord], name: &str) -> AppResult<&'a VaultSecretRecord> {
     records
         .iter()
         .find(|r| r.name == name.trim())
@@ -253,7 +250,7 @@ pub(super) fn named<'a>(
 }
 
 /// Refuses a personal secret, `personal` saying why it never goes this way, and a production one.
-pub(super) fn refuse_personal_or_prod(record: &VaultSecretRecord, personal: &str) -> AppResult<()> {
+fn refuse_personal_or_prod(record: &VaultSecretRecord, personal: &str) -> AppResult<()> {
     if matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
         return Err(AppError::Forbidden(format!("{}: {personal}", record.name)));
     }
@@ -394,7 +391,7 @@ impl App {
     ///
     /// # Errors
     /// Store failures; `Invalid` when none of that name applies.
-    pub(super) async fn named_agent_secret(
+    async fn named_agent_secret(
         &self,
         sandbox: &SandboxId,
         holder: Holder<'_>,

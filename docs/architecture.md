@@ -539,7 +539,7 @@ as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-w
   lines, stays for two seconds after a prompt went on, whose record is written a moment
   later, and logs the fact that keeps a session that is due (`kept_by`)
   ([SPEC-471](../.ai/specs/SPEC-471-claude-code-moves-a-prompt-that-waits-in.md)); an idle one that is restarted is idle again from its launch on, with what its goal left
-  (`IdleRest` in `supervisor.rs`), and the notification center remembers what a task read
+  (`IdleRest` in `supervisor/start.rs`), and the notification center remembers what a task read
   through a switch ([SPEC-468](../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md)).
   A restart whose session does not reach its SessionStart hook (the launch fails, the process
   ends by itself, or two minutes pass) stops further restarts on that version.
@@ -1429,8 +1429,8 @@ every task appends to (the changes log, the decision index) merge by union in ev
 from Yulius's block in the clone's `info/attributes`; Yulius merges the integration branch
 locally before GitHub merges (SPEC-050 DLV-203), so GitHub never sees those conflicts. A review
 carries over Git's own merges of the integration branch, checked with `git merge-tree`. Yulius's own
-decision index gives each new number a separate insertion point under
-[decision 0403](decisions/0403-reserve-edit-locations-in-the-decision-index.md).
+decision index is generated from the records (`python3 scripts/check_repository.py
+--decision-index`), and its repository check asks for a new run when a merge left it stale.
 
 ## The discipline gate
 
@@ -3860,8 +3860,8 @@ Yulius's own `[cd.dev]` deploys to a staging VM, a Yulius instance no person rel
 [Yulius's own staging VM](operations.md#yuliuss-own-staging-vm)). The scripts are `scripts/cd/`,
 the build `deploy/build/Dockerfile`, and the tests `scripts/test_cd.py`, which run against a fake
 root. Production is still a promotion of `dev` to `main` that each instance installs through
-its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: the two test jobs share one run-scoped nextest archive,
-and both shards and e2e are `after_merge`, and a promotion comes only from the revision staging verified
+its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: `test` and e2e are `after_merge`, and a promotion
+comes only from the revision staging verified
 ([decision 0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
 
 ```mermaid
@@ -4132,7 +4132,7 @@ values ≤ 4 KiB, ≤ 200 per project), refuses a name that is an agent secret o
 it in one transaction and audits `variable.*` without values; the Secrets page's Variables tab,
 `/api/sandboxes/{sid}/variables` and the remote tools (`variables_list`, `variables_set`,
 `variable_delete`, behind `yulius vars`) all go through it. A task run's environment starts with
-them (`supervisor.rs`), so `base_env` and the agent secret placeholders win over a variable of the
+them (`supervisor/launch.rs`), so `base_env` and the agent secret placeholders win over a variable of the
 same name; `secrets_list` names them. A CD run gets them too, before its own variables and secrets:
 a dev-stage run all of them, a production-stage run only those its `[cd.<name>]` `variables`
 names (`ci/cd.rs`, [decision 0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).
@@ -4804,7 +4804,7 @@ flowchart TD
   R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
 
-Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust shards cover those tests on dev. [Decision 0448](decisions/0448-repository-file-readers-run-before-merge.md)
+Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust `test` job covers those tests on dev. [Decision 0448](decisions/0448-repository-file-readers-run-before-merge.md)
 
 ## CI job output
 

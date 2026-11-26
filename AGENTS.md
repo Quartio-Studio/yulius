@@ -46,8 +46,8 @@ lines, as `scripts/dev ci` does.
 Delivery follows the task briefing and the bundled `delivery-pipeline` skill; this repository's
 settings are in [Git workflow](docs/engineering/git.md). The whole gate is Yulius CI's. A pull
 request merges on `quality`, `lint`, `macos`, `docs`, `deps`, `security`, the affected
-`file-contracts` tests and any job it adds or changes; the two partitions of `test` and `e2e` run
-on the merged revision. Before review, run the whole test binary you touched, including its other
+`file-contracts` tests and any job it adds or changes; `test` and `e2e` run on
+the merged revision. Before review, run the whole test binary you touched, including its other
 tests, and the e2e specs your change touches.
 
 ## Commands
@@ -110,10 +110,8 @@ Skills are APM primitives ([ADR-0016](docs/decisions/0016-apm-for-agent-primitiv
 `.apm/skills/<name>/`, run `apm install` (`pip install apm-cli`), commit the sources, the generated
 `.agents/skills` and `.claude/skills`, and `apm.lock.yaml`. Never edit the generated copies; the
 repository check fails on drift. Other tool instructions only point here.
-For a new ADR, insert its index entry before its numbered comment and run
-`python3 scripts/decision_slots.py` before committing. It verifies that the author branch
-shares the insertion point with dev and replenishes the reserve. See the
-[decision index](docs/decisions/README.md).
+The [decision index](docs/decisions/README.md) is generated: after adding an ADR, changing its
+title or Status, run `python3 scripts/check_repository.py --decision-index`.
 Change an invariant in one canonical document, link it from related specs, and update
 its check in the same change. Use [the handoff template](.ai/templates/handoff.md) for
 work spanning sessions. Keep sensitive run evidence under ignored `.ai/runs/`.

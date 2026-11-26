@@ -1852,9 +1852,7 @@ impl App {
         async move {
             match app.signed_in_user(&ctx).await {
                 None => Some("signed out"),
-                Some(user) if !(user.is_superadmin || user.is_instance_admin) => {
-                    Some("access revoked")
-                }
+                Some(user) if !user.is_admin() => Some("access revoked"),
                 Some(_) => None,
             }
         }

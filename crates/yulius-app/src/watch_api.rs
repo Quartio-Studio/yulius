@@ -79,9 +79,7 @@ impl App {
     }
 
     fn watch_rights(ctx: &AuthContext, watch: &WatchRecord, level: AccessLevel) -> Rights {
-        let changes = ctx
-            .scope()
-            .is_none_or(|scope| scope.allows(Action::Configure));
+        let changes = ctx.token_allows(Action::Configure);
         let owner = watch.owner == ctx.user.id && level.allows(Action::Configure);
         Rights {
             edit: changes && owner,

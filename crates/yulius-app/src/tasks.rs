@@ -823,7 +823,7 @@ impl App {
             .display_summary(&task, None, parked, None, true)
             .await?;
         // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
-        let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+        let admin = ctx.user.is_admin();
         if admin
             && let Some(attempt) = store.live_attempt(&task.id).await?
             && let Some(id) = attempt.account_id

@@ -841,7 +841,7 @@ impl App {
                     sandbox_id: l.intake_sandbox.clone(),
                 }),
             choices: choices_view(link.map_or_else(NotifyChoices::default, |l| l.choices)),
-            account_choice: ctx.user.is_superadmin || ctx.user.is_instance_admin,
+            account_choice: ctx.user.is_admin(),
         })
     }
 
@@ -985,7 +985,7 @@ impl App {
         ctx: &AuthContext,
         choices: &TelegramChoices,
     ) -> AppResult<MyTelegramView> {
-        let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+        let admin = ctx.user.is_admin();
         let choices = NotifyChoices {
             needs_you: choices.needs_you,
             done: choices.done,
