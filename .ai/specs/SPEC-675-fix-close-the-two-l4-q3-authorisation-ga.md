@@ -61,6 +61,8 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
 - [x] Handoff answers ask the task Control rule
 - [x] Changes, architecture and API documents updated
 - [x] Touched test binaries pass in full
+- [x] Review round 1 answered: waiting statuses, failed stop and recovery tested, stop loop after the audit
+- [x] Review round 2 answered: loop past a failed stop and notice reset tested
 - [ ] Independent review of the change
 
 ## Acceptance criteria
