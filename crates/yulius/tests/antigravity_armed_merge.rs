@@ -75,10 +75,11 @@ async fn fixture() -> BoxResult<Fixture> {
     let waits = Arc::new(AtomicU32::new(0));
     // A synthetic live attempt (pid 42 424) whose background probe the test sets, without a
     // real container; every other run goes to the real host.
+    let real = Arc::new(PtySessionHost::new(exe));
     let host = Arc::new(crate::support::ScriptedHost {
-        inner: Some(Arc::new(PtySessionHost::new(exe.clone()))),
+        inner: Some(real.clone()),
         background_shells: Some(Box::new({
-            let (inner, shells) = (PtySessionHost::new(exe.clone()), Arc::clone(&shells));
+            let (inner, shells) = (Arc::clone(&real), Arc::clone(&shells));
             move |pid| {
                 if pid == 42_424 {
                     return Some(shells.load(Ordering::SeqCst));
@@ -87,7 +88,7 @@ async fn fixture() -> BoxResult<Fixture> {
             }
         })),
         background_probe: Some(Box::new({
-            let inner = PtySessionHost::new(exe.clone());
+            let inner = Arc::clone(&real);
             let (shells, waits) = (Arc::clone(&shells), Arc::clone(&waits));
             move |pid| {
                 if pid == 42_424 {

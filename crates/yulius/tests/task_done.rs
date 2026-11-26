@@ -776,10 +776,11 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
         let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
         // The real host, whose probe also finds `waits` shells that only run `yulius wait` (what
         // `yulius_ptyhost::shells::count_background` tells apart on a real process tree).
+        let real = Arc::new(PtySessionHost::new(exe));
         let host = Arc::new(support::ScriptedHost {
-            inner: Some(Arc::new(PtySessionHost::new(exe.clone()))),
+            inner: Some(real.clone()),
             background_probe: Some(Box::new({
-                let (inner, waits) = (PtySessionHost::new(exe), Arc::clone(&waits));
+                let (inner, waits) = (Arc::clone(&real), Arc::clone(&waits));
                 move |pid| {
                     inner.background_probe(pid).map(|found| BackgroundProbe {
                         waits: waits.load(std::sync::atomic::Ordering::SeqCst),

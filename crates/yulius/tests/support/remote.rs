@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use super::{FakeRemote, git};
 
-/// A bare repository behind [`super::FakeGitHub`]: `merge` lands a merge commit (`merge`) or one
-/// commit with the head's tree (`squash`, `rebase`) on the base branch.
+/// A bare repository behind [`super::FakeGitHub`]: `merge` lands the tree of merging the head into
+/// the base, as a merge commit (`merge`) or one commit on the base (`squash`, `rebase`).
 pub struct BareRemote(pub PathBuf);
 
 impl BareRemote {

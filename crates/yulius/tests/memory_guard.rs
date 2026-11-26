@@ -108,11 +108,7 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
             !host.plans().is_empty()
         })
         .await?;
-        let plan = host
-        .plans()
-        .into_iter()
-        .next()
-            .ok_or("no plan")?;
+        let plan = host.plans().into_iter().next().ok_or("no plan")?;
         Ok::<_, Box<dyn std::error::Error>>(plan)
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
