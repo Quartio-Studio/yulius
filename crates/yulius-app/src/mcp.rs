@@ -19,6 +19,7 @@ use crate::cross_sandbox::CrossAction;
 use crate::error::{AppError, AppResult};
 use crate::manage::TaskChange;
 use crate::mcp_args::tool;
+use crate::person_tools::PERSON_TOOLS;
 use crate::shells::COCKPIT_TOKEN_PREFIX;
 use crate::vault::SecretUser;
 
@@ -32,27 +33,12 @@ pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
 /// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
-pub const COCKPIT_TOOLS: [&str; 94] = [
-    "tasks_list",
-    "task_get",
-    "task_create",
-    "task_fork",
-    "task_update",
+pub const COCKPIT_TOOLS: [&str; PROJECT_TOOLS.len() + PERSON_TOOLS.len() + SUPERAGENT_TOOLS.len()] =
+    cockpit_tools();
+
+/// The tools only a Cockpit is served, beside [`PROJECT_TOOLS`] and the person's project tools.
+const SUPERAGENT_TOOLS: &[&str] = &[
     "task_message",
-    "task_stop",
-    "task_archive",
-    "task_delete",
-    "attachments_trash",
-    "automation_create",
-    "automations_list",
-    "automation_update",
-    "automation_delete",
-    "automation_run_now",
-    "automation_template_enable",
-    "workflows_list",
-    "sessions_search",
-    "session_read",
-    "secrets_list",
     "commands_list",
     "secret_verify",
     "secret_copy_to_env",
@@ -79,49 +65,6 @@ pub const COCKPIT_TOOLS: [&str; 94] = [
     "browser_screenshot",
     "browser_request_user_action",
     "browser_fill_secret",
-    // The person's project tools (`crate::person_tools::PERSON_TOOLS`).
-    "task_delivery",
-    "task_restart",
-    "task_pause",
-    "task_unpause",
-    "task_start_now",
-    "task_edit",
-    "task_close",
-    "tasks_reorder",
-    "tasks_bulk",
-    "task_question_dismiss",
-    "task_held_prompt",
-    "task_merge",
-    "merge_queue",
-    "subscriptions",
-    "task_switch",
-    "task_model",
-    "instance",
-    "instance_update",
-    "docker_restart",
-    "notices_list",
-    "notice_dismiss",
-    // The project's script watches (SPEC-630 WCH-012).
-    "watches_list",
-    "watch_create",
-    "watch_update",
-    "watch_run",
-    "watch_pause",
-    "watch_remove",
-    "ci_runs",
-    "ci_run",
-    "ci_rerun",
-    "ci_cancel",
-    "ci_prioritize",
-    "cd_status",
-    "cd_deploy",
-    "cd_rollback",
-    "variables_list",
-    "task_screen",
-    "task_usage",
-    "checkout",
-    "variables_set",
-    "variable_delete",
     // Production and onboarding, asked on the panel (SPEC-487 REL-001, REL-005).
     "promote",
     "onboarding_start",
@@ -134,6 +77,27 @@ pub const COCKPIT_TOOLS: [&str; 94] = [
     // A missing ability, reported in one call (SPEC-487 ABL-001).
     "ability_report",
 ];
+
+/// [`COCKPIT_TOOLS`]: [`PROJECT_TOOLS`], the person's project tools and [`SUPERAGENT_TOOLS`].
+const fn cockpit_tools<const N: usize>() -> [&'static str; N] {
+    let mut tools = [""; N];
+    let mut i = 0;
+    while i < PROJECT_TOOLS.len() {
+        tools[i] = PROJECT_TOOLS[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < PERSON_TOOLS.len() {
+        tools[i + j] = PERSON_TOOLS[j].0;
+        j += 1;
+    }
+    let mut k = 0;
+    while k < SUPERAGENT_TOOLS.len() {
+        tools[i + j + k] = SUPERAGENT_TOOLS[k];
+        k += 1;
+    }
+    tools
+}
 
 /// The most characters (UTF-16 units) of an MCP server's instructions, or of one tool's
 /// description, that reach the model: Claude Code cuts each at 4096 (seen with Claude Code
