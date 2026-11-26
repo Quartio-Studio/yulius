@@ -1301,7 +1301,7 @@ class NoOldScan(unittest.TestCase):
         self.assertFalse((root / "tools" / "vidoc").exists())
         listed = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True,
                                 check=True).stdout.split()
-        history = (".ai/specs/", "docs/decisions/", "docs/changes.md", "scripts/test_vidoc_scan.py")
+        history = (".ai/specs/", "docs/decisions/", "docs/changes.md", "docs/archive/", "scripts/test_vidoc_scan.py")
         stale = []
         for path in listed:
             if path.startswith(history) or not (root / path).is_file():

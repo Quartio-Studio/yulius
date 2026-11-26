@@ -10,7 +10,8 @@ use yulius_domain::ids::{AttemptId, TaskId};
 use yulius_domain::task::{TaskEvent, TaskStatus};
 use yulius_domain::time::Timestamp;
 
-use super::{EndIntent, STOP_ROUNDS, request_shutdown};
+use super::stop::request_shutdown;
+use super::{EndIntent, STOP_ROUNDS};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 
