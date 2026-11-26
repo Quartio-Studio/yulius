@@ -895,7 +895,7 @@ pub fn strict_git() -> yulius::wiring::git::GitAdapter {
 }
 
 pub fn harness() -> Result<Harness, Box<dyn std::error::Error>> {
-    harness_with_git(Arc::new(yulius::wiring::pending::UnavailableGit))
+    harness_with_git(Arc::new(crate::support::pending::UnavailableGit))
 }
 
 /// Like [`harness`] with a specific Git adapter.
@@ -904,7 +904,7 @@ pub fn harness_with_git(
 ) -> Result<Harness, Box<dyn std::error::Error>> {
     build_harness(
         git,
-        Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+        Arc::new(crate::support::pending::UnavailableSessionHost),
     )
 }
 
@@ -1169,7 +1169,7 @@ pub fn harness_with_host(
     session_host: Arc<dyn yulius_app::ports::session::SessionHost>,
 ) -> Result<Harness, Box<dyn std::error::Error>> {
     build_harness(
-        Arc::new(yulius::wiring::pending::UnavailableGit),
+        Arc::new(crate::support::pending::UnavailableGit),
         session_host,
     )
 }
@@ -1397,6 +1397,8 @@ pub async fn wait_stopped(app: &App, tasks: &[&yulius_domain::ids::TaskId]) -> T
 pub mod agents;
 /// The real ptyhost whose next attach a test can hold (SPEC-077).
 pub mod gated;
+/// Process host and Git adapters whose every call fails.
+pub mod pending;
 /// Repository fixtures (real Git over local remotes) for project and import tests.
 pub mod repos;
 /// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).
@@ -1852,7 +1854,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         github: github.clone(),
         session_host: options
             .session_host
-            .unwrap_or_else(|| Arc::new(yulius::wiring::pending::UnavailableSessionHost)),
+            .unwrap_or_else(|| Arc::new(crate::support::pending::UnavailableSessionHost)),
         harness: options.harness.unwrap_or_else(|| {
             Arc::new(yulius::wiring::harness::HarnessAdapter::new(
                 "/bin/false".into(),
@@ -1861,7 +1863,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         }),
         git: options
             .git
-            .unwrap_or_else(|| Arc::new(yulius::wiring::pending::UnavailableGit)),
+            .unwrap_or_else(|| Arc::new(crate::support::pending::UnavailableGit)),
         browser: options
             .browser
             .unwrap_or_else(|| Arc::new(yulius::wiring::browser::UnavailableBrowser)),
