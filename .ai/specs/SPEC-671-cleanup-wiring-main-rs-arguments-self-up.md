@@ -39,7 +39,7 @@ wall-clock readers, and `main.rs` rebuilding every option struct field by field.
 - [x] F4: one shared npm tarball module
 - [x] F4: independent review answered
 - [x] F5: clap Args on the option structs in main.rs
-- [ ] F5: independent review answered
+- [x] F5: independent review answered
 - [ ] F7: compare the update helper and staging CD install/rollback and the two freezes
 - [ ] F7: simplify where behaviour stays identical, or report
 - [ ] F7: independent review answered
