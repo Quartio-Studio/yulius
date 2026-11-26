@@ -11,10 +11,13 @@ use yulius_domain::ids::{AttemptId, TaskId};
 use yulius_domain::task::{Activity, AttemptState, StopReason, TaskEvent, TaskStatus};
 use yulius_domain::time::Timestamp;
 
+use super::typing::{
+    PendingGoal, opening_pending, opening_unsubmitted, person_typed_marked, personal_mcp_marked,
+    save_screen, session_started_marked, typed_goal_awaits_opening,
+};
 use super::{
-    EndIntent, FlagPending, PendingGoal, STOP_ROUNDS, SwitchEnd, TakenRequest, TaskRuntime,
-    could_not_end, opening_pending, opening_unsubmitted, person_typed_marked, personal_mcp_marked,
-    replace_intent, save_screen, session_started_marked, typed_goal_awaits_opening,
+    EndIntent, FlagPending, STOP_ROUNDS, SwitchEnd, TakenRequest, TaskRuntime, could_not_end,
+    replace_intent,
 };
 use crate::attention::AttentionRecord;
 use crate::context::App;

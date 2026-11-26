@@ -16,11 +16,12 @@ use super::antigravity::{
 };
 use super::codex::{CodexLeftover, write_codex_files};
 use super::start::IdleRest;
-use super::{
+use super::typing::{
     CLAUDE_CREDENTIAL_DIGEST, GOAL_COMMAND, InputReady, LAUNCH_GOAL_FILE, OPENING_PENDING_FILE,
-    PERSONAL_MCP_FILE, PendingGoal, Placed, PromptReceipts, RunStart, TYPED_GOAL_FILE,
-    TYPED_GOAL_OPENS, model_change_notice, sets_goal, switched_back_notice, write_private_file,
+    PERSONAL_MCP_FILE, PendingGoal, TYPED_GOAL_FILE, TYPED_GOAL_OPENS, sets_goal,
+    write_private_file,
 };
+use super::{Placed, PromptReceipts, RunStart, model_change_notice, switched_back_notice};
 use crate::auth::hex_token;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
