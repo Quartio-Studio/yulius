@@ -10,17 +10,13 @@ use yulius_app::ports::store_ext::{
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{DbError, SqliteStore, text_parsed};
+use crate::{DbError, SqliteStore, opt_ts, text_parsed};
 
 const COLUMNS: &str = "id, sandbox_id, name, script, every_seconds, cron, utc_offset_minutes, \
      expiry, timeout_seconds, secrets, owner_id, created_via, created_at, updated_at, paused, \
      since, ended_reason, ended_at, run_id, running_since, last_started_at, last_ended_at, \
      last_exit, last_failure, last_output, last_errors, failures, warned, runs, posts, \
      last_posted_at";
-
-fn ts(value: Option<i64>) -> Option<Timestamp> {
-    value.map(Timestamp)
-}
 
 fn watch_row(row: &Row<'_>) -> rusqlite::Result<WatchRecord> {
     let run_id: Option<String> = row.get(18)?;
@@ -43,11 +39,11 @@ fn watch_row(row: &Row<'_>) -> rusqlite::Result<WatchRecord> {
         paused: row.get(14)?,
         since: Timestamp(row.get(15)?),
         ended_reason: row.get(16)?,
-        ended_at: ts(row.get(17)?),
+        ended_at: opt_ts(row, 17)?,
         state: WatchState {
             running: run_id.zip(running_since.map(Timestamp)),
-            last_started_at: ts(row.get(20)?),
-            last_ended_at: ts(row.get(21)?),
+            last_started_at: opt_ts(row, 20)?,
+            last_ended_at: opt_ts(row, 21)?,
             last_exit: row.get(22)?,
             last_failure: row.get(23)?,
             last_output: row.get(24)?,
@@ -56,7 +52,7 @@ fn watch_row(row: &Row<'_>) -> rusqlite::Result<WatchRecord> {
             warned: row.get(27)?,
             runs: row.get(28)?,
             posts: row.get(29)?,
-            last_posted_at: ts(row.get(30)?),
+            last_posted_at: opt_ts(row, 30)?,
         },
     })
 }

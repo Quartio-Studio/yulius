@@ -13,7 +13,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::resources::{LoadMinute, Need};
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_as, text_parsed, to_u32};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_parsed, to_u32};
 
 const RUN_COLS: &str = "id, sandbox_id, reference, sha, source, state, reason, requested_by, \
     status_for, status_note, status_attempts, queued_at, started_at, ended_at";
@@ -72,7 +72,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<CiRunRecord> {
         // A source a later release wrote reads as the integration branch's configuration, so a
         // rollback keeps reading its runs (SPEC-504 review round 1: `last_valid_yulius_toml`).
         source: GateSource::parse(&source).unwrap_or(GateSource::ProjectConfig),
-        state: text_as(row, "state", "CI state", RunState::parse)?,
+        state: state(&row.get::<_, String>("state")?)?,
         reason: row.get("reason")?,
         requested_by: row.get("requested_by")?,
         status_for: status_for.as_deref().map(state).transpose()?,
@@ -93,7 +93,7 @@ fn job_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CiJobRecor
         key: row.get("job_key")?,
         command: row.get("command")?,
         matrix: row.get("matrix")?,
-        state: text_as(row, "state", "CI state", RunState::parse)?,
+        state: state(&row.get::<_, String>("state")?)?,
         reason: row.get("reason")?,
         exit_code: row.get("exit_code")?,
         output: if with_output {
