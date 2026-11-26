@@ -31,9 +31,10 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 - [x] PR1: review approved and merged into dev
 - [x] PR2: dev run measured before; one test job replaces the two archive shards
 - [x] PR2: ci_test_shard.py, test-shard, archive and partition code and their tests deleted; docs updated
-- [ ] PR2: review approved, merged into dev, dev run measured after
+- [x] PR2: review approved and merged into dev
+- [x] PR2: dev run measured after, both numbers in the PR
 - [x] PR3: drill users checked in quartio-v2 and other instance projects
-- [ ] PR3: prove.rs and the proving hooks and tests deleted
+- [x] PR3: prove.rs and the proving hooks and tests deleted
 - [ ] PR3: review approved and merged into dev
 - [ ] PR4: config.rs shared list/names/one-line helpers, EnvironmentsConflict and render narrowing
 - [ ] PR4: [disk] validated by parse_yulius_toml (test first)

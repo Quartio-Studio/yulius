@@ -563,7 +563,7 @@ watching, steering and unblocking.
   (agents fix findings in their own code and obtain re-review through approval under the task's existing authorization),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
-  promotions) that Yulius checks before every merge. Each task records what it delivered in the
+  promotions) that Yulius checks before every merge. Each task notes a user-visible change in the
   project's changes log, or, with `[docs] changes = "docs/changes/"` (a trailing `/` or an
   existing directory), in one new note of its own in that folder, named
   `YYYY-MM-DD-<task number>-<short-slug>.md`, so parallel pull requests never conflict on it; the
@@ -675,9 +675,8 @@ watching, steering and unblocking.
   previous one, "Roll back to this" on the others (agents roll dev back with
   `cd_rollback`), refuses rolling back past a release whose migration cannot be undone and says
   why, drills the rollback on dev after every deploy, and refuses a production deploy until that
-  drill passed for the commit it deploys. When only that drill is missing, Deploy production
-  deploys dev at the commit first, waits for its drill and then deploys production by itself, or
-  says why production did not deploy (SPEC-438). An environment that runs no deploy command (an empty one,
+  drill passed for the commit it deploys; the refusal says to get that commit deployed on dev
+  first, and its drill follows by itself. An environment that runs no deploy command (an empty one,
   or a production that only promotes, as Yulius's own) needs no rollback, and the page says so and
   why; Yulius itself rolls back through its update, which restores the previous binary and database
   when the new build fails to start (its health check), or by a revert promoted again (SPEC-418).
