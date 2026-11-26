@@ -7,7 +7,9 @@ status: draft
 
 <!-- The form `spec_check` validates (skill `om-spec-writing`): the frontmatter above, with
 `status` one of draft, approved, in-progress, done or abandoned, and the seven sections below.
-Omit nothing; a section that does not apply says why in one line. -->
+Omit nothing; a section that does not apply says why in one line. Title the spec by what it
+delivers and name its file after that title (`SPEC-NNN-<title-slug>.md`); `spec_check` names the
+file it expects. -->
 
 ## Goal
 

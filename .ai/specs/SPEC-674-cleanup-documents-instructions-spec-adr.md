@@ -63,15 +63,18 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 - [x] PR2 review approved
 - [x] Generated title-only ADR index
 - [x] Slot machinery deleted
-- [ ] PR3 review approved
-- [ ] changes.md cut to user-visible entries, briefing rule 6 changed
-- [ ] architecture.md per-feature sections moved verbatim to docs/archive
-- [ ] architecture.md trimmed to its budget
-- [ ] operations.md: old upgrade notes and legacy unit sections archived
-- [ ] product.md trimmed to current behaviour
-- [ ] Q5 false sentences fixed
-- [ ] PR4 review approved
-- [ ] Spec file named from its heading (inside this task's paths)
+- [x] PR3 review approved
+- [x] changes.md cut to user-visible entries, briefing rule 6 changed
+- [x] PR4a (changes.md) review approved
+- [x] architecture.md per-feature sections moved verbatim to docs/archive
+- [x] architecture.md trimmed to its budget
+- [x] PR4b (architecture.md) review approved
+- [x] operations.md: old upgrade notes and legacy unit sections archived
+- [x] product.md trimmed to current behaviour
+- [x] Q5 false sentences fixed
+- [x] changes.md: entries merged in from branches cut before the new log
+- [x] PR4c (operations.md, product.md) review approved
+- [x] Spec file named from its heading (inside this task's paths)
 - [ ] PR5 review approved
 - [ ] README: audience, what leaves the machine, not supported
 - [ ] PR6 review approved
@@ -122,6 +125,24 @@ and the link checker). The rest of the gate is Yulius CI's.
   union-merged, unsorted index moves no line that a later union merge could duplicate. Left: two
   branches changing neighbouring lines (a title or Status mark beside a new record) can leave both
   versions, and the check asks for a regeneration; ADR-0403 says so.
+- changes.md (L10 F6): the old log moves verbatim to `docs/archive/changes-until-2026-11-26.md`
+  (its links rewritten for the folder in a second commit); the new log keeps one line per
+  user-visible change of the last four weeks. Briefing rule 6 asks for a line only for a
+  user-visible change; the changes-folder sentence keeps its wording, which an integration test
+  in another task's paths pins, and adds "Skip it for an internal change."
+- architecture.md, operations.md and product.md (L10 F3): each moves verbatim to
+  `docs/archive/<name>-until-2026-11-26.md` (links rewritten for the folder in the next commit),
+  and a condensed document of current state replaces it within the Q9 budget (757, 1,749 and 397
+  lines), linking the archive's sections for detail. The headings other documents and the code
+  name are kept; operations.md keeps the three unit files a test reads byte for byte. Its
+  upgrade notes and the behaviour comments inside the sample unit (audit L6 F9) stay only in the
+  archive.
+- Spec file names (L10 F5): inside this task's paths, `spec_check` (through
+  `SpecReport::agent_message`) adds the name the file should have when its name does not follow
+  its level-1 heading, keeping a `SPEC-NNN-` or date prefix; the template says to name the file
+  after its title. Allocating only the number (`allocate_spec_path`), titling the task from the
+  agent's heading instead of the request (`title_from_prompt`, `branch_for`) and PR titles are in
+  other tasks' paths. This task's own spec keeps its name: renaming it mid-delivery gains nothing.
 - Briefing rule 5 stays within the budget in both decision layouts: the directory arm drops its
   section list (the project docs check still names missing sections; "Alternatives" is implied
   by "two rejected alternatives"), the file arm drops its parts list, and "with at least one
