@@ -8,7 +8,7 @@ use yulius_app::ports::store::InstanceStore;
 use yulius_domain::time::Timestamp;
 
 use crate::users::insert_user_tx;
-use crate::{SqliteStore, to_i64, to_u64};
+use crate::{SqliteStore, opt_ts, to_i64, to_u64};
 
 fn instance_from_row(row: &Row<'_>) -> rusqlite::Result<InstanceRecord> {
     Ok(InstanceRecord {
@@ -18,14 +18,10 @@ fn instance_from_row(row: &Row<'_>) -> rusqlite::Result<InstanceRecord> {
         github_app: row.get::<_, Option<Vec<u8>>>("github_app")?.map(Sealed),
         installation_id: row.get::<_, Option<i64>>("installation_id")?.map(to_u64),
         setup_token_hash: row.get("setup_token_hash")?,
-        setup_completed_at: row
-            .get::<_, Option<i64>>("setup_completed_at")?
-            .map(Timestamp),
+        setup_completed_at: opt_ts(row, "setup_completed_at")?,
         recovery_hash: row.get("recovery_hash")?,
         recovery_failures: crate::to_u32(row.get("recovery_failures")?),
-        recovery_locked_at: row
-            .get::<_, Option<i64>>("recovery_locked_at")?
-            .map(Timestamp),
+        recovery_locked_at: opt_ts(row, "recovery_locked_at")?,
     })
 }
 

@@ -12,21 +12,16 @@ use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::{AccessLevel, TokenScope};
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column};
-
-fn user_id(text: &str) -> rusqlite::Result<UserId> {
-    UserId::parse(text).map_err(|_| bad_column("user id", text))
-}
+use crate::{DbResult, SqliteStore, opt_ts, parsed, text_parsed};
 
 fn session_from_row(row: &Row<'_>) -> rusqlite::Result<WebSessionRecord> {
-    let uid: String = row.get("user_id")?;
     Ok(WebSessionRecord {
         id_hash: row.get("id_hash")?,
-        user_id: user_id(&uid)?,
+        user_id: text_parsed(row, "user_id", "user id", UserId::parse)?,
         csrf_token: row.get("csrf_token")?,
         created_at: Timestamp(row.get("created_at")?),
         expires_at: Timestamp(row.get("expires_at")?),
-        revoked_at: row.get::<_, Option<i64>>("revoked_at")?.map(Timestamp),
+        revoked_at: opt_ts(row, "revoked_at")?,
     })
 }
 
@@ -36,7 +31,10 @@ fn grant_from_row(row: &Row<'_>) -> rusqlite::Result<DeviceGrantRecord> {
         user_code: row.get("user_code")?,
         device_code_hash: row.get("device_code_hash")?,
         status: row.get("status")?,
-        user_id: uid.as_deref().map(user_id).transpose()?,
+        user_id: uid
+            .as_deref()
+            .map(|u| parsed("user id", u, UserId::parse))
+            .transpose()?,
         token: row.get::<_, Option<Vec<u8>>>("token_plain")?.map(Sealed),
         client_key: row.get("client_key")?,
         created_at: Timestamp(row.get("created_at")?),
@@ -442,16 +440,15 @@ const API_TOKEN_COLUMNS: &str =
 
 /// An `api_tokens` row; an unknown scope reads as `read`, the narrowest (fail closed).
 fn api_token_row(r: &Row<'_>) -> rusqlite::Result<ApiTokenRecord> {
-    let uid: String = r.get(1)?;
     let scope: String = r.get(4)?;
     Ok(ApiTokenRecord {
         id: r.get(0)?,
-        user_id: user_id(&uid)?,
+        user_id: text_parsed(r, 1, "user id", UserId::parse)?,
         token_hash: r.get(2)?,
         label: r.get(3)?,
         scope: TokenScope::parse(&scope).unwrap_or(TokenScope::Read),
         created_at: Timestamp(r.get(5)?),
-        last_used_at: r.get::<_, Option<i64>>(6)?.map(Timestamp),
-        revoked_at: r.get::<_, Option<i64>>(7)?.map(Timestamp),
+        last_used_at: opt_ts(r, 6)?,
+        revoked_at: opt_ts(r, 7)?,
     })
 }

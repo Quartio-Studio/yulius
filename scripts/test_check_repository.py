@@ -136,7 +136,7 @@ class RepositoryContracts(unittest.TestCase):
         # SPEC-483 DOC-002: the files an agent follows, each once.
         files = instruction_files()
         names = {str(path.relative_to(ROOT)) for path in files}
-        for name in ["AGENTS.md", "docs/engineering/git.md", ".apm/skills/yulius-git/SKILL.md",
+        for name in ["AGENTS.md", "docs/engineering/git.md", ".apm/skills/yulius-review/SKILL.md",
                      "catalog/workflows/feature.md", "catalog/skills/yulius/delivery-pipeline/SKILL.md",
                      ".ai/templates/spec.md", ".github/pull_request_template.md"]:
             self.assertIn(name, names)

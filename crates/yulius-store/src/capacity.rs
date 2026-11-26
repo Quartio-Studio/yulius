@@ -10,7 +10,7 @@ use yulius_app::ports::store_ext::CapacityStore;
 use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column};
+use crate::{SqliteStore, bad_column, opt_ts, text_parsed};
 
 /// The pauses that were open since `?1`, with the columns `cols` (`pauses_since`): the open
 /// ones and those that ended at or after it, as two branches that each read the `ended_at`
@@ -34,12 +34,11 @@ pub(crate) const PAUSE_COLS: &str =
     "id, task_id, kind, account_id, continuation, started_at, ended_at, outcome, during_turn";
 
 fn pause_from_row(row: &Row<'_>) -> rusqlite::Result<PauseRecord> {
-    let task: String = row.get("task_id")?;
     let account: Option<String> = row.get("account_id")?;
     let kind: String = row.get("kind")?;
     Ok(PauseRecord {
         id: row.get("id")?,
-        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         kind: PauseKind::parse(&kind),
         account_id: account
             .map(|a| AccountId::parse(&a).map_err(|_| bad_column("account id", &a)))
@@ -47,7 +46,7 @@ fn pause_from_row(row: &Row<'_>) -> rusqlite::Result<PauseRecord> {
         continuation: row.get("continuation")?,
         during_turn: row.get("during_turn")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        ended_at: opt_ts(row, "ended_at")?,
         outcome: row.get("outcome")?,
     })
 }
@@ -217,7 +216,7 @@ impl CapacityStore for SqliteStore {
                     at: Timestamp(row.get(1)?),
                     window: row.get(2)?,
                     used_percent: row.get(3)?,
-                    resets_at: row.get::<_, Option<i64>>(4)?.map(Timestamp),
+                    resets_at: opt_ts(row, 4)?,
                     source: row.get(5)?,
                 })
             })?;
@@ -237,7 +236,7 @@ impl CapacityStore for SqliteStore {
                         .map(|a| AccountId::parse(&a).map_err(|_| bad_column("account id", &a)))
                         .transpose()?,
                     started_at: Timestamp(row.get("started_at")?),
-                    ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+                    ended_at: opt_ts(row, "ended_at")?,
                     metrics: metrics
                         .map(|_| crate::tasks::metrics_from_row(row))
                         .transpose()?,

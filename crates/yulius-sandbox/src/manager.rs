@@ -48,6 +48,8 @@ use crate::usage::Usage;
 mod build;
 mod docker;
 
+use docker::FrontState;
+
 pub use crate::system_layer::{DOCKERD_PATHS, own_engine, system_file_text, system_has_dockerd};
 
 /// Bound on starting a holder.
@@ -206,18 +208,8 @@ pub enum PrepareError {
 struct Live {
     record: HolderRecord,
     relays: Vec<JoinHandle<()>>,
-    /// Its Docker front, once it serves (ADR-0158).
-    front: Option<DockerFrontRecord>,
-    /// Mount namespaces of its runs: attempts to bind the Docker directory, or [`BIND_DONE`].
-    bound: HashMap<u64, u8>,
-    /// What the journal said of its front's state (SPEC-494 DFJ-005).
-    front_watch: crate::front_gate::StateWatch,
-    /// When its front is restarted by itself (SPEC-494 DFJ-008).
-    repair: crate::front_repair::RepairWatch,
-    /// A restart whose new front did not start: counted and journaled once one starts.
-    restart_pending: Option<crate::front_repair::Why>,
-    /// When the journal last said that its front runs an earlier build and stays busy.
-    outdated_said: Option<Instant>,
+    /// Its Docker front and what the upkeep keeps of it.
+    front: FrontState,
 }
 
 impl Live {
@@ -225,23 +217,8 @@ impl Live {
         Self {
             record,
             relays,
-            front: None,
-            bound: HashMap::new(),
-            front_watch: crate::front_gate::StateWatch::default(),
-            repair: crate::front_repair::RepairWatch::default(),
-            restart_pending: None,
-            outdated_said: None,
+            front: FrontState::default(),
         }
-    }
-
-    /// The front's pid, when it has one.
-    fn front_pid(&self) -> u32 {
-        self.front.as_ref().map_or(0, |f| f.pid)
-    }
-
-    /// Whether its front may run an engine.
-    fn serves_engine(&self) -> bool {
-        self.front.as_ref().is_some_and(|f| f.mode != "refuse")
     }
 }
 
@@ -727,7 +704,7 @@ impl Manager {
             let entry = self.entry(sandbox);
             let state = entry.lock().await;
             match &state.live {
-                Some(live) => (live.record.clone(), live.front_pid()),
+                Some(live) => (live.record.clone(), live.front.pid()),
                 None => return 0,
             }
         };
@@ -1137,7 +1114,7 @@ impl Manager {
         if alive(&record) && !self.retired(sandbox) {
             let relays = self.start_relays(sandbox, &record);
             let mut live = Live::new(record, relays);
-            live.front = read_json::<DockerFrontRecord>(&state.docker_record()).ok();
+            live.front.record = read_json::<DockerFrontRecord>(&state.docker_record()).ok();
             guard.live = Some(live);
             guard.last_used = Some(Instant::now());
             self.keep_front(sandbox, &mut guard).await;
@@ -1221,7 +1198,7 @@ impl Manager {
                     self.repair_front(&sandbox, &mut state, reading).await;
                     self.replace_outdated_front(&sandbox, &mut state).await;
                     self.bind_docker_dirs(&sandbox, &mut state).await;
-                    let front = state.live.as_ref().map_or(0, Live::front_pid);
+                    let front = state.live.as_ref().map_or(0, |live| live.front.pid());
                     let runs = tokio::task::spawn_blocking(move || {
                         Self::runs_in(record.net_ns, &[record.inner_pid, front])
                     })
@@ -1598,7 +1575,7 @@ mod tests {
     /// A live holder whose front serves an engine.
     fn engine_live(record: HolderRecord) -> Live {
         let mut live = Live::new(record, Vec::new());
-        live.front = Some(DockerFrontRecord {
+        live.front.record = Some(DockerFrontRecord {
             pid: 0,
             mode: "engine".into(),
             reason: None,
@@ -1635,8 +1612,8 @@ mod tests {
         };
         let mut live = Live::new(live_record(), Vec::new());
         // This server started it: its refusals are all new.
-        live.front_watch.started(77);
-        live.front = Some(DockerFrontRecord {
+        live.front.watch.started(77);
+        live.front.record = Some(DockerFrontRecord {
             pid: 77,
             mode: "engine".into(),
             reason: None,
@@ -1786,7 +1763,10 @@ while True:
     async fn front_of(manager: &Manager) -> Option<DockerFrontRecord> {
         let entry = manager.entry("s1");
         let state = entry.lock().await;
-        state.live.as_ref().and_then(|live| live.front.clone())
+        state
+            .live
+            .as_ref()
+            .and_then(|live| live.front.record.clone())
     }
 
     fn kill(pid: u32) {
@@ -1854,7 +1834,7 @@ while True:
             let entry = manager.entry("s1");
             let mut guard = entry.lock().await;
             if let Some(live) = guard.live.as_mut() {
-                live.repair.observe(true, None, long_ago);
+                live.front.repair.observe(true, None, long_ago);
             }
             manager.repair_front("s1", &mut guard, Some(jammed)).await;
         }
@@ -1978,7 +1958,7 @@ while True:
             let entry = manager.entry("s1");
             let mut guard = entry.lock().await;
             if let Some(live) = guard.live.as_mut() {
-                live.repair.observe(true, None, long_ago);
+                live.front.repair.observe(true, None, long_ago);
             }
             manager.repair_front("s1", &mut guard, None).await;
             manager.repair_front("s1", &mut guard, Some(jammed)).await;
@@ -2086,7 +2066,7 @@ while True:
             let entry = manager.entry("s1");
             let mut guard = entry.lock().await;
             if let Some(live) = guard.live.as_mut() {
-                live.front = None;
+                live.front.record = None;
             }
         }
         manager.restart_docker("s1").await?;
@@ -2114,12 +2094,18 @@ while True:
         };
         let entry = manager.entry(&name);
         let mut guard = entry.lock().await;
-        let before = guard.live.as_ref().and_then(|live| live.front.clone());
+        let before = guard
+            .live
+            .as_ref()
+            .and_then(|live| live.front.record.clone());
         if let Some(live) = guard.live.as_mut() {
-            live.repair.observe(true, None, long_ago);
+            live.front.repair.observe(true, None, long_ago);
         }
         manager.repair_front(&name, &mut guard, Some(jammed)).await;
-        let after = guard.live.as_ref().and_then(|live| live.front.clone());
+        let after = guard
+            .live
+            .as_ref()
+            .and_then(|live| live.front.record.clone());
         if let Some(front) = &after {
             kill(front.pid);
         }
@@ -2313,8 +2299,8 @@ while True:
         let paths = StatePaths::new(manager.state_dir(&name));
         std::fs::create_dir_all(&paths.dir)?;
         let mut live = Live::new(live_record(), Vec::new());
-        live.front_watch.started(77);
-        live.front = Some(DockerFrontRecord {
+        live.front.watch.started(77);
+        live.front.record = Some(DockerFrontRecord {
             pid: 77,
             mode: "engine".into(),
             reason: None,
