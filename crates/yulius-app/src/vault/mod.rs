@@ -228,6 +228,45 @@ pub(crate) const PERSONAL_SECRET_ENV: &str = "a personal secret is never copied 
 every task of this project can read them. Only the proxy sends a personal secret, to its hosts; \
 code that needs the value outside the proxy needs a project secret";
 
+/// A vault tool's arguments, or the refusal every tool gives for ones it cannot read.
+pub(super) fn parse_args<T: serde::de::DeserializeOwned>(args: &serde_json::Value) -> AppResult<T> {
+    serde_json::from_value(args.clone())
+        .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))
+}
+
+/// The agent secret named `name` (compared trimmed) among `records`.
+///
+/// # Errors
+/// `Invalid` naming `name` as the caller wrote it.
+pub(super) fn named<'a>(
+    records: &'a [VaultSecretRecord],
+    name: &str,
+) -> AppResult<&'a VaultSecretRecord> {
+    records
+        .iter()
+        .find(|r| r.name == name.trim())
+        .ok_or_else(|| {
+            AppError::Invalid(format!(
+                "no agent secret named {name:?} applies to this project (see secrets_list)"
+            ))
+        })
+}
+
+/// Refuses a personal secret, `personal` saying why it never goes this way, and a production one.
+pub(super) fn refuse_personal_or_prod(record: &VaultSecretRecord, personal: &str) -> AppResult<()> {
+    if matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
+        return Err(AppError::Forbidden(format!("{}: {personal}", record.name)));
+    }
+    // A production secret is no agent's, by any way (ADR-0324).
+    if record.cd_prod {
+        return Err(AppError::Forbidden(format!(
+            "{}: {PRODUCTION_SECRET}",
+            record.name
+        )));
+    }
+    Ok(())
+}
+
 /// Agent secret payload (sealed as JSON).
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct AgentPayload {
@@ -349,6 +388,20 @@ impl App {
         }
         let candidates = self.deps.store.vault_agent_in(sandbox).await?;
         Ok(reach::resolve(candidates, holder))
+    }
+
+    /// The agent secret named `name` that applies to `sandbox` for `holder` ([`named`]).
+    ///
+    /// # Errors
+    /// Store failures; `Invalid` when none of that name applies.
+    pub(super) async fn named_agent_secret(
+        &self,
+        sandbox: &SandboxId,
+        holder: Holder<'_>,
+        name: &str,
+    ) -> AppResult<VaultSecretRecord> {
+        let records = self.resolved_agent_secrets(sandbox, holder).await?;
+        named(&records, name).cloned()
     }
 
     /// The agent secrets an agent run, the Superagent or a granted CI job uses through the egress

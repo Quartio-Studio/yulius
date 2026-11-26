@@ -998,8 +998,7 @@ impl App {
         ctx: &AgentContext,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: RestoreArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: RestoreArgs = super::parse_args(args)?;
         let parts = Self::home_path(&args.path)?;
         let path = format!("~/{}", parts.join("/"));
         let sandbox = ctx.task.sandbox_id.clone();
@@ -1097,8 +1096,7 @@ impl App {
         ctx: &AgentContext,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: SaveArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: SaveArgs = super::parse_args(args)?;
         let sandbox = ctx.task.sandbox_id.clone();
         self.refuse_states_with_guests(&sandbox).await?;
         // One writer at a time (SPEC-278 CDS-005): never under a running deploy, and read under
