@@ -2994,13 +2994,7 @@ async fn codex_goal_stop_continues_the_325_shape_and_a_red_pr_alone() -> TestRes
 /// failure of a commit the agent has moved past, ends the turn and spends no attempt.
 #[tokio::test]
 async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
     told_red_run(&f, "red-earlier-head")?;
     red_ordinary_run(
         &f,
@@ -3021,10 +3015,7 @@ async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResu
         &[],
     )
     .await?;
-    let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(stop["decision"].is_null(), "{stop}");
-    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.gate_blocks, 0);
+    ends_uncharged(&f, Agent::Codex).await?;
     Ok(())
 }
 
@@ -3033,17 +3024,38 @@ async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResu
 /// hand over to it, and only the told check keeps the turn from being charged.
 #[tokio::test]
 async fn codex_goal_stop_leaves_an_untold_failure_uncharged() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
+    told_red_run(&f, "an-older-run")?;
+    red_ordinary_run(&f, "untold-red-at-head", head.trim(), 10).await?;
+    busy_sandbox(&f).await?;
+    ends_uncharged(&f, Agent::Codex).await?;
+    Ok(())
+}
+
+/// A goal of `agent` whose one step is done and whose pull request #1461 is open: the fixture,
+/// the agent's context and the worktree's head.
+async fn finished_goal(
+    agent: Agent,
+) -> Result<(Fixture, yulius_app::coordination::AgentContext, String), Box<dyn std::error::Error>> {
+    let f = task_with_open_step(agent, TaskMode::Goal, "Finish compatibility").await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;
     f.h.app
         .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
         .await?;
     install_compatibility_pull(&f).await?;
     let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    told_red_run(&f, "an-older-run")?;
-    red_ordinary_run(&f, "untold-red-at-head", head.trim(), 10).await?;
-    busy_sandbox(&f).await?;
-    let stop = stop_of(&f, Agent::Codex).await?;
+    Ok((f, ctx, head))
+}
+
+/// A failed run at `head` that the watch told the agent about.
+async fn red_at_head(f: &Fixture, head: &str) -> TestResult {
+    told_red_run(f, "red-at-head")?;
+    red_ordinary_run(f, "red-at-head", head, 10).await
+}
+
+/// `agent`'s Stop ends the turn without spending an attempt.
+async fn ends_uncharged(f: &Fixture, agent: Agent) -> TestResult {
+    let stop = stop_of(f, agent).await?;
     assert!(stop["decision"].is_null(), "{stop}");
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
     assert_eq!(task.gate_blocks, 0);
@@ -3071,15 +3083,8 @@ async fn busy_sandbox(f: &Fixture) -> TestResult {
 /// The run is found by its commit, however many newer runs the sandbox has.
 #[tokio::test]
 async fn codex_goal_stop_finds_its_red_run_in_a_busy_sandbox() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    told_red_run(&f, "red-at-head")?;
-    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
+    red_at_head(&f, &head).await?;
     busy_sandbox(&f).await?;
     let stop = stop_of(&f, Agent::Codex).await?;
     assert_eq!(stop["decision"], "block", "{stop}");
@@ -3094,15 +3099,8 @@ async fn codex_goal_stop_finds_its_red_run_in_a_busy_sandbox() -> TestResult {
 /// another commit (the branch was updated outside the worktree): the turn ends uncharged.
 #[tokio::test]
 async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    told_red_run(&f, "red-at-head")?;
-    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
+    red_at_head(&f, &head).await?;
     super::delivery::insert_ci_attempt(
         &f.h.store,
         "newer-green-elsewhere",
@@ -3113,10 +3111,7 @@ async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResu
         &[],
     )
     .await?;
-    let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(stop["decision"].is_null(), "{stop}");
-    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.gate_blocks, 0);
+    ends_uncharged(&f, Agent::Codex).await?;
     Ok(())
 }
 
@@ -3124,13 +3119,7 @@ async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResu
 /// the watch (`run_superseded_by_pushed_head`): the turn ends uncharged.
 #[tokio::test]
 async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let (f, ctx, head) = finished_goal(Agent::Codex).await?;
     let head = head.trim();
     told_red_run(&f, "red-at-head")?;
     red_ordinary_run(&f, "red-at-head", head, 10).await?;
@@ -3149,10 +3138,7 @@ async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestRe
         ],
     )?;
     crate::support::git(&f.worktree, &["reset", "-q", "--hard", head])?;
-    let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(stop["decision"].is_null(), "{stop}");
-    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.gate_blocks, 0);
+    ends_uncharged(&f, Agent::Codex).await?;
     Ok(())
 }
 
@@ -3161,15 +3147,8 @@ async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestRe
 #[tokio::test]
 async fn codex_goal_stop_ends_after_its_red_pr_merged() -> TestResult {
     use yulius_domain::delivery::DeliveryStage;
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    told_red_run(&f, "red-at-head")?;
-    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
+    red_at_head(&f, &head).await?;
     f.h.app
         .deps
         .store
@@ -3183,10 +3162,7 @@ async fn codex_goal_stop_ends_after_its_red_pr_merged() -> TestResult {
             },
         )
         .await?;
-    let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(stop["decision"].is_null(), "{stop}");
-    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.gate_blocks, 0);
+    ends_uncharged(&f, Agent::Codex).await?;
     Ok(())
 }
 
@@ -3195,15 +3171,8 @@ async fn codex_goal_stop_ends_after_its_red_pr_merged() -> TestResult {
 #[tokio::test]
 async fn a_red_pr_continues_no_other_harnesss_finished_goal() -> TestResult {
     for agent_kind in [Agent::ClaudeCode, Agent::Antigravity] {
-        let f = task_with_open_step(agent_kind, TaskMode::Goal, "Finish compatibility").await?;
-        let ctx = f.h.app.agent_context(TOKEN).await?;
-        f.h.app
-            .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-            .await?;
-        install_compatibility_pull(&f).await?;
-        let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
-        told_red_run(&f, "red-at-head")?;
-        red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+        let (f, _, head) = finished_goal(agent_kind).await?;
+        red_at_head(&f, &head).await?;
         let stop = stop_of(&f, agent_kind).await?;
         assert!(stop["decision"].is_null(), "{agent_kind:?}: {stop}");
         let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
