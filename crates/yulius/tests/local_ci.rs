@@ -4,6 +4,7 @@
 //! deletions.
 
 use crate::support;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,29 +34,6 @@ type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 type TestResult = BoxResult<()>;
 
 const WAIT: Duration = Duration::from_secs(60);
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
 
 /// The bare `origin` as the fake GitHub's repository side.
 struct Origin(PathBuf);

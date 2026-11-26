@@ -22,6 +22,7 @@
 //! ```
 
 use crate::support;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -128,21 +129,6 @@ async fn until(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-}
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
 }
 
 /// Samples the task terminal on every animation frame (see the module docs); `__termRec.report()`

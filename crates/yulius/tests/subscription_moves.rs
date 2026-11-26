@@ -3,10 +3,10 @@
 
 use crate::pool_supervision::{
     HOUR, ScriptedUsage, add_account, build_with, has_status, new_task, refresh, runtime, screen,
-    seed, stop, temp, usage, wait_for,
+    seed, stop, temp, usage,
 };
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::{TestResult, eventually};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,7 +45,7 @@ pub(crate) async fn run_accounts(app: &App, id: &TaskId) -> Vec<Option<String>> 
 
 /// Waits until the task's run number `n` (from 1) is live.
 pub(crate) async fn live_run(app: &App, id: &TaskId, n: usize) -> TestResult {
-    wait_for("the next run", Duration::from_secs(60), || async {
+    eventually("the next run", Duration::from_secs(60), || async {
         let attempts = app.deps.store.attempts(id).await.unwrap_or_default();
         attempts.len() == n && attempts[n - 1].state == AttemptState::Live
     })
@@ -64,7 +64,7 @@ pub(crate) fn notices(watch: &mut broadcast::Receiver<HubFrame>) -> Vec<String> 
 }
 
 pub(crate) async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
-    wait_for("the run", Duration::from_secs(30), || {
+    eventually("the run", Duration::from_secs(30), || {
         let app = app.clone();
         let id = id.clone();
         async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -210,7 +210,7 @@ fn deleting_a_subscription_in_use_moves_its_task() -> TestResult {
         );
         runs_on(&app, &id, "b-second").await?;
         let mut said = Vec::new();
-        wait_for("the notice", Duration::from_secs(30), || {
+        eventually("the notice", Duration::from_secs(30), || {
             said.extend(notices(&mut watch));
             let found = said.iter().any(|n| {
                 n.contains("Claude a-first was removed")
@@ -242,7 +242,7 @@ fn deleting_the_last_subscription_makes_its_task_wait_for_one() -> TestResult {
         let ctx = ctx(&app, &user).await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.delete_account(&ctx, "a-first").await?;
-        wait_for(
+        eventually(
             "the wait and its request",
             Duration::from_secs(60),
             || async {
@@ -317,11 +317,11 @@ fn a_refused_last_subscription_leaves_the_task_needing_you() -> TestResult {
         ready(&app, &id).await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the wait", Duration::from_secs(60), || {
+        eventually("the wait", Duration::from_secs(60), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
-        wait_for("the request", Duration::from_secs(30), || async {
+        eventually("the request", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .task_needs_you(&id)
@@ -362,7 +362,7 @@ fn a_refused_subscription_says_where_its_task_went() -> TestResult {
         let mut watch = app.runtime(&id).hub.watch();
         app.send_input(&id, b"hello\r").await?;
         live_run(&app, &id, 2).await?;
-        wait_for("the notice", Duration::from_secs(30), || {
+        eventually("the notice", Duration::from_secs(30), || {
             let said = notices(&mut watch);
             let found = said.iter().any(|n| {
                 n.contains("Claude refused Claude a-first")
@@ -488,7 +488,7 @@ fn a_person_moves_a_waiting_task_to_the_subscription_they_choose() -> TestResult
         probe.set("b-second", usage(100.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let id = new_task(&app, &sandbox, &user, "Waits").await?;
-        wait_for("the wait", Duration::from_secs(30), || {
+        eventually("the wait", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -551,7 +551,7 @@ async fn reached(at: std::sync::mpsc::Receiver<()>) -> TestResult {
 
 /// Waits until the task runs, live, on `account`.
 async fn runs_on(app: &App, id: &TaskId, account: &str) -> TestResult {
-    wait_for(account, Duration::from_secs(60), || async {
+    eventually(account, Duration::from_secs(60), || async {
         let live = app.deps.store.live_attempt(id).await.ok().flatten();
         has_status(app, id, TaskStatus::Running).await
             && live.is_some_and(|a| {
@@ -672,7 +672,7 @@ fn removing_a_paused_tasks_subscription_stops_it_without_resuming() -> TestResul
         app.pause_task_for_person(&ctx, id.as_str()).await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.delete_account(&ctx, "a-first").await?;
-        wait_for("the stop", Duration::from_secs(60), || async {
+        eventually("the stop", Duration::from_secs(60), || async {
             app.deps
                 .store
                 .task(&id)
@@ -731,7 +731,7 @@ fn a_removal_keeps_a_request_already_open() -> TestResult {
         let mut watch = app.runtime(&id).hub.watch();
         let ctx = ctx(&app, &user).await?;
         app.delete_account(&ctx, "a-first").await?;
-        wait_for("the notice", Duration::from_secs(60), || {
+        eventually("the notice", Duration::from_secs(60), || {
             let said = notices(&mut watch);
             let found = said
                 .iter()
