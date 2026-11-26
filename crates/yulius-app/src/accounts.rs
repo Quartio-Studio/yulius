@@ -2586,6 +2586,34 @@ mod tests {
         assert!(read_login_file(dir.path(), usable).is_err());
         Ok(())
     }
+
+    /// Each kind of unusable sign-in file keeps its own refusal: a socket and a link are "not
+    /// usable" like a folder, a missing file is not stored, a larger one is too large.
+    #[test]
+    fn a_codex_sign_ins_unusable_file_says_why() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let usable = |_: &[u8]| None;
+        let unusable = Err("the Codex credentials file is not usable".to_owned());
+        let path = dir.path().join("auth.json");
+        assert_eq!(
+            read_login_file(&path, usable),
+            Err("the Codex sign-in did not store credentials".to_owned())
+        );
+        let socket = dir.path().join("socket.json");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
+        assert_eq!(read_login_file(&socket, usable), unusable);
+        std::fs::write(&path, b"{}")?;
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link)?;
+        assert_eq!(read_login_file(&link, usable), unusable);
+        assert_eq!(read_login_file(dir.path(), usable), unusable);
+        std::fs::File::create(&path)?.set_len(u64::try_from(CODEX_LOGIN_AUTH_MAX)? + 1)?;
+        assert_eq!(
+            read_login_file(&path, usable),
+            Err("the Codex credentials file is too large".to_owned())
+        );
+        Ok(())
+    }
     use std::cell::Cell;
     use yulius_domain::time::Timestamp;
 
