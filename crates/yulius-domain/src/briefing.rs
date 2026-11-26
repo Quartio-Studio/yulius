@@ -625,12 +625,11 @@ fn header(input: &BriefingInput<'_>) -> String {
 fn decisions_rule(layout: &DocsLayout) -> String {
     match &layout.decisions {
         DecisionsLocation::Directory(directory) => format!(
-            "as an ADR in {} with the sections Status, Context, Decision, Alternatives and \
-             Consequences",
+            "ADR in {}",
             code(&format!("{directory}/NNNN-<slug>.md"), 220)
         ),
         DecisionsLocation::File(file) => format!(
-            "as a new `## <decision>` entry (context, decision, alternatives, consequences) in {}",
+            "ADR as a new `## <decision>` entry (context, decision, alternatives, consequences) in {}",
             code(file, 200)
         ),
     }
@@ -677,7 +676,8 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          cover failures. Run each touched test binary in full. Wait on conditions, never sleeps. \
          Flaky tests are reproduced and fixed or quarantined with an issue, never retried until green.\n\
          5. Decide like a senior engineer: compare options, choose and justify yourself (do not \
-         ask the user to choose), and record each lasting decision {decisions}. Keep the \
+         ask the user to choose). Write an {decisions} only for a build or run choice someone \
+         may want to reverse, with two rejected alternatives. Keep the \
          architecture document {architecture} (with at least one Mermaid diagram), the product \
          summary and AGENTS.md true in the same change. No secrets in the repository: keys go \
          in the ignored `.env` (names in `.env.example`), agent secrets via \
@@ -1842,6 +1842,7 @@ mod tests {
     }
 
     fn assert_mandatory(text: &str) {
+        assert!(!text.contains("lasting decision"), "{text}");
         let mut last = 0;
         for heading in MANDATORY_HEADINGS {
             let found = text[last..].find(heading).map(|offset| offset + last);
@@ -1855,7 +1856,8 @@ mod tests {
             "Never commit or push to `dev` or `main`",
             "Use only ports 20000-20019",
             "read them first: `AGENTS.md`, `CLAUDE.md`",
-            "ADR in `docs/decisions/NNNN-<slug>.md`",
+            "ADR in `docs/decisions/NNNN-<slug>.md` only for a build or run choice someone may \
+             want to reverse, with two rejected alternatives.",
             "top of `docs/changes.md`",
             "Mermaid diagram",
             "`browser_request_user_action`",
