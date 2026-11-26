@@ -47,10 +47,10 @@ lives in files named by what they do. Behaviour unchanged.
 - [x] Run-dir markers and opening/goal typing moved into supervisor/typing.rs
 - [x] Independent review of PR (c) answered
 - [x] Integration gate repaired: parking::a_staging_outcome_reaches_its_task_once green on dev
-- [ ] Subscription switching moved into supervisor/switch.rs
-- [ ] Attach and watch loop moved into supervisor/watch.rs
-- [ ] Stop and close moved into supervisor/stop.rs
-- [ ] Placement/limits moved into capacity.rs and viewer input into terminal.rs
+- [x] Subscription switching moved into supervisor/switch.rs
+- [x] Attach and watch loop moved into supervisor/watch.rs
+- [x] Stop and close moved into supervisor/stop.rs
+- [x] Placement and limits moved into supervisor/placement.rs, viewer input into supervisor/input.rs
 - [ ] Independent review of PR (d) answered
 
 ## Acceptance criteria
@@ -76,7 +76,11 @@ must still pass. The `yulius` integration binary runs in Yulius CI.
   private state. Otherwise it becomes a child module of `supervisor/`, so its visibility stays
   `pub(super)`. Parking a session uses `TaskRuntime`'s `run`, `intent`, `parked_activity` and
   `terminal_cleanup`, the launch lock and the `EndIntent`/`SwitchEnd`/`ActiveRun` types. So it is
-  `supervisor/park.rs`, and `crate::parking` keeps when to park.
+  `supervisor/park.rs`, and `crate::parking` keeps when to park. For the same reason placement,
+  limits and rotation (which need `TaskRuntime`'s `run`, `SupervisorState`'s `runtimes` and
+  `ObservationSource`) are `supervisor/placement.rs` rather than `crate::capacity`, and viewer
+  input (`run`, `prompt_receipts`, `input_seq`, `viewer_submits` and three private types) is
+  `supervisor/input.rs` rather than `crate::terminal`.
 - A moved item that other files name as `crate::supervisor::X` keeps that path through a
   re-export of the same visibility (`pub use` for `pub` items, `pub(crate) use` otherwise), so no
   caller outside `supervisor/` changes. Sibling files under `supervisor/` import from the
