@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-26
 
-- A task whose spec is not registered finds it again in a specs directory of more than 500 files (audit L10 F10). Discovery read the first 500 directory entries in directory order and sorted only those, so with `.ai/specs` past 600 entries a renamed or unregistered spec could be missed. It now lists every name (up to 10,000) and reads the file named with the task's branch slug first. [SPEC-667](../.ai/specs/SPEC-667-cleanup-delivery-merge-queue-git-github.md)
+- A task whose spec is not registered finds it again in a specs directory of more than 500 files. Discovery read the first 500 directory entries in directory order and sorted only those, so with `.ai/specs` past 600 entries a renamed or unregistered spec could be missed. It now lists every Markdown file (up to 2,000) and reads the file named with the task's branch slug first. [SPEC-667](../.ai/specs/SPEC-667-cleanup-delivery-merge-queue-git-github.md)
 
 ## 2026-11-25
 

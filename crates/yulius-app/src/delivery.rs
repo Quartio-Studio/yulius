@@ -76,9 +76,9 @@ pub(crate) const PREPARE_ALLOWANCE: Duration = Duration::from_secs(35 * 60);
 pub const ENVIRONMENT_OUTPUT_BYTES: usize = 1 << 20;
 /// Largest spec file read.
 pub const MAX_SPEC_BYTES: u64 = 256 * 1024;
-/// Most directory entries listed when discovering an unregistered spec, far above any real
-/// specs directory: all of them are listed before the slug-named file is read first.
-pub const MAX_SPEC_CANDIDATES: usize = 10_000;
+/// Most Markdown files kept when discovering an unregistered spec, far above any real specs
+/// directory: all of them are listed before the slug-named file is read first.
+pub const MAX_SPEC_CANDIDATES: usize = 2_000;
 /// Integration commits on the Git page.
 pub const RECENT_COMMITS: u32 = 20;
 /// Open pull requests examined on the Git page.
@@ -1959,7 +1959,8 @@ impl App {
                 .as_deref()
                 .is_none_or(|ending| !name.ends_with(ending))
         };
-        names.sort_by_cached_key(|name| (not_slug_named(name), name.clone()));
+        names.sort();
+        names.sort_by_key(not_slug_named);
         for name in names {
             let relative = format!("{dir}/{name}");
             let Ok(text) = read_spec(worktree, &relative).await else {

@@ -38,9 +38,9 @@ PR 0.
 
 ## Plan
 
-- [ ] Spec discovery: failing test for >500 specs
-- [ ] Spec discovery: sort before the cut, prefer the slug file
-- [ ] Spec discovery: independent review answered
+- [x] Spec discovery: failing test for >500 specs
+- [x] Spec discovery: sort before the cut, prefer the slug file
+- [x] Spec discovery: independent review answered
 - [ ] Split delivery.rs: verbatim move into 8 files
 - [ ] Split delivery.rs: independent review answered
 - [ ] Queue: queue_readiness and armed_snapshot
@@ -76,3 +76,21 @@ scripts/cargo nextest run -p yulius --test delivery
 - Discovery lists every name up to a bound far above any real specs directory and reads the
   slug-named file first, instead of sorting 500 entries: a sorted cut at 500 would still drop
   `SPEC-667` among 700 numbered specs.
+- The bound counts kept Markdown files and is 2,000: a discovery that finds nothing reads every
+  file, so the bound limits that worst case while staying far above the 600 specs of today. The
+  Plan item "sort before the cut" was done by raising the bound and ordering the slug file first.
+
+## Evidence
+
+PR 0 (#1774), spec discovery (CLN-001):
+- `agent_hooks::a_spec_among_hundreds_is_found_and_the_slug_named_one_wins` failed on the code
+  before the fix ("the spec is found", `/tmp` is tmpfs, which lists the newest entry first) and
+  passes after it. After the review the task's two specs are written before and after the 700
+  others, so one lies past the first 500 in either listing order.
+- Hand mutations: plain `names.sort()` registers `0-old-copy.md` instead of `SPEC-900-x.md`; the
+  bound back at 500 with the slug order kept, and the whole pre-fix `delivery.rs`, both fail at
+  the renamed-spec assertion (`agent_hooks.rs:1510`).
+- `scripts/cargo nextest run -p yulius --test main`: 2829 passed; `-p yulius-app`: 740 passed;
+  `scripts/dev quick` and `clippy -p yulius-app --all-targets -D warnings`: clean.
+- Independent review (Fable 5.2) approved `3b589768e`; its minors and nits are answered in the
+  next commit (test order, `docs/api.md`, bound and wording, sort without clones, no audit label).
