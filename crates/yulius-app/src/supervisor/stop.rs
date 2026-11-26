@@ -20,7 +20,6 @@ const CLOSE_SETTLE_MS: u64 = 5_000;
 /// How long asking a run to shut down may take: one frame on a local socket; a host that takes
 /// longer is stuck, which the escalation handles (SPEC-065 END-005).
 const SHUTDOWN_WRITE_BOUND: Duration = Duration::from_secs(2);
-
 /// How often a close waiting for its run looks again without an update (SPEC-039).
 const CLOSE_RECHECK: Duration = Duration::from_secs(1);
 

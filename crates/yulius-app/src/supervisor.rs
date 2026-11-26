@@ -75,6 +75,7 @@ pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
 /// How many times a stop makes its status change: each lost one means another writer changed the
 /// status, and the status machine has no cycle a stop can keep losing to (SPEC-250 STW-001).
 const STOP_ROUNDS: usize = 4;
+
 /// Why Yulius is ending a run.
 enum EndIntent {
     /// User or system stop.

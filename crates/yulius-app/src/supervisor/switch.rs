@@ -63,7 +63,7 @@ impl App {
     /// `family`: what the CLI was told is the account's state (ROT-009), the limited window full
     /// until its reset, even when the provider's usage request does not answer. A limit of one
     /// model family fills that family's own window, never the subscription's week (SPEC-464,
-    /// [`AccountUsage::record_limit`]). Shared by tasks and the Cockpit (SPEC-074).
+    /// [`yulius_domain::usage::AccountUsage::record_limit`]). Shared by tasks and the Cockpit (SPEC-074).
     pub(crate) async fn record_limit(
         &self,
         account: &AccountId,
