@@ -169,47 +169,7 @@ enum Command {
     /// Onboard a local repository and your Claude Code sessions to Yulius: progress bars,
     /// secrets redacted on this computer, only new or changed sessions sent, onboarding state.
     #[command(visible_alias = "import")]
-    Onboard {
-        /// Repository path (default: current directory).
-        #[arg(default_value = ".")]
-        path: PathBuf,
-        /// Yulius URL (default: the only server you signed in to).
-        #[arg(long, env = "YULIUS_SERVER")]
-        server: Option<String>,
-        /// Which sessions: all, recent, pick or none (asked when omitted; recent with --yes).
-        #[arg(long, value_name = "WHICH")]
-        sessions: Option<String>,
-        /// Window of recent sessions, e.g. 14d, 36h, 2w.
-        #[arg(long)]
-        since: Option<String>,
-        /// Upload sessions only, not unpublished branches or uncommitted changes.
-        #[arg(long)]
-        sessions_only: bool,
-        /// Show what would be uploaded and upload nothing.
-        #[arg(long)]
-        dry_run: bool,
-        /// Only show the sandbox's onboarding state and what is pending.
-        #[arg(long)]
-        status: bool,
-        /// List every redacted secret's rule and key name.
-        #[arg(long)]
-        show_redactions: bool,
-        /// Upload into a playground of yours (local Git on the server) instead of a GitHub
-        /// repository's sandbox: no GitHub remote needed; every branch, the uncommitted work and
-        /// the chosen sessions are sent, and nothing is pushed anywhere.
-        #[arg(long)]
-        playground: bool,
-        /// The playground's name with --playground (default: the checkout directory's name); an
-        /// existing playground of yours with that name receives the upload.
-        #[arg(long, requires = "playground")]
-        name: Option<String>,
-        /// Do not ask anything.
-        #[arg(long)]
-        yes: bool,
-        /// No colours (also NO_COLOR=1).
-        #[arg(long)]
-        no_color: bool,
-    },
+    Onboard(yulius::cli::OnboardArgs),
     /// List and delete leftovers on this server's disk (SPEC-215), as root or the service user,
     /// through the running server's loopback listener and its rules.
     Leftovers {
@@ -227,7 +187,7 @@ enum Command {
         url: String,
         /// What to do.
         #[command(subcommand)]
-        action: LeftoversAction,
+        action: yulius::leftovers_cli::Action,
     },
     /// Manage the vault from this computer.
     #[command(visible_alias = "secret")]
@@ -281,38 +241,7 @@ enum Command {
         action: yulius::remote_cli::CiAction,
     },
     /// Check this host's prerequisites (git, agent CLIs, containment, browser, editor, data dir).
-    Doctor {
-        /// Prove that sandboxes get Docker on this host, end to end, in a throwaway sandbox
-        /// (SPEC-196): run it as root or the service user; it uses the current base.
-        #[arg(long)]
-        docker_smoke: bool,
-        /// With --docker-smoke: one JSON line per check (what Settings → Instance reads).
-        #[arg(long, requires = "docker_smoke")]
-        json: bool,
-        /// Data directory.
-        #[arg(
-            long = "data-dir",
-            visible_alias = "data",
-            env = "YULIUS_DATA",
-            default_value = "/var/lib/yulius"
-        )]
-        data: PathBuf,
-        /// Require bubblewrap containment.
-        #[arg(long, env = "YULIUS_CONTAINED")]
-        contained: bool,
-        /// Extra paths visible inside containment (as for `serve`).
-        #[arg(long, env = "YULIUS_CONTAINED_READONLY", value_delimiter = ':')]
-        contained_readonly: Vec<PathBuf>,
-        /// The reverse proxy's secret file (as for `serve`): checked, never shown.
-        #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
-        proxy_secret_file: Option<PathBuf>,
-        /// Claude Code releases isolated sandboxes follow (as for `serve`, SPEC-421), unless
-        /// one was chosen in Settings, Instance.
-        #[arg(long, env = "YULIUS_CLAUDE_UPDATES",
-              default_value = yulius::wiring::sandbox::DEFAULT_CHANNEL,
-              value_parser = yulius::wiring::sandbox::parse_channel)]
-        claude_updates: yulius_domain::agent_cli::Channel,
-    },
+    Doctor(Box<yulius::doctor::DoctorArgs>),
     /// Bring this host to every prerequisite of Docker in sandboxes (run as root; SPEC-203).
     Host {
         /// What to do.
@@ -351,102 +280,16 @@ enum Command {
 enum InstanceAction {
     /// Freeze every Yulius process, then stream the whole data directory to standard output as
     /// one tar of a size announced before the first byte; nothing is written on this host.
-    Export {
-        /// Data directory.
-        #[arg(
-            long = "data-dir",
-            visible_alias = "data",
-            env = "YULIUS_DATA",
-            default_value = "/var/lib/yulius"
-        )]
-        data_dir: PathBuf,
-        /// The server's systemd unit.
-        #[arg(long, default_value = "yulius.service")]
-        service: String,
-        /// The update helper's unit (no export while it runs).
-        #[arg(long, default_value = "yulius-update.service")]
-        update_service: String,
-        /// Moving to another host: after a successful export keep the instance frozen and
-        /// disable its unit, so it never runs beside the copy.
-        #[arg(long = "move")]
-        move_out: bool,
-    },
+    Export(yulius::instance::export::ExportOptions),
     /// Install an export on this host: makes the service user and its ids, extracts the copy
     /// into the exported data directory as it arrives and checks it; never overwrites an
     /// instance. Then run `yulius host setup`.
-    Import {
-        /// The export; standard input when absent or `-`.
-        file: Option<PathBuf>,
-        /// Data directory; it must be the one the copy was exported from.
-        #[arg(
-            long = "data-dir",
-            visible_alias = "data",
-            env = "YULIUS_DATA",
-            default_value = "/var/lib/yulius"
-        )]
-        data_dir: PathBuf,
-        /// The service user to make when the data directory does not exist (default: the
-        /// exported one's name).
-        #[arg(long)]
-        user: Option<String>,
-    },
+    Import(yulius::instance::import::ImportOptions),
     /// Move the whole instance to another host with one command: check and set up the new
     /// host, carry every setting and key, copy the data while this instance runs, freeze it
     /// only to send what changed, prove the copy, start the new instance, redirect the old
     /// URL. Run it on the old host; run it again to continue.
-    Migrate {
-        /// The new host, as ssh takes it: `root@new-host`.
-        target: Option<String>,
-        /// The new host's SSH port.
-        #[arg(long = "ssh-port", default_value_t = 22)]
-        ssh_port: u16,
-        /// The new public URL (default: the old one, or the same form for the new address).
-        #[arg(long)]
-        public_url: Option<String>,
-        /// A blank disk of the new host for the data directory; twice for a mirror.
-        #[arg(long = "data-disk")]
-        data_disk: Vec<String>,
-        /// Do not ask before moving.
-        #[arg(long)]
-        yes: bool,
-        /// The longest freeze to begin, in minutes: while the estimate is above it the move
-        /// copies again, and after five such passes it stops without freezing.
-        #[arg(long = "max-downtime", value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
-        max_downtime: Option<u64>,
-        /// Never sign in to the new host as root does (root's own keys, agent and ssh
-        /// configuration, a password): reach it with the move's one-time key alone, and show
-        /// the key's line for a person to add there. The move helper runs the command so.
-        #[arg(long = "no-sign-in")]
-        no_sign_in: bool,
-        /// The id of the request this run answers (the move helper sets it): it is written
-        /// into the status, so that readers tell this run's checklist from another's.
-        #[arg(long = "request-id", value_name = "ID", value_parser = request_id)]
-        request_id: Option<String>,
-        /// Print the recorded move and its checklist.
-        #[arg(long, conflicts_with_all = ["abort", "target"])]
-        status: bool,
-        /// Go back to this host: stop the new instance, undo the redirect, thaw and enable the
-        /// old one.
-        #[arg(long, conflicts_with = "target")]
-        abort: bool,
-        /// Data directory.
-        #[arg(
-            long = "data-dir",
-            visible_alias = "data",
-            env = "YULIUS_DATA",
-            default_value = "/var/lib/yulius"
-        )]
-        data_dir: PathBuf,
-        /// The server's systemd unit.
-        #[arg(long, default_value = "yulius.service")]
-        service: String,
-        /// The update helper's unit.
-        #[arg(long, default_value = "yulius-update.service")]
-        update_service: String,
-        /// Where the move keeps its key and state.
-        #[arg(long, default_value = "/var/lib/yulius-migrate")]
-        state_dir: PathBuf,
-    },
+    Migrate(Box<yulius::instance::migrate::Options>),
     /// A move's steps on the new host; run by `yulius instance migrate` over SSH.
     #[command(hide = true)]
     MigrateTarget {
@@ -457,86 +300,13 @@ enum InstanceAction {
 }
 
 #[derive(Debug, Subcommand)]
-enum LeftoversAction {
-    /// Rescan and list every leftover: id, size, safe / needs you / report only, kind, path,
-    /// owner and why.
-    List {
-        /// The server's JSON instead of the list.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Rescan, then delete every safe leftover or the given ids, after a typed yes.
-    Delete {
-        /// Every leftover Yulius deletes by itself.
-        #[arg(long, conflicts_with = "ids")]
-        all_safe: bool,
-        /// Ids from `yulius leftovers list`.
-        ids: Vec<String>,
-        /// Do not ask (scripts).
-        #[arg(long)]
-        yes: bool,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 enum SecretsAction {
     /// Import secrets from a dotenv file, key files, stdin or typed prompts (SPEC-205): team
     /// secrets for people, or agent secrets, of a sandbox or team-wide (SPEC-216). Names are
     /// shown, values never; a secret that exists is skipped, never overwritten; nothing is sent
     /// before you type yes at the terminal, or with --yes and your agent's operate token
     /// (SPEC-256).
-    Import {
-        /// Team secrets (for people) or agent secrets (for agents, who never see them).
-        #[arg(long, value_enum)]
-        to: yulius::cli::VaultChoice,
-        /// A dotenv file (NAME=value lines; a comment above a key becomes its description), `-`
-        /// for stdin; without it, type each name and its hidden value.
-        file: Option<PathBuf>,
-        /// The sandbox of the secrets: owner/name, slug or id (default: this checkout's GitHub
-        /// repository).
-        #[arg(long)]
-        sandbox: Option<String>,
-        /// Team-wide team secrets; global agent secrets (instance administrators), switched on for
-        /// the sandbox.
-        #[arg(long)]
-        instance: bool,
-        /// Agent secrets: you allow each host and production deploys on the Secrets page,
-        /// instead of agents setting them up (the default).
-        #[arg(long)]
-        confirm_hosts: bool,
-        /// A whole file as one secret, `NAME=PATH` (a key such as `DEPLOY_SSH_KEY=~/.ssh/id_deploy`;
-        /// repeatable): the file is read here and never shown.
-        #[arg(long = "from-file", value_name = "NAME=PATH")]
-        from_files: Vec<String>,
-        /// A folder of operator state (a deploy tool's inventory, rollouts, configs), or a .tar.gz
-        /// of one, as the agent state NAME of the project, `NAME=DIR` (repeatable, SPEC-271): a
-        /// task restores it into the sandbox home, and that copy is the one written to after.
-        #[arg(long = "state", value_name = "NAME=DIR")]
-        states: Vec<String>,
-        /// Overwrite a state a task already restored (its sandbox copy is then stale until
-        /// restored again); without it such a send is refused, so the two copies never fork.
-        #[arg(long)]
-        replace_state: bool,
-        /// Agent secrets: agents may copy them into the project's git-ignored `.env` files from
-        /// the start (ssh keys, deploy scripts), instead of you allowing it when a task asks.
-        #[arg(long)]
-        env_files: bool,
-        /// Agent secrets of one project: keep values that are not secrets (too short, a plain
-        /// word, a URL or e-mail address without credentials) out of the project's variables,
-        /// where they go by default (SPEC-275); they are then checked as secrets.
-        #[arg(long)]
-        no_vars: bool,
-        /// Send without asking: only with the operate token `yulius remote login` stored, made for
-        /// your agent on Settings → Connect your local agent.
-        #[arg(long)]
-        yes: bool,
-        /// Yulius URL (default: the only server you signed in to).
-        #[arg(long, env = "YULIUS_SERVER")]
-        server: Option<String>,
-        /// No colours (also NO_COLOR=1).
-        #[arg(long)]
-        no_color: bool,
-    },
+    Import(yulius::cli::SecretsImportArgs),
     /// Download the newest saved copy of an agent state (SPEC-271) as a .tar.gz, to a new file;
     /// the sandbox's copy stays the one written to.
     StateGet {
@@ -817,79 +587,18 @@ fn main() -> ExitCode {
         ),
         Command::SandboxBase { action } => yulius::sandbox_cli::base(action),
         Command::Login { server } => yulius::cli::login(&server),
-        Command::Onboard {
-            path,
-            server,
-            sessions,
-            since,
-            sessions_only,
-            dry_run,
-            status,
-            show_redactions,
-            playground,
-            name,
-            yes,
-            no_color,
-        } => yulius::cli::onboard(yulius::cli::OnboardArgs {
-            path,
-            server,
-            sessions,
-            since,
-            yes,
-            sessions_only,
-            dry_run,
-            status,
-            show_redactions,
-            playground,
-            playground_name: name,
-            no_color,
-        }),
+        Command::Onboard(args) => yulius::cli::onboard(args),
         Command::Leftovers {
             data_dir,
             url,
             action,
         } => {
-            let action = match action {
-                LeftoversAction::List { json } => yulius::leftovers_cli::Action::List { json },
-                LeftoversAction::Delete { all_safe, ids, yes } => {
-                    yulius::leftovers_cli::Action::Delete { all_safe, ids, yes }
-                }
-            };
             let code = yulius::leftovers_cli::run(&data_dir, &url, action);
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::Secrets {
-            action:
-                SecretsAction::Import {
-                    to,
-                    file,
-                    sandbox,
-                    instance,
-                    confirm_hosts,
-                    from_files,
-                    states,
-                    replace_state,
-                    env_files,
-                    no_vars,
-                    yes,
-                    server,
-                    no_color,
-                },
-        } => yulius::cli::secrets_import(yulius::cli::SecretsImportArgs {
-            no_vars,
-            states,
-            replace_state,
-            to,
-            file,
-            sandbox,
-            instance,
-            confirm_hosts,
-            server,
-            yes,
-            from_files,
-            env_files,
-            no_color,
-        }),
+            action: SecretsAction::Import(args),
+        } => yulius::cli::secrets_import(args),
         Command::Secrets {
             action:
                 SecretsAction::StateGet {
@@ -910,95 +619,26 @@ fn main() -> ExitCode {
         Command::Project { opts, action } => yulius::remote_cli::project_cmd(action, &opts),
         Command::Task { opts, action } => yulius::remote_cli::task_cmd(action, &opts),
         Command::Ci { opts, action } => yulius::remote_cli::ci_cmd(action, &opts),
-        Command::Doctor {
-            docker_smoke: true,
-            data,
-            json,
-            ..
-        } => yulius::docker_smoke::main(&data, json),
-        Command::Doctor {
-            docker_smoke: false,
-            data,
-            contained,
-            contained_readonly,
-            proxy_secret_file,
-            claude_updates,
-            ..
-        } => yulius::doctor::doctor(
-            &data,
-            contained,
-            &contained_readonly,
-            proxy_secret_file.as_deref(),
-            claude_updates,
+        Command::Doctor(args) if args.docker_smoke => {
+            yulius::docker_smoke::main(&args.data, args.json)
+        }
+        Command::Doctor(args) => yulius::doctor::doctor(
+            &args.data,
+            args.contained,
+            &args.contained_readonly,
+            args.proxy_secret_file.as_deref(),
+            args.claude_updates,
         ),
         Command::Host { action } => host(action),
         Command::Instance {
-            action:
-                InstanceAction::Export {
-                    data_dir,
-                    service,
-                    update_service,
-                    move_out,
-                },
-        } => yulius::instance::export::main(&yulius::instance::export::ExportOptions {
-            data_dir,
-            service,
-            update_service,
-            move_out,
-        }),
+            action: InstanceAction::Export(options),
+        } => yulius::instance::export::main(&options),
         Command::Instance {
-            action:
-                InstanceAction::Import {
-                    file,
-                    data_dir,
-                    user,
-                },
-        } => yulius::instance::import::main(&yulius::instance::import::ImportOptions {
-            file,
-            data_dir,
-            user,
-        }),
+            action: InstanceAction::Import(options),
+        } => yulius::instance::import::main(&options),
         Command::Instance {
-            action:
-                InstanceAction::Migrate {
-                    target,
-                    ssh_port,
-                    public_url,
-                    data_disk,
-                    yes,
-                    max_downtime,
-                    no_sign_in,
-                    request_id,
-                    status,
-                    abort,
-                    data_dir,
-                    service,
-                    update_service,
-                    state_dir,
-                },
-        } => yulius::instance::migrate::main(
-            &yulius::instance::migrate::Options {
-                target,
-                port: ssh_port,
-                public_url,
-                data_disks: data_disk,
-                yes,
-                data_dir,
-                service,
-                update_service,
-                state_dir,
-                max_downtime,
-                no_sign_in,
-                request: request_id,
-            },
-            if status {
-                yulius::instance::migrate::Action::Status
-            } else if abort {
-                yulius::instance::migrate::Action::Abort
-            } else {
-                yulius::instance::migrate::Action::Run
-            },
-        ),
+            action: InstanceAction::Migrate(options),
+        } => yulius::instance::migrate::main(&options, options.action()),
         Command::Instance {
             action: InstanceAction::MigrateTarget { receive },
         } => yulius::instance::migrate::target::main(receive),
@@ -1051,15 +691,6 @@ where
     }
 }
 
-/// A request's id as the move helper passes it: the request's own rule.
-fn request_id(text: &str) -> Result<String, String> {
-    if yulius_app::migration::rules::valid_id(text) {
-        Ok(text.to_owned())
-    } else {
-        Err("8 to 64 letters, digits or hyphens".into())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser as _};
@@ -1102,42 +733,29 @@ mod tests {
             json["max_downtime"] = 8.into();
             let bounded: MoveRequest = serde_json::from_value(json)?;
             let Command::Instance {
-                action:
-                    InstanceAction::Migrate {
-                        target,
-                        ssh_port,
-                        public_url,
-                        data_disk,
-                        max_downtime,
-                        no_sign_in,
-                        request_id,
-                        yes,
-                        status,
-                        abort,
-                        data_dir,
-                        service,
-                        update_service,
-                        state_dir,
-                    },
+                action: InstanceAction::Migrate(options),
             } = parsed(&bounded)?
             else {
                 return Err("not `instance migrate`".into());
             };
-            assert_eq!(target.as_deref(), Some("root@new.example"));
-            assert_eq!(ssh_port, 2222);
-            assert_eq!(public_url.as_deref(), Some("https://new.example"));
-            assert_eq!(data_disk, ["/dev/vdc", "/dev/vdd"]);
-            assert_eq!(yes, says_yes, "{action:?}");
-            assert_eq!(max_downtime, Some(8), "{action:?}");
+            assert_eq!(options.target.as_deref(), Some("root@new.example"));
+            assert_eq!(options.port, 2222);
+            assert_eq!(options.public_url.as_deref(), Some("https://new.example"));
+            assert_eq!(options.data_disks, ["/dev/vdc", "/dev/vdd"]);
+            assert_eq!(options.yes, says_yes, "{action:?}");
+            assert_eq!(options.max_downtime, Some(8), "{action:?}");
             // Root's helper is nobody's sign-in: only the move's own key reaches the new host.
-            assert!(no_sign_in, "{action:?}");
+            assert!(options.no_sign_in, "{action:?}");
             // And says which request it answers, for the checklist it writes.
-            assert_eq!(request_id.as_deref(), Some("0123abcd-request"));
-            assert!(!status && !abort);
-            assert_eq!(data_dir, std::path::Path::new("/srv/yulius"));
-            assert_eq!(service, "yulius-b.service");
-            assert_eq!(update_service, "yulius-b-update.service");
-            assert_eq!(state_dir, std::path::Path::new("/srv/yulius-migrate"));
+            assert_eq!(options.request.as_deref(), Some("0123abcd-request"));
+            assert!(!options.status && !options.abort);
+            assert_eq!(options.data_dir, std::path::Path::new("/srv/yulius"));
+            assert_eq!(options.service, "yulius-b.service");
+            assert_eq!(options.update_service, "yulius-b-update.service");
+            assert_eq!(
+                options.state_dir,
+                std::path::Path::new("/srv/yulius-migrate")
+            );
         }
         let abort = MoveRequest {
             target: None,
@@ -1147,26 +765,19 @@ mod tests {
             ..request(MoveAction::Abort)
         };
         let Command::Instance {
-            action:
-                InstanceAction::Migrate {
-                    target,
-                    yes,
-                    abort,
-                    no_sign_in,
-                    request_id,
-                    service,
-                    state_dir,
-                    ..
-                },
+            action: InstanceAction::Migrate(options),
         } = parsed(&abort)?
         else {
             return Err("not `instance migrate`".into());
         };
-        assert!(abort && !yes && no_sign_in);
-        assert_eq!(request_id.as_deref(), Some("0123abcd-request"));
-        assert_eq!(target, None);
-        assert_eq!(service, "yulius-b.service");
-        assert_eq!(state_dir, std::path::Path::new("/srv/yulius-migrate"));
+        assert!(options.abort && !options.yes && options.no_sign_in);
+        assert_eq!(options.request.as_deref(), Some("0123abcd-request"));
+        assert_eq!(options.target, None);
+        assert_eq!(options.service, "yulius-b.service");
+        assert_eq!(
+            options.state_dir,
+            std::path::Path::new("/srv/yulius-migrate")
+        );
         // An id is the request's own form: nothing else reaches the status through it.
         for bad in ["short", "with space-0123", "0123abcd/../x", ""] {
             let refused = Cli::try_parse_from([
