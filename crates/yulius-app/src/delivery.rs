@@ -236,13 +236,17 @@ pub struct EnvironmentRunRecord {
     pub ended_at: Option<Timestamp>,
 }
 
-// ---------------------------------------------------------------- profiles
-
-fn invalid(message: impl Into<String>) -> AppError {
-    AppError::Invalid(message.into())
-}
-
 // ---------------------------------------------------------------- small helpers
+
+/// Where `task`'s worktree is (SPEC-343): the Git overview says it, and the changes view reads
+/// only a `Present` one. A task gets its branch when created and its worktree when it starts.
+fn worktree_state(task: &TaskRecord) -> WorktreeState {
+    match task.worktree_path.as_deref() {
+        None => WorktreeState::NotCreated,
+        Some(path) if Path::new(path).is_dir() => WorktreeState::Present,
+        Some(_) => WorktreeState::Gone,
+    }
+}
 
 /// Maps a domain refusal to an API error (state conflicts are 409, request problems 422).
 fn refusal(err: &DeliveryError) -> AppError {

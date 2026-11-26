@@ -65,25 +65,6 @@ impl App {
         matches!(self.deps.store.delivery(task).await, Ok(Some(record)) if past_merge(&record.stage))
     }
 
-    /// Claims `head` for one automatic attempt, so two Stop hooks never push or open twice;
-    /// `false` when this head was already handled.
-    pub(super) fn claim_auto_head(&self, task_id: &TaskId, head: &str) -> AppResult<bool> {
-        let runtime = self.runtime(task_id);
-        let mut tried = runtime.auto_pr_head.lock().map_err(AppError::internal)?;
-        if tried.as_deref() == Some(head) {
-            return Ok(false);
-        }
-        *tried = Some(head.to_owned());
-        Ok(true)
-    }
-
-    /// Forgets a failed attempt, so the next clean Stop tries again (#68).
-    pub(super) fn release_auto_head(&self, task_id: &TaskId) {
-        if let Ok(mut tried) = self.runtime(task_id).auto_pr_head.lock() {
-            *tried = None;
-        }
-    }
-
     // A confirmed branch identity must outlive the process that observed it. The normal
     // opening transaction also retires a closed-unmerged snapshot and records the base for
     // landing recovery. Its compare-and-set preserves a competing or already merged delivery.

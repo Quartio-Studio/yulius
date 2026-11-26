@@ -249,6 +249,12 @@ impl App {
     }
 }
 
+// ---------------------------------------------------------------- profiles
+
+fn invalid(message: impl Into<String>) -> AppError {
+    AppError::Invalid(message.into())
+}
+
 /// Converts and validates an API profile. Unknown names are rejected, blank commands mean "no
 /// command", a missing `require_checks` takes the preset's default, and the result is
 /// relabeled (`custom` unless every setting equals the named preset's defaults, DLV-005).
@@ -373,16 +379,6 @@ fn profile_switch_on(profile_json: &str, key: &str) -> bool {
         .ok()
         .and_then(|profile| profile.get(key).and_then(Value::as_bool))
         != Some(false)
-}
-
-/// Where `task`'s worktree is (SPEC-343): the Git overview says it, and the changes view reads
-/// only a `Present` one. A task gets its branch when created and its worktree when it starts.
-pub(super) fn worktree_state(task: &TaskRecord) -> WorktreeState {
-    match task.worktree_path.as_deref() {
-        None => WorktreeState::NotCreated,
-        Some(path) if Path::new(path).is_dir() => WorktreeState::Present,
-        Some(_) => WorktreeState::Gone,
-    }
 }
 
 /// A playground runs no CI scan, so it has no Vidoc switch (SPEC-338 VOF-001).
