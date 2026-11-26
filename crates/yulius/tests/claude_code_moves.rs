@@ -1266,7 +1266,7 @@ mod moves {
         let dir = tempfile::tempdir()?;
         let db = dir.path().join("store.db");
         let h = crate::support::harness_with(crate::support::HarnessOptions {
-            store: Some(yulius_store::SqliteStore::open(&db)?),
+            store: Some(crate::support::store::migrated(&db)?),
             dir: Some(dir),
             ..Default::default()
         })?;

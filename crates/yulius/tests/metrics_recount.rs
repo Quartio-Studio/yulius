@@ -8,7 +8,6 @@ use crate::support::{self, HarnessOptions, TestResult};
 use yulius_app::model::MetricsRecord;
 use yulius_app::ports::store::TaskStore;
 use yulius_domain::ids::TaskId;
-use yulius_store::SqliteStore;
 
 const SESSION: &str = "5d2a8c41-3e6f-4b7a-9c0d-1e2f3a4b5c6d";
 const WORKTREE: &str = "/work/demo";
@@ -147,7 +146,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
     let db = data.join("yulius.db");
     old_store(&db, &outside(&data).to_string_lossy())?;
     // The upgrade queues the eight runs recorded before it.
-    let store = SqliteStore::open(&db)?;
+    let store = crate::support::store::migrated(&db)?;
     let h = support::harness_with(HarnessOptions {
         dir: Some(dir),
         store: Some(store),
@@ -320,7 +319,7 @@ async fn the_recount_waits_for_a_reconciliation_that_succeeds() -> TestResult {
          INSERT INTO attempts (id, task_id, seq, harness, provider_session_id, launch_kind, state, run_dir, token_hash, host_token, started_at, ended_at) VALUES
            ('a1', 't1', 1, 'claude', 'gone-session', 'new', 'exited', '/r/a1', 'h1', x'00', 1, 2);",
     )?;
-    let store = SqliteStore::open(&db)?;
+    let store = crate::support::store::migrated(&db)?;
     let h = support::harness_with(HarnessOptions {
         dir: Some(dir),
         store: Some(store),

@@ -626,7 +626,7 @@ async fn file_instance(
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("yulius.db");
     let h = harness_with(HarnessOptions {
-        store: Some(yulius_store::SqliteStore::open(&file)?),
+        store: Some(crate::support::store::migrated(&file)?),
         ..HarnessOptions::default()
     })?;
     let admin = setup_superadmin_creds(&h).await?;

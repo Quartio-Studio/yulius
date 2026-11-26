@@ -35,7 +35,6 @@ use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
 type BoxError = Box<dyn std::error::Error>;
@@ -5550,7 +5549,7 @@ fn a_restart_after_an_api_error(
 
     let rt = runtime()?;
     rt.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         let record = TaskStore::task(&store, &id).await?.ok_or("task")?;
         let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
         let attempt = TaskStore::live_attempt(&store, &id)
@@ -6733,7 +6732,7 @@ fn a_restart_after(
 
     let rt = runtime()?;
     rt.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         let record = TaskStore::task(&store, &id).await?.ok_or("task")?;
         let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
         let attempt = TaskStore::live_attempt(&store, &id)
@@ -6930,7 +6929,7 @@ fn a_restart_keeps_done_tasks_done_and_applies_goals_achieved_meanwhile() -> Tes
     // While Yulius is down the second agent achieves its goal; its Stop hook goes unanswered.
     let rt = runtime()?;
     rt.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         let record = TaskStore::task(&store, &late).await?.ok_or("task")?;
         let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
         let attempt = TaskStore::live_attempt(&store, &late)
@@ -7079,7 +7078,7 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
     // The reboot: every process ends with no exit recorded (the host first, so nobody records it).
     let rt = runtime()?;
     rt.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         let mut run_dirs = Vec::new();
         for id in [&done, &waiting] {
             let attempt = TaskStore::live_attempt(&store, id)

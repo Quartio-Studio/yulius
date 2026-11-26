@@ -26,7 +26,6 @@ use yulius_app::ports::store::{InstanceStore, SessionStore, UserStore};
 use yulius_domain::ids::UserId;
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::time::Timestamp;
-use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
 use super::{Creds, FakeGitHub, Harness, Resp, TestClock};
@@ -997,7 +996,8 @@ impl World {
     pub async fn without_claude(owner_kind: &str) -> Result<Self, BoxError> {
         let dir = tempfile::tempdir()?;
         let scratch = tempfile::tempdir()?;
-        let store = SqliteStore::open_in_memory()?;
+        let store_dir = tempfile::tempdir()?;
+        let store = super::store::migrated(&store_dir.path().join("yulius.db"))?;
         let base = Arc::new(FakeGitHub::default());
         let git = Arc::new(LocalGit::default());
         let github = Arc::new(RepoGitHub {
@@ -1064,6 +1064,7 @@ impl World {
                 system,
                 router,
                 _dir: dir,
+                _store: store_dir,
             },
             github,
             git,

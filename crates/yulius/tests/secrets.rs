@@ -2284,7 +2284,7 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = dir.path().canonicalize()?.join("yulius.db");
     let h = support::harness_with(support::HarnessOptions {
-        store: Some(yulius_store::SqliteStore::open(&path)?),
+        store: Some(crate::support::store::migrated(&path)?),
         ..support::HarnessOptions::default()
     })?;
     let admin = setup_superadmin_creds(&h).await?;
@@ -2402,7 +2402,7 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
 async fn nothing_is_stored_in_clear() -> TestResult {
     let dir = tempfile::tempdir()?;
     let data = dir.path().canonicalize()?;
-    let store = yulius_store::SqliteStore::open(&data.join("yulius.db"))?;
+    let store = crate::support::store::migrated(&data.join("yulius.db"))?;
     let h = support::harness_with(support::HarnessOptions {
         store: Some(store.clone()),
         ..support::HarnessOptions::default()

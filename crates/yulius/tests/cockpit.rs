@@ -2230,7 +2230,7 @@ async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
     drop(socket);
     f.h.app.stop_workspace_services().await;
 
-    // The restarted server's vault (the test store is in memory) holds the same secret.
+    // The restarted server's vault (each harness has a store of its own) holds the same secret.
     let g = fixture_with(true, Some(f.data.clone())).await?;
     add_apify_key(&g).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));

@@ -1355,7 +1355,7 @@ async fn unreadable_requests_keep_old_drafts_and_shell_folders() -> TestResult {
     let dir = tempfile::tempdir()?;
     let db_path = dir.path().join("yulius.db");
     let h = harness_with(HarnessOptions {
-        store: Some(yulius_store::SqliteStore::open(&db_path)?),
+        store: Some(crate::support::store::migrated(&db_path)?),
         dir: Some(dir),
         configure: Some(Box::new(|c| c.upload_max_bytes = LIMIT)),
         ..HarnessOptions::default()

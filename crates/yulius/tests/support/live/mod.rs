@@ -17,7 +17,6 @@ use yulius_app::ports::Clock;
 use yulius_app::ports::browser::BrowserPort;
 use yulius_app::ports::session::SessionHost;
 use yulius_app::ports::usage::{NoUsageProbe, UsageProbe};
-use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
 use super::FakeGitHub;
@@ -71,7 +70,7 @@ impl Live {
         tune(&mut config);
         let inner = HarnessAdapter::new(exe.clone(), url);
         let deps = Deps {
-            store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
+            store: Arc::new(crate::support::store::migrated(&data.join("yulius.db"))?),
             clock: self.clock,
             crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
             github: self.github,
