@@ -395,7 +395,7 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          - `docs/architecture.md`: components and data flow (Mermaid).\n\
          - `docs/decisions/`: architecture decision records.\n\
          - `docs/specs/`: one spec per task.\n\
-         - `docs/changes.md`: delivered changes, newest first.\n\
+         - `docs/changes.md`: user-visible changes, newest first.\n\
          {layout}"
     )
 }

@@ -6,14 +6,14 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-26
 
-- Agents write an ADR only for a reversible build or run choice, and add a line here only for a user-visible change.
+- Agents write an ADR only for a reversible build or run choice, and note only user-visible changes in a project's changes log.
 
 ## 2026-11-25
 
 - Agents can no longer write to their harness's persistent memory or user instructions; existing notes still load, and a refused write says why.
 - Merge-first staging moves on by itself and judges the newest waiting revision first; writers can deploy its verified head from the CD page.
 - An agent asks for a secret's allowance with a tool that shows an Allow button on the Secrets page, not a Needs you card.
-- Each card on the Subscriptions page says when its subscription next charges.
+- Each card on the Subscriptions page can say when its subscription next charges, once an administrator sets the date.
 - The person who creates an organization's project in Yulius is its admin on GitHub, so they can deploy its production.
 
 ## 2026-11-24
@@ -97,7 +97,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-15
 
-- Yulius picks each review round's model: Fable 5.2 for the first two rounds, Opus 5.5 later or when the subscription cannot run Fable.
+- Yulius picks each review round's model: Fable 5.2 for the first two rounds, then Opus 5.5 (also when no subscription can run Fable).
 - Delivery records who wrote and reviewed each PR, and the Dashboard's Pipeline tab shows review statistics per model.
 - An approval carries across a follow-up of at most 20 product lines.
 - Yulius CI tests a head while its review runs, and an armed PR whose base moved waits about one CI run, not two.
@@ -142,6 +142,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-08
 
+- A pull request's own CI run always finishes; behind a moved `dev`, a merge queue tests waiting pull requests together and merges them in order.
 - Agents can ask for a copy of a production secret, and the Superagent follows up tasks it asked for in other sandboxes.
 
 ## 2026-11-07
@@ -150,6 +151,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-06
 
+- A `[[ci.jobs]]` entry can set `exclusive = true` (one run at a time per sandbox) and its own `timeout_minutes`; a job's limit counts only its own run.
 - The Superagent panel has This sandbox and All sandboxes tabs; the global one takes typing, clicks and pasted screenshots in its terminal.
 - A task session whose Yulius MCP server dropped is reconnected, and a superadmin can restart Yulius.
 
@@ -176,6 +178,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-01
 
+- `[docs] changes` may name a folder of change notes, one new file per change, so parallel pull requests no longer collide on one log.
 - "Review changes" appears only when the task's worktree exists, and the Changes tile says "No worktree yet" or "Worktree gone".
 
 ## 2026-10-31

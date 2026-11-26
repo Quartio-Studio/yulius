@@ -63,7 +63,7 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 - [x] PR2 review approved
 - [x] Generated title-only ADR index
 - [x] Slot machinery deleted
-- [ ] PR3 review approved
+- [x] PR3 review approved
 - [x] changes.md cut to user-visible entries, briefing rule 6 changed
 - [ ] PR4a (changes.md) review approved
 - [ ] architecture.md per-feature sections moved verbatim to docs/archive
@@ -72,7 +72,8 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 - [ ] operations.md: old upgrade notes and legacy unit sections archived
 - [ ] product.md trimmed to current behaviour
 - [ ] Q5 false sentences fixed
-- [ ] PR4 review approved
+- [ ] changes.md: entries merged in from branches cut before the new log
+- [ ] PR4c (operations.md, product.md) review approved
 - [ ] Spec file named from its heading (inside this task's paths)
 - [ ] PR5 review approved
 - [ ] README: audience, what leaves the machine, not supported

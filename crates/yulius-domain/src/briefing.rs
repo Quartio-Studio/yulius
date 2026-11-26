@@ -1743,7 +1743,7 @@ mod tests {
             ),
             "{text}"
         );
-        assert!(!text.contains("entry at the"), "{text}");
+        assert!(!text.contains("change at the top of"), "{text}");
         assert!(
             text.contains("- `docs/changes/`: what was delivered recently, one file per change.")
         );
