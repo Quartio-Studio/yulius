@@ -2462,15 +2462,13 @@ impl App {
             return Some(conflicts);
         }
         // A missing commit, missing common history or failed lookup cannot establish
-        // mergeability. Let the caller fall back to GitHub and keep the cache empty.
-        let since = self.deps.git.merge_base(&repo, &base, head).await.ok()??;
-        let conflicts = self
-            .deps
-            .git
-            .adds_to(&repo, &base, &since, head)
-            .await
-            .ok()?
-            .is_none();
+        // mergeability. Let the caller fall back to GitHub and keep the cache empty. The merge is
+        // the armed-merge pass's own (`conflict_files`), with the repository's merge drivers.
+        self.deps.git.merge_base(&repo, &base, head).await.ok()??;
+        let conflicts = matches!(
+            self.deps.git.preview_merge(&repo, &base, head).await.ok()?,
+            crate::ports::git::TrainStep::Conflict(_)
+        );
         if let Some(runtime) = runtime {
             *runtime
                 .pr_conflict
