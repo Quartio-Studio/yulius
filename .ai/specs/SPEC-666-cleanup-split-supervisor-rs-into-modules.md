@@ -1,6 +1,6 @@
 ---
 yulius-task: d872f7f7-d8d8-4403-92b5-85685b9ab892
-status: in-progress
+status: done
 ---
 
 # SPEC-666: Cleanup: split supervisor.rs into modules (verbatim moves)
@@ -51,7 +51,7 @@ lives in files named by what they do. Behaviour unchanged.
 - [x] Attach and watch loop moved into supervisor/watch.rs
 - [x] Stop and close moved into supervisor/stop.rs
 - [x] Placement and limits moved into supervisor/placement.rs, viewer input into supervisor/input.rs
-- [ ] Independent review of PR (d) answered
+- [x] Independent review of PR (d) answered
 
 ## Acceptance criteria
 
@@ -89,3 +89,27 @@ must still pass. The `yulius` integration binary runs in Yulius CI.
   file in the same pull request, with its `line` updated where it has one.
 - Parent code imports moved items by name (`use codex::{..}`), instead of using `super::*` globs
   in the children, so every file states what it uses.
+
+## Evidence
+
+Four pull requests, each a set of verbatim-move commits reviewed with `git diff --color-moved` and
+a removed-versus-added line multiset (only the edits SPL-001 allows remain):
+
+- (a) #1772, merged at `0c8ad78e1`: `codex.rs`, `antigravity.rs`.
+- (b) #1777, merged at `7a3b2f468`: `end.rs`, `park.rs`.
+- (c) #1782, merged at `b1fc903d1`: `start.rs`, `launch.rs`, `typing.rs`, and the repair of the
+  integration gate that Yulius assigned to this task (`parking::a_staging_outcome_reaches_its_task_once`,
+  #1712: reproduced 1 of 40 under `--stress-count` on 4 contended CPUs, a probe showed the task
+  Working at the failing read; with the test waiting for the release, 80 of 80).
+- (d) this pull request: `switch.rs`, `watch.rs`, `stop.rs`, `placement.rs`, `input.rs`.
+
+`supervisor.rs`: 9,284 product and 848 test lines on dev `90a749384`; 1,087 product and 249 test
+lines after (d), the rest in twelve child modules. For every part:
+`scripts/cargo clippy -p yulius-app --all-targets -- -D warnings` clean,
+`RUSTDOCFLAGS="-D warnings" scripts/cargo doc -p yulius-app --no-deps` clean (from part c on),
+`scripts/cargo nextest run -p yulius-app --lib` 740 passed (the same count before and after each
+move), `scripts/dev quick` passed, and an independent review of the exact head. The `yulius`
+integration binary, e2e and the test shards ran in Yulius CI on each merged revision
+(merge-first). Vidoc is switched off for this project: the moved `[[ignore]]` entries could not
+be exercised by a scan.
+
