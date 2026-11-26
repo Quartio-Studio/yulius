@@ -788,7 +788,8 @@ impl Manager {
         let serve = match front_action(current, wanted, moved) {
             FrontAction::Keep => {
                 // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
-                // from an older binary does not make it again (SPEC-201 DBX-006).
+                // from an older binary does not make it again (SPEC-201 DBX-006). It also passes
+                // `cpu` and `pids` down to the engine's root again, which the stop took back.
                 if live.front.as_ref().is_some_and(|f| f.mode == "engine")
                     && let Some(groups) = self.group_paths(sandbox)
                 {
