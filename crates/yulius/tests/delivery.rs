@@ -386,17 +386,6 @@ impl GitPort for RealGit {
             .await
     }
 
-    async fn preview_merge(
-        &self,
-        repo: &Path,
-        ours: &str,
-        theirs: &str,
-    ) -> AppResult<yulius_app::ports::git::TrainStep> {
-        crate::support::confined_git()
-            .preview_merge(repo, ours, theirs)
-            .await
-    }
-
     async fn is_ancestor(&self, repo: &Path, ancestor: &str, descendant: &str) -> AppResult<bool> {
         crate::support::confined_git()
             .is_ancestor(repo, ancestor, descendant)
@@ -1227,7 +1216,7 @@ async fn set_steps(f: &Fixture, task: &str, statuses: &[&str]) -> BoxResult<()> 
 
 /// Whether a pull request conflicts with its base is asked two ways: `merge_base` + `adds_to`
 /// (the watch's and delivery's check) and `preview_merge` (the armed-merge pass's). On the real
-/// Git, with the repository's merge drivers, they agree in every shape a pull request takes.
+/// Git, with the repository's merge drivers, they agree in every shape with one merge base.
 #[tokio::test]
 async fn preview_merge_and_adds_to_agree_on_conflicts() -> TestResult {
     use yulius_app::ports::git::TrainStep;
@@ -1304,6 +1293,74 @@ async fn preview_merge_and_adds_to_agree_on_conflicts() -> TestResult {
     let head = git(repo, &["rev-parse", "head-unrelated"])?;
     let base = git(repo, &["rev-parse", "dev"])?;
     assert_eq!(real.merge_base(repo, &base, &head).await?, None);
+    Ok(())
+}
+
+/// With several merge bases (a criss-cross history, reachable when merge commits land both ways)
+/// the two checks disagree: `adds_to` merges from the one base `merge_base` names, `preview_merge`
+/// lets Git build its recursive base, as `git merge` does. Recorded here, unchanged: making
+/// `local_conflict` follow `preview_merge` changes its answer for such pull requests.
+#[tokio::test]
+async fn adds_to_and_preview_merge_differ_with_several_merge_bases() -> TestResult {
+    use yulius_app::ports::git::TrainStep;
+    let real = support::confined_git();
+    // (shape, whether `git merge` conflicts)
+    for (shape, merge_conflicts) in [("keep-own", true), ("apart-after", false)] {
+        let dir = tempfile::tempdir()?;
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "dev"])?;
+        commit_file(repo, "f.txt", "o\n", "root")?;
+        commit_file(repo, "g.txt", "g\n", "root")?;
+        git(repo, &["checkout", "-q", "-b", "head"])?;
+        commit_file(repo, "f.txt", "head\n", "head 1")?;
+        git(repo, &["checkout", "-q", "dev"])?;
+        let base_file = if shape == "keep-own" {
+            "f.txt"
+        } else {
+            "g.txt"
+        };
+        commit_file(repo, base_file, "base\n", "base 1")?;
+        // Each side merges the other's first commit: two merge bases.
+        let strategy: &[&str] = if shape == "keep-own" {
+            &["-s", "ours"]
+        } else {
+            &[]
+        };
+        git(repo, &["checkout", "-q", "head"])?;
+        git(
+            repo,
+            &[&["merge", "-q", "--no-edit"][..], strategy, &["dev"]].concat(),
+        )?;
+        git(repo, &["checkout", "-q", "dev"])?;
+        git(
+            repo,
+            &[&["merge", "-q", "--no-edit"][..], strategy, &["head~1"]].concat(),
+        )?;
+        if shape == "apart-after" {
+            git(repo, &["checkout", "-q", "head"])?;
+            commit_file(repo, "f.txt", "head 2\n", "head 2")?;
+            git(repo, &["checkout", "-q", "dev"])?;
+            commit_file(repo, "g.txt", "base 2\n", "base 2")?;
+        }
+        let base = git(repo, &["rev-parse", "dev"])?;
+        let head = git(repo, &["rev-parse", "head"])?;
+        let bases = git(repo, &["merge-base", "--all", &base, &head])?;
+        assert_eq!(bases.lines().count(), 2, "{shape}: two merge bases");
+        let since = real
+            .merge_base(repo, &base, &head)
+            .await?
+            .ok_or("merge base")?;
+        let by_adds_to = real.adds_to(repo, &base, &since, &head).await?.is_none();
+        let by_preview = matches!(
+            real.preview_merge(repo, &base, &head).await?,
+            TrainStep::Conflict(_)
+        );
+        assert_eq!(
+            by_preview, merge_conflicts,
+            "{shape}: preview_merge as git merge"
+        );
+        assert_eq!(by_adds_to, !merge_conflicts, "{shape}: adds_to differs");
+    }
     Ok(())
 }
 

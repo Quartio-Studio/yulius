@@ -47,7 +47,7 @@ PR 0.
 - [x] Queue: bring_armed_up_to_date for both drivers
 - [x] Queue: independent review answered
 - [x] Merge: preview_merge vs adds_to agreement test
-- [x] Merge: merge_or_arm and base_relation
+- [x] Merge: conflict checks compared; F3 and F4 reported
 - [ ] Merge: independent review answered
 - [ ] Queue leftovers: typed dissolve reason, is_merged, branch filter, typed queue
 - [ ] Leftovers/finish: TaskCache kind and background probe
@@ -139,16 +139,18 @@ PR 2, the queue's readiness rule and armed slot (audit L2 F2 + F5, CLN-002):
   pins its "turn as working" sentence. `crates/yulius/tests/antigravity_armed_merge.rs` is
   claimed beside task #657's `crates/yulius/tests/**`, for these two additions only.
 
-PR 3, one conflict check (audit L2 F4; F3 not done):
+PR 3, the conflict checks compared (audit L2 F4's precondition; F3 and F4 not done):
 - `delivery::preview_merge_and_adds_to_agree_on_conflicts` (real Git, the repository's merge
-  drivers) shows `merge_base` + `adds_to` and `preview_merge` agree in six shapes (apart,
-  conflicting, union-driver, up to date, behind, the same change); an unrelated head has no merge
-  base. Then `local_conflict` asks `preview_merge`, as `conflict_files` does, and keeps its
-  merge-base check and per-run cache. The delivery tests' `RealGit` delegates `preview_merge`.
-- Hand mutation: `local_conflict` never conflicting fails
-  `antigravity_armed_merge::armed_green_pr_conflict_reports_conflicts_true_and_drops_arm`.
-- `-p yulius --test main`: 2831 passed; clippy `-p yulius-app -p yulius --all-targets -D
-  warnings`: clean.
+  drivers): `merge_base` + `adds_to` and `preview_merge` agree in every shape with one merge base
+  (apart, conflicting, union-driver, up to date, behind, the same change); an unrelated head has
+  no merge base for either.
+- `delivery::adds_to_and_preview_merge_differ_with_several_merge_bases`: with two merge bases
+  (each side merged the other) they disagree. `preview_merge` answers as `git merge` does;
+  `adds_to` from `merge_base`'s one base gives the opposite (found by the independent review).
+- So switching `local_conflict` to `preview_merge` changes its answer for criss-cross pull
+  requests (reachable where merge commits land both ways): a behaviour change, which the cleanup
+  charter leaves to the owner. The switch was made, reviewed and reverted; only the two tests
+  remain.
 - Not done, outside the task's paths: F3 (`merge_or_arm`) has to fold `merges.rs`'s
   `merge_for_person` into `agent_delivery.rs`'s `delivery_merge_answer`; `merges.rs` is not
   claimed by this task. F4's `BaseRelation` cache would change `TaskRuntime.pr_conflict`'s type in
