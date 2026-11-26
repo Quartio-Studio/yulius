@@ -189,10 +189,10 @@ The team brings its own Claude, Codex (OpenAI) and Antigravity (Google) subscrip
   rollback on dev after every deploy. An environment that deploys nothing needs none.
 - **Production is a person's**: an administrator types the project's slug, and it deploys the
   revision staging verified (also while a newer one is being checked), only once its rollback drill
-  passed; when only the drill is missing, Deploy production runs it first. A GitHub ruleset keeps
-  the production branch out of the agents' token (onboarding adds it, or a sandbox admin waives it
-  where the plan has none). Where a delivery profile promotes by itself (`auto_promote`), Yulius
-  promotes verified changes; the production deploy stays a person's.
+  passed; when only the drill is missing, the refusal says to deploy that commit on dev first. A
+  GitHub ruleset keeps the production branch out of the agents' token (onboarding adds it, or a
+  sandbox admin waives it where the plan has none). Where a delivery profile promotes by itself
+  (`auto_promote`), Yulius promotes verified changes; the production deploy stays a person's.
 - Yulius's own dev deploys to its staging VM; its production is the promotion of `dev` to `main`,
   which each instance installs when a superadmin chooses Update now.
 
