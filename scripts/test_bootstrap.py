@@ -105,5 +105,63 @@ class BootstrapToolBuild(unittest.TestCase):
                     self.assertFalse(targets[0].exists())
 
 
+@unittest.skipIf(os.name == "nt", "POSIX shell stand-ins")
+class DevBootstrapsInCi(unittest.TestCase):
+    """A Yulius CI job's command is `scripts/dev <job>`: on CI's clean machine scripts/dev installs
+    rustup and the pinned tools first; elsewhere it leaves that to the person."""
+
+    def dev(self, **env):
+        import shutil
+        with tempfile.TemporaryDirectory() as root:
+            tree = Path(root)
+            (tree / "scripts").mkdir()
+            shutil.copyfile(BOOTSTRAP.with_name("dev"), tree / "scripts/dev")
+            (tree / "rust-toolchain.toml").write_text('[toolchain]\nchannel="1.0.0"\n')
+            record = tree / "record"
+            # bootstrap.py installs rustup where scripts/dev looks for it, then exits with $BOOT_EXIT.
+            (tree / "scripts/bootstrap.py").write_text(
+                "import os, sys\nfrom pathlib import Path\n"
+                "open(os.environ['RECORD'], 'a').write('bootstrap ' + ' '.join(sys.argv[1:]) + '\\n')\n"
+                "rustup = Path.home() / '.cargo/bin/rustup'\nrustup.parent.mkdir(parents=True)\n"
+                "rustup.write_text(os.environ['RUSTUP'])\nrustup.chmod(0o755)\n"
+                "sys.exit(int(os.environ.get('BOOT_EXIT', '0')))\n")
+            rustup = ('#!/bin/sh\nif [ "$1" = which ]; then echo /pinned/rustc; exit 0; fi\n'
+                      f'echo "rustup $* marker=$YULIUS_BOOTSTRAPPED" >> "{record}"\n')
+            # Only python on PATH: a system rustup (apt's, Homebrew's) must not stand in for the stub.
+            bin_dir = tree / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "python3").symlink_to(sys.executable)
+            base = {"HOME": str(tree / "home"), "PATH": str(bin_dir), "RECORD": str(record), "RUSTUP": rustup}
+            run = subprocess.run([sys.executable, str(tree / "scripts/dev"), "lint"], env={**base, **env},
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+            return run, record.read_text() if record.exists() else ""
+
+    def test_in_ci_scripts_dev_bootstraps_before_it_enters_the_toolchain(self):
+        run, record = self.dev(YULIUS_CI="1")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(record, "bootstrap --install-rustup\nrustup run 1.0.0 cargo xtask lint marker=1\n")
+
+    def test_a_failed_bootstrap_fails_the_job_with_its_code(self):
+        run, record = self.dev(YULIUS_CI="1", BOOT_EXIT="5")
+        self.assertEqual(run.returncode, 5, run.stderr)
+        self.assertEqual(record, "bootstrap --install-rustup\n")
+
+    def test_outside_ci_scripts_dev_does_not_bootstrap(self):
+        for env in ({}, {"YULIUS_CI": "0"}, {"YULIUS_CI": "off"}):
+            with self.subTest(env=env):
+                run, record = self.dev(**env)
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn("rustup is required", run.stderr)
+                self.assertEqual(record, "")
+
+    def test_a_gate_scripts_dev_starts_inside_a_bootstrapped_one_does_not_bootstrap_again(self):
+        # The gate's environment carries the marker the outer scripts/dev set (a test shard's
+        # `scripts/dev test` after its archive build).
+        run, record = self.dev(YULIUS_CI="1", YULIUS_BOOTSTRAPPED="1", BOOT_EXIT="5")
+        self.assertNotEqual(run.returncode, 5, run.stderr)
+        self.assertNotIn("bootstrap", record)
+        self.assertIn("rustup is required", run.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,14 +23,14 @@ lives in files named by what they do. Behaviour unchanged.
 
 ## Requirements
 
-- SPL-001: each commit moves code verbatim. The only edits are imports, `mod` lines, the
-  `impl` / `mod tests` wrappers around moved items, the visibility the move needs (`pub(super)`,
+- SPL-001: each commit moves code verbatim. The only edits are imports, `mod` lines, a new
+  file's one- or two-line `//!` doc, the `impl` / `mod tests` wrappers around moved items, the visibility the move needs (`pub(super)`,
   re-exports `pub(crate) use` for paths other files already name), and rustfmt re-wrapping a
   line that the visibility made too long.
 - SPL-002: visibility is as narrow as the move allows.
 - SPL-003: a moved item's unit tests move with it.
 - SPL-004: each pull request is reviewable with `git diff --color-moved`. The four pull requests
-  are (a) codex and antigravity, (b) end and parking, (c) start, launch and typing, (d) switch,
+  are (a) codex and antigravity, (b) end and park, (c) start, launch and typing, (d) switch,
   watch, stop and the capacity/terminal moves. Each starts from fresh `origin/dev` after the
   previous one merged.
 
@@ -38,9 +38,9 @@ lives in files named by what they do. Behaviour unchanged.
 
 - [x] Codex code moved into supervisor/codex.rs
 - [x] Antigravity code moved into supervisor/antigravity.rs
-- [ ] Independent review of PR (a) answered
-- [ ] Run end, loss and reconcile moved into supervisor/end.rs
-- [ ] Parking methods moved into parking.rs
+- [x] Independent review of PR (a) answered
+- [x] Run end, loss and reconcile moved into supervisor/end.rs
+- [x] Parking a session moved into supervisor/park.rs
 - [ ] Independent review of PR (b) answered
 - [ ] Start admission and queue drain moved into supervisor/start.rs
 - [ ] Launch moved into supervisor/launch.rs
@@ -70,5 +70,11 @@ must still pass. The `yulius` integration binary runs in Yulius CI.
 
 - Tests move into a `#[cfg(test)] mod tests` of the new file, with their `super::` paths
   unchanged, so they stay verbatim.
+- A cluster the audit sends to an existing sibling file (`parking.rs`, `capacity.rs`,
+  `terminal.rs`) goes there only when the move needs no `pub(crate)` on the supervisor's
+  private state. Otherwise it becomes a child module of `supervisor/`, so its visibility stays
+  `pub(super)`. Parking a session uses `TaskRuntime`'s `run`, `intent`, `parked_activity` and
+  `terminal_cleanup`, the launch lock and the `EndIntent`/`SwitchEnd`/`ActiveRun` types. So it is
+  `supervisor/park.rs`, and `crate::parking` keeps when to park.
 - Parent code imports moved items by name (`use codex::{..}`), instead of using `super::*` globs
   in the children, so every file states what it uses.

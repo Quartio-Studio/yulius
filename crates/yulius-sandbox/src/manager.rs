@@ -383,9 +383,9 @@ impl Live {
         self.front.as_ref().map_or(0, |f| f.pid)
     }
 
-    /// Whether an engine may run (its own front's, or a SPEC-187 holder's).
+    /// Whether its front may run an engine.
     fn serves_engine(&self) -> bool {
-        self.record.engine || self.front.as_ref().is_some_and(|f| f.mode != "refuse")
+        self.front.as_ref().is_some_and(|f| f.mode != "refuse")
     }
 }
 
@@ -665,12 +665,6 @@ impl Manager {
         if let Some(reason) = self.docker_unavailable() {
             return DockerServe::Refuse { reason };
         }
-        if record.engine {
-            let state = StatePaths::new(self.state_dir(&request.id));
-            return DockerServe::Relay {
-                socket: state.engine_socket().to_string_lossy().into_owned(),
-            };
-        }
         let base = self.bases.path(&record.base_id);
         if !system_has_dockerd(&base, &self.sysroot(&request.id).join("upper")) {
             return DockerServe::Refuse {
@@ -767,8 +761,7 @@ impl Manager {
     /// holder has none or it ended, replaced when the mode changed. An engine's other settings
     /// change only with a new holder, so a running engine is never cut for them; but a front
     /// whose engine group is gone (the sandbox's groups moved to another unit, SPEC-458 LAY-005)
-    /// is replaced, since it could start no engine again, and so is a quiet one whose engine
-    /// would start without the masks of SPEC-652.
+    /// is replaced, since it could start no engine again.
     async fn keep_front(&self, sandbox: &str, state: &mut SandboxState) {
         let request = state
             .request
@@ -792,27 +785,12 @@ impl Manager {
                 &wanted,
                 Path::exists,
             );
-        // An engine front from before the masks is replaced as a moved one is, once it is quiet
-        // (no engine, no connection, read live; SPEC-652 MEM-010, review rounds 2 and 3).
-        let moved = moved
-            || engine_front.is_some_and(|(front, _)| {
-                matches!(wanted, DockerServe::Engine { .. })
-                    && engine_unguarded(served_engine_command(&paths).as_deref())
-                    && crate::front_repair::quiet(
-                        crate::front_gate::read_state(&paths.docker_state(), front.pid).as_ref(),
-                        front.pid,
-                        &paths.docker_socket(),
-                    )
-            });
         let serve = match front_action(current, wanted, moved) {
             FrontAction::Keep => {
                 // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
-                // from an older binary does not make it again (SPEC-201 DBX-006); a SPEC-187
-                // holder's own engine, behind a relay front, uses the same leaf.
-                if live
-                    .front
-                    .as_ref()
-                    .is_some_and(|f| f.mode == "engine" || f.mode == "relay")
+                // from an older binary does not make it again (SPEC-201 DBX-006). It also passes
+                // `cpu` and `pids` down to the engine's root again, which the stop took back.
+                if live.front.as_ref().is_some_and(|f| f.mode == "engine")
                     && let Some(groups) = self.group_paths(sandbox)
                 {
                     match crate::cgroup::restore_leaf(&groups.engine_root) {
@@ -1816,7 +1794,6 @@ impl Manager {
             base = %record.base_id,
             holder = record.inner_pid,
             egress = record.slirp_pid.is_some(),
-            docker = record.engine,
             "sandbox holder started"
         );
         Ok(record)
@@ -2613,26 +2590,6 @@ fn front_action(
     }
 }
 
-/// The engine command of the front of `paths`, from the spec it was started with; `None` for a
-/// front that serves no engine of its own, or without a readable spec.
-fn served_engine_command(paths: &StatePaths) -> Option<Vec<String>> {
-    match read_json::<DockerFrontSpec>(&paths.docker_spec())
-        .ok()?
-        .serve
-    {
-        DockerServe::Engine { engine } => Some(engine.command),
-        _ => None,
-    }
-}
-
-/// Whether a front serves an engine started without the masks of the sandbox's harness folders:
-/// its command has no `--guard` (a front from before SPEC-652 reads its engine command once at
-/// its start). Such a front is replaced once it is quiet, so the next engine starts masked
-/// (MEM-010).
-fn engine_unguarded(command: Option<&[String]>) -> bool {
-    command.is_some_and(|command| !command.iter().any(|arg| arg == "--guard"))
-}
-
 /// The group the front of `paths` starts its engine in, from the spec it was started with;
 /// `None` for a front that serves no engine of its own, or without a readable spec.
 fn served_engine_group(paths: &StatePaths) -> Option<String> {
@@ -2821,7 +2778,7 @@ mod tests {
         Ok(crate::cgroup::prepare(&unit)?)
     }
 
-    fn live_record(engine: bool) -> HolderRecord {
+    fn live_record() -> HolderRecord {
         HolderRecord {
             version: HOLDER_RECORD_VERSION,
             sandbox: "s1".into(),
@@ -2835,8 +2792,20 @@ mod tests {
             boot_id: "b".into(),
             started_at_ms: 0,
             system_root: "/r".into(),
-            engine,
+            engine: false,
         }
+    }
+
+    /// A live holder whose front serves an engine.
+    fn engine_live(record: HolderRecord) -> Live {
+        let mut live = Live::new(record, Vec::new());
+        live.front = Some(DockerFrontRecord {
+            pid: 0,
+            mode: "engine".into(),
+            reason: None,
+            started_at_ms: 0,
+        });
+        live
     }
 
     /// SPEC-494 DFJ-005/006 (review round 2): the upkeep reads the state file of the front it
@@ -2865,7 +2834,7 @@ mod tests {
             engine_running: true,
             engine_busy: false,
         };
-        let mut live = Live::new(live_record(true), Vec::new());
+        let mut live = Live::new(live_record(), Vec::new());
         // This server started it: its refusals are all new.
         live.front_watch.started(77);
         live.front = Some(DockerFrontRecord {
@@ -2894,7 +2863,7 @@ mod tests {
         );
         // A holder dropped, by any path, leaves no Docker trouble of its sandbox (its boot id
         // is not this host's: nothing is signalled).
-        manager.stop_holder("s1", &live_record(true)).await;
+        manager.stop_holder("s1", &live_record()).await;
         assert!(health.troubles().is_empty(), "{:?}", health.troubles());
         Ok(())
     }
@@ -2957,9 +2926,8 @@ while True:
     fn adopting(
         data: &Path,
         docker: Result<(), String>,
-        engine: bool,
     ) -> Result<Arc<Manager>, Box<dyn std::error::Error>> {
-        adopting_as(data, "s1", docker, engine)
+        adopting_as(data, "s1", docker)
     }
 
     /// [`adopting`] for the holder of `sandbox`.
@@ -2967,7 +2935,6 @@ while True:
         data: &Path,
         sandbox: &str,
         docker: Result<(), String>,
-        engine: bool,
     ) -> Result<Arc<Manager>, Box<dyn std::error::Error>> {
         use std::os::unix::fs::MetadataExt as _;
         let exe = data.join("fake-yulius");
@@ -2995,7 +2962,7 @@ while True:
             net_ns: ns("net")?,
             mnt_ns: ns("mnt")?,
             boot_id: crate::holder::boot_id(),
-            ..live_record(engine)
+            ..live_record()
         };
         write_json(&state.record(), &record)?;
         Ok(manager)
@@ -3033,34 +3000,21 @@ while True:
 
     /// SPEC-201 DBX-006 (#614): a restart of `yulius.service` prunes an idle engine's empty
     /// leaf while the holder and its front keep running. The next upkeep tick brings it back,
-    /// even for a front from an older binary, which no update replaces. Review round 1 (major):
-    /// also for a SPEC-187 holder, whose own engine uses the same leaf behind a relay front.
+    /// even for a front from an older binary, which no update replaces.
     #[tokio::test]
     async fn a_kept_engine_front_gets_its_pruned_leaf_back()
     -> Result<(), Box<dyn std::error::Error>> {
-        for (holder_engine, mode) in [(false, "engine"), (true, "relay")] {
-            kept_front_restores_the_leaf(holder_engine, mode).await?;
-        }
-        Ok(())
-    }
-
-    async fn kept_front_restores_the_leaf(
-        holder_engine: bool,
-        mode: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), holder_engine)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let front = front_of(&manager).await.ok_or("no front")?;
-        assert_eq!(front.mode, mode);
+        assert_eq!(front.mode, "engine");
         let groups = manager.group_paths("s1").ok_or("no delegation")?;
         let leaf = groups.engine_root;
         assert!(leaf.is_dir());
-        if !holder_engine {
-            // SPEC-483 C4: the front starts the engine in the root below the engine's group.
-            let served = served_engine_group(&StatePaths::new(manager.state_dir("s1")));
-            assert_eq!(served.as_deref(), Some(leaf.to_string_lossy().as_ref()));
-        }
+        // SPEC-483 C4: the front starts the engine in the root below the engine's group.
+        let served = served_engine_group(&StatePaths::new(manager.state_dir("s1")));
+        assert_eq!(served.as_deref(), Some(leaf.to_string_lossy().as_ref()));
         // A restart of the service prunes both empty groups.
         std::fs::remove_dir(&leaf)?;
         std::fs::remove_dir(&groups.engine)?;
@@ -3072,12 +3026,9 @@ while True:
         assert_eq!(
             front_of(&manager).await.map(|f| f.pid),
             Some(front.pid),
-            "{mode}: the running front is kept"
+            "the running front is kept"
         );
-        assert!(
-            leaf.is_dir(),
-            "{mode}: the engine's root and group are back"
-        );
+        assert!(leaf.is_dir(), "the engine's root and group are back");
         kill(front.pid);
         Ok(())
     }
@@ -3088,7 +3039,7 @@ while True:
     async fn a_front_full_for_long_is_restarted_when_no_ci_job_runs()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let long_ago = Instant::now()
@@ -3145,7 +3096,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::front_repair::Reading;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         // The front's socket, answered by the test: every ping is seen, and refused (503).
@@ -3214,7 +3165,7 @@ while True:
     async fn a_successor_front_is_not_restarted_for_its_predecessors_jam()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let long_ago = Instant::now()
@@ -3247,7 +3198,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_contracts::sandbox::DockerFrontState;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let paths = StatePaths::new(manager.state_dir("s1"));
@@ -3312,7 +3263,7 @@ while True:
     async fn an_asked_restart_that_stopped_nothing_is_not_counted_later()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         // No front can start from the beginning.
         put_executable(&data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
         assert_eq!(manager.adopt().await, 1);
@@ -3353,7 +3304,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
         let name = production_holder("s1");
-        let manager = adopting_as(data.path(), &name, Ok(()), false)?;
+        let manager = adopting_as(data.path(), &name, Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let long_ago = Instant::now()
             .checked_sub(crate::front_repair::REPAIR_AFTER * 2)
@@ -3385,7 +3336,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_contracts::sandbox::DockerFrontState;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let paths = StatePaths::new(manager.state_dir("s1"));
@@ -3445,7 +3396,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_contracts::sandbox::DockerFrontState;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let busy = DockerFrontState {
@@ -3519,7 +3470,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_contracts::sandbox::DockerFrontState;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let front = front_of(&manager).await.ok_or("no front")?;
         let state = DockerFrontState {
@@ -3562,7 +3513,7 @@ while True:
         let name = production_holder("s1");
         let paths = StatePaths::new(manager.state_dir(&name));
         std::fs::create_dir_all(&paths.dir)?;
-        let mut live = Live::new(live_record(true), Vec::new());
+        let mut live = Live::new(live_record(), Vec::new());
         live.front_watch.started(77);
         live.front = Some(DockerFrontRecord {
             pid: 77,
@@ -3600,7 +3551,7 @@ while True:
     async fn an_adopted_holder_from_before_engines_gains_an_engine_front()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let front = front_of(&manager).await.ok_or("no front")?;
         assert_eq!(front.mode, "engine");
@@ -3631,7 +3582,7 @@ while True:
         assert_eq!(ask_front(&manager).await?, "mode:engine:");
 
         // Another server process with Docker off adopts the holder and its running front.
-        let off = adopting(data.path(), Err(DOCKER_OFF.into()), false)?;
+        let off = adopting(data.path(), Err(DOCKER_OFF.into()))?;
         assert_eq!(off.adopt().await, 1);
         let refusing = front_of(&off).await.ok_or("no front")?;
         assert_eq!(refusing.mode, "refuse");
@@ -3649,13 +3600,13 @@ while True:
         );
         assert_eq!(ask_front(&off).await?, format!("mode:refuse:{DOCKER_OFF}"));
         // And the next with Docker on: the engine again, the refusal gone.
-        let on = adopting(data.path(), Ok(()), false)?;
+        let on = adopting(data.path(), Ok(()))?;
         assert_eq!(on.adopt().await, 1);
         let back = front_of(&on).await.ok_or("no front")?;
         assert_eq!(back.mode, "engine");
         assert_eq!(ask_front(&on).await?, "mode:engine:");
         // An unchanged front is kept across server restarts.
-        let same = adopting(data.path(), Ok(()), false)?;
+        let same = adopting(data.path(), Ok(()))?;
         assert_eq!(same.adopt().await, 1);
         assert_eq!(front_of(&same).await.map(|f| f.pid), Some(back.pid));
         kill(back.pid);
@@ -3675,10 +3626,10 @@ while True:
         // production holder.
         let smoke = format!("docker-smoke-{}", std::process::id());
         let production = production_holder(&smoke);
-        let own = adopting_as(data.path(), &smoke, Err(DOCKER_OFF.into()), false)?;
-        adopting_as(data.path(), &production, Ok(()), false)?;
+        let own = adopting_as(data.path(), &smoke, Err(DOCKER_OFF.into()))?;
+        adopting_as(data.path(), &production, Ok(()))?;
         // The server beside it has Docker on and a sandbox of its own.
-        let server = adopting(data.path(), Ok(()), false)?;
+        let server = adopting(data.path(), Ok(()))?;
         // From here fronts run: nothing returns or asserts until they are ended below.
         let own_adopted = own.adopt_one(&smoke).await;
         let refusing = own.docker_front(&smoke).await;
@@ -3721,7 +3672,7 @@ while True:
         let pid = ended.id();
         ended.wait()?;
         let left = format!("docker-smoke-{pid}");
-        let restarted = adopting_as(data.path(), &left, Ok(()), false)?;
+        let restarted = adopting_as(data.path(), &left, Ok(()))?;
         std::fs::remove_dir_all(server.state_dir(&smoke))?;
         std::fs::remove_dir_all(server.state_dir(&production))?;
         let adopted = restarted.adopt().await;
@@ -3736,25 +3687,21 @@ while True:
         Ok(())
     }
 
-    /// SPEC-196 DKL-002/005: a SPEC-187 holder serving its own engine gets a relay to it; a
-    /// missing prerequisite a refusal that names it; and runs see the Docker directory.
+    /// SPEC-196 DKL-002/005: a holder gets an engine front, a missing prerequisite a refusal
+    /// that names it; and runs see the Docker directory.
     #[tokio::test]
     async fn the_front_mode_follows_the_holder_and_the_prerequisites()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
         let request = request(data.path());
-        let on = adopting(data.path(), Ok(()), true)?;
+        let on = adopting(data.path(), Ok(()))?;
         assert!(matches!(
-            on.front_mode(&request, &live_record(true)),
-            DockerServe::Relay { socket } if socket.ends_with("runtime/sandboxes/s1/docker.sock")
-        ));
-        assert!(matches!(
-            on.front_mode(&request, &live_record(false)),
+            on.front_mode(&request, &live_record()),
             DockerServe::Engine { .. }
         ));
         // Review round 1 (low): a system without `dockerd` (SPEC-199 DSY-003: the agent can
         // install it in the sandbox, or an operator on the host for new bases).
-        let mut older = live_record(false);
+        let mut older = live_record();
         older.base_id = "base-0".into();
         assert_eq!(
             on.front_mode(&request, &older),
@@ -3773,9 +3720,9 @@ while True:
         ] {
             assert!(DOCKER_NO_DOCKERD.contains(needle), "{needle}");
         }
-        let off = adopting(data.path(), Err(DOCKER_OFF.into()), true)?;
+        let off = adopting(data.path(), Err(DOCKER_OFF.into()))?;
         assert_eq!(
-            off.front_mode(&request, &live_record(true)),
+            off.front_mode(&request, &live_record()),
             DockerServe::Refuse {
                 reason: DOCKER_OFF.into()
             }
@@ -3823,9 +3770,9 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
         let request = request(data.path());
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         let mode = |base: &str| {
-            let mut record = live_record(false);
+            let mut record = live_record();
             record.base_id = base.into();
             manager.front_mode(&request, &record)
         };
@@ -3879,10 +3826,10 @@ while True:
     #[tokio::test]
     async fn deciding_a_front_prepares_no_cgroup() -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         let mut request = request(data.path());
         request.id = "s2".into();
-        let serve = manager.front_mode(&request, &live_record(false));
+        let serve = manager.front_mode(&request, &live_record());
         assert!(matches!(serve, DockerServe::Engine { .. }), "{serve:?}");
         let unit = manager.config.delegation.as_ref().map(|d| d.unit.clone());
         let group = unit.ok_or("delegated")?.join("sandboxes/s2");
@@ -3970,30 +3917,6 @@ while True:
             front_action(Some((&refusing, true)), refuse("off"), true),
             FrontAction::Keep
         );
-    }
-
-    /// SPEC-652 MEM-010 (review rounds 2 and 3): a front started before the engine's masks (its
-    /// engine command has no `--guard`) is one to replace once quiet; a guarded front stays.
-    #[test]
-    fn an_unguarded_engine_front_is_replaced_once_its_engine_stopped() {
-        let old = vec![
-            "/y".to_owned(),
-            "sandbox-exec".into(),
-            "--engine".into(),
-            "--".into(),
-        ];
-        let new = vec![
-            "/y".to_owned(),
-            "sandbox-exec".into(),
-            "--engine".into(),
-            "--guard".into(),
-            "[]".into(),
-            "--".into(),
-        ];
-        // Whether it is quiet is `front_repair::quiet`'s live read (its own tests).
-        assert!(engine_unguarded(Some(&old)));
-        assert!(!engine_unguarded(Some(&new)));
-        assert!(!engine_unguarded(None));
     }
 
     /// SPEC-458 LAY-005: a front's engine group counts as moved only when the front was given
@@ -4117,13 +4040,11 @@ while True:
         assert!(manager.docker(), "the setting with the delegation");
         assert!(manager.docker_for("s1").await, "its next holder serves one");
         let entry = manager.entry("s1");
-        entry.lock().await.live = Some(Live::new(live_record(false), Vec::new()));
+        entry.lock().await.live = Some(Live::new(live_record(), Vec::new()));
         assert!(
             manager.docker_for("s1").await,
             "a holder from before engines gains one"
         );
-        entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
-        assert!(manager.docker_for("s1").await);
         Ok(())
     }
 
@@ -4315,13 +4236,13 @@ while True:
             }
         });
         let entry = manager.entry("s1");
-        entry.lock().await.live = Some(Live::new(live_record(false), Vec::new()));
+        entry.lock().await.live = Some(Live::new(live_record(), Vec::new()));
         manager.ci_job_ended("s1", "j1").await;
         assert!(
             deleted.lock().map_err(|_| "poisoned")?.is_empty(),
             "no engine"
         );
-        entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
+        entry.lock().await.live = Some(engine_live(live_record()));
         manager.ci_job_ended("s1", "j1").await;
         assert_eq!(
             deleted.lock().map_err(|_| "poisoned")?.clone(),
@@ -4396,14 +4317,14 @@ while True:
         std::fs::create_dir_all(state.engine_control())?;
         let (front, front_hits) = fake_api(tokio::net::UnixListener::bind(state.engine_socket())?);
         let entry = manager.entry("s1");
-        entry.lock().await.live = Some(Live::new(live_record(false), Vec::new()));
+        entry.lock().await.live = Some(Live::new(live_record(), Vec::new()));
         assert_eq!(
             manager.prune_engine("s1").await,
             None,
             "a holder without an engine"
         );
         assert_eq!(manager.engine_networks("s1").await, None, "no engine");
-        entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
+        entry.lock().await.live = Some(engine_live(live_record()));
         assert_eq!(manager.prune_engine("s1").await, None, "a stopped engine");
         assert_eq!(
             manager.engine_networks("s1").await,
@@ -4760,7 +4681,7 @@ while True:
     /// are this process's, so it reads as alive and stopping it ends only the child). The child
     /// is reaped in the background; returns its pid.
     fn adopting_child(data: &Path) -> Result<(Arc<Manager>, u32), Box<dyn std::error::Error>> {
-        let manager = adopting(data, Err(DOCKER_OFF.into()), false)?;
+        let manager = adopting(data, Err(DOCKER_OFF.into()))?;
         let mut child = std::process::Command::new("sleep").arg("600").spawn()?;
         let pid = child.id();
         std::thread::spawn(move || child.wait());
@@ -5123,7 +5044,7 @@ while True:
             "no spec: an old holder"
         );
         assert!(manager.bridge_forwards("s1.prod").is_empty());
-        let record = live_record(false);
+        let record = live_record();
         for name in ["s1", "s1.prod"] {
             std::fs::create_dir_all(manager.state_dir(name)).unwrap_or_else(|e| panic!("{e}"));
         }
@@ -5202,13 +5123,10 @@ while True:
         std::fs::create_dir_all(state.engine_control())?;
         let control = state.engine_control().join("docker.sock");
         let (engine, hits) = fake_api(tokio::net::UnixListener::bind(&control)?);
-        manager.entry("s1.prod").lock().await.live = Some(Live::new(
-            HolderRecord {
-                sandbox: "s1.prod".into(),
-                ..live_record(true)
-            },
-            Vec::new(),
-        ));
+        manager.entry("s1.prod").lock().await.live = Some(engine_live(HolderRecord {
+            sandbox: "s1.prod".into(),
+            ..live_record()
+        }));
         manager.entry("s1").lock().await.usage = Some((
             crate::usage::Usage {
                 bytes: 5_000,

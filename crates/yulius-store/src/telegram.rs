@@ -9,7 +9,7 @@ use yulius_domain::ids::UserId;
 use yulius_domain::notify::NotifyChoices;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{SqliteStore, bad_column};
 
 /// The bot's messages remembered per chat (SPEC-512 TGI-002).
 const SENT_KEPT: i64 = 500;
@@ -39,7 +39,7 @@ fn link_row(row: &Row<'_>) -> rusqlite::Result<ChatLink> {
 impl ChatLinkStore for SqliteStore {
     async fn chat_bot(&self) -> AppResult<Option<StoredBot>> {
         self.call(|c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT telegram_token, telegram_bot_id, telegram_bot_username, telegram_set_at, \
                  telegram_set_by FROM instance WHERE singleton = 1",
                 [],
@@ -61,8 +61,7 @@ impl ChatLinkStore for SqliteStore {
                 },
             )
             .optional()
-            .map(Option::flatten)
-            .map_err(db)
+            .map(Option::flatten)?)
         })
         .await
     }
@@ -94,8 +93,7 @@ impl ChatLinkStore for SqliteStore {
                      WHERE singleton = 1",
                     [],
                 ),
-            }
-            .map_err(db)?;
+            }?;
             Ok(())
         })
         .await
@@ -115,8 +113,7 @@ impl ChatLinkStore for SqliteStore {
                  ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, \
                  expires_at = excluded.expires_at",
                 params![user, hash, expires_at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -125,22 +122,20 @@ impl ChatLinkStore for SqliteStore {
     async fn take_link_code(&self, code_hash: &str, now: Timestamp) -> AppResult<Option<UserId>> {
         let hash = code_hash.to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "DELETE FROM telegram_link_codes WHERE expires_at <= ?1",
                 [now.0],
-            )
-            .map_err(db)?;
+            )?;
             let user: Option<String> = tx
                 .query_row(
                     "DELETE FROM telegram_link_codes WHERE code_hash = ?1 RETURNING user_id",
                     [hash],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
-            user.map(|id| UserId::parse(&id).map_err(|_| db(bad_column("user id", &id))))
+                .optional()?;
+            tx.commit()?;
+            user.map(|id| UserId::parse(&id).map_err(|_| bad_column("user id", &id).into()))
                 .transpose()
         })
         .await
@@ -155,29 +150,26 @@ impl ChatLinkStore for SqliteStore {
         let user = user.as_str().to_owned();
         let chat = chat.to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             // The person's earlier chat, if another, forgets its messages too (SPEC-512 TGI-002).
             tx.execute(
                 "DELETE FROM telegram_sent WHERE chat_id IN \
                  (SELECT chat_id FROM telegram_links WHERE user_id = ?1 AND chat_id <> ?2)",
                 params![user, chat],
-            )
-            .map_err(db)?;
+            )?;
             // And its keyed messages (SPEC-624, review round 1).
             tx.execute(
                 "DELETE FROM telegram_keyed WHERE chat_id IN \
                  (SELECT chat_id FROM telegram_links WHERE user_id = ?1 AND chat_id <> ?2)",
                 params![user, chat],
-            )
-            .map_err(db)?;
+            )?;
             let earlier: Option<String> = tx
                 .query_row(
                     "DELETE FROM telegram_links WHERE chat_id = ?1 AND user_id <> ?2 RETURNING user_id",
                     params![chat, user],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             tx.execute(
                 "INSERT INTO telegram_links (user_id, chat_id, linked_at) VALUES (?1, ?2, ?3) \
                  ON CONFLICT(user_id) DO UPDATE SET chat_id = excluded.chat_id, \
@@ -197,19 +189,16 @@ impl ChatLinkStore for SqliteStore {
                  intake_sandbox = CASE WHEN telegram_links.chat_id = excluded.chat_id \
                  THEN telegram_links.intake_sandbox ELSE NULL END",
                 params![user, chat, at.0],
-            )
-            .map_err(db)?;
+            )?;
             // A chat that changed hands forgets which task each of its messages was about: a
             // reply in it is no longer the earlier person's (SPEC-512 TGI-002).
             if earlier.is_some() {
-                tx.execute("DELETE FROM telegram_sent WHERE chat_id = ?1", [&chat])
-                    .map_err(db)?;
-                tx.execute("DELETE FROM telegram_keyed WHERE chat_id = ?1", [&chat])
-                    .map_err(db)?;
+                tx.execute("DELETE FROM telegram_sent WHERE chat_id = ?1", [&chat])?;
+                tx.execute("DELETE FROM telegram_keyed WHERE chat_id = ?1", [&chat])?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             earlier
-                .map(|id| UserId::parse(&id).map_err(|_| db(bad_column("user id", &id))))
+                .map(|id| UserId::parse(&id).map_err(|_| bad_column("user id", &id).into()))
                 .transpose()
         })
         .await
@@ -218,22 +207,19 @@ impl ChatLinkStore for SqliteStore {
     async fn unlink_user(&self, user: &UserId) -> AppResult<Option<String>> {
         let user = user.as_str().to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let chat: Option<String> = tx
                 .query_row(
                     "DELETE FROM telegram_links WHERE user_id = ?1 RETURNING chat_id",
                     [user],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             if let Some(chat) = &chat {
-                tx.execute("DELETE FROM telegram_sent WHERE chat_id = ?1", [chat])
-                    .map_err(db)?;
-                tx.execute("DELETE FROM telegram_keyed WHERE chat_id = ?1", [chat])
-                    .map_err(db)?;
+                tx.execute("DELETE FROM telegram_sent WHERE chat_id = ?1", [chat])?;
+                tx.execute("DELETE FROM telegram_keyed WHERE chat_id = ?1", [chat])?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(chat)
         })
         .await
@@ -242,13 +228,12 @@ impl ChatLinkStore for SqliteStore {
     async fn chat_link(&self, user: &UserId) -> AppResult<Option<ChatLink>> {
         let user = user.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {LINK_COLUMNS} FROM telegram_links WHERE user_id = ?1"),
                 [user],
                 link_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -256,29 +241,24 @@ impl ChatLinkStore for SqliteStore {
     async fn chat_link_of(&self, chat: &str) -> AppResult<Option<ChatLink>> {
         let chat = chat.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {LINK_COLUMNS} FROM telegram_links WHERE chat_id = ?1"),
                 [chat],
                 link_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
 
     async fn chat_links(&self) -> AppResult<Vec<ChatLink>> {
         self.call(|c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {LINK_COLUMNS} FROM telegram_links ORDER BY linked_at"
-                ))
-                .map_err(db)?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {LINK_COLUMNS} FROM telegram_links ORDER BY linked_at"
+            ))?;
             let links = stmt
-                .query_map([], link_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([], link_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(links)
         })
         .await
@@ -288,21 +268,19 @@ impl ChatLinkStore for SqliteStore {
         let user = user.as_str().to_owned();
         let choices = *choices;
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE telegram_links SET notify_needs_you = ?2, notify_done = ?3, \
+            let changed = c.execute(
+                "UPDATE telegram_links SET notify_needs_you = ?2, notify_done = ?3, \
                      notify_failed = ?4, notify_account = ?5, notify_digest = ?6 \
                      WHERE user_id = ?1",
-                    params![
-                        user,
-                        choices.needs_you,
-                        choices.done,
-                        choices.failed,
-                        choices.account,
-                        choices.digest
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    user,
+                    choices.needs_you,
+                    choices.done,
+                    choices.failed,
+                    choices.account,
+                    choices.digest
+                ],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -317,12 +295,10 @@ impl ChatLinkStore for SqliteStore {
         let user = user.as_str().to_owned();
         let sandbox = sandbox.map(str::to_owned);
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE telegram_links SET intake = ?2, intake_sandbox = ?3 WHERE user_id = ?1",
-                    params![user, enabled, sandbox],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "UPDATE telegram_links SET intake = ?2, intake_sandbox = ?3 WHERE user_id = ?1",
+                params![user, enabled, sandbox],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -339,22 +315,20 @@ impl ChatLinkStore for SqliteStore {
         let (task, asked_at) = (about.task.as_str().to_owned(), about.asked_at);
         let run = about.command_run.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "INSERT OR REPLACE INTO telegram_sent \
                  (chat_id, message_id, task_id, asked_at, sent_at, command_run) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![chat, message, task, asked_at, at.0, run],
-            )
-            .map_err(db)?;
+            )?;
             tx.execute(
                 "DELETE FROM telegram_sent WHERE chat_id = ?1 AND rowid NOT IN \
                  (SELECT rowid FROM telegram_sent WHERE chat_id = ?1 \
                   ORDER BY sent_at DESC, rowid DESC LIMIT ?2)",
                 params![chat, SENT_KEPT],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)
+            )?;
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -369,8 +343,7 @@ impl ChatLinkStore for SqliteStore {
                     params![chat, message],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(row.and_then(|(id, asked_at, command_run)| {
                 yulius_domain::ids::TaskId::parse(&id)
                     .ok()
@@ -386,13 +359,12 @@ impl ChatLinkStore for SqliteStore {
 
     async fn clear_chat_links(&self) -> AppResult<u64> {
         self.call(|c| {
-            let tx = c.transaction().map_err(db)?;
-            tx.execute("DELETE FROM telegram_link_codes", [])
-                .map_err(db)?;
-            let links = tx.execute("DELETE FROM telegram_links", []).map_err(db)?;
-            tx.execute("DELETE FROM telegram_sent", []).map_err(db)?;
-            tx.execute("DELETE FROM telegram_keyed", []).map_err(db)?;
-            tx.commit().map_err(db)?;
+            let tx = c.transaction()?;
+            tx.execute("DELETE FROM telegram_link_codes", [])?;
+            let links = tx.execute("DELETE FROM telegram_links", [])?;
+            tx.execute("DELETE FROM telegram_sent", [])?;
+            tx.execute("DELETE FROM telegram_keyed", [])?;
+            tx.commit()?;
             Ok(u64::try_from(links).unwrap_or(u64::MAX))
         })
         .await

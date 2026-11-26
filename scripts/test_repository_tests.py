@@ -206,39 +206,6 @@ fn reads_a_config() {
                 '#[test]\nfn pins_exported_data() {\n    assert!(sample::source::GUIDE_TEXT.contains("old"));\n}\n')
             self.assertEqual([r.name for r in select(inventory(root), ["docs/guide.md"])], ["pins_exported_data"])
 
-    def test_an_older_pr_executes_the_protected_selector_on_its_own_checkout(self):
-        jobs = tomllib.loads((ROOT / "yulius.toml").read_text())["ci"]["jobs"]
-        command = next(job["command"] for job in jobs if job["name"] == "file-contracts")
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            def git(*args):
-                subprocess.run(["git", "-C", root, "-c", "user.name=CI", "-c", "user.email=ci@example.com",
-                                *args], check=True, capture_output=True)
-            git("init", "-q")
-            for directory in ("scripts", "docs", "crates/legacy/src"):
-                (root / directory).mkdir(parents=True)
-            (root / "crates/legacy/Cargo.toml").write_text('[package]\nname = "legacy"\n')
-            (root / "crates/legacy/src/lib.rs").write_text(
-                '#[test]\nfn pins_guide() {\n    assert!(include_str!("../../../docs/guide.md").contains("old"));\n}\n')
-            (root / "docs/guide.md").write_text("old")
-            cargo = root / "scripts/cargo"
-            cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\nexit 42\n')
-            cargo.chmod(0o755)
-            git("add", ".")
-            git("commit", "-qm", "legacy")
-            git("branch", "old-pr")
-            (root / "scripts/repository_tests.py").write_bytes((ROOT / "scripts/repository_tests.py").read_bytes())
-            git("add", ".")
-            git("commit", "-qm", "gate rollout")
-            git("update-ref", "refs/remotes/origin/dev", "HEAD")
-            git("checkout", "-q", "old-pr")
-            (root / "docs/guide.md").write_text("new")
-            git("commit", "-qam", "edit guide on older head")
-            env = dict(os.environ, YULIUS_CI="0", YULIUS_CI_REF="pr/1", YULIUS_INTEGRATION_BRANCH="dev")
-            result = subprocess.run(["sh", "-c", command], cwd=root, env=env, text=True, capture_output=True)
-            self.assertEqual(result.returncode, 42, result.stderr)
-            self.assertIn("pins_guide", result.stdout)
-
     def test_diff_includes_deletions_and_both_sides_of_a_rename(self):
         from repository_tests import changed_paths
         with tempfile.TemporaryDirectory() as tmp:
