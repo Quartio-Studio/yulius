@@ -1,0 +1,96 @@
+---
+yulius-task: 1fbe203d-b576-4287-aa8e-b4c183b45e46
+status: in-progress
+---
+
+# SPEC-667. Cleanup of delivery, the merge queue and the Git/GitHub adapters (audit L2)
+
+## Goal
+
+Less code that does the same thing in the delivery lane, in a shape a person can read: the
+owner's November 2026 cleanup, audit report L2 (`L2-delivery.md`), plus the spec-discovery bug
+that audit L10 found (F10).
+
+## Context
+
+The cleanup charter asks a chore for no spec. Yulius's edit gate holds code changes of this task
+until it has one, so this spec stays lean: it records the plan and the evidence, and the audit
+report is the design. Behaviour stays the same in every pull request, except the bug fix of
+PR 0.
+
+- `crates/yulius-app/src/delivery.rs` (8.2k lines) holds ten responsibilities (F8).
+- The queue's two drivers (`agent_wait.rs`, `merge_train.rs`) and `pr_watch.rs` copy the
+  readiness rule, the bring-up-to-date step and the armed-slot reads (F2, F5).
+- "Merge now or arm" and "does the PR conflict with its base" are decided twice or three times
+  (F3, F4).
+- Queue state lives in three JSON files beside the store (F1).
+- Spec discovery reads the first 500 directory entries before it sorts them; `.ai/specs` has
+  more than 600 (L10 F10).
+
+## Requirements
+
+- **CLN-001** Spec discovery finds a task's spec in a specs directory of any size up to the
+  listing bound, and prefers the file named with the task's branch slug.
+- **CLN-002** Each later pull request keeps behaviour unchanged; a move is verbatim and in its
+  own commit.
+- **CLN-003** Nothing outside the task's claimed paths changes; `supervisor.rs` is untouched.
+- **CLN-004** F7 (the parked-PR display reads) is not done: it drops a capability.
+
+## Plan
+
+- [x] Spec discovery: failing test for >500 specs
+- [x] Spec discovery: sort before the cut, prefer the slug file
+- [x] Spec discovery: independent review answered
+- [ ] Split delivery.rs: verbatim move into 8 files
+- [ ] Split delivery.rs: independent review answered
+- [ ] Queue: queue_readiness and armed_snapshot
+- [ ] Queue: bring_armed_up_to_date for both drivers
+- [ ] Queue: independent review answered
+- [ ] Merge: preview_merge vs adds_to agreement test
+- [ ] Merge: merge_or_arm and base_relation
+- [ ] Merge: independent review answered
+- [ ] Queue leftovers: typed dissolve reason, is_merged, branch filter, typed queue
+- [ ] Leftovers/finish: TaskCache kind and background probe
+- [ ] F6/F9/F10: independent review answered
+- [ ] Adapters: branch check, test-only fns, hand-rolled code, Git builder repeats
+- [ ] Adapters: port types (F11) within paths
+- [ ] Adapters: independent review answered
+- [ ] Queue state: armed merges, trains, notices into the store
+- [ ] Queue state: independent review answered
+
+## Acceptance criteria
+
+- A task whose spec is one of 700 files, listed after 500 others, is found (CLN-001).
+- Of two files naming the task, the one with the branch slug is registered (CLN-001).
+- Every touched test binary passes unchanged apart from the tests of deleted code (CLN-002).
+
+## Test plan
+
+```sh
+scripts/cargo nextest run -p yulius --test agent_hooks
+scripts/cargo nextest run -p yulius --test delivery
+```
+
+## Decisions
+
+- Discovery lists every name up to a bound far above any real specs directory and reads the
+  slug-named file first, instead of sorting 500 entries: a sorted cut at 500 would still drop
+  `SPEC-667` among 700 numbered specs.
+- The bound counts kept Markdown files and is 2,000: a discovery that finds nothing reads every
+  file, so the bound limits that worst case while staying far above the 600 specs of today. The
+  Plan item "sort before the cut" was done by raising the bound and ordering the slug file first.
+
+## Evidence
+
+PR 0 (#1774), spec discovery (CLN-001):
+- `agent_hooks::a_spec_among_hundreds_is_found_and_the_slug_named_one_wins` failed on the code
+  before the fix ("the spec is found", `/tmp` is tmpfs, which lists the newest entry first) and
+  passes after it. After the review the task's two specs are written before and after the 700
+  others, so one lies past the first 500 in either listing order.
+- Hand mutations: plain `names.sort()` registers `0-old-copy.md` instead of `SPEC-900-x.md`; the
+  bound back at 500 with the slug order kept, and the whole pre-fix `delivery.rs`, both fail at
+  the renamed-spec assertion (`agent_hooks.rs:1510`).
+- `scripts/cargo nextest run -p yulius --test main`: 2829 passed; `-p yulius-app`: 740 passed;
+  `scripts/dev quick` and `clippy -p yulius-app --all-targets -D warnings`: clean.
+- Independent review (Fable 5.2) approved `3b589768e`; its minors and nits are answered in the
+  next commit (test order, `docs/api.md`, bound and wording, sort without clones, no audit label).
