@@ -115,6 +115,12 @@ pub(super) struct GateFailures {
     latest_run: Option<String>,
     /// An earlier full suite still has to finish before attribution is final.
     pub waiting: bool,
+    /// Open failures kept only because later passing runs skipped their job: notices for
+    /// people, but they stop no merge (SPEC-676).
+    carried: BTreeSet<String>,
+    /// Failures of settled red verdicts the replay did not reach (narrowed, or above an active
+    /// verdict): unattributed, they stop the merge queue (SPEC-676 RGS-002).
+    held: Vec<GateNotice>,
 }
 
 impl GateFailures {
@@ -140,6 +146,8 @@ impl GateFailures {
                 jobs.retain(|job| skipped.contains(job));
                 !jobs.is_empty()
             });
+            self.carried.extend(self.tests.keys().cloned());
+            self.carried.extend(self.unknown.keys().cloned());
             return;
         }
         let origin = Origin {
@@ -172,7 +180,11 @@ impl GateFailures {
             .filter(|job| !job.passed && !job.skipped)
         {
             observed = true;
+            if job.unknown {
+                self.carried.remove(&job.name);
+            }
             for test in job.tests {
+                self.carried.remove(&test);
                 let (_, jobs) = self
                     .tests
                     .entry(test)
@@ -246,6 +258,44 @@ impl GateFailures {
         Some((only_inherited, parts.join("; ")))
     }
 
+    /// Keeps the failures of `verdict`, a settled red verdict the replay did not reach, for the
+    /// merge queue's stop (SPEC-676 RGS-002).
+    fn hold(&mut self, verdict: &GateVerdict) {
+        if verdict.state.is_active() {
+            return;
+        }
+        if let Some(Gate::Failed(failures)) = verdict.gate() {
+            for test in failures {
+                self.held.push(GateNotice {
+                    key: crate::notice_producers::gate_key(&test).to_string(),
+                    revision: verdict.sha.clone(),
+                    merge_task: None,
+                    run_id: verdict.run.clone(),
+                    test,
+                });
+            }
+        }
+    }
+
+    /// The failures that make the integration branch red for the merge queue (SPEC-676
+    /// RGS-002): the open ones but those only skipped since, and those of red verdicts not yet
+    /// attributed.
+    pub(super) fn red(self) -> Vec<GateNotice> {
+        let carried = self.carried.clone();
+        let held = self.held.clone();
+        let mut red: Vec<GateNotice> = self
+            .notices()
+            .into_iter()
+            .filter(|notice| !carried.contains(&notice.test))
+            .collect();
+        for notice in held {
+            if !red.iter().any(|known| known.test == notice.test) {
+                red.push(notice);
+            }
+        }
+        red
+    }
+
     fn notices(self) -> Vec<GateNotice> {
         let Some(run_id) = self.latest_run else {
             return Vec::new();
@@ -302,6 +352,35 @@ fn unresolved_ranges(
         .collect()
 }
 
+/// Replays `history` (verdicts since the last full pass, newest first) oldest first, up to a
+/// revision whose range is still `unresolved` or, when `settled_only`, an active verdict; the
+/// red verdicts after that point are held for the merge queue's stop (SPEC-676).
+fn replay(
+    history: Vec<GateVerdict>,
+    unresolved: &BTreeSet<String>,
+    settled_only: bool,
+) -> GateFailures {
+    let mut failures = GateFailures::default();
+    let mut oldest_first = history.into_iter().rev();
+    while let Some(verdict) = oldest_first.next() {
+        if unresolved.contains(&verdict.sha) {
+            failures.waiting = true;
+            failures.hold(&verdict);
+            break;
+        }
+        if settled_only && verdict.state.is_active() {
+            // A preceding revision has no settled verdict yet. The next tick can
+            // attribute the newer failures once that revision is known.
+            break;
+        }
+        failures.observe(verdict);
+    }
+    for verdict in oldest_first {
+        failures.hold(&verdict);
+    }
+    failures
+}
+
 impl App {
     /// Replay the branch's retained verdicts since its last full pass in first-parent order.
     pub(super) async fn gate_failures_at(
@@ -346,20 +425,7 @@ impl App {
             // A failure whose range still holds a waiting staging request is not attributed
             // before that request is judged (SPEC-653 NWF-004).
             let unresolved = unresolved_ranges(&walked, &history, green.as_deref(), &asked);
-            let mut failures = GateFailures::default();
-            for verdict in history.into_iter().rev() {
-                if unresolved.contains(&verdict.sha) {
-                    failures.waiting = true;
-                    break;
-                }
-                if settled_only && verdict.state.is_active() {
-                    // A preceding revision has no settled verdict yet. The next tick can
-                    // attribute the newer failures once that revision is known.
-                    break;
-                }
-                failures.observe(verdict);
-            }
-            Ok(failures)
+            Ok(replay(history, &unresolved, settled_only))
         };
         tokio::time::timeout(Duration::from_secs(30), search)
             .await
@@ -367,10 +433,28 @@ impl App {
     }
 
     /// Read the integration head independently of whether its task asked for staging.
-    pub(crate) async fn integration_failures(
+    async fn integration_failures(&self, sandbox: &SandboxRecord) -> AppResult<Vec<GateNotice>> {
+        Ok(self
+            .integration_replay(sandbox)
+            .await?
+            .map(GateFailures::notices)
+            .unwrap_or_default())
+    }
+
+    /// What makes the integration branch red for the merge queue (SPEC-676 RGS-002): its open
+    /// failures but those only skipped since, and those of red verdicts not yet attributed.
+    pub(crate) async fn integration_red(
         &self,
         sandbox: &SandboxRecord,
     ) -> AppResult<Vec<GateNotice>> {
+        Ok(self
+            .integration_replay(sandbox)
+            .await?
+            .map(GateFailures::red)
+            .unwrap_or_default())
+    }
+
+    async fn integration_replay(&self, sandbox: &SandboxRecord) -> AppResult<Option<GateFailures>> {
         let branch = delivery_profile(sandbox).integration_branch;
         if !self
             .deps
@@ -378,7 +462,7 @@ impl App {
             .has_gate_failure(&sandbox.id, &branch)
             .await?
         {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let repo = self.sandbox_repo(&sandbox.id);
         let Some(head) = self
@@ -387,12 +471,11 @@ impl App {
             .resolve_commit(&repo, &format!("refs/remotes/origin/{branch}"))
             .await?
         else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
-        Ok(self
-            .gate_failures_at(sandbox, &repo, &head, true)
-            .await?
-            .notices())
+        Ok(Some(
+            self.gate_failures_at(sandbox, &repo, &head, true).await?,
+        ))
     }
 
     async fn available_gate_workers(&self, sandbox: &SandboxRecord) -> AppResult<Vec<TaskId>> {
@@ -659,6 +742,91 @@ mod tests {
         for state in [RunState::Cancelled, RunState::Skipped] {
             assert_eq!(verdict("h", state, Vec::new()).gate(), None);
         }
+    }
+
+    fn owned(mut verdict: GateVerdict, owner: u32) -> GateVerdict {
+        verdict.owner = Some(owner);
+        verdict
+    }
+
+    fn red_tests(failures: GateFailures) -> Vec<(String, Option<u32>, String)> {
+        failures
+            .red()
+            .into_iter()
+            .map(|n| (n.test, n.merge_task, n.run_id))
+            .collect()
+    }
+
+    /// SPEC-676 RGS-002 (review round 1): a settled red verdict stops the queue while its range
+    /// is still narrowed, or while an older verdict is active, unattributed; the notices for
+    /// people still wait for the attribution.
+    #[test]
+    fn a_red_verdict_not_yet_attributed_still_stops_the_queue() {
+        let red = |sha: &str| verdict(sha, RunState::Failed, vec![job("full", false, &["t"])]);
+        let narrowing = replay(vec![red("c")], &BTreeSet::from(["c".to_owned()]), true);
+        assert!(narrowing.waiting);
+        assert!(narrowing.notices().is_empty(), "nobody is named yet");
+        let narrowing = replay(vec![red("c")], &BTreeSet::from(["c".to_owned()]), true);
+        assert_eq!(
+            red_tests(narrowing),
+            [("t".to_owned(), None, "run-c".to_owned())]
+        );
+        let active = verdict("a", RunState::Running, Vec::new());
+        let behind = replay(vec![red("c"), active], &BTreeSet::new(), true);
+        assert_eq!(
+            red_tests(behind),
+            [("t".to_owned(), None, "run-c".to_owned())]
+        );
+        let attributed = replay(vec![owned(red("c"), 4)], &BTreeSet::new(), true);
+        assert_eq!(
+            red_tests(attributed),
+            [("t".to_owned(), Some(4), "run-c".to_owned())]
+        );
+    }
+
+    /// SPEC-676 RGS-002 (review round 1): a failure kept open only because later runs skipped
+    /// its job is still a notice, but stops nothing, until a run of its job fails it again.
+    #[test]
+    fn a_failure_only_skipped_since_stops_nothing() {
+        let red = |sha: &str| verdict(sha, RunState::Failed, vec![job("full", false, &["t"])]);
+        let mut skipped = job("full", true, &[]);
+        skipped.skipped = true;
+        let skipping = verdict(
+            "s",
+            RunState::Passed,
+            vec![job("quick", true, &[]), skipped],
+        );
+        let carried = replay(vec![skipping, red("r")], &BTreeSet::new(), true);
+        assert_eq!(carried.notices().len(), 1, "people still see it");
+        let carried = replay(
+            vec![
+                verdict(
+                    "s",
+                    RunState::Passed,
+                    vec![job("quick", true, &[]), {
+                        let mut j = job("full", true, &[]);
+                        j.skipped = true;
+                        j
+                    }],
+                ),
+                red("r"),
+            ],
+            &BTreeSet::new(),
+            true,
+        );
+        assert!(carried.red().is_empty());
+        let mut skipped = job("full", true, &[]);
+        skipped.skipped = true;
+        let again = replay(
+            vec![
+                red("n"),
+                verdict("s", RunState::Passed, vec![skipped]),
+                red("r"),
+            ],
+            &BTreeSet::new(),
+            true,
+        );
+        assert_eq!(red_tests(again).len(), 1, "failed again where it ran");
     }
 
     /// SPEC-653 NWF-004: the walk's red revisions with a waiting request below them, down to the

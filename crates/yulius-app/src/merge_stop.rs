@@ -22,8 +22,10 @@ pub(crate) const STOP_READ_MS: i64 = 15_000;
 pub(crate) type StopRead = (String, i64, Option<MergeStop>);
 
 impl App {
-    /// The merge queue's stop in `sandbox` now (SPEC-676 RGS-002), `None` while merges go on.
-    pub(crate) async fn merge_stop(&self, sandbox: &SandboxRecord) -> Option<MergeStop> {
+    /// The merge queue's stop in `sandbox` now (SPEC-676 RGS-002), `None` while merges go on;
+    /// kept for [`STOP_READ_MS`] per integration head. Public for the integration tests.
+    #[doc(hidden)]
+    pub async fn merge_stop(&self, sandbox: &SandboxRecord) -> Option<MergeStop> {
         if sandbox.is_playground() {
             return None;
         }
@@ -43,13 +45,18 @@ impl App {
         {
             return stop.clone();
         }
-        let stop = self.read_merge_stop(sandbox, &branch).await;
+        let stop = self.read_merge_stop(sandbox).await;
         self.stop_reads()
             .insert(sandbox.id.clone(), (head, now, stop.clone()));
         stop
     }
 
-    async fn read_merge_stop(&self, sandbox: &SandboxRecord, branch: &str) -> Option<MergeStop> {
+    /// [`App::merge_stop`] read now, not from what was kept.
+    pub(crate) async fn read_merge_stop(&self, sandbox: &SandboxRecord) -> Option<MergeStop> {
+        if sandbox.is_playground() {
+            return None;
+        }
+        let branch = delivery_profile(sandbox).integration_branch;
         let repo = self.sandbox_repo(&sandbox.id);
         let text = self
             .deps
@@ -61,22 +68,18 @@ impl App {
         if !parse_yulius_toml_stop_on_red_gate(&text).unwrap_or(false) {
             return None;
         }
-        let notices = match self.integration_failures(sandbox).await {
-            Ok(notices) => notices,
+        let red = match self.integration_red(sandbox).await {
+            Ok(red) => red,
             Err(err) => {
                 tracing::warn!(sandbox = %sandbox.slug, error = %err, "the merge queue's stop could not be read");
                 return None;
             }
         };
-        let run = notices.first()?.run_id.clone();
-        let quarantined = self
-            .deps
-            .store
-            .quarantined_tests(Some(&sandbox.id))
-            .await
-            .unwrap_or_default();
-        let names: Vec<&str> = quarantined.iter().map(|q| q.test.as_str()).collect();
-        let failures = notices
+        // The newest red run is the one to read and run again.
+        let run = red.last()?.run_id.clone();
+        let quarantined = self.quarantined_names(sandbox).await;
+        let names: Vec<&str> = quarantined.iter().map(String::as_str).collect();
+        let failures = red
             .into_iter()
             .map(|notice| OpenFailure {
                 test: notice.test,
@@ -85,6 +88,18 @@ impl App {
             })
             .collect();
         MergeStop::of(failures, &names, &run)
+    }
+
+    /// The project's quarantined flaky tests by name (ADR-0356); none when unreadable.
+    pub(crate) async fn quarantined_names(&self, sandbox: &SandboxRecord) -> Vec<String> {
+        self.deps
+            .store
+            .quarantined_tests(Some(&sandbox.id))
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|q| q.test)
+            .collect()
     }
 
     fn stop_reads(
