@@ -26,6 +26,7 @@
 
 use std::time::Duration;
 
+use crate::wiring::http::{BodyError, read_bounded};
 use async_trait::async_trait;
 use serde_json::Value;
 use yulius_app::model::Secret;
@@ -67,11 +68,8 @@ impl ProviderUsage {
     /// # Errors
     /// When the HTTP client cannot be built.
     pub fn new() -> Result<Self, String> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
+        let http = super::http::client_builder()
             .timeout(TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("usage client setup failed: {e}"))?;
         Ok(Self {
@@ -117,17 +115,12 @@ impl ProviderUsage {
 
 /// Keep at most the usage probe's byte budget, including for chunked responses.
 async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, UsageFailure> {
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| {
-        tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
-        UsageFailure::new(TRY_AGAIN)
-    })? {
-        if chunk.len() > MAX_BODY - bytes.len() {
-            return Err(UsageFailure::new(TRY_AGAIN));
+    read_bounded(&mut response, MAX_BODY).await.map_err(|e| {
+        if let BodyError::Read(e) = e {
+            tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
         }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
+        UsageFailure::new(TRY_AGAIN)
+    })
 }
 
 /// The failure an HTTP status means (`None` for success): 403 is a sign-in without the

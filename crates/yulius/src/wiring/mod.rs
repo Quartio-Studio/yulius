@@ -9,6 +9,7 @@ pub mod egress;
 pub mod git;
 pub mod github_client;
 pub mod harness;
+pub mod http;
 pub mod jev;
 pub mod migrate_files;
 pub mod pinned_cli;

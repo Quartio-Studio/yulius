@@ -215,12 +215,9 @@ impl PinnedCli {
         label: &'static str,
         https_only: bool,
     ) -> Result<Self, String> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
+        let http = super::http::client_builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .https_only(https_only)
-            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("registry client setup failed: {e}"))?;
         Ok(Self {

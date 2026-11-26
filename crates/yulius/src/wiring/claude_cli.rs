@@ -38,6 +38,7 @@ use yulius_domain::agent_cli::{
 };
 
 use crate::wiring::claude_models::{BuildScan, Known};
+use crate::wiring::http::BodyError;
 
 /// npm's registry.
 pub const REGISTRY: &str = "https://registry.npmjs.org";
@@ -190,12 +191,9 @@ impl ClaudeUpdater {
         platform: Option<String>,
         https_only: bool,
     ) -> Result<Self, String> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
+        let http = super::http::client_builder()
             .connect_timeout(DOCUMENT_TIMEOUT)
             .https_only(https_only)
-            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("registry client setup failed: {e}"))?;
         Ok(Self {
@@ -516,17 +514,14 @@ impl ClaudeUpdater {
                 response.status().as_u16()
             ));
         }
-        let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
+        let body = super::http::read_bounded(&mut response, MAX_DOCUMENT)
             .await
-            .map_err(|_| UpdateError::new(format!("{REGISTRY_HOST} stopped answering")))?
-        {
-            if body.len() + chunk.len() > MAX_DOCUMENT {
-                return fail("the registry's document is too long");
-            }
-            body.extend_from_slice(&chunk);
-        }
+            .map_err(|e| match e {
+                BodyError::Read(_) => {
+                    UpdateError::new(format!("{REGISTRY_HOST} stopped answering"))
+                }
+                BodyError::TooLarge(_) => UpdateError::new("the registry's document is too long"),
+            })?;
         serde_json::from_slice(&body)
             .map_err(|_| UpdateError::new("the registry's document is not JSON"))
     }
