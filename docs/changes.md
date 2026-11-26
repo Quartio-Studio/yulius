@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-26
+
+- The vault's MCP tools share one lookup of an agent secret by name, one refusal of personal and production secrets, one argument parser and one fingerprint-file planner (audit L4 F2). Refusal texts and behaviour are unchanged. [SPEC-669](../.ai/specs/SPEC-669-cleanup-secrets-vault-auth-helpers-audit.md)
+
 ## 2026-11-25
 
 - An agent whose write to its harness's memory or user instructions is refused is told why in one sentence: Yulius keeps them read-only, and lasting knowledge goes into the repository through a pull request (#636). Claude Code's edit tools are denied with it, a failed shell command and a Codex tool result get it as added context, Claude Code's memory instructions carry it, and an Antigravity session hears it at its start. The update's host check clears the immutable flags the stopgap of 2026-11-25 set on the memory folders (its line "memory stopgap"), so a removed sandbox's purge works again. [ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md), [SPEC-652](../.ai/specs/SPEC-652-agents-cannot-write-harness-memory-every.md)
