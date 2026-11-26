@@ -715,7 +715,7 @@ pub struct PlanStep {
     /// `pending`, `in_progress`, `done`, `skipped` or `blocked`.
     pub status: String,
     /// Declared effort, 1-3.
-    #[serde(default)]
+    #[serde(default = "one")]
     pub effort: u8,
     /// Note.
     pub note: Option<String>,
@@ -929,4 +929,54 @@ pub struct FeedbackRequest {
     /// Optional comment.
     #[serde(default)]
     pub comment: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{PlanProgress, PlanRecord, PlanStep, StepChange};
+
+    /// The steps tools' record keeps its wire shape: an unknown optional field is null, and
+    /// `updated` is there only after `step_update`.
+    #[test]
+    fn a_plan_record_keeps_its_wire_shape() -> Result<(), serde_json::Error> {
+        let mut record = PlanRecord {
+            progress: PlanProgress {
+                done: 0,
+                total: 1,
+                percent: 0,
+                current: None,
+                first_total: None,
+            },
+            steps: vec![PlanStep {
+                id: "s1".into(),
+                ordinal: 1,
+                title: "Spec".into(),
+                status: "pending".into(),
+                effort: 1,
+                note: None,
+                started_at: None,
+                finished_at: None,
+            }],
+            nudges: Vec::new(),
+            updated: None,
+        };
+        let plain = json!({
+            "progress": {"done": 0, "total": 1, "percent": 0, "current": null, "first_total": null},
+            "steps": [{"id": "s1", "ordinal": 1, "title": "Spec", "status": "pending", "effort": 1,
+                "note": null, "started_at": null, "finished_at": null}],
+            "nudges": [],
+        });
+        assert_eq!(serde_json::to_value(&record)?, plain);
+        record.updated = Some(StepChange {
+            ordinal: 1,
+            title: "Spec".into(),
+            status: "done".into(),
+        });
+        let mut updated = plain;
+        updated["updated"] = json!({"ordinal": 1, "title": "Spec", "status": "done"});
+        assert_eq!(serde_json::to_value(&record)?, updated);
+        Ok(())
+    }
 }

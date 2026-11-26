@@ -9,7 +9,7 @@
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use yulius_contracts::api::tasks::{PlanProgress, PlanRecord, PlanStep};
+use yulius_contracts::api::tasks::{PlanProgress, PlanRecord};
 
 /// Characters of a job command shown in `ci_status`'s list of jobs.
 const COMMAND_CHARS: usize = 120;
@@ -61,10 +61,17 @@ fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
+    value.get(key).and_then(Value::as_str).and_then(shown)
+}
+
+/// `text` unless it is blank.
+fn shown(text: &str) -> Option<&str> {
+    Some(text).filter(|s| !s.trim().is_empty())
+}
+
+/// A step's or a change's title, "(untitled)" when blank.
+fn title(text: &str) -> &str {
+    shown(text).unwrap_or("(untitled)")
 }
 
 fn push_line(out: &mut String, line: &str) {
@@ -286,17 +293,6 @@ fn nudges(out: &mut String, record: &PlanRecord) {
     }
 }
 
-fn plan_step_line(out: &mut String, step: &PlanStep) {
-    step_line(
-        out,
-        u64::from(step.ordinal),
-        &step.status,
-        &step.title,
-        u64::from(step.effort),
-        step.note.as_deref(),
-    );
-}
-
 /// `steps_get` / `steps_set`: the plan as a checklist, the progress and the nudges. Step ids and
 /// times are left out: steps are named by ordinal or title.
 fn plan(record: &PlanRecord, set: bool) -> String {
@@ -313,7 +309,14 @@ fn plan(record: &PlanRecord, set: bool) -> String {
     }
     push_line(&mut out, &progress_line(&record.progress));
     for step in &record.steps {
-        plan_step_line(&mut out, step);
+        step_line(
+            &mut out,
+            u64::from(step.ordinal),
+            &step.status,
+            title(&step.title),
+            u64::from(step.effort),
+            step.note.as_deref().and_then(shown),
+        );
     }
     nudges(&mut out, record);
     out
@@ -325,7 +328,7 @@ fn step_update(record: &PlanRecord) -> Option<String> {
     let mut out = format!(
         "Step {} \"{}\" is {}.\n",
         updated.ordinal,
-        updated.title,
+        title(&updated.title),
         status_words(&updated.status)
     );
     push_line(&mut out, &progress_line(&record.progress));
@@ -342,7 +345,7 @@ fn step_update(record: &PlanRecord) -> Option<String> {
             &format!(
                 "Next: {} \"{}\" ({}).",
                 step.ordinal,
-                step.title,
+                title(&step.title),
                 status_words(&step.status)
             ),
         ),
@@ -937,7 +940,7 @@ fn task_line(task: &Value) -> Option<String> {
             at_first(steps.first_total),
             steps.percent
         );
-        if let Some(current) = &steps.current {
+        if let Some(current) = steps.current.as_deref().and_then(shown) {
             s.push_str(&format!(", now \"{current}\""));
         }
         parts.push(s);
@@ -1486,6 +1489,47 @@ mod tests {
         last["updated"] = json!({"ordinal": 3, "title": "Review", "status": "done"});
         let text = render("step_update", &json!({}), &last);
         assert!(text.ends_with("Every step is finished."), "{text}");
+    }
+
+    /// A blank note is no note and a blank title reads "(untitled)", in the plan, an update and
+    /// a task's line, as the record's text always did.
+    #[test]
+    fn blank_notes_and_titles_read_as_absent() {
+        for blank in ["", " "] {
+            let mut record = plan_record();
+            record["steps"][0]["note"] = json!(blank);
+            record["steps"][1]["title"] = json!(blank);
+            let text = render("steps_get", &json!({}), &record);
+            assert_eq!(
+                text,
+                "Progress: 1/3 steps done, 40% by effort.\n\
+                 1 [x] Write the spec\n\
+                 2 [>] (untitled) (in progress, effort 2)\n\
+                 3 [ ] Review\n    note: waits for CI\n\
+                 Nudge: Mark \"Review\" in_progress when you start it.",
+                "{blank:?}"
+            );
+            record["steps"][2]["title"] = json!(blank);
+            record["steps"][2]["status"] = json!("done");
+            record["updated"] = json!({"ordinal": 3, "title": blank, "status": "done"});
+            let text = render("step_update", &json!({}), &record);
+            assert!(
+                text.starts_with("Step 3 \"(untitled)\" is done.\n")
+                    && text.contains("Next: 2 \"(untitled)\" (in progress)."),
+                "{blank:?}: {text}"
+            );
+            let task = json!({
+                "task_id": UUID, "number": 7, "title": "Audit", "harness": "claude",
+                "status": "running", "activity": "working", "branch": null, "spec_path": null,
+                "steps": {"done": 1, "total": 2, "percent": 50, "current": blank, "first_total": null},
+                "runs_after": null, "created_at": "2026-11-12T22:12:35Z", "updated_at": "2026-11-13T16:23:07Z"
+            });
+            let text = render("task_get", &json!({"number": 7}), &task);
+            assert!(
+                text.contains("steps 1/2, 50%") && !text.contains("now"),
+                "{blank:?}: {text}"
+            );
+        }
     }
 
     /// TOL-006: a record a rendering does not recognise is printed whole, as an outline.

@@ -576,7 +576,7 @@ impl App {
             title: step.title.clone(),
             status: status.to_owned(),
         });
-        serde_json::to_value(record).map_err(AppError::internal)
+        crate::person_tools::record(&record)
     }
 
     /// `steps_get`: the task's steps, the effort-weighted progress and the current nudges.
@@ -584,7 +584,7 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn tool_steps_get(&self, ctx: &AgentContext) -> AppResult<Value> {
-        serde_json::to_value(self.plan_record(ctx).await?).map_err(AppError::internal)
+        crate::person_tools::record(&self.plan_record(ctx).await?)
     }
 
     async fn plan_record(&self, ctx: &AgentContext) -> AppResult<PlanRecord> {
