@@ -3,15 +3,16 @@
 //! 2.1.292. Yulius compacts it once, continues the task in a fresh session when compacting
 //! fails, and flags the task when the fresh session is full too.
 
+use crate::support::live::UNSERVED;
+use crate::support::live::pool::{pool, pool_live};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::pool_supervision::{
-    ScriptedUsage, build_tuned, build_with, echoed, new_task, runtime, screen, seed, stop, task,
-    temp,
-};
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::pool::{
+    ScriptedUsage, build_with, echoed, new_task, runtime, screen, seed, stop, task, temp,
+};
 use crate::support::{TestResult, eventually};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::TryRecvError;
@@ -365,7 +366,7 @@ async fn served_on(
     tune: impl FnOnce(&mut yulius_app::context::AppConfig),
 ) -> Result<(Arc<App>, u16), Box<dyn std::error::Error>> {
     let usage = Arc::new(ScriptedUsage::default());
-    crate::first_message::start_with(data, fake, agent, port, usage, tune).await
+    crate::support::live::first_message::start_with(data, fake, agent, port, usage, tune).await
 }
 
 /// Waits for a notice that contains `words` and fails when the terminal never says it.
@@ -859,9 +860,14 @@ fn nothing_is_typed_between_a_line_of_yulius_and_its_enter() -> TestResult {
     rt.block_on(async {
         // A session without hooks counts as started half this time after its spawn: a message
         // for it is not refused for a session that still starts.
-        let app = build_tuned(&data, &fake, agent(1, false), |config| {
-            config.goal_ready_ms = 200;
-        })?;
+        let app = pool(
+            pool_live(&fake, agent(1, false)),
+            &data,
+            UNSERVED,
+            |config| {
+                config.goal_ready_ms = 200;
+            },
+        )?;
         let id = started(&app, &data).await?;
         let record = task(&app, &id).await?;
         let refused = Arc::new(std::sync::Mutex::new(None));

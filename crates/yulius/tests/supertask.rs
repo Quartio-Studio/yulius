@@ -621,7 +621,7 @@ async fn a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge() -> TestR
         .task(&TaskId::parse("t-agent")?)
         .await?
         .ok_or("agent")?;
-    crate::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
+    crate::support::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
     let unseen = seed_task(&h, "t-unseen", "s1", "u-alice", TaskStatus::Running, None).await?;
     seed_live_attempt(&h, "t-unseen", "tok-unseen").await?;
     for task in [&agent, &unseen] {
@@ -709,7 +709,7 @@ async fn a_merge_during_an_updates_hold_is_still_news_due() -> TestResult {
         .task(&TaskId::parse("t-agent")?)
         .await?
         .ok_or("agent")?;
-    crate::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
+    crate::support::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
     h.store
         .set_activity(&agent.id, Some(Activity::Waiting), h.app.now())
         .await?;

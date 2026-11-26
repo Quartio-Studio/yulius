@@ -4,106 +4,28 @@
 //! account, it moves to another Codex account at a usage limit by a native resume, a restart
 //! reattaches it, and the credentials Codex refreshed are kept. No test calls OpenAI.
 
+use crate::support::codex::{
+    add_codex_account, codex_auth, connect_codex, new_codex_task, new_codex_task_in,
+};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::supervision::{build_full, runtime, screen_contains, seed_records, seed_repo, task};
 use crate::support;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::supervision::{
+    build_full, runtime, screen_contains, seed_records, seed_repo, task,
+};
 use crate::support::{TestResult, eventually};
 use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{AccountRecord, AccountStatus, LaunchKind, TaskMode, TaskOrigin};
-use yulius_domain::harness::{Harness, Provider};
+use yulius_app::model::{AccountStatus, LaunchKind, TaskMode, TaskOrigin};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
-
-/// A synthetic Codex `auth.json` refreshed at `last_refresh`.
-fn codex_auth(last_refresh: &str) -> String {
-    format!(
-        r#"{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{{"id_token":"h.e30.s","access_token":"SYNTHETIC-access-{last_refresh}","refresh_token":"SYNTHETIC-refresh","account_id":"acc-synthetic"}},"last_refresh":"{last_refresh}"}}"#
-    )
-}
-
-/// Connects a synthetic Codex sign-in for tests that create Codex tasks through other interfaces.
-pub(super) async fn connect_codex(app: &App) -> TestResult {
-    add_codex_account(app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
-    Ok(())
-}
-
-pub(super) async fn add_codex_account(
-    app: &App,
-    id: &str,
-    auth: &str,
-) -> Result<AccountId, Box<dyn std::error::Error>> {
-    let account = AccountId::parse(id)?;
-    app.deps
-        .store
-        .insert_account(&AccountRecord {
-            id: account.clone(),
-            provider: Provider::OpenAi,
-            label: format!("Codex {id}"),
-            credential: Some(app.deps.crypto.seal(auth.as_bytes())?),
-            status: AccountStatus::Ok,
-            usage_json: None,
-            last_error: None,
-            created_at: Timestamp(1),
-            updated_at: Timestamp(1),
-            email: None,
-            email_checked_at: None,
-            email_typed: false,
-        })
-        .await?;
-    Ok(account)
-}
-
-pub(super) async fn new_codex_task(
-    app: &Arc<App>,
-    sandbox: &SandboxId,
-    user: &UserId,
-    title: &str,
-) -> Result<TaskId, Box<dyn std::error::Error>> {
-    new_codex_task_in(
-        app,
-        sandbox,
-        user,
-        title,
-        yulius_app::model::TaskMode::Prompt,
-    )
-    .await
-}
-
-async fn new_codex_task_in(
-    app: &Arc<App>,
-    sandbox: &SandboxId,
-    user: &UserId,
-    title: &str,
-    mode: yulius_app::model::TaskMode,
-) -> Result<TaskId, Box<dyn std::error::Error>> {
-    let record = app
-        .create_task_internal(NewTask {
-            sandbox: sandbox.clone(),
-            created_by: user.clone(),
-            prompt: format!("{title}: answer with an echo"),
-            harness: Harness::Codex,
-            title: Some(title.into()),
-            workflow_id: None,
-            steps: Vec::new(),
-            model: None,
-            effort: None,
-            origin: TaskOrigin::Ui,
-            automation_run: None,
-            start: true,
-            mode,
-            supertask: false,
-        })
-        .await?;
-    Ok(record.id)
-}
 
 async fn stored_credential(
     app: &App,
@@ -1981,10 +1903,14 @@ fn a_contained_codex_run_sees_the_provided_codex_cli() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = crate::supervision::build_tuned(&data, Some(&fake), agent, move |c| {
-            c.contained = true;
-            c.contained_readonly = vec![fake_dir];
-        })?;
+        let app = crate::support::live::Live::new(Some(&fake), agent).app(
+            &data,
+            crate::support::live::UNSERVED,
+            move |c| {
+                c.contained = true;
+                c.contained_readonly = vec![fake_dir];
+            },
+        )?;
         let (sandbox, user) = seed_records(&app).await?;
         add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         seed_repo(&data, &sandbox)?;
@@ -3383,9 +3309,9 @@ fn the_capacity_view_names_providers_and_resumes_with_codex_too() -> TestResult 
 /// task continues the rollout that produced its answer.
 #[test]
 fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() -> TestResult {
-    use crate::first_message::{hooked, start_with};
-    use crate::pool_supervision::{ScriptedUsage, seed};
-    use crate::task_message::superagent;
+    use crate::support::live::first_message::{hooked, start_with};
+    use crate::support::live::pool::{ScriptedUsage, seed};
+    use crate::support::task_message::superagent;
     use yulius_domain::task::Activity;
     let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
     let (_dir, data) = temp()?;
@@ -3610,7 +3536,7 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
             .ok_or("rollout")?;
         let history = std::fs::read_to_string(rollout)?;
         assert!(history.contains("First turn") && history.contains(prompt));
-        crate::pool_supervision::stop(&app, &id).await?;
+        crate::support::live::pool::stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -3621,9 +3547,9 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
 /// continuation for a later round. Starting fresh here would discard its context.
 #[test]
 fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error() -> TestResult {
-    use crate::first_message::{hooked, start_with};
-    use crate::pool_supervision::{ScriptedUsage, seed};
-    use crate::task_message::superagent;
+    use crate::support::live::first_message::{hooked, start_with};
+    use crate::support::live::pool::{ScriptedUsage, seed};
+    use crate::support::task_message::superagent;
     use yulius_domain::task::Activity;
     let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
     let (_dir, data) = temp()?;
@@ -3711,7 +3637,7 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
         assert_eq!(attempts.len(), 2);
         assert_eq!(attempts[1].exit_reason.as_deref(), Some("account_removed"));
         let caller = superagent(&sandbox, &user, "admin");
-        crate::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await?;
+        crate::support::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await?;
         let pause = app
             .deps
             .store
@@ -3759,7 +3685,8 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
         };
         tokio::task::spawn_blocking(move || recorded_rx.recv_timeout(Duration::from_secs(30)))
             .await??;
-        let visible = crate::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await;
+        let visible =
+            crate::support::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await;
         go.send(())?;
         resumed.await?;
         visible?;
@@ -3780,7 +3707,7 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
             second.provider_session_id.as_deref(),
             Some(session.as_str())
         );
-        crate::pool_supervision::stop(&app, &id).await?;
+        crate::support::live::pool::stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

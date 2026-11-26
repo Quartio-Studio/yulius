@@ -821,7 +821,7 @@ fn the_watch_releases_the_achieved_owners_slot_after_external_pr_closure() -> Te
         }
         // A later ordinary run on the old head cannot start the obsolete
         // integration decision's 15-minute wait when the PR has closed.
-        let (mut rerun, job) = crate::pr_watch::run(
+        let (mut rerun, job) = crate::support::pr_watch::run(
             &task.sandbox_id,
             "closed-rerun",
             &head,
@@ -974,7 +974,7 @@ fn a_published_repair_on_the_same_base_releases_the_candidate_owner() -> TestRes
         )?;
         set_pull_head(remote, 1481, &head)?;
         remote.set_checks(&head, ChecksState::Success);
-        let (mut run, job) = crate::pr_watch::run(
+        let (mut run, job) = crate::support::pr_watch::run(
             &task.sandbox_id,
             "repair-green",
             &head,
@@ -1807,7 +1807,7 @@ async fn pending_owner_merge(
             .retire_singleton(id, &span, app.now())
             .await?
     );
-    let (mut rerun, job) = crate::pr_watch::run(
+    let (mut rerun, job) = crate::support::pr_watch::run(
         &task.sandbox_id,
         "ordinary-rerun",
         head,
@@ -2306,7 +2306,7 @@ fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_on
             );
             if now == queued {
                 let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
-                let (mut run, job) = crate::pr_watch::run(
+                let (mut run, job) = crate::support::pr_watch::run(
                     &owner.sandbox_id,
                     "still-queued",
                     &head,
@@ -2318,7 +2318,7 @@ fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_on
                 run.started_at = None;
                 run.ended_at = None;
                 app.deps.store.insert_ci_run(&run, &[job]).await?;
-                let (peer, job) = crate::pr_watch::run(
+                let (peer, job) = crate::support::pr_watch::run(
                     &owner.sandbox_id,
                     "unrelated-queued",
                     "peer-head",
@@ -2352,7 +2352,7 @@ fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_on
                         )
                         .await?
                 );
-                let (mut run, job) = crate::pr_watch::run(
+                let (mut run, job) = crate::support::pr_watch::run(
                     &owner.sandbox_id,
                     "second-rerun",
                     &head,
@@ -2593,7 +2593,7 @@ async fn seed_candidate(
         .store
         .replace_steps(&id, &steps, "agent", app.now())
         .await?;
-    let (mut green, job) = crate::pr_watch::run(
+    let (mut green, job) = crate::support::pr_watch::run(
         &caller.sandbox,
         "ordinary-green",
         &head,
@@ -2626,7 +2626,7 @@ async fn seed_candidate(
     }
     app.deps.store.insert_ci_run(&green, &[job]).await?;
     if matches!(case, ColdCandidate::DisabledSharedFailure) {
-        let (mut historical, job) = crate::pr_watch::run(
+        let (mut historical, job) = crate::support::pr_watch::run(
             &caller.sandbox,
             "shared-before-disable",
             &head,
@@ -2653,7 +2653,7 @@ async fn seed_candidate(
             "candidate",
         ],
     )?;
-    let (mut candidate, mut job) = crate::pr_watch::run(
+    let (mut candidate, mut job) = crate::support::pr_watch::run(
         &caller.sandbox,
         "candidate-red",
         &integrated,
@@ -2683,7 +2683,7 @@ async fn seed_candidate(
             | ColdCandidate::RearmedOutsideTrain
             | ColdCandidate::RearmedInTrain
     ) {
-        let (mut prior, job) = crate::pr_watch::run(
+        let (mut prior, job) = crate::support::pr_watch::run(
             &caller.sandbox,
             "earlier-bisection",
             &integrated,
@@ -2759,7 +2759,7 @@ async fn seed_candidate(
         0
     };
     for n in 0..later_runs {
-        let (run, job) = crate::pr_watch::run(
+        let (run, job) = crate::support::pr_watch::run(
             &caller.sandbox,
             &format!("other-{n}"),
             "another-head",
@@ -3061,7 +3061,7 @@ async fn check_live_queue(
         }
         if matches!(case, ColdCandidate::OrdinaryErrorThenTrainFailure) {
             std::fs::write(&path, serde_json::to_vec(&train)?)?;
-            let (mut ordinary, job) = crate::pr_watch::run(
+            let (mut ordinary, job) = crate::support::pr_watch::run(
                 &sandbox,
                 "ordinary-infrastructure",
                 head,
@@ -3161,8 +3161,14 @@ async fn check_live_queue(
             return Ok(());
         }
         let heard = matches!(case, ColdCandidate::HeardOrdinaryFailure);
-        let (mut red, job) =
-            crate::pr_watch::run(&sandbox, "ordinary-red", head, RunState::Failed, None, 31);
+        let (mut red, job) = crate::support::pr_watch::run(
+            &sandbox,
+            "ordinary-red",
+            head,
+            RunState::Failed,
+            None,
+            31,
+        );
         red.reference = CiRef::PullRequest(
             if matches!(
                 case,
@@ -3505,8 +3511,14 @@ async fn check_live_queue(
                 ("errored", Some(RunState::Error)),
             ] {
                 if let Some(verdict) = verdict {
-                    let (mut run, job) =
-                        crate::pr_watch::run(&task.sandbox_id, run_id, "merge", verdict, None, 31);
+                    let (mut run, job) = crate::support::pr_watch::run(
+                        &task.sandbox_id,
+                        run_id,
+                        "merge",
+                        verdict,
+                        None,
+                        31,
+                    );
                     run.reference = CiRef::Train(vec![1481]);
                     cold.deps.store.insert_ci_run(&run, &[job]).await?;
                 }
@@ -3519,7 +3531,7 @@ async fn check_live_queue(
                 obsolete_news.is_empty(),
                 "train due to dissolve: {obsolete_news:?}"
             );
-            let (mut run, job) = crate::pr_watch::run(
+            let (mut run, job) = crate::support::pr_watch::run(
                 &task.sandbox_id,
                 "later-train",
                 "merge",
@@ -3641,7 +3653,7 @@ async fn check_live_queue(
             .enumerate()
             {
                 std::fs::write(&path, registry)?;
-                let (mut run, job) = crate::pr_watch::run(
+                let (mut run, job) = crate::support::pr_watch::run(
                     &task.sandbox_id,
                     run_id,
                     head,
@@ -3746,7 +3758,7 @@ async fn check_recorded_decision(
         let entered = entered.as_deref().unwrap_or(&remote.pull_read_entered);
         tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
         let task = cold.deps.store.task(id).await?.ok_or("owner")?;
-        let (mut rerun, job) = crate::pr_watch::run(
+        let (mut rerun, job) = crate::support::pr_watch::run(
             &task.sandbox_id,
             "ordinary-rerun",
             head,
@@ -3785,7 +3797,7 @@ async fn check_recorded_decision(
         let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
         tokio::time::timeout(Duration::from_secs(5), remote.pull_read_entered.notified()).await?;
         let sandbox = cold.deps.store.task(id).await?.ok_or("owner")?.sandbox_id;
-        let (mut rerun, job) = crate::pr_watch::run(
+        let (mut rerun, job) = crate::support::pr_watch::run(
             &sandbox,
             "superseding-green",
             head,

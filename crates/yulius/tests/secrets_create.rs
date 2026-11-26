@@ -74,7 +74,7 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
-    let person = crate::secrets::unlocked(&h, "u-alice").await?;
+    let person = crate::support::secrets::unlocked(&h, "u-alice").await?;
     Ok(World {
         h,
         writer,
@@ -132,7 +132,7 @@ async fn allow_env(w: &World, name: &str) -> TestResult {
 #[tokio::test]
 async fn a_task_stores_files_as_agent_secrets_without_seeing_them() -> TestResult {
     let w = world().await?;
-    let key = crate::secrets_env::openssh_key(7);
+    let key = crate::support::secrets_env::openssh_key(7);
     std::fs::write(w.home.join(".ssh/deploy_key"), &key)?;
     std::fs::create_dir_all(w.worktree.join("secrets"))?;
     std::fs::write(
@@ -241,11 +241,11 @@ async fn a_task_stores_files_as_agent_secrets_without_seeing_them() -> TestResul
     let copied = copy().await?;
     assert_ne!(copied["isError"], true, "{copied}");
     assert_eq!(
-        crate::secrets_env::sourced(&w.worktree, "DEPLOY_SSH_KEY")?,
+        crate::support::secrets_env::sourced(&w.worktree, "DEPLOY_SSH_KEY")?,
         key
     );
     assert_eq!(
-        crate::secrets_env::sourced(&w.worktree, "API_TOKEN")?,
+        crate::support::secrets_env::sourced(&w.worktree, "API_TOKEN")?,
         API_TOKEN
     );
 

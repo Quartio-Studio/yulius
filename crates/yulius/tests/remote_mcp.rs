@@ -1971,7 +1971,7 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
         "--json",
     ];
     // SPEC-620 CDM-001: Claude Code on Opus 5.5 by default, even with Codex usable too.
-    crate::codex::connect_codex(&w.h.app).await?;
+    crate::support::codex::connect_codex(&w.h.app).await?;
     let (code, out, err) = yulius_cli(home, &create, "").await?;
     assert_eq!(code, Some(0), "{out}{err}");
     let created: Value = serde_json::from_str(&out)?;

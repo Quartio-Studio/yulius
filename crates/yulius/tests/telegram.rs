@@ -2219,7 +2219,7 @@ async fn with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment() -> 
     let w = world().await?;
     set_bot(&w, TOKEN_A).await?;
     signed_in_subscription(&w).await?;
-    crate::codex::connect_codex(&w.h.app).await?;
+    crate::support::codex::connect_codex(&w.h.app).await?;
     // The project's folder, where its attachments live.
     std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
     link(&w, &w.alice, 100).await?;

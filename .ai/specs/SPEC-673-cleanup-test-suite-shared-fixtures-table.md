@@ -31,8 +31,8 @@ before the next starts.
 - [x] PR1a: review findings answered (macOS import, description)
 - [x] PR1b: support::BareRemote and support::ScriptedHost replace the FakeRemote and SessionHost copies
 - [x] PR1b: review findings answered
-- [ ] PR2: support::live real-process builder replaces start_holding, build_tuned and start_hosted
-- [ ] PR2: hand-wired Deps and sibling-file imports moved into support
+- [x] PR2: support::live real-process builder replaces start_holding, build_tuned and start_hosted
+- [x] PR2: hand-wired Deps and sibling-file imports moved into support
 - [ ] PR2: review findings answered
 - [ ] PR3: migrated-template store, test time measured before and after
 - [ ] PR3: review findings answered

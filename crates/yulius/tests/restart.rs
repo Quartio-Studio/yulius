@@ -3,6 +3,8 @@
 //! manual step. The first server runs in a runtime of its own, dropped as a dying process drops
 //! its connections; the second is a new `App` on the same store, listening on the same port.
 
+use crate::support::live::pool::{pool, pool_live};
+use crate::support::live::{Live, UNSERVED};
 use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -154,11 +156,9 @@ fn bash(env: &[(String, String)], command: &str) -> Result<String, SendError> {
 /// prefix, as Claude Code 2.1.292 spawns them.
 #[test]
 fn a_running_session_uses_mcp_git_and_gh_across_a_restart() -> TestResult {
-    use crate::pool_supervision::{
-        ScriptedUsage, build_served, new_task, runtime, screen, seed, stop, temp,
-    };
     use crate::support::FakeGitHub;
     use crate::support::eventually;
+    use crate::support::live::pool::{ScriptedUsage, new_task, runtime, screen, seed, stop, temp};
 
     use yulius_ptyhost::test_support::locate_fake_agent;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -175,13 +175,15 @@ fn a_running_session_uses_mcp_git_and_gh_across_a_restart() -> TestResult {
         ..crate::support::agents::FakeAgentOptions::default()
     };
     let build = || {
-        build_served(
+        pool(
+            Live {
+                usage: Arc::new(ScriptedUsage::default()),
+                github: github.clone(),
+                ..Live::new(Some(&fake), agent())
+            },
             &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent(),
-            github.clone(),
             &url,
+            |_| {},
         )
     };
 
@@ -445,10 +447,10 @@ async fn turn_closed_while_down(
 /// an update 10 s after it), nor one that waits for a person.
 #[test]
 fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
-    use crate::pool_supervision::{
+    use crate::support::eventually;
+    use crate::support::live::pool::{
         ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, temp,
     };
-    use crate::support::eventually;
     use yulius_ptyhost::test_support::locate_fake_agent;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
@@ -469,7 +471,7 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
         let asked = new_task(&app, &sandbox, &user, "Asked").await?;
         let blocked = new_task(&app, &sandbox, &user, "Blocked").await?;
         for id in [&cut, &blocked] {
-            crate::pr_watch::leave_verification_step(&app, id).await?;
+            crate::support::pr_watch::leave_verification_step(&app, id).await?;
         }
         for (id, title) in [
             (&cut, "Cut"),
@@ -581,8 +583,8 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
 /// nothing.
 #[test]
 fn a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues() -> TestResult {
-    use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop, temp};
     use crate::support::eventually;
+    use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
     use yulius_app::mcp_watch::{
         CONTINUE_TEXT, MCP_PING_ID, RECONNECT_TEXT, WatchAction, WatchBounds,
     };
@@ -597,7 +599,9 @@ fn a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues() -> TestRe
     let rt = runtime()?;
     rt.block_on(async {
         // Without Claude Code's SessionStart, a session takes input half of this after its spawn.
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let cut = new_task(&app, &sandbox, &user, "Cut").await?;
         let heard = new_task(&app, &sandbox, &user, "Heard").await?;

@@ -2748,7 +2748,7 @@ async fn goal_stop_rechecks_the_remaining_step_after_a_slow_observation() -> Tes
     for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
         assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
     }
-    let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+    let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::default());
     let (entered, release) = browser.hold_publication_lookup(&f.task);
     browser.running(&f.sandbox).await;
     let mut deps = f.h.app.deps.clone();
@@ -2801,7 +2801,7 @@ async fn goal_stop_during_spec_publication(check: bool) -> TestResult {
         f.worktree.join("docs/specs/checkout.md"),
         "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout\n\n## Goal\n\nVerify checkout.\n\n## Context\n\nFixture.\n\n## Requirements\n\n- Verify.\n\n## Plan\n\n- [x] Build checkout\n- [ ] Verify dev\n\n## Acceptance criteria\n\nCheckout verified.\n\n## Test plan\n\nRun tests.\n\n## Decisions\n\nUse fixtures.\n",
     )?;
-    let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+    let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::default());
     let (entered, release) = browser.hold_publication_lookup(&f.task);
     browser.running(&f.sandbox).await;
     let mut deps = f.h.app.deps.clone();
@@ -3411,7 +3411,7 @@ async fn goal_stop_answers_within_the_hook_deadline_while_browser_startup_is_hel
 
     for hold_first in [true, false] {
         let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
-        let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+        let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::default());
         if hold_first {
             browser.running(&f.sandbox).await;
         }
@@ -5017,7 +5017,7 @@ async fn incomplete_git_overviews_preserve_the_current_parked_pr_observation() -
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
     f.h.github
         .set_checks("external", yulius_app::ports::github::ChecksState::Failure);
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     for open in [true, false] {
         // Omit both PRs; task #1 now needs a direct lookup. Hold it after #2's row was read.
         f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
@@ -5593,7 +5593,7 @@ async fn a_parked_task_names_the_blocking_pr_when_its_branch_has_two_open_prs() 
         let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
         assert_eq!(summary["parked_needs_you"], true);
         assert_eq!(summary["parked_pr"], json!({"number":1461, "open":true}));
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         let brief =
             f.h.app
                 .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
@@ -5650,7 +5650,7 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
     let summary = serde_json::to_value(app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(summary["parked_needs_you"], true);
     assert_eq!(summary["parked_pr"], json!({"number":1461,"open":true}));
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let brief = app
         .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
         .await?;
@@ -5758,7 +5758,7 @@ async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged(
     let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(detail["parked_needs_you"], true);
     assert_eq!(detail["parked_pr"], json!({"number":1461, "open":false}));
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let brief =
         f.h.app
             .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
@@ -5806,7 +5806,7 @@ async fn parked_with_recorded_merge()
 async fn a_parked_merge_survives_unavailable_followup_discovery_on_every_display() -> TestResult {
     let (f, owner) = parked_with_recorded_merge().await?;
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     app.deps.store.set_installation(None).await?;
     f.h.github.no_installation.store(true, Ordering::SeqCst);
     let detail = app.task_detail(&owner, f.task.as_str()).await?;
@@ -5878,7 +5878,7 @@ async fn a_parked_merge_survives_a_stalled_branch_lookup_and_finds_a_replacement
     let mut config = f.h.app.config.clone();
     config.parked_pr_read_ms = 750;
     let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     *f.h.github
         .pull_list_hold
@@ -5935,7 +5935,7 @@ async fn a_parked_merge_survives_a_stalled_branch_lookup_and_finds_a_replacement
 async fn verify_followup_outage(closed: bool, second: bool, expected: Option<u64>) -> TestResult {
     let (f, owner) = parked_with_recorded_merge().await?;
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     {
         let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
@@ -6005,7 +6005,7 @@ async fn parked_followup_with_stalled_final_list(merged: bool) -> TestResult {
         });
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(
         app.tool_task_get(&caller, &args).await?["shows"],
@@ -6070,7 +6070,7 @@ async fn a_parked_merge_survives_saturated_followup_discovery_and_remains_a_prer
 -> TestResult {
     let (f, owner) = parked_with_recorded_merge().await?;
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     let gate = Arc::new(tokio::sync::Notify::new());
     f.h.github.hold_overview_list.store(true, Ordering::SeqCst);
@@ -6114,7 +6114,7 @@ async fn a_parked_merge_rechecks_local_work_after_stalled_followup_discovery() -
     let mut config = f.h.app.config.clone();
     config.parked_pr_read_ms = 750;
     let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     *f.h.github
         .pull_list_hold
         .lock()
@@ -6409,7 +6409,7 @@ async fn parked_lists_share_one_budget_for_unreadable_pr_heads() -> TestResult {
         record.activity = None;
         store.insert_task(&record).await?;
     }
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"prompt":"Wait for the outstanding PRs", "after_all_tasks":true});
     let problem = tokio::time::timeout(limit, f.h.app.tool_task_create(&caller, &args))
         .await
@@ -6757,7 +6757,7 @@ async fn a_parked_task_keeps_a_confirmed_failure_in_an_incomplete_check_report()
     use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
     let (f, owner) = owner_observed_external_pr().await?;
     install_app(&f).await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     for (state, unreadable, reason) in [
         (
             ChecksState::Failure,
@@ -6794,7 +6794,7 @@ async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> Test
     install_app(&f).await?;
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     for (at, state, reason) in [
         (
             21,
@@ -6840,7 +6840,7 @@ async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> Test
 async fn a_title_edit_during_a_parked_check_preserves_the_same_heads_failure() -> TestResult {
     let (f, owner) = owner_observed_external_pr().await?;
     install_app(&f).await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     let held = f.h.github.hold_checks();
     let reading = f.h.app.tool_task_get(&caller, &args);
@@ -6874,7 +6874,7 @@ async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestR
         install_app(&f).await?;
         let ctx = f.h.app.agent_context(TOKEN).await?;
         f.h.github.set_checks("abc123", state);
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         let args = json!({"task_id":f.task.as_str()});
         let held = f.h.github.hold_checks();
         let reading = f.h.app.tool_task_get(&caller, &args);
@@ -6935,7 +6935,7 @@ impl Neighbour {
                 while let Ok(reply) = inbox.recv() {
                     let answer = match &ready {
                         Ok((f, owner)) => {
-                            let caller = crate::task_message::superagent(
+                            let caller = crate::support::task_message::superagent(
                                 &f.sandbox,
                                 &owner.user.id,
                                 "admin",
@@ -7054,7 +7054,7 @@ async fn hold_dismissed_during_the_read(neighbour: Option<&Neighbour>) -> TestRe
             new_task_id: None,
         })
         .await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let app = Arc::clone(&f.h.app);
     let args = json!({"task_id":f.task.as_str()});
     let (at, resume) =
@@ -7094,7 +7094,7 @@ async fn tasks_list_skips_queue_capacity_reads_for_needs_you_nonmatches() -> Tes
     use yulius_app::ports::store::TaskStore as _;
     let f = fixture().await?;
     let mut queued = f.h.store.task(&f.task).await?.ok_or("task")?;
-    let caller = crate::task_message::superagent(&f.sandbox, &queued.created_by, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &queued.created_by, "admin");
     let now = f.h.app.now();
     f.h.store
         .set_activity(&f.task, Some(Activity::NeedsAttention), now)
@@ -7137,7 +7137,8 @@ async fn archived_task_list_spends_its_limit_on_archived_rows() -> TestResult {
     use yulius_app::ports::store::TaskStore as _;
     let f = fixture().await?;
     let mut archived = f.h.store.task(&f.task).await?.ok_or("task")?;
-    let caller = crate::task_message::superagent(&f.sandbox, &archived.created_by, "admin");
+    let caller =
+        crate::support::task_message::superagent(&f.sandbox, &archived.created_by, "admin");
     archived.id = TaskId::parse("archived-task")?;
     archived.number = 33;
     archived.status = TaskStatus::Closed;
@@ -7193,7 +7194,7 @@ async fn parked_needs_you_list_gives_two_stalled_rows_the_whole_remaining_window
         healthy.updated_at = Timestamp(f.h.app.now().0 + offset);
         store.insert_task(&healthy).await?;
     }
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let mut config = f.h.app.config.clone();
     config.parked_pr_read_ms = 2400;
     let budget = std::time::Duration::from_millis(config.parked_pr_read_ms);
@@ -7328,7 +7329,7 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
             Timestamp(now.0 + 1),
         )
         .await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &slow.created_by, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &slow.created_by, "admin");
     let all =
         f.h.app
             .tool_tasks_list(&caller, &json!({"scope":"all","limit":9}))
@@ -7445,7 +7446,7 @@ async fn plan_and_decision_read_during_the_hold(neighbour: Option<&Neighbour>) -
             None
         };
         let ctx = f.h.app.agent_context(TOKEN).await?;
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         let app = Arc::clone(&f.h.app);
         let id = f.task.clone();
         let (at, resume) =
@@ -7499,7 +7500,7 @@ async fn plan_and_decision_read_during_the_hold(neighbour: Option<&Neighbour>) -
         } else {
             assert!(row.is_none());
         }
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         let next =
             f.h.app
                 .tool_tasks_list(&caller, &json!({"scope":"needs_you"}))
@@ -7558,7 +7559,7 @@ async fn a_parked_directly_observed_merge_survives_an_unavailable_direct_read() 
             pulls[0].merged = merged;
             pulls[0].state = "closed".into();
         }
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         for unavailable in [false, true] {
             if unavailable {
                 f.h.github.pulls.lock().map_err(|_| "pulls")?.clear();
@@ -7645,7 +7646,7 @@ async fn a_rate_limited_github_leaves_merged_tasks_done_and_reports_one_reset() 
         ..yulius_github::GitHubConfig::github_com()?
     })?);
     let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     for status in [TaskStatus::Parked, TaskStatus::Running] {
         app.deps
             .store
@@ -7733,7 +7734,7 @@ async fn a_finished_live_task_uses_its_recorded_merge_after_an_older_red_read() 
             },
         )
         .await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let row = app
         .tool_task_get(&caller, &json!({"task_id": f.task.as_str()}))
         .await?;
@@ -7748,7 +7749,7 @@ async fn unreadable_checks_keep_a_verified_head_but_do_not_test_a_new_push() -> 
     install_app(&f).await?;
     f.h.github.set_checks("abc123", ChecksState::Success);
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
     *f.h.github.checks_error.lock().map_err(|_| "checks")? =
@@ -7774,7 +7775,7 @@ async fn a_parked_new_head_with_unreadable_checks_survives_the_next_outage() -> 
     install_app(&f).await?;
     f.h.github.set_checks("abc123", ChecksState::Success);
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
     f.h.github.pulls.lock().map_err(|_| "pulls")?[0].head_sha = "new-sha".into();
@@ -7801,7 +7802,7 @@ async fn a_real_local_ci_error_supersedes_cached_green_during_a_github_outage() 
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
     super::delivery::insert_ci_attempt(
@@ -7876,7 +7877,7 @@ async fn a_partial_success_on_a_new_head_cannot_test_that_head_during_an_outage(
     let (f, owner) = owner_observed_external_pr().await?;
     install_app(&f).await?;
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     f.h.github.set_checks("abc123", ChecksState::Success);
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
@@ -7926,7 +7927,7 @@ async fn a_newly_confirmed_conflict_survives_an_unavailable_overview() -> TestRe
     install_app(&f).await?;
     f.h.github.set_checks("abc123", ChecksState::Success);
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
     f.h.github.pulls.lock().map_err(|_| "pulls")?[0].mergeable = Some(false);

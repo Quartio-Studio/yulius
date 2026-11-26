@@ -3,11 +3,11 @@
 //! pauses the workflow without waking the session's own thread; Yulius moves the task as at any
 //! limit and tells the relaunched session to resume the workflow by its run id.
 
-use crate::pool_supervision::{
+use crate::support::agents::FakeAgentOptions;
+use crate::support::live::pool::{
     HOUR, ScriptedUsage, build_with, has_status, new_task, refresh, runtime, screen, seed, stop,
     task, temp, usage,
 };
-use crate::support::agents::FakeAgentOptions;
 use crate::support::{TestResult, eventually};
 use std::path::Path;
 use std::sync::Arc;
@@ -585,8 +585,10 @@ fn a_workflow_paused_at_a_limit_is_known_after_a_restart() -> TestResult {
     let second = runtime()?;
     second.block_on(async {
         let app = build_with(&data, &fake, probe.clone(), workflow_agent(true))?;
-        let (paused, release) =
-            crate::pool_supervision::hold_pool_move(yulius_app::race::Point::LimitPauseStored, &id);
+        let (paused, release) = crate::support::live::pool::hold_pool_move(
+            yulius_app::race::Point::LimitPauseStored,
+            &id,
+        );
         app.reconcile().await?;
         crate::support::point_reached(paused).await?;
         // The new server knows nothing but what the transcripts say.
