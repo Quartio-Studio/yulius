@@ -2099,11 +2099,16 @@ async fn fixture_with_app() -> Result<Fixture, Box<dyn std::error::Error>> {
 }
 
 /// SPEC-675 L4Q3-001, L4Q3-002, ADR-0481: disabling a task's owner stops the task, and its run
-/// is refused a git credential from then on.
+/// is refused a git credential from then on; another person's task runs on.
 #[tokio::test]
 async fn a_disabled_owners_run_gets_no_git_credential_and_stops() -> TestResult {
     let f = fixture_with_app().await?;
     let admin = crate::support::setup_superadmin_creds(&f.h).await?;
+    let mut bobs = f.task.clone();
+    bobs.id = TaskId::parse("t2")?;
+    bobs.number = 2;
+    bobs.owner = UserId::parse("u-b")?;
+    f.h.store.insert_task(&bobs).await?;
     let before = agent_credential(&f.h, "tt").await?;
     assert_eq!(before.status, 200, "{}", before.body);
 
@@ -2120,9 +2125,18 @@ async fn a_disabled_owners_run_gets_no_git_credential_and_stops() -> TestResult 
     // Refused as a person's own git is after a disable (`workspace_git_credential`).
     assert_eq!(refused.status, 401, "{}", refused.body);
     assert!(refused.body.get("token").is_none(), "{}", refused.body);
-    let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
-    assert!(task.status.is_resting(), "{:?}", task.status);
+    // Asked to stop: its run ends as the supervisor reaps it.
+    let status = f.h.store.task(&f.task.id).await?.ok_or("task")?.status;
+    assert!(
+        status.is_resting() || status == TaskStatus::Stopping,
+        "{status:?}"
+    );
     assert_eq!(audited(&f.h, "t1", "task.stopped").await?, 1);
+    // Bob's task, in the same project, runs on.
+    assert_eq!(
+        f.h.store.task(&bobs.id).await?.ok_or("t2")?.status,
+        TaskStatus::Running
+    );
     Ok(())
 }
 

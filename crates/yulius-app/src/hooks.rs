@@ -2234,9 +2234,13 @@ impl App {
     /// the task use the owner's token on the server. `gh` in the run asks the same way (`yulius
     /// gh-token`, SPEC-004). Requests for any other host or repository are refused.
     ///
+    /// The run gets it only while the task's owner is enabled and may work in the project
+    /// (`git_credential_holder`, ADR-0481).
+    ///
     /// # Errors
-    /// `Unauthenticated` for unknown runs, `Forbidden` for other repositories, `Conflict` when the
-    /// App is not installed, GitHub failures.
+    /// `Unauthenticated` for unknown runs and a disabled owner, `NotFound` or `Forbidden` for an
+    /// owner who may not work in the project, `Forbidden` for other repositories, `Conflict` when
+    /// the App is not installed, GitHub failures.
     pub async fn agent_git_credential(
         &self,
         token: &str,
@@ -2249,12 +2253,11 @@ impl App {
                 "credentials are only issued for github.com".into(),
             ));
         }
-        let sandbox = self
-            .deps
-            .store
-            .sandbox(&ctx.task.sandbox_id)
-            .await?
-            .ok_or(AppError::NotFound)?;
+        // Only while the task's owner is enabled and may still work in the project, as for a
+        // person's own git (SPEC-675 L4Q3-001, ADR-0481).
+        let (_, sandbox) = self
+            .git_credential_holder(&ctx.task.owner, &ctx.task.sandbox_id)
+            .await?;
         // A playground has no GitHub repository: nothing is issued (SPEC-099 PLY-002).
         if sandbox.is_playground() {
             return Err(AppError::Forbidden(

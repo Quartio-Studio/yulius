@@ -655,6 +655,30 @@ impl App {
         }
     }
 
+    /// The person on whose standing a GitHub credential for `sandbox_id` is issued, and that
+    /// sandbox, while they are enabled and may work there (SPEC-675 L4Q3-001): the one check
+    /// both a person's own processes ([`App::workspace_git_credential`]) and a task's run
+    /// (`agent_git_credential`, for the task's owner) ask, so both refuse alike.
+    ///
+    /// # Errors
+    /// `Unauthenticated` for an unknown or disabled person; as [`App::require`] for one who may
+    /// not work in the sandbox (`NotFound` without access, `Forbidden` below write).
+    pub(crate) async fn git_credential_holder(
+        &self,
+        user_id: &UserId,
+        sandbox_id: &SandboxId,
+    ) -> AppResult<(UserRecord, SandboxRecord)> {
+        let user = self
+            .deps
+            .store
+            .user(user_id)
+            .await?
+            .filter(|u| u.disabled_at.is_none())
+            .ok_or(AppError::Unauthenticated)?;
+        let (sandbox, _) = self.require(&user, sandbox_id, Action::Work).await?;
+        Ok((user, sandbox))
+    }
+
     /// A GitHub credential for a user process: the user's own token (the superadmin without a
     /// GitHub identity: the App's token for this repository, ACC-012), for the sandbox's
     /// repository only, while the user may still work in the sandbox.
@@ -674,14 +698,7 @@ impl App {
                 "credentials are only issued for github.com".into(),
             ));
         }
-        let user = self
-            .deps
-            .store
-            .user(&user_id)
-            .await?
-            .filter(|u| u.disabled_at.is_none())
-            .ok_or(AppError::Unauthenticated)?;
-        let (sandbox, _) = self.require(&user, &sandbox_id, Action::Work).await?;
+        let (user, sandbox) = self.git_credential_holder(&user_id, &sandbox_id).await?;
         // A playground has no GitHub repository: nothing is issued (SPEC-099 PLY-002).
         if sandbox.is_playground() {
             return Err(AppError::Forbidden(

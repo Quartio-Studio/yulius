@@ -1111,7 +1111,9 @@ async fn the_agents_git_never_holds_the_owners_token() -> TestResult {
     assert_eq!(gh.body["token"], "agent-inst");
     assert!(notices(&mut watch).is_empty());
 
-    // A task of an owner without a linked GitHub account gets the same token.
+    // A task of an owner without a linked GitHub account, who therefore may not work in the
+    // project, gets no token at all, never a person's (SPEC-675 L4Q3-001; before it, the agent
+    // token). The superadmin, unlinked or not, keeps Admin and the agent token (above).
     let store = &f.h.app.deps.store;
     let unlinked = UserRecord {
         id: UserId::parse("u-local")?,
@@ -1137,10 +1139,19 @@ async fn the_agents_git_never_holds_the_owners_token() -> TestResult {
     attempt.task_id = task.id.clone();
     attempt.token_hash = f.h.app.deps.crypto.sha256_hex(b"local-task-token");
     store.insert_attempt(&attempt).await?;
-    assert_eq!(
-        agent_credential(&f, "local-task-token").await?,
-        "agent-inst"
-    );
+    let unlinked = call(
+        &f.h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com", "path": "acme/fixture.git"})),
+        &Creds {
+            bearer: Some("local-task-token".into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(unlinked.status, 404, "{}", unlinked.body);
+    assert!(unlinked.body.get("token").is_none(), "{}", unlinked.body);
 
     // Without the App installed there is nothing to hand out: refused, never a person's token.
     store.set_installation(None).await?;
