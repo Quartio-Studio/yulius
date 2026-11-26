@@ -8,15 +8,14 @@ use yulius_app::ports::store::UserStore;
 use yulius_domain::ids::UserId;
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column, to_i64, to_u64};
+use crate::{DbResult, SqliteStore, opt_ts, text_parsed, to_i64, to_u64};
 
 const COLS: &str = "id, github_login, github_id, display_name, avatar_url, is_superadmin, \
     is_instance_admin, password_hash, created_at, disabled_at";
 
 pub(crate) fn user_from_row(row: &Row<'_>) -> rusqlite::Result<UserRecord> {
-    let id: String = row.get("id")?;
     Ok(UserRecord {
-        id: UserId::parse(&id).map_err(|_| bad_column("user id", &id))?,
+        id: text_parsed(row, "id", "user id", UserId::parse)?,
         github_login: row.get("github_login")?,
         github_id: row.get::<_, Option<i64>>("github_id")?.map(to_u64),
         display_name: row.get("display_name")?,
@@ -25,7 +24,7 @@ pub(crate) fn user_from_row(row: &Row<'_>) -> rusqlite::Result<UserRecord> {
         is_instance_admin: row.get("is_instance_admin")?,
         password_hash: row.get("password_hash")?,
         created_at: Timestamp(row.get("created_at")?),
-        disabled_at: row.get::<_, Option<i64>>("disabled_at")?.map(Timestamp),
+        disabled_at: opt_ts(row, "disabled_at")?,
     })
 }
 
@@ -241,8 +240,8 @@ impl UserStore for SqliteStore {
                         user_id: user.clone(),
                         access: Sealed(r.get(0)?),
                         refresh: r.get::<_, Option<Vec<u8>>>(1)?.map(Sealed),
-                        expires_at: r.get::<_, Option<i64>>(2)?.map(Timestamp),
-                        refresh_expires_at: r.get::<_, Option<i64>>(3)?.map(Timestamp),
+                        expires_at: opt_ts(r, 2)?,
+                        refresh_expires_at: opt_ts(r, 3)?,
                     })
                 },
             )

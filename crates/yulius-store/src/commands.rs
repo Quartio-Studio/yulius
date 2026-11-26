@@ -9,16 +9,15 @@ use yulius_app::ports::store_ext::{
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::time::Timestamp;
 
-use crate::{DbError, SqliteStore, bad_column};
+use crate::{DbError, SqliteStore, opt_ts, text_parsed};
 
 const COLUMNS: &str =
     "id, sandbox_id, name, definition, secret_id, created_by, created_at, updated_by, updated_at";
 
 fn command_row(row: &Row<'_>) -> rusqlite::Result<CommandRecord> {
-    let sandbox: String = row.get(1)?;
     Ok(CommandRecord {
         id: row.get(0)?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, 1, "sandbox id", SandboxId::parse)?,
         name: row.get(2)?,
         definition: row.get(3)?,
         secret_id: row.get(4)?,
@@ -57,30 +56,27 @@ const LISTED_COLUMNS: &str = "id, sandbox_id, command_id, command, command_updat
 const KEEP_RUNS: i64 = 200;
 
 fn run_row(row: &Row<'_>) -> rusqlite::Result<CommandRunRecord> {
-    let sandbox: String = row.get(1)?;
-    let task: String = row.get(5)?;
-    let args: String = row.get(7)?;
     Ok(CommandRunRecord {
         id: row.get(0)?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, 1, "sandbox id", SandboxId::parse)?,
         command_id: row.get(2)?,
         command: row.get(3)?,
         command_updated_at: Timestamp(row.get(4)?),
-        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
+        task_id: text_parsed(row, 5, "task id", TaskId::parse)?,
         task_number: row.get(6)?,
-        args: serde_json::from_str(&args).map_err(|_| bad_column("args", &args))?,
+        args: text_parsed(row, 7, "args", |text| serde_json::from_str(text))?,
         line: row.get(8)?,
         changes: row.get(9)?,
         state: row.get(10)?,
         reason: row.get(11)?,
-        deadline: row.get::<_, Option<i64>>(12)?.map(Timestamp),
+        deadline: opt_ts(row, 12)?,
         answered_by: row.get(13)?,
         exit_code: row.get(14)?,
         stdout: row.get(15)?,
         stderr: row.get(16)?,
         created_at: Timestamp(row.get(17)?),
-        started_at: row.get::<_, Option<i64>>(18)?.map(Timestamp),
-        ended_at: row.get::<_, Option<i64>>(19)?.map(Timestamp),
+        started_at: opt_ts(row, 18)?,
+        ended_at: opt_ts(row, 19)?,
     })
 }
 

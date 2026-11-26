@@ -13,7 +13,7 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column};
+use crate::{SqliteStore, bad_column, opt_ts, text_as, text_parsed};
 
 const COLS: &str = "id, sandbox_id, name, cron, utc_offset_minutes, prompt, workflow_id, harness, \
     enabled, created_by, created_via, created_at, last_scheduled, supertask, after_task_id, start_rule, prepared";
@@ -51,14 +51,12 @@ fn start_from_row(row: &Row<'_>) -> rusqlite::Result<AutomationStart> {
 }
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<AutomationRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
     let harness: String = row.get("harness")?;
-    let created_by: String = row.get("created_by")?;
     let created_via: String = row.get("created_via")?;
     let offset: i64 = row.get("utc_offset_minutes")?;
     Ok(AutomationRecord {
         id: row.get("id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         name: row.get("name")?,
         cron: row.get("cron")?,
         utc_offset_minutes: i32::try_from(offset)
@@ -71,20 +69,19 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<AutomationRecord> {
         },
         enabled: row.get("enabled")?,
         start: start_from_row(row)?,
-        created_by: UserId::parse(&created_by).map_err(|_| bad_column("user id", &created_by))?,
+        created_by: text_parsed(row, "created_by", "user id", UserId::parse)?,
         created_via: CreatedVia::parse(&created_via),
         created_at: Timestamp(row.get("created_at")?),
-        last_scheduled: row.get::<_, Option<i64>>("last_scheduled")?.map(Timestamp),
+        last_scheduled: opt_ts(row, "last_scheduled")?,
     })
 }
 
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<AutomationRunRecord> {
-    let state: String = row.get("state")?;
     let task: Option<String> = row.get("task_id")?;
     Ok(AutomationRunRecord {
         automation_id: row.get("automation_id")?,
         scheduled_for: Timestamp(row.get("scheduled_for")?),
-        state: RunState::parse(&state).ok_or_else(|| bad_column("run state", &state))?,
+        state: text_as(row, "state", "run state", RunState::parse)?,
         task_id: task
             .as_deref()
             .map(|t| TaskId::parse(t).map_err(|_| bad_column("task id", t)))
