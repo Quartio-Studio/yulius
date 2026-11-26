@@ -4,7 +4,7 @@ import tempfile
 import re
 import subprocess
 import unittest
-from check_repository import branch_decision_changes, new_decision_errors, delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
+from check_repository import branch_decision_changes, new_decision_errors, delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, decision_index, regenerated_index, DECISION_INDEX_HEAD, superseded_mark, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
 
 
 def package(name, layer, dependencies=()):
@@ -136,7 +136,7 @@ class RepositoryContracts(unittest.TestCase):
         # SPEC-483 DOC-002: the files an agent follows, each once.
         files = instruction_files()
         names = {str(path.relative_to(ROOT)) for path in files}
-        for name in ["AGENTS.md", "docs/engineering/git.md", ".apm/skills/yulius-git/SKILL.md",
+        for name in ["AGENTS.md", "docs/engineering/git.md", ".apm/skills/yulius-review/SKILL.md",
                      "catalog/workflows/feature.md", "catalog/skills/yulius/delivery-pipeline/SKILL.md",
                      ".ai/templates/spec.md", ".github/pull_request_template.md"]:
             self.assertIn(name, names)
@@ -156,49 +156,149 @@ class RepositoryContracts(unittest.TestCase):
     def test_two_decision_records_cannot_share_a_number(self):
         with tempfile.TemporaryDirectory() as tmp:
             decisions = Path(tmp)
-            index = "# Decision records\n\n- [0006](0006-first.md): First\n- [0007](0007-second.md): Second\n"
-            (decisions / "README.md").write_text(index)
             (decisions / "0006-first.md").write_text("# 0006. First\n")
             (decisions / "0007-second.md").write_text("# 0007. Second\n")
+            (decisions / "README.md").write_text(decision_index(decisions))
             self.assertEqual(decision_errors(decisions), [])
-            (decisions / "README.md").write_text(index + "- [0007](0007-parallel.md): Parallel\n- [0008](0008-parallel.md): Parallel\n")
             (decisions / "0007-parallel.md").write_text("# 0007. Parallel\n")
-            errors = decision_errors(decisions)
-            self.assertEqual(len(errors), 2)
-            self.assertTrue(any("more than once" in error for error in errors))
-            self.assertTrue(any("0007-parallel.md" in error and "0007-second.md" in error
-                                for error in errors))
-            # A renumbered record whose title kept the old number is caught too.
-            (decisions / "0007-parallel.md").rename(decisions / "0008-parallel.md")
-            errors = decision_errors(decisions)
-            self.assertEqual(len(errors), 2)
-            self.assertTrue(any("0008-parallel.md" in error for error in errors))
-            (decisions / "README.md").write_text(index + "- [0008](0008-parallel.md): Parallel\n")
-            (decisions / "0008-parallel.md").write_text("# 0008. Parallel\n")
-            (decisions / "notes.md").write_text("# Notes\n")
-            self.assertEqual(len(decision_errors(decisions)), 1)
-        self.assertEqual(decision_errors(ROOT / "docs/decisions"), [])
-
-    def test_decision_index_reports_a_reversed_pair(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            decisions = Path(tmp)
-            for number in ("0006", "0007"):
-                (decisions / f"{number}-choice.md").write_text(f"# {number}. Choice\n")
-            (decisions / "README.md").write_text("- [0007](0007-choice.md)\n- [0006](0006-choice.md)\n")
-            self.assertTrue(any("0007 before 0006" in error for error in decision_errors(decisions)))
-
-    def test_every_decision_record_is_indexed(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            decisions = Path(tmp)
-            (decisions / "0006-first.md").write_text("# 0006. First\n")
-            (decisions / "0007-second.md").write_text("# 0007. Second\n")
-            self.assertEqual(decision_errors(decisions), [f"{decisions}: missing README.md index of the decision records"])
-            (decisions / "README.md").write_text("# Decision records\n\n- [0006](0006-first.md): First\n")
+            (decisions / "README.md").write_text(decision_index(decisions))
             errors = decision_errors(decisions)
             self.assertEqual(len(errors), 1)
-            self.assertIn("0007-second.md", errors[0])
-            (decisions / "README.md").write_text("- [0006](0006-first.md): First\n- [0007](0007-second.md): Second\n")
+            self.assertTrue("0007-parallel.md" in errors[0] and "0007-second.md" in errors[0], errors)
+            # Regenerating lists both, so only the collision is reported until one is renumbered.
+            (decisions / "README.md").write_text(regenerated_index((decisions / "README.md").read_text(), decisions))
+            self.assertEqual(decision_errors(decisions), errors)
+            # A renumbered record whose title kept the old number is caught too.
+            (decisions / "0007-parallel.md").rename(decisions / "0008-parallel.md")
+            (decisions / "README.md").write_text(decision_index(decisions))
+            errors = decision_errors(decisions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("0008-parallel.md", errors[0])
+            (decisions / "0008-parallel.md").write_text("# 0008. Parallel\n")
+            (decisions / "notes.md").write_text("# Notes\n")
+            (decisions / "README.md").write_text(decision_index(decisions))
+            errors = decision_errors(decisions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("NNNN-<slug>.md", errors[0])
+        self.assertEqual(decision_errors(ROOT / "docs/decisions"), [])
+
+    def test_the_decision_index_is_generated_from_titles_and_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp)
+            (decisions / "0007-later.md").write_text(
+                "# 0007. Later choice\n\n## Status\n\nAccepted; superseded in part on 2026-11-19 by\n[ADR-0009](0009-x.md).\n\n## Context\n")
+            (decisions / "0006-first.md").write_text(
+                "# 0006. First choice\n\n## Status\n\nSuperseded by [0007](0007-later.md) on 2026-11-20.\n")
+            (decisions / "0008-plain.md").write_text("# 0008. Plain\n\n## Status\n\nAccepted. Specified in SPEC-1.\n")
+            (decisions / "0005-gone.md").write_text("# 0005. Gone\n\n## Status\n\nSuperseded on 2026-11-26: the index is generated.\n")
+            index = decision_index(decisions)
+            entries = [line for line in index.splitlines() if line.startswith("- [")]
+            self.assertEqual(entries, [
+                "- [0005](0005-gone.md): Gone (superseded)",
+                "- [0006](0006-first.md): First choice (superseded by 0007)",
+                "- [0007](0007-later.md): Later choice (partly superseded by 0009)",
+                "- [0008](0008-plain.md): Plain",
+            ])
+            self.assertIn("--decision-index", index)
+
+    def test_regenerating_keeps_the_committed_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp)
+            for number in ("0006", "0007", "0008", "0009"):
+                (decisions / f"{number}-r.md").write_text(f"# {number}. R{number}\n")
+            head = DECISION_INDEX_HEAD
+            current = head + "- [0006](0006-r.md): R0006\n- [0008](0008-r.md): R0008\n- [0007](0007-r.md): Old\n- [0005](0005-gone.md): Gone\n"
+            self.assertEqual(regenerated_index(current, decisions), head
+                             + "- [0006](0006-r.md): R0006\n- [0008](0008-r.md): R0008\n- [0007](0007-r.md): R0007\n- [0009](0009-r.md): R0009\n")
+            self.assertEqual(regenerated_index("", decisions), decision_index(decisions))
+
+    def test_a_regeneration_on_an_unsorted_base_meets_an_older_branch(self):
+        # Review round 2 of #1789: A and B land in the order B, A; C regenerates on that dev to add
+        # its record while E, branched before both, lands by union. C's merge candidate stays valid.
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp) / "decisions"
+            decisions.mkdir()
+            line = lambda n: f"- [{n}]({n}-r.md): R{n}\n"
+            for number in ("0006", "0007", "0008"):
+                (decisions / f"{number}-r.md").write_text(f"# {number}. R{number}\n")
+            head = DECISION_INDEX_HEAD
+            dev0 = head + line("0006")
+            dev1 = dev0 + line("0008") + line("0007")
+            older = dev0 + line("0010")
+            files = {}
+            def union(ours, base, theirs):
+                for name, text in (("ours", ours), ("base", base), ("theirs", theirs)):
+                    files[name] = Path(tmp) / name
+                    files[name].write_text(text)
+                return subprocess.run(["git", "merge-file", "--union", "-p", files["ours"], files["base"], files["theirs"]],
+                                      capture_output=True, text=True, check=True).stdout
+            dev2 = union(older, dev0, dev1)  # the train checks out the branch and merges dev into it
+            (decisions / "0009-r.md").write_text("# 0009. R0009\n")
+            branch = regenerated_index(dev1, decisions)
+            (decisions / "0010-r.md").write_text("# 0010. R0010\n")
+            for ours, theirs in ((branch, dev2), (dev2, branch)):
+                merged = union(ours, dev1, theirs)
+                (decisions / "README.md").write_text(merged)
+                self.assertEqual(decision_errors(decisions), [], merged)
+
+    def test_superseded_marks_follow_the_records_status(self):
+        cases = {
+            "Superseded on 2026-11-21 by [ADR-0444](x.md). Originally accepted.": " (superseded by 0444)",
+            "Superseded by [ADR-0289](x.md) for the model; the rest stands.": " (partly superseded by 0289)",
+            "Superseded on 2026-11-21 for delivery campaigns by [ADR-0439](x.md).": " (partly superseded by 0439)",
+            "Accepted. Its rule is superseded for Codex by\n[ADR-0355](x.md).": " (partly superseded by 0355)",
+            "Accepted. [SPEC-1](s.md) [ADR-0457](x.md) supersedes this decision: now Opus.": " (superseded by 0457)",
+            "Accepted. [ADR-0422](a.md) supersedes the draw. [ADR-0426](b.md) supersedes the select.":
+                " (partly superseded by 0422, 0426)",
+            "Accepted. On 2026-11-21, [ADR-0439](x.md) superseded the clause.": " (partly superseded by 0439)",
+            "Accepted. Amends [0100](a.md), itself superseded by [0200](b.md).": "",
+            "Accepted. Supersedes the effort of [ADR-0289](x.md).": "",
+            "Superseded on 2026-11-26: the index is generated.": " (superseded)",
+        }
+        for status, mark in cases.items():
+            self.assertEqual(superseded_mark(status), mark, status)
+
+    def test_a_missing_or_stale_index_names_the_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp)
+            (decisions / "0006-first.md").write_text("# 0006. First\n")
+            self.assertEqual(decision_errors(decisions), [f"{decisions}/README.md: missing; run python3 scripts/check_repository.py --decision-index"])
+            (decisions / "README.md").write_text(decision_index(decisions))
+            (decisions / "0007-second.md").write_text("# 0007. Second\n")
+            index = decision_index(decisions)
+            for stale in (index.replace("- [0007](0007-second.md): Second\n", ""),
+                          index + "- [0007](0007-second.md): Second\n",
+                          index.replace(": Second", ": Old title")):
+                (decisions / "README.md").write_text(stale)
+                errors = decision_errors(decisions)
+                self.assertEqual(len(errors), 1, stale)
+                self.assertIn("is stale", errors[0])
+                self.assertIn("--decision-index", errors[0])
+            (decisions / "README.md").write_text(index)
             self.assertEqual(decision_errors(decisions), [])
+
+    def test_two_branches_that_each_add_a_record_merge_in_either_order(self):
+        # Yulius merges the index with Git's union driver (the clone's info/attributes): each
+        # branch's new line survives in the order of the side checked out, and the check passes.
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp) / "decisions"
+            decisions.mkdir()
+            (decisions / "0006-base.md").write_text("# 0006. Base\n")
+            base = decision_index(decisions)
+            (decisions / "0007-left.md").write_text("# 0007. Left\n")
+            left = decision_index(decisions)
+            (decisions / "0007-left.md").unlink()
+            (decisions / "0008-right.md").write_text("# 0008. Right\n")
+            right = decision_index(decisions)
+            (decisions / "0007-left.md").write_text("# 0007. Left\n")
+            sides = {name: Path(tmp) / name for name in ("base", "left", "right")}
+            for name, text in (("base", base), ("left", left), ("right", right)):
+                sides[name].write_text(text)
+            for ours, theirs in (("left", "right"), ("right", "left")):
+                merged = subprocess.run(["git", "merge-file", "--union", "-p", sides[ours], sides["base"], sides[theirs]],
+                                        capture_output=True, text=True, check=True).stdout
+                (decisions / "README.md").write_text(merged)
+                self.assertEqual(decision_errors(decisions), [], merged)
 
     def test_a_new_decision_names_two_rejected_alternatives(self):
         adr = "# 0009. Choice\n\n## Alternatives\n\n- Keep it: {}\n\n## Consequences\n\n- One\n- Two\n"

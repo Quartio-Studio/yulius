@@ -91,7 +91,7 @@ impl App {
                 slug: s.slug,
             });
         }
-        let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+        let admin = ctx.user.is_admin();
         let accounts = store
             .accounts()
             .await?

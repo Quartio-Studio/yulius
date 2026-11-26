@@ -7,28 +7,22 @@ description: Write or refine Yulius specifications with traceable requirements, 
 
 Read `AGENTS.md`, `docs/engineering/specifications.md` and the relevant existing spec from the
 repository root. Start from `.ai/templates/spec.md`, the form `spec_check` validates (every
-section stays; one that does not apply says why). The product brief is SPEC-001 in `.ai/specs`:
-distinguish reference observations, user requirements and proposed defaults.
+section stays; one that does not apply says why). Distinguish reference observations, user
+requirements and proposed defaults.
 
-1. Inspect the affected behavior/code and scope authorized by the user. Record
-   the concrete outcome and current failure or missing capability. Read the
-   neighbours first: `tasks_list`, then `task_get` on each task near the change
-   (plan, PR and stage, claims, waits, screen). Extend or wait for one that
-   overlaps; never ask a person to relay a status you can read there. The view is
-   read-only: only a person, through the Superagent, writes to a task.
-2. Assign requirement IDs and observable acceptance scenarios. Include invalid
-   input, cancellation, retries, recovery and old-default behavior where affected.
-3. Define ownership, boundary types, persistence/compatibility and the exit trigger
-   for each nonterminal state. Read `docs/engineering/runtime-contracts.md` only
-   for affected runtime boundaries.
-4. Identify blocking decisions separately from reversible implementation choices.
-   Continue independent design work; don't turn a proposal into product approval.
-5. Review the spec against the actual brief, then run `spec_check` (its form) and
-   `python3 scripts/check_repository.py` (links). Neither proves the design is sufficient:
-   explain acceptance evidence still needed.
+1. Inspect the affected behavior and code and the scope the user authorized. Record the concrete
+   outcome and the current failure or missing capability; read the neighbouring tasks first
+   (`delivery-pipeline`, Ready).
+2. Assign requirement IDs and observable acceptance scenarios. Include invalid input,
+   cancellation, retries, recovery and old-default behavior where affected.
+3. Define ownership, boundary types, persistence/compatibility and the exit trigger for each
+   nonterminal state. Read `docs/engineering/runtime-contracts.md` only for affected runtime
+   boundaries.
+4. Separate blocking decisions from reversible implementation choices; a proposal is not
+   product approval.
+5. Review the spec against the actual brief, then run `spec_check` (its form) and `python3
+   scripts/check_repository.py` (links); say what acceptance evidence is still needed.
 
-Keep reference research and speculative product notes outside the repository.
-Only write a product spec into the repo when the user has requested that artifact
-or authorized the corresponding feature work. Deliver the spec path, state,
-requirements and unresolved decisions. A spec-only
-task ends with a complete reviewable spec; do not silently implement or publish it.
+Keep reference research and speculative product notes outside the repository. Deliver the spec
+path, state, requirements and unresolved decisions; a spec-only task ends with a complete
+reviewable spec, neither implemented nor published.

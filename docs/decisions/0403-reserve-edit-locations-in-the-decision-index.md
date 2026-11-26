@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted for Yulius's own repository.
+Superseded on 2026-11-26 (audit L10 F8): the index is generated from the records by
+`python3 scripts/check_repository.py --decision-index`, and the slots, `scripts/decision_slots.py`
+and the index's union line in `.gitattributes` are gone. Parallel additions still merge: the
+repository check accepts the entries in any order, and the regeneration keeps the committed order,
+so the union merge Yulius applies in its clones passes whichever branch is checked out first. One
+case the slots did not have remains: two branches that change neighbouring entries (a title or a
+Status mark beside a new record) can leave both versions of a line, and the check asks for a
+regeneration.
 
 ## Context
 

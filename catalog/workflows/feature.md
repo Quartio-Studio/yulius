@@ -26,10 +26,7 @@ Follow `delivery-pipeline`; nobody accepts the result for you; the whole gate is
   delivers and leaving the project working.
 - Build each slice with `test-driven-development`: a test that fails without the change, then the
   change. One step in progress at a time, done as soon as it is finished.
-- Review: the reviewer from the task briefing runs `om-code-review` on the diff and
-  the spec, marking findings own code or pre-existing. Answer each in the PR. Fix own code
-  test-first, never as a follow-up issue (request changes). Re-review until approval without asking the user.
-  File only pre-existing bugs, flaky tests the change did not cause and nits left after 3 rounds,
-  saying why they are outside the change.
+- Review: the reviewer from the task briefing runs `om-code-review` on the diff and the spec;
+  answer each finding as that skill says.
 - Finish with `om-check-and-commit` and `verification-before-completion`, then deliver: merge on
   green, clean up (`git-hygiene`), deploy dev only if asked (`cd_deploy`); production is a person's.

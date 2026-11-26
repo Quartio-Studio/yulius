@@ -1940,9 +1940,8 @@ mod tests {
         assert_eq!(dev.secrets, ["STAGING_VM_SSH_KEY"]);
         let dev_about = dev.about.as_deref().unwrap_or_default();
         assert!(dev_about.contains("staging VM"), "{dev_about}");
-        // SPEC-591 STG-007: the staging VM is the merge-first target, and the full suite (both
-        // test partitions and e2e) runs on the merged revision. PRs run all quality passes
-        // and security (SPEC-598).
+        // SPEC-591 STG-007: the staging VM is the merge-first target, and the full suite (test
+        // and e2e) runs on the merged revision. PRs run all quality passes and security.
         assert!(dev.merge_first);
         assert_eq!(cd.merge_first().map(|t| t.name.as_str()), Some("dev"));
         let config = parse_yulius_toml(raw)?;
@@ -1960,8 +1959,7 @@ mod tests {
                 ("docs", false),
                 ("deps", false),
                 ("file-contracts", false),
-                ("test (1/2)", true),
-                ("test (2/2)", true),
+                ("test", true),
                 ("e2e", true),
                 ("security", false)
             ],

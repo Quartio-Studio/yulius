@@ -28,9 +28,7 @@ Follow `delivery-pipeline`; a fix is one concern; the whole gate is Yulius CI's.
   could break.
 - Fix with `om-fix`: commit the regression test first, show it fails, then the smallest fix
   that makes it pass, no refactoring.
-- Review by the reviewer from the task briefing (`om-code-review`) marks
-  findings own code or pre-existing. Answer each in the PR. Fix own code test-first, never as a
-  follow-up issue (request changes). Re-review until approval without asking the user. File only pre-existing
-  bugs, flaky tests the change did not cause and nits left after 3 rounds, saying why they are outside the change. Then
+- Review: the reviewer from the task briefing runs `om-code-review` on the diff and the spec;
+  answer each finding as that skill says. Then
   `om-check-and-commit` and deliver: merge on green, clean up (`git-hygiene`), deploy dev only if
   asked (`cd_deploy`); production is a person's.

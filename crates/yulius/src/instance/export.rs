@@ -25,15 +25,25 @@ use super::walk::{self, Seen, Skipped};
 use super::{IdRange, KEPT, MANIFEST, MANIFEST_LEN, Manifest, Progress, REFUSED, Service};
 
 /// Options of `yulius instance export`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct ExportOptions {
-    /// The data directory.
+    /// Data directory.
+    #[arg(
+        long = "data-dir",
+        visible_alias = "data",
+        env = "YULIUS_DATA",
+        default_value = "/var/lib/yulius"
+    )]
     pub data_dir: PathBuf,
-    /// The server's unit.
+    /// The server's systemd unit.
+    #[arg(long, default_value = "yulius.service")]
     pub service: String,
-    /// The update helper's unit.
+    /// The update helper's unit (no export while it runs).
+    #[arg(long, default_value = "yulius-update.service")]
     pub update_service: String,
-    /// Keep the instance frozen and disable its unit after a successful export.
+    /// Moving to another host: after a successful export keep the instance frozen and
+    /// disable its unit, so it never runs beside the copy.
+    #[arg(long = "move")]
     pub move_out: bool,
 }
 
