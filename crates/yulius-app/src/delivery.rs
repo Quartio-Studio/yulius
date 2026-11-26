@@ -76,8 +76,9 @@ pub(crate) const PREPARE_ALLOWANCE: Duration = Duration::from_secs(35 * 60);
 pub const ENVIRONMENT_OUTPUT_BYTES: usize = 1 << 20;
 /// Largest spec file read.
 pub const MAX_SPEC_BYTES: u64 = 256 * 1024;
-/// Most files examined when discovering an unregistered spec.
-pub const MAX_SPEC_CANDIDATES: usize = 500;
+/// Most directory entries listed when discovering an unregistered spec, far above any real
+/// specs directory: all of them are listed before the slug-named file is read first.
+pub const MAX_SPEC_CANDIDATES: usize = 10_000;
 /// Integration commits on the Git page.
 pub const RECENT_COMMITS: u32 = 20;
 /// Open pull requests examined on the Git page.
@@ -1217,6 +1218,15 @@ impl RepoReadError {
     }
 }
 
+/// The slug of a task's `type/NNN-slug` branch: `cleanup-x` of `feat/651-cleanup-x`.
+fn branch_slug(task: &TaskRecord) -> Option<&str> {
+    task.branch
+        .as_deref()
+        .and_then(|b| b.split_once('/').map(|(_, rest)| rest))
+        .and_then(|rest| rest.split_once('-').map(|(_, slug)| slug))
+        .filter(|slug| !slug.is_empty())
+}
+
 /// Reads a whole spec through an in-worktree handle, refusing links and partial documents.
 pub(crate) async fn read_spec(root: &Path, relative: &str) -> Result<String, RepoReadError> {
     read_checked_file(root, relative, MAX_SPEC_BYTES, true).await
@@ -1854,13 +1864,7 @@ impl App {
                 return;
             }
         };
-        let slug = task
-            .branch
-            .as_deref()
-            .and_then(|b| b.split_once('/').map(|(_, rest)| rest))
-            .and_then(|rest| rest.split_once('-').map(|(_, slug)| slug))
-            .filter(|slug| !slug.is_empty())
-            .unwrap_or("task");
+        let slug = branch_slug(task).unwrap_or("task");
         let path = format!("{dir}/{}-{slug}.md", given.formatted());
         let update = TaskFieldUpdate {
             spec_path: Some(path),
@@ -1913,8 +1917,9 @@ impl App {
         }
     }
 
-    /// Looks for a spec naming this task under the project's specs directory. Returns the
-    /// directory searched and the repository-relative path found.
+    /// Looks for a spec naming this task under the project's specs directory, the file named
+    /// with the branch slug first. Returns the directory searched and the repository-relative
+    /// path found.
     async fn dlv_discover_spec(
         &self,
         task: &TaskRecord,
@@ -1948,7 +1953,13 @@ impl App {
                 names.push(name.to_owned());
             }
         }
-        names.sort();
+        let slug_name = branch_slug(task).map(|slug| format!("-{slug}.md"));
+        let not_slug_named = |name: &String| {
+            slug_name
+                .as_deref()
+                .is_none_or(|ending| !name.ends_with(ending))
+        };
+        names.sort_by_cached_key(|name| (not_slug_named(name), name.clone()));
         for name in names {
             let relative = format!("{dir}/{name}");
             let Ok(text) = read_spec(worktree, &relative).await else {
