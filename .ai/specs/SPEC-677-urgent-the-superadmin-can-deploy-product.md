@@ -1,6 +1,6 @@
 ---
 yulius-task: 728e003b-5abd-430b-82f2-d69fd9946b8c
-status: in-progress
+status: done
 ---
 
 # SPEC-677: The superadmin deploys production and releases through the GitHub App
@@ -51,12 +51,12 @@ refused. Every other rule of a production release stays as it is.
 
 ## Plan
 
-- [ ] Spec: the superadmin acts through the App for production
-- [ ] Failing tests: superadmin deploy, release and merge through the App
-- [ ] The App's token and the App's name in the note and the audit
-- [ ] A plain refusal when GitHub refuses the App
-- [ ] Docs, changes entry and evidence
-- [ ] Independent review approves the head
+- [x] Spec: the superadmin acts through the App for production
+- [x] Failing tests: superadmin deploy, release and merge through the App
+- [x] The App's token and the App's name in the note and the audit
+- [x] A plain refusal when GitHub refuses the App
+- [x] Docs, changes entry and evidence
+- [x] Independent review approves the head
 
 ## Acceptance criteria
 
@@ -100,3 +100,25 @@ refused. Every other rule of a production release stays as it is.
   and agents out. The superadmin has no GitHub account to check, the App would need Administration
   write, and the App would write the very rule that binds it. That is not equally small or safe,
   so the onboarding task keeps asking a person ("Needs you") as ADR-0129 says.
+
+## Evidence
+
+- Red first: `scripts/cargo nextest run -p yulius -E '… cd::the_superadmin_deploys_production_through_the_github_app | delivery::the_superadmin_delivers_merges_and_releases_through_the_app | cd::production_is_deployed_by_an_administrator_who_types_the_slug'`
+  before the change: both superadmin tests failed with `left: 403` (the old "acts as a person on
+  GitHub" refusal). The GitHub-user test passed, and it asserts `merge_pull` by `bob`.
+- Green: the same three tests and `access::app_refusal_tests` (3) pass, 6 of 6.
+- `cd::`, `delivery::`, `staging::` and `production_protect` of `yulius::main`, plus the whole
+  `yulius-app` package: 1004 passed, 0 failed.
+- The whole `yulius::main` binary: 2837 passed and 10 failed under host load
+  (`local_ci::` ×6, `memory_guard::a_contained_*` ×3,
+  `delivery::overlapping_parked_status_reads_bound_git_workers_after_timeouts`). All 10 pass when
+  rerun alone (`--test-threads 2`: 10 of 10). None touches the changed code.
+- `scripts/dev quick` passes (repository contracts, `cargo fmt --check`).
+  `cargo clippy --locked -p yulius-app -p yulius --all-targets --all-features -- -D warnings` and
+  `RUSTDOCFLAGS=-D warnings cargo doc -p yulius-app --no-deps` are clean.
+- Not tested against real GitHub: the App's refusal by a real ruleset is exercised through the fake
+  GitHub's `app_write_refusal`, with GitHub's 405 wording, and the classifier's unit tests cover
+  403, 405 and 422. The customer instance's own deploy is the owner's to try once this reaches
+  `main`.
+- Security scan: Vidoc is turned off for this project ("Security scan disabled"), so the scan did
+  not run. It neither passed nor failed.
