@@ -1,22 +1,26 @@
 # Architecture
 
+> Archive: the architecture document as it stood on 2026-11-26, kept verbatim except for its links.
+> The current one is [docs/architecture.md](../architecture.md); this file holds the per-feature
+> detail it links to.
+
 One Rust binary, `yulius`, serves the web UI and API, supervises detached `ptyhost` processes
 that own Claude Code sessions inside per-sandbox containment, and talks to GitHub and
 Anthropic. Codex returns as a second harness
-([SPEC-503](../.ai/specs/SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
-[decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): its
+([SPEC-503](../../.ai/specs/SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
+[decision 0355](../decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): its
 adapter in `yulius-harness` plans a run, reads its rollout and checks its sign-ins, the supervisor
 runs a Codex task in its own Codex home (see "Codex" below), and Yulius provides the pinned
 Codex CLI itself (see "Codex CLI" below); Codex subscriptions sign in by device code, an API key
 or an imported `auth.json`. The detailed contracts are in
-[SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
-[engineering/architecture.md](engineering/architecture.md).
+[SPEC-002](../../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
+[engineering/architecture.md](../engineering/architecture.md).
 
-The GitHub adapter exposes the active reset time for App-authenticated requests. Task displays use the recorded delivery and ordered pull observations during an outage. [Decision 0446](decisions/0446-keep-github-availability-separate-from-task-state.md)
+The GitHub adapter exposes the active reset time for App-authenticated requests. Task displays use the recorded delivery and ordered pull observations during an outage. [Decision 0446](../decisions/0446-keep-github-availability-separate-from-task-state.md)
 
-Contained agent and CI processes have a 1 GiB `/tmp`. The process host creates a run-owned directory inside the sandbox disk quota for disposable builds. Commands receive a build subdirectory. The ownership marker lives in its parent. The host pins the parent directory, and the server retains its launch ownership at readiness or reclaims a stopped host's builds before returning a startup error. Cleanup walks the opened build tree and keeps its versioned receipt with the protected run metadata. Same-boot recovery checks host and child process identities before removing the tree. [Decision 0439](decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
+Contained agent and CI processes have a 1 GiB `/tmp`. The process host creates a run-owned directory inside the sandbox disk quota for disposable builds. Commands receive a build subdirectory. The ownership marker lives in its parent. The host pins the parent directory, and the server retains its launch ownership at readiness or reclaims a stopped host's builds before returning a startup error. Cleanup walks the opened build tree and keeps its versioned receipt with the protected run metadata. Same-boot recovery checks host and child process identities before removing the tree. [Decision 0439](../decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
 
-The supervisor terminates a disconnected run using the identities recorded by its host. On Linux it checks exit of the entire process before recording a forced loss. [Decision 0390](decisions/0390-linux-host-exit-is-observed-for-the-whole-process.md)
+The supervisor terminates a disconnected run using the identities recorded by its host. On Linux it checks exit of the entire process before recording a forced loss. [Decision 0390](../decisions/0390-linux-host-exit-is-observed-for-the-whole-process.md)
 
 ```mermaid
 flowchart LR
@@ -61,33 +65,33 @@ flowchart LR
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
 ```
 
-Task delivery stores observed terminal PR metadata in SQLite. The GitHub adapter coalesces credential-scoped display GETs, revalidates with ETags and records installation attempts at the HTTP transport. The delivery reconciliation tick discovers new PRs on parked terminal branches. GitHub response headers supply the remaining quota and reset time. [ADR-0447](decisions/0447-task-display-shares-github-reads-and-yields-to-delivery.md)
+Task delivery stores observed terminal PR metadata in SQLite. The GitHub adapter coalesces credential-scoped display GETs, revalidates with ETags and records installation attempts at the HTTP transport. The delivery reconciliation tick discovers new PRs on parked terminal branches. GitHub response headers supply the remaining quota and reset time. [ADR-0447](../decisions/0447-task-display-shares-github-reads-and-yields-to-delivery.md)
 
 ## Codex
 
 A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,
 using its chosen model or `-m gpt-6.2-astra`. Each new or resumed process receives the task's
 chosen effort or `-c model_reasoning_effort="high"` for every model.
-[Decision 0444](decisions/0444-codex-tasks-inherit-high-effort-on-every-model.md)
+[Decision 0444](../decisions/0444-codex-tasks-inherit-high-effort-on-every-model.md)
 For a ChatGPT Pro 500 sign-in, the launch planner writes `service_tier = "ultrafast"` as the
-home default ([decision 0375](decisions/0375-codex-selects-ultrafast-for-pro-500.md)).
+home default ([decision 0375](../decisions/0375-codex-selects-ultrafast-for-pro-500.md)).
 The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
 `hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
 `codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
 refreshed `auth.json` goes back into the vault, and the file leaves the sandbox once no run of the
 account is left there. If a session document predates its rollout, transcript reads look up the
 file by session ID and the next index refresh saves its path on the same document.
-[SPEC-538](../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
+[SPEC-538](../../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
 
-For an explicit restart of stopped Codex work, the supervisor carries a continuation prompt through admission and into the native resume. It derives initial activity from the launch mode and observes subsequent turns in the rollout. [Decision 0429](decisions/0429-continue-stopped-codex-work-in-its-saved-session.md)
+For an explicit restart of stopped Codex work, the supervisor carries a continuation prompt through admission and into the native resume. It derives initial activity from the launch mode and observes subsequent turns in the rollout. [Decision 0429](../decisions/0429-continue-stopped-codex-work-in-its-saved-session.md)
 
 The generated Codex configuration hides the rate-limit model switch reminder. If a live terminal
 shows the picker or its resized alternate grid has yet to repaint, the terminal writer holds
 automated pastes and submits. For an indeterminate screen, the supervisor saves the viewer size in the run directory, requests a redraw at a temporary width and restores the saved size under the same writer lock. If the server restarts during that probe, reattachment restores the saved size. Later viewer resizes update it, and drop it when it cannot be saved. The PR watch can deliver
 its pending notice after the picker closes. The run directory records the paste before it is sent.
 A successful Enter clears the record. After an interrupted submission or server reattachment,
-a confirmed empty composer clears it. An inconclusive probe opens Needs you on the observed live attempt. A pending PR notice or automatic prompt (the wake after an outage) releases its own request at its next send once the screen is readable; a person's message keeps its request until they resend it. [Decision 0451](decisions/0451-repaint-an-unreadable-codex-terminal-before-typing.md)
-[Decision 0443](decisions/0443-hold-codex-input-at-the-rate-limit-model-picker.md)
+a confirmed empty composer clears it. An inconclusive probe opens Needs you on the observed live attempt. A pending PR notice or automatic prompt (the wake after an outage) releases its own request at its next send once the screen is readable; a person's message keeps its request until they resend it. [Decision 0451](../decisions/0451-repaint-an-unreadable-codex-terminal-before-typing.md)
+[Decision 0443](../decisions/0443-hold-codex-input-at-the-rate-limit-model-picker.md)
 
 ```mermaid
 flowchart LR
@@ -101,9 +105,9 @@ flowchart LR
   SUP2 -->|"a genuine refresh"| ACC
 ```
 
-The capacity estimator reads the model and four token classes stored per attempt. It uses Standard GPT-6 prices for Codex and reports a weekly Ultrafast scenario for eligible models. The attempt totals lack per-response speed settings and cover the task session. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
+The capacity estimator reads the model and four token classes stored per attempt. It uses Standard GPT-6 prices for Codex and reports a weekly Ultrafast scenario for eligible models. The attempt totals lack per-response speed settings and cover the task session. [Decision 0440](../decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
 
-A Codex run's totals include the responses of its session's subagents, which Codex writes to rollouts of their own in the sandbox's shared sessions folder. The watch and the recount find them by `parent_thread_id`, count each response once in the run whose window holds it, and store the parts other models answered (`metrics.model_parts`), which the estimator prices at their own models. [Decision 0455](decisions/0455-count-codex-subagents-under-their-sessions-run-by-model.md)
+A Codex run's totals include the responses of its session's subagents, which Codex writes to rollouts of their own in the sandbox's shared sessions folder. The watch and the recount find them by `parent_thread_id`, count each response once in the run whose window holds it, and store the parts other models answered (`metrics.model_parts`), which the estimator prices at their own models. [Decision 0455](../decisions/0455-count-codex-subagents-under-their-sessions-run-by-model.md)
 
 A Codex subscription signs in with `codex login --device-auth` in the login terminal (the
 provided CLI, its `CODEX_HOME` in the sign-in's own folder with credentials kept in a file),
@@ -114,9 +118,9 @@ or Codex) and then its way in, a Codex card imports a new `auth.json`, the compo
 groups explicit model IDs by provider. Each Codex or Gemini choice sends its harness and model,
 and the Codex default choice sends its harness alone. Settings and the composer share the model's
 supported effort levels and browser preferences. A missing or unusable model preference selects
-Opus 5.5, Claude Code's default, while a saved JSON null selects Random. [Decision 0457](decisions/0457-new-tasks-default-to-claude-code-on-opus-5-5.md)
+Opus 5.5, Claude Code's default, while a saved JSON null selects Random. [Decision 0457](../decisions/0457-new-tasks-default-to-claude-code-on-opus-5-5.md)
 An automation chooses the agent of the tasks it
-creates. See [ADR-0372](decisions/0372-model-pickers-use-provider-reasoning-levels.md).
+creates. See [ADR-0372](../decisions/0372-model-pickers-use-provider-reasoning-levels.md).
 
 Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
 accounts, by `codex resume <id>`: at a usage limit, when a person moves it and when its
@@ -134,10 +138,10 @@ selects the parent task's harness for a follow-up and Claude Code for the CLI or
 Superagent, including approved cross-sandbox requests. Claude Code then inherits Opus 5.5 at high
 effort. Explicit `auto` still draws. An automation created by a task inherits its
 parent's harness by default. Other automations default to a draw on each run.
-[Decision 0457](decisions/0457-new-tasks-default-to-claude-code-on-opus-5-5.md)
+[Decision 0457](../decisions/0457-new-tasks-default-to-claude-code-on-opus-5-5.md)
 
-An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
-[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))
+An Antigravity task ([decision 0361](../decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](../decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))
 runs the `agy` TUI on a Google account, on its own model and effort or else `--model gemini-4-neon
 --effort high` (SPEC-519), with a home of its own in its run directory,
 `<run>/antigravity-home`, the folder whose `.gemini` the CLI reads: Yulius writes its
@@ -146,7 +150,7 @@ a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Goog
 CLI's token file. Its `antigravity-cli/brain` and `conversations` link to
 `<sandbox>/antigravity/shared`, so a conversation resumes on any Antigravity account by
 `--conversation <id>`. Without a prompt or continuation, a resumed Antigravity process starts
-with its saved idle activity or Waiting. The next turn follows native events. [ADR-0445](decisions/0445-antigravity-resume-activity-follows-its-launch-prompt.md)
+with its saved idle activity or Waiting. The next turn follows native events. [ADR-0445](../decisions/0445-antigravity-resume-activity-follows-its-launch-prompt.md)
 
 A contained run binds that `.gemini` over the sandbox home's (the agent's
 shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's Antigravity home.
@@ -157,9 +161,9 @@ with `fullyIdle: false` probes live background processes (including PTY-hosted c
 `yulius wait` calls: when only `yulius wait` is running, Yulius settles the turn to Waiting with
 `yulius_wait = true` so the merge queue proceeds; when non-wait background work runs, Yulius
 settles `activity = Waiting` while tracking `background_shells >= 1` so SPEC-528 does not show
-Needs You and the merge queue holds until that work ends ([ADR-0419](decisions/0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md),
-[SPEC-580](../.ai/specs/SPEC-580-an-armed-green-pr-merges-when-its-agent.md)). A first invocation
-following a system message signals activity without submitting a prompt ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). When its run ends, a
+Needs You and the merge queue holds until that work ends ([ADR-0419](../decisions/0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md),
+[SPEC-580](../../.ai/specs/SPEC-580-an-armed-green-pr-merges-when-its-agent.md)). A first invocation
+following a system message signals activity without submitting a prompt ([SPEC-528](../../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). When its run ends, a
 token file the CLI refreshed replaces the stored sign-in and is removed.
 
 ```mermaid
@@ -176,9 +180,9 @@ flowchart LR
 ## Codex and Antigravity CLIs
 
 The Codex CLI and the Antigravity CLI are Yulius's own
-([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md),
-[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
-[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
+([decision 0355](../decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md),
+[decision 0361](../decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](../decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
 each pinned release (Codex 0.170.0, Antigravity 1.5.12) is downloaded once (Codex from npm,
 Antigravity from Google's release storage), checked against the sha512 in the source
 (`yulius_domain::agent_cli::{codex, antigravity}`) and unpacked into
@@ -217,8 +221,8 @@ A sandbox's processes share its cgroup limits, but not equally. CI jobs run in i
 with four times the CPU weight of the agents' `agents/` leaf. Under full load CI gets up to 80 % of
 the sandbox and the agents 20 % while the holder (`system/`) and the Docker engine (`engine/`), at
 the agents' weight each, idle; and idle CPU goes to whoever wants it. Agent Bash commands also run
-5 nice levels below the agents themselves ([SPEC-053](../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
-[decision 0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
+5 nice levels below the agents themselves ([SPEC-053](../../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
+[decision 0039](../decisions/0039-ci-jobs-get-the-cpu-first.md)).
 
 Weights only compare siblings, so the sandboxes' own groups are weighed too. While any CI job of
 a sandbox runs, its group weighs 500 among the sandboxes (100 with none), however many jobs run.
@@ -227,7 +231,7 @@ With CI and agents building in one sandbox and agents building in two others, CI
 the sandboxes get instead of 4/15, and each other sandbox keeps 1/7. Since SPEC-497 the weight
 follows the CPUs the sandbox's running jobs hold: 100 plus 100 per CPU, at least 500, at most
 10,000, so a sandbox holding 30 CPUs gets about 45 of 64 against four sandboxes whose agents build
-([decision 0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
+([decision 0350](../decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
 `ci/slots.rs` counts the jobs; `resources.rs` (`CiAdmission`) admits them from one CI budget for the
 whole instance, the capacity less an eighth for the server and the agents. A job starts when:
 - the running jobs' budgets with its own stay within three times the budget;
@@ -239,25 +243,25 @@ whole instance, the capacity less an eighth for the server and the agents. A job
 
 Waiting jobs start by priority (merge trains', pull requests', branches') and age; one that cannot
 start lets the others pass for 10 minutes at most, and a job takes its slot once admitted
-([decision 0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md)). The CI executor counts a job
+([decision 0353](../decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md)). The CI executor counts a job
 from its slot to its reap (`JobWeight`). The isolation adapter writes the weight, every
 preparation keeps it, and every start and stop of the server writes 100 again
-([SPEC-362](../.ai/specs/SPEC-362-ci-slots-per-job-configurable-per-projec.md),
-[decision 0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). A job's CPUs
+([SPEC-362](../../.ai/specs/SPEC-362-ci-slots-per-job-configurable-per-projec.md),
+[decision 0247](../decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). A job's CPUs
 (its "slots") are its budget, `cpus` in `[[ci.jobs]]` or an equal share of its run.
 
 Tasks (processes and threads) are one budget too, sized from the host (a quarter of its task
 table, at least 8192, at most three quarters of the service's own limit). CI jobs and the engine with its containers each stop at 3/8 of it, so the
 agent sessions keep at least a quarter. A session that still ends while the sandbox was at its
 task or memory limit says so in the task
-([SPEC-268](../.ai/specs/SPEC-268-parallel-tasks-in-one-sandbox-crash-clau.md),
-[decision 0198](decisions/0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)).
+([SPEC-268](../../.ai/specs/SPEC-268-parallel-tasks-in-one-sandbox-crash-clau.md),
+[decision 0198](../decisions/0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)).
 All sandboxes together stop at three quarters of the service's limit (`sandboxes/pids.max`), so
 the server keeps a quarter however many are busy; a hit there or at the service's own limit
 counts as the sandbox's, one above the service does not
-([SPEC-272](../.ai/specs/SPEC-272-all-sandboxes-together-keep-the-server-a.md),
-[SPEC-316](../.ai/specs/SPEC-316-limit-counters-count-forks-refused-at-th.md),
-[decision 0201](decisions/0201-all-sandboxes-share-a-task-limit-below-the-services.md)).
+([SPEC-272](../../.ai/specs/SPEC-272-all-sandboxes-together-keep-the-server-a.md),
+[SPEC-316](../../.ai/specs/SPEC-316-limit-counters-count-forks-refused-at-th.md),
+[decision 0201](../decisions/0201-all-sandboxes-share-a-task-limit-below-the-services.md)).
 
 The sandboxes' groups do not live in the server's unit. systemd 258 and later start a unit
 inside the unit's own group, which the kernel refuses while a group below it holds processes, so
@@ -267,8 +271,8 @@ in the sessions unit `yulius-sandboxes.service`, in one slice with the server; t
 unit, `yulius-adopt.service`, runs before every start of the server and moves what an earlier
 layout left in the server's unit. `yulius host setup` writes all three; without them the server
 uses its own unit as before, and Restart and Update now are refused where the restart would fail
-([SPEC-458](../.ai/specs/SPEC-458-urgent-yulius-service-cannot-restart-wit.md),
-[decision 0298](decisions/0298-sessions-live-in-their-own-unit.md)). The task limits below are
+([SPEC-458](../../.ai/specs/SPEC-458-urgent-yulius-service-cannot-restart-wit.md),
+[decision 0298](../decisions/0298-sessions-live-in-their-own-unit.md)). The task limits below are
 then the sessions unit's.
 
 ```mermaid
@@ -290,10 +294,10 @@ The e2e suite (`e2e/`, test-only) shares that CPU with the agents when an agent 
 `ci/` leaf in CI. Its static server (`e2e/serve.py`) keeps connections alive and queues 1024 of
 them, so a page's burst of module requests waits for a busy server instead of having its SYNs
 dropped; the runner's workers stay bounded by the CPU budget
-([SPEC-148](../.ai/specs/SPEC-148-fix-354-349-356-394-the-e2e-suite-holds.md),
-[decision 0122](decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)). Three waits
+([SPEC-148](../../.ai/specs/SPEC-148-fix-354-349-356-394-the-e2e-suite-holds.md),
+[decision 0122](../decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)). Three waits
 have their own named budgets, each for one first-load condition: a test's first look at a page
-(`FIRST_LOAD_MS`, [decision 0262](decisions/0262-an-e2e-tests-first-look-at-a-page-has-a-first-load-budget.md)),
+(`FIRST_LOAD_MS`, [decision 0262](../decisions/0262-an-e2e-tests-first-look-at-a-page-has-a-first-load-budget.md)),
 a task terminal's first screen (`TERMINAL_SHOW_MS`, 0251) and Monaco's cold load
 (`MONACO_LOAD_MS`, 0122); the other waits keep the budgets they had (the runner's defaults or a
 test's own), with no retries.
@@ -308,21 +312,21 @@ flowchart LR
 ## Containers
 
 Each isolated sandbox has its own Docker engine
-([SPEC-187](../.ai/specs/SPEC-187-docker-works-inside-sandboxes-for-tasks.md),
-[decision 0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md),
-superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)).
+([SPEC-187](../../.ai/specs/SPEC-187-docker-works-inside-sandboxes-for-tasks.md),
+[decision 0151](../decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md),
+superseding [0140](../decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)).
 
-- **The socket** ([decision 0158](decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
+- **The socket** ([decision 0158](../decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
   A Docker front (`yulius sandbox-host docker`), a process the server starts beside every live
   holder, adopted ones included, serves `<state>/docker/docker.sock` (0660 by a umask private to
   the binding thread,
-  [decision 0217](decisions/0217-the-docker-front-binds-its-socket-under-a-thread-private-umask.md)).
+  [decision 0217](../decisions/0217-the-docker-front-binds-its-socket-under-a-thread-private-umask.md)).
   Agents, the Superagent, Shells and CI jobs bind that directory at `/run/yulius/docker`, with
   `DOCKER_HOST` and a `/run/docker.sock` link, so a recreated socket reaches them. Runs started
   without it get the directory moved into their mount namespace at the next upkeep (`yulius sandbox-host
   bind-docker`: `open_tree` in the holder's namespace, `move_mount` in the run's). Without an
   engine (a missing prerequisite) the front answers a Docker-API error naming the reason.
-- **The front's places** ([decision 0344](decisions/0344-the-docker-front-gives-way-and-ends-connections-whose-client-is-gone.md)).
+- **The front's places** ([decision 0344](../decisions/0344-the-docker-front-gives-way-and-ends-connections-whose-client-is-gone.md)).
   Every mode admits through one table of 256 places: at the limit the connection idle longest
   past 300 s gives way, else the call gets a Docker-API 503 saying so (from slice 3 of SPEC-494, that Yulius repairs it). A connection
   whose client hung up ends within about two seconds, one whose engine side ended gives the client 30 s. The
@@ -338,7 +342,7 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   `docker_restart`), each task told.
   Restarts, give-ways and Docker Needs you are audited and counted per week
   (`/api/analytics/docker`, the Pipeline tab).
-- **What a CI job leaves** ([decision 0359](decisions/0359-a-ci-jobs-containers-and-networks-carry-its-label-and-go-when-it-ends.md)).
+- **What a CI job leaves** ([decision 0359](../decisions/0359-a-ci-jobs-containers-and-networks-carry-its-label-and-go-when-it-ends.md)).
   Each CI job runs in its own cgroup `ci/ci-job-<id>`. The front reads a connecting process's
   pid (`SO_PEERCRED`) and its cgroup through the host's `/proc`, opened before it joined the
   sandbox; for a job's connection it reads the requests (`docker_label`) and labels the bodies of
@@ -358,7 +362,7 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   and a cgroup namespace of its own. Its seccomp profile (the run profile plus the mount APIs,
   `setns` and `pivot_root`) bounds every container.
 - **Removal.** Removing a sandbox
-  ([SPEC-206](../.ai/specs/SPEC-206-i-deleted-sandbox-from-yulius-but-it-s-s.md)) stops its tasks,
+  ([SPEC-206](../../.ai/specs/SPEC-206-i-deleted-sandbox-from-yulius-but-it-s-s.md)) stops its tasks,
   cancels its CI runs, ends its Superagents, Shells and browser (a start under way ends itself
   once it reads the removal), and retires its holder. A `retired` marker in the holder's state
   directory makes `prepare` refuse the sandbox and the upkeep tick stop the holder, with its
@@ -381,8 +385,8 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   upper layer, else its base) has no `dockerd` is told to install it there
   (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`, buildx and compose
   included, SPEC-201) or that the host's Docker reaches new bases (ADR-0160).
-- **Production's own engine** ([SPEC-279](../.ai/specs/SPEC-279-production-cd-runs-get-a-docker-engine-a.md),
-  [decision 0208](decisions/0208-production-cd-runs-use-a-production-holder-with-its-own-docker-engine.md)).
+- **Production's own engine** ([SPEC-279](../../.ai/specs/SPEC-279-production-cd-runs-get-a-docker-engine-a.md),
+  [decision 0208](../decisions/0208-production-cd-runs-use-a-production-holder-with-its-own-docker-engine.md)).
   Production-stage runs never use the sandbox's engine (agents run its `dockerd` from a layer
   they change, and its images and socket are theirs). Each sandbox has a second holder, its
   production holder `<sid>.prod` (`.` is outside the ids' alphabet), which the manager runs like
@@ -405,7 +409,7 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   While its process runs, its sandbox `docker-smoke-<pid>` and that production holder are the
   smoke's alone: a server that starts meanwhile does not adopt them (`Manager::adopt` skips them
   by the leftovers scan's name rule and its own process check), so its Docker-off holder keeps
-  its refusing front ([ADR-0308](decisions/0308-a-running-docker-smoke-tests-sandbox-is-the-smokes-alone.md)).
+  its refusing front ([ADR-0308](../decisions/0308-a-running-docker-smoke-tests-sandbox-is-the-smokes-alone.md)).
 
 ```mermaid
 flowchart LR
@@ -437,13 +441,13 @@ flowchart LR
   A["agent runs, sandbox engine"] -. "other namespaces, data dir covered" .-x PF
 ```
 
-**The host's part** ([SPEC-203](../.ai/specs/SPEC-203-docker-in-sandboxes-works-out-of-the-box.md),
-[decision 0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
+**The host's part** ([SPEC-203](../../.ai/specs/SPEC-203-docker-in-sandboxes-works-out-of-the-box.md),
+[decision 0162](../decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
 `yulius host setup` (root, `crates/yulius/src/host_setup.rs`) brings a host to what sandboxes
 need for Docker: Docker Engine for the bases to copy, the host's own daemon stopped, the
 modules, the service user and its ids, an AppArmor rule that lets bwrap create user namespaces
 where the host restricts them (`host_setup/bwrap_userns.rs`, proven by starting bwrap;
-[decision 0296](decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)),
+[decision 0296](../decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)),
 the unit's delegation, a root-owned binary, a current base. Each item reads the host through a
 `Host` trait, so the same items run against a fake host in tests. `yulius host check` is the
 same list with only the safe fixes. After each healthy
@@ -470,8 +474,8 @@ flowchart LR
 
 Six limits decide how much work the host takes: live sessions, CI jobs, CI runs per sandbox, a
 sandbox's memory, its disk quota and the disk bound of a CD or environment run
-([SPEC-459](../.ai/specs/SPEC-459-resource-limits-default-to-the-host-s-si.md),
-[decision 0294](decisions/0294-resource-limits-are-sized-from-the-host-and-pins-remember-their-host.md)). The rules are pure
+([SPEC-459](../../.ai/specs/SPEC-459-resource-limits-default-to-the-host-s-si.md),
+[decision 0294](../decisions/0294-resource-limits-are-sized-from-the-host-and-pins-remember-their-host.md)). The rules are pure
 functions in `yulius_domain::limits`: `Limit::host_sized` (the formula over the host's CPUs,
 memory and the data directory's filesystem), `Limit::resolve` (a Settings number, else
 "host-sized" saved in Settings, else the unit's `YULIUS_*` value, else the formula) and
@@ -507,10 +511,10 @@ flowchart LR
 ## Claude Code updates
 
 Sessions run with Claude Code's own updater off (#45). The server keeps the CLI current instead,
-as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-when-new-versio.md),
-[decision 0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md);
-[SPEC-461](../.ai/specs/SPEC-461-claude-code-in-sandboxes-always-knows-yu.md),
-[decision 0293](decisions/0293-claude-code-follows-latest-and-must-know-the-default-model.md)).
+as its service user ([SPEC-421](../../.ai/specs/SPEC-421-claude-should-autoupdate-when-new-versio.md),
+[decision 0266](../decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md);
+[SPEC-461](../../.ai/specs/SPEC-461-claude-code-in-sandboxes-always-knows-yu.md),
+[decision 0293](../decisions/0293-claude-code-follows-latest-and-must-know-the-default-model.md)).
 
 - `wiring/claude_cli.rs` (the updater) reads npm's dist-tags, installs a newer platform binary
   under `<data>/claude-code` after its sha512, ELF, embedded-version and default-model checks
@@ -538,9 +542,9 @@ as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-w
   run not known until it was read again), and a turn's end asks it after it read the turn's
   lines, stays for two seconds after a prompt went on, whose record is written a moment
   later, and logs the fact that keeps a session that is due (`kept_by`)
-  ([SPEC-471](../.ai/specs/SPEC-471-claude-code-moves-a-prompt-that-waits-in.md)); an idle one that is restarted is idle again from its launch on, with what its goal left
+  ([SPEC-471](../../.ai/specs/SPEC-471-claude-code-moves-a-prompt-that-waits-in.md)); an idle one that is restarted is idle again from its launch on, with what its goal left
   (`IdleRest` in `supervisor/start.rs`), and the notification center remembers what a task read
-  through a switch ([SPEC-468](../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md)).
+  through a switch ([SPEC-468](../../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md)).
   A restart whose session does not reach its SessionStart hook (the launch fails, the process
   ends by itself, or two minutes pass) stops further restarts on that version.
 
@@ -568,7 +572,7 @@ flowchart LR
 
 Each sandbox's Chromium runs outside containment and speaks the DevTools protocol only over the
 pipe pair Yulius gives it at spawn (`--remote-debugging-pipe`, fds 3 and 4, NUL-terminated JSON;
-[ADR-0191](decisions/0191-the-sandbox-browser-speaks-devtools-over-a-pipe.md)). It opens no
+[ADR-0191](../decisions/0191-the-sandbox-browser-speaks-devtools-over-a-pipe.md)). It opens no
 DevTools socket, and a contained run (isolated or the fallback bubblewrap, each with its own PID
 namespace) cannot see its process, so no such agent or other sandbox can drive it. A process
 running as Yulius's user on the host, including an agent run without containment (host mode), or
@@ -579,16 +583,16 @@ a Chrome that runs on the host: the browser takes button and key presses only wh
 itself that the host's managed policy, which switches those windows off, is in force
 (`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
 blocks; `yulius_browser::policy`, written by `yulius host setup`;
-[ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
-The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
-The other way, a viewer's paste (`paste`, at most 32 KiB) becomes that display's CLIPBOARD, owned by the X thread (`xclipboard::Owner`), and the thread presses Shift+Insert in order with the viewer's keys, so the page gets a real `paste` event (xterm.js terminals too, which make Ctrl+V the `^V` character). The paste is answered `paste_failed` when no client fetched the text within 3 s. A newer paste waits until Chrome's reads of the last one are over, and the text is let go after 30 s. Without a display a paste, like an agent's `browser_type`, is typed as CDP key events. [ADR-0471](decisions/0471-a-viewer-paste-becomes-the-displays-clipboard-and-a-real-paste-key.md)
-A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
-Before each start the manager removes the profile's Chrome lock entries (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) unless a running process of this host holds the lock, so a profile carried from another host starts. This happens before the display starts (`yulius_browser::profile`). [ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)
-A browser slot keeps whatever it could not stop: a browser, a display, or the Xvfb of a display that failed to start and then survived SIGKILL (`StrandedXvfb`, with its cookie). Every later start, restart, idle reap and shutdown stops it again first. While it survives they fail with its error, so the sandbox never gets a second X server. [SPEC-616](../.ai/specs/SPEC-616-keep-ownership-of-xvfb-when-display-star.md)
+[ADR-0318](../decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
+The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](../decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
+The other way, a viewer's paste (`paste`, at most 32 KiB) becomes that display's CLIPBOARD, owned by the X thread (`xclipboard::Owner`), and the thread presses Shift+Insert in order with the viewer's keys, so the page gets a real `paste` event (xterm.js terminals too, which make Ctrl+V the `^V` character). The paste is answered `paste_failed` when no client fetched the text within 3 s. A newer paste waits until Chrome's reads of the last one are over, and the text is let go after 30 s. Without a display a paste, like an agent's `browser_type`, is typed as CDP key events. [ADR-0471](../decisions/0471-a-viewer-paste-becomes-the-displays-clipboard-and-a-real-paste-key.md)
+A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](../decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
+Before each start the manager removes the profile's Chrome lock entries (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) unless a running process of this host holds the lock, so a profile carried from another host starts. This happens before the display starts (`yulius_browser::profile`). [ADR-0432](../decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)
+A browser slot keeps whatever it could not stop: a browser, a display, or the Xvfb of a display that failed to start and then survived SIGKILL (`StrandedXvfb`, with its cookie). Every later start, restart, idle reap and shutdown stops it again first. While it survives they fail with its error, so the sandbox never gets a second X server. [SPEC-616](../../.ai/specs/SPEC-616-keep-ownership-of-xvfb-when-display-star.md)
 
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
 extensions unloaded, so a later policy reload can take effect without a native administrator
-dialog. [ADR-0402](decisions/0402-sandbox-browsers-skip-chromes-default-apps.md)
+dialog. [ADR-0402](../decisions/0402-sandbox-browsers-skip-chromes-default-apps.md)
 The probe's tab and Chrome's own `chrome:` pages are never listed as tabs. Chrome is on the
 host's network, not its sandbox's, so each browser is started behind a proxy of its own
 (`BrowserNetwork`; `--proxy-server` for every address, the loopback included), a listener the
@@ -596,28 +600,28 @@ egress proxy serves as that sandbox's browser (`EgressProxy::handle_browser`, wi
 `BrowserProxies`): it connects where the sandbox's processes could, plus the sandbox's own
 dev-server ports on the loopback and the welcome page, and never intercepts, injects or
 redacts; without its proxy a browser is not started
-([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)). Ranges of removed sandboxes can be reassigned once their work, holders and listeners have ended ([ADR-0393](decisions/0393-sandbox-port-ranges-are-reused-after-retirement.md)).
+([ADR-0321](../decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)). Ranges of removed sandboxes can be reassigned once their work, holders and listeners have ended ([ADR-0393](../decisions/0393-sandbox-port-ranges-are-reused-after-retirement.md)).
 The two Superagents drive it with the same tools: the
 sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
 sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label
-([SPEC-437](../.ai/specs/SPEC-437-add-browser-use-for-superagents.md),
-[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)). A secret is typed into the
+([SPEC-437](../../.ai/specs/SPEC-437-add-browser-use-for-superagents.md),
+[decision 0281](../decisions/0281-the-superagents-use-the-project-browser.md)). A secret is typed into the
 page the browser shows when the typing begins: the vault's rule (a page of one of the secret's
 hosts) travels to `tool_type_secret`, which applies it to the document read with the input lock
 held, and Yulius's own navigations wait for that lock; a page that moves on by itself to one
 the secret may not get is reported instead of `filled`
-([ADR-0319](decisions/0319-a-secret-is-typed-into-the-page-the-browser-shows-when-the-typing-begins.md)).
+([ADR-0319](../decisions/0319-a-secret-is-typed-into-the-page-the-browser-shows-when-the-typing-begins.md)).
 The same rule is asked of what else the keys can reach: unless the focus is in a text field of
 a document the page's probe read, of every frame of another site the page holds; of the
 document read again once the field has the focus; and, last, of the addresses Chrome announced
 navigations of the page's frames to (`Leaving`: `Page.frameStartedNavigating`, kept until the
 frame arrived, stopped loading or is gone, bounded). A secret's user name and one-time code are
 typed under the same rule (`tool_type_beside_secret`)
-([ADR-0320](decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md)). All three are typed
+([ADR-0320](../decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md)). All three are typed
 as real key presses, as `browser_type` types, so terminals take them; a text holding a tab or
 another control character is refused before anything is typed
-([ADR-0475](decisions/0475-browser-fill-secret-types-real-key-presses.md)).
+([ADR-0475](../decisions/0475-browser-fill-secret-types-real-key-presses.md)).
 Pixels cannot be
 redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, each value
 `browser_fill_secret` typed, the hosts and documents it went into and the hosts it reached outside
@@ -628,8 +632,8 @@ redactor's matcher, holding the input lock throughout:
 `browser_screenshot` is refused while the page shows an agent secret, is on an exposed host
 (a value went outside a password field, or was edited as typed), frames a host a secret went
 into, or cannot be read; password sign-ins keep screenshots
-([SPEC-450](../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md),
-[decision 0291](decisions/0291-a-screenshot-of-a-page-showing-a-filled-secret-is-refused.md)).
+([SPEC-450](../../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md),
+[decision 0291](../decisions/0291-a-screenshot-of-a-page-showing-a-filled-secret-is-refused.md)).
 
 ```mermaid
 flowchart LR
@@ -649,13 +653,13 @@ flowchart LR
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
 work every 5 minutes (ended tasks, then idle ones from 90 % of the quota), removes the worktrees
 of closed and cancelled tasks, and a switch checks the quota and the other start preconditions
-before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
-[decision 0017](decisions/0017-sandbox-disk-upkeep.md)). A running task's caches go only when a
+before it ends the running session ([SPEC-008](../../.ai/specs/SPEC-008-sandbox-disk.md),
+[decision 0017](../decisions/0017-sandbox-disk-upkeep.md)). A running task's caches go only when a
 fresh probe finds no background shell and no background subagent. An unanswered probe keeps them.
 
 Over the quota, a CI run waits in the queue instead of erroring
-([SPEC-059](../.ai/specs/SPEC-059-fix-240-256-258-245-ci-waits-for-disk-in.md),
-[decision 0045](decisions/0045-ci-waits-for-disk-under-the-shared-quota.md)). The dispatcher
+([SPEC-059](../../.ai/specs/SPEC-059-fix-240-256-258-245-ci-waits-for-disk-in.md),
+[decision 0045](../decisions/0045-ci-waits-for-disk-under-the-shared-quota.md)). The dispatcher
 starts a check off its loop, at most once a minute per sandbox: upkeep under pressure, then a fresh
 measurement. The run's reason and its `pending` commit status name the largest consumers, and the
 run starts at the first dispatch under the quota. A job refused after its run started puts the
@@ -680,7 +684,7 @@ It runs in a server-owned PTY, and the web UI shows it in a dialog over the logi
 token once, so the server reads the token from the raw PTY stream and masks it for viewers. On
 the CLI's exit it seals the token into the account. A CLI that runs on more than 5 s after a
 complete token appeared is stopped and the token sealed (SPEC-243,
-[decision 0184](decisions/0184-a-captured-token-ends-the-sign-in-and-a-closed-dialog-cancels-it.md)).
+[decision 0184](../decisions/0184-a-captured-token-ends-the-sign-in-and-a-closed-dialog-cancels-it.md)).
 The dialog follows the terminal's ending. On `ok` it closes by itself and a toast names the
 subscription. On `error`, `cancelled` or a lost terminal it shows why, with Try again (a new
 sign-in in the same dialog). Closing it while the sign-in runs cancels that sign-in. The cancel
@@ -688,7 +692,7 @@ waits for the end and keeps a token already printed, so a sign-in that succeeded
 The sign-in runs on the host, not in a sandbox. It has a fixed argv, new empty HOME and config
 folders, and input from instance administrators only. Its raw output is one allocation that never
 grows and is zeroed whole once the token is extracted
-([decision 0256](decisions/0256-a-sign-in-runs-on-the-host-and-its-raw-output-is-one-wiped-allocation.md)).
+([decision 0256](../decisions/0256-a-sign-in-runs-on-the-host-and-its-raw-output-is-one-wiped-allocation.md)).
 Codex (`codex login --device-auth`) and Antigravity sign in the same way but leave a file instead
 of printing a token: `auth.json`, or the Antigravity CLI's token file below
 `.gemini/antigravity-cli`, read without following a link and sealed. The Antigravity CLI has no
@@ -696,10 +700,10 @@ sign-in-only command: its sign-in is the whole agent TUI (auto-update off). It w
 file before the rest of its setup (the data-use choice and more), so it is not stopped then. The
 terminal's state says `signed_in`, and the dialog offers Done. Done or closing the dialog (the
 cancel, answering `ok`), the CLI's exit or the timeout end it and seal the token file
-([decision 0369](decisions/0369-a-google-sign-in-runs-until-the-person-is-done.md)). Once signed
+([decision 0369](../decisions/0369-a-google-sign-in-runs-until-the-person-is-done.md)). Once signed
 in, that TUI can run a shell command typed into it, which an instance administrator can do anyway
 (an MCP server's Test), and Yulius types nothing into it
-([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
+([decision 0361](../decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
 
 ```mermaid
 stateDiagram-v2
@@ -715,8 +719,8 @@ stateDiagram-v2
 ```
 
 The token can also be pasted
-([SPEC-502](../.ai/specs/SPEC-502-accept-outside-pr-1144-connect-a-claude.md),
-[decision 0352](decisions/0352-a-subscription-can-be-connected-by-pasting-a-setup-token.md)). The
+([SPEC-502](../../.ai/specs/SPEC-502-accept-outside-pr-1144-connect-a-claude.md),
+[decision 0352](../decisions/0352-a-subscription-can-be-connected-by-pasting-a-setup-token.md)). The
 subscription's owner runs `claude setup-token` on any computer and the administrator pastes what
 it printed: in the Add dialog ("Paste token") for a new subscription, or with "Paste a new token"
 on a card. The server takes only that token shape and asks Claude's profile once with it: a 401
@@ -729,24 +733,24 @@ token is never echoed, logged or audited.
 ## Usage limits
 
 When a subscription's usage limit cuts a turn, the task goes on as if the limit never happened
-([SPEC-034](../.ai/specs/SPEC-034-in-previous-tasks-we-have-hit-a-session.md),
-[decision 0027](decisions/0027-step-back-past-a-usage-limit.md)): on another subscription at
+([SPEC-034](../../.ai/specs/SPEC-034-in-previous-tasks-we-have-hit-a-session.md),
+[decision 0027](../decisions/0027-step-back-past-a-usage-limit.md)): on another subscription at
 once, or on its own after the reset. The supervisor has the harness adapter step the transcript
 back over the limit on a blocking thread, and indexes the session again only if the file changed.
 The transcript is the agent's: the step back reaches it from the folder above the home through
 handles that follow no link, reads it only when it is a regular file, and replaces it within its
-folder's handle ([SPEC-266](../.ai/specs/SPEC-266-transcript-step-back-and-home-creation-g.md),
-[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)).
+folder's handle ([SPEC-266](../../.ai/specs/SPEC-266-transcript-step-back-and-home-creation-g.md),
+[decision 0174](../decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)).
 Claude Code then resumes the same session with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so it
 redoes the lost turn by itself. Nothing is typed. If Claude Code continues the turn by itself at
 the reset, its first agent work or turn end after the pause ends the pause, and Yulius leaves
 that run alone; after a restart, a limit that such a turn followed is not acted on again. A person's
 switch of a task left at its limit by a refused automatic switch also resumes past the limit
-([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
-[decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
+([SPEC-072](../../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
+[decision 0058](../decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
 
 A capacity pause records whether a Claude prompt was held during a preceding turn. The
-preceding Stop can settle while the prompt waits for capacity. [Decision 0394](decisions/0394-a-held-prompt-remembers-the-turn-running-at-its-enter.md)
+preceding Stop can settle while the prompt waits for capacity. [Decision 0394](../decisions/0394-a-held-prompt-remembers-the-turn-running-at-its-enter.md)
 
 ### A limit met while a dynamic workflow runs
 
@@ -754,8 +758,8 @@ Claude Code's Workflow tool ("ultracode") runs a script's agents inside the sess
 A usage limit that refuses those agents is written to their own transcripts only
 (`<session>/subagents/workflows/<run>/agent-<id>.jsonl`); Claude Code pauses the workflow and
 does not wake the session's thread, whose transcript ends with a finished turn
-([SPEC-486](../.ai/specs/SPEC-486-a-usage-limit-reached-while-a-dynamic-wo.md),
-[decision 0326](decisions/0326-a-workflow-agents-usage-limit-is-the-sessions.md)). The harness
+([SPEC-486](../../.ai/specs/SPEC-486-a-usage-limit-reached-while-a-dynamic-wo.md),
+[decision 0326](../decisions/0326-a-workflow-agents-usage-limit-is-the-sessions.md)). The harness
 follows those files (`SubagentTails`: the 64 runs changed last, their files changed since the
 run under watch began, the newest runs' first, 512 at most), and the transcript watch reports
 a limit found there as `WorkflowLimitReached`: once the session's transcript is read to its
@@ -798,13 +802,13 @@ sequenceDiagram
 ### What a limit binds
 
 A limit Claude reports binds either the subscription or the models of one family
-([SPEC-464](../.ai/specs/SPEC-464-we-still-have-healthy-subscribtionsbut-w.md),
-[decision 0301](decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). The harness
+([SPEC-464](../../.ai/specs/SPEC-464-we-still-have-healthy-subscribtionsbut-w.md),
+[decision 0301](../decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). The harness
 reads which from the limit record (`LimitScope`). The 5-hour and weekly windows are the
 subscription's. A per-model weekly cap (`seven_day_opus`, `seven_day_sonnet`) is that family's.
 The weekly allowance of usage credits (`seven_day_overage_included`, a bucket per model; Fable
 runs on one) is the limit of the model the task is launched with, the default model (Opus 5.5,
-[decision 0340](decisions/0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md)) when it
+[decision 0340](../decisions/0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md)) when it
 names none. So is Claude Code's refusal "You're out of usage credits"
 (`apiError: "model_requires_usage_credits"`), which Claude Code 2.1.311 writes without a window
 or a reset. A record that carries only the text is the model's when the text names the model or
@@ -848,7 +852,7 @@ recorded while a reading is under way is kept. The write that marks a subscripti
 with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
 Under that lock it checks the current sealed credential against the digest recorded at launch.
 A stale refusal or a pre-upgrade run without a digest affects only the interrupted task
-([decision 0387](decisions/0387-bind-claude-refusals-to-the-launch-credential.md)).
+([decision 0387](../decisions/0387-bind-claude-refusals-to-the-launch-credential.md)).
 A subscription works while it reads `ok` or `limited` (`AccountStatus::healthy`), and that is
 the one rule: the pool places tasks only on one that works, the background rounds ask only such
 a one for its usage and its e-mail address, and a reading that arrives for any other stores its
@@ -859,8 +863,8 @@ else.
 ### The fallback model
 
 A task of a Fable model does not wait while a subscription can run Opus 5.5
-([SPEC-482](../.ai/specs/SPEC-482-add-fallback-for-opus-5-5-if-fable-is-do.md),
-[decision 0312](decisions/0312-a-fable-run-falls-back-to-opus-5-5-while-no-subscription-can-run-fable.md)).
+([SPEC-482](../../.ai/specs/SPEC-482-add-fallback-for-opus-5-5-if-fable-is-do.md),
+[decision 0312](../decisions/0312-a-fable-run-falls-back-to-opus-5-5-while-no-subscription-can-run-fable.md)).
 The pool's policy decides the model at each placement (`rotation::placing_family`):
 
 ```mermaid
@@ -919,7 +923,7 @@ so does a restart of Yulius. Only a model's limit is bounded this way
 own limit.
 
 Yulius's request says the task does not go on by itself, like the one for a goal Claude Code
-paused, and ends the same way ([decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)):
+paused, and ends the same way ([decision 0304](../decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)):
 when the session's agent works again, or sooner when Yulius takes the task on at the refusal
 that cut its turn (`TakenOn`; a usage limit, or a subscription Claude refuses for good): it runs
 the session on past the refusal, or pauses the task until a subscription can take it and resumes
@@ -966,8 +970,8 @@ sequenceDiagram
 
 No usage reading shows a model's allowance of usage credits, so a limit stored for a model would
 hold until its reset even after a person bought credits. The Subscriptions page's Refresh asks
-([SPEC-473](../.ai/specs/SPEC-473-subscriptions-page-refresh-now-one-and-a.md),
-[decision 0307](decisions/0307-a-refresh-asks-claude-about-a-stored-limit-and-the-round-reads-no-allowance-ahead.md)).
+([SPEC-473](../../.ai/specs/SPEC-473-subscriptions-page-refresh-now-one-and-a.md),
+[decision 0307](../decisions/0307-a-refresh-asks-claude-about-a-stored-limit-and-the-round-reads-no-allowance-ahead.md)).
 `POST /api/admin/accounts/{id}/usage` (`App::refresh_account_usage`) reads the usage, then sends
 one request of one output token for each limit stored and in effect, with the model that limit
 binds (`UsageProbe::model_answer`): a model of each family whose own weekly window is used up, and
@@ -1038,8 +1042,8 @@ sequenceDiagram
 ## Moving a task off its subscription
 
 A task leaves its subscription for four reasons besides the pool's own rotation
-([SPEC-447](../.ai/specs/SPEC-447-subscriptions-switch-by-hand-delete-one.md),
-[decision 0288](decisions/0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)):
+([SPEC-447](../../.ai/specs/SPEC-447-subscriptions-switch-by-hand-delete-one.md),
+[decision 0288](../decisions/0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)):
 a person chooses another from the task (`POST /api/tasks/{tid}/switch`), a person removes the
 subscription (`DELETE /api/admin/accounts/{id}`), or Claude refuses it (`Observed::AccessLost`,
 which marks it `relogin` while the refused sign-in is current). All three go through `App::move_task` (`moves.rs`), which picks the
@@ -1049,8 +1053,8 @@ the launch pauses the task. A removal deletes the row first, so `choose_account`
 stored accounts, can never pick it again, then ends every run on it. `App::tell_left` writes the
 one-line notice and, with nothing usable left, the task's Needs you, which `end_pause` ends.
 
-The fourth is the rebalance pass ([SPEC-629](../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md),
-[decision 0461](decisions/0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md),
+The fourth is the rebalance pass ([SPEC-629](../../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md),
+[decision 0461](../decisions/0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md),
 `rebalance.rs`): every 2 minutes (`start_rebalance_loop`, the first pass 3 minutes after start)
 `App::rebalance_now` looks at the running tasks whose activity is idle (`waiting`, `done`) and
 whose live run is on a subscription past its harness's rebalance threshold
@@ -1096,16 +1100,16 @@ A live Codex task resumed without a turn keeps its saved Waiting or Done activit
 Goal mode. The supervisor determines activity from the final launch mode, so a recovered reviewer
 or another opening instruction still starts a turn. Automatic Codex placement ranks eligible
 subscriptions by headroom in the tightest binding window before considering reset urgency.
-[Decision 0449](decisions/0449-use-codex-quota-headroom-and-preserve-idle-moves.md)
+[Decision 0449](../decisions/0449-use-codex-quota-headroom-and-preserve-idle-moves.md)
 
 ## Subscription names and emails
 
 A subscription (an `accounts` row) has the name a person gives it and the email of the Claude
-account behind its credential ([SPEC-244](../.ai/specs/SPEC-244-rename-claude-sessions-and-show-account.md),
-[decision 0185](decisions/0185-a-subscription-email-comes-from-claudes-profile-at-sign-in.md)).
+account behind its credential ([SPEC-244](../../.ai/specs/SPEC-244-rename-claude-sessions-and-show-account.md),
+[decision 0185](../decisions/0185-a-subscription-email-comes-from-claudes-profile-at-sign-in.md)).
 Administrators edit both in place on the Subscriptions page (`PATCH /api/admin/accounts/{id}` with
-`label`, `email` or both; [SPEC-463](../.ai/specs/SPEC-463-hey-i-want-to-do-a-quick-change.md),
-[decision 0300](decisions/0300-an-administrator-can-type-a-subscriptions-email.md)).
+`label`, `email` or both; [SPEC-463](../../.ai/specs/SPEC-463-hey-i-want-to-do-a-quick-change.md),
+[decision 0300](../decisions/0300-an-administrator-can-type-a-subscriptions-email.md)).
 
 The email is Claude's unless an administrator types it. After a sign-in stores a credential, the
 app asks Claude's profile with that credential through the usage adapter. The background usage
@@ -1136,8 +1140,8 @@ flowchart LR
 
 No provider tells Yulius when a subscription bills its card, so an administrator gives one
 charge date and whether it repeats monthly or yearly
-([SPEC-651](../.ai/specs/SPEC-651-hey-i-subscrbition-page-i-need-to-have-a.md),
-[decision 0478](decisions/0478-a-person-gives-each-subscriptions-charge-date.md)). The cycle is
+([SPEC-651](../../.ai/specs/SPEC-651-hey-i-subscrbition-page-i-need-to-have-a.md),
+[decision 0478](../decisions/0478-a-person-gives-each-subscriptions-charge-date.md)). The cycle is
 its own table, `account_billing` (one row per subscription, removed with it), so credential
 writes never touch it. `yulius_domain::billing::BillingCycle` counts the next charge from today's
 UTC date (the anchor's day, or the month's last day without one), and `App::billing_views` adds it
@@ -1155,11 +1159,11 @@ flowchart LR
 
 An API error ends a turn with no Stop hook. With a goal active, Claude Code retries the turn
 itself and says so in a notice; Yulius follows it and types nothing
-([SPEC-333](../.ai/specs/SPEC-333-this-api-error-should-trigger-retry-and.md),
-[decision 0225](decisions/0225-claude-code-owns-the-goal-retry-after-an-api-error.md), #927). The
+([SPEC-333](../../.ai/specs/SPEC-333-this-api-error-should-trigger-retry-and.md),
+[decision 0225](../decisions/0225-claude-code-owns-the-goal-retry-after-an-api-error.md), #927). The
 harness reads the notices as `GoalRetry { armed, notice }`. An armed retry keeps the task Working
 over the record that closes the turn, which otherwise settles it as Your turn
-([decision 0212](decisions/0212-a-turn-whose-stop-yulius-never-answered-settles-at-its-record.md)).
+([decision 0212](../decisions/0212-a-turn-whose-stop-yulius-never-answered-settles-at-its-record.md)).
 A failed goal check is retried the same way, and a notice ends the wait for a goal verdict. A goal
 cleared, achieved or failed while a retry is armed settles the closed turn, since no check-in
 comes. Spent retries, or a pause on an API error, end the turn and put the task in Needs you with a
@@ -1167,7 +1171,7 @@ request. A restart's replay folds the last notice the same way. A pause that fol
 or a refused subscription in the same turn is not such a pause: Claude Code answers a model
 refused for its usage credits with "Goal paused · the request was rate limited", and the limit
 path already moves the task or resumes it at the reset, so nobody is asked
-([decision 0301](decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). Its notice
+([decision 0301](../decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). Its notice
 is held meanwhile (`LimitGoalPause`): when the switch past the limit is refused before it ends the
 session, the session stays at the refusal, and the held pause puts the task in Needs you after
 all; a later move past the limit ends that request and says so in the audit log
@@ -1176,8 +1180,8 @@ after Claude Code recorded the limit says the limit was asked about, so a restar
 same pause again only puts the task back under Needs you.
 
 That request says the task does not go on by itself, so it ends when the session does go on
-([SPEC-469](../.ai/specs/SPEC-469-even-if-it-woke-up-it-still-has-needs-yo.md),
-[decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md),
+([SPEC-469](../../.ai/specs/SPEC-469-even-if-it-woke-up-it-still-has-needs-yo.md),
+[decision 0304](../decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md),
 #1183): at the agent's first work after the pause (`AgentWork`, or the session's own answer),
 whatever woke it: Claude Code's wake-up, a prompt Yulius typed, a session Yulius restarted, or no
 prompt anyone sees. A prompt alone ends nothing, since the API may refuse it again. Only the
@@ -1215,8 +1219,8 @@ stateDiagram-v2
 ## Full context
 
 A session whose context is full gets "Prompt is too long" for every prompt, and no Stop hook ends
-the turn ([SPEC-060](../.ai/specs/SPEC-060-fix-213-a-session-whose-context-is-full.md),
-[decision 0046](decisions/0046-compact-then-restart-a-full-session.md), #213). The harness
+the turn ([SPEC-060](../../.ai/specs/SPEC-060-fix-213-a-session-whose-context-is-full.md),
+[decision 0046](../decisions/0046-compact-then-restart-a-full-session.md), #213). The harness
 observes the refusal (`ContextFull`), the compaction boundary (`Compacted`) and a failed compaction
 (`CompactFailed`). The supervisor ends the turn so the task waits instead of working, and keeps
 one recovery episode per task in its runtime. The episode outlives a run and ends at the agent's
@@ -1240,8 +1244,8 @@ stateDiagram-v2
 ## Playgrounds
 
 A playground lets a team try Yulius on its own code before it connects GitHub
-([SPEC-099](../.ai/specs/SPEC-099-on-onboarding-we-want-a-mode-to-play-aro.md),
-[decision 0081](decisions/0081-a-playground-keeps-its-git-on-the-server.md)). Its `origin` is a
+([SPEC-099](../../.ai/specs/SPEC-099-on-onboarding-we-want-a-mode-to-play-aro.md),
+[decision 0081](../decisions/0081-a-playground-keeps-its-git-on-the-server.md)). Its `origin` is a
 bare repository on the server outside the sandbox (`<data>/playgrounds/<id>.git`), so the
 clone, worktrees and merges use the same `origin/<branch>` refs as a GitHub sandbox while nothing
 leaves the server, and the sandbox's processes never reach a repository whose hooks the server's
@@ -1251,8 +1255,8 @@ working tree, `git/` the history part of `.git`); the server takes only `HEAD`, 
 `shallow`, `objects/` and `refs/` of it, copies the branches and tags into the new `origin` with the
 hardened Git, and commits the working files on top. `delivery_merge` squashes a task branch onto
 the integration branch there (`git merge-tree` and `commit-tree`, pushed without forcing) on green
-Yulius CI ([SPEC-163](../.ai/specs/SPEC-163-fix-411-yulius-ci-runs-the-gate-on-a-pla.md),
-[decision 0134](decisions/0134-a-playground-s-ci-tests-the-head-merged-into-its-integration-branch.md)):
+Yulius CI ([SPEC-163](../../.ai/specs/SPEC-163-fix-411-yulius-ci-runs-the-gate-on-a-pla.md),
+[decision 0134](../decisions/0134-a-playground-s-ci-tests-the-head-merged-into-its-integration-branch.md)):
 the CI sync tests the integration head without GitHub, and `delivery_merge` first builds the task
 head merged into the integration branch in Yulius's clone (the merge train's builder, a merge
 commit) and tests it as `task/<n>`; while that run goes the merge is armed, and it lands once the
@@ -1260,8 +1264,8 @@ run passed. Nothing is published to GitHub. Hygiene, the automatic pull request 
 skip playgrounds.
 
 A playground's admins let teammates without GitHub in as guests
-([SPEC-410](../.ai/specs/SPEC-410-playgrounds-teammates-try-a-playground-w.md),
-[decision 0260](decisions/0260-a-playgrounds-guests-come-in-through-an-expiring-link.md)): a link
+([SPEC-410](../../.ai/specs/SPEC-410-playgrounds-teammates-try-a-playground-w.md),
+[decision 0260](../decisions/0260-a-playgrounds-guests-come-in-through-an-expiring-link.md)): a link
 holds a 256-bit code, only its hash is kept in `playground_invites`, and joining through it makes
 a user with no GitHub link and no password, tied to the link in `playground_guests`, with a browser
 session that ends with the link. `App::access_level` gives a guest write on that playground while
@@ -1293,7 +1297,7 @@ sequenceDiagram
 ```
 
 A local checkout without GitHub comes in from the command line too
-([SPEC-171](../.ai/specs/SPEC-171-fix-409-420-yulius-onboard-uploads-a-che.md)): `yulius onboard
+([SPEC-171](../../.ai/specs/SPEC-171-fix-409-420-yulius-onboard-uploads-a-che.md)): `yulius onboard
 --playground` sends a bundle of every branch and tag, the uncommitted work and the chosen sessions
 through the import pipeline, with `playground: true` on the plan and the manifest. Into a new
 playground the job's files go under an id reserved when the job is created; the playground is made
@@ -1301,8 +1305,8 @@ when the upload completes, as from a folder (the bundle's refs copied into `orig
 hardened Git, the uncommitted work one commit on the checked-out branch). Into the person's
 existing playground of that name the upload lands as an import does, under `import/<login>/`.
 A removed sandbox's files go on request
-([decision 0139](decisions/0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md) for a
-playground's code, [decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)
+([decision 0139](../decisions/0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md) for a
+playground's code, [decision 0205](../decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)
 for every sandbox): the remove dialog asks whether to delete them or keep them, the request is
 kept in `playground_purges` (every sandbox, the name is historical), and `playground::purge`
 deletes the leftovers engine's "everything of the removed sandbox" item through its guard (no
@@ -1310,22 +1314,22 @@ deletes the leftovers engine's "everything of the removed sandbox" item through 
 other process of its sandbox is left and its holder stopped (tried at once, every 15 s for 10
 minutes, then with every disk round); a playground's quota counts only the `origin`s left on disk.
 
-**Repository hygiene** (SPEC-001 DLV-007, [SPEC-269](../.ai/specs/SPEC-269-i-don-t-understand-the-idea-of-manual-cl.md),
-[decision 0199](decisions/0199-yulius-removes-safe-stale-branches-and-worktrees-itself.md)).
+**Repository hygiene** (SPEC-001 DLV-007, [SPEC-269](../../.ai/specs/SPEC-269-i-don-t-understand-the-idea-of-manual-cl.md),
+[decision 0199](../decisions/0199-yulius-removes-safe-stale-branches-and-worktrees-itself.md)).
 `yulius-app::ci::hygiene` classifies branches and worktrees with `yulius-domain::ci` and, every 6
 hours, removes each live sandbox's safe ones as `yulius` through the same cleanup a person's Clean
 up or an agent's `repo_cleanup` runs; unmerged work without a pull request stays for a person.
 The kept report (in memory) carries the last cleanup and the next round for the CI tab's card.
 
-**Leftovers** ([SPEC-215](../.ai/specs/SPEC-215-leftovers-are-found-and-cleaned-accurate.md),
-[decision 0170](decisions/0170-leftovers-are-deleted-by-kind-rules-checked-again-at-deletion.md)).
+**Leftovers** ([SPEC-215](../../.ai/specs/SPEC-215-leftovers-are-found-and-cleaned-accurate.md),
+[decision 0170](../decisions/0170-leftovers-are-deleted-by-kind-rules-checked-again-at-deletion.md)).
 Every path under the data directory has an owner record and a rule for when it is garbage (the
 inventory in SPEC-215). `yulius-domain::leftovers` holds the kinds and their policy (safe
 automatically, needs a person, report only). `yulius-app::leftovers` scans by kind: removed
 sandboxes from `SandboxStore::removed_sandboxes`, live sandboxes' ended caches (from the disk
 upkeep's own scan), worktrees no task owns, unused CI checkouts and their caches (each job
 checkout has its own `YULIUS_CI_CACHE`, `ci/cache/<checkout>`, never shared with a concurrent job;
-[decision 0238](decisions/0238-a-ci-job-s-cache-is-its-checkout-s-own.md)), Git records of vanished
+[decision 0238](../decisions/0238-a-ci-job-s-cache-is-its-checkout-s-own.md)), Git records of vanished
 worktrees, and instance directories no record owns. It deletes one item at a time after its
 **guard** checks the rule again: the sandbox is still removed and was removed 10 minutes ago,
 `still_running` finds no run, shell, browser or CI run, no CD run is live, the isolation's
@@ -1334,22 +1338,22 @@ sandbox's mapped ids go through the isolation's `remove_owned_tree`: the system 
 `base::remove_tree` as root of a mapped namespace, and every path below `sandboxes/` (its CI jobs
 and agents write there as sub-uids) by `sandbox-host remove-tree --below <data dir>`, the same
 link-safe walk as root of the mapped namespace
-([decision 0176](decisions/0176-leftovers-below-a-sandbox-go-through-its-mapped-root.md)); a
+([decision 0176](../decisions/0176-leftovers-below-a-sandbox-go-through-its-mapped-root.md)); a
 failure names the entry that stayed. No link is followed: an item reached through one is never listed, and the
 removal opens each directory from the data directory down with `O_NOFOLLOW` and removes through
-the opened directory, so a link a sandbox swaps in after the check fails the removal. A tree that stays is made writable directory by directory through `O_PATH` handles, its owner's unreadable directories included ([decision 0179](decisions/0179-a-tree-is-made-writable-through-o-path-handles.md)), and removed again. The automatic round runs at every start and hourly. People reach the
+the opened directory, so a link a sandbox swaps in after the check fails the removal. A tree that stays is made writable directory by directory through `O_PATH` handles, its owner's unreadable directories included ([decision 0179](../decisions/0179-a-tree-is-made-writable-through-o-path-handles.md)), and removed again. The automatic round runs at every start and hourly. People reach the
 same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
 loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`; the same key opens
 `/internal/github-callback` for `yulius instance migrate`, [Moving an instance](#moving-an-instance)).
 
-**Build caches and disk pressure** ([SPEC-276](../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md),
-[decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)).
+**Build caches and disk pressure** ([SPEC-276](../../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md),
+[decision 0205](../decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)).
 For this repository, Cargo writes targets per checkout and mbx stores compiled artifacts in
 `<sandbox>/rust-compile-cache`. Each build owns its mbx session. mbx collects at 16 GiB.
 Instance upkeep can reclaim a stamped, idle store above 20 GiB or under remaining disk pressure.
 A shared lock protects active builds. Upkeep moves the opened store’s ownership stamp to a pending name
 before clearing its contents. Builds use ordinary Cargo until upkeep restores the ready name. A later
-round resumes an interrupted eviction even on a healthy disk. [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md).
+round resumes an interrupted eviction even on a healthy disk. [ADR-0434](../decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md).
 
 The disk upkeep (`yulius-app::disk`) reads the data disk every minute through
 `SystemProbe::disk`; `yulius-domain::sweep` turns it into a level (low from 85 %, critical from
@@ -1390,8 +1394,8 @@ flowchart LR
 ```
 
 A playground moves to GitHub
-([SPEC-176](../.ai/specs/SPEC-176-fix-410-move-a-playground-to-a-github-re.md),
-[decision 0142](decisions/0142-a-playground-moves-into-an-empty-github-repository.md)) into an empty
+([SPEC-176](../../.ai/specs/SPEC-176-fix-410-move-a-playground-to-a-github-re.md),
+[decision 0142](../decisions/0142-a-playground-moves-into-an-empty-github-repository.md)) into an empty
 repository of the instance owner that its mover could import (`admin` or `maintain` there; the
 superadmin: one the App can access). Detached from its request, while no task of it is live or
 queued and no CI run of it is active, and holding the
@@ -1420,8 +1424,8 @@ flowchart LR
 ## Parallel tasks at merge
 
 Tasks working at once must not collide where their parallel work meets
-([SPEC-083](../.ai/specs/SPEC-083-merge-conflicts-with-many-agents.md),
-[decision 0066](decisions/0066-parallel-tasks-stop-colliding-at-merge.md)). Numbered files
+([SPEC-083](../../.ai/specs/SPEC-083-merge-conflicts-with-many-agents.md),
+[decision 0066](../decisions/0066-parallel-tasks-stop-colliding-at-merge.md)). Numbered files
 (decision records, specs, migrations) get their number from Yulius (`record_number`): past the
 integration branch, every live task's checkout and every reservation in `record_numbers`. The logs
 parallel tasks append to (the changes log, the decision index) merge by union in every repository
@@ -1448,8 +1452,8 @@ stays open (the spec is documentation, which the agent or a person in the editor
 agent that loops meets the Stop gate at its turn's end, which asks a person after three blocks;
 what the gate cannot judge (an unreadable spec or workflow) passes. A goal task's long turn therefore cannot change code with the edit
 tools before its plan exists; Bash edits are left to the Stop gate
-([SPEC-426](../.ai/specs/SPEC-426-yulius-in-repo-when-the-org-doesnt-have.md),
-[decision 0270](decisions/0270-a-code-edit-waits-for-the-tasks-spec-plan.md)). Bash calls are
+([SPEC-426](../../.ai/specs/SPEC-426-yulius-in-repo-when-the-org-doesnt-have.md),
+[decision 0270](../decisions/0270-a-code-edit-waits-for-the-tasks-spec-plan.md)). Bash calls are
 checked in the sandbox (`guard_client`, a `pgrep -f` that matches itself) and never sent.
 
 ```mermaid
@@ -1471,7 +1475,7 @@ sequenceDiagram
 
 ## The review's rounds and models
 
-The task briefing directs the author to fix findings and obtain independent re-review under the existing delivery authorization, including after the third round. [ADR-0427](decisions/0427-task-authorization-covers-independent-re-review.md)
+The task briefing directs the author to fix findings and obtain independent re-review under the existing delivery authorization, including after the third round. [ADR-0427](../decisions/0427-task-authorization-covers-independent-re-review.md)
 
 The independent code review runs as one of two agents Yulius defines at every task launch
 (`--agents`, `harness::launch::reviewer_agents`), out of the agent's reach:
@@ -1481,9 +1485,9 @@ The independent code review runs as one of two agents Yulius defines at every ta
 effort whatever the session runs, and a launch definition outranks one in the agent's home; a
 repository's own `.claude/agents/yulius-reviewer.md` would outrank it, and the round's record
 then shows the model that answered
-([decision 0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)).
+([decision 0341](../decisions/0341-yulius-picks-the-model-of-each-review-round.md)).
 
-The task briefing selects the review instructions from the active attempt’s harness ([ADR-0376](decisions/0376-review-instructions-follow-the-active-harness.md)). Codex requests GPT-6.2 Astra at high effort and Antigravity requests Gemini 4 Neon (High) for each round. Claude Code asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
+The task briefing selects the review instructions from the active attempt’s harness ([ADR-0376](../decisions/0376-review-instructions-follow-the-active-harness.md)). Codex requests GPT-6.2 Astra at high effort and Antigravity requests Gemini 4 Neon (High) for each round. Claude Code asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
 `Agent|Task`) reaches Yulius with the tool's whole input (`guard_client::agent_request`), and
 `App::review_gate` numbers the round among the rounds of the task's open pull request (a round
 counts once it ended with a report; a reviewer started again for a round without one keeps its
@@ -1509,11 +1513,11 @@ agent is told why, and the reviewer starts anyway. Merging still needs `delivery
 reviewed head and that head's passed run. `SubagentStart`
 links the round to Claude Code's subagent. Resuming an unfinished reviewer continues that round.
 Resuming it after its report opens the next round on the current head and keeps its model
-([ADR-0400](decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md)).
+([ADR-0400](../decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md)).
 The first `SubagentStop` ends the round with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
 subagent off sends no `SubagentStop`, so such a round stays without a report. When the hooks missed
 a round, its report still ends it
-([ADR-0467](decisions/0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md)):
+([ADR-0467](../decisions/0467-a-reviewers-report-ends-its-round-when-its-hooks-missed-it.md)):
 - **Start came first.** A `PreToolUse` that outlasted the hook client inserts its round after
   `SubagentStart`, which then linked nothing. A stop whose id no round carries links and ends the
   newest unlinked open round (`end_unlinked_review_round`). The reviewer ran as asked, since the
@@ -1535,9 +1539,9 @@ child rollout header names that reviewer and the authenticated parent, and takes
 reviewed head and start time from its launch metadata. A `SubagentStop` with a verdict can
 settle or establish the same round under the child's ID. The merge transaction keeps its time
 in the delivery record even when it has zero rounds, so delayed hooks from the previous PR
-cannot open a round on the next one. [ADR-0442](decisions/0442-identify-codex-reviewers-by-their-child-rollout.md)
+cannot open a round on the next one. [ADR-0442](../decisions/0442-identify-codex-reviewers-by-their-child-rollout.md)
 
-The delivery transaction also binds the task, PR, accepted head, integration branch and landed commit in `task_merges`. Delivery reads the existing CI jobs, CD runs and delivery-profile command runs by sandbox and exact commit. A historical link keeps its identity when a branch moves or the task opens another PR. Retention archives the compact results before deleting a linked run. A clean CD wrapper exit confirms each configured command. Other exits leave their individual outcomes unconfirmed. Legacy deliveries recover their binding from the recorded PR on the branch named by the task's historical PR-opening audit entry. A direct merge awaiting confirmation recovers only when the closed PR matches the original expected branch, head and merge result. An unavailable historical result supplies no proof. [Decision 0399](decisions/0399-task-evidence-belongs-to-the-landed-commit.md)
+The delivery transaction also binds the task, PR, accepted head, integration branch and landed commit in `task_merges`. Delivery reads the existing CI jobs, CD runs and delivery-profile command runs by sandbox and exact commit. A historical link keeps its identity when a branch moves or the task opens another PR. Retention archives the compact results before deleting a linked run. A clean CD wrapper exit confirms each configured command. Other exits leave their individual outcomes unconfirmed. Legacy deliveries recover their binding from the recorded PR on the branch named by the task's historical PR-opening audit entry. A direct merge awaiting confirmation recovers only when the closed PR matches the original expected branch, head and merge result. An unavailable historical result supplies no proof. [Decision 0399](../decisions/0399-task-evidence-belongs-to-the-landed-commit.md)
 
 The transcript watch also reads each subagent of the session's own thread
 (`<session>/subagents/agent-<id>.jsonl`): the model and time of each answer
@@ -1603,31 +1607,31 @@ sequenceDiagram
 Dashboard → Harnesses reads the sandbox analytics summary for tasks created in the selected UTC period.
 Task counts use the assigned harness. Each run contributes to the executing harness’s token totals and
 reporting coverage. Ended runs also contribute elapsed wall time to that harness’s median and p90.
-[ADR-0374](decisions/0374-compare-harnesses-by-executing-attempt.md)
+[ADR-0374](../decisions/0374-compare-harnesses-by-executing-attempt.md)
 
 ## Agent feedback
 
-Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
-[decision 0023](decisions/0023-no-messages-until-delivery-is-reliable.md)): nothing is stored for
+Yulius has no messages for now ([SPEC-028](../../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
+[decision 0023](../decisions/0023-no-messages-until-delivery-is-reliable.md)): nothing is stored for
 an agent, injected by a hook or typed into its session, except what happens to its open pull
 request ([Pull request notices](#pull-request-notices)). An agent pulls the rest: it waits
 with `yulius wait` in a background shell, which Claude Code wakes it from, and reads
 `ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait,
 with the armed merge and its decisions in progress under one lock: a merge armed again while an
-earlier one is decided supersedes it ([decision 0048](decisions/0048-armed-merge-state-under-one-lock.md)).
+earlier one is decided supersedes it ([decision 0048](../decisions/0048-armed-merge-state-under-one-lock.md)).
 Before Yulius merges or arms a merge, its merge gate checks the pull request's title, head and
 base against the branch policy of `yulius.toml` `[branch_policy]` at the integration branch;
 a violation is refused with the rule in words, also for promotion pull requests
-([SPEC-069](../.ai/specs/SPEC-069-fix-223-yulius-s-merge-gate-enforces-the.md),
-[decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
+([SPEC-069](../../.ai/specs/SPEC-069-fix-223-yulius-s-merge-gate-enforces-the.md),
+[decision 0051](../decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
 Every merge Yulius makes (`delivery_merge`, the merge train, the promotion of a production deploy,
 remote file edits) goes through the GitHub adapter's `merge_pull`. GitHub answers a merge of a
 pull request whose mergeability it is still computing (just opened, or its base just moved) with
 405 "Base branch was modified": the adapter then reads the pull request until GitHub has an
 answer and merges again, at most 4 merge requests and 12 s of waits; a real
 refusal ends the merge with its reason (a conflict, branch protection, behind the base, a draft)
-([SPEC-495](../.ai/specs/SPEC-495-a-production-deploy-never-fails-on-a-pro.md),
-[decision 0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)).
+([SPEC-495](../../.ai/specs/SPEC-495-a-production-deploy-never-fails-on-a-pro.md),
+[decision 0349](../decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)).
 `delivery_merge` first delivers the head the way the end of a clean turn does
 (`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
 it. Work committed after the task's pull request merged (on top of its head, more than clean
@@ -1637,8 +1641,8 @@ nothing new, `delivery_merge` answers that the pull request is merged already an
 what Yulius cannot judge (a rewritten branch, a merged head missing from the clone, a conflict
 with the integration branch, a failed fetch, GitHub not answering, new work while a live merge
 train holds the task) it refuses with the reason
-([SPEC-425](../.ai/specs/SPEC-425-yulius-doesnt-pick-up-things-this-is-on.md),
-[decision 0269](decisions/0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md)).
+([SPEC-425](../../.ai/specs/SPEC-425-yulius-doesnt-pick-up-things-this-is-on.md),
+[decision 0269](../decisions/0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md)).
 A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
 uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
 (merge the pushed head, never force): only a note that same call wrote replaces its error. For an
@@ -1647,14 +1651,14 @@ armed, a clean committed fast-forward repair on the feature branch publishes at 
 `yulius wait`, or during PR watch and triggers exact-head CI even while a verification step
 remains open, unless a human `needs_you` decision or `Blocked` step is pending; failed
 publications surface in `delivery_status`, `yulius wait`, and `pr_watch`
-([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
-[decision 0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)). A head
+([SPEC-553](../../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
+[decision 0391](../decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)). A head
 is pushed when GitHub's branch is at it, whatever `git push` said: every push of a task's head
 (end of turn, `delivery_merge`, Deliver…, armed-merge upkeep, merge trains) goes through one helper
 that asks the remote (`git ls-remote`) when Git reports a failure, and the wait drops a failed-push
-note once the branch is at its head ([SPEC-139](../.ai/specs/SPEC-139-fix-366-448-yulius-wait-and-delivery-mer.md),
-[decision 0113](decisions/0113-github-s-branch-says-whether-a-head-is-pushed.md)). A goal task whose evaluator keeps every turn going therefore still gets its pull request
-([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md) DMG-001).
+note once the branch is at its head ([SPEC-139](../../.ai/specs/SPEC-139-fix-366-448-yulius-wait-and-delivery-mer.md),
+[decision 0113](../decisions/0113-github-s-branch-says-whether-a-head-is-pushed.md)). A goal task whose evaluator keeps every turn going therefore still gets its pull request
+([SPEC-116](../../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md) DMG-001).
 
 ```mermaid
 sequenceDiagram
@@ -1671,9 +1675,9 @@ sequenceDiagram
 ### The merge queue
 
 Every sandbox's armed merges go through one queue, with no setting
-([SPEC-441](../.ai/specs/SPEC-441-merge-queue-for-every-sandbox-no-restart.md),
-[decision 0285](decisions/0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md),
-amending the merge trains of [decision 0067](decisions/0067-armed-pull-requests-merge-in-trains.md)).
+([SPEC-441](../../.ai/specs/SPEC-441-merge-queue-for-every-sandbox-no-restart.md),
+[decision 0285](../decisions/0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md),
+amending the merge trains of [decision 0067](../decisions/0067-armed-pull-requests-merge-in-trains.md)).
 A pass (`App::merge_armed`, one per sandbox at a time) runs at the end of every CI run, every 3
 minutes after the delivery reconcile, and every 20 seconds for a sandbox with something it can
 decide now (a candidate whose run ended, or an armed head whose run passed that is up to date or,
@@ -1682,7 +1686,7 @@ then decides the armed merges in arm order. An armed merge lives with the run th
 (`TaskStatus::keeps_an_armed_merge`): while the task runs, its run is only held (no capacity,
 a subscription switch) or it waits in the queue to start again, it stays armed, also across a
 restart (a saved arm not later than the task's latest recorded merge wait was decided already and
-is dropped, [decision 0452](decisions/0452-a-recorded-merge-wait-consumes-every-earlier-saved-arm.md));
+is dropped, [decision 0452](../decisions/0452-a-recorded-merge-wait-consumes-every-earlier-saved-arm.md));
 once the run ended (the task was closed, stopped or failed) the next pass ends it and
 says so (a pull request merged meanwhile is said to be merged), and Yulius leaves the pull
 request as it is:
@@ -1718,7 +1722,7 @@ The queue writes `delivery.train.formed`, `.merged` and `.dissolved` (`(why: mem
 member_failed | bisected | base_moved | errored | too_long)`); `GET /api/analytics/merge-queue`
 reads them per day with the minutes from arming to merge and the last ten dissolved with their
 reason (`merge_queue::queue_numbers`; the Pipeline tab's Merge queue card)
-([decision 0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)).
+([decision 0357](../decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)).
 
 The armed merge verdict uses the SHA returned by the protected merge and the head GitHub accepted.
 It names the base when the closed PR confirms it. A train also names the candidate commit whose run passed.
@@ -1749,8 +1753,8 @@ flowchart TD
 ### Pull request notices
 
 A task hears what happens to its pull request without a wait running
-([SPEC-444](../.ai/specs/SPEC-444-tasks-always-notice-what-happens-to-thei.md),
-[decision 0287](decisions/0287-yulius-types-what-happens-to-a-tasks-pull-request-into-its-session.md);
+([SPEC-444](../../.ai/specs/SPEC-444-tasks-always-notice-what-happens-to-thei.md),
+[decision 0287](../decisions/0287-yulius-types-what-happens-to-a-tasks-pull-request-into-its-session.md);
 amends the "nothing is typed" rule above for a task with an open pull request). Every 20 seconds
 the pull request watch (`pr_watch.rs`) looks at each running, unpaused task whose delivery is
 `pr_open`, from Yulius's own records and clone (its pull request's newest run, a merge candidate
@@ -1803,8 +1807,8 @@ flowchart LR
 ### Across a Yulius restart
 
 A restart or an update is invisible to a task's session
-([SPEC-358](../.ai/specs/SPEC-358-sessions-keep-yulius-mcp-waits-and-deliv.md),
-[decision 0244](decisions/0244-task-runs-reach-yulius-through-a-stdio-bridge-and-are-woken-after-an-outage.md)):
+([SPEC-358](../../.ai/specs/SPEC-358-sessions-keep-yulius-mcp-waits-and-deliv.md),
+[decision 0244](../decisions/0244-task-runs-reach-yulius-through-a-stdio-bridge-and-are-woken-after-an-outage.md)):
 
 - **The MCP bridge.** Claude Code gives up on an HTTP MCP server after about a minute of failed
   reconnects. So a task run's `yulius` server is the stdio bridge `yulius mcp`, which lives as
@@ -1826,8 +1830,8 @@ A restart or an update is invisible to a task's session
   with a Stop Yulius answers, so the branch is pushed and delivery goes on.
 - **Armed merges** are restored, then tried once at the start.
 - **A dropped server is reconnected**
-  ([SPEC-432](../.ai/specs/SPEC-432-fix-so-this-never-ever-happen-again-also.md),
-  [decision 0276](decisions/0276-a-session-whose-yulius-mcp-went-silent-is-reconnected-and-a-superadmin-restarts-yulius.md)).
+  ([SPEC-432](../../.ai/specs/SPEC-432-fix-so-this-never-ever-happen-again-also.md),
+  [decision 0276](../decisions/0276-a-session-whose-yulius-mcp-went-silent-is-reconnected-and-a-superadmin-restarts-yulius.md)).
   Claude Code can still mark the server failed for good (a stdio server gets 30 s to connect).
   The bridge pings `POST /mcp` every minute and every agent request records the task's last
   contact. A Running, idle task silent for 3 minutes whose MCP is known to be gone (its bridge
@@ -1835,7 +1839,7 @@ A restart or an update is invisible to a task's session
   typed (at most every 10 minutes, hourly after 3 unanswered), and once heard again, if its turn
   closed while it was silent, "Yulius's tools are reconnected; continue". A bridge heard but never
   pinged may be an older build that is alive, since a sandbox keeps the `yulius` of the base it
-  started on: it is left alone ([decision 0280](decisions/0280-only-a-yulius-mcp-known-to-be-gone-is-reconnected.md)). Mid-turn, `yulius tool <name> '<json>'` calls
+  started on: it is left alone ([decision 0280](../decisions/0280-only-a-yulius-mcp-known-to-be-gone-is-reconnected.md)). Mid-turn, `yulius tool <name> '<json>'` calls
   any Yulius tool from the shell. In a session `yulius` is the `/yulius/bin` wrapper, which passes
   only the session's commands (`wait`, `tool`, `security-scan`, `remove`) to the binary; a test
   fails when a subcommand documented "In a task's session" is missing from it (SPEC-451).
@@ -1865,8 +1869,8 @@ sequenceDiagram
 Claude Code's removal check asks a person even with approvals bypassed (a root-level path, a path
 in a variable, a `sh -c` script). A task removes the files it created itself with
 `yulius remove <path>…`, run in its own run, which alone sees the run's private tmpfs
-([SPEC-192](../.ai/specs/SPEC-192-claude-sessions-asks-me-to-delete-someth.md),
-[decision 0155](decisions/0155-a-task-removes-its-own-files-with-yulius-remove.md)). It judges
+([SPEC-192](../../.ai/specs/SPEC-192-claude-sessions-asks-me-to-delete-someth.md),
+[decision 0155](../decisions/0155-a-task-removes-its-own-files-with-yulius-remove.md)). It judges
 ownership by location: an untracked or ignored path of the task's worktree
 (`YULIUS_TASK_WORKTREE`), or a path on the run's own tmpfs (`/`, `/tmp`, `/run`, `/dev/shm`) of a
 contained run; mount points, directories holding one and the root's links are refused, and a
@@ -1881,7 +1885,7 @@ The hook reads the Bash syntax tree and excludes shell jobs and command-local re
 checks how Bash resolves the command and runs the helper only for the system rm executable.
 When the original removal omitted `--`, an option-like expanded operand stops the entire retry.
 On retry, a trailing slash on the expanded path requires a directory. A directory symlink
-spelled this way produces a refusal and preserves its target. [Decision 0435](decisions/0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md)
+spelled this way produces a refusal and preserves its target. [Decision 0435](../decisions/0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md)
 
 ```mermaid
 flowchart TD
@@ -1908,12 +1912,12 @@ that handle; the format check of a sandbox checkout (`onboarding::validate_sandb
 opens each document and folder with `files::open_inside` against the checkout's resolved root,
 read only when that root is inside the sandbox directory, and each decision file with `openat`
 from its checked folder's handle
-([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
-[SPEC-285](../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
-[SPEC-367](../.ai/specs/SPEC-367-ci-job-preparation-never-follows-a-link.md),
-[SPEC-391](../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md),
-[SPEC-394](../.ai/specs/SPEC-394-vidoc-triage-onboarding-and-delivery-832.md),
-[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). A CI
+([SPEC-220](../../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
+[SPEC-285](../../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
+[SPEC-367](../../.ai/specs/SPEC-367-ci-job-preparation-never-follows-a-link.md),
+[SPEC-391](../../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md),
+[SPEC-394](../../.ai/specs/SPEC-394-vidoc-triage-onboarding-and-delivery-832.md),
+[decision 0174](../decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). A CI
 checkout is the exception Git imposes: its place is readied through handles, then Git adds, checks
 out and cleans it by path, only when Git registers it at its resolved path inside `ci`. The
 helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the handle's real path
@@ -1926,36 +1930,36 @@ or an old draft that a task's request or an automation's prompt names is kept, S
 resolved folder from the sandbox directory with `open_dirs_below` (no real-path check, so no
 `/proc`) and list, `mkdirat`, or remove through `files::remove_tree` (bounded, handle by handle,
 a link unlinked, never followed)
-([SPEC-265](../.ai/specs/SPEC-265-editor-delete-folder-create-and-listing.md)); the harness's skill copies
+([SPEC-265](../../.ai/specs/SPEC-265-editor-delete-folder-create-and-listing.md)); the harness's skill copies
 do the same and remove trees with `unlinkat`, and the launch preparation of the Claude config dir
 (`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home,
 keys the worktree's trust by the sandbox directory's real path and the rest of the worktree's path
 as named (a link below the sandbox directory is never resolved, and the worktree's `.git` is read
 through folders opened with `O_NOFOLLOW`; a shell's folder, the Superagent's working directory,
 resolves only the sandbox directory the same way,
-[SPEC-398](../.ai/specs/SPEC-398-vidoc-triage-supervisor-harness-and-host.md)), and reads paths the
+[SPEC-398](../../.ai/specs/SPEC-398-vidoc-triage-supervisor-harness-and-host.md)), and reads paths the
 agent wrote in a worktree's git files lexically, never on the host filesystem
-([SPEC-253](../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
-[decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)).
+([SPEC-253](../../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
+[decision 0193](../decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)).
 The disk upkeep counts a worktree, a CI job checkout or a cache only when every folder from the
 sandbox directory down to it is a real directory (`leftovers::no_link_between`), checks a cache
 again right before removing it through `leftovers::remove_below`'s `O_NOFOLLOW` handles, and an
 ended worktree again before its removal
-([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). A task worktree
+([SPEC-263](../../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). A task worktree
 is removed, or discarded at a task's deletion, by Git's checks only (registered, clean, unlocked);
 on Linux the server then removes its folder and its `.git/worktrees/<id>` record with
 `remove_below` from the folder above each (the sandbox directory; for a snapshot import the
 server's `import-worktrees`), because Git's own removal resolves the path again and
 follows a link swapped in after the checks
-([SPEC-401](../.ai/specs/SPEC-401-vidoc-triage-ci-disk-and-cd-848-844-795.md),
-[decision 0255](decisions/0255-git-checks-a-worktree-and-the-server-removes-it-through-handles.md)).
+([SPEC-401](../../.ai/specs/SPEC-401-vidoc-triage-ci-disk-and-cd-848-844-795.md),
+[decision 0255](../decisions/0255-git-checks-a-worktree-and-the-server-removes-it-through-handles.md)).
 The scrub of a clone's transport settings (SPEC-176) opens `.git`, `config` and `config.worktree`
 with `O_NOFOLLOW` under Git's own `<file>.lock`, lets Git edit a copy in a 0700 folder of the
 service user, and renames the result over the name through the `.git` handle; an upload places a
 new name with a link or `RENAME_NOREPLACE`, never a check then a rename; and the folders the server
 creates in a sandbox tree are 0755 whatever the umask
-([SPEC-402](../.ai/specs/SPEC-402-vidoc-triage-uploads-files-and-git-809-8.md),
-[decision 0257](decisions/0257-the-config-scrub-and-new-names-never-go-through-a-checked-path.md)).
+([SPEC-402](../../.ai/specs/SPEC-402-vidoc-triage-uploads-files-and-git-809-8.md),
+[decision 0257](../decisions/0257-the-config-scrub-and-new-names-never-go-through-a-checked-path.md)).
 The merge attributes the server keeps in a clone's `info/attributes` and the pre-push guard's
 files in a worktree's Git directory go the same way (`yulius_git::handles`, shared with the
 scrub): the clone is named by the caller, never asked of the worktree; Git only says which of the
@@ -1963,34 +1967,34 @@ clone's Git directories is the worktree's, and the files are read (regular, boun
 (a random `O_EXCL` name, renamed in the handle) below the clone's own `.git`. A contained run is
 started with the `bwrap` of the process host's own `PATH`, never the run's, whose first entries
 are in the sandbox home
-([decision 0314](decisions/0314-the-host-starts-bubblewrap-by-its-own-path-and-writes-git-files-through-handles.md)).
+([decision 0314](../decisions/0314-the-host-starts-bubblewrap-by-its-own-path-and-writes-git-files-through-handles.md)).
 The reads the server still made by path there go the same way
-([decision 0315](decisions/0315-what-the-host-reads-in-a-sandbox-it-reads-through-handles.md)):
+([decision 0315](../decisions/0315-what-the-host-reads-in-a-sandbox-it-reads-through-handles.md)):
 a session's transcript is opened from the sandbox directory folder by folder, without following
 a link or waiting on a FIFO, and only a regular file is read (`transcripts::open`, used by the
 transcript pages, `session_read` and the search index, which read a Claude Code session, a Codex
 rollout and an Antigravity transcript into the same entries, the format told by each line's
-shape ([SPEC-525](../.ai/specs/SPEC-525-hey-we-have-a-small-bug-i-don-t-see-a-pr.md)); the run
+shape ([SPEC-525](../../.ai/specs/SPEC-525-hey-we-have-a-small-bug-i-don-t-see-a-pr.md)); the run
 watcher's tail opens it the same way at its name); the sandbox adapter reads the system layer's `passwd` and `group` itself, at
 most 1 MiB of a regular file, and hands people's identity files the text; `record_number` lists
 a numbered directory from the sandbox directory down; the quota's disk usage is measured from
 folder handles; and the task review reads an untracked file from the worktree's folder.
 Session search restores the parser’s dotenv context by replaying the indexed prefix when it resumes
 from the byte and line offsets committed with its passages.
-[Decision 0382](decisions/0382-session-index-resumption-replays-redaction-context.md) describes the
+[Decision 0382](../decisions/0382-session-index-resumption-replays-redaction-context.md) describes the
 read budget and the one-time rebuild of historical passages.
 
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new
 `mkdir`, removed again when the import fails; disk upkeep lists what an interrupted import leaves), as
-`project_change` works in `<data>/changes`, and `extract_snapshot` refuses a linked root ([SPEC-296](../.ai/specs/SPEC-296-snapshot-import-reserves-its-worktree-pa.md),
-[decision 0213](decisions/0213-a-snapshot-import-checks-out-in-a-server-private-folder.md)).
+`project_change` works in `<data>/changes`, and `extract_snapshot` refuses a linked root ([SPEC-296](../../.ai/specs/SPEC-296-snapshot-import-reserves-its-worktree-pa.md),
+[decision 0213](../decisions/0213-a-snapshot-import-checks-out-in-a-server-private-folder.md)).
 Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature). While the tokio runtime that registered a hook
 lives, only a point reached on it runs the hook, so running tests sharing a process do not take
 each other's hooks through a repeated task id; hooks registered or reached outside a runtime, and
-those of a runtime that shut down, still match by point and key alone ([decision 0474](decisions/0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md)).
+those of a runtime that shut down, still match by point and key alone ([decision 0474](../decisions/0474-a-test-pause-hook-belongs-to-the-runtime-that-registered-it.md)).
 
 Git itself, which the server runs in those folders as the service user, is confined by the
 kernel: every command of the Git adapter is started through `yulius git-confined`
@@ -2000,7 +2004,7 @@ worktrees; what else a command touches is named where it is made). A clone's con
 can then make the server's Git run nothing, and a link in the clone leads it nowhere
 outside. Only a transfer between two folders Yulius names may start the shell, with its
 transports pinned to `file`, and never in a sandbox's folder
-([decision 0322](decisions/0322-the-hosts-own-git-runs-confined.md)). A clone's transfers,
+([decision 0322](../decisions/0322-the-hosts-own-git-runs-confined.md)). A clone's transfers,
 with GitHub (which carry the server's token) and with a playground's origin (which need the
 shell), are not made in the clone at all: a courier, a bare repository of the server's own in
 `<data>/git-couriers`, fetches or pushes on the clone's objects, and the refs travel as data
@@ -2010,7 +2014,7 @@ the adapter's own configuration, where the token travels, or the shell. What the
 commits and pushes (a change from the remote control, an empty repository's first commit) is
 made in `<data>/changes`, not in the sandbox's folder
 (`yulius_git::courier`,
-[decision 0323](decisions/0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md)).
+[decision 0323](../decisions/0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md)).
 
 ```mermaid
 flowchart LR
@@ -2040,8 +2044,8 @@ flowchart LR
 Every contained session Yulius starts sees its harness's persistent memory and user-level
 instruction files read-only, so no edit tool, shell command or script of the agent adds, changes
 or deletes them, while what is there still loads
-([decision 0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md),
-[SPEC-652](../.ai/specs/SPEC-652-agents-cannot-write-harness-memory-every.md)). The paths
+([decision 0479](../decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md),
+[SPEC-652](../../.ai/specs/SPEC-652-agents-cannot-write-harness-memory-every.md)). The paths
 (`yulius_app::memory_guard`):
 
 | Harness | Guarded (read-only) | Pinned (bound over itself) |
@@ -2090,28 +2094,28 @@ flowchart LR
 ## Task start
 
 A task's agent is a native Claude Code session, and its first message is in before a person can
-type into it ([SPEC-117](../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-very-weird.md),
-[decision 0095](decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
+type into it ([SPEC-117](../../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-very-weird.md),
+[decision 0095](../decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
 attached on the new-task composer are uploaded to the sandbox's drafts folder and show in the
 composer's tray, and each sits in the prompt's text as a placeholder where it was pasted, dropped
-or placed from the tray ([SPEC-150](../.ai/specs/SPEC-150-fix-the-ux-i-d-expect-uploading-images-a.md),
-[decision 0124](decisions/0124-uploaded-files-sit-in-a-tray-the-text-holds-placeholders.md)); a
+or placed from the tray ([SPEC-150](../../.ai/specs/SPEC-150-fix-the-ux-i-d-expect-uploading-images-a.md),
+[decision 0124](../decisions/0124-uploaded-files-sit-in-a-tray-the-text-holds-placeholders.md)); a
 file without one follows the text. The prompt is stored with it there as the
 mention `@'<path>'` (an older prompt has its files after the text, a line `@path` each), and
 `Request::parse` keeps that order everywhere the prompt goes
-([SPEC-124](../.ai/specs/SPEC-124-images-keep-their-position-in-the-text-f.md),
-[decision 0101](decisions/0101-attached-files-keep-their-place-in-the-prompt.md)). A goal task (the
+([SPEC-124](../../.ai/specs/SPEC-124-images-keep-their-position-in-the-text-f.md),
+[decision 0101](../decisions/0101-attached-files-keep-their-place-in-the-prompt.md)). A goal task (the
 default) is launched with `/goal <condition>` as Claude Code's prompt argument: one message, nothing
 typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. Until it
 is confirmed the run directory holds `launch-goal-pending`, so a restarted server watches it again
-([SPEC-146](../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md)). The
+([SPEC-146](../../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md)). The
 condition is the person's whole request, its lines kept and each attached file at its place as
 `[file N: <path>]` (the agent opens it with its Read tool, since a `/goal` carries no image block),
 then a blank line and the definition of done. Past Claude Code's 4000 UTF-16 code units it is cut
 and points at the request file in the sandbox home, which keeps the whole request with the same
 markers. Yulius's other rules reach the agent and the goal's judge natively, in the SessionStart
-briefing ([SPEC-212](../.ai/specs/SPEC-212-we-need-to-approach-it-differently-we-ca.md),
-[decision 0168](decisions/0168-the-goal-is-the-whole-request-and-the-briefing-carries-the-rules.md)). A
+briefing ([SPEC-212](../../.ai/specs/SPEC-212-we-need-to-approach-it-differently-we-ca.md),
+[decision 0168](../decisions/0168-the-goal-is-the-whole-request-and-the-briefing-carries-the-rules.md)). A
 prompt task's first message is its request. Without an image it is the CLI prompt argument, each
 file mentioned where it sits (`@"<path>"`). With an image the session starts with no prompt and
 Yulius types the message into the TUI, in order: the text, each image's path pasted on its own
@@ -2129,14 +2133,14 @@ then has no typist for it, gives a run whose opening turn has not ended that tur
 mark says the session opens with one, and no Stop of the run was answered), watches the
 reattached run from that turn's end as it watches a launch goal, and flags a task that Claude
 Code recorded no goal for
-([SPEC-483](../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md) RST-002). Each
+([SPEC-483](../../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md) RST-002). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
 a worktree's trust up there when `.claude/settings.json` pre-approves tools. The same preparation,
 for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the config dir's user
 `settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
 `/output-style` and a repository's committed style still win
-([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
-[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Yulius
+([SPEC-210](../../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
+[decision 0166](../decisions/0166-sessions-default-to-the-concise-output-style.md)). Yulius
 switches plugin language servers off for every session it starts, and none is asked to install
 one: before each
 launch Yulius reads which plugins of the session bring a language server (the installed ones
@@ -2151,40 +2155,40 @@ above sets `"lspRecommendationDisabled": true` in `.claude.json`. Claude Code ot
 in the terminal and with yes as the default, to install the plugin of any language server it
 finds on `PATH`, for every session of the home, and then starts one server per session at the
 first edited file, or reports that it could not
-([SPEC-485](../.ai/specs/SPEC-485-task-sessions-start-without-yellow-error.md),
-[decision 0327](decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md)).
+([SPEC-485](../../.ai/specs/SPEC-485-task-sessions-start-without-yellow-error.md),
+[decision 0327](../decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md)).
 Task runs and the
 Superagent (the Cockpit) start Claude Code with `CLAUDE_CODE_NO_FLICKER=1`, so it always draws
 full screen with mouse reporting, which the web terminal's wheel and late viewers need. Without it,
 Claude Code's boot canary in the shared config dir took a sibling task's start (every contained run
 is pid 2) for a failed one of its own and turned full screen off for the project
-([SPEC-310](../.ai/specs/SPEC-310-i-can-t-scroll-up-fix.md),
-[decision 0218](decisions/0218-claude-code-runs-always-draw-full-screen.md)). Claude Code shows a
+([SPEC-310](../../.ai/specs/SPEC-310-i-can-t-scroll-up-fix.md),
+[decision 0218](../decisions/0218-claude-code-runs-always-draw-full-screen.md)). Claude Code shows a
 session only from its last compaction, so a wheel turn that reaches the top of a task's terminal
 offers the History view: the task's live transcript (`GET /api/tasks/{tid}/transcript`) read from
 line 0, in the terminal's place, while the terminal stays connected underneath
-([SPEC-326](../.ai/specs/SPEC-326-i-can-t-scroll-up-terminals-with-claude.md),
-[decision 0220](decisions/0220-a-task-terminal-s-top-leads-to-its-whole-session.md)). If a trust prompt
+([SPEC-326](../../.ai/specs/SPEC-326-i-can-t-scroll-up-terminals-with-claude.md),
+[decision 0220](../decisions/0220-a-task-terminal-s-top-leads-to-its-whole-session.md)). If a trust prompt
 still shows before SessionStart, Yulius types nothing into it and says so, and the keys a person
 answers it with are no draft. A goal launched as the prompt runs once the prompt is answered, a
 typed one follows once it is gone, and a prompt left unanswered for 5 minutes flags the task
-([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
-[decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)). A typed
+([SPEC-106](../../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
+[decision 0086](../decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)). A typed
 first message is pending (`opening-pending` in the run directory) until its `UserPromptSubmit`: a
 restart flags a task whose first message never reached that hook (a submitted one a hold keeps
 goes on), and a first message held for capacity resumes on another account, or a manual switch,
 as a fresh session that types it again with its images
-([SPEC-068](../.ai/specs/SPEC-068-fix-252-266-only-real-typing-counts-as-t.md),
-[decision 0052](decisions/0052-only-keystrokes-count-as-typing.md);
-[SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
-[SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
-[SPEC-030](../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),
-[decisions 0022](decisions/0022-native-task-attachments.md) and
-[0026](decisions/0026-attached-images-are-pasted.md)). The request is read when the task first
+([SPEC-068](../../.ai/specs/SPEC-068-fix-252-266-only-real-typing-counts-as-t.md),
+[decision 0052](../decisions/0052-only-keystrokes-count-as-typing.md);
+[SPEC-011](../../.ai/specs/SPEC-011-automatic-dev-delivery.md),
+[SPEC-025](../../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
+[SPEC-030](../../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),
+[decisions 0022](../decisions/0022-native-task-attachments.md) and
+[0026](../decisions/0026-attached-images-are-pasted.md)). The request is read when the task first
 starts, after its compare-and-set to `starting`. Until then, a message a person queues into the
 waiting task is appended to the stored request by one conditional update, so the start either
-reads it or refuses it ([SPEC-052](../.ai/specs/SPEC-052-even-if-a-task-is-queued-i-d-like-to-be.md),
-[decision 0035](decisions/0035-queued-messages-join-the-request.md)).
+reads it or refuses it ([SPEC-052](../../.ai/specs/SPEC-052-even-if-a-task-is-queued-i-d-like-to-be.md),
+[decision 0035](../decisions/0035-queued-messages-join-the-request.md)).
 
 ```mermaid
 sequenceDiagram
@@ -2223,32 +2227,32 @@ sequenceDiagram
 ### Onboarding repair
 
 A sandbox waits in `pending` or `preparing` until its onboarding task has made it ready
-([decision 0076](decisions/0076-onboarding-is-mandatory-in-the-ui.md),
-[decision 0077](decisions/0077-onboarding-task-is-created-when-needed.md)). That task stays in
+([decision 0076](../decisions/0076-onboarding-is-mandatory-in-the-ui.md),
+[decision 0077](../decisions/0077-onboarding-task-is-created-when-needed.md)). That task stays in
 the task list while the sandbox waits: archiving it is refused. If it is deleted, the sandbox
 returns to `pending` and Start onboarding creates a new one. `refresh_onboarding` makes these
 repairs, and the server makes them once for every sandbox at start, which heals sandboxes stuck
-before the fix ([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
-[decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)).
+before the fix ([SPEC-106](../../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
+[decision 0086](../decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)).
 Every state change below is a compare-and-set from the state it was decided on, so a Start
 onboarding or a refresh running while an admin skips never writes over the skip (attaching a new
 onboarding task writes `pending` under the lock a skip takes, so it needs no condition). Until it runs,
 the onboarding task reads "Waits for Start onboarding" (or "Not started" after a skip), not Closed
-([SPEC-153](../.ai/specs/SPEC-153-fix-406-431-399-onboarding-writes-never.md),
-[decision 0126](decisions/0126-a-task-that-never-ran-is-a-view-not-a-status.md)).
+([SPEC-153](../../.ai/specs/SPEC-153-fix-406-431-399-onboarding-writes-never.md),
+[decision 0126](../decisions/0126-a-task-that-never-ran-is-a-view-not-a-status.md)).
 A repository with no commits has no branch for that task's worktree: a start whose clone has no
 branch of origin fetches it again and, when origin still has none, pushes `README.md` to the default branch GitHub reports
 (`main` when none), as the App, and records that branch. A sandbox recorded with a branch GitHub
 lacks (an empty clone's `master`) is corrected to GitHub's when someone pushed it since
-([SPEC-241](../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md),
-[decision 0187](decisions/0187-an-empty-repository-gets-its-first-commit-when-onboarding-starts.md)).
+([SPEC-241](../../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md),
+[decision 0187](../decisions/0187-an-empty-repository-gets-its-first-commit-when-onboarding-starts.md)).
 Onboarding runs an agent, so it waits for a Claude account first: without a usable one (signed in,
 `ok` or `limited`) Start onboarding and a browser import's start are refused before anything is
 created or pushed and the sandbox stays `pending`; the same gate (`account_gate`, 409
 `claude_account_required`) refuses every other start a person asks for, while a start by a chain, a
 rule, an automation or a time waits `waiting_capacity` saying no account is connected
-([SPEC-246](../.ai/specs/SPEC-246-onboarding-requires-a-connected-claude-a.md),
-[decision 0190](decisions/0190-a-person-starts-no-agent-without-a-connected-claude-account.md)).
+([SPEC-246](../../.ai/specs/SPEC-246-onboarding-requires-a-connected-claude-a.md),
+[decision 0190](../decisions/0190-a-person-starts-no-agent-without-a-connected-claude-account.md)).
 
 ```mermaid
 stateDiagram-v2
@@ -2266,19 +2270,19 @@ the gate: a test command, lint and format, and a dead-code and unused-dependency
 `[commands]` and `[[ci.jobs]]` with a CI job for every project of a monorepo. Existing findings
 go into a committed baseline instead of application-code changes. It delivers through the review
 and `delivery_merge` like every task
-([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md),
-[decision 0094](decisions/0094-onboarding-installs-the-gate-in-its-own-pull-request.md)). The
+([SPEC-116](../../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md),
+[decision 0094](../decisions/0094-onboarding-installs-the-gate-in-its-own-pull-request.md)). The
 briefing quotes the newest end of the changes log: a log whose ISO dates run oldest first is
 quoted from its end, and its new entries go there. A changes folder (`[docs] changes` ending with
 `/`, or naming a directory) is quoted as its newest notes, by the date in their names, and a task
-with a user-visible change adds one new note there ([decision 0248](decisions/0248-change-notes-may-be-a-folder-of-one-file-per-change.md)).
+with a user-visible change adds one new note there ([decision 0248](../decisions/0248-change-notes-may-be-a-folder-of-one-file-per-change.md)).
 
 ### Parked sessions
 
 A task whose turn ended and that waits for a person gives its idle session up
 (`yulius-app/src/parking.rs`,
-[SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 1,
-[decision 0367](decisions/0367-an-idle-session-is-parked-and-resumed-by-a-message.md)). The
+[SPEC-512](../../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 1,
+[decision 0367](../decisions/0367-an-idle-session-is-parked-and-resumed-by-a-message.md)). The
 background tick (every minute) reads the `running` tasks whose activity is `waiting` or `done`
 and parks one once `ParkFacts::parkable` holds for `YULIUS_PARK_AFTER_MINUTES` (default 30, 0
 off) counted from `state_at`: the list shows it under Needs you or Done, no turn runs, it left no
@@ -2288,9 +2292,9 @@ possible draft or keystroke within the grace period, and is not an onboarding ta
 A task keeps its session while its plan has an open step, its spec is unfinished, or its goal still needs work. Both grace and digest parking recheck these facts before stopping the session, including when a person has been asked.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
-A run parked before that snapshot existed has only its final screen. When the task is parked or a recorded park transition ended with that run, the readers show the final screen with one parking notice (with the idle time when the transition records it) and, for Codex, drop a trailing exit block of token usage, `codex resume <id>` and its selection hint. A `codex resume` line that is part of the answer stays. [SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md)
+A run parked before that snapshot existed has only its final screen. When the task is parked or a recorded park transition ended with that run, the readers show the final screen with one parking notice (with the idle time when the transition records it) and, for Codex, drop a trailing exit block of token usage, `codex resume <id>` and its selection hint. A `codex resume` line that is part of the answer stays. [SPEC-621](../../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md)
 Parked admission waits outside the launch lock for in-flight terminal cleanup, up to the stop escalation bound. The observer that records the attempt’s terminal outcome saves the final screen. A late exit reader leaves the replacement run alone. Successor and onboarding checks may continue after terminal cleanup finishes.
-[Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
+[Decision 0396](../decisions/0396-capture-the-parked-terminal-before-shutdown.md).
 
 Codex parking requires a recorded rollout ID. A message to the parked task resumes that rollout.
 If the server restarted between writing the attempt’s ID and writing its session lineage, the
@@ -2316,19 +2320,19 @@ has settled the task, also after that end took the park's intent while the task 
 `running`. The task reads `parked` only after its intent was taken, so a `parked` task wakes at
 once. A later park pass cannot set a new intent on that ending run: it needs the attempt still
 attached and no terminal cleanup under way
-([SPEC-634](../.ai/specs/SPEC-634-reproduce-the-second-idle-park-pass-that.md), #1605). The web terminal treats `parked` as a non-live ended
+([SPEC-634](../../.ai/specs/SPEC-634-reproduce-the-second-idle-park-pass-that.md), #1605). The web terminal treats `parked` as a non-live ended
 status so it shows the calm parked banner (distinct from a crash or operator stop) and a visible
 `Resume` button (plus `Reply` in the waiting bar for the owner), disables cursor blink, and wakes
 the exact saved provider session and worktree through `start_run` with `RunStart::Resume` on
 `task_message`, `Resume`, `Reply` (`POST /api/tasks/{tid}/continue` with optional `prompt`), or
 ordinary owner terminal input; bare interrupts/scroll, non-owners, and operator-stopped/crashed
 tasks never auto-wake. PR and staging outcomes remain on their delivery. Only a person
-resumes a parked task ([ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)); at the limit the
+resumes a parked task ([ADR-0450](../decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)); at the limit the
 resume waits `queued` with its prompt. A queued task's summary carries `queue_reason` (the session
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
 
-Home and MCP apply Git overview results to each task in read order. A failed or truncated list preserves a known open PR, including one reported through the owner’s token. A direct closure or complete list can clear it. Overlapping requests publish their observations under one lock. [ADR-0407](decisions/0407-keep-current-pr-observations-across-incomplete-overviews.md)
+Home and MCP apply Git overview results to each task in read order. A failed or truncated list preserves a known open PR, including one reported through the owner’s token. A direct closure or complete list can clear it. Overlapping requests publish their observations under one lock. [ADR-0407](../decisions/0407-keep-current-pr-observations-across-incomplete-overviews.md)
 
 When a successor waits for its predecessor to be Done (`after_task` or `#N done`), Yulius
 checks the parked predecessor’s declared work, goal and outstanding owner requests. It verifies
@@ -2344,7 +2348,7 @@ an unsuccessful read or a restart requires fresh verification. Before reserving 
 a launch rechecks the owners it would omit and holds their delivery read guards through
 the reservation. A concurrent watcher retries on its next pass.
 The same check decides whether a live owner is Done for its dependents and its close
-([SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md) FIN-003):
+([SPEC-621](../../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md) FIN-003):
 a start rule for all outstanding tasks includes an owner it cannot clear locally, a chain or
 compound Done rule holds each live owner's delivery read guard until the successor is
 released, and archive, tidy and a removed subscription's close hold it until the Close
@@ -2356,22 +2360,22 @@ The individual HTTP task detail verifies both recorded and branch PRs.
 A durable ordinary CI failure identifies its own PR and head even when a newer PR is
 green. Remote verification has a 750 ms deadline. Up to eight native Git operations
 run for these reads per application. Each keeps its permit until Git returns.
-[ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
+[ADR-0409](../decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
 
-Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](../decisions/0412-share-parked-pr-read-time-across-task-lists.md)
 
-A recorded merge remains visible when a display read cannot discover follow-up PRs. Branch discovery and Git overviews publish PR identities in request-start order. A branch result updates only its task. The overlap limit applies separately to the sandbox overview and to each task branch. Known open follow-ups still need verification. The server rechecks the local plan, decisions and delivery before showing Done and keeps an unverified follow-up lookup in the prerequisites for an `after_all_tasks` rule. [ADR-0424](decisions/0424-keep-a-recorded-merge-visible-when-follow-up-discovery-is-unavailable.md)
+A recorded merge remains visible when a display read cannot discover follow-up PRs. Branch discovery and Git overviews publish PR identities in request-start order. A branch result updates only its task. The overlap limit applies separately to the sandbox overview and to each task branch. Known open follow-ups still need verification. The server rechecks the local plan, decisions and delivery before showing Done and keeps an unverified follow-up lookup in the prerequisites for an `after_all_tasks` rule. [ADR-0424](../decisions/0424-keep-a-recorded-merge-visible-when-follow-up-discovery-is-unavailable.md)
 
-The browser uses the parked summary’s verified Needs you group and its open steps, spec or goal when classifying a task. It retains the displayed reason for a human decision or failing PR. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+The browser uses the parked summary’s verified Needs you group and its open steps, spec or goal when classifying a task. It retains the displayed reason for a human decision or failing PR. [ADR-0412](../decisions/0412-share-parked-pr-read-time-across-task-lists.md)
 
-The sidebar watches the bounded task list and Git overview independently. It can update a parked group while the Git read is pending. The list reader confirms an overlapping parked lifecycle change once. The mounted terminal uses the refreshed row for plan progress and owner notices while a detail read is outstanding. Opening the terminal or Task Info verifies parked work and publishes its progress, owner decision and PR state to the existing parked row. The request order resolves overlapping answers from the list, detail and Git overview. A terminal detail can also update an existing task’s lifecycle when its park event was missed. An older outstanding list retains that transition, even if its snapshot omitted the task. A terminal that discovers a resume also publishes the active subscription and work state to the sidebar. A Closed, Stopped or Failed task can be restored after archive without changing its process status. Its unarchived terminal detail verifies membership in the active task list, even if an older list omitted the row. A newer list that restores a row also updates its mounted terminal. Archive detail removes the active row and notifies the terminal even when an empty list has already omitted it. Overlapping reads keep the archive observation until a newer Undo or removal resolves the task’s membership. [ADR-0417](decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
+The sidebar watches the bounded task list and Git overview independently. It can update a parked group while the Git read is pending. The list reader confirms an overlapping parked lifecycle change once. The mounted terminal uses the refreshed row for plan progress and owner notices while a detail read is outstanding. Opening the terminal or Task Info verifies parked work and publishes its progress, owner decision and PR state to the existing parked row. The request order resolves overlapping answers from the list, detail and Git overview. A terminal detail can also update an existing task’s lifecycle when its park event was missed. An older outstanding list retains that transition, even if its snapshot omitted the task. A terminal that discovers a resume also publishes the active subscription and work state to the sidebar. A Closed, Stopped or Failed task can be restored after archive without changing its process status. Its unarchived terminal detail verifies membership in the active task list, even if an older list omitted the row. A newer list that restores a row also updates its mounted terminal. Archive detail removes the active row and notifies the terminal even when an empty list has already omitted it. Overlapping reads keep the archive observation until a newer Undo or removal resolves the task’s membership. [ADR-0417](../decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
 
-When browser list requests overlap, the newest successful snapshot supplies the task list. A failed cold task page recovers when an overlapping request supplies the list. [ADR-0418](decisions/0418-keep-the-newest-successful-task-list.md)
+When browser list requests overlap, the newest successful snapshot supplies the task list. A failed cold task page recovers when an overlapping request supplies the list. [ADR-0418](../decisions/0418-keep-the-newest-successful-task-list.md)
 
-MCP parked task reads use the verifier’s plan snapshot for progress and detailed steps. The Needs you filter uses the group rendered with the owner’s current decision. Each page shares one parked PR lookup budget. [ADR-0416](decisions/0416-parked-mcp-rows-use-the-verified-plan-and-pr.md)
+MCP parked task reads use the verifier’s plan snapshot for progress and detailed steps. The Needs you filter uses the group rendered with the owner’s current decision. Each page shares one parked PR lookup budget. [ADR-0416](../decisions/0416-parked-mcp-rows-use-the-verified-plan-and-pr.md)
 
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
-[decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
+[decision 0380](../decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
 tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with
 a conditional write of `digest_ran_at`. `send_digests_now` first parks, with
 `ParkRule::Digest(threshold)`, running tasks whose agent waits for its turn and that ask nobody
@@ -2397,8 +2401,8 @@ stateDiagram-v2
 Every run starts through `App::start_run`: a new task, the queue, a released chain or rule,
 Start now, Continue, and the capacity loop. Before the session limit, it applies the supertask
 hold (`yulius-app/src/supertask.rs`,
-[SPEC-071](../.ai/specs/SPEC-071-somewhere-here-the-user-should-be-able-t.md),
-[decision 0054](decisions/0054-a-supertask-holds-its-project-at-the-start-door.md)). A task
+[SPEC-071](../../.ai/specs/SPEC-071-somewhere-here-the-user-should-be-able-t.md),
+[decision 0054](../decisions/0054-a-supertask-holds-its-project-at-the-start-door.md)). A task
 without a live run waits `queued` while its project has a pending supertask (only an earlier one
 counts, for a supertask). A supertask also waits while the project has a working task. Live runs
 are never touched. The queue offers free slots to supertasks first, then FIFO, one start after
@@ -2410,7 +2414,7 @@ later; it is written with the change to `queued` and removed by the change out o
 subscription that could not take the task when its turn comes is given up, said in the task's
 terminal. A paused task's pause ends where its start is made or queued, so a start the full
 queue refuses leaves it for the pool's next round
-([SPEC-483](../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md) QST-001).
+([SPEC-483](../../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md) QST-001).
 
 ```mermaid
 flowchart LR
@@ -2427,8 +2431,8 @@ flowchart LR
 ### Prepared tasks
 
 A task can wait as `prepared` before its first run (`yulius-app/src/prepared.rs`,
-[SPEC-105](../.ai/specs/SPEC-105-add-scheduling-when-i-decide-in-this-mod.md),
-[decision 0085](decisions/0085-a-prepared-task-waits-for-a-person-or-its-time.md)). Without a time
+[SPEC-105](../../.ai/specs/SPEC-105-add-scheduling-when-i-decide-in-this-mod.md),
+[decision 0085](../decisions/0085-a-prepared-task-waits-for-a-person-or-its-time.md)). Without a time
 it waits for a person's Start now; with one (a row in `task_schedules`) the background tick
 releases it once the time has come and the sandbox's onboarding no longer blocks tasks. Released,
 it goes `prepared → queued` by compare-and-set and starts through `start_run` like a new task.
@@ -2447,8 +2451,8 @@ flowchart LR
 
 A `chained` or `prepared` task takes another start choice before its first run
 (`yulius-app/src/start_change.rs`, `PUT /api/tasks/{tid}/start`,
-[SPEC-126](../.ai/specs/SPEC-126-we-d-like-to-be-able-to-change-task-runn.md),
-[decision 0102](decisions/0102-a-waiting-task-changes-how-it-starts.md)). The choice is checked
+[SPEC-126](../../.ai/specs/SPEC-126-we-d-like-to-be-able-to-change-task-runn.md),
+[decision 0102](../decisions/0102-a-waiting-task-changes-how-it-starts.md)). The choice is checked
 as at creation, a wait on itself is refused, and the store replaces the status, chain row and
 start time in one transaction guarded by the status read. A chain evaluation releases a task only
 while its chain still names what was evaluated, and a rule judges the tasks that existed when it
@@ -2466,8 +2470,8 @@ flowchart LR
 ### Forked tasks
 
 Fork (`yulius-app/src/forks.rs`, `POST /api/tasks/{tid}/fork`, `task_fork`,
-[SPEC-628](../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md),
-[decision 0463](decisions/0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md)) creates a
+[SPEC-628](../../.ai/specs/SPEC-628-fork-a-task-a-new-task-continues-from-th.md),
+[decision 0463](../decisions/0463-a-fork-resumes-a-stored-copy-of-its-sources-session.md)) creates a
 task of the same project and harness that continues a copy of another task's conversation. The
 source is only read. Its id, number, title, branch, the branch's commit and its latest session
 become a `task_forks` row (migration 0092). For Claude Code, the transcript's complete lines and
@@ -2497,9 +2501,9 @@ flowchart LR
 
 ## Remote control
 
-A person drives the instance from their own computer ([guide](remote-control.md), SPEC-247,
-[ADR-0188](decisions/0188-remote-control-uses-scoped-personal-api-tokens.md),
-[ADR-0189](decisions/0189-remote-file-changes-are-commits-on-a-change-branch-with-a-pull-request.md)).
+A person drives the instance from their own computer ([guide](../remote-control.md), SPEC-247,
+[ADR-0188](../decisions/0188-remote-control-uses-scoped-personal-api-tokens.md),
+[ADR-0189](../decisions/0189-remote-file-changes-are-commits-on-a-change-branch-with-a-pull-request.md)).
 On Settings they make a personal API token (`operate` or `read`, stored hashed). Their local
 Claude Code adds `https://<instance>/mcp` with it; the `yulius` CLI (`yulius remote login`, then
 `yulius project|task|ci …`) calls the same endpoint. `App::remote_mcp_handle`
@@ -2513,7 +2517,7 @@ pull request that Yulius CI tests, and `change_merge` merges it once green
 (`crates/yulius-app/src/remote_files.rs`).
 
 "Onboard this folder" needs nothing more from the person (SPEC-256,
-[ADR-0194](decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md)): the
+[ADR-0194](../decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md)): the
 local agent signs the CLI in with the same `operate` token, which `yulius onboard` and
 `yulius secrets import` also use when there is no `yulius login` token. `yulius onboard --yes`
 uploads the checkout and sessions; `yulius secrets import --yes --env-files --from-file NAME=PATH`
@@ -2550,23 +2554,23 @@ sequenceDiagram
 ## Superagent (the Cockpit)
 
 Every user has one plain Claude Code session per sandbox, shown as the **Superagent**
-([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md), formerly the Agent)
-([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
-[decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
+([SPEC-074](../../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md), formerly the Agent)
+([SPEC-021](../../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
+[decision 0020](../decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
 call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
 login shell: no lifecycle hooks, status line or briefing (its only hook is the redaction hook,
 below), a pool subscription's token, and the newest
 conversation resumed whenever it starts again. On a contained server it runs in Claude Code's
 bypass-permissions mode, as task runs do (`--dangerously-skip-permissions`, `IS_SANDBOX=1`,
-[SPEC-208](../.ai/specs/SPEC-208-tasks-and-the-superagent-should-run-in-d.md),
-[decision 0165](decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)). Its start, like a terminal's, runs detached from
+[SPEC-208](../../.ai/specs/SPEC-208-tasks-and-the-superagent-should-run-in-d.md),
+[decision 0165](../decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)). Its start, like a terminal's, runs detached from
 the request, so a client that goes away mid-start never leaves a second or half-started session
-([SPEC-077](../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
-[decision 0053](decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
+([SPEC-077](../../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
+[decision 0053](../decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
 the page, under a notice that it is for quick work only, opened from the first button of the tools
-rail ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
-[decision 0036](decisions/0036-agent-in-the-right-panel.md),
-[decision 0106](decisions/0106-the-superagent-is-opened-from-the-tools-rail-only.md)).
+rail ([SPEC-035](../../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
+[decision 0036](../decisions/0036-agent-in-the-right-panel.md),
+[decision 0106](../decisions/0106-the-superagent-is-opened-from-the-tools-rail-only.md)).
 
 Every minute Yulius tests each Cockpit's link to it from inside its sandbox, through the holder's
 forward (`relay::probe_link`, `GET /internal/healthz`). When a test fails, the panel says that the
@@ -2574,11 +2578,11 @@ Superagent cannot reach Yulius. Once the link works again after a loss, the pane
 Yulius tools may stay disconnected, because Claude Code does not reconnect a failed MCP server.
 Both offer Restart Superagent (`POST …/cockpit/restart`), which ends it and starts it again in
 place, resuming its newest conversation
-([SPEC-355](../.ai/specs/SPEC-355-a-superagent-whose-sandbox-lost-yulius-r.md)).
+([SPEC-355](../../.ai/specs/SPEC-355-a-superagent-whose-sandbox-lost-yulius-r.md)).
 
 A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
-while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
-[decision 0055](decisions/0055-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
+while it runs ([SPEC-074](../../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
+[decision 0055](../decisions/0055-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
 it started is recorded on that subscription as a task's is. The Cockpit then starts again, under
 its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
 limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old
@@ -2586,12 +2590,12 @@ process ends with the exit status `switched`, and the panel follows it to the ne
 capacity, it stays and its viewers get a notice. A shell, the Cockpit included, is recorded as
 ended only once it exited or its host was terminated: when its host cannot be ended it stays live
 and its viewers are told, and the move starts no second Cockpit on the same conversation
-([SPEC-146](../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md),
-[decision 0120](decisions/0120-a-shell-ends-only-when-its-host-is-proven-gone.md)).
+([SPEC-146](../../.ai/specs/SPEC-146-fix-346-453-a-shell-ends-only-when-its-h.md),
+[decision 0120](../decisions/0120-a-shell-ends-only-when-its-host-is-proven-gone.md)).
 
 It manages the project through the Yulius MCP server
-([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
-[decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
+([SPEC-037](../../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
+[decision 0029](../decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served `COCKPIT_TOOLS`: the task, automation, workflow and session tools,
 `attachments_trash`, `task_message`, the vault tools (below) and `sandboxes_list`,
 `sandbox_task_create`, `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message`,
@@ -2603,8 +2607,8 @@ New task; `task_update` is the UI's change of a waiting task's start (SPEC-126, 
 `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
 and `automation_template_enable` call the UI's own functions with that person and the caller as
 the audit actor, never on the caller's own task
-([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
-[decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
+([SPEC-066](../../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
+[decision 0049](../decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
 What a person does on a project's pages is one list of tools, `person_tools::PERSON_TOOLS`
 (a task's Continue, Pause, Resume and Start now, its delivery, the CI page's runs, run again
 and cancel, the CD page's state and dev deploy, the variables): `App::person_project_tool`
@@ -2638,8 +2642,8 @@ an agent's `delivery_merge`; `App::ci_run_first` moves a queued run before its s
 the next start of its session takes; a task's brief names its live run's subscription. The instance is `instance_tools.rs`: the Status panel's and
 Settings' views for everyone, and for a superadmin the update buttons' functions (`check_updates_now`,
 `start_update`, `start_restart`, `cancel_update`) with the ask as their confirmation. A task's agent is served none of them; it keeps the tools about its own work
-([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
-[decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
+([SPEC-487](../../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
+[decision 0330](../decisions/0330-the-superagent-does-what-its-person-may-do.md)).
 `task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task
 (`App::tool_task_message`, `task_message.rs`): a task that never started gets it in its request
 through `App::queue_task_message` (SPEC-052); a running one gets it through `App::send_input` as
@@ -2650,19 +2654,19 @@ reads for a reattached run, or half the goal-ready timeout after the spawn, `spa
 while a person's draft may sit in its prompt box (they typed since the box was last empty,
 however long ago; the task's owner alone sends past their own with `with_draft`,
 `Sender::OwnerPastDraft`, SPEC-487) or they typed in the last minute (`App::box_held`, `policy::box_held`;
-[SPEC-480](../.ai/specs/SPEC-480-a-message-yulius-types-lands-on-a-person.md),
-[decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md): the
+[SPEC-480](../../.ai/specs/SPEC-480-a-message-yulius-types-lands-on-a-person.md),
+[decision 0309](../decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md): the
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
 and its terminal says so once the person's last key is ten minutes old; the key that begins a
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
 the box and read by `reconcile` for a reattached run). Claude’s scheduled hand-over preserves that mark even when its submit hook
-carries plain text (SPEC-541, [ADR-0388](decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)).
+carries plain text (SPEC-541, [ADR-0388](../decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)).
 After the typing minute, the exact empty conversation box can also end the key's hold,
-its recovery mark and its held-message flag. Codex's reader recognizes its focused, dim conversation placeholder and empty-composer footer on a fully rendered grid. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md) · [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
+its recovery mark and its held-message flag. Codex's reader recognizes its focused, dim conversation placeholder and empty-composer footer on a fully rendered grid. [ADR-0420](../decisions/0420-recognize-the-empty-codex-composer.md) · [ADR-0405](../decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 Before a paste, visible input in
 Claude Code’s conversation box also holds a message. This catches restores that generated no
 key. An automatic message flags the task immediately in this case
-([ADR-0384](decisions/0384-visible-prompt-text-holds-session-messages.md)). Messages also wait while Claude Code's
+([ADR-0384](../decisions/0384-visible-prompt-text-holds-session-messages.md)). Messages also wait while Claude Code's
 folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while anything else
 is typed (`TaskRuntime::typing_message`, held from a line to its Enter by a message,
@@ -2672,19 +2676,19 @@ compaction is held, at most ten minutes and with the task flagged, while anythin
 the box was last emptied may sit there; typed after the hold behind real text, the command is
 refused as a prompt, which fails the compaction at once (`ContextEpisode::Compacting`'s
 `behind_draft`), SPEC-483 TYP-001, TYP-002); audited `task.messaged`
-([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
-[decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
+([SPEC-230](../../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
+[decision 0178](../decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 
 Only the Superagent reaches its person's other sandboxes, and only through them
-([SPEC-335](../.ai/specs/SPEC-335-superagents-should-be-able-to-talk-to-ot.md),
-[decision 0227](decisions/0227-the-superagent-starts-tasks-in-other-sandboxes-only-on-its-persons-approval.md),
+([SPEC-335](../../.ai/specs/SPEC-335-superagents-should-be-able-to-talk-to-ot.md),
+[decision 0227](../decisions/0227-the-superagent-starts-tasks-in-other-sandboxes-only-on-its-persons-approval.md),
 `cross_sandbox.rs`). `sandboxes_list` names the other live sandboxes the person can work in.
 `sandbox_task_create` records a request in `App::cross_requests` (at most 3 per person and source
 sandbox) and waits for the person's answer, at most `CROSS_REQUEST_WAIT` (4 minutes, below Node's
 300 s headers timeout). Then, or when the call is dropped, the call answers `waiting` with the
 request's id and the request stays until the person answers it or the Superagent withdraws it
-([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md) XRQ-001,
-[decision 0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)):
+([SPEC-487](../../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md) XRQ-001,
+[decision 0333](../decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)):
 the waiting requests and the newest 200 outcomes are written whole to `superagent-requests.json`
 beside the database at every change and put back first at a start (`restore_cross_requests`;
 nothing is written from the start until then, `begin_cross_restore`, so a request asked
@@ -2695,14 +2699,14 @@ timeout raced. `sandbox_requests` reads the Superagent's own waiting requests an
 removes one; `person_ask` records a request of the action `Ask` on the Superagent's own sandbox
 (Yes / No on the same panel, nothing runs), and `sandbox_tasks_list` reads another sandbox's
 tasks without asking. The Superagent's production releases are requests of its own sandbox too
-([decision 0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md),
+([decision 0334](../decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md),
 `release_requests.rs`): `cd_deploy` and `cd_rollback` of a production-stage environment, `promote`
 and `onboarding_start` are checked as the page would check the person (`checked_release`), and
 the approval, which for a release carries the project's slug as typed (checked before the request
 is taken), runs `cd_deploy`, `cd_rollback`, `promote_sandbox` or `approve_onboarding` with the
 answering person's browser `AuthContext` (`run_release`); a dev-stage deploy or rollback is the
 person's project tool, run at once. `secret_request_value` is one too
-([decision 0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)):
+([decision 0336](../decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)):
 its answer carries the value the person typed in the card's masked field, checked as the Secrets
 page checks a pasted value (`secret_value_to_store`) before the request is taken, and stored with
 the answering person's session (`store_secret_value`: `update_agent_secret` of theirs of that
@@ -2715,8 +2719,8 @@ its own request. Approval runs `tool_task_create` with a `ProjectCaller` for the
 as shown, in a task of its own (a cancelled page loses nothing), and its result goes to the
 waiting call; audited `superagent.cross_task` in both sandboxes.
 The same requests follow a task there up
-([SPEC-442](../.ai/specs/SPEC-442-a-session-can-manage-the-tasks-it-asks-f.md),
-[decision 0286](decisions/0286-the-superagent-changes-tasks-in-other-sandboxes-on-its-persons-approval.md)):
+([SPEC-442](../../.ai/specs/SPEC-442-a-session-can-manage-the-tasks-it-asks-f.md),
+[decision 0286](../decisions/0286-the-superagent-changes-tasks-in-other-sandboxes-on-its-persons-approval.md)):
 each carries a `CrossAction` (`Create`, `Update`, `Message`, `Stop`; there is no delete or archive)
 and, but for a create, the task it names, resolved in the target before anyone is asked; an
 approval runs `tool_task_update`, `tool_task_message` or `tool_task_change(Stop)` there instead.
@@ -2749,8 +2753,8 @@ sequenceDiagram
 
 Beside the sandbox Superagents every person has one **Global Superagent**, which sees every
 sandbox they can see and keeps them in sync
-([SPEC-427](../.ai/specs/SPEC-427-there-should-be-2-superagens-global-and.md),
-[decision 0271](decisions/0271-a-global-superagent-acts-in-every-sandbox-of-its-person-through-yulius-tools-only.md),
+([SPEC-427](../../.ai/specs/SPEC-427-there-should-be-2-superagens-global-and.md),
+[decision 0271](../decisions/0271-a-global-superagent-acts-in-every-sandbox-of-its-person-through-yulius-tools-only.md),
 `global_superagent.rs`). It is a Cockpit marked `global` in its shell record, so it shares the
 start lock, usage-limit moves, update refreshes, adoption and the terminal protocol; its seat is
 `Seat::Global` instead of `Seat::Sandbox(id)`. A sandbox its person can work in hosts it (its shell
@@ -2773,8 +2777,8 @@ requests a minute. A removed host ends it, and the next `POST /api/superagent` l
 its person lost write access; it then starts under the oldest sandbox the person can work in,
 resuming the conversation kept in its folder. Its `shell.json` is version 2, which older releases
 end and remove. Its person types into its terminal as into the sandbox Superagent's
-([SPEC-430](../.ai/specs/SPEC-430-this-should-be-exactly-like-normal-super.md),
-[decision 0274](decisions/0274-the-global-superagent-takes-its-persons-keys.md)); `EDITOR` and
+([SPEC-430](../../.ai/specs/SPEC-430-this-should-be-exactly-like-normal-super.md),
+[decision 0274](../decisions/0274-the-global-superagent-takes-its-persons-keys.md)); `EDITOR` and
 `VISUAL` name the refusing script too, and on a contained server the login shell Claude Code runs
 that script through finds its home's startup files as empty read-only binds, so neither its `!`
 mode nor its editor runs anything, and its `--settings` carry `skipDangerousModePermissionPrompt` with the approval bypass, since it reads no
@@ -2782,10 +2786,10 @@ settings file where Claude Code keeps the accepted warning. It is not served `ch
 image pasted into (or dropped on) its terminal is uploaded by `POST /api/superagent/attachments`
 into `users/<id>/superagent/attachments/`, inside its root at the same path, and its path pasted,
 which Claude Code turns into an image (images only, as it has no file tools; the week-old ones go
-at the next upload; [SPEC-433](../.ai/specs/SPEC-433-i-can-t-paste-to-the-global-superagent-f.md),
-[decision 0277](decisions/0277-the-global-superagent-keeps-pasted-images-in-its-own-folder.md)). The web UI shows it as the All sandboxes tab of the Superagent panel,
-beside This sandbox ([SPEC-428](../.ai/specs/SPEC-428-this-2-superagents-thingy-should-be-some.md),
-[decision 0272](decisions/0272-the-two-superagents-are-tabs-of-one-panel.md)): `panels.js` holds
+at the next upload; [SPEC-433](../../.ai/specs/SPEC-433-i-can-t-paste-to-the-global-superagent-f.md),
+[decision 0277](../decisions/0277-the-global-superagent-keeps-pasted-images-in-its-own-folder.md)). The web UI shows it as the All sandboxes tab of the Superagent panel,
+beside This sandbox ([SPEC-428](../../.ai/specs/SPEC-428-this-2-superagents-thingy-should-be-some.md),
+[decision 0272](../decisions/0272-the-two-superagents-are-tabs-of-one-panel.md)): `panels.js` holds
 one Global view per page (`sharedGlobal`), which `createSuperagentPanel` moves into the panel
 showing that tab, so the session is attached once; outside a sandbox only that tab is enabled.
 
@@ -2806,17 +2810,17 @@ Superagent starts. Before every task run and Superagent start, `App::import_proj
 the file's servers that the sandbox lacks to its MCP servers, so task runs get them like any
 other server. The Superagent starts with `--settings` naming every one of them in
 `disabledMcpjsonServers`, so it never asks
-([SPEC-095](../.ai/specs/SPEC-095-while-onboarding-other-project-i-got-som.md),
-[decision 0078](decisions/0078-repository-mcp-json-feeds-the-mcp-section.md)). Agents write the
+([SPEC-095](../../.ai/specs/SPEC-095-while-onboarding-other-project-i-got-som.md),
+[decision 0078](../decisions/0078-repository-mcp-json-feeds-the-mcp-section.md)). Agents write the
 file, so imported servers have the origin `mcp_json`: the MCP Test, which runs on the host, never
 starts their command nor connects to their private address until a person changes what they run
-([decision 0173](decisions/0173-the-mcp-test-refuses-servers-imported-from-mcp-json.md)). An MCP server's
+([decision 0173](../decisions/0173-the-mcp-test-refuses-servers-imported-from-mcp-json.md)). An MCP server's
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
 ### MCP server scopes
 
-Since SPEC-332 ([decision 0224](decisions/0224-an-mcp-server-is-for-every-sandbox-or-one-and-for-the-team-or-its-owner.md))
+Since SPEC-332 ([decision 0224](../decisions/0224-an-mcp-server-is-for-every-sandbox-or-one-and-for-the-team-or-its-owner.md))
 an MCP server is for every sandbox (`sandbox_id` NULL) or one, and for the team (`owner_id` NULL)
 or one person (removed with the user's row). `McpStore::mcp_servers(sandbox, person)` lists the
 team servers of both reaches and `person`'s own; `App::mcp_attachments(sandbox, holder)` keeps one
@@ -2831,7 +2835,7 @@ hand-over resumes such a run with the new owner's servers. After a replayed refu
 hand-over places the interrupted turn on an available subscription and carries the reporting
 attempt's model-change notice into its replacement. A deferred limit move acts only on the
 attempt that reported it. The capacity loop defers the persisted pause while that hand-over runs
-([ADR-0389](decisions/0389-a-reattach-finishes-its-hand-over-before-a-limit-moves-the-run.md)).
+([ADR-0389](../decisions/0389-a-reattach-finishes-its-hand-over-before-a-limit-moves-the-run.md)).
 `App::mcp_secret_values` adds the servers' literal secret values to
 `App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
 generation).
@@ -2855,23 +2859,23 @@ redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<run>/scrub-exec` (a scrip
 its Bash commands, hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
 server as a task's terminal is. The wrapper and hook load their fingerprints with the workspace
 token the person's environment holds, answered while the person may work in the sandbox (by an
-access decision within the staleness bound, never waiting on GitHub) ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
-[decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
+access decision within the staleness bound, never waiting on GitHub) ([SPEC-147](../../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
+[decision 0121](../decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
 While Yulius cannot be reached or is not ready (a restart), the wrapper reads them from the
 shell's `scrub.json` (`YULIUS_SCRUB_FILE`, written at the start, read-only when contained), as a
 task run's does. A refused token is not a restart, so a command does not run, as it does not
-without both ([SPEC-352](../.ai/specs/SPEC-352-something-got-broken-with-yulius-fix.md),
-[decision 0239](decisions/0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md)).
+without both ([SPEC-352](../../.ai/specs/SPEC-352-something-got-broken-with-yulius-fix.md),
+[decision 0239](../decisions/0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md)).
 
 Every terminal people watch (a task's, the Superagent's, a Cockpit shell's) replaces a value with
 its label fitted to the value's display width (`fitted_label`): `[secret:NAME]` followed by `*` padding, or cut short. A full-screen
 program's cursor-addressed redraws then land in the cells it meant. Text channels keep the full
-label ([SPEC-239](../.ai/specs/SPEC-239-termial-gets-bugged-often-fix.md),
-[decision 0181](decisions/0181-a-terminal-masks-a-secret-as-wide-as-its-value.md)).
+label ([SPEC-239](../../.ai/specs/SPEC-239-termial-gets-bugged-often-fix.md),
+[decision 0181](../decisions/0181-a-terminal-masks-a-secret-as-wide-as-its-value.md)).
 
 The Superagent uses the agent vault as a task's agent does
-([SPEC-186](../.ai/specs/SPEC-186-the-superagent-uses-the-agent-vault-like.md),
-[decision 0150](decisions/0150-the-superagent-uses-agent-secrets-as-a-task-does.md)). It starts
+([SPEC-186](../../.ai/specs/SPEC-186-the-superagent-uses-the-agent-vault-like.md),
+[decision 0150](../decisions/0150-the-superagent-uses-agent-secrets-as-a-task-does.md)). It starts
 behind the egress proxy with its own `ck_` bearer (`App::vault_superagent_setup`: proxy variables,
 the CA bundle in its run directory, a placeholder per agent secret), and the proxy's policy takes
 a live Superagent's bearer as `EgressCaller::Superagent`, which never uses a production secret.
@@ -2885,30 +2889,30 @@ folder, a folder the agent cannot replace (`secret_source_root`): `repo` for the
 worktree's folders for a task, then the folders named, one at a time without following links, and
 the folder reached must be inside that work folder; Git checks run in the anchored work folder. A
 Superagent that swapped `repo` for a link is refused and nothing is written
-([SPEC-254](../.ai/specs/SPEC-254-superagent-secret-copy-to-env-follows-a.md), #635). It drives the project browser as a task's agent does, `browser_fill_secret` included
-([decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)).
+([SPEC-254](../../.ai/specs/SPEC-254-superagent-secret-copy-to-env-follows-a.md), #635). It drives the project browser as a task's agent does, `browser_fill_secret` included
+([decision 0281](../decisions/0281-the-superagents-use-the-project-browser.md)).
 `secrets_list` gives it a task's records with its own guidance, and `secret_verify`, the
 Superagent's only (a matching candidate's hash must not reach a task transcript other members
 read), compares the SHA-256 of a value the person holds with the stored value and its variants (a
 final line break; literal `\n` as line breaks, since an agent secret never spans lines)
-([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
-[decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
+([SPEC-178](../../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
+[decision 0144](../decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
 A key block stored that way is written to a `.env` as its file (`dotenv::key_block`), and its
 lines are redaction needles, except blank lines, armour and public text of a known shape (named
 RFC 1421, PGP armour and PKCS#12 headers, `subject=`/`issuer=`) holding no `:` or `(0x` in their
 value and no key-length base64 run
-([decision 0215](decisions/0215-a-key-block-s-public-header-lines-are-not-redaction-needles.md)).
+([decision 0215](../decisions/0215-a-key-block-s-public-header-lines-are-not-redaction-needles.md)).
 The Secrets page's value field is one line, so it writes a pasted key block's line breaks as
 literal `\n`; `check_agent_value` refuses a key flattened onto one line (`dotenv::flattened_key`),
 and the agent secrets list marks one stored before that `flattened` for the people who manage it
-([SPEC-193](../.ai/specs/SPEC-193-creating-multiline-keys-fails-make-sure.md),
-[decision 0156](decisions/0156-a-pasted-multi-line-secret-is-stored-with-escaped-line-breaks.md)).
+([SPEC-193](../../.ai/specs/SPEC-193-creating-multiline-keys-fails-make-sure.md),
+[decision 0156](../decisions/0156-a-pasted-multi-line-secret-is-stored-with-escaped-line-breaks.md)).
 A team secret keeps real line breaks: its value field, a password input too, carries each pasted
 LF and CR as a private-use character that the form turns back on save, so the vault stores the
-value as pasted ([SPEC-299](../.ai/specs/SPEC-299-team-secret-value-field-keeps-pasted-lin.md),
-[decision 0214](decisions/0214-a-team-secret-value-carries-pasted-line-breaks-in-its-password-field.md)).
+value as pasted ([SPEC-299](../../.ai/specs/SPEC-299-team-secret-value-field-keeps-pasted-lin.md),
+[decision 0214](../decisions/0214-a-team-secret-value-carries-pasted-line-breaks-in-its-password-field.md)).
 
-New agent-secret names and renames reserve five interpreter settings. Stored names still resolve in run environments, proxy bindings and CI grants. Their managers see a rename notice in the existing vault metadata view. [ADR-0408](decisions/0408-interpreter-settings-are-reserved-for-new-agent-secret-names.md)
+New agent-secret names and renames reserve five interpreter settings. Stored names still resolve in run environments, proxy bindings and CI grants. Their managers see a rename notice in the existing vault metadata view. [ADR-0408](../decisions/0408-interpreter-settings-are-reserved-for-new-agent-secret-names.md)
 
 Agents create agent secrets from a file with `secret_create_from_file` (`vault/create.rs`, for
 a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
@@ -2921,25 +2925,25 @@ conversion too) and stores it through `App::insert_agent_secret`, the Secrets pa
 secret has no hosts and no `.env` allowance, its creator is the person the caller acts for (write
 access required) and its audit actor is the agent. The file is removed through the same folder
 handle only when asked
-([SPEC-211](../.ai/specs/SPEC-211-yulius-should-be-able-to-create-secrets.md),
-[decision 0167](decisions/0167-agents-create-agent-secrets-from-a-file-yulius-reads.md)).
+([SPEC-211](../../.ai/specs/SPEC-211-yulius-should-be-able-to-create-secrets.md),
+[decision 0167](../decisions/0167-agents-create-agent-secrets-from-a-file-yulius-reads.md)).
 
 `yulius secrets import` (`crates/yulius/src/cli.rs`, `yulius-import`'s `secrets_import` and
 `dotenv`) adds secrets from a computer through the same create calls as the Secrets page, with
 the `yulius login` token, else the `yulius remote login` one: it reads a dotenv file, stdin,
 hidden prompts or whole files (`--from-file NAME=PATH`), lists the caller's existing team titles
 or a sandbox's agent names, classifies each secret, asks for `yes` at `/dev/tty` (unless `--yes`
-runs with an `operate` token, [decision 0194](decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md))
+runs with an `operate` token, [decision 0194](../decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md))
 and posts the new ones once each (no retry). Agent values that are ordinary text
 (`yulius_domain::vault::ordinary_text`: configuration words, hosts, e-mail addresses, URLs without
 credentials) are skipped, and values found in the tracked files of the project's checkout
 (`repo_values::find_in_checkout`, in memory) are asked about or, with `--yes`, skipped
-([SPEC-274](../.ai/specs/SPEC-274-agent-secrets-refuse-plain-words-that-ma.md),
-[decision 0204](decisions/0204-secrets-import-refuses-ordinary-text-and-an-operate-token-deletes.md));
+([SPEC-274](../../.ai/specs/SPEC-274-agent-secrets-refuse-plain-words-that-ma.md),
+[decision 0204](../decisions/0204-secrets-import-refuses-ordinary-text-and-an-operate-token-deletes.md));
 `yulius secrets delete NAME` calls the remote tool `secret_delete`. Values stay in `Secret` (redacted `Debug`,
 wiped on drop) and never reach its output
-([SPEC-205](../.ai/specs/SPEC-205-to-cli-add-and-option-to-import-secrets.md),
-[decision 0163](decisions/0163-the-cli-imports-secrets-after-a-typed-yes-and-shows-no-value.md)).
+([SPEC-205](../../.ai/specs/SPEC-205-to-cli-add-and-option-to-import-secrets.md),
+[decision 0163](../decisions/0163-the-cli-imports-secrets-after-a-typed-yes-and-shows-no-value.md)).
 
 ```mermaid
 sequenceDiagram
@@ -2962,7 +2966,7 @@ the proxy before it adopts shells). One adopted after a restart with another dig
 none, is due a refresh: its watch tracks whether a turn or background work is open, and once its
 conversation is idle it is ended (`switched`) and started again resuming that conversation, as a
 usage-limit move does but without redoing a turn. It keeps its person's text
-([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md) SES-001,
+([SPEC-487](../../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md) SES-001,
 SES-002): the shell reads its person's keystrokes (`read_box_keys`: text, a paste across frames,
 Alt-Enter and backslash-Enter type; Enter and Ctrl-C empty the box; Esc, Tab and arrows do
 neither), ordered by their count, and keeps a draft's mark in `shell.json` (`draft_typed_at`), so
@@ -2979,7 +2983,7 @@ read, not measured anew: `task_screen` takes a task's live hub screen, or render
 repository's `HEAD` against `origin/<integration branch>`, without a fetch.
 
 A task's agent reads its neighbours the same way, read-only
-([decision 0460](decisions/0460-a-task-reads-its-neighbours-status-and-never-steers-them.md),
+([decision 0460](../decisions/0460-a-task-reads-its-neighbours-status-and-never-steers-them.md),
 SPEC-625, `peer_status.rs`): `task_get` adds to the brief the owner's login, the delivery record's
 stage and PR with `merge_is_armed`, the task's `active_claims`, `waits_for` (fixed sentences built
 from the brief and `task_attention_facts`) and `last_words` (`last_agent_words`, the digest's
@@ -3006,7 +3010,7 @@ flowchart LR
 
 A check that a script can decide is a script watch instead ([Script watches](#script-watches)).
 A Superagent's standing jobs are scheduled checks held by Yulius
-([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
+([decision 0335](../decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
 `superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`
 keep them in `App::superagent_checks` and `superagent-checks.json`, read back at the start before
 the listeners serve (`restore_superagent_checks`). The Cockpit watch types the first due check into
@@ -3065,7 +3069,7 @@ answering at once cannot end with both (SPEC-134 M-B, SPEC-262). No way gives a 
 secret to a run: the egress proxy sends it for no client (`EgressClient::may_use`),
 `browser_fill_secret` never types it into a page the agent drives (SPEC-405), and no row has
 hosts for one (migration 0055 removed those kept from before; the store refuses to insert the
-pair; [decision 0324](decisions/0324-a-production-secret-reaches-no-run-and-has-no-hosts.md)).
+pair; [decision 0324](../decisions/0324-a-production-secret-reaches-no-run-and-has-no-hosts.md)).
 
 Every team secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
 (`NULL`). A sandbox's team secret is read by the people who can view that sandbox
@@ -3078,7 +3082,7 @@ secrets have their own scopes (below).
 
 ### Method and path rules
 
-Since SPEC-627 ([decision 0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md))
+Since SPEC-627 ([decision 0458](../decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md))
 a person who manages an agent secret can limit it to requests: `vault_secrets.rules` holds 0–32
 rules, each 1–16 HTTP methods and a path pattern (`*` matching any characters, `/` included;
 schema version 90, `[]` = any request). The domain parses and matches them
@@ -3111,7 +3115,7 @@ every request that can carry a value.
 
 ### Copies of production secrets
 
-Since SPEC-440 ([decision 0284](decisions/0284-agents-ask-for-a-copy-of-a-production-secret-and-a-person-allows-it.md))
+Since SPEC-440 ([decision 0284](../decisions/0284-agents-ask-for-a-copy-of-a-production-secret-and-a-person-allows-it.md))
 an agent whose work needs a production secret's value (a dev CI token that exists only as a
 production secret) asks for a copy with `secret_request_copy {secret, name, hosts, reason?}`
 (`vault/copies.rs`). The request is a row of `vault_copy_requests` (one per secret and project,
@@ -3129,7 +3133,7 @@ off) goes somewhere new: a host it is not bound to (`update_agent_secret`,
 (`answer_cd_prod`) and switching `auto_allow` on, each
 through `App::fresh_to_widen`; an API token is refused, and a secret agents set up is not asked
 for it, as agents bind its hosts without a person
-([ADR-0317](decisions/0317-a-guarded-secret-goes-somewhere-new-only-after-two-factor.md)).
+([ADR-0317](../decisions/0317-a-guarded-secret-goes-somewhere-new-only-after-two-factor.md)).
 Redaction that cannot load a sandbox's secrets withholds on every path: text redacted in one
 piece and a terminal's first screen say so, the live terminal stream shows one notice and drops
 its output until a load succeeds, asking again after a second or when a secret changes
@@ -3156,7 +3160,7 @@ sequenceDiagram
 
 ## Agent secret scopes
 
-Since SPEC-245 ([decision 0186](decisions/0186-agent-secrets-are-project-global-or-personal.md))
+Since SPEC-245 ([decision 0186](../decisions/0186-agent-secrets-are-project-global-or-personal.md))
 an agent secret is a project's (`sandbox_id`), global (no sandbox, no owner) or personal
 (`owner_id`, removed with the user's row). `vault_enabled (secret_id, sandbox_id)` switches a global or
 personal secret on for a project; a new one is on for the project it was added from. Names are
@@ -3181,7 +3185,7 @@ says a value's length, its salted digest and a tag of 3 to 16 bits of a hash of 
 bytes; a sandbox's set is the same on every request; a starting server and a guest's join
 rewrite the files of the sessions that are running, and a session an older Yulius launched keeps
 a file in the format its wrapper reads
-([decision 0313](decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md)).
+([decision 0313](../decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md)).
 Global secrets are managed and switched by
 instance administrators, personal ones only by their owner (404 to everyone else), through
 `PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`; the store counts the 200 secrets a project
@@ -3201,7 +3205,7 @@ flowchart LR
 Storing a host or `.env` request, a host bound at once, a secret an agent created, or a global or
 personal secret switched on or off for a project publishes `secrets.updated` to a project
 secret's sandbox (to everyone for a global or personal secret), so an open Secrets page reads its
-list again without a reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
+list again without a reload ([SPEC-209](../../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
 
 ```mermaid
 flowchart LR
@@ -3238,8 +3242,8 @@ sequenceDiagram
 
 A CLI that needs a key file (a deploy tool, a cloud SDK with a service-account JSON, a signing
 tool) runs outside the agent's sandbox
-([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
-[decision 0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md),
+([SPEC-626](../../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
+[decision 0459](../decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md),
 `crates/yulius-app/src/commands.rs`, `commands_run.rs`, `ci/brokered.rs`, rules in
 `yulius_domain::commands`).
 
@@ -3319,7 +3323,7 @@ flowchart LR
 
 A CI job runs a pull request's code, so it gets an agent secret only the way an agent does, and
 only when the integration branch grants it
-([SPEC-142](../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md), ADR-0116). When a
+([SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md), ADR-0116). When a
 job starts, `App::ci_job_secrets` (`crates/yulius-app/src/ci/exec.rs`) looks up the `secrets` of
 the integration branch's `[[ci.jobs]]` entry of the same name in the integration head GitHub
 reports, taken into the CD mirror only Yulius writes (`App::ci_verified_gate`): CI jobs can write the
@@ -3327,13 +3331,13 @@ sandbox clone, so its copy only says whether to look. A pull request's own `yuli
 asked, and the grant binds the entry's command too: a commit tested with its own jobs (since
 SPEC-504 only one that brings CI to a branch without any) that reuses a granted name for another
 command runs it without any secret, and its output says why
-([SPEC-264](../.ai/specs/SPEC-264-ci-grants-agent-secrets-only-to-the-trus.md), ADR-0196). A
+([SPEC-264](../../.ai/specs/SPEC-264-ci-grants-agent-secrets-only-to-the-trus.md), ADR-0196). A
 granted job gets the placeholders, the CA bundle and a proxy credential of its own, held in memory
 until its process ended. The proxy's `EgressClient` is then a CI caller, `ci:<run>`, that may use
 only the granted secrets toward their bound hosts; each use is audited under that actor. A fork's
 pull request is never tested at all: GitHub's word that its head is in another repository decides,
 since an agent that fetched its head to review it puts it in the clone
-([SPEC-391](../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md)).
+([SPEC-391](../../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md)).
 
 ```mermaid
 flowchart LR
@@ -3350,8 +3354,8 @@ flowchart LR
 ## Handoffs between sandboxes
 
 A task's agent may hand work to another sandbox of the instance
-([SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 5,
-[decision 0395](decisions/0395-tasks-hand-work-to-another-sandbox-behind-an-instance-switch.md),
+([SPEC-512](../../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 5,
+[decision 0395](../decisions/0395-tasks-hand-work-to-another-sandbox-behind-an-instance-switch.md),
 `crates/yulius-app/src/handoffs.rs`). `instance.handoffs` holds the switch; a sandbox's
 `profile` holds its opt-out (`accept_handoffs`). `tools/list` adds `sandbox_handoff` to a task
 agent's tools only while the switch is not off, and `tool_sandbox_handoff` refuses (audited) or
@@ -3364,8 +3368,8 @@ parked one with it) once the target ended, is Done or merged.
 ## The personal Telegram channel
 
 Each person can get their notifications in their own Telegram chat
-([SPEC-498](../.ai/specs/SPEC-498-accept-outside-pr-1130-personal-telegram.md),
-[decision 0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md)).
+([SPEC-498](../../.ai/specs/SPEC-498-accept-outside-pr-1130-personal-telegram.md),
+[decision 0351](../decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md)).
 
 - **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`
   (the sent message's id), `receive` (text or caption, the replied-to message, files, album) and
@@ -3392,7 +3396,7 @@ Each person can get their notifications in their own Telegram chat
   `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
   passes `App::redact_for_sandbox` (account text: the shape-based `redact`).
 - **Intake** (`crates/yulius-app/src/telegram_intake.rs`, SPEC-512 part 4,
-  [decision 0392](decisions/0392-a-linked-telegram-chat-answers-and-starts-tasks-when-its-person-turns-intake-on.md)).
+  [decision 0392](../decisions/0392-a-linked-telegram-chat-answers-and-starts-tasks-when-its-person-turns-intake-on.md)).
   A notice about a task is queued with what it is about (`enqueue_about`, `SentAbout`: the task
   and, for a request, its `at`); once sent, `telegram_sent` (migration 0073) keeps it, the last
   500 per chat, and the bot's own answers about a task too. With the person's `intake` on,
@@ -3428,8 +3432,8 @@ sequenceDiagram
 ## Notices: a key and an expiry
 
 Notices for people carry a key and an expiry
-([SPEC-624](../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md),
-[decision 0462](decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md)).
+([SPEC-624](../../.ai/specs/SPEC-624-notifications-that-replace-and-expire-a.md),
+[decision 0462](../decisions/0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md)).
 
 - **Posting.** `App::post_notice` (`crates/yulius-app/src/notices.rs`) takes a `NewNotice`: a
   project or none, an optional recipient, `admin_only`, a `NoticeKey`
@@ -3508,8 +3512,8 @@ flowchart LR
 
 A watch is a project's bash script on a schedule, run by Yulius without an agent, whose output
 becomes a notice for its owner
-([SPEC-630](../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
-[decision 0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md)).
+([SPEC-630](../../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
+[decision 0465](../decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md)).
 
 - **Record.** `watches` (migration 0093) holds the definition (name, script, `every_seconds` or
   `cron` with its UTC offset, notice expiry, timeout, secret names, owner) and the state its runs
@@ -3564,7 +3568,7 @@ flowchart LR
 ## Vidoc: the instance key and the security scan
 
 Vidoc is an optional instance service, like Jev
-([SPEC-195](../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md), ADR-0157).
+([SPEC-195](../../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md), ADR-0157).
 
 - **The key.** A superadmin saves the key on the Instance page or in a setup step
   (`crates/yulius-app/src/vidoc_key.rs`, `/api/admin/vidoc*`). It is sealed in the `instance` row,
@@ -3598,8 +3602,8 @@ Vidoc is an optional instance service, like Jev
   (`GitHubPort::create_issue`, `set_issue_state`).
 - **Infra bootstrap.** The briefing and the onboarding prompt carry the scan only when the instance
   has a key (`briefing.rs` `security_scan`, `onboarding.rs` `security_setup`).
-- **The project switch** ([SPEC-338](../.ai/specs/SPEC-338-in-vidoc-related-problems-we-want-to-be.md),
-  [decision 0229](decisions/0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md)).
+- **The project switch** ([SPEC-338](../../.ai/specs/SPEC-338-in-vidoc-related-problems-we-want-to-be.md),
+  [decision 0229](../decisions/0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md)).
   `vidoc: false` in a sandbox's profile JSON (`delivery::vidoc_switched_on`, set by
   `PATCH /api/sandboxes/{sid}` `{"vidoc": …}` from the Instance page's Vidoc card or the CI/CD
   page's Security scan card)
@@ -3610,16 +3614,16 @@ Vidoc is an optional instance service, like Jev
   code); `applied_agent_secrets` leaves the instance key out, `ci_scans` adds no built-in job, and
   the briefing and onboarding prompt say it is off (`VidocBriefing::Off`). The sandbox's admins
   flip it on the CI/CD page's Security scan card (`pages/cividoc.js`;
-  [SPEC-359](../.ai/specs/SPEC-359-vidoc-can-be-turned-off-in-a-sandbox-s-o.md),
-  [decision 0245](decisions/0245-a-sandboxs-admins-switch-its-vidoc-scans-on-its-ci-cd-page.md)),
+  [SPEC-359](../../.ai/specs/SPEC-359-vidoc-can-be-turned-off-in-a-sandbox-s-o.md),
+  [decision 0245](../decisions/0245-a-sandboxs-admins-switch-its-vidoc-scans-on-its-ci-cd-page.md)),
   which reads `GET /api/sandboxes/{sid}/vidoc` (`App::sandbox_vidoc_view`: the project and instance
   switches, `.config/vidoc.toml` at `origin/<integration>` read by
   `yulius_domain::ci::vidoc::repository_vidoc`, which wins when off, and the last
   `delivery.vidoc.update` audit entry). Runs, terminals and CI jobs get `YULIUS_VIDOC_SWITCH`
   (`App::vidoc_switch_env`, the CI/CD page's address), which the scanner names when Vidoc refuses
   the key or its quota is used up.
-- **The instance switch** ([SPEC-356](../.ai/specs/SPEC-356-vidoc-security-should-be-optional-and-su.md),
-  [decision 0242](decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)).
+- **The instance switch** ([SPEC-356](../../.ai/specs/SPEC-356-vidoc-security-should-be-optional-and-su.md),
+  [decision 0242](../decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)).
   `PUT /api/admin/vidoc/enabled` (superadmin) sets `vidoc_off_at`/`vidoc_off_by` on the `instance`
   row, cached in `VidocServices` and read at start with the key, which it keeps. Off, every project
   is off: `App::vidoc_scans_on(sandbox)` (instance and project switch) decides the environments,
@@ -3649,15 +3653,15 @@ flowchart LR
 ## CD (deployment)
 
 CD runs a project's deploy and verify scripts like CI runs its checks
-([SPEC-134](../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md), ADR-0109,
+([SPEC-134](../../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md), ADR-0109,
 ADR-0110, ADR-0111). In the UI both are one CI/CD page with a CI (tests) and a CD (deployment)
 tab (`pages/cicd.js`, ADR-0125); "the CD page" below is its CD tab, `/s/<slug>/ci?section=cd`.
 A CI run or a deploy is a view of its tab at its own address (`?run=<id>`, `runview.js`), with a
 sticky live summary, and the Now summary above both tabs (`pages/cinow.js`) lists what runs and
-links to it ([decision 0180](decisions/0180-ci-and-cd-runs-are-views-of-the-ci-cd-page.md)).
+links to it ([decision 0180](../decisions/0180-ci-and-cd-runs-are-views-of-the-ci-cd-page.md)).
 `yulius.toml` defines `[cd.dev]` and `[cd.prod]` and any other `[cd.<name>]` with its `stage`
-(`dev` or `prod`, [SPEC-257](../.ai/specs/SPEC-257-current-ci-cd-is-too-strict-dev-prod-is.md),
-[decision 0195](decisions/0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md)):
+(`dev` or `prod`, [SPEC-257](../../.ai/specs/SPEC-257-current-ci-cd-is-too-strict-dev-prod-is.md),
+[decision 0195](../decisions/0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md)):
 the stage carries every rule below, so "dev" and "production" mean the stages. A name's stage is
 resolved at the verified integration head first, else at the production head
 (`yulius_domain::cd::resolve_stage`). Yulius reads them only at the heads of the
@@ -3667,7 +3671,7 @@ person with write access or an agent (`cd_deploy`), production only an administr
 project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
 (`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
 own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`, which
-also stops a run whose files and cache grow past `--cd-run-disk-gb`, [decision 0216](decisions/0216-cd-and-environment-runs-have-a-disk-bound-of-their-own.md)): dev in
+also stops a run whose files and cache grow past `--cd-run-disk-gb`, [decision 0216](../decisions/0216-cd-and-environment-runs-have-a-disk-bound-of-their-own.md)): dev in
 the sandbox's containment, production in the sandbox's production holder (its own network and Docker engine, [Containers](#containers)) on the host's read-only system (the launch spec's `host_system` join mode), each with the
 secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
 before it is stored in `cd_runs`. A run also gets the project's variables and the agent states its
@@ -3677,12 +3681,12 @@ sandbox's Docker engine, production runs their production holder's (ADR-0208; th
 (SSH included) through their holder's network. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
 you until a person writes to it (a request Yulius opened itself also ends when what it describes
-does, [ADR-0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)); its request (what happened, the problem, what to do or decide) is
-stored as JSON there ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)). `POST …/cd/{env}/deploy` answers only once the run is recorded,
+does, [ADR-0304](../decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)); its request (what happened, the problem, what to do or decide) is
+stored as JSON there ([ADR-0221](../decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)). `POST …/cd/{env}/deploy` answers only once the run is recorded,
 after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
 dialog as soon as the person confirms, saying what is being checked and promoted with the time so
 far, and turns it into the run's view when the answer comes, or shows the refusal in it
-([SPEC-189](../.ai/specs/SPEC-189-when-i-clicked-deploy-nothing-happened-f.md)).
+([SPEC-189](../../.ai/specs/SPEC-189-when-i-clicked-deploy-nothing-happened-f.md)).
 
 ```mermaid
 sequenceDiagram
@@ -3715,9 +3719,9 @@ flowchart LR
 ### Merge-first staging
 
 A project's shared staging target is the dev-stage `[cd.<name>]` with `merge_first = true` at
-the verified integration head ([decision 0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
-[decision 0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
-[SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)). It changes only
+the verified integration head ([decision 0410](../decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
+[decision 0411](../decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
+[SPEC-575](../../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)). It changes only
 through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 `yulius_domain::staging`, rows in `staging_requests`, migration 0078).
 
@@ -3727,7 +3731,7 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   verified integration head (`requested_by` `user:<id>`). So does their Superagent's `cd_deploy`
   once approved on its panel with the slug typed (write access is enough). A plain deploy of it
   is refused in `cd_prepare`, naming those
-  ([decision 0477](decisions/0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md)).
+  ([decision 0477](../decisions/0477-people-and-a-schedule-ask-merge-first-staging-for-the-gated-head.md)).
 - **Waiting for green.** A request of no task whose gate failed is `inherited`
   (`stg::after_failed_gate`). Once the head moves past it, one request of no task is recorded
   for the new head (`stg::follow_up`): one carried request at a time, none for what staging
@@ -3753,8 +3757,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
   Inventory includes retained full integration and candidate runs and configuration refusals at the current integration head after unrelated PR runs fill its planning window. An active staging candidate defers admission of a new integration suite.
-- **Newest first** ([decision 0480](decisions/0480-the-full-gate-judges-the-newest-waiting-revision-first.md),
-  [SPEC-653](../.ai/specs/SPEC-653-staging-the-full-gate-judges-the-newest.md)). Each round reads
+- **Newest first** ([decision 0480](../decisions/0480-the-full-gate-judges-the-newest-waiting-revision-first.md),
+  [SPEC-653](../../.ai/specs/SPEC-653-staging-the-full-gate-judges-the-newest.md)). Each round reads
   up to 512 first-parent revisions below the verified head and their newest verdicts, and
   `yulius_domain::staging_gate::judging` decides: a `testing` request at or below a green revision
   needs no run (`inherited`, naming it; `stg::serves_green` asks for that revision when no request
@@ -3768,7 +3772,7 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   order once a verified deployment contains them. One available worker owns the red branch.
   Other workers receive the assignee's number. When no worker is available, CI and Status show
   each unresolved test and its introducing merge. Writers can retry the latest affected run
-  or start a task in that project. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
+  or start a task in that project. [ADR-0450](../decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).
@@ -3789,9 +3793,9 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   - A running task with an unfinished step shows which part of staging it awaits. The queue
     delivers its verdict to that session. Finished tasks show the receipt on their page and in lists,
     and hear it only while their idle agent still runs background work that waits for it
-    (`Sender::YuliusAwaited`, [ADR-0466](decisions/0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md)). Each stage change
+    (`Sender::YuliusAwaited`, [ADR-0466](../decisions/0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md)). Each stage change
     updates the task view. If the summary exceeds its budget, sandbox viewers receive a resync.
-    [ADR-0437](decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
+    [ADR-0437](../decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
   - `tell_staging_outcomes` sends delivery outcomes to working sessions once.
   - `delivery_status` tells a merged task its request is due, then where it stands
     (`staging_note`).
@@ -3807,7 +3811,7 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   - A production CD deploy selects the verified staging revision through the CD mirror.
     If the integration branch has advanced, a fast-forward uses the selected SHA and a
     merge-commit release uses a same-repository pull request pinned to it. CD checks the
-    production tree against the confirmed revision. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
+    production tree against the confirmed revision. [ADR-0425](../decisions/0425-pin-a-production-deploy-to-verified-dev.md)
   - The Delivery page and automatic promotion use `staging_promotion_head` and wait for the
     verified integration head.
     - A head that cannot be read is refused.
@@ -3835,7 +3839,7 @@ stateDiagram-v2
 
 ### Merge-first as the bootstrap default
 
-[Decision 0415](decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md)
+[Decision 0415](../decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md)
 (SPEC-575 MFS-010 to MFS-012).
 
 - **The default, taught.** The built-in `infra-bootstrap` skill, its workflow, the
@@ -3855,14 +3859,14 @@ stateDiagram-v2
 ### Yulius's own staging
 
 Yulius's own `[cd.dev]` deploys to a staging VM, a Yulius instance no person relies on
-([decision 0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
-[SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md); operations in
-[Yulius's own staging VM](operations.md#yuliuss-own-staging-vm)). The scripts are `scripts/cd/`,
+([decision 0430](../decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
+[SPEC-591](../../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md); operations in
+[Yulius's own staging VM](../operations.md#yuliuss-own-staging-vm)). The scripts are `scripts/cd/`,
 the build `deploy/build/Dockerfile`, and the tests `scripts/test_cd.py`, which run against a fake
 root. Production is still a promotion of `dev` to `main` that each instance installs through
 its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: `test` and e2e are `after_merge`, and a promotion
 comes only from the revision staging verified
-([decision 0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
+([decision 0436](../decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
 
 ```mermaid
 flowchart LR
@@ -3879,8 +3883,8 @@ flowchart LR
 ### Rollback
 
 Rollback is part of every project's CD
-([SPEC-415](../.ai/specs/SPEC-415-global-rollback-in-ci-cd-one-click-roll.md),
-[decision 0263](decisions/0263-rollback-redeploys-a-kept-release-and-a-dev-drill-proves-it-before-production.md)):
+([SPEC-415](../../.ai/specs/SPEC-415-global-rollback-in-ci-cd-one-click-roll.md),
+[decision 0263](../decisions/0263-rollback-redeploys-a-kept-release-and-a-dev-drill-proves-it-before-production.md)):
 a CD run has a kind (`cd_runs.kind`: deploy, rollback or drill). A passed deploy records the
 releases its output names (`::yulius-release`, per part; else its commit) in `cd_releases`, which
 outlives the runs' 14 days. A rollback (`crates/yulius-app/src/ci/rollback.rs`) goes through the
@@ -3897,8 +3901,8 @@ can prove that tree. A person's production deploy refused only for that proof, w
 deploy the same tree (`yulius_domain::rollback::dev_can_prove`, `App::cd_dev_proof`), deploys that
 environment instead as the same person (`App::cd_start_or_prove`,
 `crates/yulius-app/src/ci/prove.rs`;
-[SPEC-438](../.ai/specs/SPEC-438-something-is-fucked-up-with-deployment-f.md),
-[decision 0282](decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md)). The
+[SPEC-438](../../.ai/specs/SPEC-438-something-is-fucked-up-with-deployment-f.md),
+[decision 0282](../decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md)). The
 production deploy waits in memory (`CiState::production_waits`) for that deploy and the drill it
 starts, then starts as the person with the commit they confirmed; a wait that ends otherwise
 records an ended production run in `error` saying why. An environment whose table has no `deploy` and no `rollback` (empty, or a production that
@@ -3906,8 +3910,8 @@ only promotes) needs no rollback: `mark_rollback_not_needed`
 (`crates/yulius-app/src/ci/rollback.rs`) sets its `not_needed` reason once per CD overview, which
 `cd_status` and the CD page show, unless a production-stage environment with a deploy command drills
 on it or its table could not be read
-([SPEC-418](../.ai/specs/SPEC-418-configure-rollback-in-the-cd.md), [decision
-0264](decisions/0264-yulius-own-production-rolls-back-through-its-update-not-a-cd-command.md)).
+([SPEC-418](../../.ai/specs/SPEC-418-configure-rollback-in-the-cd.md), [decision
+0264](../decisions/0264-yulius-own-production-rolls-back-through-its-update-not-a-cd-command.md)).
 Yulius's own CD is such: its production is a promotion of `dev` into `main`, and an instance rolls
 back through its update (the update helper restores the previous binary and database when the new
 build fails to start (its health check), and never installs an older commit) or by a revert promoted
@@ -3928,7 +3932,7 @@ flowchart LR
 ```
 
 A delivery profile's environment run (DLV-003; an agent's `delivery_deploy`) is a CD run of its
-stage ([SPEC-219](../.ai/specs/SPEC-219-fix-656-delivery-environment-runs-must-r.md), ADR-0175):
+stage ([SPEC-219](../../.ai/specs/SPEC-219-fix-656-delivery-environment-runs-must-r.md), ADR-0175):
 `App::environment_head` (`crates/yulius-app/src/ci/environment.rs`) fetches the stage branch's head
 from origin, the token only in that command's environment, into its own mirror
 `<data>/cd/<sandbox>/environments.git` (`mirror_fetch_head`, one commit, objects checked), and
@@ -3947,7 +3951,7 @@ flowchart LR
 ```
 
 Outside Yulius, GitHub keeps the production branch a person's
-([ADR-0114](decisions/0114-agents-hold-a-token-github-refuses-on-production.md)). The agent's Git
+([ADR-0114](../decisions/0114-agents-hold-a-token-github-refuses-on-production.md)). The agent's Git
 and `gh` get `App::agent_git_credential`: an installation token restricted to the repository and
 to the agent permissions (`AGENT_TOKEN_PERMISSIONS`, no Administration or Workflows), never a
 person's. The production ruleset (`rulesets_for`: restrict updates and deletions, block force
@@ -3958,16 +3962,16 @@ A project created from a template in an organization is created by the App, so
 for the account they signed in as; failures that may pass asked again, at most 3 times; every
 outcome audited as `sandbox.creator_admin`): without it only the organization's owners, or people
 an owner made its admins, could promote or deploy its production
-([ADR-0476](decisions/0476-the-creator-of-a-project-is-made-its-admin-on-github.md)).
+([ADR-0476](../decisions/0476-the-creator-of-a-project-is-made-its-admin-on-github.md)).
 `App::production_branch_warning` asks GitHub, with an agent token, which rules apply to the
 production branch and whether that token may bypass them (`GitHubPort::branch_guard`), and
 onboarding reports a branch the agents could write. The preparation agent then calls
-`production_protect` ([ADR-0129](decisions/0129-onboarding-agents-protect-production-as-the-onboarding-person.md)):
+`production_protect` ([ADR-0129](../decisions/0129-onboarding-agents-protect-production-as-the-onboarding-person.md)):
 `App::tool_production_protect` adds `people_only_ruleset` (the same rules, no pull-request rule)
 with the task owner's own token after `repo_access` says they are a repository admin, and only
 when the branch is not already guarded; the agent's token never gains Administration. A sandbox
 admin can waive the ruleset where the GitHub plan has none
-([ADR-0267](decisions/0267-a-sandboxs-admins-waive-the-production-ruleset-on-its-git-page.md)):
+([ADR-0267](../decisions/0267-a-sandboxs-admins-waive-the-production-ruleset-on-its-git-page.md)):
 `profile.protect_production: false` (`delivery::production_protection_required`, the Git page's
 Production protection card) makes `production_branch_warning` answer nothing and
 `production_protect` answer `waived`; every request for the ruleset (`production_ruleset_fix`)
@@ -3987,17 +3991,17 @@ flowchart LR
 
 That token reaches only the sandbox's own repository. To read another repository of the same
 GitHub owner (an earlier version to port from, a shared library), an agent calls `reference_repo`
-([ADR-0197](decisions/0197-tasks-read-other-repositories-of-their-owner-through-a-bundle.md),
-[SPEC-267](../.ai/specs/SPEC-267-i-got-this-such-things-should-usually-ha.md)):
+([ADR-0197](../decisions/0197-tasks-read-other-repositories-of-their-owner-through-a-bundle.md),
+[SPEC-267](../../.ai/specs/SPEC-267-i-got-this-such-things-should-usually-ha.md)):
 `App::tool_reference_repo` checks with the task owner's user token that they can read it
 (`repo_access`), and `GitPort::bundle_repository` fetches every branch and tag with that token
 into a fresh bare repository under `<data>/tmp` and writes a bundle of `HEAD` (the default branch),
 every branch and every tag; the agent's optional `branch` is the one its clone checks out, and a
 branch the repository lacks is invalid with the branch list
-([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md),
-[SPEC-330](../.ai/specs/SPEC-330-fix-this-tasks-act-as-the-user-they-shou.md)). The copy is bounded
-by the 1 GiB a task gets ([ADR-0236](decisions/0236-a-reference-fetch-is-bounded-by-the-cap-while-it-runs.md),
-[SPEC-349](../.ai/specs/SPEC-349-reference-repo-bounds-its-fetch-by-the-1.md)): a repository GitHub
+([ADR-0223](../decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md),
+[SPEC-330](../../.ai/specs/SPEC-330-fix-this-tasks-act-as-the-user-they-shou.md)). The copy is bounded
+by the 1 GiB a task gets ([ADR-0236](../decisions/0236-a-reference-fetch-is-bounded-by-the-cap-while-it-runs.md),
+[SPEC-349](../../.ai/specs/SPEC-349-reference-repo-bounds-its-fetch-by-the-1.md)): a repository GitHub
 reports above it (`GhRepo::size_kib`) is refused before anything runs, and so is a fetch that would
 bring the data disk to its critical level (`App::disk_room_if_short`, shared with uploads); while
 Git runs, the runner's size watch measures the fetch folder and then the bundle (with Git's
@@ -4022,7 +4026,7 @@ flowchart LR
 ## Keys in .env
 
 A project keeps its keys in a `.env` that Git ignores, beside a tracked `.env.example` that names
-them without values ([SPEC-129](../.ai/specs/SPEC-129-default-place-for-keys-should-be-env-tha.md),
+them without values ([SPEC-129](../../.ai/specs/SPEC-129-default-place-for-keys-should-be-env-tha.md),
 ADR-0105). Code that runs outside the egress proxy (a deployed app, a deploy script of Yulius CD)
 reads them there. The agent never holds a value, so Yulius writes it: `secret_copy_to_env` checks
 with Git that the file is ignored and untracked, then writes the file whole (mode 0600). A value in
@@ -4049,8 +4053,8 @@ sequenceDiagram
 
 A project's operator state (a deploy tool's inventory database, rollout folders, configs) moves
 from a laptop as an *agent state*
-([SPEC-271](../.ai/specs/SPEC-271-laptop-onboarding-move-a-project-s-opera.md),
-[decision 0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)).
+([SPEC-271](../../.ai/specs/SPEC-271-laptop-onboarding-move-a-project-s-opera.md),
+[decision 0200](../decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)).
 `yulius secrets import --state NAME=DIR` (`yulius-import`'s `states`) packs the folder into a
 gzip tar with each entry's permission bits, refusing links and special files, and sends it with
 `PUT /api/sandboxes/{sid}/agent-states/{name}` under ADR-0194's rules (typed `yes`, or `--yes`
@@ -4083,8 +4087,8 @@ sequenceDiagram
     L->>App: GET agent-states/OPS/archive (state-get)
 ```
 
-**CD runs** ([SPEC-278](../.ai/specs/SPEC-278-cd-runs-use-agent-states-restore-before.md),
-[decision 0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)) are
+**CD runs** ([SPEC-278](../../.ai/specs/SPEC-278-cd-runs-use-agent-states-restore-before.md),
+[decision 0207](../decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)) are
 writers too. A `[cd.<name>]` names its states (`states = ["OPS"]`; a missing one refuses the
 deploy). The run (`ci/cd.rs`, `cd_process`) takes the in-memory hold of all of them at once
 (`vault/holds.rs`, `StateHolds`; it waits while another run holds one, bounded by the job timeout
@@ -4124,8 +4128,8 @@ sequenceDiagram
 
 A project's non-secret values (regions, environment names, account and project ids, base URLs,
 contact addresses) are *project variables*
-([SPEC-275](../.ai/specs/SPEC-275-project-variables-non-secret-values-regi.md),
-[decision 0203](decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)):
+([SPEC-275](../../.ai/specs/SPEC-275-project-variables-non-secret-values-regi.md),
+[decision 0203](../decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)):
 plain rows of `project_variables` (schema 43), not secrets, so they are neither sealed, redacted nor
 proxied. `App::set_project_variables` (`variables.rs`) checks a batch (agent secret names, one-line
 values ≤ 4 KiB, ≤ 200 per project), refuses a name that is an agent secret of the project, writes
@@ -4135,7 +4139,7 @@ it in one transaction and audits `variable.*` without values; the Secrets page's
 them (`supervisor/launch.rs`), so `base_env` and the agent secret placeholders win over a variable of the
 same name; `secrets_list` names them. A CD run gets them too, before its own variables and secrets:
 a dev-stage run all of them, a production-stage run only those its `[cd.<name>]` `variables`
-names (`ci/cd.rs`, [decision 0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).
+names (`ci/cd.rs`, [decision 0207](../decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).
 `yulius_domain::vault::plain` tells a plain value from a
 secret (shorter than 8 characters and plain-shaped, or the ordinary text of SPEC-274's
 `ordinary_text`, never under a credential-like name), and `yulius secrets import --to agent` sends such entries of a
@@ -4156,18 +4160,18 @@ flowchart LR
 
 Task terminals suppress xterm’s wheel-to-arrow fallback when the alternate buffer has no mouse
 tracking. The existing history offer handles the upward gesture.
-[Decision 0378](decisions/0378-keep-wheel-generated-arrows-out-of-task-prompts.md)
+[Decision 0378](../decisions/0378-keep-wheel-generated-arrows-out-of-task-prompts.md)
 
 A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
-GitHub ([SPEC-118](../.ai/specs/SPEC-118-when-i-write-something-in-a-claude-termi.md),
-[decision 0096](decisions/0096-terminal-input-rides-a-write-grant.md)). Each viewer holds a write
+GitHub ([SPEC-118](../../.ai/specs/SPEC-118-when-i-write-something-in-a-claude-termi.md),
+[decision 0096](../decisions/0096-terminal-input-rides-a-write-grant.md)). Each viewer holds a write
 grant, confirmed when it opens the terminal. The store's access epoch grows with every write that
 can change who may type. While the epoch is unchanged, input is written at once. When it moves,
 the next input is checked first. A grant older than 30 s is re-confirmed in the background. The
 viewer's socket loop never awaits a permission check: the 60 s re-check runs in a spawned task, and
 the loop picks up its verdict. The provider sign-in terminal (`routes/accounts.rs`) runs the same
 spawned re-check of the sign-in and the administrator role, and closes with 4003 when either has
-ended ([SPEC-295](../.ai/specs/SPEC-295-login-terminal-socket-closes-when-its-se.md), #759).
+ended ([SPEC-295](../../.ai/specs/SPEC-295-login-terminal-socket-closes-when-its-se.md), #759).
 
 ```mermaid
 sequenceDiagram
@@ -4191,24 +4195,24 @@ sequenceDiagram
   Note over L: every 60 s a spawned re-check, its verdict selected beside input and output
 ```
 
-A plain right-click in a mouse-tracking Codex terminal opens the viewer’s clipboard menu. Choosing Paste sends the text through xterm’s existing input path. [Decision 0421](decisions/0421-codex-right-click-opens-the-viewers-clipboard-menu.md)
+A plain right-click in a mouse-tracking Codex terminal opens the viewer’s clipboard menu. Choosing Paste sends the text through xterm’s existing input path. [Decision 0421](../decisions/0421-codex-right-click-opens-the-viewers-clipboard-menu.md)
 
 Output can carry a program's copy: Claude Code copies the selection it draws with an OSC 52 write.
 The browser terminal (`terminal-core.js`) writes it to the clipboard only for a viewer who can write
 and just pressed a key or the mouse there, and never answers a clipboard query
-([decision 0130](decisions/0130-a-program-s-copy-reaches-the-clipboard-of-the-viewer-who-used-it.md)).
+([decision 0130](../decisions/0130-a-program-s-copy-reaches-the-clipboard-of-the-viewer-who-used-it.md)).
 
 ## Task ownership
 
 A task acts on GitHub with one person's token, so it is that person's: its owner, the creator
-until a hand-over ([SPEC-070](../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-specific-pers.md),
-[decision 0060](decisions/0060-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
+until a hand-over ([SPEC-070](../../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-specific-pers.md),
+[decision 0060](../decisions/0060-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
 token (`App::owner_github_token`), the worktree's commit identity and the authority of the task's
 agent; `created_by` stays who asked.
 
 What a person does to a task is one of three things, decided in one place
-(`yulius_domain::task_access`, [SPEC-490](../.ai/specs/SPEC-490-users-may-stop-archive-and-delete-other.md),
-[decision 0331](decisions/0331-anyone-tidies-a-task-and-only-its-owners-consent-passes-control.md)):
+(`yulius_domain::task_access`, [SPEC-490](../../.ai/specs/SPEC-490-users-may-stop-archive-and-delete-other.md),
+[decision 0331](../decisions/0331-anyone-tidies-a-task-and-only-its-owners-consent-passes-control.md)):
 **view** (read access), **tidy** (stop, close out, archive, restore, delete: write access,
 whoever owns the task) and **control** (everything that steers it: write access and ownership).
 `App::load_task` and `App::require_control` apply it; a sandbox-level action above view passed
@@ -4216,8 +4220,8 @@ to `load_task` means control, so a new task function is the owner's unless it as
 name. Nothing else compares a task's owner: the terminal's write grant, shells and files in a
 worktree, the queue's order, a Superagent's message, a restore of attachments into a task and
 Start onboarding all ask the same rule. A fourth, **answer** (`TaskAction::Answer`,
-[SPEC-516](../.ai/specs/SPEC-516-user-should-be-able-to-answer-yulius-s-n.md),
-[decision 0370](decisions/0370-a-teammate-answers-a-tasks-needs-you-without-taking-control.md)),
+[SPEC-516](../../.ai/specs/SPEC-516-user-should-be-able-to-answer-yulius-s-n.md),
+[decision 0370](../decisions/0370-a-teammate-answers-a-tasks-needs-you-without-taking-control.md)),
 answers what a running task's agent asked a person (`needs_you`) with write access, owner or
 not: `POST /api/tasks/{tid}/needs-you/answer` (`App::answer_needs_you`) types one labelled answer
 through `type_into_session` and ends the request (audited `task.needs_you.answered`); control
@@ -4225,8 +4229,8 @@ does not move. The task is read again after the access check. It is refused whil
 in its terminal and, from anyone but the owner, while the owner's personal agent
 secrets or MCP servers reach the run. A request can name whom it waits for besides the owner
 (`NeedsYouRecord.named`, `who` of `needs_you`,
-[SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 2,
-[decision 0379](decisions/0379-a-needs-you-names-who-may-answer-it.md)): each a person with write
+[SPEC-512](../../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 2,
+[decision 0379](../decisions/0379-a-needs-you-names-who-may-answer-it.md)): each a person with write
 access, checked when it is raised. A named request is answered by its owner and whom it still
 names; `task_message` from a non-owner while such a request is open goes through
 `answer_needs_you`; an answer carries the request's `at_ms` (`asked_at_ms`), is refused once the
@@ -4234,8 +4238,8 @@ request was replaced and ends only that request (`end_task_needs_you_at`, one st
 `task.needs_you.withdrawn`). A playground's guest tidies and answers only their own
 tasks (`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
 once from the task's page or its menu (`App::take_task_control`, `seize_control`,
-[SPEC-510](../.ai/specs/SPEC-510-change-request-control-for-tasks-to-take.md),
-[decision 0365](decisions/0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md)),
+[SPEC-510](../../.ai/specs/SPEC-510-change-request-control-for-tasks-to-take.md),
+[decision 0365](../decisions/0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md)),
 and the previous owner gets `task.control_taken` wherever they are. An owner who turned on
 "Ask me before taking control of my tasks" (`users.control_ask_first`, schema 67; each
 `TaskSummary` says `owner_asks_first`) is asked instead: they hear of a request wherever they are
@@ -4270,21 +4274,21 @@ flowchart LR
 
 Everyone but the owner watches the task as its live transcript, not its terminal: the terminal is
 drawn for the size its writer's browser sets and is unreadable at another
-([SPEC-179](../.ai/specs/SPEC-179-ui-problem-when-someone-else-has-a-contr.md),
-[decision 0145](decisions/0145-someone-else-s-task-is-watched-as-its-live-transcript.md)).
+([SPEC-179](../../.ai/specs/SPEC-179-ui-problem-when-someone-else-has-a-contr.md),
+[decision 0145](../decisions/0145-someone-else-s-task-is-watched-as-its-live-transcript.md)).
 `watchview.js` prints the session with the Sessions view's renderer in the terminal's colours and
 reads on from where it stopped; `App::task_transcript` reads the file of the lineage entry adopted
 last (`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a
 `stat`. The server's read cursor keeps the IDs of Claude background shells that read dotenv files,
 so each later `BashOutput` or `TaskOutput` for that shell gets dotenv redaction.
-[SPEC-536](../.ai/specs/SPEC-536-carry-claude-redaction-into-background-c.md).
+[SPEC-536](../../.ai/specs/SPEC-536-carry-claude-redaction-into-background-c.md).
 Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
 `claude` the agent runs in its worktree writes a transcript beside the TUI's but is never adopted
-([decision 0209](decisions/0209-only-the-tui-s-own-hooks-change-the-task-s-session.md)).
+([decision 0209](../decisions/0209-only-the-tui-s-own-hooks-change-the-task-s-session.md)).
 While the reader has not scrolled up, a `ResizeObserver` keeps the view at the bottom through every
-change of height ([decision 0149](decisions/0149-the-watched-transcript-follows-the-bottom-as-a-state.md)).
+change of height ([decision 0149](../decisions/0149-the-watched-transcript-follows-the-bottom-as-a-state.md)).
 While the agent works, a `✻ Working… (1m 23s)` line moves as Claude Code's spinner, in CSS, and
-counts from the task's `working_since` ([decision 0153](decisions/0153-the-working-line-moves-as-claude-code-s-spinner.md)).
+counts from the task's `working_since` ([decision 0153](../decisions/0153-the-working-line-moves-as-claude-code-s-spinner.md)).
 
 ```mermaid
 sequenceDiagram
@@ -4308,16 +4312,16 @@ sequenceDiagram
 
 ## Ready-made automations
 
-Each automation has an immutable creator. HTTP and MCP compare the authenticated person with the creator before saving, re-enabling or starting a run. Task creation uses that same identity. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
+Each automation has an immutable creator. HTTP and MCP compare the authenticated person with the creator before saving, re-enabling or starting a run. Task creation uses that same identity. [ADR-0381](../decisions/0381-automation-creators-authorize-edits-and-starts.md)
 
 Ready-made automations are a read-only catalog like the default workflows
-([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
-[decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
+([SPEC-042](../../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
+[decision 0034](../decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
 embedded at build time. Enable copies one into an ordinary automation; a project's automation of
 the same name counts as the template's. The Automations page lists every shipped automation first,
 as Defaults (the project's automation of its name, or the shipped one switched off until its switch
-enables it), then the project's others as Custom ([SPEC-197](../.ai/specs/SPEC-197-those-2-automations-should-be-defaults-l.md),
-[decision 0159](decisions/0159-shipped-automations-are-the-automations-page-defaults.md)).
+enables it), then the project's others as Custom ([SPEC-197](../../.ai/specs/SPEC-197-those-2-automations-should-be-defaults-l.md),
+[decision 0159](../decisions/0159-shipped-automations-are-the-automations-page-defaults.md)).
 
 ```mermaid
 flowchart LR
@@ -4333,18 +4337,18 @@ flowchart LR
 ## How an automation's tasks start
 
 An automation stores one start choice for every task it creates, the choices of New task's start
-chip ([SPEC-078](../.ai/specs/SPEC-078-we-d-like-to-be-able-to-set-the-automati.md),
-[decision 0062](decisions/0062-an-automation-starts-its-tasks-like-new-task.md)). A run creates
+chip ([SPEC-078](../../.ai/specs/SPEC-078-we-d-like-to-be-able-to-set-the-automati.md),
+[decision 0062](../decisions/0062-an-automation-starts-its-tasks-like-new-task.md)). A run creates
 its task through the same `create_task_ruled` as New task. A task to run after that has ended
 turns into the rule `#N done`, so a recurring automation keeps working once its predecessor is
 finished. The editor shows the choice as New task's start chip in its action bar, and Run now
 sends the choice the chip shows for that run only
-([SPEC-093](../.ai/specs/SPEC-093-automation-editor-the-start-choice-sits.md),
-[decision 0074](decisions/0074-run-now-uses-the-start-choice-the-editor-shows.md)); without it a
+([SPEC-093](../../.ai/specs/SPEC-093-automation-editor-the-start-choice-sits.md),
+[decision 0074](../decisions/0074-run-now-uses-the-start-choice-the-editor-shows.md)); without it a
 run uses the stored choice. "When I decide" creates the task through `create_task_held` as a
 prepared task without a time, which waits for Start now and keeps the next runs skipped while it
-waits ([SPEC-155](../.ai/specs/SPEC-155-fix-416-automations-can-create-prepared.md),
-[decision 0128](decisions/0128-an-automation-can-prepare-its-tasks.md)).
+waits ([SPEC-155](../../.ai/specs/SPEC-155-fix-416-automations-can-create-prepared.md),
+[decision 0128](../decisions/0128-an-automation-can-prepare-its-tasks.md)).
 
 ```mermaid
 flowchart LR
@@ -4362,7 +4366,7 @@ flowchart LR
 The web UI is plain ES modules. Server state comes from the API and the UI event stream
 (`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
 column widths, model and effort), the notification history, the new-task composer's drafts
-([decision 0433](decisions/0433-store-each-new-task-draft-under-its-own-key.md)), and each sandbox's pull
+([decision 0433](../decisions/0433-store-each-new-task-draft-under-its-own-key.md)), and each sandbox's pull
 requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
 after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
 that read fails, while a later failed read keeps the chips an earlier read on the page showed;
@@ -4372,14 +4376,14 @@ stage moved, a Yulius CI run was queued, started or ended), at least 3 s after t
 last read, or when a hidden tab that missed one is shown again. Reads of a sandbox never overlap,
 also across views that stop and start watching it; an announcement during a read brings one more
 read after it. A pull request Yulius recorded as merged reads merged even while GitHub still lists
-it open ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)). These reads are
+it open ([decision 0087](../decisions/0087-pull-request-changes-are-announced.md)). These reads are
 planned on a clock the transport may give: the real one, or in mock mode with `pullclock=manual` a
-clock only a test's `advanceClock` moves ([decision 0118](decisions/0118-the-mock-drives-the-pull-request-read-clock.md)).
+clock only a test's `advanceClock` moves ([decision 0118](../decisions/0118-the-mock-drives-the-pull-request-read-clock.md)).
 Sign-out removes the notification history, the drafts and the pull requests; an expired session
 removes the pull requests too.
 
 Screens keep their state when the person moves away and back
-([decision 0092](decisions/0092-screens-remember-where-they-were-left.md), SPEC-113). The router
+([decision 0092](../decisions/0092-screens-remember-where-they-were-left.md), SPEC-113). The router
 (`router.js`) remembers, in `sessionStorage` for this browser tab, the last address shown inside
 each sandbox and on each sandbox page, including the filters pages keep in their query with
 `replaceQuietly`; links marked `data-restore` (sandbox tabs, Home's cards, the sidebar's pages, the
@@ -4388,7 +4392,7 @@ path. The tool panel (`panels.js`) keeps each sandbox's open tool, and the Super
 Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the editor of a sandbox in
 the background keeps its files' text without Monaco models. A tool chosen while a sandbox's page
 loads and no sandbox is the panel's context yet waits, shown pressed, and opens in that sandbox
-([SPEC-450](../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md) SSC-007). Sign-out and an expired session forget
+([SPEC-450](../../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md) SSC-007). Sign-out and an expired session forget
 the places. The editor loads Monaco once and makes its editor only when all of `editor.main` has
 run: Monaco's main chunk sets `window.monaco` before the chunk that registers some of its services,
 and an editor made earlier lacks them (decision 0122). Monaco ends a worker it no longer needs (the
@@ -4398,15 +4402,15 @@ uncaught error, while a worker in use still reports its errors (SPEC-235).
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
-([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
+([decision 0030](../decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
 start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
-continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
+continues past with a "↓ N more" line under it ([decision 0083](../decisions/0083-long-menu-groups-scroll-five-rows.md)).
 While a modal dialog is open, the menu is mounted in the topmost one, as the toasts are: outside
 it, it would be inert and under the dialog. It closes with an `openModal` dialog, and Escape or Tab
 gives the keyboard back to its anchor, or to the element that had it for a menu at a point
-([decision 0473](decisions/0473-a-menu-opened-over-a-modal-dialog-is-mounted-in-it.md)).
+([decision 0473](../decisions/0473-a-menu-opened-over-a-modal-dialog-is-mounted-in-it.md)).
 
-The Tasks page's Graph view (`?view=graph`, SPEC-164, [decision 0135](decisions/0135-the-task-graph-is-drawn-in-the-browser-from-the-task-summaries.md))
+The Tasks page's Graph view (`?view=graph`, SPEC-164, [decision 0135](../decisions/0135-the-task-graph-is-drawn-in-the-browser-from-the-task-summaries.md))
 is drawn from the task summaries the store already holds, with no endpoint of its own:
 `taskgraph.js` reads each open task's `after` (a chain, or a start rule's `#N`s), `held_by`,
 `supertask`, `status` and `state_since` into the queue in start order, a layered graph (a column
@@ -4448,7 +4452,7 @@ flowchart LR
 ## Task status
 
 A running task's activity is derived from Claude Code's own records, not guessed from the last
-event ([ADR-0044](decisions/0044-task-status-follows-claude-codes-own-records.md)). Background work
+event ([ADR-0044](../decisions/0044-task-status-follows-claude-codes-own-records.md)). Background work
 is counted from three sources:
 - background shells, from the process probe;
 - background agents and dynamic workflows, from the turn record;
@@ -4457,30 +4461,30 @@ is counted from three sources:
 The probe counts only the agent's own shells. In the sandbox, an orphaned subshell that the PID
 namespace's init adopted is not one, even though it still carries Claude Code's wrapper command
 line (a server started as `(server &)`)
-([SPEC-130](../.ai/specs/SPEC-130-458-got-achieved-but-wasn-t-marked-as-do.md)). Such orphans
+([SPEC-130](../../.ai/specs/SPEC-130-458-got-achieved-but-wasn-t-marked-as-do.md)). Such orphans
 (strays: everything that init adopted, other than the agent) are listed apart by the same probe.
 An idle task's strays are logged when first seen and killed 2 hours later, each process only while
 its pid keeps the recorded start time
-([SPEC-353](../.ai/specs/SPEC-353-leftover-agent-shells-pile-up-in-a-sandb.md),
-[decision 0240](decisions/0240-a-run-s-strays-are-reaped-after-a-bound-and-a-sandbox-gets-half-the-proxy.md)).
+([SPEC-353](../../.ai/specs/SPEC-353-leftover-agent-shells-pile-up-in-a-sandb.md),
+[decision 0240](../decisions/0240-a-run-s-strays-are-reaped-after-a-bound-and-a-sandbox-gets-half-the-proxy.md)).
 An idle Superagent's strays are probed every minute and reaped the same way
-([SPEC-355](../.ai/specs/SPEC-355-a-superagent-whose-sandbox-lost-yulius-r.md)).
+([SPEC-355](../../.ai/specs/SPEC-355-a-superagent-whose-sandbox-lost-yulius-r.md)).
 The egress proxy gives one sandbox at most half of its connections. At a limit, the relays toward
 Yulius (the holder's forward, the server's `out.sock`) and the proxy close their longest-idle
 connection (no byte for at least 5 minutes) for a new one instead of refusing it, so leftover processes
 holding connections cannot cut a sandbox's agents off from Yulius, also after a server restart,
 which does not restart the holder
-([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
+([decision 0241](../decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
 Stopping a holder's host-side `out.sock` relay cancels its accepted connections, closes both
 socket endpoints and releases their places.
 The host-side relay and the opaque CONNECT proxy each keep up to 8 KiB per direction in
 their copy state. Pausing preserves the first unwritten byte in each direction. After EOF
 the copy resumes any pending write-half shutdown before marking that half closed.
-[SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+[SPEC-577](../../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected descriptors
 and private copy state for one successor. The departing server starts it from its own running
 image (`/proc/self/exe`), so a removed or half-written install path cannot stop the handoff
-([ADR-0456](decisions/0456-the-tunnel-custodian-runs-the-departing-servers-own-image.md)). Its two-minute deadline includes the time spent
+([ADR-0456](../decisions/0456-the-tunnel-custodian-runs-the-departing-servers-own-image.md)). Its two-minute deadline includes the time spent
 receiving and returning the batch. Each timed pair also retains its original monotonic
 deadline. The helper releases expired pairs while a successor receives the remaining live
 records. A timed pair can carry its original kernel socket identities. The sender supplies
@@ -4499,22 +4503,22 @@ outbound copies in their old admission order before the relay accepts again. Evi
 explicit cancellation releases both host-side places. A peer's FIN closes its write
 direction and allows the other direction to drain. A copy that finishes first remains
 available for handoff while the other copy still has outstanding bytes.
-[ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
+[ADR-0413](../decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
 run cannot lock the other runs of its sandbox out
-([decision 0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)).
+([decision 0243](../decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)).
 A plain `http://` request never gives way while in flight, so it waits at most 5 minutes with no
 progress for its upstream's response head, then gets `504` and frees its place
-([decision 0250](decisions/0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md)).
+([decision 0250](../decisions/0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md)).
 A refusal that remains (a sandbox's share, its `out.sock`, the proxy's total) is a connection
 trouble in the app's `ConnectionHealth` registry, with the three busiest runs or sandboxes. It
 ends once its limit falls to seven eighths, and only its beginning and end are published
 (`connections.updated`): the panel shows a pill naming the run's task, and the notification
 center gets one entry per trouble (`GET /api/connections`;
-[SPEC-361](../.ai/specs/SPEC-361-proxy-and-mcp-health-on-the-panel-with-t.md),
-[decision 0246](decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)):
+[SPEC-361](../../.ai/specs/SPEC-361-proxy-and-mcp-health-on-the-panel-with-t.md),
+[decision 0246](../decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)):
 
 ```mermaid
 flowchart LR
@@ -4541,9 +4545,9 @@ merge"), even with a complete plan and a tested pull request; only an achieved g
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). For a prompt-mode Claude resume, the supervisor reads the conversation’s last goal
 status before spawning the process. The new attempt still counts its turns and usage from its
-own start. [ADR-0386](decisions/0386-prompt-goals-follow-the-resumed-claude-conversation.md).
+own start. [ADR-0386](../decisions/0386-prompt-goals-follow-the-resumed-claude-conversation.md).
 A proactive switch waits for any of this background work
-([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), also when
+([ADR-0063](../decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), also when
 the look at the session's processes gives no answer (`background_work_now` is `None`: not known
 counts as running for everyone who asks before a session ends, so a host whose look never
 answers moves no session at a turn's end; a move at a usage limit does not ask), and for a
@@ -4554,8 +4558,8 @@ subscription that stays; a turn held for capacity is released in place instead o
 on (`Queue::turn_closed`, `Queue::hands_on`) was left by Claude Code and keeps no move; an
 end that handed something on marks nothing, since what waits behind an entry Claude Code
 hands on alone leaves one end later
-([SPEC-479](../.ai/specs/SPEC-479-a-subscription-switch-at-a-turn-s-end-lo.md),
-[ADR-0310](decisions/0310-a-move-to-another-subscription-at-a-turns-end-waits-for-what-claude-code-still-queues.md)):
+([SPEC-479](../../.ai/specs/SPEC-479-a-subscription-switch-at-a-turn-s-end-lo.md),
+[ADR-0310](../decisions/0310-a-move-to-another-subscription-at-a-turns-end-waits-for-what-claude-code-still-queues.md)):
 
 ```mermaid
 flowchart LR
@@ -4573,12 +4577,12 @@ flowchart LR
     attention -.->|"a notice's flag:\nagent works on"| working
 ```
 
-A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
-A Codex goal has no native evaluator, so its own red pull request counts as declared work too: a Stop with the plan and spec finished continues the goal under the same retry bound when the newest Yulius CI run of its open pull request at the commit its worktree is on failed, the PR watcher has already pasted that failure (SPEC-578), and neither a newer run of the pull request nor a pushed head past that commit superseded it. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
+A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](../decisions/0428-a-goal-turn-continues-its-declared-work.md)
+A Codex goal has no native evaluator, so its own red pull request counts as declared work too: a Stop with the plan and spec finished continues the goal under the same retry bound when the newest Yulius CI run of its open pull request at the commit its worktree is on failed, the PR watcher has already pasted that failure (SPEC-578), and neither a newer run of the pull request nor a pushed head past that commit superseded it. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](../decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
 
 A `needs_attention` flag keeps its reason with the task
-([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),
-[ADR-0306](decisions/0306-a-needs-attention-flag-keeps-its-reason.md)). Claude Code's notice is one
+([SPEC-472](../../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),
+[ADR-0306](../decisions/0306-a-needs-attention-flag-keeps-its-reason.md)). Claude Code's notice is one
 way to the flag and the only one that puts a question on the terminal. Yulius raises it itself
 when the Stop gate gave up, a goal was never set, Claude Code still asks whether to trust the
 folder, a restart cut the first message, a full context could not be recovered, a session could
@@ -4595,8 +4599,8 @@ be terminated (`end_failed`) and the task still reads that flag, the prompt hook
 a transcript turn start and an interrupt leave the task's activity as it is
 (`write_session_activity`, under the runtime's `end_gate`, which the record of that failure takes
 too), until a person stops the task or the run ends; once a pause or another matter replaced the
-flag, the session's activity rules again ([SPEC-635](../.ai/specs/SPEC-635-a-yulius-could-not-end-this-session-flag.md),
-[ADR-0468](decisions/0468-a-flag-whose-cause-stands-is-not-answered-by-work.md)). One flag changes owner, and its reason follows: a secret
+flag, the session's activity rules again ([SPEC-635](../../.ai/specs/SPEC-635-a-yulius-could-not-end-this-session-flag.md),
+[ADR-0468](../decisions/0468-a-flag-whose-cause-stands-is-not-answered-by-work.md)). One flag changes owner, and its reason follows: a secret
 request's flag that another matter takes over (the request's answer then leaves it) says that
 matter's reason, and one that waits for several requests points at one still open
 (`replace_attention`: the same flag and time, another reason). The reason also records that a
@@ -4625,9 +4629,9 @@ handoffs (`browser_request_user_action`) persist on `tasks.needs_you` and clear 
 persisted requests, and legacy browser `tasks.attention` when answered, dismissed, superseded,
 closed, viewer-cleared (`clear_action`), or ended; untold failed Yulius CI runs on a live session
 and newer progressing CI runs keep the task in Working until human action is needed
-([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md),
-[SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md),
-[ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md)).
+([SPEC-552](../../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md),
+[SPEC-578](../../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md),
+[ADR-0414](../decisions/0414-actionable-needs-you-notices-and-wait-history.md)).
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,
@@ -4636,8 +4640,8 @@ permission prompt, `needs_you`, a browser request, a held prompt, failing checks
 reads "Answered" under Done and is counted nowhere, while its activity stays `waiting`, so no chain
 starts and its slot is kept. Archive and Delete close its session as for a Done task (`shows_done`),
 and a goal record read after the turn settled publishes the task again. The server's `AttentionFacts::group` and the web UI's `taskInfo` apply
-this one rule ([SPEC-429](../.ai/specs/SPEC-429-hey-why-yulius-still-mark-this-thread-as.md),
-[decision 0273](decisions/0273-an-answered-turn-is-not-needs-you.md)):
+this one rule ([SPEC-429](../../.ai/specs/SPEC-429-hey-why-yulius-still-mark-this-thread-as.md),
+[decision 0273](../decisions/0273-an-answered-turn-is-not-needs-you.md)):
 
 ```mermaid
 flowchart LR
@@ -4668,8 +4672,8 @@ Working, at most two minutes; typed while a turn runs, Claude Code queues it, an
 watch tells nothing is Done as before: a playground's, one whose pull request it never saw
 open, one a person paused; an update's hold changes nothing, since the news is typed right
 after it
-([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
-[decision 0328](decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md)).
+([SPEC-487](../../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
+[decision 0328](../decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md)).
 
 A task is Done (TSK-014: chains start, the queue may take its slot) through an achieved goal or a
 tested pull request with no declared work left. Tested is one reading (`PullSignal::from_wire`,
@@ -4681,20 +4685,20 @@ passed, or none are required by the project. Declared work is the plan's open st
 task's spec: Yulius keeps the spec's `status` with the task whenever it reads the spec
 (`tasks.spec_status`), and while it says `draft`, `approved` or `in-progress` the task is not
 Done, however complete its plan reads
-([SPEC-491](../.ai/specs/SPEC-491-a-task-whose-work-is-not-finished-never.md),
-[decision 0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
+([SPEC-491](../../.ai/specs/SPEC-491-a-task-whose-work-is-not-finished-never.md),
+[decision 0332](../decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
 So a task without a goal that opens no pull request would never be Done. For that reason the
 tasks Yulius creates itself are goal tasks: an automation run's task and the onboarding
 preparation. Only the continuation of an imported session is a prompt task, because the person
 whose conversation it continues decides when it is finished
-([SPEC-240](../.ai/specs/SPEC-240-fix-they-seem-to-be-wrong-because-tasks.md),
-[decision 0182](decisions/0182-an-automation-runs-its-task-as-a-goal.md)).
+([SPEC-240](../../.ai/specs/SPEC-240-fix-they-seem-to-be-wrong-because-tasks.md),
+[decision 0182](../decisions/0182-an-automation-runs-its-task-as-a-goal.md)).
 
 A reboot (or any lost run) ends a task by what it was doing
-([ADR-0177](decisions/0177-a-run-lost-after-its-goal-closes-the-task.md)). Every settled turn saves
+([ADR-0177](../decisions/0177-a-run-lost-after-its-goal-closes-the-task.md)). Every settled turn saves
 the run's screen to its `final-screen`, so the terminal of a run lost later is not blank. A run
 lost while the server runs saves the screen it was lost on as well
-([SPEC-301](../.ai/specs/SPEC-301-a-run-lost-while-yulius-runs-saves-its-l.md)); after a restart the
+([SPEC-301](../../.ai/specs/SPEC-301-a-run-lost-while-yulius-runs-saves-its-l.md)); after a restart the
 new server's hub has no output and the saved screen stays:
 
 ```mermaid
@@ -4712,23 +4716,23 @@ attach together with the hub's reset and kept after the run ends until the next 
 reader writes its output, released redaction tails, snapshots and reattachments through
 `TaskRuntime::on_screen_of`, which writes only while the hub shows that run, under the lock the
 attach takes. Output of a replaced run that arrives late is dropped
-([ADR-0454](decisions/0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md),
-[SPEC-614](../.ai/specs/SPEC-614-a-delayed-terminal-output-chunk-must-not.md)).
+([ADR-0454](../decisions/0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md),
+[SPEC-614](../../.ai/specs/SPEC-614-a-delayed-terminal-output-chunk-must-not.md)).
 
 ## Run metrics
 
 A run's tokens, turns and active time are computed from its own transcript lines and its
 sub-agents' transcripts (those of a dynamic workflow's agents included, SPEC-486), by one accumulator (`yulius-harness` `observe`), live while it runs and
-again after a restart ([ADR-0070](decisions/0070-run-metrics-come-from-the-transcript.md)). Runs
+again after a restart ([ADR-0070](../decisions/0070-run-metrics-come-from-the-transcript.md)). Runs
 recorded before that rule are counted again once: migration 23 queues every run recorded so far,
 and after start, once reconciliation has ended the lost runs, a background job counts each ended
 run's window of its transcript and records the outcome with the figures it replaced
-([ADR-0072](decisions/0072-recount-old-runs-from-their-transcripts-once.md)); no recount starts
+([ADR-0072](../decisions/0072-recount-old-runs-from-their-transcripts-once.md)); no recount starts
 after a failed reconciliation (`App::recover`). A run that ends before a watcher of this process
 read its transcript to its end (its agent exited while Yulius was down: reconciliation finds the
 exit, or a reattach gets it at once) is counted the same way when it is ended; its row changes only
 when the count finds figures
-([ADR-0117](decisions/0117-a-run-that-ends-while-yulius-is-down-is-counted-from-its-transcript.md)):
+([ADR-0117](../decisions/0117-a-run-that-ends-while-yulius-is-down-is-counted-from-its-transcript.md)):
 
 ```mermaid
 flowchart LR
@@ -4756,8 +4760,8 @@ outcome recorded")]
 
 ## Which jobs judge a commit
 
-[Decision 0360](decisions/0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md)
-([SPEC-504](../.ai/specs/SPEC-504-ci-leaves-nothing-behind-and-a-bad-yuliu.md) CFG-001 to CFG-006).
+[Decision 0360](../decisions/0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md)
+([SPEC-504](../../.ai/specs/SPEC-504-ci-leaves-nothing-behind-and-a-bad-yuliu.md) CFG-001 to CFG-006).
 `yulius.toml` is read with a TOML 1.1 parser (`spec_format::config`, the `toml` crate's spanned
 document): any valid layout parses, and invalid TOML is refused with the parser's message at its
 line.
@@ -4778,8 +4782,8 @@ After the integration configuration is repaired, the scheduler reads its bounded
   read it after the merge. That is the commit's own, except for a pull request that did not
   change it: then it is the integration branch's. An invalid one fails the run at once with a
   failed job `yulius.toml` and the other jobs skipped.
-- **The full suite after the merge** ([decision 0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
-  [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md) MFS-002). While the
+- **The full suite after the merge** ([decision 0410](../decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
+  [SPEC-575](../../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md) MFS-002). While the
   integration head has a merge-first staging target (a dev-stage `[cd.<name>]` with
   `merge_first = true` that deploys), its `after_merge` jobs end skipped, with their reason, on
   pull request heads, merge trains and playground tasks (`dom::after_merge_skip`, applied in
@@ -4804,7 +4808,7 @@ flowchart TD
   R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
 
-Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust `test` job covers those tests on dev. [Decision 0448](decisions/0448-repository-file-readers-run-before-merge.md)
+Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust `test` job covers those tests on dev. [Decision 0448](../decisions/0448-repository-file-readers-run-before-merge.md)
 
 ## CI job output
 
@@ -4815,15 +4819,15 @@ block it sees anywhere in the output, nextest's (`FAIL [ 0.5s] …` with its `st
 `stderr ───`) and libtest's, at most 8 KiB each and 32 KiB per job, in `ci_jobs.failures` when the
 job ends. `ci_status` with a `run_id` shows them before the end of a failed job's output, so a test
 that failed early in a long job stays diagnosable
-([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
-[decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
+([SPEC-145](../../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
+[decision 0119](../decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
 On a failed run, retained blocks from a sibling stopped by fail-fast share the run detail budget.
 Asking for the job by name shows its full retained blocks.
-[Decision 0401](decisions/0401-red-ci-notices-include-partial-sibling-failures.md)
+[Decision 0401](../decisions/0401-red-ci-notices-include-partial-sibling-failures.md)
 
 ## CI job waits and time limits
 
-A job's `paths` (SPEC-493 CJP, [decision 0343](decisions/0343-a-ci-job-names-the-files-it-tests-and-is-never-skipped-on-doubt.md))
+A job's `paths` (SPEC-493 CJP, [decision 0343](../decisions/0343-a-ci-job-names-the-files-it-tests-and-is-never-skipped-on-doubt.md))
 are decided before any wait, when the run is queued (`ci_queue_placed`): for a pull request, a
 merge candidate or a playground task, `GitPort::changed_paths` lists the head's files against its
 merge base with `origin/<integration>`, and `ci::paths_skip` ends each job that matches none of
@@ -4838,7 +4842,7 @@ A job waits before it starts, in `App::ci_job` (`crates/yulius-app/src/ci/exec.r
 then for room in its sandbox's Docker engine (at least 32 more networks of what its pools hold,
 read from its `/info`; networks no container used for 10 minutes are pruned first), then for
 admission by the host's CI budget (SPEC-497 HBA-002,
-[decision 0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md):
+[decision 0353](../decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md):
 no contention, the bounded worst case, room beside what CI uses), and only then for a job slot,
 which admission kept free. While it waits its reason says for what ("waits for the host's CI
 budget: CI uses 3 of the host's 3 CPUs for CI and jobs that just started may bring 1 more; this
@@ -4847,8 +4851,8 @@ a cancellation ends them. The job records how long it waited (`ci_jobs.waited_ms
 Its time limit, its own `timeout_minutes` or else `YULIUS_CI_JOB_TIMEOUT_MIN`, starts when its
 process starts (`ci_watch`), so no wait counts; a job that runs out of it is killed and errors
 "timed out: ran 2 h 0 min, its time limit; it waited 39 min 12 s before it started"
-([SPEC-435](../.ai/specs/SPEC-435-ci-a-job-s-time-limit-counts-only-its-ow.md),
-[decision 0279](decisions/0279-a-ci-job-s-limit-is-its-own-and-yulius-holds-its-one-at-a-time-lock.md)).
+([SPEC-435](../../.ai/specs/SPEC-435-ci-a-job-s-time-limit-counts-only-its-ow.md),
+[decision 0279](../decisions/0279-a-ci-job-s-limit-is-its-own-and-yulius-holds-its-one-at-a-time-lock.md)).
 
 ```mermaid
 flowchart LR
@@ -4875,32 +4879,32 @@ host): it then runs again once by itself in the same slot, saying so; a second s
 it error, and the thrown-away run's kind and time are kept for the CI minutes (a per-day tally
 written when a run ends, `ci_minutes`; the dispatcher also keeps the host's CI load once a
 minute, `ci_load`, read by hour at `GET /api/analytics/ci-load`)
-([decision 0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
+([decision 0354](../decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
 The dispatcher keeps each lane's last run (`CiState::lane_runs`); a run takes the free lane whose
 checkouts last built what it builds on (`preferred_lanes`: a candidate's members' own runs, a pull
 request's previous run), and each job's output names it
-([decision 0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
+([decision 0358](../decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
 A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit), except
 a pull request's failure whose block names a file that pull request changed
 (`failed_test_blocks`, `named_changed_file`, `App::ci_changed_paths`): that failure is the change's
-own ([decision 0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
+own ([decision 0453](../decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
 One that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
 all on the integration branch (`GitPort::merge_bases`), while the integration branch did not fail it
 (`yulius_domain::ci::flaky`), is quarantined with an issue filed through the GitHub port, one at
 a time (`ci_quarantine`, `App::ci_note_failing_tests`). Every later job of the sandbox gets the list in
 `YULIUS_CI_QUARANTINE` and `YULIUS_CI_QUARANTINE_NEXTEST`, and the hourly prune ends a quarantine
 whose issue is closed, forgetting the test's failures
-([decision 0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
+([decision 0356](../decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
 A failed job cancels the run's other jobs (fail-fast), except that the
 `security` job neither cancels nor is cancelled by them (SPEC-273). `yulius_domain::ci::aggregate` makes the run's
 state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
 rule; the commit status counts the skipped jobs
-([SPEC-162](../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
-[decision 0133](decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)). It is published
+([SPEC-162](../../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
+[decision 0133](../decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)). It is published
 when the run is queued and when it starts. It is published again each time a job passes or ends
 skipped while other jobs still run (one at a time, so its count never goes back), and last when
 the run ends, after every job's task. A published status resets the run's retry attempts
-([SPEC-198](../.ai/specs/SPEC-198-it-isn-t-true-because-i-saw-that-some-ci.md)).
+([SPEC-198](../../.ai/specs/SPEC-198-it-isn-t-true-because-i-saw-that-some-ci.md)).
 
 ```mermaid
 flowchart LR
@@ -4917,8 +4921,8 @@ flowchart LR
 ## Stages
 
 Every stage of a task, a CI run and a CD run is one row of `spans`
-([SPEC-137](../.ai/specs/SPEC-137-rich-measurements-of-every-stage-tasks-c.md),
-[decision 0112](decisions/0112-stages-are-spans-written-with-the-state-they-measure.md)). Spans that
+([SPEC-137](../../.ai/specs/SPEC-137-rich-measurements-of-every-stage-tasks-c.md),
+[decision 0112](../decisions/0112-stages-are-spans-written-with-the-state-they-measure.md)). Spans that
 follow a state are written by SQLite triggers in the same transaction as the state change, with the
 time the application wrote; the rest by Yulius as it happens (`yulius-app/src/stages.rs`): a CI
 run's preparation, job-slot waits and checkouts, a CD run's checks, promotion and confirmation, a
@@ -4927,20 +4931,20 @@ output names, read from the log Yulius already follows (`OutputScanner` in `yuli
 job's or CD run's CPU time, peak memory and bytes written come from its process host, which measures
 the job's reaped process tree (`getrusage` of its children) into `exit.json`; they are stored with
 the job's end and the end trigger adds them to its span
-([SPEC-154](../.ai/specs/SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md),
-[decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
+([SPEC-154](../../.ai/specs/SPEC-154-fix-488-ci-jobs-and-cd-runs-record-their.md),
+[decision 0127](../decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
 outside Yulius writes a span; the API only reads them, and the Dashboard's Pipeline tab (SPEC-161),
 the run views (decision 0180), the task overview and the Dashboard's Overview draw them. Spans older than 180
 days go with the hourly CI upkeep. A waterfall (`stages.js`) draws one subject's spans on a time
 axis with a legend, folds a span's children (one with a failure opens), and in a CI run puts each
 job's slot wait on the job's own row under "Jobs", paired by the job id in the span keys
-([SPEC-165](../.ai/specs/SPEC-165-for-very-complex-tests-it-s-not-readable.md),
-[decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)). A job's slot
+([SPEC-165](../../.ai/specs/SPEC-165-for-very-complex-tests-it-s-not-readable.md),
+[decision 0136](../decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)). A job's slot
 wait is open from the moment it begins to wait and ends `started`, `cancelled` or `error`, so a job
 still waiting is its wait alone on its row there, hatched up to "now"
-([SPEC-385](../.ai/specs/SPEC-385-ci-a-job-still-waiting-for-a-job-slot-sh.md)). A running
+([SPEC-385](../../.ai/specs/SPEC-385-ci-a-job-still-waiting-for-a-job-slot-sh.md)). A running
 subject's waterfall is drawn again at every poll; the row under a still pointer shows its tip again
-after the redraw ([SPEC-412](../.ai/specs/SPEC-412-e2e-a-named-longer-wait-for-first-loads.md)).
+after the redraw ([SPEC-412](../../.ai/specs/SPEC-412-e2e-a-named-longer-wait-for-first-loads.md)).
 
 ```mermaid
 flowchart LR
@@ -4962,11 +4966,11 @@ flowchart LR
 ## Notes
 
 The tools rail's Notes hold a notepad per sandbox and one for the team, shared and saved while
-people type ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
-[decision 0032](decisions/0032-shared-notes-with-revisions.md)), and one per person, "Me"
+people type ([SPEC-041](../../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
+[decision 0032](../decisions/0032-shared-notes-with-revisions.md)), and one per person, "Me"
 (`/api/me/notes`, row `user:<user id>`;
-[SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md),
-[decision 0084](decisions/0084-personal-notes-in-the-notes-table.md)). A save carries the whole
+[SPEC-103](../../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md),
+[decision 0084](../decisions/0084-personal-notes-in-the-notes-table.md)). A save carries the whole
 text and the revision it started from; the store writes it only when that revision is still
 current, and every stored edit is announced on the event stream: a personal note's event is
 addressed to its owner (`Envelope.user`), and `WS /api/events` drops it for everyone else.
@@ -4974,13 +4978,13 @@ addressed to its owner (`Envelope.user`), and `WS /api/events` drops it for ever
 The tabs go in any order, Team first by default (`yulius.notesOrder` in the browser). Each notepad
 draws its selections itself (`textlayer.js`: rounded shapes under the transparent text box,
 measured on a hidden mirror) and shows the teammates who have it open
-([SPEC-112](../.ai/specs/SPEC-112-i-want-to-be-able-to-move-those-3-bars-t.md),
-[decision 0091](decisions/0091-notepad-presence-is-relayed-not-stored.md)): a browser sends its
+([SPEC-112](../../.ai/specs/SPEC-112-i-want-to-be-able-to-move-those-3-bars-t.md),
+[decision 0091](../decisions/0091-notepad-presence-is-relayed-not-stored.md)): a browser sends its
 selection in the saved text's offsets, `App::note_presence` relays it as `note.presence` to the
 notepad's readers (20 a second per person and notepad at most) and stores nothing. Each update
 carries `seq`, growing per browser tab, and a receiver drops one older than the newest it heard
 from that tab, so a leave sent as the page goes (with `keepalive`, not waiting for the update on
-its way) is never undone by a late update ([decision 0138](decisions/0138-presence-updates-carry-a-per-tab-sequence-number.md)).
+its way) is never undone by a late update ([decision 0138](../decisions/0138-presence-updates-carry-a-per-tab-sequence-number.md)).
 
 ```mermaid
 sequenceDiagram
@@ -4997,8 +5001,8 @@ sequenceDiagram
 ```
 
 The Editor's folder picker reaches every branch through its worktree
-([SPEC-340](../.ai/specs/SPEC-340-in-editor-we-want-be-able-to-change-bran.md),
-[decision 0231](decisions/0231-the-editor-reaches-a-branch-through-its-worktree.md)):
+([SPEC-340](../../.ai/specs/SPEC-340-in-editor-we-want-be-able-to-change-bran.md),
+[decision 0231](../decisions/0231-the-editor-reaches-a-branch-through-its-worktree.md)):
 `App::files_roots` lists the sandbox repository with the branch its `.git/HEAD` names (walked
 from the sandbox directory through `O_NOFOLLOW` handles, as in the section on host access above)
 and each task worktree still on disk, with whether the caller owns it. The Editor reads the list
@@ -5016,8 +5020,8 @@ flowchart LR
 ```
 
 The Editor shows the same presence for files
-([SPEC-127](../.ai/specs/SPEC-127-the-editor-gets-the-notepad-s-smooth-sel.md),
-[decision 0103](decisions/0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md)): the
+([SPEC-127](../../.ai/specs/SPEC-127-the-editor-gets-the-notepad-s-smooth-sel.md),
+[decision 0103](../decisions/0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md)): the
 browser loop is shared (`presence.js`), `App::file_presence` checks the path like the files API
 and shares the notepads' limiter, and the event goes through a third envelope audience,
 `Envelope.writers_only`, which `WS /api/events` delivers only to people with write access to the
@@ -5035,8 +5039,8 @@ flowchart LR
     M --> L[editorlayer.js<br/>rounded gliding shapes]
 ```
 
-The file in front follows the disk ([SPEC-181](../.ai/specs/SPEC-181-here-ui-got-bugged-a-little-bit-we-want.md),
-[decision 0146](decisions/0146-the-editor-follows-the-file-in-front-by-polling-with-its-sha.md)).
+The file in front follows the disk ([SPEC-181](../../.ai/specs/SPEC-181-here-ui-got-bugged-a-little-bit-we-want.md),
+[decision 0146](../decisions/0146-the-editor-follows-the-file-in-front-by-polling-with-its-sha.md)).
 Agents and shells write the sandbox directly, so there is no event to wait for: while the Editor is
 shown, the page visible and the sandbox in front, the browser looks at that one file every 2 s
 (and at once when the Editor or the page comes back) with the `sha256` it has, and
@@ -5062,8 +5066,8 @@ sequenceDiagram
 ```
 
 The Editor's text is shared live and saves itself
-([SPEC-411](../.ai/specs/SPEC-411-editor-live-co-editing-of-unsaved-text-a.md),
-[decision 0261](decisions/0261-the-editors-text-is-shared-live-and-saved-by-the-server.md)).
+([SPEC-411](../../.ai/specs/SPEC-411-editor-live-co-editing-of-unsaved-text-a.md),
+[decision 0261](../decisions/0261-the-editors-text-is-shared-live-and-saved-by-the-server.md)).
 `App::live_*` (`live_files.rs`) keeps one document per sandbox, folder and path in memory, each
 behind its own lock (at most 256, each up to 2 MiB with its last 256 steps); `live_text.rs` applies and transforms operations
 over UTF-16 units. Each browser tab (`livedoc.js`, ops in `livetext.js`) keeps one operation in
@@ -5142,7 +5146,7 @@ During a planned install the old CI executor can finish a gate that has an execu
 and at most one running job. The first 30 seconds of the task drain are available for this. CI keeps
 dispatching normally. The helper receives the install request once the qualifying runs finish, the
 window expires, or the operator proceeds, subject to the existing deploy guard.
-[ADR-0406](decisions/0406-a-planned-install-gives-ci-on-its-last-job-a-short-grace-period.md)
+[ADR-0406](../decisions/0406-a-planned-install-gives-ci-on-its-last-job-a-short-grace-period.md)
 
 A cancel removes the request file, and a new update replaces it: the helper checks every 500 ms
 while cargo builds and, once its request is withdrawn, kills cargo's process group (cargo and its
@@ -5383,8 +5387,8 @@ sequenceDiagram
 
 ## Agent primitives
 
-Repository skills are APM primitives ([ADR-0016](decisions/0016-apm-for-agent-primitives.md),
-[standard](engineering/primitives.md)): the sources in `.apm/skills` are deployed by `apm install`
+Repository skills are APM primitives ([ADR-0016](../decisions/0016-apm-for-agent-primitives.md),
+[standard](../engineering/primitives.md)): the sources in `.apm/skills` are deployed by `apm install`
 to the harness directories Yulius already discovers, and the repository check rejects drift.
 
 ```mermaid
@@ -5402,8 +5406,8 @@ start) reach a sandbox through its home, `<sandbox>/home/.claude/skills`: a run'
 the sandbox's set there, and so does every server start and every switch of a skill for the
 sandbox, writing only the copies that differ (a SHA-256 of the catalog skill against the copy read
 through folder handles), under the launch lock, so a session already running reads the new skill
-at its next use ([SPEC-507](../.ai/specs/SPEC-507-after-an-update-every-sandbox-gets-the-n.md),
-[ADR-0364](decisions/0364-a-server-start-refreshes-every-sandboxs-skills-and-the-reviewers-prompt-is-a-contract.md)).
+at its next use ([SPEC-507](../../.ai/specs/SPEC-507-after-an-update-every-sandbox-gets-the-n.md),
+[ADR-0364](../decisions/0364-a-server-start-refreshes-every-sandboxs-skills-and-the-reviewers-prompt-is-a-contract.md)).
 What a session got at its launch (its briefing, run settings and the reviewer agents' prompt)
 stays until it is launched again, so those carry no review rule.
 
@@ -5425,31 +5429,31 @@ flowchart LR
 - Agents reach Yulius only through the internal loopback listener with per-run tokens. A hook runs
   in its own task: the hook client fails open after 5 s and closes its connection, which drops the
   HTTP handler, and the hook is still applied to its end
-  ([ADR-0115](decisions/0115-a-received-hook-is-applied-to-its-end.md)). The client says when it
+  ([ADR-0115](../decisions/0115-a-received-hook-is-applied-to-its-end.md)). The client says when it
   sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
   or a goal verdict it applied belongs to a turn that is over and changes nothing
-  ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
+  ([ADR-0234](../decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
   That stamp, like each transcript line's recorded time, is read on Yulius's clock
   (`Clock::of_wall`), so a test clock that runs shifted orders a late hook or line by when it was
-  made too ([ADR-0470](decisions/0470-wall-clock-stamps-are-read-on-yuliuss-clock.md)).
+  made too ([ADR-0470](../decisions/0470-wall-clock-stamps-are-read-on-yuliuss-clock.md)).
   The client assigns each UserPromptSubmit a 32-hex-digit `x-yulius-hook-invocation` and reuses it on every HTTP retry. A goal run uses that ID to distinguish a retry from a fresh submission of identical text. Older clients use terminal input and the run’s recent issued prompts.
   A prompt the transcript watcher reads takes the same per-task turn order as a clean Stop: the
   Stop remembers its time and settles after a prompt that is being applied, and a prompt read
   after it is not a new turn
-  ([ADR-0299](decisions/0299-a-transcript-prompt-and-its-turns-clean-stop-share-the-turn-order.md)).
+  ([ADR-0299](../decisions/0299-a-transcript-prompt-and-its-turns-clean-stop-share-the-turn-order.md)).
 - A stop or close asks the attached run to shut down; one that comes while the run is launching
   (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
-  escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).
+  escalation ([SPEC-140](../../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).
 - A stop always takes effect: its status change, and a run end's, is a compare-and-set that, lost
   to a concurrent change (a switch completing, a stop landing), is made again from the status read
   anew, in bounded rounds. A run that ends on a stop's intent rests its task even before the stop's
   change lands, and a switch overtaken by a stop, a close or its old run's loss starts no new run
-  ([SPEC-250](../.ai/specs/SPEC-250-stop-during-a-switch-leaves-the-task-run.md)).
-- The run reader leaves an attempt-scoped copy of the close, cancel or park request it took. If escalation records host loss first and the intent slot is empty, it uses that copy to settle the task. The attempt keeps its lost exit reason. [SPEC-563](../.ai/specs/SPEC-563-honor-close-and-cancel-intents-when-host.md)
+  ([SPEC-250](../../.ai/specs/SPEC-250-stop-during-a-switch-leaves-the-task-run.md)).
+- The run reader leaves an attempt-scoped copy of the close, cancel or park request it took. If escalation records host loss first and the intent slot is empty, it uses that copy to settle the task. The attempt keeps its lost exit reason. [SPEC-563](../../.ai/specs/SPEC-563-honor-close-and-cancel-intents-when-host.md)
 - Persistence is SQLite in WAL mode; the data directory layout is in SPEC-002 section 4.
 - State machines (task, attempt, switch, automation, import, onboarding, delivery, update, CI)
   are in SPEC-002 section 6; runtime contracts in section 7 and
-  [engineering/runtime-contracts.md](engineering/runtime-contracts.md).
+  [engineering/runtime-contracts.md](../engineering/runtime-contracts.md).
 - Security and trust model: SPEC-002 section 8. Limits: section 9.
 
-Decisions: [decisions](decisions/README.md).
+Decisions: [decisions](../decisions/README.md).
