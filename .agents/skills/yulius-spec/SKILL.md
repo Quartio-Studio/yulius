@@ -13,16 +13,15 @@ requirements and proposed defaults.
 1. Inspect the affected behavior and code and the scope the user authorized. Record the concrete
    outcome and the current failure or missing capability; read the neighbouring tasks first
    (`delivery-pipeline`, Ready).
-2. Assign requirement IDs and observable acceptance scenarios. Include invalid
-   input, cancellation, retries, recovery and old-default behavior where affected.
-3. Define ownership, boundary types, persistence/compatibility and the exit trigger
-   for each nonterminal state. Read `docs/engineering/runtime-contracts.md` only
-   for affected runtime boundaries.
-4. Identify blocking decisions separately from reversible implementation choices.
-   Continue independent design work; don't turn a proposal into product approval.
-5. Review the spec against the actual brief, then run `spec_check` (its form) and
-   `python3 scripts/check_repository.py` (links). Neither proves the design is sufficient:
-   explain acceptance evidence still needed.
+2. Assign requirement IDs and observable acceptance scenarios. Include invalid input,
+   cancellation, retries, recovery and old-default behavior where affected.
+3. Define ownership, boundary types, persistence/compatibility and the exit trigger for each
+   nonterminal state. Read `docs/engineering/runtime-contracts.md` only for affected runtime
+   boundaries.
+4. Separate blocking decisions from reversible implementation choices; a proposal is not
+   product approval.
+5. Run `spec_check` (its form) and `python3 scripts/check_repository.py` (links); neither proves
+   the design sufficient, so say what acceptance evidence is still needed.
 
 Keep reference research and speculative product notes outside the repository. Deliver the spec
 path, state, requirements and unresolved decisions; a spec-only task ends with a complete

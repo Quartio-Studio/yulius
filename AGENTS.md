@@ -56,16 +56,7 @@ Python 3.11+, rustup, Git and a platform C linker are prerequisites.
 
 ```sh
 python3 scripts/bootstrap.py
-scripts/dev doctor
-scripts/dev quick
-scripts/dev check
-scripts/dev lint
-scripts/dev macos
-scripts/dev test
-scripts/dev deps
-scripts/dev ci
-scripts/dev checks
-scripts/dev security
+scripts/dev doctor|quick|check|lint|macos|test|deps|ci|checks|security   # one per call
 ```
 
 - Before each commit you publish: `scripts/dev quick` (the repository contracts and

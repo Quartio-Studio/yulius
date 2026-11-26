@@ -58,7 +58,9 @@ few lines rarely finds anything.
 - **One rule, everywhere reviews and merges are described**: "After an approval, fix the
   remaining nits within 20 product lines and merge without another round: `delivery_merge` with
   the approved head counts them (tests and documents do not count). More than that, or a file
-  leaving the change, needs a new round." A test holds every place to it.
+  leaving the change, needs a new round." A test holds every place to it. Since 2026-11-26
+  (audit L10 F2) `delivery_merge`'s messages and one line in `delivery-pipeline` say it, and the
+  test refuses a copy elsewhere.
 
 ## Alternatives
 

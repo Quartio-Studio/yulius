@@ -970,31 +970,31 @@ mod tests {
         Ok(normal(&fs::read_to_string(root.join(rel))?))
     }
 
-    /// Every instruction text an agent of this repository or a managed project reads.
-    const INSTRUCTION_TEXTS: [&str; 22] = [
-        "AGENTS.md",
-        "docs/engineering/workflow.md",
-        "docs/engineering/git.md",
-        "docs/engineering/development.md",
-        "docs/engineering/specifications.md",
-        "docs/engineering/rust.md",
-        ".apm/skills/yulius-review/SKILL.md",
-        ".apm/skills/yulius-verify/SKILL.md",
-        ".apm/skills/yulius-spec/SKILL.md",
-        ".apm/skills/yulius-rust-slice/SKILL.md",
-        ".apm/skills/yulius-runner/SKILL.md",
-        "catalog/skills/yulius/delivery-pipeline/SKILL.md",
-        "catalog/skills/yulius/git-hygiene/SKILL.md",
-        "catalog/skills/yulius/infra-bootstrap/SKILL.md",
-        "catalog/skills/open-mercato/om-code-review/SKILL.md",
-        "catalog/skills/open-mercato/om-code-review/references/review-checklist.md",
-        "catalog/skills/open-mercato/om-check-and-commit/SKILL.md",
-        "catalog/skills/open-mercato/om-fix/SKILL.md",
-        "catalog/skills/superpowers/test-driven-development/SKILL.md",
-        "catalog/workflows/feature.md",
-        "catalog/workflows/fix.md",
-        "catalog/workflows/chore.md",
-    ];
+    /// Every instruction text an agent of this repository or a managed project reads: AGENTS.md,
+    /// the engineering docs, the repository skills and everything the catalog ships.
+    fn instruction_texts() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut found = vec!["AGENTS.md".to_owned()];
+        let mut dirs = vec![
+            root.join("docs/engineering"),
+            root.join(".apm/skills"),
+            root.join("catalog"),
+        ];
+        while let Some(dir) = dirs.pop() {
+            for entry in fs::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "md") {
+                    let rel = path.strip_prefix(&root)?.to_string_lossy().into_owned();
+                    found.push(rel);
+                }
+            }
+        }
+        found.sort();
+        assert!(found.len() > 40, "{found:?}");
+        Ok(found)
+    }
 
     /// One rule, one place (audit L10 F2): `source` states `rule` and no other instruction text
     /// repeats it (the source skill's own references aside). With no source, code states it at
@@ -1010,12 +1010,12 @@ mod tests {
                 "{source} does not state {rule:?}"
             );
         }
-        for rel in INSTRUCTION_TEXTS {
+        for rel in instruction_texts()? {
             if folder.as_deref().is_some_and(|dir| rel.starts_with(dir)) {
                 continue;
             }
             assert!(
-                !normal_file(rel)?.contains(&rule),
+                !normal_file(&rel)?.contains(&rule),
                 "{rel} repeats {rule:?}, which {} states",
                 source.unwrap_or("code")
             );
@@ -1116,10 +1116,8 @@ mod tests {
     /// is "request changes" — and no other instruction repeats or relaxes it.
     #[test]
     fn review_findings_in_own_code_are_never_deferred() -> TestResult {
-        for rel in [
-            "catalog/skills/open-mercato/om-code-review/SKILL.md",
-            "catalog/skills/open-mercato/om-code-review/references/review-checklist.md",
-        ] {
+        {
+            let rel = "catalog/skills/open-mercato/om-code-review/SKILL.md";
             let text = normal_file(rel)?;
             for stated in [
                 "own code",
@@ -1141,8 +1139,26 @@ mod tests {
             "is fixed in this pull request, test-first, and never becomes a follow-up issue",
             Some("catalog/skills/open-mercato/om-code-review/SKILL.md"),
         )?;
-        for rel in INSTRUCTION_TEXTS {
-            let text = normal_file(rel)?;
+        // Earlier copies said it in their own words: none of those may come back either.
+        for rel in instruction_texts()? {
+            if rel.starts_with("catalog/skills/open-mercato/om-code-review/") {
+                continue;
+            }
+            let text = normal_file(&rel)?;
+            for copy in [
+                "never becomes a follow-up issue",
+                "never as a follow-up issue",
+                "re-review until approval",
+                "after 3 rounds",
+            ] {
+                assert!(
+                    !text.contains(copy),
+                    "{rel} repeats om-code-review: {copy:?}"
+                );
+            }
+        }
+        for rel in instruction_texts()? {
+            let text = normal_file(&rel)?;
             for gone in [
                 "follow-up issue accepts",
                 "reason and follow-up issue",
@@ -1238,11 +1254,11 @@ mod tests {
             review.contains("read the yulius ci run of the head you review"),
             "om-code-review does not send the reviewer to the head's run"
         );
-        for rel in INSTRUCTION_TEXTS
+        for rel in instruction_texts()?
             .into_iter()
-            .chain(["crates/yulius-domain/src/briefing.rs"])
+            .chain(["crates/yulius-domain/src/briefing.rs".to_owned()])
         {
-            let text = normal_file(rel)?;
+            let text = normal_file(&rel)?;
             for old in OLD {
                 assert!(!text.contains(old), "{rel} keeps the old rule: {old}");
             }
@@ -1253,7 +1269,7 @@ mod tests {
     /// SPEC-493 APR-005 (AC-12): the rule for a follow-up after an approval is said by
     /// `delivery_merge` itself and once in `delivery-pipeline`.
     #[test]
-    fn every_place_states_the_follow_up_bound() -> TestResult {
+    fn the_follow_up_bound_is_stated_once() -> TestResult {
         stated_once(
             "after an approval, fix the remaining nits within 20 product lines and merge without \
              another round: `delivery_merge` with the approved head counts them (tests and \
@@ -1272,7 +1288,7 @@ mod tests {
     /// SPEC-493 RLM-004 (AC-12): resuming a cut-off reviewer and the reviewer's effort are
     /// Yulius's at run time (the resume prompt, the agent definition), so no text repeats them.
     #[test]
-    fn every_place_says_resume_a_cut_off_reviewer() -> TestResult {
+    fn no_text_repeats_how_a_reviewer_resumes_or_its_effort() -> TestResult {
         stated_once("resume that same reviewer by its agent id", None)?;
         stated_once("a reviewer runs at high effort, never max", None)?;
         stated_once("the reviewer runs at high effort, never max", None)?;
@@ -1283,7 +1299,7 @@ mod tests {
     /// SPEC-600 MTS-002/003: `test-driven-development` states the instance's mutation policy
     /// for every project, and no other instruction repeats it.
     #[test]
-    fn every_place_requires_by_hand_mutation_checks() -> TestResult {
+    fn the_mutation_policy_is_stated_once() -> TestResult {
         stated_once(
             "mutation checks are by hand, in every project: undo the few lines your new tests \
              are meant to hold, watch those tests fail, restore the lines, and say in the spec's \
@@ -1296,9 +1312,9 @@ mod tests {
              same pull request (adr-0141).",
             Some("catalog/skills/superpowers/test-driven-development/SKILL.md"),
         )?;
-        for rel in INSTRUCTION_TEXTS {
+        for rel in instruction_texts()? {
             assert!(
-                !normal_file(rel)?.contains("mutation testing runs beside the review"),
+                !normal_file(&rel)?.contains("mutation testing runs beside the review"),
                 "{rel}"
             );
         }
@@ -1484,7 +1500,7 @@ mod tests {
     /// leaves it to the skill (SPEC-507 SKR-006); the old wording that made any failed job a
     /// blocker is gone.
     #[test]
-    fn every_place_says_ci_alone_is_no_request_for_changes() -> TestResult {
+    fn ci_alone_is_no_request_for_changes_stated_once() -> TestResult {
         const OLD: [&str; 3] = [
             "a failed job is a blocker, even if it looks unrelated",
             "a failing gate included",
@@ -1523,7 +1539,7 @@ mod tests {
     /// Review corrections have a failing test and the author checks each against the new head:
     /// said once, in `om-code-review`.
     #[test]
-    fn every_place_says_prove_each_fix_before_another_round() -> TestResult {
+    fn proving_each_fix_is_stated_once() -> TestResult {
         stated_once(
             "before asking for another round, answer each finding of the last report with the \
              test that fails without its fix (or why no test can) and check every finding of \
@@ -1535,7 +1551,7 @@ mod tests {
     /// SPEC-506 FST-006 (AC-4): `om-check-and-commit` says to run the quick checks before each
     /// published commit (every project); AGENTS.md names this repository's command only.
     #[test]
-    fn every_place_says_run_the_quick_checks_before_a_published_commit() -> TestResult {
+    fn the_quick_checks_rule_is_stated_once() -> TestResult {
         stated_once(
             "before each commit you publish, run the project's quick checks: its format check \
              and the tests that read the whole repository (contracts, generated lists, \
@@ -1544,7 +1560,8 @@ mod tests {
             Some("catalog/skills/open-mercato/om-check-and-commit/SKILL.md"),
         )?;
         assert!(
-            normal_file("AGENTS.md")?.contains("`scripts/dev quick`"),
+            normal_file("AGENTS.md")?
+                .contains("before each commit you publish: `scripts/dev quick`"),
             "AGENTS.md does not name this repository's command"
         );
         Ok(())

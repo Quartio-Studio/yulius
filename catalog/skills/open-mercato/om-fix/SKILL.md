@@ -47,9 +47,9 @@ never invent a cause of your own when an analysis exists.
 
 ## Review findings and failed checks
 
-A review finding or a failed check is a defect like any other: reproduce it with a test (or the
-failing command), fix it minimally, rerun the checks it touches, and answer the finding with the
-evidence, as `om-code-review` asks before another round.
+A review finding or a failed check is a defect like any other once it is true here: reproduce it
+with a test (or the failing command), fix it minimally, rerun the checks it touches, and answer
+the finding with the evidence, as `om-code-review` asks before another round.
 
 ## Rules
 

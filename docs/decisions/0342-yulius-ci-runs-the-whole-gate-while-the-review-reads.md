@@ -30,7 +30,8 @@ anyway (CIR-003), so the local copies prove nothing a merge relies on.
   reviewer reads. Do not run the whole gate locally before a review or between rounds, except to
   reproduce a CI failure or when CI cannot run (a playground without CI, an outage)." The
   workflows and the briefing, which have size budgets, say its short form ("the whole gate is
-  Yulius CI's"). A test holds every place to it and refuses the old wordings.
+  Yulius CI's"). A test holds every place to it and refuses the old wordings. Since 2026-11-26
+  (audit L10 F2) the full sentence is in `delivery-pipeline` only; the test refuses a copy.
 - **The reviewer reads the head's Yulius CI run** and runs the tests it doubts; it does not run
   the whole gate either, except where CI cannot run.
 
