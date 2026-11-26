@@ -276,19 +276,14 @@ impl App {
                 };
                 self.settle_resting_run(task_id, selected, resume).await?
             };
-            // The Codex CLI is installed before the launch lock, so a first install does not hold
-            // other tasks' starts (SPEC-503 CLI-002); the launch asks again and reports a failure.
+            // The Codex or Antigravity CLI is installed before the launch lock, so a first install
+            // does not hold other tasks' starts; the launch asks again and reports a failure.
             if let Ok(Some(task)) = self.deps.store.task(task_id).await {
-                match task.harness {
-                    Harness::Codex => {
-                        let _ = self.deps.harness.provide_codex(true).await;
-                    }
-                    // The same for the Antigravity CLI (SPEC-505 AGY-007).
-                    Harness::Antigravity => {
-                        let _ = self.deps.harness.provide_antigravity(true).await;
-                    }
-                    Harness::ClaudeCode => {}
-                }
+                let _ = self
+                    .deps
+                    .harness
+                    .provide_cli(task.harness.provider(), true)
+                    .await;
             }
             crate::race::reached(
                 crate::race::Point::StartPreflightFinished,
