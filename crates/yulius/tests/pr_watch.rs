@@ -3,6 +3,8 @@
 //! conflict with the integration branch and of its merge, each once and with its next step. Real
 //! repositories, the production Git adapter and a fake agent that echoes what it is typed.
 
+use crate::support::live::pool::{pool, pool_live};
+use crate::support::live::{Live, UNSERVED};
 use crate::support::pr_watch::{leave_verification_step, run};
 use crate::support::{eventually, git};
 use std::path::Path;
@@ -16,7 +18,7 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::Activity;
 
-use crate::support::live::pool::{build_tuned, new_task, runtime, screen, seed, stop, temp};
+use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -33,7 +35,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| config.goal_ready_ms = 2_000)?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         // The integration branch, `dev`, on the origin and in Yulius's clone.
         let seed_dir = data.join("seed");
@@ -313,7 +315,9 @@ fn a_conflict_is_told_without_a_run_at_the_head() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let seed_dir = data.join("seed");
         git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
@@ -408,15 +412,7 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = crate::support::live::pool::build_served_tuned(
-            &data,
-            &fake,
-            Arc::new(crate::support::live::pool::ScriptedUsage::default()),
-            agent,
-            github.clone(),
-            "http://127.0.0.1:9",
-            |config| config.goal_ready_ms = 2_000,
-        )?;
+        let app = pool(Live { usage: Arc::new(crate::support::live::pool::ScriptedUsage::default()), github: github.clone(), ..Live::new(Some(&fake), agent) }, &data, "http://127.0.0.1:9", |config| config.goal_ready_ms = 2_000)?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         yulius_app::ports::store::PermissionStore::put_access(
             app.deps.store.as_ref(),

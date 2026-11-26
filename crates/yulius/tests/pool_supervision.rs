@@ -6,11 +6,12 @@
 
 use crate::support;
 use crate::support::eventually;
+use crate::support::live::pool::pool;
 use crate::support::live::pool::{
-    HOUR, ScriptedUsage, add_account, build, build_served_tuned, build_with, build_with_github,
-    echoed, has_status, hold_pool_move, new_task, now, reading, refresh, runtime, screen, seed,
-    stop, task, temp, usage,
+    HOUR, ScriptedUsage, add_account, build, build_with, echoed, has_status, hold_pool_move,
+    new_task, now, reading, refresh, runtime, screen, seed, stop, task, temp, usage,
 };
+use crate::support::live::{Live, UNSERVED};
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -1464,12 +1465,15 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
     let build = || {
         let github = Arc::new(FakeGitHub::default());
         github.set_perm("bob", "acme/pool", support::perms("write"));
-        build_with_github(
+        pool(
+            Live {
+                usage: Arc::new(ScriptedUsage::default()),
+                github,
+                ..Live::new(Some(&fake), agent())
+            },
             &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent(),
-            github,
+            UNSERVED,
+            |_| {},
         )
     };
     let first = runtime()?;
@@ -1564,12 +1568,15 @@ fn reattach_for_new_owner(revoked: bool) -> TestResult {
         ..FakeAgentOptions::default()
     };
     let build = || {
-        build_with_github(
+        pool(
+            Live {
+                usage: Arc::new(ScriptedUsage::default()),
+                github: Arc::new(FakeGitHub::default()),
+                ..Live::new(Some(&fake), agent())
+            },
             &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent(),
-            Arc::new(FakeGitHub::default()),
+            UNSERVED,
+            |_| {},
         )
     };
     let first = runtime()?;
@@ -1724,12 +1731,15 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
             access_lost: matches!(order, LimitRestartRace::AccessLost),
             ..FakeAgentOptions::default()
         };
-        build_with_github(
+        pool(
+            Live {
+                usage: probe.clone(),
+                github: Arc::new(FakeGitHub::default()),
+                ..Live::new(Some(&fake), agent)
+            },
             &data,
-            &fake,
-            probe.clone(),
-            agent,
-            Arc::new(FakeGitHub::default()),
+            UNSERVED,
+            |_| {},
         )
     };
     let first = runtime()?;
@@ -1966,13 +1976,7 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             transcript: true,
             ..FakeAgentOptions::default()
         };
-        let app = build_with_github(
-            &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent,
-            github,
-        )?;
+        let app = pool(Live { usage: Arc::new(ScriptedUsage::default()), github, ..Live::new(Some(&fake), agent) }, &data, UNSERVED, |_| {})?;
         let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
         let bob = second_person(&app, &admin).await?;
         let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
@@ -2092,12 +2096,15 @@ fn a_hand_over_stops_a_run_holding_personal_mcp_servers_it_cannot_restart() -> T
             transcript: true,
             ..FakeAgentOptions::default()
         };
-        let app = build_with_github(
+        let app = pool(
+            Live {
+                usage: Arc::new(ScriptedUsage::default()),
+                github,
+                ..Live::new(Some(&fake), agent)
+            },
             &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent,
-            github,
+            UNSERVED,
+            |_| {},
         )?;
         let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
         let bob = UserRecord {
@@ -3420,12 +3427,13 @@ fn build_slots(
     agent: FakeAgentOptions,
     queue_max: u32,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_served_tuned(
+    pool(
+        Live {
+            usage,
+            github: Arc::new(FakeGitHub::default()),
+            ..Live::new(Some(fake), agent)
+        },
         data,
-        fake,
-        usage,
-        agent,
-        Arc::new(FakeGitHub::default()),
         "http://127.0.0.1:9",
         |config| {
             config.max_live_sessions = 1;

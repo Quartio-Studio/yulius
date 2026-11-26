@@ -180,23 +180,17 @@ async fn app_on(data: &Path, host: Arc<HoldingHost>) -> Result<Arc<App>, Error> 
         resume_prompts: true,
         ..hooked()
     };
-    let (app, _, _) = crate::support::live::first_message::start_hosted_with_github(
-        data,
-        &fake,
-        agent,
-        (
-            0,
-            Arc::new(ScriptedUsage::default()),
-            Arc::new(yulius::wiring::clock::SystemClock),
-        ),
-        Some(host),
-        None,
-        |config| {
-            config.max_live_sessions = 8;
-            config.park_after_ms = 1;
-            config.stop_escalation_ms = 1000;
-        },
-    )
+    let (app, _) = crate::support::live::Live {
+        usage: Arc::new(ScriptedUsage::default()),
+        clock: Arc::new(yulius::wiring::clock::SystemClock),
+        host: Some(host),
+        ..crate::support::live::Live::new(Some(&fake), agent)
+    }
+    .start(data, 0, |config| {
+        config.max_live_sessions = 8;
+        config.park_after_ms = 1;
+        config.stop_escalation_ms = 1000;
+    })
     .await?;
     Ok(app)
 }

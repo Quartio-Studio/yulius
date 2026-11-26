@@ -3,13 +3,15 @@
 //! stands; the holding task's session gets one message naming the claiming task and the paths.
 //! A fake agent echoes what it is typed.
 
+use crate::support::live::UNSERVED;
+use crate::support::live::pool::{pool, pool_live};
 use std::time::Duration;
 
 use serde_json::json;
 use yulius_app::coordination::AgentContext;
 
 use crate::support::eventually;
-use crate::support::live::pool::{build_tuned, new_task, runtime, screen, seed, stop, temp};
+use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -45,7 +47,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent_options, |config| {
+        let app = pool(pool_live(&fake, agent_options), &data, UNSERVED, |config| {
             config.goal_ready_ms = 2_000;
         })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;

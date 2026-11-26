@@ -4,19 +4,17 @@
 
 use crate::support;
 use crate::support::git;
+use crate::support::live::{Live, UNSERVED};
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
-use support::{FakeGitHub, TestResult};
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::session::PtySessionHost;
+use support::TestResult;
+use support::agents::FakeAgentOptions;
 use yulius_app::auth::AuthContext;
-use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{AccountRecord, AccountStatus, SandboxRecord, TaskOrigin, UserRecord};
 use yulius_contracts::api::secrets::AgentSecretInput;
@@ -24,8 +22,6 @@ use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 const VALUE: &str = concat!("sk_test_", "51NzQ9redactValue8f3a");
 const LABEL: &str = "[secret:STRIPE_KEY]";
@@ -317,38 +313,18 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
-        let mut config = AppConfig::new(
-            data.clone(),
-            "https://yulius.test",
-            "http://127.0.0.1:9",
-            exe(),
-        );
-        config.contained = false;
-        let deps = Deps {
-            store: Arc::new(store),
-            clock: Arc::new(SystemClock),
-            crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-            github: Arc::new(FakeGitHub::default()),
-            session_host: Arc::new(PtySessionHost::new(exe())),
-            harness: Arc::new(FakeAgentHarness::new(
-                exe(),
-                fake.clone(),
-                FakeAgentOptions {
-                    report_env: vec![
-                        "STRIPE_KEY".into(),
-                        "CLAUDE_CODE_SHELL_PREFIX".into(),
-                        "YULIUS_SCRUB_FILE".into(),
-                    ],
-                    ..FakeAgentOptions::default()
-                },
-            )),
-            git: Arc::new(crate::support::confined_git()),
-            system: Arc::new(support::FixedSystem),
-            browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-            usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-        };
-        let app = App::new(config, deps);
+        let app = Live::new(
+            Some(&fake),
+            FakeAgentOptions {
+                report_env: vec![
+                    "STRIPE_KEY".into(),
+                    "CLAUDE_CODE_SHELL_PREFIX".into(),
+                    "YULIUS_SCRUB_FILE".into(),
+                ],
+                ..FakeAgentOptions::default()
+            },
+        )
+        .app(&data, UNSERVED, |_| {})?;
         let user = admin()?;
         let sandbox = sandbox_record(&user)?;
         app.deps.store.insert_user(&user).await?;

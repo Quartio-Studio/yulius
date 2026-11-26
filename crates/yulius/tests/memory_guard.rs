@@ -3,24 +3,19 @@
 //! Runs everywhere: the session host records the plans and starts nothing; the namespace itself is
 //! proven by the opt-in isolation test and on a guest (SPEC-652 Evidence).
 
+use crate::support::live::{Live, UNSERVED};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::support;
 use crate::support::agents::FakeAgentOptions;
 use crate::support::live::supervision::{runtime, seed_records, seed_repo};
 use crate::support::{TestResult, eventually};
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius_app::context::{App, AppConfig, Deps};
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{TaskMode, TaskOrigin};
 use yulius_app::ports::session::{Containment, LaunchPlan};
 use yulius_contracts::ptyhost::{GuardKind, GuardPath};
 use yulius_domain::harness::Harness;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 /// The recorded plan of a new contained task of `harness` in a fresh sandbox.
 fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std::error::Error>> {
@@ -30,13 +25,6 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
     let plan = rt.block_on(async {
         let host = Arc::new(crate::support::ScriptedHost::default());
         let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-        let mut config = AppConfig::new(
-            data.clone(),
-            "https://yulius.test",
-            "http://127.0.0.1:9",
-            exe.clone(),
-        );
-        config.contained = true;
         let provided = |name: &str| {
             let dir = data.join(format!("{name}-cli"));
             yulius_app::ports::harness::ProvidedCli {
@@ -44,28 +32,15 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
                 dir,
             }
         };
-        let deps = Deps {
-            store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-            clock: Arc::new(SystemClock),
-            crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-            github: Arc::new(support::FakeGitHub::default()),
-            session_host: host.clone(),
-            harness: Arc::new(support::agents::FakeAgentHarness {
-                inner: HarnessAdapter::new(exe.clone(), "http://127.0.0.1:9"),
-                fake: exe.clone(),
-                options: FakeAgentOptions {
-                    provided_codex: Some(provided("codex")),
-                    provided_antigravity: Some(provided("antigravity")),
-                    ..FakeAgentOptions::default()
-                },
-                yulius_exe: exe,
-            }),
-            git: Arc::new(crate::support::confined_git()),
-            system: Arc::new(support::FixedSystem),
-            browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-            usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-        };
-        let app = App::new(config, deps);
+        let app = Live {
+            host: Some(host.clone()),
+            ..Live::new(Some(&exe), FakeAgentOptions {
+            provided_codex: Some(provided("codex")),
+            provided_antigravity: Some(provided("antigravity")),
+            ..FakeAgentOptions::default()
+        })
+        }
+        .app(&data, UNSERVED, |config| config.contained = true)?;
         let (sandbox, user) = seed_records(&app).await?;
         match harness {
             Harness::Codex => {

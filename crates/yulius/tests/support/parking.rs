@@ -63,19 +63,18 @@ pub(crate) async fn app_with_pulls_and_clock(
         resume_prompts: true,
         ..hooked()
     };
-    let (app, _, github) = crate::support::live::first_message::start_hosted_with_github(
-        data,
-        &fake,
-        agent,
-        (0, Arc::new(ScriptedUsage::default()), clock),
-        None,
-        None,
-        |config| {
-            config.max_live_sessions = slots;
-            config.park_after_ms = park_after_ms;
-            configure(config);
-        },
-    )
+    let github = Arc::new(crate::support::FakeGitHub::default());
+    let (app, _) = crate::support::live::Live {
+        usage: Arc::new(ScriptedUsage::default()),
+        clock,
+        github: github.clone(),
+        ..crate::support::live::Live::new(Some(&fake), agent)
+    }
+    .start(data, 0, |config| {
+        config.max_live_sessions = slots;
+        config.park_after_ms = park_after_ms;
+        configure(config);
+    })
     .await?;
     Ok((app, github))
 }

@@ -2,6 +2,7 @@
 //! task's session (real processes: supervisor → detached `yulius ptyhost` → fake agent), or adds
 //! it to the request of a task that has not started, and refuses what cannot take one.
 
+use crate::support::live::Live;
 use crate::support::task_message::{
     app, fake_agent, fixture_box_empty, full_screen, full_screen_terminal, superagent, terminal,
 };
@@ -31,8 +32,8 @@ use yulius_app::model::TaskMode;
 use crate::support::agents::FakeAgentOptions;
 use crate::support::eventually;
 use crate::support::live::first_message::{
-    ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
-    start_on_listener, start_with, stop,
+    ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start,
+    start_with, stop,
 };
 use crate::support::live::pool::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support::{
@@ -653,7 +654,13 @@ async fn app_behind(data: &Path, behind_ms: i64) -> Result<(Arc<App>, Arc<Shifte
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let clock = Arc::new(ShiftedClock::new(-behind_ms));
     let probe = Arc::new(ScriptedUsage::default());
-    let (app, _) = start_on(data, &fake, fake_agent(), 0, probe, clock.clone(), |_| {}).await?;
+    let (app, _) = Live {
+        usage: probe,
+        clock: clock.clone(),
+        ..Live::new(Some(&fake), fake_agent())
+    }
+    .start(data, 0, |_| {})
+    .await?;
     Ok((app, clock))
 }
 
@@ -921,7 +928,13 @@ fn a_message_sent_past_a_draft_from_before_a_restart_ends_that_draft() -> TestRe
         // The first server's clock is five minutes behind: the draft is that old afterwards.
         let clock = Arc::new(ShiftedClock::new(-5 * MINUTE));
         let probe = Arc::new(ScriptedUsage::default());
-        let (app, port) = start_on(&data, &fake, fake_agent(), 0, probe, clock, |_| {}).await?;
+        let (app, port) = Live {
+            usage: probe,
+            clock,
+            ..Live::new(Some(&fake), fake_agent())
+        }
+        .start(&data, 0, |_| {})
+        .await?;
         let (id, caller) = running(&app, &data).await?;
         let (ctx, attach) = terminal(&app, &caller, &id).await?;
         app.terminal_input(&ctx, &attach, b"half a thought", false)
@@ -1219,7 +1232,13 @@ async fn idle_full_screen(
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let clock = Arc::new(ShiftedClock::new(-behind_ms));
     let probe = Arc::new(ScriptedUsage::default());
-    let (app, _) = start_on(data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
+    let (app, _) = Live {
+        usage: probe,
+        clock: clock.clone(),
+        ..Live::new(Some(&fake), full_screen())
+    }
+    .start(data, 0, |_| {})
+    .await?;
     let (id, caller) = running(&app, data).await?;
     turn_ended(&app, &id).await?;
     // Its Stop settles the task before Yulius records the answer: a test that flags the task
@@ -1571,7 +1590,12 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
             hooks: false,
             ..full_screen()
         };
-        let (app, _) = start_on(&data, &fake, hookless, 0, probe, clock.clone(), |config| {
+        let (app, _) = Live {
+            usage: probe,
+            clock: clock.clone(),
+            ..Live::new(Some(&fake), hookless)
+        }
+        .start(&data, 0, |config| {
             config.goal_ready_ms = 2_000;
         })
         .await?;
@@ -1722,8 +1746,13 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
     let (port, id, caller) = first.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let clock = Arc::new(ShiftedClock::new(-2 * MINUTE));
-        let (app, port) =
-            start_on(&data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
+        let (app, port) = Live {
+            usage: probe,
+            clock: clock.clone(),
+            ..Live::new(Some(&fake), full_screen())
+        }
+        .start(&data, 0, |_| {})
+        .await?;
         let (id, caller) = running(&app, &data).await?;
         eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle) && fixture_box_empty(&app, &id)
@@ -1751,15 +1780,12 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
     rt.block_on(async {
         let clock = Arc::new(ShiftedClock::new(0));
         let probe = Arc::new(ScriptedUsage::default());
-        let (app, _) = start_on(
-            &data,
-            &fake,
-            full_screen(),
-            port,
-            probe,
-            clock.clone(),
-            |_| {},
-        )
+        let (app, _) = Live {
+            usage: probe,
+            clock: clock.clone(),
+            ..Live::new(Some(&fake), full_screen())
+        }
+        .start(&data, port, |_| {})
         .await?;
         app.reconcile().await?;
         eventually(
@@ -1859,7 +1885,12 @@ async fn codex_with_pr_fixture(
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
     let accepting = tokio::net::TcpListener::from_std(listener.try_clone()?)?;
-    let app = start_on_listener(data, &fake, options, accepting, probe, clock).await?;
+    let app = Live {
+        usage: probe,
+        clock,
+        ..Live::new(Some(&fake), options)
+    }
+    .serve(data, accepting, |_| {}, |router| router)?;
     let (sandbox, user) = seed(&app, data, &[]).await?;
     crate::support::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#)
         .await?;
@@ -1902,15 +1933,17 @@ fn reattached_idle_codex_repaints_and_receives_its_ci_notice() -> TestResult {
     first.shutdown_timeout(Duration::from_secs(5));
     runtime()?.block_on(async {
         let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-        let app = start_on_listener(
+        let app = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(ShiftedClock::new(0)),
+            ..Live::new(Some(&fake), full_screen())
+        }
+        .serve(
             &data,
-            &fake,
-            full_screen(),
             tokio::net::TcpListener::from_std(listener)?,
-            Arc::new(ScriptedUsage::default()),
-            Arc::new(ShiftedClock::new(0)),
-        )
-        .await?;
+            |_| {},
+            |router| router,
+        )?;
         app.reconcile().await?;
         let rt = app.runtime(&id);
         let (cols, rows) = rt.hub.size();
@@ -2010,15 +2043,17 @@ fn restarting_the_server_during_a_codex_repaint_restores_the_childs_size() -> Te
     first.shutdown_timeout(Duration::from_secs(5));
     runtime()?.block_on(async {
         let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-        let app = start_on_listener(
+        let app = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(ShiftedClock::new(0)),
+            ..Live::new(Some(&fake), fake_agent())
+        }
+        .serve(
             &data,
-            &fake,
-            fake_agent(),
             tokio::net::TcpListener::from_std(listener)?,
-            Arc::new(ScriptedUsage::default()),
-            Arc::new(ShiftedClock::new(0)),
-        )
-        .await?;
+            |_| {},
+            |router| router,
+        )?;
         app.reconcile().await?;
         assert_eq!(
             app.runtime(&id).hub.size(),
@@ -2574,15 +2609,7 @@ fn codex_paste_across_restart(interrupt_before_enter: bool) -> TestResult {
 
     runtime()?.block_on(async {
         let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-        let app = start_on_listener(
-            &data,
-            &fake,
-            fake_agent(),
-            tokio::net::TcpListener::from_std(listener)?,
-            Arc::new(ScriptedUsage::default()),
-            Arc::new(ShiftedClock::new(0)),
-        )
-        .await?;
+        let app = Live { usage: Arc::new(ScriptedUsage::default()), clock: Arc::new(ShiftedClock::new(0)), ..Live::new(Some(&fake), fake_agent()) }.serve(&data, tokio::net::TcpListener::from_std(listener)?, |_| {}, |router| router)?;
         app.reconcile().await?;
         paint_codex(
             &app,
@@ -2831,15 +2858,12 @@ fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult
     rt.block_on(async {
         let clock = Arc::new(ShiftedClock::new(-3 * MINUTE));
         let probe = Arc::new(ScriptedUsage::default());
-        let (app, _) = start_on(
-            &data,
-            &fake,
-            fake_agent(),
-            port,
-            probe,
-            clock.clone(),
-            |_| {},
-        )
+        let (app, _) = Live {
+            usage: probe,
+            clock: clock.clone(),
+            ..Live::new(Some(&fake), fake_agent())
+        }
+        .start(&data, port, |_| {})
         .await?;
         app.reconcile().await?;
         // Its transcript was read again: its last turn's end is known.
@@ -3238,15 +3262,12 @@ fn a_mark_ahead_of_the_clock_is_read_as_typed_now() -> TestResult {
     rt.block_on(async {
         let clock = Arc::new(ShiftedClock::new(0));
         let probe = Arc::new(ScriptedUsage::default());
-        let (app, _) = start_on(
-            &data,
-            &fake,
-            fake_agent(),
-            port,
-            probe,
-            clock.clone(),
-            |_| {},
-        )
+        let (app, _) = Live {
+            usage: probe,
+            clock: clock.clone(),
+            ..Live::new(Some(&fake), fake_agent())
+        }
+        .start(&data, port, |_| {})
         .await?;
         app.reconcile().await?;
         // Its transcript was read again: the watch knows that no turn is open.
@@ -3767,15 +3788,12 @@ async fn restored_draft(submit: &str, response: &str) -> TestResult {
         ..fake_agent()
     };
     let fake = locate_fake_agent().ok_or("missing fake-agent")?;
-    let (app, _) = start_on(
-        &data,
-        &fake,
-        agent,
-        0,
-        Arc::new(ScriptedUsage::default()),
-        clock.clone(),
-        |_| {},
-    )
+    let (app, _) = Live {
+        usage: Arc::new(ScriptedUsage::default()),
+        clock: clock.clone(),
+        ..Live::new(Some(&fake), agent)
+    }
+    .start(&data, 0, |_| {})
     .await?;
     let (id, caller) = running(&app, &data).await?;
     crate::support::pr_watch::leave_verification_step(&app, &id).await?;
@@ -3916,15 +3934,12 @@ fn a_key_after_submit_in_the_same_millisecond_keeps_its_draft() -> TestResult {
         let at = yulius::wiring::clock::SystemClock.now().0 - 4 * MINUTE;
         let clock = Arc::new(support::TestClock(AtomicI64::new(at)));
         let fake = locate_fake_agent().ok_or("missing fake-agent")?;
-        let (app, _) = start_on(
-            &data,
-            &fake,
-            fake_agent(),
-            0,
-            Arc::new(ScriptedUsage::default()),
-            clock.clone(),
-            |_| {},
-        )
+        let (app, _) = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: clock.clone(),
+            ..Live::new(Some(&fake), fake_agent())
+        }
+        .start(&data, 0, |_| {})
         .await?;
         let (id, caller) = running(&app, &data).await?;
         let (ctx, attach) = terminal(&app, &caller, &id).await?;

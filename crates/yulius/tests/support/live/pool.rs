@@ -1,17 +1,16 @@
 //! Shared fixtures moved from `pool_supervision`.
 
 use crate::support;
+use crate::support::live::{Live, UNSERVED};
 use crate::support::{eventually, git};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
-use support::{FakeGitHub, TestResult};
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::session::PtySessionHost;
+use support::TestResult;
+use support::agents::FakeAgentOptions;
 use yulius_app::auth::AuthContext;
-use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::context::{App, AppConfig};
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
     AccountRecord, AccountStatus, SandboxRecord, Secret, TaskOrigin, TaskRecord, UserRecord,
@@ -22,8 +21,6 @@ use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, ModelAnswer, UsageWindow};
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 pub(crate) const HOUR: i64 = 3_600_000;
 
@@ -120,94 +117,44 @@ pub(crate) fn build(
     )
 }
 
+/// [`build`] with `agent`'s options.
 pub(crate) fn build_with(
     data: &Path,
     fake: &Path,
     usage: Arc<ScriptedUsage>,
     agent: FakeAgentOptions,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_with_github(data, fake, usage, agent, Arc::new(FakeGitHub::default()))
-}
-
-/// [`build_with`] answering access from `github`.
-pub(crate) fn build_with_github(
-    data: &Path,
-    fake: &Path,
-    usage: Arc<ScriptedUsage>,
-    agent: FakeAgentOptions,
-    github: Arc<FakeGitHub>,
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_served(data, fake, usage, agent, github, "http://127.0.0.1:9")
-}
-
-/// [`build_with`] whose configuration `tune` changes.
-pub(crate) fn build_tuned(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    tune: impl FnOnce(&mut AppConfig),
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_served_tuned(
+    pool(
+        Live {
+            usage,
+            ..Live::new(Some(fake), agent)
+        },
         data,
-        fake,
-        Arc::new(ScriptedUsage::default()),
-        agent,
-        Arc::new(FakeGitHub::default()),
-        "http://127.0.0.1:9",
-        tune,
+        UNSERVED,
+        |_| {},
     )
 }
 
-/// [`build_with_github`] whose runs reach Yulius at `internal_url` (their `YULIUS_URL`).
-pub(crate) fn build_served(
-    data: &Path,
-    fake: &Path,
-    usage: Arc<ScriptedUsage>,
-    agent: FakeAgentOptions,
-    github: Arc<FakeGitHub>,
-    internal_url: &str,
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_served_tuned(data, fake, usage, agent, github, internal_url, |_| {})
+/// The fake agent with `agent`'s options reading usage from an unscripted probe.
+pub(crate) fn pool_live(fake: &Path, agent: FakeAgentOptions) -> Live {
+    Live {
+        usage: Arc::new(ScriptedUsage::default()),
+        ..Live::new(Some(fake), agent)
+    }
 }
 
-/// [`build_served`] whose configuration `tune` changes.
-pub(crate) fn build_served_tuned(
+/// A pool's app built from `live`: its runs reach Yulius at `url` (as the instance's own adapter
+/// tells them), sessions resume 1.5 s apart, then `tune` changes the configuration.
+pub(crate) fn pool(
+    live: Live,
     data: &Path,
-    fake: &Path,
-    usage: Arc<ScriptedUsage>,
-    agent: FakeAgentOptions,
-    github: Arc<FakeGitHub>,
-    internal_url: &str,
+    url: &str,
     tune: impl FnOnce(&mut AppConfig),
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let store = SqliteStore::open(&data.join("yulius.db"))?;
-    let mut config = AppConfig::new(
-        data.to_path_buf(),
-        "https://yulius.test",
-        internal_url,
-        exe.clone(),
-    );
-    config.contained = false;
-    config.resume_stagger_ms = 1_500;
-    tune(&mut config);
-    let deps = Deps {
-        store: Arc::new(store),
-        clock: Arc::new(SystemClock),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github,
-        session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: Arc::new(FakeAgentHarness {
-            // Runs reach Yulius at `internal_url`, as the instance's own adapter tells them.
-            inner: yulius::wiring::harness::HarnessAdapter::new(exe.clone(), internal_url),
-            ..FakeAgentHarness::new(exe, fake.to_path_buf(), agent)
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage,
-    };
-    Ok(App::new(config, deps))
+    live.app(data, url, |config| {
+        config.resume_stagger_ms = 1_500;
+        tune(config);
+    })
 }
 
 fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {

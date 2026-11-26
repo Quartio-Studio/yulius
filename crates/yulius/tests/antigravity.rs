@@ -6,6 +6,7 @@
 //! message, and a refreshed sign-in is kept. No test calls Google.
 
 use crate::support::antigravity::{API_KEY, add_google_account, api_key};
+use crate::support::live::{Live, UNSERVED};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,11 +18,7 @@ use crate::support::live::supervision::{
     build_full, runtime, screen_contains, seed_records, seed_repo, task,
 };
 use crate::support::{TestResult, eventually};
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius::wiring::session::PtySessionHost;
 use yulius_app::context::App;
-use yulius_app::context::{AppConfig, Deps};
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{AccountStatus, LaunchKind, TaskMode, TaskOrigin};
 use yulius_domain::harness::Harness;
@@ -29,8 +26,6 @@ use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 use yulius_harness::login::antigravity_sign_in_credential;
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 async fn new_agy_task(
     app: &Arc<App>,
@@ -67,36 +62,7 @@ async fn build_hooked(
     fake: &Path,
     agent: FakeAgentOptions,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?;
-    let listener = socket.listen(64)?;
-    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
-    config.contained = false;
-    let deps = Deps {
-        store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-        clock: Arc::new(SystemClock),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new(support::FakeGitHub::default()),
-        session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: Arc::new(support::agents::FakeAgentHarness {
-            inner: HarnessAdapter::new(exe.clone(), url),
-            fake: fake.to_path_buf(),
-            options: agent,
-            yulius_exe: exe,
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-    };
-    let app = App::new(config, deps);
-    let internal = yulius_server::internal_router(app.clone())
-        .into_make_service_with_connect_info::<std::net::SocketAddr>();
-    tokio::spawn(async move { axum::serve(listener, internal).await });
-    Ok(app)
+    Ok(Live::new(Some(fake), agent).start(data, 0, |_| {}).await?.0)
 }
 
 fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
@@ -1018,15 +984,11 @@ fn a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes() -> TestResul
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = crate::support::live::supervision::build_tuned(
-            &data,
-            Some(&fake),
-            FakeAgentOptions::default(),
-            move |c| {
+        let app =
+            Live::new(Some(&fake), FakeAgentOptions::default()).app(&data, UNSERVED, move |c| {
                 c.contained = true;
                 c.contained_readonly = vec![fake_dir];
-            },
-        )?;
+            })?;
         let (sandbox, user) = seed_records(&app).await?;
         add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
@@ -1072,38 +1034,22 @@ fn a_contained_antigravity_plan_binds_the_runs_home() -> TestResult {
     rt.block_on(async {
         let host = Arc::new(crate::support::ScriptedHost::default());
         let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-        let mut config = AppConfig::new(
-            data.clone(),
-            "https://yulius.test",
-            "http://127.0.0.1:9",
-            exe.clone(),
-        );
-        config.contained = true;
         let cli = data.join("antigravity-cli/1.5.12-linux-x64");
-        let deps = Deps {
-            store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-            clock: Arc::new(SystemClock),
-            crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-            github: Arc::new(support::FakeGitHub::default()),
-            session_host: host.clone(),
-            harness: Arc::new(support::agents::FakeAgentHarness {
-                inner: HarnessAdapter::new(exe.clone(), "http://127.0.0.1:9"),
-                fake: exe.clone(),
-                options: FakeAgentOptions {
+
+        let app = Live {
+            host: Some(host.clone()),
+            ..Live::new(
+                Some(&exe),
+                FakeAgentOptions {
                     provided_antigravity: Some(yulius_app::ports::harness::ProvidedCli {
                         program: cli.join("antigravity"),
                         dir: cli.clone(),
                     }),
                     ..FakeAgentOptions::default()
                 },
-                yulius_exe: exe,
-            }),
-            git: Arc::new(crate::support::confined_git()),
-            system: Arc::new(support::FixedSystem),
-            browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-            usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-        };
-        let app = App::new(config, deps);
+            )
+        }
+        .app(&data, UNSERVED, |config| config.contained = true)?;
         let (sandbox, user) = seed_records(&app).await?;
         add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;

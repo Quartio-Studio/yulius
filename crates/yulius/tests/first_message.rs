@@ -9,9 +9,10 @@
 
 use crate::support;
 use crate::support::eventually;
+use crate::support::live::Live;
 use crate::support::live::first_message::{
     ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start,
-    start_hosted, start_with, stop,
+    start_with, stop,
 };
 use crate::support::live::pool::{HOUR, ScriptedUsage, refresh, seed, usage};
 
@@ -1521,14 +1522,13 @@ fn a_restored_prompt_goal_waits_at_stop_before_attach() -> TestResult {
             limit_after: Some(3),
             ..hooked()
         };
-        let (app, _) = start_hosted(
-            &data,
-            &fake,
-            options,
-            (0, Arc::new(ScriptedUsage::default()), Arc::new(SystemClock)),
-            Some(host.clone()),
-            |_| {},
-        )
+        let (app, _) = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(SystemClock),
+            host: Some(host.clone()),
+            ..Live::new(Some(&fake), options)
+        }
+        .start(&data, 0, |_| {})
         .await?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "initial turn", TaskMode::Prompt).await?;

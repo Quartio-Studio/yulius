@@ -7,6 +7,7 @@
 use crate::support::codex::{
     add_codex_account, codex_auth, connect_codex, new_codex_task, new_codex_task_in,
 };
+use crate::support::live::{Live, UNSERVED};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1903,11 +1904,10 @@ fn a_contained_codex_run_sees_the_provided_codex_cli() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app =
-            crate::support::live::supervision::build_tuned(&data, Some(&fake), agent, move |c| {
-                c.contained = true;
-                c.contained_readonly = vec![fake_dir];
-            })?;
+        let app = Live::new(Some(&fake), agent).app(&data, UNSERVED, move |c| {
+            c.contained = true;
+            c.contained_readonly = vec![fake_dir];
+        })?;
         let (sandbox, user) = seed_records(&app).await?;
         add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         seed_repo(&data, &sandbox)?;

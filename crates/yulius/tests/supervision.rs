@@ -5,9 +5,10 @@
 
 use crate::support;
 use crate::support::live::supervision::{
-    build, build_custom, build_full, build_tuned, build_with, runtime, screen_contains,
-    seed_records, seed_repo, seed_repo_with, task,
+    build, build_full, build_with, runtime, screen_contains, seed_records, seed_repo,
+    seed_repo_with, task,
 };
+use crate::support::live::{Live, UNSERVED};
 use crate::support::{eventually, git};
 
 use std::path::{Path, PathBuf};
@@ -303,7 +304,7 @@ fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult 
             .to_vec(),
             ..FakeAgentOptions::default()
         };
-        let app = build_tuned(&data, Some(&fake), agent, |c| c.agent_cpus = Some(3))?;
+        let app = Live::new(Some(&fake), agent).app(&data, UNSERVED, |c| c.agent_cpus = Some(3))?;
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo_with(
             &data,
@@ -367,9 +368,10 @@ fn goal_mode_launches_the_session_with_its_goal() -> TestResult {
     let data = dir.path().canonicalize()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), |c| {
-            c.goal_ready_ms = 8_000;
-        })?;
+        let app =
+            Live::new(Some(&fake), FakeAgentOptions::default()).app(&data, UNSERVED, |c| {
+                c.goal_ready_ms = 8_000;
+            })?;
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let record = app
@@ -1280,7 +1282,8 @@ fn a_normal_exit_closes_the_task() -> TestResult {
     let data = dir.path().canonicalize()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), |_| {})?;
+        let app =
+            Live::new(Some(&fake), FakeAgentOptions::default()).app(&data, UNSERVED, |_| {})?;
         app.start_background();
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
@@ -1342,7 +1345,8 @@ fn a_clean_exit_keeps_its_outcome_when_attempt_metadata_is_unreadable() -> TestR
     let data = dir.path().canonicalize()?;
     let rt = runtime()?;
     let result = rt.block_on(async {
-        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), |_| {})?;
+        let app =
+            Live::new(Some(&fake), FakeAgentOptions::default()).app(&data, UNSERVED, |_| {})?;
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let sender = new_task(&app, &sandbox, &user, "Sender").await?;
@@ -1399,13 +1403,11 @@ fn usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
             limit_after: None,
             ..FakeAgentOptions::default()
         };
-        let app = build_custom(
-            &data,
-            Some(&fake),
-            agent,
-            |_| {},
-            Arc::new(FirstAccountNearLimit),
-        )?;
+        let app = Live {
+            usage: Arc::new(FirstAccountNearLimit),
+            ..Live::new(Some(&fake), agent)
+        }
+        .app(&data, UNSERVED, |_| {})?;
         let (sandbox, user) = seed_records(&app).await?;
         add_account(&app, "a-claude-2").await?;
         seed_repo(&data, &sandbox)?;
@@ -1506,10 +1508,11 @@ fn contained_tasks_cannot_read_other_sandboxes_or_the_data_directory() -> TestRe
     let data = dir.path().canonicalize()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), move |c| {
-            c.contained = true;
-            c.contained_readonly = vec![fake_dir];
-        })?;
+        let app =
+            Live::new(Some(&fake), FakeAgentOptions::default()).app(&data, UNSERVED, move |c| {
+                c.contained = true;
+                c.contained_readonly = vec![fake_dir];
+            })?;
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let other = data.join("sandboxes").join("s-other").join("repo");

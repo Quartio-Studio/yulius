@@ -2,21 +2,16 @@
 
 use crate::support;
 use crate::support::git;
-use std::path::{Path, PathBuf};
+use crate::support::live::{Live, UNSERVED};
+use std::path::Path;
 use std::sync::Arc;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
-use support::{FakeGitHub, TestResult};
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius::wiring::session::PtySessionHost;
-use yulius_app::context::{App, AppConfig, Deps};
+use support::TestResult;
+use support::agents::FakeAgentOptions;
+use yulius_app::context::App;
 use yulius_app::model::{AccountRecord, AccountStatus, SandboxRecord, TaskRecord, UserRecord};
-use yulius_app::ports::usage::UsageProbe;
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 pub(crate) fn build(data: &Path, fake: &Path) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     build_with(data, Some(fake))
@@ -36,59 +31,7 @@ pub(crate) fn build_full(
     agent: FakeAgentOptions,
     max_live_sessions: u32,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_tuned(data, fake, agent, |c| {
-        c.max_live_sessions = max_live_sessions
-    })
-}
-
-pub(crate) fn build_tuned(
-    data: &Path,
-    fake: Option<&Path>,
-    agent: FakeAgentOptions,
-    tune: impl FnOnce(&mut AppConfig),
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    build_custom(
-        data,
-        fake,
-        agent,
-        tune,
-        Arc::new(yulius_app::ports::usage::NoUsageProbe),
-    )
-}
-
-pub(crate) fn build_custom(
-    data: &Path,
-    fake: Option<&Path>,
-    agent: FakeAgentOptions,
-    tune: impl FnOnce(&mut AppConfig),
-    usage: Arc<dyn UsageProbe>,
-) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let store = SqliteStore::open(&data.join("yulius.db"))?;
-    let mut config = AppConfig::new(
-        data.to_path_buf(),
-        "https://yulius.test",
-        "http://127.0.0.1:9",
-        exe.clone(),
-    );
-    config.contained = false;
-    tune(&mut config);
-    let deps = Deps {
-        store: Arc::new(store),
-        clock: Arc::new(SystemClock),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new(FakeGitHub::default()),
-        session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: match fake {
-            Some(fake) => Arc::new(FakeAgentHarness::new(exe, fake.to_path_buf(), agent)),
-            None => Arc::new(HarnessAdapter::new(exe, "http://127.0.0.1:9")),
-        },
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage,
-    };
-    Ok(App::new(config, deps))
+    Live::new(fake, agent).app(data, UNSERVED, |c| c.max_live_sessions = max_live_sessions)
 }
 
 /// Bare origin with one commit on `main`, cloned as the sandbox repository.

@@ -678,15 +678,17 @@ fn a_decision_during_draft_readiness_keeps_the_armed_notice_unheard() -> TestRes
     rt.block_on(async {
         let fake = yulius_ptyhost::test_support::locate_fake_agent().ok_or("fake agent")?;
         let clock = Arc::new(ShiftedClock::new(-13 * 60_000));
-        let (app, _, github) = crate::support::live::first_message::start_hosted_with_github(
-            &data,
-            &fake,
-            crate::support::task_message::full_screen(),
-            (0, Arc::new(super::ScriptedUsage::default()), clock.clone()),
-            None,
-            None,
-            |_| {},
-        )
+        let github = Arc::new(crate::support::FakeGitHub::default());
+        let (app, _) = crate::support::live::Live {
+            usage: Arc::new(super::ScriptedUsage::default()),
+            clock: clock.clone(),
+            github: github.clone(),
+            ..crate::support::live::Live::new(
+                Some(&fake),
+                crate::support::task_message::full_screen(),
+            )
+        }
+        .start(&data, 0, |_| {})
         .await?;
         let (id, caller) = answered(&app, &data).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;

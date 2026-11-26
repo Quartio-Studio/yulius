@@ -3,13 +3,15 @@
 //! trouble stayed ended, the tasks told hear that it is no longer full. A fake agent echoes what it is
 //! typed.
 
+use crate::support::live::UNSERVED;
+use crate::support::live::pool::{pool, pool_live};
 use std::time::Duration;
 
 use yulius_app::docker_trouble::{DOCKER_BACK, DOCKER_FULL};
 use yulius_domain::connection_health::{Limit, Refusal};
 
 use crate::support::eventually;
-use crate::support::live::pool::{build_tuned, new_task, runtime, screen, seed, stop, temp};
+use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -43,7 +45,9 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let id = new_task(&app, &sandbox, &user, "Docker user").await?;
         eventually("the first answer", Duration::from_secs(30), || {
@@ -168,7 +172,9 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let first = new_task(&app, &sandbox, &user, "First").await?;
         let second = new_task(&app, &sandbox, &user, "Second").await?;
@@ -388,7 +394,9 @@ fn continuing_a_stopped_task_answers_no_other_tasks_request() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let stopped = new_task(&app, &sandbox, &user, "Stopped").await?;
         let working = new_task(&app, &sandbox, &user, "Working").await?;
@@ -452,7 +460,9 @@ fn a_page_answer_to_a_shared_docker_question_answers_the_others() -> TestResult 
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let first = new_task(&app, &sandbox, &user, "First").await?;
         let second = new_task(&app, &sandbox, &user, "Second").await?;

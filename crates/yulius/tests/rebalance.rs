@@ -4,9 +4,11 @@
 
 use crate::support::agents::FakeAgentOptions;
 use crate::support::eventually;
+use crate::support::live::Live;
+use crate::support::live::pool::pool;
 use crate::support::live::pool::{
-    HOUR, ScriptedUsage, build_served_tuned, build_with, new_task, refresh, runtime, screen, seed,
-    stop, task, temp, usage,
+    HOUR, ScriptedUsage, build_with, new_task, refresh, runtime, screen, seed, stop, task, temp,
+    usage,
 };
 use crate::support::subscription_moves::{live_run, notices, ready, run_accounts};
 use crate::support::{FakeGitHub, TestResult};
@@ -144,12 +146,13 @@ fn pinned_parked_task_resumes(pin_used: f64) -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
-        let app = build_served_tuned(
+        let app = pool(
+            Live {
+                usage: probe.clone(),
+                github: Arc::new(FakeGitHub::default()),
+                ..Live::new(Some(&fake), agent())
+            },
             &data,
-            &fake,
-            probe.clone(),
-            agent(),
-            Arc::new(FakeGitHub::default()),
             "http://127.0.0.1:9",
             |config| config.park_after_ms = 1,
         )?;
@@ -587,12 +590,13 @@ fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
         let rt = runtime()?;
         rt.block_on(async {
             let probe = Arc::new(ScriptedUsage::default());
-            let app = build_served_tuned(
+            let app = pool(
+                Live {
+                    usage: probe.clone(),
+                    github: Arc::new(FakeGitHub::default()),
+                    ..Live::new(Some(&fake), agent())
+                },
                 &data,
-                &fake,
-                probe.clone(),
-                agent(),
-                Arc::new(FakeGitHub::default()),
                 "http://127.0.0.1:9",
                 |config| config.park_after_ms = u64::from(parking),
             )?;
@@ -652,12 +656,13 @@ fn a_goal_session_parking_keeps_costs_no_github_reads() -> TestResult {
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let github = Arc::new(FakeGitHub::default());
-        let app = build_served_tuned(
+        let app = pool(
+            Live {
+                usage: probe.clone(),
+                github: github.clone(),
+                ..Live::new(Some(&fake), agent())
+            },
             &data,
-            &fake,
-            probe.clone(),
-            agent(),
-            github.clone(),
             "http://127.0.0.1:9",
             |config| config.park_after_ms = 30 * 60_000,
         )?;
@@ -703,12 +708,13 @@ fn at_98_the_rebalance_is_off() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
-        let app = build_served_tuned(
+        let app = pool(
+            Live {
+                usage: probe.clone(),
+                github: Arc::new(FakeGitHub::default()),
+                ..Live::new(Some(&fake), agent())
+            },
             &data,
-            &fake,
-            probe.clone(),
-            agent(),
-            Arc::new(FakeGitHub::default()),
             "http://127.0.0.1:9",
             |config| config.rebalance.claude_code = 98.0,
         )?;

@@ -3,6 +3,7 @@
 //! is parked after the grace period, frees its session for a queued task, keeps its place, and
 //! resumes in its own session when someone writes to it.
 
+use crate::support::live::Live;
 use crate::support::parking::{
     app, app_with_pulls, app_with_pulls_and_clock, ask, asks, assert_cold_screen,
     configured_app_with_pulls, parked, parked_within, status_of,
@@ -25,7 +26,7 @@ use yulius_ptyhost::test_support::locate_fake_agent;
 
 use crate::support::agents::FakeAgentOptions;
 use crate::support::live::first_message::{
-    data_dir, hooked, new_task, runtime, screen, start_hosted, start_with,
+    data_dir, hooked, new_task, runtime, screen, start_with,
 };
 use crate::support::live::pool::{ScriptedUsage, seed};
 use crate::support::task_message::superagent;
@@ -1550,18 +1551,13 @@ fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
             answers_first_message: true,
             ..hooked()
         };
-        let (app, _) = start_hosted(
-            &data,
-            &fake,
-            agent,
-            (
-                0,
-                Arc::new(ScriptedUsage::default()),
-                Arc::new(yulius::wiring::clock::SystemClock),
-            ),
-            Some(host.clone()),
-            |config| config.park_after_ms = 1,
-        )
+        let (app, _) = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(yulius::wiring::clock::SystemClock),
+            host: Some(host.clone()),
+            ..Live::new(Some(&fake), agent)
+        }
+        .start(&data, 0, |config| config.park_after_ms = 1)
         .await?;
         let (id, _) = answered(&app, &data).await?;
         host.silence_work_probe(true);
@@ -1676,21 +1672,16 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
             answers_first_message: true,
             ..hooked()
         };
-        let (app, _) = start_hosted(
-            &data,
-            &fake,
-            agent,
-            (
-                0,
-                Arc::new(ScriptedUsage::default()),
-                Arc::new(yulius::wiring::clock::SystemClock),
-            ),
-            Some(host.clone()),
-            |config| {
-                config.park_after_ms = 1;
-                config.stop_escalation_ms = 500;
-            },
-        )
+        let (app, _) = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(yulius::wiring::clock::SystemClock),
+            host: Some(host.clone()),
+            ..Live::new(Some(&fake), agent)
+        }
+        .start(&data, 0, |config| {
+            config.park_after_ms = 1;
+            config.stop_escalation_ms = 500;
+        })
         .await?;
         let (id, caller) = answered(&app, &data).await?;
         host.refuse_ends(true);
@@ -1944,21 +1935,16 @@ fn a_session_deaf_to_the_park_is_parked_by_the_escalation() -> TestResult {
             answers_first_message: true,
             ..hooked()
         };
-        let (app, _) = start_hosted(
-            &data,
-            &fake,
-            agent,
-            (
-                0,
-                Arc::new(ScriptedUsage::default()),
-                Arc::new(yulius::wiring::clock::SystemClock),
-            ),
-            Some(host.clone()),
-            |config| {
-                config.park_after_ms = 1;
-                config.stop_escalation_ms = 500;
-            },
-        )
+        let (app, _) = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(yulius::wiring::clock::SystemClock),
+            host: Some(host.clone()),
+            ..Live::new(Some(&fake), agent)
+        }
+        .start(&data, 0, |config| {
+            config.park_after_ms = 1;
+            config.stop_escalation_ms = 500;
+        })
         .await?;
         let (id, _) = answered(&app, &data).await?;
         host.deafen(true);
@@ -3651,11 +3637,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
     rt.block_on(async {
         let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::for_publication());
         let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-        let (app, _, _) = crate::support::live::first_message::start_hosted_with_github(
-            &data, &fake, FakeAgentOptions { answers_first_message: true, ..hooked() },
-            (0, Arc::new(ScriptedUsage::default()), Arc::new(yulius::wiring::clock::SystemClock)),
-            None, Some(browser.clone()), |config| { config.max_live_sessions = 8; },
-        ).await?;
+        let (app, _) = crate::support::live::Live { usage: Arc::new(ScriptedUsage::default()), clock: Arc::new(yulius::wiring::clock::SystemClock), browser: Some(browser.clone()), ..crate::support::live::Live::new(Some(&fake), FakeAgentOptions { answers_first_message: true, ..hooked() }) }.start(&data, 0, |config| { config.max_live_sessions = 8; }).await?;
         let (id, caller) = answered(&app, &data).await?;
         crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let task = TaskStore::task(app.deps.store.as_ref(), &id)

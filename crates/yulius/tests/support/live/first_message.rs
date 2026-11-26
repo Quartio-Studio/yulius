@@ -2,17 +2,15 @@
 
 use crate::support;
 use crate::support::eventually;
+use crate::support::live::Live;
 use crate::support::live::pool::ScriptedUsage;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use support::TestResult;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
+use support::agents::FakeAgentOptions;
 use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius::wiring::session::PtySessionHost;
-use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::context::{App, AppConfig};
 use yulius_app::hub::HubFrame;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{TaskMode, TaskOrigin};
@@ -22,8 +20,6 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::task::Activity;
 use yulius_domain::time::Timestamp;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 type BoxError = Box<dyn std::error::Error>;
 
@@ -48,15 +44,11 @@ pub(crate) async fn start_with(
     probe: Arc<ScriptedUsage>,
     configure: impl FnOnce(&mut AppConfig),
 ) -> Result<(Arc<App>, u16), BoxError> {
-    start_on(
-        data,
-        fake,
-        agent,
-        port,
-        probe,
-        Arc::new(SystemClock),
-        configure,
-    )
+    Live {
+        usage: probe,
+        ..Live::new(Some(fake), agent)
+    }
+    .start(data, port, configure)
     .await
 }
 
@@ -113,125 +105,6 @@ impl yulius_app::ports::Clock for ShiftedClock {
     fn of_wall(&self, wall: Timestamp) -> Timestamp {
         Timestamp(wall.0 + self.offset_at(wall.0))
     }
-}
-
-/// [`start_with`] on the clock `clock`.
-pub(crate) async fn start_on(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    port: u16,
-    probe: Arc<ScriptedUsage>,
-    clock: Arc<dyn yulius_app::ports::Clock>,
-    configure: impl FnOnce(&mut AppConfig),
-) -> Result<(Arc<App>, u16), BoxError> {
-    start_hosted(data, fake, agent, (port, probe, clock), None, configure).await
-}
-
-/// [`start_on`] whose runs go through `host` (the real one when `None`).
-pub(crate) async fn start_hosted(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    settings: (u16, Arc<ScriptedUsage>, Arc<dyn yulius_app::ports::Clock>),
-    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
-    configure: impl FnOnce(&mut AppConfig),
-) -> Result<(Arc<App>, u16), BoxError> {
-    let (app, port, _) =
-        start_hosted_with_github(data, fake, agent, settings, host, None, configure).await?;
-    Ok((app, port))
-}
-
-/// The same hosted fixture with access to the upstream pull and its current head.
-pub(crate) async fn start_hosted_with_github(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    (port, probe, clock): (u16, Arc<ScriptedUsage>, Arc<dyn yulius_app::ports::Clock>),
-    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
-    browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
-    configure: impl FnOnce(&mut AppConfig),
-) -> Result<(Arc<App>, u16, Arc<support::FakeGitHub>), BoxError> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
-    let listener = socket.listen(64)?;
-    start_hosted_on_listener(
-        data,
-        fake,
-        agent,
-        (listener, probe, clock),
-        host,
-        browser,
-        configure,
-    )
-    .await
-}
-
-/// Starts the fixture on a listener the test can keep bound across a server restart.
-pub(crate) async fn start_on_listener(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    listener: tokio::net::TcpListener,
-    probe: Arc<ScriptedUsage>,
-    clock: Arc<dyn yulius_app::ports::Clock>,
-) -> Result<Arc<App>, BoxError> {
-    let (app, _, _) = start_hosted_on_listener(
-        data,
-        fake,
-        agent,
-        (listener, probe, clock),
-        None,
-        None,
-        |_| {},
-    )
-    .await?;
-    Ok(app)
-}
-
-async fn start_hosted_on_listener(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    (listener, probe, clock): (
-        tokio::net::TcpListener,
-        Arc<ScriptedUsage>,
-        Arc<dyn yulius_app::ports::Clock>,
-    ),
-    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
-    browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
-    configure: impl FnOnce(&mut AppConfig),
-) -> Result<(Arc<App>, u16, Arc<support::FakeGitHub>), BoxError> {
-    let port = listener.local_addr()?.port();
-    let url = format!("http://127.0.0.1:{port}");
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
-    config.contained = false;
-    configure(&mut config);
-    let github = Arc::new(support::FakeGitHub::default());
-    let deps = Deps {
-        store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-        clock,
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: github.clone(),
-        session_host: host.unwrap_or_else(|| Arc::new(PtySessionHost::new(exe.clone()))),
-        harness: Arc::new(FakeAgentHarness {
-            inner: HarnessAdapter::new(exe.clone(), url),
-            fake: fake.to_path_buf(),
-            options: agent,
-            yulius_exe: exe,
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: browser.unwrap_or_else(|| Arc::new(yulius::wiring::browser::UnavailableBrowser)),
-        usage: probe,
-    };
-    let app = App::new(config, deps);
-    let internal = yulius_server::internal_router(app.clone())
-        .into_make_service_with_connect_info::<SocketAddr>();
-    tokio::spawn(async move { axum::serve(listener, internal).await });
-    Ok((app, port, github))
 }
 
 pub(crate) fn hooked() -> FakeAgentOptions {
