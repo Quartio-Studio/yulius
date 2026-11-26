@@ -37,7 +37,7 @@ wall-clock readers, and `main.rs` rebuilding every option struct field by field.
 - [x] F4: base64 crate and Timestamp::now()
 - [x] F4: one HTTP client builder and one bounded reader
 - [x] F4: one shared npm tarball module
-- [ ] F4: independent review answered
+- [x] F4: independent review answered
 - [ ] F5: clap Args on the option structs in main.rs
 - [ ] F5: independent review answered
 - [ ] F7: compare the update helper and staging CD install/rollback and the two freezes
