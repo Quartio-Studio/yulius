@@ -64,9 +64,11 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 - [x] Generated title-only ADR index
 - [x] Slot machinery deleted
 - [ ] PR3 review approved
-- [ ] changes.md cut to user-visible entries, briefing rule 6 changed
+- [x] changes.md cut to user-visible entries, briefing rule 6 changed
+- [ ] PR4a (changes.md) review approved
 - [ ] architecture.md per-feature sections moved verbatim to docs/archive
 - [ ] architecture.md trimmed to its budget
+- [ ] PR4b (architecture.md) review approved
 - [ ] operations.md: old upgrade notes and legacy unit sections archived
 - [ ] product.md trimmed to current behaviour
 - [ ] Q5 false sentences fixed
@@ -122,6 +124,11 @@ and the link checker). The rest of the gate is Yulius CI's.
   union-merged, unsorted index moves no line that a later union merge could duplicate. Left: two
   branches changing neighbouring lines (a title or Status mark beside a new record) can leave both
   versions, and the check asks for a regeneration; ADR-0403 says so.
+- changes.md (L10 F6): the old log moves verbatim to `docs/archive/changes-until-2026-11-26.md`
+  (its links rewritten for the folder in a second commit); the new log keeps one line per
+  user-visible change of the last four weeks. Briefing rule 6 asks for a line only for a
+  user-visible change; the changes-folder sentence keeps its wording, which an integration test
+  in another task's paths pins, and adds "Skip it for an internal change."
 - Briefing rule 5 stays within the budget in both decision layouts: the directory arm drops its
   section list (the project docs check still names missing sections; "Alternatives" is implied
   by "two rejected alternatives"), the file arm drops its parts list, and "with at least one
