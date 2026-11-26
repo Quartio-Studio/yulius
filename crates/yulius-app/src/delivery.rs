@@ -897,7 +897,7 @@ impl App {
         user: &UserRecord,
         sandbox: &SandboxRecord,
     ) -> AppResult<Secret> {
-        if user.is_superadmin && user.github_login.is_none() {
+        if crate::access::acts_through_app(user) {
             return self.dlv_installation_token(sandbox).await;
         }
         self.user_github_token(user).await
@@ -1014,6 +1014,17 @@ impl App {
 
     pub(crate) fn dlv_actor_login(user: &UserRecord) -> String {
         user.label()
+    }
+
+    /// The actor an audit entry names for what `user` did on GitHub: [`App::dlv_actor_login`],
+    /// marked as the GitHub App for the superadmin without a GitHub identity, who reaches GitHub
+    /// only through it (SPEC-677 SAP-003).
+    pub(crate) fn dlv_github_actor(user: &UserRecord) -> String {
+        if crate::access::acts_through_app(user) {
+            format!("{} (through the GitHub App)", user.label())
+        } else {
+            user.label()
+        }
     }
 
     /// Why the head under review cannot go out now (SPEC-493 CIR-001): a spec that is not
