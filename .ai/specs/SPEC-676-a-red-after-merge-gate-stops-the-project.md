@@ -106,7 +106,7 @@ What exists:
 - [x] Merge trains form only from repairs while the queue is stopped; a candidate under test is dissolved
 - [x] The breaker is preferred as the repair owner and told the queue waits for the repair
 - [x] Docs: architecture, product, API, changes
-- [ ] Independent review of the backend, answered until approved
+- [x] Independent review of the backend, answered until approved
 - [ ] Deliver the backend: green CI and merge into dev
 - [ ] The CI/CD page shows the stopped queue (API `merge_stop`, banner, mock, e2e)
 - [ ] Independent review of the page, green CI and merge into dev
