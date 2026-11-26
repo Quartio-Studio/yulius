@@ -2166,5 +2166,154 @@ async fn an_owner_down_to_read_access_has_their_run_refused_a_git_credential() -
     let bob = agent_credential(&f.h, "tt2").await?;
     assert_eq!(bob.status, 200, "{}", bob.body);
     assert_eq!(bob.body["token"], "agent-inst");
+
+    // Alice is absent from her task now: Bob takes control at once, and its run gets the token
+    // again, on his standing.
+    let taken = control(&f, Method::POST, "", &f.bob).await?;
+    assert_eq!(taken.status, 200, "{}", taken.body);
+    assert_eq!(taken.body["owner"]["login"], "bob");
+    let again = agent_credential(&f.h, "tt").await?;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.body["token"], "agent-inst");
+    Ok(())
+}
+
+/// The audit entries `action` of task `task`.
+async fn audits_of(
+    h: &Harness,
+    task: &str,
+    action: &str,
+) -> Result<Vec<yulius_app::automations::AuditEntry>, Box<dyn std::error::Error>> {
+    Ok(h.store
+        .automation_audit(task, 50)
+        .await?
+        .into_iter()
+        .filter(|e| e.action == action)
+        .collect())
+}
+
+/// Disables `u-a` (Alice) through the admin API.
+async fn disable_alice(f: &Fixture) -> TestResult {
+    let admin = crate::support::setup_superadmin_creds(&f.h).await?;
+    let disable = call(
+        &f.h.router,
+        Method::PATCH,
+        "/api/admin/users/u-a",
+        Some(json!({"disabled": true})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(disable.status, 200, "{}", disable.body);
+    Ok(())
+}
+
+/// Disabling a person stops every task of theirs that would start by itself, not only a
+/// running one, each audited with the reason and said in the task's terminal; a waiting task of
+/// another person stays.
+#[tokio::test]
+async fn disabling_stops_every_waiting_task_of_the_owner_and_says_why() -> TestResult {
+    let f = fixture().await?;
+    let waiting = [
+        ("t-q", TaskStatus::Queued),
+        ("t-c", TaskStatus::Chained),
+        ("t-p", TaskStatus::Prepared),
+        ("t-k", TaskStatus::Parked),
+        ("t-w", TaskStatus::WaitingCapacity),
+    ];
+    for (id, status) in waiting {
+        seed_task(&f.h, id, "s1", "u-a", status, None).await?;
+    }
+    seed_task(&f.h, "t-b", "s1", "u-b", TaskStatus::Queued, None).await?;
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+
+    disable_alice(&f).await?;
+    for (id, before) in waiting {
+        let task = f.h.store.task(&TaskId::parse(id)?).await?.ok_or(id)?;
+        assert_eq!(
+            task.status, RESTING,
+            "{id} was {before:?}, is {:?}",
+            task.status
+        );
+    }
+    let running = f.h.store.task(&f.task.id).await?.ok_or("t1")?.status;
+    assert!(
+        running.is_resting() || running == TaskStatus::Stopping,
+        "{running:?}"
+    );
+    for (id, _) in waiting.iter().chain([&("t1", TaskStatus::Running)]) {
+        let entries = audits_of(&f.h, id, "task.stopped").await?;
+        assert_eq!(entries.len(), 1, "{id}: {entries:?}");
+        let detail: serde_json::Value =
+            serde_json::from_str(entries[0].detail.as_deref().ok_or("no detail")?)?;
+        assert_eq!(
+            (
+                entries[0].actor.as_str(),
+                &detail["owner"],
+                &detail["reason"]
+            ),
+            ("superadmin", &json!("alice"), &json!("owner disabled")),
+            "{id}: {detail}"
+        );
+    }
+    assert!(
+        notices(&mut watch).contains(&"Stopped: its owner @alice was disabled.".to_owned()),
+        "the terminal says why"
+    );
+    let bobs = f.h.store.task(&TaskId::parse("t-b")?).await?.ok_or("t-b")?;
+    assert_eq!(bobs.status, TaskStatus::Queued);
+    assert!(audits_of(&f.h, "t-b", "task.stopped").await?.is_empty());
+    Ok(())
+}
+
+/// A stop that keeps losing to the task's own changes fails: the person stays disabled,
+/// their other tasks still stop, the failed one is not audited as stopped, and its run is refused
+/// a git credential all the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_that_fails_on_disable_leaves_the_rest_stopped_and_the_credential_refused()
+-> TestResult {
+    let f = fixture_with_app().await?;
+    seed_task(&f.h, "t-q", "s1", "u-a", TaskStatus::Queued, None).await?;
+    // Every round of the stop of `t1` loses: between its read and its change the task moves.
+    for _ in 0..8 {
+        let store = f.h.store.clone();
+        let handle = tokio::runtime::Handle::current();
+        let now = f.h.app.now();
+        yulius_app::race::on(
+            yulius_app::race::Point::StopDecided,
+            std::path::Path::new("t1"),
+            move || {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        let id = TaskId::parse("t1").ok()?;
+                        let status = store.task(&id).await.ok()??.status;
+                        let next = if status == TaskStatus::Running {
+                            TaskStatus::Switching
+                        } else {
+                            TaskStatus::Running
+                        };
+                        store
+                            .transition_task(&id, Some(status), next, None, now)
+                            .await
+                            .ok()
+                    })
+                });
+            },
+        );
+    }
+
+    disable_alice(&f).await?;
+    let alice = f.h.store.user(&UserId::parse("u-a")?).await?.ok_or("u-a")?;
+    assert!(alice.disabled_at.is_some(), "the disable stays");
+    let queued = f.h.store.task(&TaskId::parse("t-q")?).await?.ok_or("t-q")?;
+    assert_eq!(queued.status, RESTING);
+    assert_eq!(audits_of(&f.h, "t-q", "task.stopped").await?.len(), 1);
+    let live = f.h.store.task(&f.task.id).await?.ok_or("t1")?.status;
+    assert!(
+        matches!(live, TaskStatus::Running | TaskStatus::Switching),
+        "{live:?}"
+    );
+    assert!(audits_of(&f.h, "t1", "task.stopped").await?.is_empty());
+    let refused = agent_credential(&f.h, "tt").await?;
+    assert_eq!(refused.status, 401, "{}", refused.body);
     Ok(())
 }
