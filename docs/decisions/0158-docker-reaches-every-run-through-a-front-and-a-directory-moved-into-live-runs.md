@@ -42,7 +42,7 @@ What constrains a fix:
   `<state>/docker/docker.sock`:
   - **engine**: the ADR-0151 supervisor and engine, unchanged;
   - **relay**: to a SPEC-187 holder's own `<state>/docker.sock`, which keeps its engine and
-    storage;
+    storage (no longer started: no holder that writes `engine: true` can still be alive);
   - **refuse**: a Docker-API 503 naming the reason (setting off, no `dockerd` in the sandbox's
     system, no delegation, a
     writable executable) and the operator's fix (`yulius doctor`, `yulius doctor

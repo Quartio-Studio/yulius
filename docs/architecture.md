@@ -368,7 +368,8 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
 - **Idle stop.** The engine stops after the idle time with no client and no container. Its
   `engine/` leaf is then empty, so where the sandboxes still live in `yulius.service` systemd
   prunes it when that unit stops (`KillMode=process` keeps the holder and front running). The
-  front makes it again before each start (SPEC-201, #614). A front whose engine group is gone because the sandbox's groups
+  front makes it again before each start, and the upkeep tick does the same for a kept engine
+  front (SPEC-201, #614). A front whose engine group is gone because the sandbox's groups
   moved to the sessions unit is replaced, since the path it was started with leads nowhere
   (SPEC-458 LAY-005).
 - **Disk.** Its storage counts toward the quota, and so do the production holder's layer and

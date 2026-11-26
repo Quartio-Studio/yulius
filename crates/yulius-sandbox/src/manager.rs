@@ -786,7 +786,22 @@ impl Manager {
                 Path::exists,
             );
         let serve = match front_action(current, wanted, moved) {
-            FrontAction::Keep => return,
+            FrontAction::Keep => {
+                // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
+                // from an older binary does not make it again (SPEC-201 DBX-006).
+                if live.front.as_ref().is_some_and(|f| f.mode == "engine")
+                    && let Some(groups) = self.group_paths(sandbox)
+                {
+                    match crate::cgroup::restore_leaf(&groups.engine_root) {
+                        Ok(true) => tracing::info!(sandbox, "recreated the engine's cgroup"),
+                        Ok(false) => {}
+                        Err(error) => {
+                            tracing::warn!(sandbox, %error, "cannot recreate the engine's cgroup");
+                        }
+                    }
+                }
+                return;
+            }
             FrontAction::Start(serve) => {
                 if live.front.is_some() {
                     tracing::warn!(
@@ -2982,23 +2997,26 @@ while True:
         }
     }
 
-    /// The front of an adopted holder starts its engine in the root below the engine's group,
-    /// and the next upkeep keeps it.
+    /// SPEC-201 DBX-006 (#614): a restart of `yulius.service` prunes an idle engine's empty
+    /// leaf while the holder and its front keep running. The next upkeep tick brings it back,
+    /// even for a front from an older binary, which no update replaces.
     #[tokio::test]
-    async fn an_engine_front_starts_its_engine_in_the_root_and_is_kept()
+    async fn a_kept_engine_front_gets_its_pruned_leaf_back()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
         let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let front = front_of(&manager).await.ok_or("no front")?;
         assert_eq!(front.mode, "engine");
-        let leaf = manager
-            .group_paths("s1")
-            .ok_or("no delegation")?
-            .engine_root;
+        let groups = manager.group_paths("s1").ok_or("no delegation")?;
+        let leaf = groups.engine_root;
         assert!(leaf.is_dir());
+        // SPEC-483 C4: the front starts the engine in the root below the engine's group.
         let served = served_engine_group(&StatePaths::new(manager.state_dir("s1")));
         assert_eq!(served.as_deref(), Some(leaf.to_string_lossy().as_ref()));
+        // A restart of the service prunes both empty groups.
+        std::fs::remove_dir(&leaf)?;
+        std::fs::remove_dir(&groups.engine)?;
         {
             let entry = manager.entry("s1");
             let mut guard = entry.lock().await;
@@ -3009,6 +3027,7 @@ while True:
             Some(front.pid),
             "the running front is kept"
         );
+        assert!(leaf.is_dir(), "the engine's root and group are back");
         kill(front.pid);
         Ok(())
     }
@@ -4025,8 +4044,6 @@ while True:
             manager.docker_for("s1").await,
             "a holder from before engines gains one"
         );
-        entry.lock().await.live = Some(engine_live(live_record()));
-        assert!(manager.docker_for("s1").await);
         Ok(())
     }
 

@@ -30,7 +30,7 @@ outside this task's paths, still reach `docker_bind`. F8 and F15 are excluded (t
 - [x] F1: check what outside the crate reaches docker_bind (blocked: sandbox_cli.rs, docker_smoke.rs)
 - [x] PR A: drop the SPEC-187 relay branches (record.engine) from the manager
 - [x] PR A: drop the unguarded-engine replacement (the outdated-front path covers it)
-- [x] PR A: drop the per-tick restore_leaf
+- [x] PR A: keep the per-tick restore_leaf (it also re-passes cpu and pids after a restart; under Not done)
 - [x] PR A: update comments and docs that describe the removed code
 - [x] PR A: run the sandbox crate tests and quick checks
 - [ ] PR A: independent review approved, merge armed
