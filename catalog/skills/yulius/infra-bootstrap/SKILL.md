@@ -21,7 +21,8 @@ example when it starts deploying for real), and record every change as a decisio
 - **Our own machines only.** CI runs on our own infrastructure through Yulius CI, which runs the
   gate for every pull request head and for the integration and production branches. Never add
   GitHub Actions or anything that needs a paid GitHub plan (rulesets, hosted runner minutes).
-- **Decide, don't ask.** Compare options, choose, and write an ADR per lasting choice.
+- **Decide, don't ask.** Compare options and choose; write an ADR only for a choice someone may
+  want to reverse (a dependency, a service, a storage format), with two rejected alternatives.
 - **Small pull requests.** Deliver the bootstrap as a short series of pull requests, one concern
   each, through the normal pipeline (`delivery-pipeline`). During onboarding, steps 1 and 2 land
   in the onboarding pull request itself, so the project starts work with its gate; never leave
@@ -319,5 +320,5 @@ example when it starts deploying for real), and record every change as a decisio
   `[cd.<name>]` and its `stage` for each further target, and each one that deploys has a deploy
   and a verify script that passed on a real run, and a `rollback` with its `migrations` line
   whose dev drill passed after two dev deploys; the gate tests the rollback script.
-- The docs describe the project as it is, and each choice has an ADR.
+- The docs describe the project as it is, and each choice someone may want to reverse has an ADR.
 - The critical and high-cost conventions are codified as primitives or checked by the gate.

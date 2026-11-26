@@ -19,9 +19,13 @@ its last slice and sets `done` with it
 
 Use stable requirement IDs and acceptance scenarios. Separate user requirements, source
 observations and proposed defaults. Decide open questions with a reversible default and
-record it under Decisions; a lasting choice is an ADR in `docs/decisions/`, with alternatives
-and consequences. An explicit implementation request authorizes its scope, without an extra
-approval ceremony for routine engineering choices.
+record it under Decisions. An ADR in `docs/decisions/` is only for a choice of how the system
+is built or run that someone may want to reverse (a dependency, an external service, a storage
+or wire format, the process or isolation model, a security boundary), with at least two rejected
+alternatives; product behaviour goes in the product summary. Refine an ADR in place; write a new
+one only to reverse it. The repository check refuses a branch that adds two ADRs, one with fewer
+than two alternatives, or one beside changes only to the web UI. An explicit implementation
+request authorizes its scope, without an extra approval ceremony for routine engineering choices.
 
 For every nonterminal execution state, name its owner, exit trigger and failure/recovery
 behavior. Define boundaries, limits, cancellation and compatibility where they affect the
