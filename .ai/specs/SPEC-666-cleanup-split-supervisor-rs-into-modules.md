@@ -41,10 +41,10 @@ lives in files named by what they do. Behaviour unchanged.
 - [x] Independent review of PR (a) answered
 - [x] Run end, loss and reconcile moved into supervisor/end.rs
 - [x] Parking a session moved into supervisor/park.rs
-- [ ] Independent review of PR (b) answered
-- [ ] Start admission and queue drain moved into supervisor/start.rs
-- [ ] Launch moved into supervisor/launch.rs
-- [ ] Run-dir markers and opening/goal typing moved into supervisor/typing.rs
+- [x] Independent review of PR (b) answered
+- [x] Start admission and queue drain moved into supervisor/start.rs
+- [x] Launch moved into supervisor/launch.rs
+- [x] Run-dir markers and opening/goal typing moved into supervisor/typing.rs
 - [ ] Independent review of PR (c) answered
 - [ ] Subscription switching moved into supervisor/switch.rs
 - [ ] Attach and watch loop moved into supervisor/watch.rs
@@ -76,5 +76,11 @@ must still pass. The `yulius` integration binary runs in Yulius CI.
   `pub(super)`. Parking a session uses `TaskRuntime`'s `run`, `intent`, `parked_activity` and
   `terminal_cleanup`, the launch lock and the `EndIntent`/`SwitchEnd`/`ActiveRun` types. So it is
   `supervisor/park.rs`, and `crate::parking` keeps when to park.
+- A moved item that other files name as `crate::supervisor::X` keeps that path through a
+  re-export of the same visibility (`pub use` for `pub` items, `pub(crate) use` otherwise), so no
+  caller outside `supervisor/` changes. Sibling files under `supervisor/` import from the
+  module that defines the item (`super::typing::X`).
+- An accepted Vidoc finding (`[[ignore]]` in `.config/vidoc.toml`) follows its code to the new
+  file in the same pull request, with its `line` updated where it has one.
 - Parent code imports moved items by name (`use codex::{..}`), instead of using `super::*` globs
   in the children, so every file states what it uses.
