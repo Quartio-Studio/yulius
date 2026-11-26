@@ -7,7 +7,7 @@ use yulius_app::notes::NoteRecord;
 use yulius_app::ports::store_ext::NoteStore;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, db, to_i64, to_u64};
+use crate::{SqliteStore, to_i64, to_u64};
 
 const COLS: &str = "scope, body, revision, updated_by, updated_at";
 
@@ -26,13 +26,12 @@ impl NoteStore for SqliteStore {
     async fn note(&self, scope: &str) -> AppResult<Option<NoteRecord>> {
         let scope = scope.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM notes WHERE scope = ?1"),
                 [scope],
                 from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -79,8 +78,7 @@ impl NoteStore for SqliteStore {
                         to_i64(base_revision)
                     ],
                 )
-            }
-            .map_err(db)?;
+            }?;
             Ok((changed == 1).then_some(record))
         })
         .await

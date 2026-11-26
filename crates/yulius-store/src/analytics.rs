@@ -17,7 +17,7 @@ use yulius_domain::ids::{AccountId, SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_u32, to_u64};
+use crate::{DbResult, SqliteStore, bad_column, to_u32, to_u64};
 
 fn task_id(text: &str) -> rusqlite::Result<TaskId> {
     TaskId::parse(text).map_err(|_| bad_column("task id", text))
@@ -113,15 +113,13 @@ fn collect<T>(
     sql: &str,
     params: &[Value],
     f: fn(&Row<'_>) -> rusqlite::Result<T>,
-) -> AppResult<Vec<T>> {
-    let mut stmt = conn.prepare(sql).map_err(db)?;
-    let rows = stmt
-        .query_map(params_from_iter(params.iter()), f)
-        .map_err(db)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(db)
+) -> DbResult<Vec<T>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), f)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-fn read(conn: &Connection, query: &AnalyticsQuery) -> AppResult<AnalyticsData> {
+fn read(conn: &Connection, query: &AnalyticsQuery) -> DbResult<AnalyticsData> {
     if query.sandboxes.is_empty() || query.limit == 0 {
         return Ok(AnalyticsData::default());
     }
