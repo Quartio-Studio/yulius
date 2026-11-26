@@ -20,8 +20,8 @@ requirements and proposed defaults.
    boundaries.
 4. Separate blocking decisions from reversible implementation choices; a proposal is not
    product approval.
-5. Run `spec_check` (its form) and `python3 scripts/check_repository.py` (links); neither proves
-   the design sufficient, so say what acceptance evidence is still needed.
+5. Review the spec against the actual brief, then run `spec_check` (its form) and `python3
+   scripts/check_repository.py` (links); say what acceptance evidence is still needed.
 
 Keep reference research and speculative product notes outside the repository. Deliver the spec
 path, state, requirements and unresolved decisions; a spec-only task ends with a complete

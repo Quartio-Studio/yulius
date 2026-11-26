@@ -343,7 +343,7 @@ impl App {
         let from = NoticeReach {
             sandboxes,
             instance_wide: !self.is_guest(user),
-            admin: user.is_superadmin || user.is_instance_admin,
+            admin: user.is_admin(),
         };
         let mut shown = Vec::new();
         for notice in self
