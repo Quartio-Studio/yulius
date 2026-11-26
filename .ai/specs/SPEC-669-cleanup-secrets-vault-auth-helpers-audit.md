@@ -42,9 +42,9 @@ before and their existing tests pass unchanged.
 - [x] F5: independent review of the auth-helper PR
 - [x] F6: one zeroizing Secret type shared by every crate
 - [x] F6: constructor shim removed, call sites moved to Secret::new
-- [ ] F6: independent review of the Secret PR
-- [ ] F7: one JSON string walker for redaction
-- [ ] F7: one redact_for_sandbox and shared credential-shape detectors
+- [x] F6: independent review of the Secret PR
+- [x] F7: one JSON string walker for redaction
+- [x] F7: one sandbox redaction for texts and records, the withheld text once
 - [ ] F7: independent review of the redaction PR
 - [ ] F8: pure egress decision in yulius-domain with unit tests
 - [ ] F8: egress_apply calls the pure decision
@@ -87,5 +87,13 @@ before and their existing tests pass unchanged.
 - F6: the GitHub copy printed `Secret([redacted])` under `Debug` and had a `Display`; the shared
   type prints `Secret(<redacted>)` like the other three, and nothing formatted the GitHub one
   with `Display`. Neither ever printed the value.
+- F7: `redact_json_strings` lives in `yulius-contracts` beside `Secret`, for the same reason
+  (the domain crate has no `serde_json`); transcripts, imports, the scrub client and MCP share it.
+- F7: the URL-userinfo and JWT scrubbers of `yulius-git`, `yulius-import` and `yulius-github`
+  keep their own code: they redact differently from the domain detectors. The domain JWT
+  detector wants segments of 12, 12 and 10 characters and a second `eyJ` segment (the GitHub
+  scrubber's own test token, third segment `c2ln`, would pass unredacted). For URLs, `yulius-git`
+  replaces the whole userinfo, the domain only the password and not a placeholder, and
+  `yulius-import` drops the userinfo. Sharing them changes what is redacted.
 - Helpers stay inside the vault module where the copies are all there (`parse_args`, `named`),
   so the parallel MCP-argument cleanup (#656) is not raced.
