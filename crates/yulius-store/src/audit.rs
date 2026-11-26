@@ -7,7 +7,7 @@ use yulius_app::error::AppResult;
 use yulius_app::ports::store::AuditStore;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, db};
+use crate::SqliteStore;
 
 #[async_trait]
 impl AuditStore for SqliteStore {
@@ -29,8 +29,7 @@ impl AuditStore for SqliteStore {
             c.execute(
                 "INSERT INTO audit_log (at, actor, action, target, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![at.0, actor, action, target, detail],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -44,16 +43,12 @@ impl AuditStore for SqliteStore {
     ) -> AppResult<Vec<String>> {
         let (target, action) = (target.to_owned(), action.to_owned());
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT detail FROM audit_log WHERE target = ?1 AND action = ?2 \
+            let mut stmt = c.prepare(
+                "SELECT detail FROM audit_log WHERE target = ?1 AND action = ?2 \
                      AND detail IS NOT NULL ORDER BY id DESC LIMIT ?3",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map(params![target, action, i64::from(limit)], |r| r.get(0))
-                .map_err(db)?;
-            rows.collect::<Result<Vec<String>, _>>().map_err(db)
+            )?;
+            let rows = stmt.query_map(params![target, action, i64::from(limit)], |r| r.get(0))?;
+            Ok(rows.collect::<Result<Vec<String>, _>>()?)
         })
         .await
     }
@@ -99,25 +94,23 @@ impl AuditStore for SqliteStore {
                    AND at >= ?2 AND at < ?3 AND action IN ({marks}) \
                    ORDER BY at DESC, id DESC LIMIT ?4) ORDER BY at, id"
             );
-            let mut stmt = c.prepare(&sql).map_err(db)?;
+            let mut stmt = c.prepare(&sql)?;
             let mut values: Vec<rusqlite::types::Value> =
                 vec![slug.into(), from.into(), to.into(), i64::from(limit).into()];
             values.extend(actions.into_iter().map(rusqlite::types::Value::from));
             values.extend(also.into_iter().map(rusqlite::types::Value::from));
-            let rows = stmt
-                .query_map(rusqlite::params_from_iter(values), |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        AuditEntry {
-                            at: Timestamp(r.get(1)?),
-                            actor: r.get(2)?,
-                            action: r.get(3)?,
-                            detail: r.get(4)?,
-                        },
-                    ))
-                })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    AuditEntry {
+                        at: Timestamp(r.get(1)?),
+                        actor: r.get(2)?,
+                        action: r.get(3)?,
+                        detail: r.get(4)?,
+                    },
+                ))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -130,7 +123,7 @@ impl AuditStore for SqliteStore {
     ) -> AppResult<Option<AuditEntry>> {
         let (target, action) = (target.to_owned(), action.to_owned());
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT at, actor, action, detail FROM audit_log WHERE target = ?1 AND action = ?2 \
                  AND at >= ?3 ORDER BY id DESC LIMIT 1",
                 params![target, action, since.0],
@@ -143,8 +136,7 @@ impl AuditStore for SqliteStore {
                     })
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }

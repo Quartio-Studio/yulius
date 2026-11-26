@@ -10,7 +10,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::staging::StagingState;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_i64};
+use crate::{SqliteStore, bad_column, to_i64};
 
 const COLUMNS: &str = "id, sandbox_id, environment, task_id, revision, state, ci_run_id, \
                        cd_run_id, attempts, note, requested_by, told, created_at, updated_at";
@@ -75,7 +75,7 @@ impl StagingStore for SqliteStore {
             match inserted {
                 Ok(_) => Ok(true),
                 Err(err) if refused(&err) => Ok(false),
-                Err(err) => Err(db(err)),
+                Err(err) => Err(err.into()),
             }
         })
         .await
@@ -84,27 +84,26 @@ impl StagingStore for SqliteStore {
     async fn staging_request(&self, id: &str) -> AppResult<Option<StagingRequestRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLUMNS} FROM staging_requests WHERE id = ?1"),
                 [id],
                 request_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
 
     async fn latest_task_staging(&self, task: &TaskId) -> AppResult<Option<StagingRequestRecord>> {
         let task = task.to_string();
-        self.call(move |c| c.query_row(&format!("SELECT {COLUMNS} FROM staging_requests WHERE task_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1"),
-            [task], request_row).optional().map_err(db)).await
+        self.call(move |c| Ok(c.query_row(&format!("SELECT {COLUMNS} FROM staging_requests WHERE task_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1"),
+            [task], request_row).optional()?)).await
     }
 
     async fn task_staging_wait(&self, task: &TaskId) -> AppResult<Option<StagingState>> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT state FROM staging_requests WHERE task_id = ?1 AND told = 0 AND EXISTS (SELECT 1 FROM machine_notice_tasks WHERE id = ?1 AND NOT needs_goal) \
                          ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 [task],
@@ -113,8 +112,7 @@ impl StagingStore for SqliteStore {
                     StagingState::parse(&state).ok_or_else(|| bad_column("staging state", &state))
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -129,18 +127,15 @@ impl StagingStore for SqliteStore {
         let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
         let (task, revision) = (task.map(|t| t.as_str().to_owned()), revision.to_owned());
         self.call(move |c| {
-            let mut statement = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM staging_requests \
+            let mut statement = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM staging_requests \
                      WHERE sandbox_id = ?1 AND environment = ?2 \
                        AND (task_id = ?3 OR (?3 IS NULL AND task_id IS NULL AND revision = ?4)) \
                      ORDER BY created_at, rowid"
-                ))
-                .map_err(db)?;
-            let rows = statement
-                .query_map(params![sandbox, environment, task, revision], request_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows =
+                statement.query_map(params![sandbox, environment, task, revision], request_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -152,42 +147,33 @@ impl StagingStore for SqliteStore {
     ) -> AppResult<Vec<StagingRequestRecord>> {
         let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
         self.call(move |c| {
-            let mut statement = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM staging_requests \
+            let mut statement = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM staging_requests \
                      WHERE sandbox_id = ?1 AND environment = ?2 \
                        AND state IN ('testing', 'inherited', 'ready', 'deploying') \
                      ORDER BY created_at, rowid"
-                ))
-                .map_err(db)?;
-            let rows = statement
-                .query_map(params![sandbox, environment], request_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = statement.query_map(params![sandbox, environment], request_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
 
     async fn staging_queues(&self, failed_since: Timestamp) -> AppResult<Vec<(SandboxId, String)>> {
         self.call(move |c| {
-            let mut statement = c
-                .prepare(
-                    "SELECT DISTINCT sandbox_id, environment FROM staging_requests \
+            let mut statement = c.prepare(
+                "SELECT DISTINCT sandbox_id, environment FROM staging_requests \
                      WHERE state IN ('testing', 'inherited', 'ready', 'deploying') \
                         OR (state = 'deploy_failed' AND updated_at >= ?1) ORDER BY sandbox_id",
-                )
-                .map_err(db)?;
-            let rows = statement
-                .query_map([failed_since.0], |row| {
-                    let sandbox: String = row.get(0)?;
-                    Ok((
-                        SandboxId::parse(&sandbox)
-                            .map_err(|_| bad_column("sandbox id", &sandbox))?,
-                        row.get::<_, String>(1)?,
-                    ))
-                })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            )?;
+            let rows = statement.query_map([failed_since.0], |row| {
+                let sandbox: String = row.get(0)?;
+                Ok((
+                    SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+                    row.get::<_, String>(1)?,
+                ))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -203,9 +189,9 @@ impl StagingStore for SqliteStore {
             environment.to_owned(),
             revision.to_owned(),
         );
-        self.call(move |c| c.query_row(
+        self.call(move |c| Ok(c.query_row(
             "SELECT EXISTS(SELECT 1 FROM staging_requests WHERE sandbox_id = ?1 AND environment = ?2 AND revision = ?3 AND state = 'verified')",
-            params![sandbox, env, sha], |row| row.get(0)).map_err(db)).await
+            params![sandbox, env, sha], |row| row.get(0))?)).await
     }
 
     async fn recent_staging_requests(
@@ -216,17 +202,13 @@ impl StagingStore for SqliteStore {
     ) -> AppResult<Vec<StagingRequestRecord>> {
         let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
         self.call(move |c| {
-            let mut statement = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM staging_requests \
+            let mut statement = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM staging_requests \
                      WHERE sandbox_id = ?1 AND environment = ?2 \
                      ORDER BY created_at DESC, rowid DESC LIMIT ?3"
-                ))
-                .map_err(db)?;
-            let rows = statement
-                .query_map(params![sandbox, environment, limit], request_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = statement.query_map(params![sandbox, environment, limit], request_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -264,7 +246,7 @@ impl StagingStore for SqliteStore {
             match moved {
                 Ok(rows) => Ok(rows == 1),
                 Err(err) if refused(&err) => Ok(false),
-                Err(err) => Err(db(err)),
+                Err(err) => Err(err.into()),
             }
         })
         .await
@@ -272,17 +254,15 @@ impl StagingStore for SqliteStore {
 
     async fn untold_staging_requests(&self) -> AppResult<Vec<StagingRequestRecord>> {
         self.call(|c| {
-            let mut statement = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM staging_requests \
+            let mut statement = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM staging_requests \
                      WHERE told = 0 AND task_id IS NOT NULL \
                        AND state IN ('verified', 'included', 'gate_failed', 'deploy_failed', \
                            'superseded') \
                      ORDER BY updated_at, rowid"
-                ))
-                .map_err(db)?;
-            let rows = statement.query_map([], request_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = statement.query_map([], request_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -297,7 +277,7 @@ impl StagingStore for SqliteStore {
         self.call(move |c| {
             // An open delivery may have merged externally since it was last read. Only its
             // reconciled landing can stage, even when the task also owns an earlier revision.
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT m.merged_sha FROM task_merges m LEFT JOIN delivery d ON d.task_id = m.task_id
                  WHERE m.task_id = ?1 AND m.branch = ?2
                    AND (?3 IS NULL OR (m.pr_number = ?3 AND d.pr_number = ?3))
@@ -306,7 +286,7 @@ impl StagingStore for SqliteStore {
                  ORDER BY m.rowid DESC LIMIT 1",
                 params![task, branch, receipt_pr.map(to_i64)],
                 |row| row.get(0),
-            ).optional().map_err(db)
+            ).optional()?)
         }).await
     }
 
@@ -318,16 +298,14 @@ impl StagingStore for SqliteStore {
     ) -> AppResult<bool> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let rows = c
-                .execute(
-                    "INSERT INTO bootstrap_upgrades (sandbox_id, revision, state, task_id, updated_at) \
+            let rows = c.execute(
+                "INSERT INTO bootstrap_upgrades (sandbox_id, revision, state, task_id, updated_at) \
                      VALUES (?1, ?2, 'claimed', NULL, ?3) \
                      ON CONFLICT(sandbox_id) DO UPDATE SET revision = excluded.revision, \
                          state = 'claimed', task_id = NULL, updated_at = excluded.updated_at \
                      WHERE bootstrap_upgrades.revision < excluded.revision",
-                    params![sandbox, revision, at.0],
-                )
-                .map_err(db)?;
+                params![sandbox, revision, at.0],
+            )?;
             Ok(rows == 1)
         })
         .await
@@ -348,8 +326,7 @@ impl StagingStore for SqliteStore {
                      state = 'laid', task_id = NULL, updated_at = excluded.updated_at \
                  WHERE bootstrap_upgrades.revision < excluded.revision",
                 params![sandbox, revision, at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -363,13 +340,11 @@ impl StagingStore for SqliteStore {
     ) -> AppResult<bool> {
         let (sandbox, task) = (sandbox.as_str().to_owned(), task.as_str().to_owned());
         self.call(move |c| {
-            let rows = c
-                .execute(
-                    "UPDATE bootstrap_upgrades SET state = 'linked', task_id = ?3 \
+            let rows = c.execute(
+                "UPDATE bootstrap_upgrades SET state = 'linked', task_id = ?3 \
                      WHERE sandbox_id = ?1 AND revision = ?2 AND state = 'claimed'",
-                    params![sandbox, revision, task],
-                )
-                .map_err(db)?;
+                params![sandbox, revision, task],
+            )?;
             Ok(rows == 1)
         })
         .await
@@ -378,7 +353,7 @@ impl StagingStore for SqliteStore {
     async fn bootstrap_upgrade(&self, sandbox: &SandboxId) -> AppResult<Option<BootstrapUpgrade>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT revision, state, task_id, updated_at FROM bootstrap_upgrades \
                  WHERE sandbox_id = ?1",
                 [sandbox],
@@ -394,8 +369,7 @@ impl StagingStore for SqliteStore {
                     })
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -410,8 +384,7 @@ impl StagingStore for SqliteStore {
                 .execute(
                     "UPDATE staging_requests SET told = 1 WHERE id = ?1 AND state = ?2 AND updated_at = ?3 AND told = 0",
                     params![id, state.as_str(), updated_at.0],
-                )
-                .map_err(db)?;
+                )?;
             Ok(rows == 1)
         })
         .await

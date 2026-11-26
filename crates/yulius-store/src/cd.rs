@@ -11,7 +11,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::rollback::{CdRunKind, ReleaseKind, ReleaseRecord, RollbackStep, kept};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{DbResult, SqliteStore, bad_column};
 
 const COLS: &str = "id, sandbox_id, environment, stage, branch, sha, state, reason, requested_by, \
     task_id, deploy, verify, note, exit_code, started_at, ended_at, kind, source, steps";
@@ -97,15 +97,11 @@ fn select(
     c: &rusqlite::Connection,
     filter: &str,
     args: &[&dyn rusqlite::ToSql],
-) -> AppResult<Vec<CdRunRecord>> {
-    let mut stmt = c
-        .prepare(&format!("SELECT {COLS} FROM cd_runs WHERE {filter}"))
-        .map_err(db)?;
+) -> DbResult<Vec<CdRunRecord>> {
+    let mut stmt = c.prepare(&format!("SELECT {COLS} FROM cd_runs WHERE {filter}"))?;
     let rows = stmt
-        .query_map(args, |row| run_from_row(row, false))
-        .map_err(db)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(db)?;
+        .query_map(args, |row| run_from_row(row, false))?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 
@@ -148,11 +144,12 @@ impl CdStore for SqliteStore {
                 Err(rusqlite::Error::SqliteFailure(err, _))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
-                    Err(AppError::Conflict(
-                        "another run of this environment is running".into(),
-                    ))
+                    Err(
+                        AppError::Conflict("another run of this environment is running".into())
+                            .into(),
+                    )
                 }
-                Err(err) => Err(db(err)),
+                Err(err) => Err(err.into()),
             }
         })
         .await
@@ -161,13 +158,12 @@ impl CdStore for SqliteStore {
     async fn cd_run(&self, id: &str, with_output: bool) -> AppResult<Option<CdRunRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS}, output FROM cd_runs WHERE id = ?1"),
                 [id],
                 |row| run_from_row(row, with_output),
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -230,8 +226,7 @@ impl CdStore for SqliteStore {
             c.execute(
                 "UPDATE cd_runs SET output = ?2 WHERE id = ?1 AND state = 'running'",
                 params![id, output],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -240,13 +235,11 @@ impl CdStore for SqliteStore {
     async fn mark_cd_run_reported(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE cd_runs SET reported = 1 \
+            let changed = c.execute(
+                "UPDATE cd_runs SET reported = 1 \
                      WHERE id = ?1 AND reported = 0 AND state <> 'running'",
-                    [id],
-                )
-                .map_err(db)?;
+                [id],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -255,24 +248,22 @@ impl CdStore for SqliteStore {
     async fn finish_cd_run(&self, id: &str, end: &CdRunEnd) -> AppResult<bool> {
         let (id, end) = (id.to_owned(), end.clone());
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE cd_runs SET state = ?2, reason = ?3, exit_code = ?4, output = ?5, \
+            let changed = c.execute(
+                "UPDATE cd_runs SET state = ?2, reason = ?3, exit_code = ?4, output = ?5, \
                      ended_at = ?6, cpu_ms = ?7, memory_peak_mb = ?8, disk_written_mb = ?9 \
                      WHERE id = ?1 AND state = 'running'",
-                    params![
-                        id,
-                        end.state.as_str(),
-                        end.reason,
-                        end.exit_code,
-                        end.output,
-                        end.ended_at.0,
-                        end.usage.map(|u| u.cpu_ms),
-                        end.usage.map(|u| u.memory_peak_mb),
-                        end.usage.and_then(|u| u.disk_written_mb)
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    id,
+                    end.state.as_str(),
+                    end.reason,
+                    end.exit_code,
+                    end.output,
+                    end.ended_at.0,
+                    end.usage.map(|u| u.cpu_ms),
+                    end.usage.map(|u| u.memory_peak_mb),
+                    end.usage.and_then(|u| u.disk_written_mb)
+                ],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -280,10 +271,9 @@ impl CdStore for SqliteStore {
 
     async fn prune_cd_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64> {
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    // Each environment's newest passed run is what is deployed: it stays.
-                    "DELETE FROM cd_runs WHERE state <> 'running' AND (\
+            let changed = c.execute(
+                // Each environment's newest passed run is what is deployed: it stays.
+                "DELETE FROM cd_runs WHERE state <> 'running' AND (\
                        started_at < ?1 OR id IN (\
                          SELECT id FROM (\
                            SELECT id, ROW_NUMBER() OVER (\
@@ -296,9 +286,8 @@ impl CdStore for SqliteStore {
                            PARTITION BY sandbox_id, environment \
                            ORDER BY started_at DESC, rowid DESC) AS v \
                          FROM cd_runs WHERE state = 'passed') WHERE v = 1)",
-                    params![before.0, i64::from(keep)],
-                )
-                .map_err(db)?;
+                params![before.0, i64::from(keep)],
+            )?;
             Ok(u64::try_from(changed).unwrap_or(0))
         })
         .await
@@ -344,7 +333,7 @@ impl CdStore for SqliteStore {
         let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
         let (stage, records) = (stage.as_str(), records.to_vec());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             for r in &records {
                 tx.execute(
                     "INSERT INTO cd_releases (sandbox_id, environment, stage, part, release, sha, \
@@ -363,22 +352,17 @@ impl CdStore for SqliteStore {
                         r.barrier,
                         r.run_id
                     ],
-                )
-                .map_err(db)?;
+                )?;
                 // What retention keeps (review M3 of SPEC-415): `rollback::kept`.
                 let rows: Vec<(i64, String, String)> = {
-                    let mut stmt = tx
-                        .prepare(
-                            "SELECT id, kind, release FROM cd_releases WHERE sandbox_id = ?1 \
+                    let mut stmt = tx.prepare(
+                        "SELECT id, kind, release FROM cd_releases WHERE sandbox_id = ?1 \
                              AND environment = ?2 AND stage = ?3 AND part = ?4 ORDER BY id DESC",
-                        )
-                        .map_err(db)?;
+                    )?;
                     stmt.query_map(params![sandbox, environment, stage, r.part], |row| {
                         Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                    })
-                    .map_err(db)?
-                    .collect::<Result<_, _>>()
-                    .map_err(db)?
+                    })?
+                    .collect::<Result<_, _>>()?
                 };
                 let view: Vec<(ReleaseKind, &str)> = rows
                     .iter()
@@ -391,12 +375,11 @@ impl CdStore for SqliteStore {
                     .collect();
                 for ((id, _, _), keep) in rows.iter().zip(kept(&view)) {
                     if !keep {
-                        tx.execute("DELETE FROM cd_releases WHERE id = ?1", [id])
-                            .map_err(db)?;
+                        tx.execute("DELETE FROM cd_releases WHERE id = ?1", [id])?;
                     }
                 }
             }
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -410,17 +393,14 @@ impl CdStore for SqliteStore {
         let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
         let stage = stage.as_str();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT part, release, sha, kind, requested_by, at, barrier, run_id \
+            let mut stmt = c.prepare(
+                "SELECT part, release, sha, kind, requested_by, at, barrier, run_id \
                      FROM cd_releases WHERE sandbox_id = ?1 AND environment = ?2 AND stage = ?3 \
                      ORDER BY id DESC",
-                )
-                .map_err(db)?;
-            stmt.query_map(params![sandbox, environment, stage], release_from_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)
+            )?;
+            Ok(stmt
+                .query_map(params![sandbox, environment, stage], release_from_row)?
+                .collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -541,13 +521,12 @@ mod tests {
         );
         let kind: String = store
             .call(|c| {
-                c.query_row(
+                Ok(c.query_row(
                     "SELECT json_extract(detail, '$.kind') FROM spans \
                      WHERE subject_kind = 'cd_run' AND subject_id = 'x1' AND key = 'run'",
                     [],
                     |row| row.get(0),
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         assert_eq!(kind, "drill", "the run's span says what it did");
@@ -774,13 +753,12 @@ mod tests {
         store.insert_cd_run(&run("x1", "platform", 3)?).await?;
         let stage: String = store
             .call(|c| {
-                c.query_row(
+                Ok(c.query_row(
                     "SELECT json_extract(detail, '$.stage') FROM spans \
                      WHERE subject_kind = 'cd_run' AND subject_id = 'x1' AND key = 'run'",
                     [],
                     |row| row.get(0),
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         assert_eq!(stage, "prod");

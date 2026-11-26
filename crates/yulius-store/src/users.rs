@@ -8,7 +8,7 @@ use yulius_app::ports::store::UserStore;
 use yulius_domain::ids::UserId;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_i64, to_u64};
+use crate::{DbResult, SqliteStore, bad_column, to_i64, to_u64};
 
 const COLS: &str = "id, github_login, github_id, display_name, avatar_url, is_superadmin, \
     is_instance_admin, password_hash, created_at, disabled_at";
@@ -29,7 +29,7 @@ pub(crate) fn user_from_row(row: &Row<'_>) -> rusqlite::Result<UserRecord> {
     })
 }
 
-pub(crate) fn insert_user_tx(tx: &Transaction<'_>, user: &UserRecord) -> AppResult<()> {
+pub(crate) fn insert_user_tx(tx: &Transaction<'_>, user: &UserRecord) -> DbResult<()> {
     tx.execute(
         &format!("INSERT INTO users ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"),
         params![
@@ -44,21 +44,19 @@ pub(crate) fn insert_user_tx(tx: &Transaction<'_>, user: &UserRecord) -> AppResu
             user.created_at.0,
             user.disabled_at.map(|t| t.0),
         ],
-    )
-    .map_err(db)?;
+    )?;
     Ok(())
 }
 
 impl SqliteStore {
     async fn user_where(&self, clause: &'static str, arg: String) -> AppResult<Option<UserRecord>> {
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM users WHERE {clause}"),
                 [arg],
                 user_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -79,8 +77,7 @@ impl UserStore for SqliteStore {
                     [id.as_str()],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(ask.unwrap_or(false))
         })
         .await
@@ -92,8 +89,7 @@ impl UserStore for SqliteStore {
             c.execute(
                 "UPDATE users SET control_ask_first = ?2 WHERE id = ?1",
                 params![id, ask_first],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -107,37 +103,33 @@ impl UserStore for SqliteStore {
     async fn user_by_github_id(&self, github_id: u64) -> AppResult<Option<UserRecord>> {
         let gid = to_i64(github_id);
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM users WHERE github_id = ?1"),
                 [gid],
                 user_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
 
     async fn superadmin(&self) -> AppResult<Option<UserRecord>> {
         self.call(|c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM users WHERE is_superadmin = 1"),
                 [],
                 user_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
 
     async fn users(&self) -> AppResult<Vec<UserRecord>> {
         self.call(|c| {
-            let mut stmt = c
-                .prepare(&format!("SELECT {COLS} FROM users ORDER BY created_at"))
-                .map_err(db)?;
-            let rows = stmt.query_map([], user_from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut stmt = c.prepare(&format!("SELECT {COLS} FROM users ORDER BY created_at"))?;
+            let rows = stmt.query_map([], user_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -145,9 +137,9 @@ impl UserStore for SqliteStore {
     async fn insert_user(&self, user: &UserRecord) -> AppResult<()> {
         let user = user.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             insert_user_tx(&tx, &user)?;
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -160,22 +152,20 @@ impl UserStore for SqliteStore {
     ) -> AppResult<()> {
         let id = id.as_str().to_owned();
         self.call_access(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             if let Some(disabled) = disabled_at {
                 tx.execute(
                     "UPDATE users SET disabled_at = ?1 WHERE id = ?2",
                     params![disabled.map(|t| t.0), id],
-                )
-                .map_err(db)?;
+                )?;
             }
             if let Some(admin) = is_instance_admin {
                 tx.execute(
                     "UPDATE users SET is_instance_admin = ?1 WHERE id = ?2",
                     params![admin, id],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -186,8 +176,7 @@ impl UserStore for SqliteStore {
             c.execute(
                 "UPDATE users SET password_hash = ?1 WHERE id = ?2",
                 params![phc, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -212,9 +201,8 @@ impl UserStore for SqliteStore {
                 .execute(
                     "UPDATE users SET github_id = ?1, github_login = ?2, display_name = ?3, avatar_url = ?4 WHERE id = ?5",
                     params![to_i64(github_id), login, name, avatar, id],
-                )
-                .map_err(db)?;
-            if changed == 1 { Ok(()) } else { Err(AppError::NotFound) }
+                )?;
+            if changed == 1 { Ok(()) } else { Err(AppError::NotFound.into()) }
         })
         .await
     }
@@ -235,8 +223,7 @@ impl UserStore for SqliteStore {
                     t.refresh_expires_at.map(|x| x.0),
                     at.0
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -246,7 +233,7 @@ impl UserStore for SqliteStore {
         let id = user.as_str().to_owned();
         let user = user.clone();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT access, refresh, expires_at, refresh_expires_at FROM github_tokens WHERE user_id = ?1",
                 [id],
                 |r| {
@@ -259,8 +246,7 @@ impl UserStore for SqliteStore {
                     })
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
