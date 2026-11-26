@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-26
+
+- A task whose spec is not registered finds it again in a specs directory of more than 500 files (audit L10 F10). Discovery read the first 500 directory entries in directory order and sorted only those, so with `.ai/specs` past 600 entries a renamed or unregistered spec could be missed. It now lists every name (up to 10,000) and reads the file named with the task's branch slug first. [SPEC-667](../.ai/specs/SPEC-667-cleanup-delivery-merge-queue-git-github.md)
+
 ## 2026-11-25
 
 - An agent whose write to its harness's memory or user instructions is refused is told why in one sentence: Yulius keeps them read-only, and lasting knowledge goes into the repository through a pull request (#636). Claude Code's edit tools are denied with it, a failed shell command and a Codex tool result get it as added context, Claude Code's memory instructions carry it, and an Antigravity session hears it at its start. The update's host check clears the immutable flags the stopgap of 2026-11-25 set on the memory folders (its line "memory stopgap"), so a removed sandbox's purge works again. [ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md), [SPEC-652](../.ai/specs/SPEC-652-agents-cannot-write-harness-memory-every.md)
