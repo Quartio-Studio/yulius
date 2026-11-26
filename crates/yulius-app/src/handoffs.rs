@@ -26,6 +26,7 @@ use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task_access::TaskAction;
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
@@ -781,7 +782,8 @@ impl App {
     /// fails puts the request back.
     ///
     /// # Errors
-    /// `Forbidden` for an API token or anyone but the owner, `Conflict` for a request already
+    /// `Forbidden` for an API token, anyone but the owner or an owner below write access to the
+    /// project (as `load_task_to` with [`TaskAction::Control`]), `Conflict` for a request already
     /// answered (also meanwhile) or a target that no longer takes it; creation errors.
     pub async fn answer_handoff(
         self: &Arc<Self>,
@@ -795,12 +797,9 @@ impl App {
                 "a handoff is answered in Yulius in a browser, not with an API token".into(),
             ));
         }
-        let task = self.load_task(ctx, tid, Action::View).await?;
-        if task.owner != ctx.user.id {
-            return Err(AppError::Forbidden(
-                "only the task's owner answers its handoffs".into(),
-            ));
-        }
+        // Answering is control of the task: its owner, with write access to the project, refused
+        // as every other control path (SPEC-490 OWN-001, SPEC-675 L4Q3-003).
+        let task = self.load_task_to(ctx, tid, TaskAction::Control).await?;
         let record = self
             .deps
             .store
