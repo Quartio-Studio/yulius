@@ -111,7 +111,7 @@ Skills are APM primitives ([ADR-0016](docs/decisions/0016-apm-for-agent-primitiv
 `.agents/skills` and `.claude/skills`, and `apm.lock.yaml`. Never edit the generated copies; the
 repository check fails on drift. Other tool instructions only point here.
 The [decision index](docs/decisions/README.md) is generated: after adding an ADR, changing its
-title or Status, or merging dev, run `python3 scripts/check_repository.py --decision-index`.
+title or Status, run `python3 scripts/check_repository.py --decision-index`.
 Change an invariant in one canonical document, link it from related specs, and update
 its check in the same change. Use [the handoff template](.ai/templates/handoff.md) for
 work spanning sessions. Keep sensitive run evidence under ignored `.ai/runs/`.

@@ -168,8 +168,9 @@ or run that someone may want to reverse ([spec workflow](../engineering/specific
 its number from Yulius's `record_number` tool (`dir` `docs/decisions`).
 
 This index is generated from the records' titles and Status sections: run
-`python3 scripts/check_repository.py --decision-index` after adding a record, changing a title or
-Status, or merging dev. The repository check fails while an entry is missing, extra or out of date.
+`python3 scripts/check_repository.py --decision-index` after adding a record or changing a title or
+Status. It keeps the entries' order. The repository check fails while an entry is missing, extra or
+out of date.
 
 """
 # A later record that replaces this one, said either way round in the Status section.
@@ -202,6 +203,22 @@ def decision_index(directory):
         status = re.search(r"^## Status[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
         lines.append(f"- [{path.name[:4]}]({path.name}): {title}{superseded_mark(status[1] if status else '')}\n")
     return DECISION_INDEX_HEAD + "".join(lines)
+
+
+def regenerated_index(current, directory):
+    """The index written by `--decision-index`: the committed entries keep their order (a union merge
+    may have left them out of number order, and moving them would make the next union merge
+    duplicate a line), each corrected in place; entries without a record go, and missing records
+    are appended in number order."""
+    generated = decision_index(directory)
+    wanted = {line[3:7]: line for line in generated.splitlines() if line.startswith("- [")}
+    kept = []
+    for line in current.splitlines():
+        number = line[3:7] if line.startswith("- [") else None
+        if number in wanted and wanted[number] not in kept:
+            kept.append(wanted[number])
+    kept += [line for line in wanted.values() if line not in kept]
+    return DECISION_INDEX_HEAD + "".join(f"{line}\n" for line in kept)
 
 
 def index_is_current(text, directory):
@@ -910,7 +927,8 @@ if __name__ == "__main__":
         elif sys.argv[1:] == ["--sync-brand"]:
             sync_brand()
         elif sys.argv[1:] == ["--decision-index"]:
-            (ROOT / "docs/decisions/README.md").write_text(decision_index(ROOT / "docs/decisions"))
+            readme = ROOT / "docs/decisions/README.md"
+            readme.write_text(regenerated_index(readme.read_text() if readme.is_file() else "", ROOT / "docs/decisions"))
         elif sys.argv[1:] == ["--ui"]:
             check_ui()
         elif not sys.argv[1:]:

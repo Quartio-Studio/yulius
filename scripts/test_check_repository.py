@@ -4,7 +4,7 @@ import tempfile
 import re
 import subprocess
 import unittest
-from check_repository import branch_decision_changes, new_decision_errors, delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, decision_index, superseded_mark, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
+from check_repository import branch_decision_changes, new_decision_errors, delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, decision_index, regenerated_index, DECISION_INDEX_HEAD, superseded_mark, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
 
 
 def package(name, layer, dependencies=()):
@@ -197,6 +197,46 @@ class RepositoryContracts(unittest.TestCase):
                 "- [0008](0008-plain.md): Plain",
             ])
             self.assertIn("--decision-index", index)
+
+    def test_regenerating_keeps_the_committed_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp)
+            for number in ("0006", "0007", "0008", "0009"):
+                (decisions / f"{number}-r.md").write_text(f"# {number}. R{number}\n")
+            head = DECISION_INDEX_HEAD
+            current = head + "- [0006](0006-r.md): R0006\n- [0008](0008-r.md): R0008\n- [0007](0007-r.md): Old\n- [0005](0005-gone.md): Gone\n"
+            self.assertEqual(regenerated_index(current, decisions), head
+                             + "- [0006](0006-r.md): R0006\n- [0008](0008-r.md): R0008\n- [0007](0007-r.md): R0007\n- [0009](0009-r.md): R0009\n")
+            self.assertEqual(regenerated_index("", decisions), decision_index(decisions))
+
+    def test_a_regeneration_on_an_unsorted_base_meets_an_older_branch(self):
+        # Review round 2 of #1789: A and B land in the order B, A; C regenerates on that dev to add
+        # its record while E, branched before both, lands by union. C's merge candidate stays valid.
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp) / "decisions"
+            decisions.mkdir()
+            line = lambda n: f"- [{n}]({n}-r.md): R{n}\n"
+            for number in ("0006", "0007", "0008"):
+                (decisions / f"{number}-r.md").write_text(f"# {number}. R{number}\n")
+            head = DECISION_INDEX_HEAD
+            dev0 = head + line("0006")
+            dev1 = dev0 + line("0008") + line("0007")
+            older = dev0 + line("0010")
+            files = {}
+            def union(ours, base, theirs):
+                for name, text in (("ours", ours), ("base", base), ("theirs", theirs)):
+                    files[name] = Path(tmp) / name
+                    files[name].write_text(text)
+                return subprocess.run(["git", "merge-file", "--union", "-p", files["ours"], files["base"], files["theirs"]],
+                                      capture_output=True, text=True, check=True).stdout
+            dev2 = union(older, dev0, dev1)  # the train checks out the branch and merges dev into it
+            (decisions / "0009-r.md").write_text("# 0009. R0009\n")
+            branch = regenerated_index(dev1, decisions)
+            (decisions / "0010-r.md").write_text("# 0010. R0010\n")
+            for ours, theirs in ((branch, dev2), (dev2, branch)):
+                merged = union(ours, dev1, theirs)
+                (decisions / "README.md").write_text(merged)
+                self.assertEqual(decision_errors(decisions), [], merged)
 
     def test_superseded_marks_follow_the_records_status(self):
         cases = {

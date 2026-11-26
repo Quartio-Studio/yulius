@@ -5,8 +5,9 @@ or run that someone may want to reverse ([spec workflow](../engineering/specific
 its number from Yulius's `record_number` tool (`dir` `docs/decisions`).
 
 This index is generated from the records' titles and Status sections: run
-`python3 scripts/check_repository.py --decision-index` after adding a record, changing a title or
-Status, or merging dev. The repository check fails while an entry is missing, extra or out of date.
+`python3 scripts/check_repository.py --decision-index` after adding a record or changing a title or
+Status. It keeps the entries' order. The repository check fails while an entry is missing, extra or
+out of date.
 
 - [0001](0001-single-rust-binary.md): One Rust binary with an embedded static web UI
 - [0002](0002-detached-ptyhost-per-run.md): A detached ptyhost process owns every agent run

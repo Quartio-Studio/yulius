@@ -116,8 +116,12 @@ and the link checker). The rest of the gate is Yulius CI's.
   script: number, title and a superseded mark read from the Status section; the check compares
   the committed file with the generated one. Yulius still adds a union line for the index to each
   clone's `info/attributes` (`integration_merges.rs`, outside this task's paths), so a merge of
-  two new entries keeps both lines in either order; the check compares the entries as a set (no
-  line missing, extra, duplicated or out of date), which keeps what the slots guaranteed.
+  two new entries keeps both lines in either order. The check compares the entries as a set (no
+  line missing, extra, duplicated or out of date), and `--decision-index` keeps the committed order
+  (corrects lines in place, drops lines without a record, appends new ones), so a regeneration on a
+  union-merged, unsorted index moves no line that a later union merge could duplicate. Left: two
+  branches changing neighbouring lines (a title or Status mark beside a new record) can leave both
+  versions, and the check asks for a regeneration; ADR-0403 says so.
 - Briefing rule 5 stays within the budget in both decision layouts: the directory arm drops its
   section list (the project docs check still names missing sections; "Alternatives" is implied
   by "two rejected alternatives"), the file arm drops its parts list, and "with at least one
