@@ -1,11 +1,11 @@
 ---
 yulius-task: 7341e60c-41be-421d-b9c0-a62785782ad0
-status: in-progress
+status: done
 ---
 
 # SPEC-671: Cleanup of the wiring, the main.rs arguments and the self-update overlap (audit L6)
 
-Status: in-progress
+Status: done
 Date: 2026-11-26
 Owner: Yulius task #655
 Scope authorization: the repository owner's cleanup chore of 2026-11-25 (audit L6, findings F4,
@@ -42,7 +42,7 @@ wall-clock readers, and `main.rs` rebuilding every option struct field by field.
 - [x] F5: independent review answered
 - [x] F7: compare the update helper and staging CD install/rollback and the two freezes
 - [x] F7: simplify where behaviour stays identical, or report
-- [ ] F7: independent review answered
+- [x] F7: independent review answered
 
 ## Acceptance criteria
 
@@ -78,19 +78,19 @@ Run the whole `yulius` test binary and the touched crates' unit tests; clippy an
   2. before the stop: the restart guard (sessions in the unit's cgroup), against a migration check
      on a copy of the live store with per-table row counts;
   3. what is kept: one backup of the binary and the database with its WAL per request
-     (`KEEP_BACKUPS`), against each release's binary and the store it left, the last 10 kept;
-  4. health: the reported commit at the health URL that stays up 2 s, against the commit at the
-     internal listener within `start_wait`;
+     (the newest 3 kept), against each release's binary and the store it left, the last 10 kept;
+  4. health (both ask `/internal/version` for 120 s): the helper looks again 2 s later with the
+     unit still active, and takes any answer when the previous commit is unknown;
   5. failure: restore and wait for the previous commit, reported `rolled_back` in `status.json`,
-     against a put back, a `hold` file and a rollback barrier when the put back fails, and a trap for
+     against a put back, a `HELD` file and a rollback barrier when the put back fails, and a trap for
      an interrupted session;
   6. after the start: `host check --json` into `host-check.json` (Settings reads it), against a
      separate verify (doctor, smoke test);
   7. progress: the steps of `status.json` the Settings page shows, against `vm:` lines;
   8. rollback to an older kept release: CD only.
-  The update drain freezes each run's process group through the process host, skips runs a
-  person paused and falls back to the turn-boundary hold; the move freezes the whole server and
-  sessions units with the cgroup freezer. What they freeze and when they thaw differ.
+  Both freezes use the cgroup v2 freezer: the drain, run by the server, freezes one run's own
+  cgroup, falls back to the turn-boundary hold and never thaws a run a person paused; the move,
+  run by root, freezes the whole server and sessions units with `systemctl freeze`.
   Done instead, behaviour identical: in `updates.rs` the drain's freeze pass uses `host_freeze`,
   one `known_freeze` lookup and one `thaw_runs` loop replace two copies each.
   `scripts/cargo nextest run -p yulius-app`: 740 passed; `-p yulius`: 3539 passed, 26 skipped.

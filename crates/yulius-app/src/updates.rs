@@ -574,7 +574,8 @@ impl App {
             .unwrap_or(RunFreeze::Unsupported)
     }
 
-    /// Thaws `runs` for an update, but those a person paused.
+    /// Thaws `runs` for an update, but those a person paused; the caller holds
+    /// [`Self::freeze_lock`].
     async fn thaw_runs(&self, runs: Vec<String>) {
         let kept = self.person_frozen_runs().await.unwrap_or_default();
         for run in runs {
