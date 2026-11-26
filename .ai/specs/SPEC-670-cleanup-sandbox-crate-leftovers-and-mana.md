@@ -59,14 +59,17 @@ The existing `yulius-sandbox` tests, and Yulius CI. No new behaviour, so no new 
 ## Evidence
 
 - #1768 (F3): merged at 133be74a2. #1779 (F2 part a, verbatim move): merged at c1c04c54f.
-  #1783 (F2 part b, `FrontState`): merged at 2a7e86c4c. Each merged on green Yulius CI after an
-  independent review approved its head.
+  #1783 (F2 part b, `FrontState`): merged at 2a7e86c4c. Each merged on its head's green Yulius CI
+  run (quality, lint, macos, docs, deps, file-contracts). The test shards and e2e are skipped on
+  pull request heads (merge-first) and run on the merged revision. The independent reviews
+  approved `7c6a36a8f` (#1768, followed by its review's nits: three comment lines and an ADR
+  wording), `bb5a0ce14` (#1779) and `3773d2ce3` (#1783).
 - Each pull request: `scripts/cargo nextest run -p yulius-sandbox --no-fail-fast` 298 passed,
   2 skipped; clippy clean; `scripts/dev quick` passed. #1779: the move commit's removed and added
   lines match apart from scaffolding, and `scripts/dev macos` passed (reviewer).
 - Not done, with reasons in the pull requests: F1 (`docker_bind` is reached from
   `crates/yulius/src/sandbox_cli.rs` and `crates/yulius/src/docker_smoke.rs`); F3's contract parts
   (`HolderRecord.engine`, `DockerServe::Relay`); F9 (the per-tick `restore_leaf` also passes `cpu`
-  and `pids` down again, `unsplit_all` is called from `crates/yulius/src/serve.rs`,
+  and `pids` down again, `unsplit_all` is reached from `crates/yulius/src/serve.rs`,
   `settle_engine_group` serves every preparation, `adopt` is used by `host_setup`); the F2 mode
   enum (`DockerFrontRecord.mode` and `docker_smoke.rs`). Security scan: disabled (Vidoc off).
