@@ -65,9 +65,9 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 - [x] Slot machinery deleted
 - [x] PR3 review approved
 - [x] changes.md cut to user-visible entries, briefing rule 6 changed
-- [ ] PR4a (changes.md) review approved
-- [ ] architecture.md per-feature sections moved verbatim to docs/archive
-- [ ] architecture.md trimmed to its budget
+- [x] PR4a (changes.md) review approved
+- [x] architecture.md per-feature sections moved verbatim to docs/archive
+- [x] architecture.md trimmed to its budget
 - [ ] PR4b (architecture.md) review approved
 - [ ] operations.md: old upgrade notes and legacy unit sections archived
 - [ ] product.md trimmed to current behaviour
