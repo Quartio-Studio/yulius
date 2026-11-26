@@ -98,11 +98,19 @@ PR 0 (#1774), spec discovery (CLN-001):
 PR 1, the split of `delivery.rs` (audit L2 F8, CLN-002):
 - Commit `5845fc850` moves eight regions verbatim into `delivery/{profile,text,view,open,parking,
   merge,promote,environments}.rs`, each inside its own `impl App` block; `switch_tests` moves with
-  the profile code it tests. `delivery.rs` goes from 8,236 to 1,784 lines (about 590 of them its tests).
+  the profile code it tests. After review, `8245ce643` moves three helpers verbatim to their
+  callers' files. `delivery.rs` goes from 8,236 to 1,788 lines (about 590 of them its tests).
 - A line-multiset comparison of the old file against the parent and the eight files finds no line
   lost; the only lines added are the module declarations, three glob re-exports, the file
-  headers, `use super::*;`, the `impl App {`/`}` wrappers and 26 `pub(super)` tokens on items
+  headers, `use super::*;`, the `impl App {`/`}` wrappers and 23 `pub(super)` tokens on items
   reached from another file (one of them the test-read field `FollowupDiscovery::open`).
+- Review round 1 found four `.config/vidoc.toml` `[[ignore]]` entries still naming `delivery.rs`;
+  they now name `delivery/environments.rs`, where the accepted code (SPEC-219's finding in
+  `dlv_environment_steps`) lives. The scanner's own `apply_ignores` ignores the four wordings
+  there and no longer at `delivery.rs`.
 - `scripts/cargo nextest run -p yulius-app`: 740 passed; `-p yulius --test main`: 2829 passed;
   `clippy --workspace --all-targets -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc -p
-  yulius-app` and `scripts/dev quick`: clean.
+  yulius-app`, `python3 scripts/test_vidoc_scan.py` (92) and `scripts/dev quick`: clean.
+- Independent review (Fable 5.2): round 1 requested changes (the Vidoc paths, three placements);
+  round 2 approved `6ca422c9c`; its last notes (drop the `profile.rs` entries, this Evidence) are
+  in the next commit.

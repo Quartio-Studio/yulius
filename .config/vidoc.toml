@@ -450,8 +450,7 @@ reason = "by design: only pull requests of the sandbox's own repository are test
 # (#656) it runs like a CD run of its stage: the commit's files from a mirror only Yulius writes,
 # in the sandbox's containment with a fresh HOME and no secrets, so it gets no more than the
 # sandbox's agents have. Reported on task #205's change scan, which made it so; one entry per
-# wording Vidoc used, at the file that runs the command (`delivery/environments.rs`) and, for
-# where the command comes from, the file that reads the profile (`delivery/profile.rs`).
+# wording Vidoc used, at the file that runs the command (`delivery/environments.rs`).
 [[ignore]]
 path = "crates/yulius-app/src/delivery/environments.rs"
 title = "command executed by environment runs"
@@ -463,17 +462,7 @@ title = "deployment command taken from project configuration"
 reason = "the profile's command (admin-set, or seeded at import) runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
 
 [[ignore]]
-path = "crates/yulius-app/src/delivery/profile.rs"
-title = "deployment command taken from project configuration"
-reason = "the profile's command (admin-set, or seeded at import) runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
-
-[[ignore]]
 path = "crates/yulius-app/src/delivery/environments.rs"
-title = "Environment command seeded from attacker-controlled repository content"
-reason = "seeded only when a repository admin or maintainer imports the repository; it runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
-
-[[ignore]]
-path = "crates/yulius-app/src/delivery/profile.rs"
 title = "Environment command seeded from attacker-controlled repository content"
 reason = "seeded only when a repository admin or maintainer imports the repository; it runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
 
