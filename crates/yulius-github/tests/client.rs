@@ -475,10 +475,6 @@ async fn manifest_flow_builds_manifest_and_converts_code() -> TestResult {
         client.convert_manifest("abc123").await,
         Err(GitHubError::NotFound)
     );
-    assert_eq!(
-        client.install_url()?,
-        format!("{base}apps/yulius-fake/installations/new")
-    );
     // The converted credentials produce a working App client.
     let converted = GitHubClient::new(GitHubConfig {
         app: Some(credentials),

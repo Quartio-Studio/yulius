@@ -79,12 +79,9 @@ impl Git {
             });
         }
         self.run_ok(Invocation::new(self, "add", Some(worktree)).args(["add", "--all"]))?;
-        let staged = self.run(Invocation::new(self, "diff", Some(worktree)).args([
-            "diff",
-            "--cached",
-            "--quiet",
-            "--no-ext-diff",
-        ]))?;
+        let staged = self.run(
+            Invocation::new(self, "diff", Some(worktree)).args(["diff", "--cached", "--quiet"]),
+        )?;
         match staged.status.code() {
             Some(0) => return Ok(None),
             Some(1) => {}
@@ -93,10 +90,7 @@ impl Git {
         self.run_ok(
             Invocation::new(self, "commit", Some(worktree))
                 .args(["commit", "--quiet", "--no-edit", "-m", message])
-                .env("GIT_AUTHOR_NAME", author.name.as_str())
-                .env("GIT_AUTHOR_EMAIL", author.email.as_str())
-                .env("GIT_COMMITTER_NAME", author.name.as_str())
-                .env("GIT_COMMITTER_EMAIL", author.email.as_str()),
+                .author(author),
         )?;
         self.rev_parse(worktree, "HEAD").map(Some)
     }
@@ -114,7 +108,6 @@ impl Git {
         let changed = self.run_ok(Invocation::new(self, "diff", Some(worktree)).args([
             "diff",
             "--name-only",
-            "--no-ext-diff",
             "--diff-filter=T",
             "-z",
         ]))?;
@@ -283,11 +276,7 @@ impl Git {
             .arg(rev);
         if let Some(author) = author {
             author.validate()?;
-            invocation = invocation
-                .env("GIT_AUTHOR_NAME", author.name.as_str())
-                .env("GIT_AUTHOR_EMAIL", author.email.as_str())
-                .env("GIT_COMMITTER_NAME", author.name.as_str())
-                .env("GIT_COMMITTER_EMAIL", author.email.as_str());
+            invocation = invocation.author(author);
         }
         let merged = self.run(invocation)?;
         if merged.status.success() {

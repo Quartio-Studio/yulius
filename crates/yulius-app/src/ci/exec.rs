@@ -175,6 +175,24 @@ enum Second {
     NotStarted(String),
 }
 
+/// What an admitted job holds until its end (its turn's entry, dropped after the rest), its
+/// budget, its start and how long it waited.
+type Admitted = (Option<super::TurnEntry>, Held, Budget, Timestamp, i64);
+/// An admitted job's turn (when it is `exclusive`), slot and budget reservation.
+type Held = (
+    Option<tokio::sync::OwnedMutexGuard<()>>,
+    super::slots::JobSlot,
+    crate::resources::Reservation,
+);
+/// How a job's runs ended: the end, its use, its failing tests' output and the infrastructure
+/// failure it met (with the time taken and how a second run ended).
+type Outcome = (
+    Result<Ended, String>,
+    Used,
+    Option<String>,
+    Option<(Infra, i64, Option<Second>)>,
+);
+
 impl Second {
     /// The job's reason after `first` ended its first run.
     fn reason(&self, first: Infra) -> String {
@@ -674,6 +692,38 @@ impl App {
         checkout: &str,
         mut cancel: watch::Receiver<Option<String>>,
     ) -> bool {
+        // Bindings of one pattern drop right to left: the permit (turn, slot, reservation) before
+        // the turn's entry, as the turn needs.
+        let Some((_turn_entry, permit, budget, started_at, waited_ms)) =
+            self.ci_job_admit(run, job, share, &mut cancel).await
+        else {
+            return false;
+        };
+        let (_stages, ring, outcome) = self
+            .ci_job_run(
+                sandbox,
+                run,
+                job,
+                budget,
+                checkout,
+                &permit,
+                started_at,
+                &mut cancel,
+            )
+            .await;
+        self.ci_job_verdict(sandbox, run, job, waited_ms, ring, outcome)
+            .await
+    }
+
+    /// Waits for `job`'s turn, slot and budget and moves it to Running: what it holds until its
+    /// end, or `None` when it ended meanwhile.
+    async fn ci_job_admit(
+        self: &Arc<Self>,
+        run: &CiRunRecord,
+        job: &CiJobRecord,
+        share: usize,
+        cancel: &mut watch::Receiver<Option<String>>,
+    ) -> Option<Admitted> {
         let store = &self.deps.store;
         let waiting = self.now();
         // How long it waits is measured on the monotonic clock: a wall-clock step never makes it.
@@ -752,7 +802,7 @@ impl App {
         };
         let permit = tokio::select! {
             permit = held => permit,
-            reason = wait_cancel(&mut cancel) => {
+            reason = wait_cancel(cancel) => {
                 let cancelled = self.now();
                 let _ = store
                     .transition_ci_job(
@@ -767,12 +817,12 @@ impl App {
                     )
                     .await;
                 end_wait(cancelled, "cancelled").await;
-                return false;
+                return None;
             }
         };
         let Some(permit) = permit else {
             end_wait(self.now(), "error").await;
-            return false;
+            return None;
         };
         let started_at = self.now();
         let waited_ms = i64::try_from(waiting_since.elapsed().as_millis()).unwrap_or(i64::MAX);
@@ -789,16 +839,34 @@ impl App {
             // It left Queued meanwhile: only a cancellation moves a waiting job (`ci_cancel_jobs`).
             Ok(false) => {
                 end_wait(started_at, "cancelled").await;
-                return false;
+                return None;
             }
             Err(_) => {
                 end_wait(started_at, "error").await;
-                return false;
+                return None;
             }
         }
         end_wait(started_at, "started").await;
+        Some((_turn_entry, permit, budget, started_at, waited_ms))
+    }
+
+    /// Runs the admitted `job`, once more after an infrastructure failure: its stages, output and
+    /// how its runs ended.
+    #[allow(clippy::too_many_arguments)] // One job's whole context.
+    async fn ci_job_run(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        run: &CiRunRecord,
+        job: &CiJobRecord,
+        budget: Budget,
+        checkout: &str,
+        permit: &Held,
+        started_at: Timestamp,
+        cancel: &mut watch::Receiver<Option<String>>,
+    ) -> (OutputStages, OutputRing, Outcome) {
+        let store = &self.deps.store;
         // It weighs on its sandbox until its process ended (SPEC-362 CSW-002).
-        let weight = super::JobWeight::new(Arc::clone(&self), &run.sandbox_id, permit.2.cpus());
+        let weight = super::JobWeight::new(Arc::clone(self), &run.sandbox_id, permit.2.cpus());
         // The first reading of its sandbox's use, so the next job's wait measures over the time
         // since it started (SPEC-497 HBA-002).
         let _ = self.ci_measured();
@@ -852,7 +920,7 @@ impl App {
                     budget,
                     checkout,
                     (&mut ring, &mut stages, &mut failures),
-                    &mut cancel,
+                    cancel,
                 )
                 .await
             {
@@ -896,7 +964,7 @@ impl App {
                         let _ = store.set_ci_job_output(&job.id, &ring.text()).await;
                         let room = tokio::select! {
                             () = self.ci_network_room(&run.sandbox_id, &job.id) => None,
-                            reason = wait_cancel(&mut cancel) => Some(Ok(reason)),
+                            reason = wait_cancel(cancel) => Some(Ok(reason)),
                             () = tokio::time::sleep(wait_limit) => Some(Err(())),
                         };
                         match room {
@@ -961,6 +1029,21 @@ impl App {
             }
         };
         drop(weight);
+        (stages, ring, (ended, usage, failures, infra))
+    }
+
+    /// Records how `job` ended from its runs' `outcome`: `true` when the sandbox refused it over
+    /// the disk quota.
+    async fn ci_job_verdict(
+        &self,
+        sandbox: &SandboxRecord,
+        run: &CiRunRecord,
+        job: &CiJobRecord,
+        waited_ms: i64,
+        mut ring: OutputRing,
+        (ended, usage, failures, infra): Outcome,
+    ) -> bool {
+        let store = &self.deps.store;
         let no_disk = matches!(ended, Ok(Ended::NoDisk(_)));
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
