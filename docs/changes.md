@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-26
+
+- Yulius CI's own job commands are `scripts/dev <gate>`: under Yulius CI `scripts/dev` bootstraps the toolchain and the gate prints its stage line, so `yulius.toml` no longer repeats `python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage …"` in every job (audit L3 F7, F11). The fallbacks for pull requests older than 2026-11-21 are gone, including the `file-contracts` one that failed on such heads. A pull request whose head lacks this change fails `quality` ("Invalid command") until it merges `dev`. The pull request's `quality` job is the new `scripts/dev quality` (doctor, quick, the checker's tests): it no longer compiles the workspace, which `lint`'s Clippy already does.
+
 ## 2026-11-25
 
 - The sandbox manager no longer carries the SPEC-187 "holder serves Docker" branch or a second replacement of engine fronts from before SPEC-652: the outdated-front replacement already replaces them once quiet (audit L5, F3). Behaviour unchanged.
