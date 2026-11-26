@@ -398,15 +398,16 @@ impl SpecReport {
         let dir = &spec_path[..spec_path.len() - file.len()];
         let stem = file.strip_suffix(".md")?;
         let keep = name_number(stem)?;
-        let name = stem[keep.len()..].trim_start_matches(['-', '_']);
-        if title
-            .chars()
-            .any(|c| c.is_alphabetic() && !c.is_ascii() && transliterate(c).is_none())
-        {
+        let name = slug_or(&stem[keep.len()..], "");
+        if title.chars().any(|c| {
+            c.is_alphabetic()
+                && !c.is_ascii()
+                && c.to_lowercase().any(|l| transliterate(l).is_none())
+        }) {
             return None;
         }
         let wanted = slug_or(without_number(title, keep), "");
-        if wanted.is_empty() || (!name.is_empty() && wanted.starts_with(name)) {
+        if wanted.is_empty() || (!name.is_empty() && wanted.starts_with(&name)) {
             return None;
         }
         let joined = if keep.is_empty() {
@@ -425,7 +426,9 @@ impl SpecReport {
 /// The number or date that starts a spec file stem (`SPEC-674`, `0007`, `2026-10-07`), `""` when
 /// it starts with a letter and no number, and `None` when it starts with a number of another form.
 fn name_number(stem: &str) -> Option<&str> {
-    if let Some(numbered) = crate::numbering::parse(stem) {
+    if let Some(numbered) = crate::numbering::parse(stem)
+        && !numbered.prefix.contains(|c: char| c.is_ascii_lowercase())
+    {
         return Some(&stem[..numbered.prefix.len() + numbered.width]);
     }
     let bytes = stem.as_bytes();
@@ -459,6 +462,7 @@ fn without_number<'a>(title: &'a str, number: &str) -> &'a str {
         if !lead.is_empty()
             && let Some(head) = title.get(..lead.len())
             && head.eq_ignore_ascii_case(lead)
+            && !title[lead.len()..].starts_with(|c: char| c.is_alphanumeric())
         {
             return title[lead.len()..].trim_start_matches(|c: char| !c.is_alphanumeric());
         }
@@ -1228,6 +1232,34 @@ mod tests {
                 "# Make task-local testing and one staging deploy per task the default",
                 ".ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md",
                 None,
+            ),
+            // A name with a digit run that is no record number, or in another case or separator.
+            ("# Checkout API v2", "docs/specs/checkout-api-v2.md", None),
+            (
+                "# Login with OAuth2",
+                "docs/specs/oauth2-raw.md",
+                Some("docs/specs/login-with-oauth2.md"),
+            ),
+            ("# Checkout API", "docs/specs/checkout_api.md", None),
+            ("# Checkout API", "docs/specs/Checkout-API.md", None),
+            ("# Checkout API", "docs/specs/0007_checkout_api.md", None),
+            // Letters with diacritics are spelled; a number is dropped only as a whole word.
+            (
+                "# \u{17b}\u{f3}\u{142}w API",
+                ".ai/specs/SPEC-080-raw.md",
+                Some(".ai/specs/SPEC-080-zolw-api.md"),
+            ),
+            (
+                "# SPEC-674: Checkout API",
+                ".ai/specs/SPEC-67-raw.md",
+                Some(".ai/specs/SPEC-67-spec-674-checkout-api.md"),
+            ),
+            // The title is the first heading, and only when it is level 1; it may be indented.
+            ("## Goal\n\n# Checkout API", "docs/specs/raw.md", None),
+            (
+                "   # Checkout API",
+                "docs/specs/raw.md",
+                Some("docs/specs/checkout-api.md"),
             ),
             // A number of another form, or a script the slug cannot spell: no hint.
             ("# Checkout API", "db/20231012120000_raw.md", None),
