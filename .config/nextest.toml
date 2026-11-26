@@ -14,7 +14,7 @@ slow-timeout = { period = "30s", terminate-after = 11 }
 fail-fast = false
 
 # These scenarios build four or five PR worktrees and execute real candidate jobs.
-# Give each the shard's test slots while it runs, alongside any jobs from other shards.
+# Give each all of the test job's slots while it runs.
 [[profile.ci.overrides]]
 filter = "test(=merge_train::a_bisection_executes_the_failed_tree_only_once) | test(=merge_train::four_heads_that_pass_during_a_candidate_join_the_next_one_in_arm_order)"
 threads-required = "num-test-threads"

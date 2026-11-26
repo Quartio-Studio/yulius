@@ -24,20 +24,24 @@ const POLL: Duration = Duration::from_millis(500);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What to do.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, clap::Subcommand)]
 pub enum Action {
-    /// Rescan and print every leftover.
+    /// Rescan and list every leftover: id, size, safe / needs you / report only, kind, path,
+    /// owner and why.
     List {
-        /// Print the server's JSON instead of the table.
+        /// The server's JSON instead of the list.
+        #[arg(long)]
         json: bool,
     },
-    /// Rescan, then delete every safe item or the given ids.
+    /// Rescan, then delete every safe leftover or the given ids, after a typed yes.
     Delete {
-        /// Every item Yulius deletes by itself.
+        /// Every leftover Yulius deletes by itself.
+        #[arg(long, conflicts_with = "ids")]
         all_safe: bool,
-        /// Ids from `list`.
+        /// Ids from `yulius leftovers list`.
         ids: Vec<String>,
-        /// Skip the typed confirmation.
+        /// Do not ask (scripts).
+        #[arg(long)]
         yes: bool,
     },
 }
