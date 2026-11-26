@@ -13,7 +13,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::resources::{LoadMinute, Need};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_u32};
+use crate::{DbResult, SqliteStore, bad_column, to_u32};
 
 const RUN_COLS: &str = "id, sandbox_id, reference, sha, source, state, reason, requested_by, \
     status_for, status_note, status_attempts, queued_at, started_at, ended_at";
@@ -142,41 +142,32 @@ fn select_runs(
     c: &rusqlite::Connection,
     filter: &str,
     args: &[&dyn rusqlite::ToSql],
-) -> AppResult<Vec<CiRunRecord>> {
-    let mut stmt = c
-        .prepare(&format!("SELECT {RUN_COLS} FROM ci_runs WHERE {filter}"))
-        .map_err(db)?;
+) -> DbResult<Vec<CiRunRecord>> {
+    let mut stmt = c.prepare(&format!("SELECT {RUN_COLS} FROM ci_runs WHERE {filter}"))?;
     let rows = stmt
-        .query_map(args, run_from_row)
-        .map_err(db)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(db)?;
+        .query_map(args, run_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 
 /// Keep only completed job verdicts and test names. Logs follow CI retention.
-fn gate_jobs(c: &rusqlite::Connection, id: &str) -> AppResult<Vec<GateJob>> {
+fn gate_jobs(c: &rusqlite::Connection, id: &str) -> DbResult<Vec<GateJob>> {
     use yulius_domain::ci::failures::{failed_test_names, omitted_tests};
-    let mut stmt = c
-        .prepare(
-            "SELECT name, state, failures, reason FROM ci_jobs WHERE run_id = ?1
+    let mut stmt = c.prepare(
+        "SELECT name, state, failures, reason FROM ci_jobs WHERE run_id = ?1
          AND state IN ('passed','failed','error','cancelled','skipped') ORDER BY ordinal",
-        )
-        .map_err(db)?;
-    let mut rows = stmt.query([id]).map_err(db)?;
+    )?;
+    let mut rows = stmt.query([id])?;
     let mut jobs = Vec::new();
-    while let Some(row) = rows.next().map_err(db)? {
-        let state = state(&row.get::<_, String>(1).map_err(db)?).map_err(db)?;
+    while let Some(row) = rows.next()? {
+        let state = state(&row.get::<_, String>(1)?)?;
         let passed = state == RunState::Passed;
         let partial = state == RunState::Cancelled;
-        let kept = row
-            .get::<_, Option<String>>(2)
-            .map_err(db)?
-            .unwrap_or_default();
+        let kept = row.get::<_, Option<String>>(2)?.unwrap_or_default();
         let tests = if state == RunState::Skipped {
             Vec::new()
         } else if partial {
-            let reason: Option<String> = row.get(3).map_err(db)?;
+            let reason: Option<String> = row.get(3)?;
             let names = yulius_app::ci::sibling_failure_names(reason.as_deref(), &kept);
             if names.is_empty() {
                 continue;
@@ -186,7 +177,7 @@ fn gate_jobs(c: &rusqlite::Connection, id: &str) -> AppResult<Vec<GateJob>> {
             failed_test_names(&kept)
         };
         jobs.push(GateJob {
-            name: row.get(0).map_err(db)?,
+            name: row.get(0)?,
             passed,
             partial,
             skipped: state == RunState::Skipped,
@@ -205,25 +196,24 @@ fn failed_gate_jobs(
     c: &rusqlite::Connection,
     sandbox: &str,
     branch: &str,
-) -> AppResult<std::collections::HashSet<String>> {
+) -> DbResult<std::collections::HashSet<String>> {
     let mut stmt = c.prepare("SELECT DISTINCT j.name FROM ci_runs r JOIN ci_jobs j ON j.run_id = r.id
         WHERE r.sandbox_id = ?1 AND (r.reference = 'branch/' || ?2 OR r.reference = 'candidate/' || r.sha)
         AND r.state IN ('failed','error') AND j.state IN ('failed','error','cancelled')
         UNION SELECT json_extract(job.value,'$.name') FROM archived_gate_verdicts a, json_each(a.jobs) job
         WHERE a.sandbox_id = ?1 AND (a.reference = 'branch/' || ?2 OR a.reference = 'candidate/' || a.sha)
         AND a.state IN ('failed','error')
-        AND (json_extract(job.value,'$.unknown') OR json_array_length(job.value,'$.tests') > 0)").map_err(db)?;
-    stmt.query_map(params![sandbox, branch], |row| row.get(0))
-        .map_err(db)?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(db)
+        AND (json_extract(job.value,'$.unknown') OR json_array_length(job.value,'$.tests') > 0)")?;
+    Ok(stmt
+        .query_map(params![sandbox, branch], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 pub(crate) fn runs_for_exact_head(
     conn: &rusqlite::Connection,
     sandbox: &str,
     head: &str,
-) -> AppResult<Vec<CiRunRecord>> {
+) -> DbResult<Vec<CiRunRecord>> {
     select_runs(
         conn,
         "sandbox_id = ?1 AND sha = ?2 ORDER BY rowid DESC",
@@ -240,10 +230,10 @@ impl CiStore for SqliteStore {
     ) -> AppResult<Option<CiRunRecord>> {
         let (sandbox, id) = (sandbox.to_string(), id.to_owned());
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {RUN_COLS} FROM archived_gate_verdicts WHERE sandbox_id = ?1 AND id = ?2"),
                 params![sandbox, id], run_from_row
-            ).optional().map_err(db)
+            ).optional()?)
         }).await
     }
 
@@ -273,14 +263,14 @@ impl CiStore for SqliteStore {
                  SELECT r.id, r.sha, r.state, r.jobs, o.task_number
                  FROM ranked r LEFT JOIN gate_merge_owners o ON o.sandbox_id = ?1 AND o.branch = ?2 AND o.sha = r.sha
                  WHERE r.newest = 1 OR (?6 AND r.state NOT IN ('running','queued')) ORDER BY r.key, r.newest"
-            ).map_err(db)?;
-            let mut rows = stmt.query(params![sandbox, branch, revisions, yulius_domain::ci::AFTER_MERGE_SKIP_REASON, read == GateRead::SettledHistory, read != GateRead::Latest]).map_err(db)?;
+            )?;
+            let mut rows = stmt.query(params![sandbox, branch, revisions, yulius_domain::ci::AFTER_MERGE_SKIP_REASON, read == GateRead::SettledHistory, read != GateRead::Latest])?;
             let mut result = Vec::new();
             let mut failed_jobs = None;
-            while let Some(row) = rows.next().map_err(db)? {
-                let run: String = row.get(0).map_err(db)?;
-                let state = state(&row.get::<_, String>(2).map_err(db)?).map_err(db)?;
-                let archive: Option<String> = row.get(3).map_err(db)?;
+            while let Some(row) = rows.next()? {
+                let run: String = row.get(0)?;
+                let state = state(&row.get::<_, String>(2)?)?;
+                let archive: Option<String> = row.get(3)?;
                 let mut jobs = if matches!(state, RunState::Failed | RunState::Error | RunState::Passed) {
                     match archive.as_deref() {
                         Some(archived) => serde_json::from_str(archived).map_err(AppError::internal)?,
@@ -299,10 +289,10 @@ impl CiStore for SqliteStore {
                 let complete_pass = state == RunState::Passed && jobs.is_empty();
                 result.push(GateVerdict {
                     run,
-                    sha: row.get(1).map_err(db)?,
+                    sha: row.get(1)?,
                     state,
                     jobs,
-                    owner: row.get(4).map_err(db)?,
+                    owner: row.get(4)?,
                 });
                 if read != GateRead::Latest && complete_pass { break; }
             }
@@ -317,12 +307,11 @@ impl CiStore for SqliteStore {
     ) -> AppResult<bool> {
         let task = task.to_string();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM machine_notice_tasks WHERE id = ?1 AND (NOT needs_goal OR ?2))",
                 params![task, unfinished_goal],
                 |row| row.get(0),
-            )
-            .map_err(db)
+            )?)
         })
         .await
     }
@@ -330,12 +319,10 @@ impl CiStore for SqliteStore {
     async fn gate_workers(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>> {
         let sandbox = sandbox.to_string();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare("SELECT id FROM gate_workers WHERE sandbox_id = ?1 ORDER BY number")
-                .map_err(db)?;
-            stmt.query_map([sandbox], |r| r.get::<_, String>(0))
-                .map_err(db)?
-                .map(|id| TaskId::parse(&id.map_err(db)?).map_err(AppError::internal))
+            let mut stmt =
+                c.prepare("SELECT id FROM gate_workers WHERE sandbox_id = ?1 ORDER BY number")?;
+            stmt.query_map([sandbox], |r| r.get::<_, String>(0))?
+                .map(|id| Ok(TaskId::parse(&id?).map_err(AppError::internal)?))
                 .collect()
         })
         .await
@@ -352,25 +339,25 @@ impl CiStore for SqliteStore {
                 .map_err(AppError::internal)?;
         let (sandbox, detail) = (sandbox.clone(), detail.to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let sid = sandbox.as_str();
             // Keep the incumbent if eligible. Replacing the row also expires its delivery receipts.
             let owner: Option<(String, u32)> = tx.query_row(
                 "SELECT w.id, w.number FROM gate_workers w LEFT JOIN gate_repairs r ON r.sandbox_id = w.sandbox_id
                  WHERE w.sandbox_id = ?1 AND w.id IN (SELECT value FROM json_each(?2)) ORDER BY (w.id IS r.owner_id) DESC, w.number LIMIT 1",
-                params![sid, available], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(db)?;
+                params![sid, available], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
             let mut recipients = Vec::new();
             if let Some((owner, number)) = owner.filter(|_| !detail.is_empty()) {
                 tx.execute("DELETE FROM gate_repairs WHERE sandbox_id = ?1 AND (detail != ?2 OR owner_id != ?3)",
-                    params![sid, detail, owner]).map_err(db)?;
+                    params![sid, detail, owner])?;
                 tx.execute("INSERT OR IGNORE INTO gate_repairs(sandbox_id, detail, owner_id) VALUES (?1, ?2, ?3)",
-                    params![sid, detail, owner]).map_err(db)?;
-                tx.execute("DELETE FROM gate_repair_told WHERE sandbox_id = ?1 AND task_id NOT IN (SELECT id FROM gate_workers WHERE sandbox_id = ?1)", [sid]).map_err(db)?;
+                    params![sid, detail, owner])?;
+                tx.execute("DELETE FROM gate_repair_told WHERE sandbox_id = ?1 AND task_id NOT IN (SELECT id FROM gate_workers WHERE sandbox_id = ?1)", [sid])?;
                 let mut stmt = tx.prepare("SELECT id FROM gate_workers w WHERE sandbox_id = ?1 AND id IN (SELECT value FROM json_each(?3))
                     AND NOT EXISTS (SELECT 1 FROM gate_repair_told t WHERE t.task_id = w.id AND t.sandbox_id = ?1)
-                    ORDER BY (id = ?2) DESC, number").map_err(db)?;
-                for id in stmt.query_map(params![sid, owner, available], |row| row.get::<_, String>(0)).map_err(db)? {
-                    let id = id.map_err(db)?;
+                    ORDER BY (id = ?2) DESC, number")?;
+                for id in stmt.query_map(params![sid, owner, available], |row| row.get::<_, String>(0))? {
+                    let id = id?;
                     recipients.push(RepairRecipient {
                         task: TaskId::parse(&id).map_err(AppError::internal)?,
                         assigned: id == owner,
@@ -378,9 +365,9 @@ impl CiStore for SqliteStore {
                     });
                 }
             } else {
-                tx.execute("DELETE FROM gate_repairs WHERE sandbox_id = ?1", [sid]).map_err(db)?;
+                tx.execute("DELETE FROM gate_repairs WHERE sandbox_id = ?1", [sid])?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(recipients)
         }).await
     }
@@ -403,34 +390,32 @@ impl CiStore for SqliteStore {
                 AND NOT EXISTS (SELECT 1 FROM gate_repair_told t WHERE t.task_id = w.id AND t.sandbox_id = w.sandbox_id)";
             let args = params![task, number, detail];
             if acknowledge {
-                c.execute(&format!("INSERT INTO gate_repair_told(sandbox_id, task_id) {select}"), args).map(|n| n == 1).map_err(db)
+                Ok(c.execute(&format!("INSERT INTO gate_repair_told(sandbox_id, task_id) {select}"), args).map(|n| n == 1)?)
             } else {
-                c.query_row(&format!("SELECT EXISTS({select})"), args, |row| row.get(0)).map_err(db)
+                Ok(c.query_row(&format!("SELECT EXISTS({select})"), args, |row| row.get(0))?)
             }
         }).await
     }
 
     async fn has_gate_failure(&self, sandbox: &SandboxId, branch: &str) -> AppResult<bool> {
         let (sandbox, branch) = (sandbox.to_string(), branch.to_owned());
-        self.call(move |c| c.query_row("SELECT EXISTS (
+        self.call(move |c| Ok(c.query_row("SELECT EXISTS (
             SELECT 1 FROM ci_runs WHERE sandbox_id = ?1 AND state IN ('failed','error','cancelled')
                 AND (reference = 'branch/' || ?2 OR reference = 'candidate/' || sha)
             UNION ALL SELECT 1 FROM archived_gate_verdicts WHERE sandbox_id = ?1 AND state IN ('failed','error','cancelled')
                 AND (reference = 'branch/' || ?2 OR reference = 'candidate/' || sha))",
-            params![sandbox, branch], |row| row.get(0)).map_err(db)).await
+            params![sandbox, branch], |row| row.get(0))?)).await
     }
 
     async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let numbers: String = c
-                .query_row(
-                    "SELECT ci_open_pulls FROM sandboxes WHERE id = ?1",
-                    [sandbox],
-                    |row| row.get(0),
-                )
-                .map_err(db)?;
-            serde_json::from_str(&numbers).map_err(AppError::internal)
+            let numbers: String = c.query_row(
+                "SELECT ci_open_pulls FROM sandboxes WHERE id = ?1",
+                [sandbox],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&numbers).map_err(AppError::internal)?)
         })
         .await
     }
@@ -439,14 +424,12 @@ impl CiStore for SqliteStore {
         let sandbox = sandbox.as_str().to_owned();
         let numbers = serde_json::to_string(numbers).map_err(AppError::internal)?;
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE sandboxes SET ci_open_pulls = ?2 WHERE id = ?1 AND removed_at IS NULL",
-                    params![sandbox, numbers],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "UPDATE sandboxes SET ci_open_pulls = ?2 WHERE id = ?1 AND removed_at IS NULL",
+                params![sandbox, numbers],
+            )?;
             if changed == 0 {
-                return Err(AppError::NotFound);
+                return Err(AppError::NotFound.into());
             }
             Ok(())
         })
@@ -456,36 +439,34 @@ impl CiStore for SqliteStore {
     async fn insert_ci_run(&self, run: &CiRunRecord, jobs: &[CiJobRecord]) -> AppResult<()> {
         let (run, jobs) = (run.clone(), jobs.to_vec());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             // Removal keeps the sandbox row. Its cleanup can already have taken a snapshot
             // of active runs while this producer was waiting for Git.
-            let inserted = tx
-                .execute(
-                    &format!(
-                        "INSERT INTO ci_runs ({RUN_COLS}) SELECT {} WHERE NOT EXISTS \
+            let inserted = tx.execute(
+                &format!(
+                    "INSERT INTO ci_runs ({RUN_COLS}) SELECT {} WHERE NOT EXISTS \
                      (SELECT 1 FROM sandboxes WHERE id = ?2 AND removed_at IS NOT NULL)",
-                        placeholders(1, 14)
-                    ),
-                    params![
-                        run.id,
-                        run.sandbox_id.as_str(),
-                        run.reference.key(),
-                        run.sha,
-                        run.source.as_str(),
-                        run.state.as_str(),
-                        run.reason,
-                        run.requested_by,
-                        run.status_for.map(RunState::as_str),
-                        run.status_note,
-                        i64::from(run.status_attempts),
-                        run.queued_at.0,
-                        run.started_at.map(|t| t.0),
-                        run.ended_at.map(|t| t.0),
-                    ],
-                )
-                .map_err(db)?;
+                    placeholders(1, 14)
+                ),
+                params![
+                    run.id,
+                    run.sandbox_id.as_str(),
+                    run.reference.key(),
+                    run.sha,
+                    run.source.as_str(),
+                    run.state.as_str(),
+                    run.reason,
+                    run.requested_by,
+                    run.status_for.map(RunState::as_str),
+                    run.status_note,
+                    i64::from(run.status_attempts),
+                    run.queued_at.0,
+                    run.started_at.map(|t| t.0),
+                    run.ended_at.map(|t| t.0),
+                ],
+            )?;
             if inserted == 0 {
-                return Err(AppError::NotFound);
+                return Err(AppError::NotFound.into());
             }
             for job in &jobs {
                 tx.execute(
@@ -513,10 +494,9 @@ impl CiStore for SqliteStore {
                         job.waited_ms,
                         job.output,
                     ],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -524,13 +504,12 @@ impl CiStore for SqliteStore {
     async fn ci_run(&self, id: &str) -> AppResult<Option<CiRunRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {RUN_COLS} FROM ci_runs WHERE id = ?1"),
                 [id],
                 run_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -543,16 +522,12 @@ impl CiStore for SqliteStore {
             } else {
                 JOB_COLS.to_owned()
             };
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {cols} FROM ci_jobs WHERE run_id = ?1 ORDER BY ordinal"
-                ))
-                .map_err(db)?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {cols} FROM ci_jobs WHERE run_id = ?1 ORDER BY ordinal"
+            ))?;
             let rows = stmt
-                .query_map([run], |row| job_from_row(row, with_output))
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([run], |row| job_from_row(row, with_output))?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -582,9 +557,8 @@ impl CiStore for SqliteStore {
                 "SELECT value FROM json_each(?2) AS history WHERE EXISTS (
                     SELECT 1 FROM ci_runs r WHERE r.sandbox_id = ?1 AND r.sha = history.value AND r.state = 'passed'
                  ) ORDER BY history.key",
-            ).map_err(db)?;
-            statement.query_map(params![sandbox, commits], |row| row.get(0))
-                .map_err(db)?.collect::<Result<Vec<_>, _>>().map_err(db)
+            )?;
+            Ok(statement.query_map(params![sandbox, commits], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -663,9 +637,8 @@ impl CiStore for SqliteStore {
             // The order the dispatcher reads: place, then insertion. A millisecond before the
             // earliest queued run of the sandbox, but never before another run of the same
             // commit: which run of a commit is the latest is read by place (`ci_runs_for_sha`).
-            let n = c
-                .execute(
-                    "UPDATE ci_runs SET queued_at = MAX( \
+            let n = c.execute(
+                "UPDATE ci_runs SET queued_at = MAX( \
                        (SELECT MIN(r.queued_at) - 1 FROM ci_runs r \
                         WHERE r.sandbox_id = ci_runs.sandbox_id AND r.state = 'queued'), \
                        COALESCE((SELECT MAX(r.queued_at) + 1 FROM ci_runs r \
@@ -680,9 +653,8 @@ impl CiStore for SqliteStore {
                        SELECT 1 FROM ci_runs r WHERE r.sandbox_id = ci_runs.sandbox_id \
                        AND r.sha = ci_runs.sha AND r.id != ci_runs.id \
                        AND r.queued_at + 1 >= ci_runs.queued_at)",
-                    [id],
-                )
-                .map_err(db)?;
+                [id],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -703,7 +675,7 @@ impl CiStore for SqliteStore {
         self.call(|c| {
             // The IN predicate selects the partial ci_runs_active index. Read only the indexed
             // jobs of a running run, and stop at the first qualifying gate.
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT EXISTS (SELECT 1 FROM ci_runs r \
                  WHERE r.state IN ('queued', 'running') AND r.state = 'running' AND EXISTS (\
                    SELECT 1 FROM ci_jobs WHERE run_id = r.id GROUP BY run_id \
@@ -713,8 +685,7 @@ impl CiStore for SqliteStore {
                       AND COUNT(*) FILTER (WHERE state = 'running') <= 1))",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(db)
+            )?)
         })
         .await
     }
@@ -749,7 +720,7 @@ impl CiStore for SqliteStore {
                     .map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>),
             );
             // The new state and the day's tally together (review round 2).
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let changed = match tx.execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref))) {
                 Ok(changed) => changed == 1,
                 Err(rusqlite::Error::SqliteFailure(err, _))
@@ -757,9 +728,10 @@ impl CiStore for SqliteStore {
                 {
                     return Err(AppError::Conflict(
                         "a constraint refused the CI run's new state".into(),
-                    ));
+                    )
+                    .into());
                 }
-                Err(err) => return Err(db(err)),
+                Err(err) => return Err(err.into()),
             };
             // A run that started and ended adds its minutes to its day's tally (SPEC-497
             // OFC-003, review round 1: runs are pruned, the tally stays).
@@ -769,10 +741,9 @@ impl CiStore for SqliteStore {
                     RunState::Passed | RunState::Failed | RunState::Error | RunState::Cancelled
                 )
             {
-                tx.execute(CI_MINUTES_ADD, params![id_for_tally])
-                    .map_err(db)?;
+                tx.execute(CI_MINUTES_ADD, params![id_for_tally])?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(changed)
         })
         .await
@@ -820,9 +791,7 @@ impl CiStore for SqliteStore {
                 from.into_iter()
                     .map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>),
             );
-            let changed = c
-                .execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref)))
-                .map_err(db)?;
+            let changed = c.execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref)))?;
             Ok(changed == 1)
         })
         .await
@@ -851,12 +820,10 @@ impl CiStore for SqliteStore {
             day(to, "9999-99-99"),
         );
         self.call(move |c| {
-            let mut statement = c
-                .prepare(
-                    "SELECT day, outcome, runs, run_ms, rerun_ms FROM ci_minutes \
+            let mut statement = c.prepare(
+                "SELECT day, outcome, runs, run_ms, rerun_ms FROM ci_minutes \
                      WHERE sandbox_id = ?1 AND day >= ?2 AND day < ?3 ORDER BY day, outcome",
-                )
-                .map_err(db)?;
+            )?;
             let rows = statement
                 .query_map(params![sandbox, from, to], |row| {
                     Ok(CiMinutesRow {
@@ -866,10 +833,8 @@ impl CiStore for SqliteStore {
                         run_ms: row.get(3)?,
                         rerun_ms: row.get(4)?,
                     })
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -877,14 +842,12 @@ impl CiStore for SqliteStore {
 
     async fn ci_jobs_waiting(&self) -> AppResult<u32> {
         self.call(|c| {
-            let waiting: i64 = c
-                .query_row(
-                    "SELECT COUNT(*) FROM ci_jobs j JOIN ci_runs r ON r.id = j.run_id \
+            let waiting: i64 = c.query_row(
+                "SELECT COUNT(*) FROM ci_jobs j JOIN ci_runs r ON r.id = j.run_id \
                      WHERE r.state = 'running' AND j.state = 'queued'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(db)?;
+                [],
+                |row| row.get(0),
+            )?;
             Ok(u32::try_from(waiting).unwrap_or(u32::MAX))
         })
         .await
@@ -908,21 +871,19 @@ impl CiStore for SqliteStore {
             tests.to_vec(),
         );
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             for test in &tests {
                 tx.execute(
                     "INSERT INTO ci_test_failures (sandbox_id, job_key, test, reference, run_id, \
                      sha, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![sandbox, job_key, test, reference, run, sha, at.0],
-                )
-                .map_err(db)?;
+                )?;
             }
             tx.execute(
                 "DELETE FROM ci_test_failures WHERE at < ?1",
                 params![forget_before.0],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)
+            )?;
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -940,12 +901,10 @@ impl CiStore for SqliteStore {
             test.to_owned(),
         );
         self.call(move |c| {
-            let mut statement = c
-                .prepare(
-                    "SELECT reference, sha, at FROM ci_test_failures WHERE sandbox_id = ?1 \
+            let mut statement = c.prepare(
+                "SELECT reference, sha, at FROM ci_test_failures WHERE sandbox_id = ?1 \
                      AND job_key = ?2 AND test = ?3 AND at >= ?4 ORDER BY at",
-                )
-                .map_err(db)?;
+            )?;
             let rows = statement
                 .query_map(params![sandbox, job_key, test, since.0], |row| {
                     Ok(yulius_domain::ci::flaky::TestFailure {
@@ -953,10 +912,8 @@ impl CiStore for SqliteStore {
                         sha: row.get(1)?,
                         at: Timestamp(row.get(2)?),
                     })
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -965,23 +922,21 @@ impl CiStore for SqliteStore {
     async fn quarantine_test(&self, entry: &Quarantined) -> AppResult<bool> {
         let entry = entry.clone();
         self.call(move |c| {
-            let added = c
-                .execute(
-                    "INSERT OR IGNORE INTO ci_quarantine (sandbox_id, test, job_key, issue_number, \
+            let added = c.execute(
+                "INSERT OR IGNORE INTO ci_quarantine (sandbox_id, test, job_key, issue_number, \
                      issue_url, since) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        entry.sandbox_id.as_str(),
-                        entry.test,
-                        entry.job_key,
-                        entry
-                            .issue
-                            .as_ref()
-                            .map(|(n, _)| i64::try_from(*n).unwrap_or(i64::MAX)),
-                        entry.issue.as_ref().map(|(_, url)| url.clone()),
-                        entry.since.0
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    entry.sandbox_id.as_str(),
+                    entry.test,
+                    entry.job_key,
+                    entry
+                        .issue
+                        .as_ref()
+                        .map(|(n, _)| i64::try_from(*n).unwrap_or(i64::MAX)),
+                    entry.issue.as_ref().map(|(_, url)| url.clone()),
+                    entry.since.0
+                ],
+            )?;
             Ok(added == 1)
         })
         .await
@@ -994,18 +949,15 @@ impl CiStore for SqliteStore {
                 .prepare(
                     "SELECT sandbox_id, test, job_key, issue_number, issue_url, since \
                      FROM ci_quarantine WHERE ?1 IS NULL OR sandbox_id = ?1 ORDER BY since, test",
-                )
-                .map_err(db)?;
+                )?;
             let rows = statement
                 .query_map(params![sandbox], |row| {
                     let sandbox: String = row.get(0)?;
                     let number: Option<i64> = row.get(3)?;
                     let url: Option<String> = row.get(4)?;
                     Ok((sandbox, row.get(1)?, row.get(2)?, number, url, row.get(5)?))
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<(String, String, String, Option<i64>, Option<String>, i64)>, _>>()
-                .map_err(db)?;
+                })?
+                .collect::<Result<Vec<(String, String, String, Option<i64>, Option<String>, i64)>, _>>()?;
             rows.into_iter()
                 .map(|(sandbox, test, job_key, number, url, since)| {
                     Ok(Quarantined {
@@ -1027,18 +979,16 @@ impl CiStore for SqliteStore {
     async fn release_test(&self, sandbox: &SandboxId, test: &str) -> AppResult<()> {
         let (sandbox, test) = (sandbox.as_str().to_owned(), test.to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "DELETE FROM ci_quarantine WHERE sandbox_id = ?1 AND test = ?2",
                 params![sandbox, test],
-            )
-            .map_err(db)?;
+            )?;
             tx.execute(
                 "DELETE FROM ci_test_failures WHERE sandbox_id = ?1 AND test = ?2",
                 params![sandbox, test],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)
+            )?;
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -1055,13 +1005,11 @@ impl CiStore for SqliteStore {
                     minute.measured_cpus,
                     minute.waiting_jobs
                 ],
-            )
-            .map_err(db)?;
+            )?;
             c.execute(
                 "DELETE FROM ci_load WHERE at < ?1",
                 params![forget_before.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1074,12 +1022,10 @@ impl CiStore for SqliteStore {
     ) -> AppResult<Vec<LoadMinute>> {
         let (from, to) = (from.map_or(i64::MIN, |t| t.0), to.map_or(i64::MAX, |t| t.0));
         self.call(move |c| {
-            let mut statement = c
-                .prepare(
-                    "SELECT at, busy_permille, held_cpus, measured_cpus, waiting_jobs FROM ci_load \
+            let mut statement = c.prepare(
+                "SELECT at, busy_permille, held_cpus, measured_cpus, waiting_jobs FROM ci_load \
                      WHERE at >= ?1 AND at < ?2 ORDER BY at",
-                )
-                .map_err(db)?;
+            )?;
             let rows = statement
                 .query_map(params![from, to], |row| {
                     Ok(LoadMinute {
@@ -1089,10 +1035,8 @@ impl CiStore for SqliteStore {
                         measured_cpus: row.get(3)?,
                         waiting_jobs: row.get(4)?,
                     })
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -1104,8 +1048,7 @@ impl CiStore for SqliteStore {
             c.execute(
                 "UPDATE ci_jobs SET reason = ?2 WHERE id = ?1 AND state = 'queued'",
                 params![id, reason],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1117,8 +1060,7 @@ impl CiStore for SqliteStore {
             c.execute(
                 "UPDATE ci_jobs SET output = ?2 WHERE id = ?1 AND state = 'running'",
                 params![id, output],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1127,14 +1069,13 @@ impl CiStore for SqliteStore {
     async fn requeue_ci_run(&self, id: &str, note: &str, at: Timestamp) -> AppResult<bool> {
         let (id, note) = (id.to_owned(), note.to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let changed = tx
                 .execute(
                     "UPDATE ci_runs SET state = 'queued', started_at = NULL, ended_at = NULL, \
                      reason = NULL, requeued_at = ?2 WHERE id = ?1 AND state = 'running'",
                     params![id, at.0],
-                )
-                .map_err(db)?;
+                )?;
             if changed == 1 {
                 tx.execute(
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
@@ -1144,10 +1085,9 @@ impl CiStore for SqliteStore {
                      WHERE run_id = ?1 AND NOT (state = 'skipped' \
                        AND substr(COALESCE(reason, ''), 1, length(?3)) = ?3)",
                     [&id, &note, &yulius_domain::ci::PATHS_SKIP_REASON.to_owned()],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(changed == 1)
         })
         .await
@@ -1175,8 +1115,7 @@ impl CiStore for SqliteStore {
                      WHERE id = ?1",
                     params![id, note],
                 ),
-            }
-            .map_err(db)?;
+            }?;
             Ok(())
         })
         .await
@@ -1212,9 +1151,8 @@ impl CiStore for SqliteStore {
             file.to_owned(),
         );
         self.call(move |c| {
-            let added = c
-                .execute(
-                    "INSERT INTO security_findings \
+            let added = c.execute(
+                "INSERT INTO security_findings \
                      (sandbox_id, fingerprint, file, anchored, claimed_at) \
                      VALUES (?1, ?2, ?3, ?4, ?5) \
                      ON CONFLICT (sandbox_id, fingerprint) DO UPDATE SET \
@@ -1222,16 +1160,15 @@ impl CiStore for SqliteStore {
                      anchored = excluded.anchored \
                      WHERE security_findings.issue_number IS NULL \
                      AND security_findings.claimed_at < ?6",
-                    params![
-                        sandbox,
-                        fingerprint,
-                        file,
-                        anchored,
-                        at.0,
-                        at.0.saturating_sub(SECURITY_CLAIM_TTL_MS)
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    sandbox,
+                    fingerprint,
+                    file,
+                    anchored,
+                    at.0,
+                    at.0.saturating_sub(SECURITY_CLAIM_TTL_MS)
+                ],
+            )?;
             Ok(added == 1)
         })
         .await
@@ -1244,7 +1181,7 @@ impl CiStore for SqliteStore {
     ) -> AppResult<Option<FiledFinding>> {
         let (sandbox, fingerprint) = (sandbox.as_str().to_owned(), fingerprint.to_owned());
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!(
                     "SELECT {FINDING_COLS} FROM security_findings \
                      WHERE sandbox_id = ?1 AND fingerprint = ?2 AND issue_number IS NOT NULL"
@@ -1252,8 +1189,7 @@ impl CiStore for SqliteStore {
                 params![sandbox, fingerprint],
                 finding_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -1265,18 +1201,14 @@ impl CiStore for SqliteStore {
     ) -> AppResult<Vec<FiledFinding>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut statement = c
-                .prepare(&format!(
-                    "SELECT {FINDING_COLS} FROM security_findings \
+            let mut statement = c.prepare(&format!(
+                "SELECT {FINDING_COLS} FROM security_findings \
                      WHERE sandbox_id = ?1 AND issue_number IS NOT NULL AND resolved_at IS NULL \
                      ORDER BY random() LIMIT ?2"
-                ))
-                .map_err(db)?;
-            statement
-                .query_map(params![sandbox, limit], finding_from_row)
-                .map_err(db)?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(db)
+            ))?;
+            Ok(statement
+                .query_map(params![sandbox, limit], finding_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }
@@ -1294,8 +1226,7 @@ impl CiStore for SqliteStore {
                 "DELETE FROM security_findings \
                  WHERE sandbox_id = ?1 AND fingerprint = ?2 AND issue_number = ?3",
                 params![sandbox, fingerprint, issue],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1313,8 +1244,7 @@ impl CiStore for SqliteStore {
                 "UPDATE security_findings SET resolved_at = ?3 \
                  WHERE sandbox_id = ?1 AND fingerprint = ?2",
                 params![sandbox, fingerprint, at.map(|t| t.0)],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1343,8 +1273,7 @@ impl CiStore for SqliteStore {
                      WHERE sandbox_id = ?1 AND fingerprint = ?2 AND issue_number IS NULL",
                     params![sandbox, fingerprint],
                 ),
-            }
-            .map_err(db)?;
+            }?;
             Ok(())
         })
         .await
@@ -1352,7 +1281,7 @@ impl CiStore for SqliteStore {
 
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64> {
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let prune = "WHERE state NOT IN ('queued', 'running') AND (\
                        queued_at < ?1 OR id IN (\
                          SELECT id FROM (\
@@ -1365,16 +1294,16 @@ impl CiStore for SqliteStore {
                            PARTITION BY sandbox_id, reference ORDER BY queued_at DESC, rowid DESC) AS v \
                          FROM ci_runs WHERE state IN ('passed', 'failed', 'error') OR (state = 'cancelled' AND reference = 'candidate/' || sha)) WHERE v = 1)";
             let ids = {
-                let mut stmt = tx.prepare(&format!("SELECT id FROM ci_runs {prune} AND sandbox_id IN (SELECT id FROM sandboxes) AND (reference LIKE 'branch/%' OR reference LIKE 'candidate/%') AND (state IN ('passed','failed','error') OR (state = 'cancelled' AND reference = 'candidate/' || sha)) AND NOT EXISTS (SELECT 1 FROM ci_jobs WHERE run_id = ci_runs.id AND state = 'skipped' AND instr(reason, ?3) = 1)")).map_err(db)?;
-                stmt.query_map(params![before.0, i64::from(keep), yulius_domain::ci::AFTER_MERGE_SKIP_REASON], |row| row.get::<_, String>(0)).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)?
+                let mut stmt = tx.prepare(&format!("SELECT id FROM ci_runs {prune} AND sandbox_id IN (SELECT id FROM sandboxes) AND (reference LIKE 'branch/%' OR reference LIKE 'candidate/%') AND (state IN ('passed','failed','error') OR (state = 'cancelled' AND reference = 'candidate/' || sha)) AND NOT EXISTS (SELECT 1 FROM ci_jobs WHERE run_id = ci_runs.id AND state = 'skipped' AND instr(reason, ?3) = 1)"))?;
+                stmt.query_map(params![before.0, i64::from(keep), yulius_domain::ci::AFTER_MERGE_SKIP_REASON], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>,_>>()?
             };
             for id in ids {
                 let jobs = serde_json::to_string(&gate_jobs(&tx, &id)?).map_err(AppError::internal)?;
                 tx.execute(&format!("INSERT INTO archived_gate_verdicts ({RUN_COLS}, sequence, jobs)
-                       SELECT {RUN_COLS}, rowid, ?2 FROM ci_runs WHERE id = ?1"), params![id, jobs]).map_err(db)?;
+                       SELECT {RUN_COLS}, rowid, ?2 FROM ci_runs WHERE id = ?1"), params![id, jobs])?;
             }
-            let changed = tx.execute(&format!("DELETE FROM ci_runs {prune}"), params![before.0, i64::from(keep)]).map_err(db)?;
-            tx.commit().map_err(db)?;
+            let changed = tx.execute(&format!("DELETE FROM ci_runs {prune}"), params![before.0, i64::from(keep)])?;
+            tx.commit()?;
             Ok(u64::try_from(changed).unwrap_or(0))
         })
         .await
@@ -1442,8 +1371,7 @@ mod tests {
                 c.execute(
                     "UPDATE ci_runs SET source = 'from_a_later_release' WHERE id = 'r1'",
                     [],
-                )
-                .map_err(db)?;
+                )?;
                 Ok(())
             })
             .await?;

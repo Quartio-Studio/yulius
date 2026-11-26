@@ -8,7 +8,7 @@ use yulius_app::ports::store_ext::{DigestStore, StoredDigest};
 use yulius_domain::ids::UserId;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, db};
+use crate::SqliteStore;
 
 /// How many digests a person keeps (DIG-005).
 const KEPT: i64 = 7;
@@ -23,8 +23,7 @@ impl DigestStore for SqliteStore {
                     [],
                     |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?)),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(row.map_or((None, None), |(doc, ran)| (doc, ran.map(Timestamp))))
         })
         .await
@@ -33,14 +32,12 @@ impl DigestStore for SqliteStore {
     async fn set_digest_setting(&self, doc: &str, ran_at: Timestamp) -> AppResult<()> {
         let doc = doc.to_owned();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE instance SET digest = ?1, digest_ran_at = ?2 WHERE singleton = 1",
-                    params![doc, ran_at.0],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "UPDATE instance SET digest = ?1, digest_ran_at = ?2 WHERE singleton = 1",
+                params![doc, ran_at.0],
+            )?;
             if changed == 0 {
-                return Err(AppError::Conflict("the instance is not set up yet".into()));
+                return Err(AppError::Conflict("the instance is not set up yet".into()).into());
             }
             Ok(())
         })
@@ -49,13 +46,11 @@ impl DigestStore for SqliteStore {
 
     async fn take_digest_run(&self, seen: Option<Timestamp>, now: Timestamp) -> AppResult<bool> {
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE instance SET digest_ran_at = ?1, digest_sent_at = ?1 \
+            let changed = c.execute(
+                "UPDATE instance SET digest_ran_at = ?1, digest_sent_at = ?1 \
                      WHERE singleton = 1 AND digest_ran_at IS ?2",
-                    params![now.0, seen.map(|t| t.0)],
-                )
-                .map_err(db)?;
+                params![now.0, seen.map(|t| t.0)],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -69,8 +64,7 @@ impl DigestStore for SqliteStore {
                     [],
                     |r| r.get::<_, Option<i64>>(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(at.flatten().map(Timestamp))
         })
         .await
@@ -84,8 +78,7 @@ impl DigestStore for SqliteStore {
                     [],
                     |r| r.get::<_, Option<i64>>(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(at.flatten().map(Timestamp))
         })
         .await
@@ -93,14 +86,12 @@ impl DigestStore for SqliteStore {
 
     async fn set_digest_listed_at(&self, at: Timestamp) -> AppResult<()> {
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE instance SET digest_listed_at = ?1 WHERE singleton = 1",
-                    [at.0],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "UPDATE instance SET digest_listed_at = ?1 WHERE singleton = 1",
+                [at.0],
+            )?;
             if changed == 0 {
-                return Err(AppError::Conflict("the instance is not set up yet".into()));
+                return Err(AppError::Conflict("the instance is not set up yet".into()).into());
             }
             Ok(())
         })
@@ -111,20 +102,18 @@ impl DigestStore for SqliteStore {
         let user = user.as_str().to_owned();
         let digest = digest.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "INSERT INTO digests (id, user_id, created_at, body) VALUES (?1, ?2, ?3, ?4)",
                 params![digest.id, user, digest.created_at.0, digest.body],
-            )
-            .map_err(db)?;
+            )?;
             tx.execute(
                 "DELETE FROM digests WHERE user_id = ?1 AND id NOT IN \
                  (SELECT id FROM digests WHERE user_id = ?1 \
                   ORDER BY created_at DESC, rowid DESC LIMIT ?2)",
                 params![user, KEPT],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)
+            )?;
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -132,7 +121,7 @@ impl DigestStore for SqliteStore {
     async fn latest_digest(&self, user: &UserId) -> AppResult<Option<StoredDigest>> {
         let user = user.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT id, created_at, body FROM digests WHERE user_id = ?1 \
                  ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 [user],
@@ -144,8 +133,7 @@ impl DigestStore for SqliteStore {
                     })
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
