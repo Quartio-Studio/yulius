@@ -367,7 +367,10 @@ impl App {
     }
 
     /// Read the integration head independently of whether its task asked for staging.
-    async fn integration_failures(&self, sandbox: &SandboxRecord) -> AppResult<Vec<GateNotice>> {
+    pub(crate) async fn integration_failures(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Vec<GateNotice>> {
         let branch = delivery_profile(sandbox).integration_branch;
         if !self
             .deps

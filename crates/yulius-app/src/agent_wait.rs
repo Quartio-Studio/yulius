@@ -63,6 +63,9 @@ struct SavedArmed {
     /// The task's owner who armed it themselves (SPEC-487 MRG-003); absent for an agent's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     by: Option<String>,
+    /// Its agent marked it the repair of the red after-merge gate (SPEC-676 RGS-005).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    repair: bool,
 }
 
 /// A merge armed by `delivery_merge` while the checks of the reviewed head still ran.
@@ -79,6 +82,9 @@ pub(crate) struct ArmedMerge {
     /// their own agent (SPEC-487 MRG-003): no independent review covers it, and its merge is
     /// theirs. `None` for an agent's `delivery_merge`.
     pub by: Option<String>,
+    /// Its agent marked it the repair of the red after-merge gate (`repairs_gate`, SPEC-676
+    /// RGS-005): it merges while the queue is stopped.
+    pub repair: bool,
 }
 
 impl ArmedMerge {
@@ -371,8 +377,10 @@ impl App {
         head: &str,
         reviewed: &str,
         summary: &str,
+        repair: bool,
     ) -> AppResult<bool> {
-        self.arm_merge_as(task, head, reviewed, summary, None).await
+        self.arm_merge_as(task, head, reviewed, summary, (None, repair))
+            .await
     }
 
     /// [`Self::arm_merge`] for the task's owner `login`, who arms `head` themselves (SPEC-487
@@ -384,7 +392,7 @@ impl App {
         login: &str,
     ) -> AppResult<bool> {
         let summary = format!("armed by @{login}, the task's owner");
-        self.arm_merge_as(task, head, head, &summary, Some(login.to_owned()))
+        self.arm_merge_as(task, head, head, &summary, (Some(login.to_owned()), false))
             .await
     }
 
@@ -394,7 +402,7 @@ impl App {
         head: &str,
         reviewed: &str,
         summary: &str,
-        by: Option<String>,
+        (by, repair): (Option<String>, bool),
     ) -> AppResult<bool> {
         self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
@@ -430,12 +438,18 @@ impl App {
             )));
         }
         self.reconcile_arm_change(&task.id, &runtime).await?;
-        if lock_slot(&runtime)
-            .merge
-            .as_ref()
-            .is_some_and(|armed| armed.head == head)
         {
-            return Ok(false);
+            let mut slot = lock_slot(&runtime);
+            if let Some(armed) = slot.merge.as_mut().filter(|armed| armed.head == head) {
+                // Marked the repair now (SPEC-676 RGS-005): it keeps its place.
+                if repair && !armed.repair {
+                    armed.repair = true;
+                    let merge = armed.clone();
+                    self.write_armed(&task.id, Some(&merge))
+                        .map_err(crate::error::AppError::internal)?;
+                }
+                return Ok(false);
+            }
         }
         let last = self.deps.store.latest_merge_wait(&task.id).await?;
         let prior = last
@@ -462,6 +476,7 @@ impl App {
                 summary: summary.to_owned(),
                 armed_at,
                 by,
+                repair,
             };
             self.write_armed(&task.id, Some(&merge))
                 .map_err(crate::error::AppError::internal)?;
@@ -596,6 +611,7 @@ impl App {
                 summary: armed.summary.clone(),
                 armed_at: armed.armed_at,
                 by: armed.by.clone(),
+                repair: armed.repair,
             });
         }
         serde_json::to_vec(&saved)
@@ -694,6 +710,7 @@ impl App {
                 summary: entry.summary,
                 armed_at: entry.armed_at,
                 by: entry.by,
+                repair: entry.repair,
             });
             tracing::info!(task = %task_id, "armed merge restored after a restart");
         }
@@ -797,10 +814,22 @@ impl App {
             crate::delivery::delivery_profile(sandbox).integration_branch
         );
         let candidate_running = self.train_running(sandbox);
+        let mut stop = None;
         for task in tasks {
             let ArmedNow::Armed(armed) = self.armed_now(&task.id) else {
                 continue;
             };
+            // A merge a red gate holds decides nothing now (SPEC-676 RGS-003).
+            if stop.is_none() {
+                stop = Some(self.merge_stop(sandbox).await);
+            }
+            if stop
+                .as_ref()
+                .and_then(Option::as_ref)
+                .is_some_and(|stop| !stop.lets_through(task.number, armed.repair))
+            {
+                continue;
+            }
             let Some(pr) = self
                 .deps
                 .store
@@ -1327,6 +1356,16 @@ impl App {
                 .await;
             return Verdict::Decided(armed_conflict_text(branch, &integration, &files));
         }
+        // A red after-merge gate holds every merge but its repair (SPEC-676 RGS-003): armed, in
+        // its place, told why.
+        let stop = self.merge_stop(&sandbox).await;
+        if let Some(stop) = stop
+            .as_ref()
+            .filter(|stop| !stop.lets_through(task.number, armed.repair))
+        {
+            self.note_armed(&task.id, stop.waiting_note(pr.number, &integration));
+            return Verdict::Keep(armed);
+        }
         // Green but behind its base: the next merge candidate tests it on top of the base
         // (SPEC-441 MQ-003), unless it goes one by one.
         if self.behind_integration(task, &sandbox).await
@@ -1377,8 +1416,13 @@ impl App {
             Ok(merged) => {
                 let (actor, action, how) = armed.merge_audit(task.number);
                 let detail = format!(
-                    "merged at head {} {how}; armed while the checks ran",
-                    armed.head
+                    "merged at head {} {how}; armed while the checks ran{}",
+                    armed.head,
+                    if stop.is_some() {
+                        "; as the repair of the red gate"
+                    } else {
+                        ""
+                    }
                 );
                 if let Err(err) = self
                     .deps
@@ -2170,6 +2214,7 @@ mod tests {
             summary: "approve".to_owned(),
             armed_at: 0,
             by: None,
+            repair: false,
         }
     }
 
@@ -2184,6 +2229,7 @@ mod tests {
             summary: "armed by @alice, the task's owner".into(),
             armed_at: 5,
             by: Some("alice".into()),
+            repair: false,
         };
         let text = serde_json::to_string(&saved)?;
         let read: SavedArmed = serde_json::from_str(&text)?;

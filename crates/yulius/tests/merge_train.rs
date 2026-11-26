@@ -5770,3 +5770,259 @@ async fn a_reused_candidate_still_leaves_the_full_suite_to_the_merged_head() -> 
     );
     Ok(())
 }
+
+/// `yulius.toml` with a full suite after the merge beside a merge-first staging target (SPEC-575)
+/// and the `[merge_queue]` lines `queue`.
+fn merge_first_toml(queue: &str) -> String {
+    format!(
+        "{YULIUS_TOML}\n[[ci.jobs]]\nname = \"full\"\ncommand = 'echo full suite ran'\n\
+         after_merge = true\n\n[cd.dev]\n[cd.prod]\n\n[cd.staging]\nstage = \"dev\"\n\
+         merge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\n\
+         migrations = \"none: stateless\"\n{queue}"
+    )
+}
+
+/// The integration head's full gate fails `test` (as its after-merge run would), the merge of
+/// task `owner` having made it when given; the head.
+async fn red_gate(f: &Fixture, test: &str, owner: Option<&str>) -> BoxResult<String> {
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    let head = git(
+        &f.repo,
+        &["rev-parse", &format!("origin/{}", f.integration)],
+    )?;
+    if let Some(task) = owner {
+        f.h.store
+            .execute_for_tests(&format!(
+                "INSERT INTO task_merges(task_id, sandbox_id, merged_sha, branch, pr_number, \
+                 head_sha) VALUES ('{task}', 's1', '{head}', 'dev', NULL, '{head}')"
+            ))
+            .await?;
+    }
+    let run = crate::support::staging::recorded_gate(
+        &f.h.app,
+        &f.sandbox,
+        &head,
+        RunState::Failed,
+        Some(&format!("---- {test} stdout ----\nassertion failed\n")),
+    )
+    .await?;
+    // Nothing to publish: CI counts it settled.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET status_note = 'recorded by the test' WHERE id = '{run}'"
+        ))
+        .await?;
+    Ok(head)
+}
+
+/// `delivery_merge` of `t<n>`'s head with `extra` arguments: its answer.
+async fn deliver(f: &Fixture, n: u32, worktree: &Path, extra: Value) -> BoxResult<Value> {
+    let head = git(worktree, &["rev-parse", "HEAD"])?;
+    let mut args = json!({"reviewed_head": head, "review_summary": "approve"});
+    if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+        args.extend(extra.clone());
+    }
+    let result = support::mcp_tool(&f.h, &format!("tok-t{n}"), "delivery_merge", args).await?;
+    assert_eq!(result["isError"], false, "{result}");
+    Ok(support::tool_text(&result))
+}
+
+/// After the queue's state is read again (it is kept for 15 s).
+fn later(f: &Fixture) {
+    f.h.clock.0.fetch_add(16_000, Ordering::SeqCst);
+}
+
+/// SPEC-676 RGS-002, RGS-003, RGS-007: on a merge-first project, a red after-merge gate at the
+/// integration head holds a green, up-to-date armed pull request: it stays armed, told which
+/// failure holds it; a passing rerun of that revision lets it merge on the next pass by itself.
+#[tokio::test]
+async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    f.advance_dev_with("yulius.toml", &merge_first_toml(""))?;
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let red = red_gate(&f, "tests::broken", None).await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    app.merge_armed(&f.sandbox).await;
+    assert!(f.merges().is_empty(), "{:?}", f.merges());
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], true, "{state}");
+    let note = state["merge_train"].as_str().unwrap_or_default();
+    for said in [
+        "Pull request #1 waits: the after-merge gate of `dev` is red",
+        &format!("`tests::broken` (first at {}", &red[..12]),
+        "it merges by itself then",
+    ] {
+        assert!(note.contains(said), "{said}: {state}");
+    }
+    later(&f);
+    app.merge_armed(&f.sandbox).await;
+    assert!(f.merges().is_empty(), "still red");
+    crate::support::staging::recorded_gate_as(
+        &app,
+        &f.sandbox,
+        &red,
+        RunState::Passed,
+        None,
+        "ci-rerun".into(),
+    )
+    .await?;
+    later(&f);
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.merges(), ["merge_pull #1 squash"]);
+    Ok(())
+}
+
+/// SPEC-676 RGS-004, RGS-005, RGS-006: while the queue is stopped, `delivery_merge` of a green
+/// head arms it and says why; one marked `repairs_gate` merges at once; the held one, behind
+/// now, joins no candidate, and the breaker's own pull request forms one alone and merges.
+#[tokio::test]
+async fn only_the_repair_merges_while_the_gate_is_red() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    // The test stays broken: every later run of the full suite fails it too.
+    let broken = merge_first_toml("").replace(
+        "echo full suite ran",
+        "printf -- \"---- tests::broken stdout ----\\nassertion failed\\n\"; exit 1",
+    );
+    f.advance_dev_with("yulius.toml", &broken)?;
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1u32, "a.txt"), (2, "b.txt"), (3, "c.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    red_gate(&f, "tests::broken", Some("t3")).await?;
+    for (n, worktree) in (1u32..).zip(&worktrees) {
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    let held = deliver(&f, 1, &worktrees[0], json!({})).await?;
+    assert_eq!(
+        (&held["merged"], &held["armed"]),
+        (&json!(false), &json!(true)),
+        "{held}"
+    );
+    assert!(
+        held["next"]
+            .as_str()
+            .is_some_and(|next| next.contains("the after-merge gate of `dev` is red")),
+        "{held}"
+    );
+    let repair = deliver(&f, 2, &worktrees[1], json!({"repairs_gate": true})).await?;
+    assert_eq!(repair["merged"], true, "{repair}");
+    // #3's merge made the red revision: its pull request is the repair Yulius attributes.
+    let breaker = deliver(&f, 3, &worktrees[2], json!({})).await?;
+    assert_eq!(breaker["armed"], true, "behind after #2: {breaker}");
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        f.merged(&app, 3).await
+    })
+    .await?;
+    assert_eq!(
+        f.merges(),
+        ["merge_pull #2 squash", "merge_pull #3 squash"],
+        "#1 waits"
+    );
+    assert!(
+        f.train_runs(&app)
+            .await?
+            .iter()
+            .all(|run| run.reference.key() == "train/3"),
+        "only the repair formed a candidate"
+    );
+    let state = f.wait(1, &worktrees[0]).await?;
+    assert_eq!(state["merge_armed"], true, "{state}");
+    let audit = yulius_app::ports::store::AuditStore::audit_details(
+        app.deps.store.as_ref(),
+        "app#2",
+        "delivery.agent.merge",
+        5,
+    )
+    .await?;
+    assert!(
+        audit
+            .iter()
+            .any(|d| d.contains("as the repair of the red gate")),
+        "{audit:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-676 RGS-006: a candidate under test when the gate turns red is dissolved (`gate_red`),
+/// and its members stay armed.
+#[tokio::test]
+async fn a_candidate_under_test_is_dissolved_when_the_gate_turns_red() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.advance_dev_with("yulius.toml", &merge_first_toml(""))?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
+    for (n, worktree) in [(1, &one), (2, &two)] {
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    let train = f.first_candidate(&app, &sandbox).await?;
+    assert!(train.state.is_active(), "{train:?}");
+    red_gate(&f, "tests::broken", None).await?;
+    later(&f);
+    app.merge_armed(&f.sandbox).await;
+    let gone = dissolved(&app).await?;
+    assert!(
+        gone.iter().any(|d| d.contains("(why: gate_red)")),
+        "{gone:?}"
+    );
+    assert!(f.merges().is_empty());
+    for (n, worktree) in [(1, &one), (2, &two)] {
+        assert_eq!(f.wait(n, worktree).await?["merge_armed"], true);
+    }
+    Ok(())
+}
+
+/// SPEC-676 RGS-008: a failure of a quarantined flaky test stops nothing.
+#[tokio::test]
+async fn a_quarantined_test_does_not_stop_the_queue() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    f.advance_dev_with("yulius.toml", &merge_first_toml(""))?;
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    red_gate(&f, "tests::flaky", None).await?;
+    f.h.store
+        .execute_for_tests(
+            "INSERT INTO ci_quarantine(sandbox_id, test, job_key, issue_number, issue_url, since) \
+             VALUES ('s1', 'tests::flaky', 'full', 7, 'https://github.com/acme/app/issues/7', 1)",
+        )
+        .await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.merges(), ["merge_pull #1 squash"]);
+    Ok(())
+}
+
+/// SPEC-676 RGS-001: without a merge-first target the stop is off by default, and
+/// `stop_on_red_gate = false` turns it off beside one: a red gate holds nothing.
+#[tokio::test]
+async fn the_stop_is_off_without_merge_first_or_when_turned_off() -> TestResult {
+    for toml in [
+        format!("{YULIUS_TOML}\n[[ci.jobs]]\nname = \"full\"\ncommand = 'true'\n"),
+        merge_first_toml("\n[merge_queue]\nstop_on_red_gate = false\n"),
+    ] {
+        let f = fixture().await?;
+        let app = f.h.app.clone();
+        f.advance_dev_with("yulius.toml", &toml)?;
+        let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+        red_gate(&f, "tests::broken", None).await?;
+        f.arm(1, &worktree).await?;
+        f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+        app.merge_armed(&f.sandbox).await;
+        assert_eq!(f.merges(), ["merge_pull #1 squash"], "{toml}");
+    }
+    Ok(())
+}

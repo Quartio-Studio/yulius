@@ -165,6 +165,11 @@ impl App {
         since: &mut String,
     ) -> AppResult<Value> {
         let reviewed = str_arg(args, "reviewed_head")?;
+        // The agent marks its change the repair of the red after-merge gate (SPEC-676 RGS-005).
+        let repair = args
+            .get("repairs_gate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let mut summary: String = args
             .get("review_summary")
             .and_then(Value::as_str)
@@ -264,7 +269,8 @@ impl App {
                     Ok(json!({"merged": true, "delivery": view}))
                 }
                 crate::delivery::playground::PlaygroundMerge::Testing(state, note) => {
-                    self.arm_merge(&ctx.task, &head, reviewed, &summary).await?;
+                    self.arm_merge(&ctx.task, &head, reviewed, &summary, repair)
+                        .await?;
                     self.agent_audit(
                         ctx,
                         "delivery.agent.merge_armed",
@@ -406,7 +412,10 @@ impl App {
                 // Still running (or not known yet): Yulius merges this exact head by itself once
                 // its checks pass (SPEC-011), so the agent never polls for them. Armed already:
                 // it keeps its place (SPEC-441 MQ-006).
-                if !self.arm_merge(&ctx.task, &head, reviewed, &summary).await? {
+                if !self
+                    .arm_merge(&ctx.task, &head, reviewed, &summary, repair)
+                    .await?
+                {
                     return Ok(json!({
                         "merged": false,
                         "armed": true,
@@ -441,13 +450,44 @@ impl App {
                 }));
             }
         }
+        // A red after-merge gate holds every merge but its repair (SPEC-676 RGS-004): armed in
+        // its place, and the queue merges it once the gate is green.
+        let stop = self.merge_stop(&sandbox).await;
+        if let (Some(stop), Some(pull)) = (stop.as_ref(), before.pr.as_ref())
+            && !stop.lets_through(ctx.task.number, repair)
+        {
+            let note = stop.waiting_note(pull.number, &profile.integration_branch);
+            self.arm_merge(&ctx.task, &head, reviewed, &summary, repair)
+                .await?;
+            self.agent_audit(
+                ctx,
+                "delivery.agent.merge_armed",
+                &format!("{}#{}", sandbox.slug, ctx.task.number),
+                &format!(
+                    "armed at head {head} (checks {checks}; held by the red after-merge gate); \
+                     reviewed independently{since}"
+                ),
+            )
+            .await;
+            return Ok(json!({
+                "merged": false,
+                "armed": true,
+                "checks": checks,
+                "next": format!(
+                    "{note} Start `yulius wait` with run_in_background and end your turn: it \
+                     says how the merge ended; do not call delivery_merge again for this head \
+                     unless it is the repair.{armed_ahead}"
+                ),
+            }));
+        }
         let merged = match self.merge_task_pr_for_task(&auth, &task_id).await {
             Ok(merged) => merged,
             Err(MergeFailure::Refused(err)) => return Err(err),
             // GitHub could not take the pull request's new title for now (SPEC-069 BPL-008):
             // armed, so Yulius merges this head on its next pass.
             Err(MergeFailure::Later(err)) => {
-                self.arm_merge(&ctx.task, &head, reviewed, &summary).await?;
+                self.arm_merge(&ctx.task, &head, reviewed, &summary, repair)
+                    .await?;
                 self.agent_audit(
                     ctx,
                     "delivery.agent.merge_armed",
@@ -478,13 +518,18 @@ impl App {
             "delivery.agent.merge",
             &format!("{}#{}", sandbox.slug, ctx.task.number),
             &format!(
-                "merged at head {head} reviewed independently ({}); for {}",
+                "merged at head {head} reviewed independently ({}); for {}{}",
                 if summary.is_empty() {
                     "no summary"
                 } else {
                     summary.as_str()
                 },
-                auth.user.label()
+                auth.user.label(),
+                if stop.is_some() {
+                    "; as the repair of the red gate"
+                } else {
+                    ""
+                }
             ),
         )
         .await;
