@@ -10,7 +10,7 @@ order: 50
 ## Steps
 
 1. Make the change with the smallest diff
-2. Every gate green and the changes log updated
+2. Every gate green
 
 ## Instructions
 

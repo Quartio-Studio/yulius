@@ -43,12 +43,12 @@ PR 0.
 - [x] Spec discovery: independent review answered
 - [x] Split delivery.rs: verbatim move into 8 files
 - [x] Split delivery.rs: independent review answered
-- [ ] Queue: queue_readiness and armed_snapshot
-- [ ] Queue: bring_armed_up_to_date for both drivers
-- [ ] Queue: independent review answered
-- [ ] Merge: preview_merge vs adds_to agreement test
-- [ ] Merge: merge_or_arm and base_relation
-- [ ] Merge: independent review answered
+- [x] Queue: queue_readiness and armed_snapshot
+- [x] Queue: bring_armed_up_to_date for both drivers
+- [x] Queue: independent review answered
+- [x] Merge: preview_merge vs adds_to agreement test
+- [x] Merge: conflict checks compared; F3 and F4 reported
+- [x] Merge: independent review answered
 - [ ] Queue leftovers: typed dissolve reason, is_merged, branch filter, typed queue
 - [ ] Leftovers/finish: TaskCache kind and background probe
 - [ ] F6/F9/F10: independent review answered
@@ -114,3 +114,46 @@ PR 1, the split of `delivery.rs` (audit L2 F8, CLN-002):
 - Independent review (Fable 5.2): round 1 requested changes (the Vidoc paths, three placements);
   round 2 approved `6ca422c9c`; its last notes (drop the `profile.rs` entries, this Evidence) are
   in the next commit.
+
+PR 2, the queue's readiness rule and armed slot (audit L2 F2 + F5, CLN-002):
+- `queue_readiness` (Working, Shells, NotRunning, then the worktree's MovedOn, Dirty and MovedOn
+  at the head; cheapest first) replaces
+  the copies in the armed-merge pass, `keep_armed_current`, `candidate_wait_note`, the train's
+  member step and candidate pick (`train_ready`), and `pr_watch`'s `armed_wait_reason`;
+  `agent_idle` replaces the two copies in parking. `bring_armed_up_to_date` (merge plus span)
+  and `audit_branch_updated` are the update step the two drivers copied; each driver keeps its
+  own push order. `armed_snapshot` reads the arm, decisions and note under one lock for
+  `pr_watch`'s race guards and replaces `arm_observation` and `arm_queue_note`.
+- One wording change, as the audit's F2 decided: `armed_wait_reason` read a failed
+  uncommitted-changes check as clean, the rest of the queue as dirty; both now say dirty.
+- Product lines +226 / −221: the copies were short inline expressions, so the gain is one rule
+  instead of eight, not size.
+- `scripts/cargo nextest run -p yulius-app`: 740 passed; `-p yulius --test main`: 2830 passed;
+  clippy `-p yulius-app -p yulius --all-targets -D warnings`: clean. Hand mutations: without the
+  background-shell check in `queue_readiness`, two `antigravity_armed_merge` tests fail; with the
+  old clean default for a failed read, the new test
+  `stalled_armed_green_pr_with_an_unreadable_worktree_says_uncommitted` fails (generic sentence).
+- Independent review (Fable 5.2) approved `6ccb58f7a`; its notes are answered in the next commit:
+  NotRunning before any Git read (no new `git status` for a task held for capacity), the
+  `MovedOn` doc, no unused derives on `ArmedSnapshot`, the new test, and the stalled-PR test now
+  pins its "turn as working" sentence. `crates/yulius/tests/antigravity_armed_merge.rs` is
+  claimed beside task #657's `crates/yulius/tests/**`, for these two additions only.
+
+PR 3, the conflict checks compared (audit L2 F4's precondition; F3 and F4 not done):
+- `delivery::preview_merge_and_adds_to_agree_on_conflicts` (real Git, the repository's merge
+  drivers): `merge_base` + `adds_to` and `preview_merge` agree in every shape with one merge base
+  (apart, conflicting, union-driver, up to date, behind, the same change); an unrelated head has
+  no merge base for either.
+- `delivery::adds_to_and_preview_merge_differ_with_several_merge_bases`: with two merge bases
+  (each side merged the other) they disagree. `preview_merge` answers as `git merge` does;
+  `adds_to` from `merge_base`'s one base gives the opposite (found by the independent review).
+- So switching `local_conflict` to `preview_merge` changes its answer for criss-cross pull
+  requests (reachable where merge commits land both ways): a behaviour change, which the cleanup
+  charter leaves to the owner. The switch was made, reviewed and reverted; only the two tests
+  remain.
+- Not done, outside the task's paths: F3 (`merge_or_arm`) has to fold `merges.rs`'s
+  `merge_for_person` into `agent_delivery.rs`'s `delivery_merge_answer`; `merges.rs` is not
+  claimed by this task. F4's `BaseRelation` cache would change `TaskRuntime.pr_conflict`'s type in
+  `supervisor.rs` (task #650's), and `adds_to` stays for parking's other question.
+- Independent review (Fable 5.2): round 1 requested changes (the criss-cross difference); round 2
+  approved `be5a14518`; its optional nit (the test runs a real `git merge`) is in `3d1b2120e`.

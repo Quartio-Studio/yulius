@@ -3,7 +3,8 @@
 ## Status
 
 Accepted; amended by [ADR-0282](0282-a-production-deploy-proves-its-rollback-on-dev-first.md)
-(a person's production deploy that only lacks the drill deploys dev first). Specified in
+(a person's production deploy that only lacks the drill deploys dev first; that amendment is
+superseded since 2026-11-26). Specified in
 [SPEC-415](../../.ai/specs/SPEC-415-global-rollback-in-ci-cd-one-click-roll.md);
 task #397, asked by quartio-v2's owner. Builds on
 [ADR-0109](0109-cd-runs-verified-commits-out-of-the-agents-reach.md),

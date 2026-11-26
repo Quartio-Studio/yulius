@@ -51,11 +51,12 @@ use serde::{Deserialize, Serialize};
 use yulius_domain::ci::{CiRef, GateResult, RunState};
 use yulius_domain::delivery::{DeliveryStage, MergeMethod};
 use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::vault::redact::{PlainMatcher, redact_text};
 
-use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Verdict};
+use crate::agent_wait::{
+    ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Readiness, Verdict,
+};
 use crate::auth::AuthContext;
 use crate::ci::{CiJobRecord, CiRunRecord, PullHead, run_for_pull_head};
 use crate::context::App;
@@ -1446,50 +1447,33 @@ impl App {
             return keep(armed, format!("#{} has no worktree", member.pr));
         };
         let worktree = Path::new(worktree);
-        let idle = task.status == TaskStatus::Running
-            && task.activity.is_some_and(Activity::is_idle)
-            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
-        // A busy agent's turn ends soon: the train waits for it (bounded, TRN-006) instead of
-        // throwing its passed run away (SPEC-441 MQ-003).
-        if !idle || self.deps.git.has_changes(worktree).await.unwrap_or(true) {
-            return (Verdict::Keep(armed), Step::Wait);
-        }
-        let at = self
-            .deps
-            .git
-            .log(worktree, "HEAD", 1)
-            .await
-            .ok()
-            .and_then(|log| log.into_iter().next())
-            .map(|commit| commit.sha);
-        if at.as_deref() != Some(armed.head.as_str()) {
-            return (
-                Verdict::Keep(armed),
-                Step::Stop(format!("#{} moved on", member.pr)),
-            );
+        match self.queue_readiness(task, Some(&armed.head)).await {
+            Readiness::Ready => {}
+            Readiness::MovedOn => {
+                return (
+                    Verdict::Keep(armed),
+                    Step::Stop(format!("#{} moved on", member.pr)),
+                );
+            }
+            // A busy agent's turn ends soon: the train waits for it (bounded, TRN-006) instead of
+            // throwing its passed run away (SPEC-441 MQ-003).
+            Readiness::Working | Readiness::Shells | Readiness::Dirty | Readiness::NotRunning => {
+                return (Verdict::Keep(armed), Step::Wait);
+            }
         }
         let profile = delivery_profile(sandbox);
         let integration = profile.integration_branch.clone();
         let Ok(token) = self.task_github_token(task, sandbox).await else {
             return keep(armed, format!("#{} has no GitHub token", member.pr));
         };
-        let updating = self.now();
         let (head, moved) = match self
-            .deps
-            .git
-            .merge_integration(worktree, &integration, &token)
+            .bring_armed_up_to_date(&task.id, worktree, &integration, &token)
             .await
         {
             Ok(MergeIntegration::UpToDate) => (armed.head.clone(), false),
-            Ok(MergeIntegration::Merged(head)) => {
-                self.integration_update_span(&task.id, &integration, updating, "merged")
-                    .await;
-                (head, true)
-            }
+            Ok(MergeIntegration::Merged(head)) => (head, true),
             // Aborted: the one-by-one flow tells the agent what to resolve.
             Ok(MergeIntegration::Conflict(_)) => {
-                self.integration_update_span(&task.id, &integration, updating, "conflict")
-                    .await;
                 return keep(armed, format!("#{} conflicts after all", member.pr));
             }
             Err(err) => {
@@ -1520,8 +1504,15 @@ impl App {
             {
                 Ok(()) => {
                     self.save_armed_during(&task.id, deciding, &moved_armed);
-                    self.train_branch_updated(sandbox, task, branch, &head, &integration)
-                        .await;
+                    self.audit_branch_updated(
+                        sandbox,
+                        task,
+                        branch,
+                        &head,
+                        &integration,
+                        "the merge train",
+                    )
+                    .await;
                     keep(moved_armed.clone(), reason)
                 }
                 Err(err) => {
@@ -1556,8 +1547,15 @@ impl App {
             }
             // A restart from here on finds the pushed head armed (TRN-008).
             self.save_armed_during(&task.id, deciding, &moved_armed);
-            self.train_branch_updated(sandbox, task, branch, &head, &integration)
-                .await;
+            self.audit_branch_updated(
+                sandbox,
+                task,
+                branch,
+                &head,
+                &integration,
+                "the merge train",
+            )
+            .await;
         }
         if let Some(run) = recorded {
             self.ci_publish(&run).await;
@@ -1641,29 +1639,6 @@ impl App {
                 ),
             ),
         }
-    }
-
-    async fn train_branch_updated(
-        &self,
-        sandbox: &SandboxRecord,
-        task: &TaskRecord,
-        branch: &str,
-        head: &str,
-        integration: &str,
-    ) {
-        let _ = self
-            .deps
-            .store
-            .audit(
-                self.now(),
-                "yulius",
-                "delivery.branch_updated",
-                Some(&format!("{}#{}", sandbox.slug, task.number)),
-                Some(&format!(
-                    "merged {integration} into {branch} at {head} for the merge train"
-                )),
-            )
-            .await;
     }
 
     /// Makes sure `head` (member `index`'s, with the tree the train predicted) has the train's
@@ -1864,7 +1839,8 @@ impl App {
                 || state
                     .held_back
                     .contains(&(task.id.to_string(), armed.armed_at))
-                || !self.train_ready(&task, &armed).await
+                || task.branch.is_none()
+                || self.queue_readiness(&task, Some(&armed.head)).await != Readiness::Ready
             {
                 continue;
             }
@@ -2118,27 +2094,6 @@ impl App {
             Ok(pull) => !pull.merged && pull.state == "open",
             Err(_) => true,
         }
-    }
-
-    /// Whether `task` could be brought up to date now, as DLV-203 requires: running and idle
-    /// with nothing running in the background, nothing uncommitted, at the armed head.
-    async fn train_ready(&self, task: &TaskRecord, armed: &ArmedMerge) -> bool {
-        let Some(worktree) = task.worktree_path.as_deref().map(Path::new) else {
-            return false;
-        };
-        let idle = task.status == TaskStatus::Running
-            && task.activity.is_some_and(Activity::is_idle)
-            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
-        if !idle || task.branch.is_none() {
-            return false;
-        }
-        if self.deps.git.has_changes(worktree).await.unwrap_or(true) {
-            return false;
-        }
-        matches!(
-            self.deps.git.log(worktree, "HEAD", 1).await,
-            Ok(log) if log.first().is_some_and(|c| c.sha == armed.head)
-        )
     }
 
     /// Train runs left going without a train (a lost or rewritten file) are cancelled.

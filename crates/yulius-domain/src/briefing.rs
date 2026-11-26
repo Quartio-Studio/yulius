@@ -693,15 +693,16 @@ fn discipline(input: &BriefingInput<'_>) -> String {
     )
 }
 
-/// Rule 6's change note: an entry in the changes log, or one new file of a changes folder
-/// (SPEC-363 CHN-002).
+/// Rule 6's change note, for a user-visible change: a line in the changes log, or one new file of
+/// a changes folder.
 fn changes_rule(input: &BriefingInput<'_>) -> String {
     let changes = code(&input.layout.changes, 200);
     if input.layout.changes_folder().is_some() {
         return format!(
             "Add one new file to {changes} for your change, named \
              `YYYY-MM-DD-{}-<short-slug>.md` (unless AGENTS.md or the newest files there use \
-             another naming: follow it), and never edit other tasks' files.",
+             another naming: follow it), and never edit other tasks' files. Skip it for an \
+             internal change.",
             input.task.number
         );
     }
@@ -710,7 +711,7 @@ fn changes_rule(input: &BriefingInput<'_>) -> String {
     } else {
         "top"
     };
-    format!("Add a short entry at the {end} of {changes}.")
+    format!("Note a user-visible change at the {end} of {changes}.")
 }
 
 /// Only Claude Code registers a named reviewer and selects its model at the Agent hook.
@@ -1595,10 +1596,10 @@ mod tests {
         );
         assert!(text.contains("Entry of day 28."));
         assert!(
-            text.contains("entry at the end of `knowledge/log.md`"),
+            text.contains("user-visible change at the end of `knowledge/log.md`"),
             "{text}"
         );
-        assert!(!text.contains("entry at the top of"));
+        assert!(!text.contains("change at the top of"));
         // However small the section's share, its newest entry is the one kept.
         let tight = recent_changes(&input, 120);
         assert!(tight.contains("Entry of day 28."), "{tight}");
@@ -1645,7 +1646,7 @@ mod tests {
 
         input.changes_newest_at_end = false;
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
-        assert!(text.contains("entry at the top of `knowledge/log.md`"));
+        assert!(text.contains("change at the top of `knowledge/log.md`"));
         assert!(text.contains("From `knowledge/log.md`:"));
         Ok(())
     }
@@ -1737,11 +1738,12 @@ mod tests {
             text.contains(
                 "Add one new file to `docs/changes/` for your change, named \
                  `YYYY-MM-DD-12-<short-slug>.md` (unless AGENTS.md or the newest files there use \
-                 another naming: follow it), and never edit other tasks' files."
+                 another naming: follow it), and never edit other tasks' files. Skip it for an \
+                 internal change."
             ),
             "{text}"
         );
-        assert!(!text.contains("entry at the"), "{text}");
+        assert!(!text.contains("change at the top of"), "{text}");
         assert!(
             text.contains("- `docs/changes/`: what was delivered recently, one file per change.")
         );
@@ -1763,7 +1765,8 @@ mod tests {
         // The single file keeps its rule.
         let file = DocsLayout::default();
         let text = build_briefing(&base(&profile, &file)?, DEFAULT_BUDGET_BYTES);
-        assert!(text.contains("Add a short entry at the top of `docs/changes.md`."));
+        assert!(text.contains("Note a user-visible change at the top of `docs/changes.md`."));
+        assert!(!text.contains("short entry"), "{text}");
         assert!(text.contains("- `docs/changes.md`: what was delivered recently.\n"));
         assert!(text.contains("From `docs/changes.md`:"));
         Ok(())
@@ -1865,7 +1868,7 @@ mod tests {
             "read them first: `AGENTS.md`, `CLAUDE.md`",
             "ADR in `docs/decisions/NNNN-<slug>.md` only for a build or run choice someone may \
              want to reverse, with two rejected alternatives.",
-            "top of `docs/changes.md`",
+            "Note a user-visible change at the top of `docs/changes.md`.",
             "Mermaid diagram",
             "`browser_request_user_action`",
             "Know the product first",
