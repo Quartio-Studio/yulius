@@ -329,11 +329,12 @@ impl App {
     /// method at the head that was checked, after the domain gates (spec, a finished step of the
     /// plan, checks per profile, current head; the pull request has its head already, so no
     /// step started since holds it, SPEC-484 PLN-002). With `auto_promote`,
-    /// promotes right after (policy). It acts as the caller on GitHub, so the superadmin without
-    /// a GitHub identity is told to merge on GitHub (ACC-012).
+    /// promotes right after (policy). It acts as the caller on GitHub; the superadmin without a
+    /// GitHub identity acts through the GitHub App (ACC-012, SPEC-677 SAP-005).
     ///
     /// # Errors
-    /// `Conflict` refusals (including stale heads), `Forbidden` without a GitHub identity,
+    /// `Conflict` refusals (including stale heads), `Forbidden` for a guest without a GitHub
+    /// identity,
     /// `Upstream` GitHub failures.
     pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
@@ -342,13 +343,21 @@ impl App {
         if sandbox.is_playground() {
             return self.playground_merge_now(&ctx.user, &task).await;
         }
-        let token = self
-            .person_github_token(&ctx.user, "Merging a pull request")
+        // The superadmin without a GitHub identity merges through the App (SPEC-677 SAP-005).
+        let acting = self
+            .person_or_app_token(&ctx.user, &sandbox, "Merging a pull request")
             .await?;
         let merged = self
-            .dlv_merge(ctx, &task, &token)
+            .dlv_merge(ctx, &task, &acting.token)
             .await
-            .map_err(MergeFailure::into_error)?;
+            .map_err(MergeFailure::into_error)
+            .map_err(|err| {
+                if acting.through_app {
+                    crate::access::app_refusal(err, &delivery_profile(&sandbox).integration_branch)
+                } else {
+                    err
+                }
+            })?;
         if self.merge_is_armed(&task.id) {
             let steps = self.deps.store.steps(&task.id).await.unwrap_or_default();
             let gate = self
@@ -679,7 +688,7 @@ impl App {
             }),
         )
         .await?;
-        let actor = Self::dlv_actor_login(&ctx.user);
+        let actor = Self::dlv_github_actor(&ctx.user);
         self.dlv_audit(
             &actor,
             "delivery.merge",

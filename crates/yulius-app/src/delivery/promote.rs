@@ -478,10 +478,10 @@ impl App {
 
     fn dlv_policy_actor(by: Initiator, actor: &UserRecord) -> String {
         match by {
-            Initiator::User => Self::dlv_actor_login(actor),
+            Initiator::User => Self::dlv_github_actor(actor),
             Initiator::Policy => format!(
                 "policy:auto_promote (after {})",
-                Self::dlv_actor_login(actor)
+                Self::dlv_github_actor(actor)
             ),
         }
     }
@@ -578,12 +578,12 @@ impl App {
 
     /// `POST /api/sandboxes/{sid}/delivery/promote` (admin, `{"confirm": "<slug>"}`): an explicit
     /// promotion, a production release as the CD page's (ADR-0110). It acts as
-    /// the caller on GitHub, so the superadmin without a GitHub identity is told to release on
-    /// GitHub (ACC-012).
+    /// the caller on GitHub; the superadmin without a GitHub identity acts through the GitHub App
+    /// (ACC-012, SPEC-677).
     ///
     /// # Errors
     /// `Conflict` when environments are pending, production diverged or nothing changed;
-    /// `Forbidden` without a GitHub identity.
+    /// `Forbidden` for a guest without a GitHub identity.
     pub async fn promote_sandbox(
         &self,
         ctx: &AuthContext,
@@ -610,12 +610,15 @@ impl App {
             other => AppError::Forbidden(other.to_string()),
         })?;
         let profile = delivery_profile(&sandbox);
-        let token = self
-            .person_github_token(
+        // The superadmin without a GitHub identity releases through the App (SPEC-677).
+        let acting = self
+            .person_or_app_token(
                 &ctx.user,
+                &sandbox,
                 &format!("Releasing to {}", profile.production_branch),
             )
             .await?;
+        let token = &acting.token;
         // With a merge-first target, only the revision staging verified (SPEC-575 MFS-009).
         let head = self
             .staging_promotion_head(&sandbox)
@@ -626,11 +629,18 @@ impl App {
             &profile,
             Initiator::User,
             &ctx.user,
-            &token,
+            token,
             false,
             PromotionSource::Head(head.as_deref()),
         )
         .await
+        .map_err(|err| {
+            if acting.through_app {
+                crate::access::app_refusal(err, &profile.production_branch)
+            } else {
+                err
+            }
+        })
     }
 
     /// The staging queue verified `request`'s revision: the profile's automatic promotion that

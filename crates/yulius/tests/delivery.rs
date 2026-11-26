@@ -1796,6 +1796,19 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
     let d = f.delivery("t1").await?;
     assert_eq!(d["stage"], "production_done");
     assert!(actions(&d).is_empty());
+    // People signed in with GitHub merge and release with their own tokens (SPEC-677 SAP-001).
+    let merged = f.h.github.actors_of("merge_pull");
+    assert_eq!(
+        merged.first().map(String::as_str),
+        Some("bob"),
+        "{merged:?}"
+    );
+    assert_eq!(
+        merged.last().map(String::as_str),
+        Some("alice"),
+        "{merged:?}"
+    );
+    assert!(!merged.iter().any(|actor| actor == "inst"), "{merged:?}");
     Ok(())
 }
 
@@ -4249,12 +4262,13 @@ async fn superadmin(h: &support::Harness) -> BoxResult<Creds> {
     })
 }
 
-/// ACC-012 (F 2026-10-09): the superadmin without a GitHub identity reads a task's delivery and
-/// opens its pull request through the App, as Yulius does for a ready task; merging and
-/// releasing act as a person on GitHub, so those two actions are refused with a message saying
-/// so (403) — never as a signed-out session (401), and the rest of the page keeps working.
+/// ACC-012 (F 2026-10-09), SPEC-677 SAP-001..SAP-005: the superadmin without a GitHub identity
+/// reads a task's delivery, opens its pull request, merges it and releases it, each through the
+/// GitHub App, as Yulius does for a ready task; the audit says the App acted for the superadmin.
+/// A writer is still refused the release, and nothing reads as a signed-out session (401).
 #[tokio::test]
-async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github() -> TestResult {
+async fn the_superadmin_delivers_merges_and_releases_through_the_app() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
     let f = fixture(&DeliveryProfile::standard()).await?;
     let owner = superadmin(&f.h).await?;
     // The superadmin's own task: only a task's owner delivers it.
@@ -4283,36 +4297,102 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
     assert_eq!(f.origin_sha("feat/1-checkout-api")?, head);
     f.h.github.set_checks(&head, ChecksState::Success);
 
+    // GitHub's rules bind the App: its refusal is said plainly (SAP-004), and nothing merges.
+    *f.h.github.app_write_refusal.lock().map_err(|_| "lock")? = Some(AppError::Conflict(
+        "pull request is not mergeable (HTTP 405): branch protection or a ruleset blocks it \
+         (required reviews or checks, or restricted updates) (GitHub: Repository rule \
+         violations found)"
+            .into(),
+    ));
+    let refused = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &owner)
+        .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let message = error_message(&refused);
+    assert!(
+        message.starts_with("GitHub refused the Yulius GitHub App, which acts for the superadmin")
+            && message.contains("keeps the App out of 'dev'"),
+        "{message}"
+    );
+    assert!(
+        f.h.github.actors_of("merge_pull").is_empty(),
+        "nothing merged"
+    );
+    *f.h.github.app_write_refusal.lock().map_err(|_| "lock")? = None;
+
     let merge = f
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &owner)
         .await?;
-    assert_eq!(merge.status, StatusCode::FORBIDDEN, "{}", merge.body);
-    assert!(
-        error_message(&merge).contains("Merging a pull request acts as a person on GitHub"),
-        "{}",
-        merge.body
+    assert_eq!(merge.status, StatusCode::OK, "{}", merge.body);
+    assert_eq!(merge.body["stage"], "merged_integration");
+    assert_eq!(
+        f.h.github.actors_of("merge_pull"),
+        ["inst"],
+        "the App merged"
     );
-    let release = f
+    let merged =
+        f.h.store
+            .last_audit("shop#1", "delivery.merge", Timestamp(0))
+            .await?
+            .ok_or("no merge record")?;
+    assert_eq!(merged.actor, "superadmin (through the GitHub App)");
+
+    // A writer is no administrator: the release stays refused, whoever could promote.
+    let main_before = f.origin_sha("main")?;
+    let writer = f
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
             Some(json!({"confirm": "shop"})),
-            &owner,
+            &f.bob,
         )
         .await?;
-    assert_eq!(release.status, StatusCode::FORBIDDEN, "{}", release.body);
-    assert!(
-        error_message(&release).contains("Releasing to main acts as a person on GitHub"),
-        "{}",
-        release.body
+    assert_eq!(writer.status, StatusCode::FORBIDDEN, "{}", writer.body);
+    assert_eq!(
+        f.h.github.actors_of("create_pull"),
+        ["inst"],
+        "nothing opened"
     );
+
+    // The release: the promotion pull request, then its merge, both by the App.
+    let confirmed = Some(json!({"confirm": "shop"}));
+    let promote = "/api/sandboxes/s1/delivery/promote";
+    let promotion = f
+        .req(Method::POST, promote, confirmed.clone(), &owner)
+        .await?;
+    assert_eq!(promotion.status, StatusCode::OK, "{}", promotion.body);
+    assert_eq!(promotion.body["result"], "pr_opened");
+    assert_eq!(f.h.github.actors_of("create_pull"), ["inst", "inst"]);
+    let promotion_head = f.h.github.pull(2).ok_or("pull 2")?.head_sha;
+    f.h.github.set_checks(&promotion_head, ChecksState::Success);
+    *f.h.github.app_write_refusal.lock().map_err(|_| "lock")? = Some(AppError::Conflict(
+        "pull request is not mergeable (HTTP 405): Repository rule violations found".into(),
+    ));
+    let refused = f
+        .req(Method::POST, promote, confirmed.clone(), &owner)
+        .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let message = error_message(&refused);
     assert!(
-        !f.h.github
-            .writes()
-            .iter()
-            .any(|w| w.starts_with("merge_pull")),
-        "nothing was merged"
+        message.starts_with("GitHub refused the Yulius GitHub App, which acts for the superadmin")
+            && message.contains("keeps the App out of 'main'")
+            && message.contains("repository admin signed in with GitHub")
+            && !message.contains("bypass"),
+        "{message}"
     );
+    assert_eq!(f.origin_sha("main")?, main_before, "nothing was released");
+    *f.h.github.app_write_refusal.lock().map_err(|_| "lock")? = None;
+    let promoted = f.req(Method::POST, promote, confirmed, &owner).await?;
+    assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
+    assert_eq!(promoted.body["result"], "promoted");
+    assert_ne!(f.origin_sha("main")?, main_before, "main moved");
+    assert_eq!(f.h.github.actors_of("merge_pull"), ["inst", "inst"]);
+    let record =
+        f.h.store
+            .last_audit("shop", "delivery.promote", Timestamp(0))
+            .await?
+            .ok_or("no release record")?;
+    assert_eq!(record.actor, "superadmin (through the GitHub App)");
 
     // Still signed in, and the Git page answers.
     let page = f
@@ -4320,9 +4400,27 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
         .await?;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert_eq!(page.body["tasks"][0]["pr"]["number"], 1);
+    Ok(())
+}
 
-    // Bob may not merge the superadmin's task; once it is handed to him, he merges
-    // the App's pull request as before.
+/// ACC-012: Bob may not merge the superadmin's task; once it is handed to him, he merges the
+/// pull request the App opened, with his own token.
+#[tokio::test]
+async fn a_superadmin_task_handed_over_merges_as_its_new_owner() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner = superadmin(&f.h).await?;
+    let wt = f
+        .add_task_by("t1", "Checkout API", "feat/1-checkout-api", "dev", "u-root")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &owner)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+
     let refused = f
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
         .await?;
@@ -4347,6 +4445,7 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
         .await?;
     assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
     assert_eq!(merged.body["stage"], "merged_integration");
+    assert_eq!(f.h.github.actors_of("merge_pull"), ["bob"]);
     Ok(())
 }
 

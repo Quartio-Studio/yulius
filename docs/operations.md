@@ -1047,7 +1047,11 @@ days, 50 per environment, and each environment's last passed run always.
 - **SSH.** Runs reach Internet hosts (port 22 too), not host loopback; pin keys in the project
   (`StrictHostKeyChecking=yes`, own `UserKnownHostsFile`). `YULIUS_SANDBOX_EGRESS=none`: no network.
 - **Production.** Only an administrator deploys it, on the CD page, typing the project's slug. With
-  `promote = true` it first promotes under that person's GitHub identity.
+  `promote = true` it first promotes under that person's GitHub identity; the superadmin, who has
+  none, promotes through the GitHub App, and the run says so. The ruleset that keeps agents off the
+  production branch keeps the App out too (never add the App to its bypass list: agents' tokens are
+  the App's, ADR-0114), so on a protected branch GitHub refuses it, the deploy says so, and a
+  repository admin signed in with GitHub deploys instead.
 - **Restarts.** A run running when the server stopped is recorded `error` ("outcome unknown") and
   never restarted by itself: check the environment and deploy again.
 
