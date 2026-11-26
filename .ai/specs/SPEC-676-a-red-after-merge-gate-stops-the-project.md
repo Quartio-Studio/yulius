@@ -97,10 +97,10 @@ What exists:
 ## Plan
 
 - [x] Spec and ADR: the stop, its setting and default, repairs, quarantine, trains
-- [ ] The decision: `[merge_queue] stop_on_red_gate`, the stop from open failures without quarantined tests, repairs and the waiting note
-- [ ] The armed-merge pass and `delivery_merge` hold merges that are not repairs while the queue is stopped; `repairs_gate` marks a repair
-- [ ] Merge trains form only from repairs while the queue is stopped; a candidate under test is dissolved
-- [ ] The breaker is preferred as the repair owner and told the queue waits for the repair
+- [x] The decision: `[merge_queue] stop_on_red_gate`, the stop from open failures without quarantined tests, repairs and the waiting note
+- [x] The armed-merge pass and `delivery_merge` hold merges that are not repairs while the queue is stopped; `repairs_gate` marks a repair
+- [x] Merge trains form only from repairs while the queue is stopped; a candidate under test is dissolved
+- [x] The breaker is preferred as the repair owner and told the queue waits for the repair
 - [ ] Docs: architecture, product, API, changes; independent review of the backend
 - [ ] Deliver the backend: green CI and merge into dev
 - [ ] The CI/CD page shows the stopped queue (API `merge_stop`, banner, mock, e2e)
