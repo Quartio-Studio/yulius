@@ -19,13 +19,9 @@ use yulius_app::model::{
 };
 use yulius_app::ports::github::GitHubAppConfig;
 use yulius_app::ports::session::{
-    AttachedRun, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWelcome,
-    RunWriter, SessionHost, SpawnedRun,
+    AttachedRun, RunEvent, RunExit, RunReader, RunSignal, RunWelcome, RunWriter,
 };
-use yulius_app::{
-    context::App,
-    error::{AppError, AppResult},
-};
+use yulius_app::{context::App, error::AppResult};
 use yulius_domain::harness::Harness as Agent;
 use yulius_domain::ids::{AttemptId, MessageId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState, TaskStatus};
@@ -78,7 +74,25 @@ async fn fixture_with_read_budget(
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
     let h = support::harness_with(support::HarnessOptions {
         git: Some(Arc::new(support::confined_git())),
-        session_host: Some(Arc::new(IdleSessionHost)),
+        // The fixtures seed a live attempt: the host only reattaches it, starting no CLI.
+        session_host: Some(Arc::new(support::ScriptedHost {
+            attach: Some(Box::new(|_| {
+                let (exit, events) = tokio::sync::oneshot::channel();
+                Ok(AttachedRun {
+                    welcome: RunWelcome {
+                        child_pid: 2,
+                        seq: 0,
+                        cols: 80,
+                        rows: 24,
+                        rendered: true,
+                        snapshot: None,
+                    },
+                    reader: Box::new(IdleSessionReader(events)),
+                    writer: Box::new(IdleSessionWriter(Some(exit))),
+                })
+            })),
+            ..support::ScriptedHost::default()
+        })),
         configure: Some(Box::new(move |config| {
             config.parked_pr_read_ms = read_budget_ms
         })),
@@ -4169,51 +4183,6 @@ async fn a_delayed_goal_submit_retains_the_owner_and_the_next_draft() -> TestRes
         "the instruction already submitted by the owner"
     );
     Ok(())
-}
-
-/// The parking fixtures already have a live attempt in the store. Its host can be
-/// reattached without starting a CLI or calling a provider.
-struct IdleSessionHost;
-
-#[async_trait::async_trait]
-impl SessionHost for IdleSessionHost {
-    async fn spawn(
-        &self,
-        _: &Path,
-        _: &str,
-        _: &str,
-        _: &LaunchPlan,
-        _: &[u8; 32],
-        _: (u16, u16),
-    ) -> AppResult<SpawnedRun> {
-        Err(AppError::Upstream(
-            "fixture only reattaches seeded runs".into(),
-        ))
-    }
-
-    async fn attach(&self, _: &Path, _: &[u8; 32]) -> AppResult<AttachedRun> {
-        let (exit, events) = tokio::sync::oneshot::channel();
-        Ok(AttachedRun {
-            welcome: RunWelcome {
-                child_pid: 2,
-                seq: 0,
-                cols: 80,
-                rows: 24,
-                rendered: true,
-                snapshot: None,
-            },
-            reader: Box::new(IdleSessionReader(events)),
-            writer: Box::new(IdleSessionWriter(Some(exit))),
-        })
-    }
-
-    fn inspect(&self, _: &Path) -> RunInspection {
-        RunInspection::Missing
-    }
-
-    fn terminate(&self, _: &Path) -> AppResult<()> {
-        Ok(())
-    }
 }
 
 struct IdleSessionReader(tokio::sync::oneshot::Receiver<RunEvent>);

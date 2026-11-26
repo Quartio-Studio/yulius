@@ -756,55 +756,6 @@ fn a_typed_compaction_leaves_a_done_task_done() -> TestResult {
     Ok(())
 }
 
-/// The real session host whose probe also finds `waits` shells that only run `yulius wait`
-/// (what `yulius_ptyhost::shells::count_background` tells apart on a real process tree).
-struct WaitingHost {
-    inner: PtySessionHost,
-    waits: Arc<std::sync::atomic::AtomicU32>,
-}
-
-#[async_trait::async_trait]
-impl SessionHost for WaitingHost {
-    async fn spawn(
-        &self,
-        run_dir: &Path,
-        attempt_id: &str,
-        task_id: &str,
-        plan: &LaunchPlan,
-        token: &[u8; 32],
-        size: (u16, u16),
-    ) -> AppResult<SpawnedRun> {
-        self.inner
-            .spawn(run_dir, attempt_id, task_id, plan, token, size)
-            .await
-    }
-
-    async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
-        self.inner.attach(run_dir, token).await
-    }
-
-    fn inspect(&self, run_dir: &Path) -> RunInspection {
-        self.inner.inspect(run_dir)
-    }
-
-    fn terminate(&self, run_dir: &Path) -> AppResult<()> {
-        self.inner.terminate(run_dir)
-    }
-
-    fn background_shells(&self, child_pid: u32) -> Option<u32> {
-        self.inner.background_shells(child_pid)
-    }
-
-    fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
-        self.inner
-            .background_probe(child_pid)
-            .map(|found| BackgroundProbe {
-                waits: self.waits.load(std::sync::atomic::Ordering::SeqCst),
-                ..found
-            })
-    }
-}
-
 /// SPEC-085 STT-002 ("needs you was too often": 173 idle periods of 37 tasks read Your turn while
 /// their agent waited in `yulius wait` for its checks or merge): the probe's waiting shells reach
 /// the task's view and the sandbox's counts. The waiting task is not counted as needing a person
@@ -823,9 +774,22 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
         };
         let waits = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-        let host = Arc::new(WaitingHost {
-            inner: PtySessionHost::new(exe),
-            waits: Arc::clone(&waits),
+        // The real host, whose probe also finds `waits` shells that only run `yulius wait` (what
+        // `yulius_ptyhost::shells::count_background` tells apart on a real process tree).
+        let real = Arc::new(PtySessionHost::new(exe));
+        let host = Arc::new(support::ScriptedHost {
+            inner: Some(real.clone()),
+            background_probe: Some(Box::new({
+                let (inner, waits) = (Arc::clone(&real), Arc::clone(&waits));
+                move |pid| {
+                    inner.background_probe(pid).map(|found| BackgroundProbe {
+                        waits: waits.load(std::sync::atomic::Ordering::SeqCst),
+                        ..found
+                    })
+                }
+            })),
+            reap_strays: Some(Box::new(|_| 0)),
+            ..support::ScriptedHost::default()
         });
         let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
         let (sandbox, user) = seed(&app, &data).await?;

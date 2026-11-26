@@ -22,50 +22,13 @@ use yulius_domain::harness::Harness;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
-/// The plans a contained server hands its session host, which starts nothing.
-#[derive(Default)]
-struct RecordingHost {
-    plans: std::sync::Mutex<Vec<LaunchPlan>>,
-}
-
-#[async_trait::async_trait]
-impl yulius_app::ports::session::SessionHost for RecordingHost {
-    async fn spawn(
-        &self,
-        _run_dir: &Path,
-        _attempt_id: &str,
-        _task_id: &str,
-        plan: &LaunchPlan,
-        _token: &[u8; 32],
-        _size: (u16, u16),
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        if let Ok(mut plans) = self.plans.lock() {
-            plans.push(plan.clone());
-        }
-        Err(yulius_app::error::AppError::Upstream("recorded".into()))
-    }
-    async fn attach(
-        &self,
-        _run_dir: &Path,
-        _token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        Err(yulius_app::error::AppError::NotFound)
-    }
-    fn inspect(&self, _run_dir: &Path) -> yulius_app::ports::session::RunInspection {
-        yulius_app::ports::session::RunInspection::Missing
-    }
-    fn terminate(&self, _run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        Ok(())
-    }
-}
-
 /// The recorded plan of a new contained task of `harness` in a fresh sandbox.
 fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std::error::Error>> {
     let dir = tempfile::Builder::new().prefix("ym").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;
     let rt = runtime()?;
     let plan = rt.block_on(async {
-        let host = Arc::new(RecordingHost::default());
+        let host = Arc::new(crate::support::ScriptedHost::default());
         let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
         let mut config = AppConfig::new(
             data.clone(),
@@ -142,16 +105,10 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
         })
         .await?;
         eventually("the recorded plan", Duration::from_secs(30), || async {
-            host.plans.lock().is_ok_and(|plans| !plans.is_empty())
+            !host.plans().is_empty()
         })
         .await?;
-        let plan = host
-            .plans
-            .lock()
-            .map_err(|_| "poisoned")?
-            .first()
-            .cloned()
-            .ok_or("no plan")?;
+        let plan = host.plans().into_iter().next().ok_or("no plan")?;
         Ok::<_, Box<dyn std::error::Error>>(plan)
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

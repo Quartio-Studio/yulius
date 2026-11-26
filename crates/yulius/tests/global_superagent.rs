@@ -472,43 +472,6 @@ async fn a_global_superagent_whose_host_was_lost_moves_to_another_sandbox() -> T
     Ok(())
 }
 
-/// The plans a contained server hands its session host, which starts nothing (AC-GSA-4).
-#[derive(Default)]
-struct RecordingHost {
-    plans: std::sync::Mutex<Vec<yulius_app::ports::session::LaunchPlan>>,
-}
-
-#[async_trait::async_trait]
-impl yulius_app::ports::session::SessionHost for RecordingHost {
-    async fn spawn(
-        &self,
-        _run_dir: &Path,
-        _attempt_id: &str,
-        _task_id: &str,
-        plan: &yulius_app::ports::session::LaunchPlan,
-        _token: &[u8; 32],
-        _size: (u16, u16),
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        if let Ok(mut plans) = self.plans.lock() {
-            plans.push(plan.clone());
-        }
-        Err(yulius_app::error::AppError::Upstream("recorded".into()))
-    }
-    async fn attach(
-        &self,
-        _run_dir: &Path,
-        _token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        Err(yulius_app::error::AppError::NotFound)
-    }
-    fn inspect(&self, _run_dir: &Path) -> yulius_app::ports::session::RunInspection {
-        yulius_app::ports::session::RunInspection::Missing
-    }
-    fn terminate(&self, _run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        Ok(())
-    }
-}
-
 /// AC-GSA-4 (GSA-002): on a contained server the plan its session host gets is contained in a
 /// bubblewrap root of its own folder, without a sandbox holder, identity, repository or the
 /// person's home, with the host's password files covered, every shell command refused through a
@@ -517,7 +480,7 @@ impl yulius_app::ports::session::SessionHost for RecordingHost {
 async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
     use yulius_app::ports::session::Containment;
 
-    let host = std::sync::Arc::new(RecordingHost::default());
+    let host = std::sync::Arc::new(crate::support::ScriptedHost::default());
     let h = support::harness_with(support::HarnessOptions {
         session_host: Some(host.clone()),
         configure: Some(Box::new(|config| config.contained = true)),
@@ -537,13 +500,7 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
 
     let resp = call(&h.router, Method::POST, "/api/superagent", None, &alice).await?;
     assert_eq!(resp.status, StatusCode::BAD_GATEWAY, "{:?}", resp.body);
-    let plan = host
-        .plans
-        .lock()
-        .map_err(|_| "poisoned")?
-        .first()
-        .cloned()
-        .ok_or("nothing spawned")?;
+    let plan = host.plans().into_iter().next().ok_or("nothing spawned")?;
     let Containment::Bubblewrap {
         sandbox_root,
         home,
@@ -1067,7 +1024,7 @@ async fn a_contained_superagent_guards_its_memory_in_the_persons_home() -> TestR
     use yulius_app::ports::session::Containment;
     use yulius_contracts::ptyhost::GuardKind;
 
-    let host = std::sync::Arc::new(RecordingHost::default());
+    let host = std::sync::Arc::new(crate::support::ScriptedHost::default());
     let h = support::harness_with(support::HarnessOptions {
         session_host: Some(host.clone()),
         configure: Some(Box::new(|config| config.contained = true)),
@@ -1090,13 +1047,7 @@ async fn a_contained_superagent_guards_its_memory_in_the_persons_home() -> TestR
     )
     .await?;
     assert!(!resp.status.is_success(), "{:?}", resp.body);
-    let plan = host
-        .plans
-        .lock()
-        .map_err(|_| "poisoned")?
-        .first()
-        .cloned()
-        .ok_or("nothing spawned")?;
+    let plan = host.plans().into_iter().next().ok_or("nothing spawned")?;
     let Containment::Bubblewrap { home, guard, .. } = &plan.containment else {
         return Err("not contained".into());
     };

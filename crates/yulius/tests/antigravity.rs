@@ -129,43 +129,6 @@ async fn build_hooked(
     Ok(app)
 }
 
-/// The plans a contained server hands its session host, which starts nothing.
-#[derive(Default)]
-struct RecordingHost {
-    plans: std::sync::Mutex<Vec<yulius_app::ports::session::LaunchPlan>>,
-}
-
-#[async_trait::async_trait]
-impl yulius_app::ports::session::SessionHost for RecordingHost {
-    async fn spawn(
-        &self,
-        _run_dir: &Path,
-        _attempt_id: &str,
-        _task_id: &str,
-        plan: &yulius_app::ports::session::LaunchPlan,
-        _token: &[u8; 32],
-        _size: (u16, u16),
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        if let Ok(mut plans) = self.plans.lock() {
-            plans.push(plan.clone());
-        }
-        Err(yulius_app::error::AppError::Upstream("recorded".into()))
-    }
-    async fn attach(
-        &self,
-        _run_dir: &Path,
-        _token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        Err(yulius_app::error::AppError::NotFound)
-    }
-    fn inspect(&self, _run_dir: &Path) -> yulius_app::ports::session::RunInspection {
-        yulius_app::ports::session::RunInspection::Missing
-    }
-    fn terminate(&self, _run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        Ok(())
-    }
-}
-
 fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
     // A short base: run sockets live at <data>/runs/<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
@@ -1133,7 +1096,7 @@ fn a_contained_antigravity_plan_binds_the_runs_home() -> TestResult {
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let host = Arc::new(RecordingHost::default());
+        let host = Arc::new(crate::support::ScriptedHost::default());
         let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
         let mut config = AppConfig::new(
             data.clone(),
@@ -1179,16 +1142,10 @@ fn a_contained_antigravity_plan_binds_the_runs_home() -> TestResult {
         )
         .await?;
         eventually("the recorded plan", Duration::from_secs(30), || async {
-            host.plans.lock().is_ok_and(|plans| !plans.is_empty())
+            !host.plans().is_empty()
         })
         .await?;
-        let plan = host
-            .plans
-            .lock()
-            .map_err(|_| "poisoned")?
-            .first()
-            .cloned()
-            .ok_or("no plan")?;
+        let plan = host.plans().into_iter().next().ok_or("no plan")?;
         let yulius_app::ports::session::Containment::Bubblewrap {
             sandbox_root,
             home,

@@ -1088,66 +1088,6 @@ async fn tasks_ci_and_cd_are_driven_remotely() -> TestResult {
     Ok(())
 }
 
-/// GitHub's side of a repository for the fake GitHub: its bare remote, where merges land as
-/// GitHub lands them.
-struct Origin(std::path::PathBuf);
-
-impl support::FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        support::git_stdout(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .ok()
-        .map(|sha| sha.trim().to_owned())
-    }
-    fn merge(&self, base: &str, head: &str, method: &str, message: &str) -> Result<String, String> {
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = support::git_stdout(&self.0, &["merge-tree", "--write-tree", &base_sha, head])
-            .map_err(|e| e.to_string())?;
-        let tree = tree.trim().to_owned();
-        let mut args = vec!["commit-tree", tree.as_str(), "-p", base_sha.as_str()];
-        if method == "merge" {
-            args.extend(["-p", head]);
-        }
-        args.extend(["-m", message]);
-        let commit = support::git_stdout(&self.0, &args)
-            .map_err(|e| e.to_string())?
-            .trim()
-            .to_owned();
-        support::git_stdout(
-            &self.0,
-            &[
-                "update-ref",
-                &format!("refs/heads/{base}"),
-                &commit,
-                &base_sha,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(commit)
-    }
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        support::git_stdout(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-        .map_err(|e| e.to_string())
-    }
-}
-
 /// `files` at `rev` of the bare `origin`, or `None`.
 fn origin_file(origin: &std::path::Path, rev: &str, path: &str) -> Option<String> {
     support::git_stdout(origin, &["show", &format!("{rev}:{path}")]).ok()
@@ -1162,7 +1102,7 @@ async fn imported_shop(
     let (_, _, alice) = person(w, "alice").await?;
     let origin = w.remote(support::repos::OWNER, "shop", files, &["dev"])?;
     w.h.github
-        .set_remote(std::sync::Arc::new(Origin(origin.clone())));
+        .set_remote(std::sync::Arc::new(support::BareRemote(origin.clone())));
     w.github
         .add_installation_repo(support::repos::OWNER, "shop", true);
     w.grant("alice", "shop", "admin");
@@ -1345,7 +1285,9 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
         Some(toml)
     );
     assert!(
-        Origin(origin.clone()).branch_sha(&branch).is_none(),
+        support::BareRemote(origin.clone())
+            .branch_sha(&branch)
+            .is_none(),
         "the change branch is deleted"
     );
 
@@ -2191,7 +2133,7 @@ async fn a_repository_is_onboarded_end_to_end_from_a_laptop() -> TestResult {
         &["dev"],
     )?;
     w.h.github
-        .set_remote(std::sync::Arc::new(Origin(origin.clone())));
+        .set_remote(std::sync::Arc::new(support::BareRemote(origin.clone())));
     w.github
         .add_installation_repo(support::repos::OWNER, "shop", true);
     w.grant("alice", "shop", "admin");
