@@ -24,9 +24,9 @@ lives in files named by what they do. Behaviour unchanged.
 ## Requirements
 
 - SPL-001: each commit moves code verbatim. The only edits are imports, `mod` lines, a new
-  file's one- or two-line `//!` doc, the `impl` / `mod tests` wrappers around moved items, the visibility the move needs (`pub(super)`,
-  re-exports `pub(crate) use` for paths other files already name), and rustfmt re-wrapping a
-  line that the visibility made too long.
+  file's one- or two-line `//!` doc, the `impl` / `mod tests` wrappers around moved items,
+  the visibility the move needs (`pub(super)`, re-exports `pub(crate) use` for paths other
+  files already name), and rustfmt re-wrapping a line that the visibility made too long.
 - SPL-002: visibility is as narrow as the move allows.
 - SPL-003: a moved item's unit tests move with it.
 - SPL-004: each pull request is reviewable with `git diff --color-moved`. The four pull requests
