@@ -2573,7 +2573,7 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
         stepped.contains("old-limit") && stepped.contains("\"u1\""),
         "{stepped}"
     );
-    // Acc-a is recorded as limited until the new limit's reset, not the old one's.
+    // `acc-a` is recorded as limited until the new limit's reset, not the old one's.
     let usage = usage_of(&f.h, "acc-a").await?;
     assert_eq!(usage["limit_reached"], true, "{usage}");
     assert_eq!(usage["limit_resets_at"], 1_791_400_000_000_i64, "{usage}");

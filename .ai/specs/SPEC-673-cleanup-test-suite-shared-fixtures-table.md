@@ -59,8 +59,10 @@ before the next starts.
   keeps its test name. `store_at` (`crates/yulius-store`, task #656's) and the `proxy.rs` capacity
   table (`crates/yulius-egress`, task #653's) are outside this task's paths. A `local_ci.rs` table
   saved no lines (+50/−46), so that family stays as it is.
-- PR4b removes citations by two mechanical passes over comment lines only. 435 lines whose id is
-  woven into a sentence stay; removing those means rewording each sentence by hand.
+- PR4b removes citations by two mechanical passes over comment lines only. 435 lines still cite an
+  id: most weave it into a sentence or share a parenthesis with prose; about 40 are prefixes the
+  patterns did not cover (`AC ATR-005:`, `SPEC-534.`) or parentheses wrapped over two lines. They
+  are left for a reword by hand.
 
 ## Evidence
 

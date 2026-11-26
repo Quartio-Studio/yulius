@@ -283,7 +283,7 @@ async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::erro
 
 /// An agent session is told its CPU and memory budget in
 /// `YULIUS_CPUS` and `YULIUS_MEMORY_MB`, and in the variables the repository's `[resources.env]`
-/// derives from it; a table that does not map `CARGO_BUILD_JOBS` leaves it unset. SPEC-268
+/// derives from it; a table that does not map `CARGO_BUILD_JOBS` leaves it unset.
 /// A repository without a table gets it, so parallel tasks do not each build for the
 /// whole machine.
 #[test]

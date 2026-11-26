@@ -748,8 +748,8 @@ async fn embedded_assets_serve_with_content_types_and_every_import_resolves() ->
             && referenced.contains("/assets/vendor/xterm/xterm.mjs")
     );
     // The mock is the e2e suite's backend and the brand lab a design aid of mock mode, both
-    // served from the source tree; a real instance ships neither (SPEC-277 MCK-001; SPEC-483
-    // The lab styles the page from its address, which made an approval one blind click).
+    // served from the source tree; a real instance ships neither (the lab styles the page from
+    // its address, which made an approval one blind click).
     let unshipped = [
         "/assets/mock.js",
         "/assets/lab.js",

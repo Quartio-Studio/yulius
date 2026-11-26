@@ -550,8 +550,8 @@ async fn opening_the_subscriptions_list_reads_usage_again() -> TestResult {
     Ok(())
 }
 
-/// The real provider probe for Codex, counting the questions about a model's limit (SPEC-503
-/// Codex has none to ask); a ChatGPT sign-in's reading is `parse_codex`'s of a reached
+/// The real provider probe for Codex, counting the questions about a model's limit (Codex has
+/// none to ask); a ChatGPT sign-in's reading is `parse_codex`'s of a reached
 /// limit, an API key's has no windows.
 struct CodexProbe {
     real: yulius::wiring::usage::ProviderUsage,
