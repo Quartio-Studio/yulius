@@ -43,8 +43,8 @@ PR 0.
 - [x] Spec discovery: independent review answered
 - [x] Split delivery.rs: verbatim move into 8 files
 - [x] Split delivery.rs: independent review answered
-- [ ] Queue: queue_readiness and armed_snapshot
-- [ ] Queue: bring_armed_up_to_date for both drivers
+- [x] Queue: queue_readiness and armed_snapshot
+- [x] Queue: bring_armed_up_to_date for both drivers
 - [ ] Queue: independent review answered
 - [ ] Merge: preview_merge vs adds_to agreement test
 - [ ] Merge: merge_or_arm and base_relation
@@ -114,3 +114,19 @@ PR 1, the split of `delivery.rs` (audit L2 F8, CLN-002):
 - Independent review (Fable 5.2): round 1 requested changes (the Vidoc paths, three placements);
   round 2 approved `6ca422c9c`; its last notes (drop the `profile.rs` entries, this Evidence) are
   in the next commit.
+
+PR 2, the queue's readiness rule and armed slot (audit L2 F2 + F5, CLN-002):
+- `queue_readiness` (Working, Shells, Dirty, NotRunning, MovedOn, Ready, in that order) replaces
+  the copies in the armed-merge pass, `keep_armed_current`, `candidate_wait_note`, the train's
+  member step and candidate pick (`train_ready`), and `pr_watch`'s `armed_wait_reason`;
+  `agent_idle` replaces the two copies in parking. `bring_armed_up_to_date` (merge plus span)
+  and `audit_branch_updated` are the update step the two drivers copied; each driver keeps its
+  own push order. `armed_snapshot` reads the arm, decisions and note under one lock for
+  `pr_watch`'s race guards and replaces `arm_observation` and `arm_queue_note`.
+- One wording change, as the audit's F2 decided: `armed_wait_reason` read a failed
+  uncommitted-changes check as clean, the rest of the queue as dirty; both now say dirty.
+- Product lines +226 / −221: the copies were short inline expressions, so the gain is one rule
+  instead of eight, not size.
+- `scripts/cargo nextest run -p yulius-app`: 740 passed; `-p yulius --test main`: 2829 passed;
+  clippy `-p yulius-app --all-targets -D warnings`: clean. Hand mutation: without the
+  background-shell check in `queue_readiness`, two `antigravity_armed_merge` tests fail.
