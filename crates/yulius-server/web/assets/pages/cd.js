@@ -218,6 +218,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     }
     const prod = isProd(env);
     const ready = env.state === 'ready';
+    const waiting = prod && env.rollback ? env.rollback.waiting : null;
     // The server decides whether Deploy works for this person and why not (SPEC-650 PST-007):
     // the same decision `needs_you` checks guidance against.
     const action = env.deploy_action || { label: prod ? `Deploy ${word(env.name)}…` : `Deploy ${word(env.name)}`, enabled: false, why: 'Reload the page' };
@@ -227,7 +228,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       icon('upload', { size: 16 }), action.label);
     // A disabled button says why in words, not only on hover (SPEC-650 PST-005); the badge says
     // "Nothing to deploy yet" already.
-    if (why && ready) rows.push(h('p', { class: 'small muted' }, `Deploy ${word(env.name)} unavailable: ${why}.`));
+    if (why && ready && why !== waiting) rows.push(h('p', { class: 'small muted' }, `Deploy ${word(env.name)} unavailable: ${why}.`));
     // A named environment says which stage's rules it follows (ADR-0195).
     const stage = env.name === 'dev' || env.name === 'prod' ? null : badge(prod ? 'production stage' : 'dev stage', '');
     return h('section', { class: 'card card-pad stack-sm cd-env', 'aria-label': `${title(env)} environment` },
@@ -300,7 +301,9 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       ? [`${stateOf(drill.state).label.toLowerCase()} `, h('a', { href: href(`${page}&run=${encodeURIComponent(drill.run_id)}`), dataset: { route: `${page}&run=${encodeURIComponent(drill.run_id)}` } }, `at ${shortSha(drill.commit)}`), h('span', { class: 'muted' }, ` · ${relLong(drill.started_at)}${prod ? ` on ${word(rb.drill_environment)}` : ''}`)]
       : h('span', { class: 'muted' }, prod ? `none yet on ${word(rb.drill_environment)}` : 'none yet: it follows a deploy that has an earlier release')]);
     rows.push(h('dl', { class: 'cd-rollback-facts' }, facts.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])));
-    if (prod && rb.blocked) rows.push(h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, `Production deploys wait: ${rb.blocked}`)));
+    // A production deploy that proves its rollback on dev first waits for that drill (SPEC-438).
+    if (prod && rb.waiting) rows.push(h('div', { class: 'banner banner-info', role: 'status' }, icon('upload', { size: 16 }), h('span', { class: 'banner-text' }, `${rb.waiting}.`)));
+    else if (prod && rb.blocked) rows.push(h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, `Production deploys wait: ${rb.blocked}`)));
     const allowed = prod ? overview.can_deploy_prod : overview.can_deploy_dev;
     const running = (overview.runs || []).some((r) => r.environment === env.name && r.state === 'running');
     const why = !allowed ? (prod ? 'Only an administrator rolls back production' : 'Requires write access') : running ? 'A run of this environment is running' : null;
@@ -465,9 +468,12 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
         return;
       }
       reload({ quiet: true });
+      // Production that proves its rollback on dev first answers with dev's deploy (SPEC-438).
+      const proving = run.environment !== env.name;
+      if (proving) toast(`Deploying ${word(run.environment)} first to prove the rollback: ${what} deploys by itself once its rollback drill passes.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
       // Still watched, the view becomes the run; left for the list meanwhile, a toast says it went out.
       if (starting.open()) showRun(run.run_id, starting.view);
-      else toast(`Deploying ${what}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
+      else if (!proving) toast(`Deploying ${what}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
     } catch (error) {
       starting.stop();
       if (starting.open()) starting.refused(error, what);

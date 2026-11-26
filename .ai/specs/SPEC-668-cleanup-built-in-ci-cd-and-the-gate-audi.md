@@ -1,6 +1,6 @@
 ---
 yulius-task: 5827cfb1-ecdb-452d-aa9a-c60afa00bdba
-status: in-progress
+status: done
 ---
 
 # SPEC-668: Cleanup: built-in CI/CD and the gate (audit L3)
@@ -9,7 +9,7 @@ status: in-progress
 
 Carry out five findings of the November 2026 audit of Yulius's own CI and CD (L3), one pull
 request each, delivered in order: F7 + F11, F1, F2, F8(a) + F12, F5 + F6. Less code doing the
-same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev).
+same thing; behaviour unchanged (F2's drop of prove-on-dev was reverted, see Decisions).
 
 ## Context
 
@@ -44,9 +44,9 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 - [x] PR5: move-only split of cd_prepare into cd_resolve_target and cd_promote_for
 - [x] PR5: F6 checked against product's CD and reported to the owner, not changed
 - [x] PR5: review approved
-- [ ] PR6: prove-on-dev restored by reverting #1799, since product can reach it
-- [ ] PR6: review approved
-- [ ] Closing summary with what changed, verification and Not done
+- [x] PR6: prove-on-dev restored by reverting #1799, since product can reach it
+- [x] PR6: review approved
+- [x] Closing summary with what changed, verification and Not done
 
 ## Acceptance criteria
 
@@ -65,7 +65,7 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
   2026-11-26) has `[cd.dev]` and `[cd.prod]` with deploy and rollback, `promote = true`, and no
   `merge_first`. Its production deploys reach prove-on-dev (F2), and the pinning picks which
   commit its production promotes (F6). PR3 read product's stale `main` (7956caf7) and deleted
-  prove-on-dev; PR6 will revert it. Both are the owner's decision.
+  prove-on-dev; PR6 reverts it. Both are the owner's decision.
 
 ## Evidence
 
@@ -76,8 +76,12 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 - PR3 #1799 (F2) merged at 5ed478be5: prove-on-dev deleted after reading the CD tables of
   yulius, quartio-v2, autoresearch, studio, Branding and VistulaValley at their integration
   branches, but product at `main` instead of its integration branch `quartio`, which can reach
-  it; PR6 will revert it.
+  it; PR6 reverts it.
 - PR4 #1806 (F8a, F12) merged at 1986071cc: shared config readers, `[disk]` checked, vidoc.toml
   read as TOML; 5061 tests passed; reviewer differentials of 13k config and 19k frontmatter files.
 - PR5 (F5): move-only splits of `ci_job` and `cd_prepare`; 4946 tests of yulius, yulius-app and
   yulius-domain passed.
+- PR5 #1814 (F5) merged at 4bc54191f.
+- PR6 reverts #1799 on dev at 4bc54191f: the proving slot passes through `cd_prepare` into the
+  split `cd_resolve_target`; 5037 tests (the three prove-on-dev tests back) and the CD e2e spec
+  (28) passed, and after merging dev at 98fc78089 the CD, rollback and staging tests (132).
