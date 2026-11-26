@@ -60,6 +60,22 @@ mod tests {
         );
     }
 
+    /// A change early in an object or array does not stop the walk: every later sibling is still
+    /// visited, in order.
+    #[test]
+    fn a_reported_change_never_cuts_the_walk_short() {
+        let mut value = json!({"a": "x", "b": ["y", "v"], "d": "w"});
+        let mut seen = Vec::new();
+        let changed = redact_json_strings(&mut value, &mut |_, text| {
+            seen.push(text.clone());
+            text.make_ascii_uppercase();
+            true
+        });
+        assert!(changed);
+        assert_eq!(seen, ["x", "y", "v", "w"]);
+        assert_eq!(value, json!({"a": "X", "b": ["Y", "V"], "d": "W"}));
+    }
+
     #[test]
     fn nothing_changed_reports_false() {
         let mut value = json!(["a", {"b": "c"}]);

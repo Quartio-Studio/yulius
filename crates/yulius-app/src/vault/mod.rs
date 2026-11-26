@@ -52,7 +52,8 @@ use crate::ports::vault::{VaultSecretRecord, VaultSection};
 use crate::vidoc_key::{VIDOC_HOST, VIDOC_SECRET, VIDOC_SECRET_ID};
 
 /// What a text says when it could not be checked for agent secrets.
-pub(crate) const WITHHELD: &str = "[withheld: Yulius could not check this text for agent secrets]";
+pub(crate) const TEXT_WITHHELD: &str =
+    "[withheld: Yulius could not check this text for agent secrets]";
 
 /// Bound of remembered "already audited" keys before the memory is cleared.
 const AUDITED_KEYS_MAX: usize = 10_000;
@@ -565,7 +566,7 @@ impl App {
     pub async fn redact_for_sandbox(&self, sandbox: &SandboxId, text: &str) -> String {
         match self.redaction_matcher(sandbox).await {
             Some(matcher) => redact_text(matcher.as_ref(), text).0,
-            None => WITHHELD.into(),
+            None => TEXT_WITHHELD.into(),
         }
     }
 
@@ -584,7 +585,7 @@ impl App {
         Some(value)
     }
 
-    async fn redaction_matcher(&self, sandbox: &SandboxId) -> Option<Arc<PlainMatcher>> {
+    pub(super) async fn redaction_matcher(&self, sandbox: &SandboxId) -> Option<Arc<PlainMatcher>> {
         self.agent_secret_matcher(sandbox)
             .await
             .inspect_err(|err| {

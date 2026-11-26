@@ -1432,12 +1432,7 @@ impl EgressPolicy for App {
     }
 
     async fn egress_redactor(&self, client: &EgressClient) -> Option<Arc<PlainMatcher>> {
-        self.agent_secret_matcher(&client.sandbox_id)
-            .await
-            .inspect_err(|err| {
-                tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
-            })
-            .ok()
+        self.redaction_matcher(&client.sandbox_id).await
     }
 }
 
