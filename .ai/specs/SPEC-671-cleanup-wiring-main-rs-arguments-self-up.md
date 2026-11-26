@@ -35,8 +35,8 @@ wall-clock readers, and `main.rs` rebuilding every option struct field by field.
 
 - [x] F4: delete dead github.rs and move pending.rs to tests
 - [x] F4: base64 crate and Timestamp::now()
-- [ ] F4: one HTTP client builder and one bounded reader
-- [ ] F4: one shared npm tarball module
+- [x] F4: one HTTP client builder and one bounded reader
+- [x] F4: one shared npm tarball module
 - [ ] F4: independent review answered
 - [ ] F5: clap Args on the option structs in main.rs
 - [ ] F5: independent review answered
