@@ -38,7 +38,8 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
   `Unauthenticated`; a person without access is `NotFound`; one with read access is `Forbidden`.
   The superadmin keeps Admin on every project (ACC-012), so the superadmin's tasks are unchanged.
   An owner whose access cannot be settled now is refused too (`Unauthenticated`). The task's
-  terminal says once why the agent gets no credential, and again after a hand-over.
+  terminal says once per refusal episode why the agent gets no credential, and again after a
+  hand-over; a credential issued again ends the episode.
 - L4Q3-002: Disabling a person stops every task they own that is not resting. That includes live
   runs and tasks that would start by themselves (queued, chained, prepared, parked, waiting for
   capacity). It uses the ordinary stop path, waiting tasks first, on a task of its own after the
@@ -137,6 +138,17 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
     `sweep::tests::over_its_cap_a_build_directory_loses_its_least_recently_used_incremental_units`
     (`busy: true`), which passed 3/3 alone. `sweep.rs` is untouched here; filed as #1826.
   - Clippy with `-D warnings`: clean. `cargo doc -p yulius-app --no-deps`: no warnings.
+- Review round 2 (head 85e97d935) requested changes, answered as follows:
+  - `t-after`, a live task handled after the failing one, now shows that the loop goes on past a
+    failed stop. Replacing `continue` with `return` in the failed-stop branch fails the test
+    (`t-after: Running`).
+  - The notice's reset on a hand-over is tested: after Bob takes control and drops to read, he
+    hears one notice naming him. Deleting the reset in `task_control.rs` fails the test (0
+    notices).
+  - A credential issued again now ends the notice's episode (test red first: 0 notices).
+- After round 2: `cargo test -p yulius --test main` gave 2837 passed, 0 failed.
+  `cargo test -p yulius-app --lib` gave 741 passed, 0 failed. Clippy `-D warnings` and
+  `scripts/dev quick` passed.
 - Security scan: Vidoc is turned off for this project (`yulius security-scan` reports it as
   disabled). Not run, not passed.
 - Not tested: a real agent process being stopped on disable. The harness has no host to reap the
