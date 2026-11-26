@@ -20,8 +20,8 @@ before and their existing tests pass unchanged.
 - Paths of this task: `yulius-app/src/vault/**`, `accounts.rs`, `auth.rs`, `scopes.rs`,
   `admin.rs`, `access.rs`, `yulius-egress/**`, `yulius-domain/src/vault/**`,
   `yulius-domain/src/redact.rs`, `yulius-harness/src/scrub_client.rs` and `secret.rs`. Parallel
-  tasks hold `supervisor.rs` (#650), `mcp.rs` and `ports/**` (#656), `yulius-git/**` and
-  `yulius-github/**` (#651), `ci/**` (#652).
+  tasks held `supervisor.rs` (#650), `mcp.rs` and `ports/**` (#656), `yulius-git/**` and
+  `yulius-github/**` (#651), `ci/**` (#652); #650 and #656 have since merged.
 - Out of scope by the request: F1, F4, F9 and Q5.
 
 ## Requirements
@@ -45,9 +45,9 @@ before and their existing tests pass unchanged.
 - [x] F6: independent review of the Secret PR
 - [x] F7: one JSON string walker for redaction
 - [x] F7: one sandbox redaction for texts and records, the withheld text once
-- [ ] F7: independent review of the redaction PR
-- [ ] F8: pure egress decision in yulius-domain with unit tests
-- [ ] F8: egress_apply calls the pure decision
+- [x] F7: independent review of the redaction PR
+- [x] F8: pure egress decision with unit tests
+- [x] F8: egress_apply calls the pure decision
 - [ ] F8: independent review of the egress PR
 - [ ] F3: one no-follow bounded reader for login files
 - [ ] F3: provide_cli and the shared credential constants
@@ -95,5 +95,12 @@ before and their existing tests pass unchanged.
   scrubber's own test token, third segment `c2ln`, would pass unredacted). For URLs, `yulius-git`
   replaces the whole userinfo, the domain only the password and not a placeholder, and
   `yulius-import` drops the userinfo. Sharing them changes what is redacted.
+- F7 changes `mcp.rs`, `transcripts.rs` and `yulius-import/src/redact.rs` because the finding
+  names their walkers; no live task held them (#656 had merged).
+- F8: the pure decision (`decide` in `vault/runtime.rs`) stays in the app, not
+  `yulius-domain/src/vault` as the audit proposed: it reads `VaultSecretRecord`, `AgentPayload`,
+  `EgressRequest`, `RuleCheck` and the substitution helpers, all app types, and moving them is
+  no cleanup. The liveness check, Vidoc, the loads, the audits and the control-character log
+  stay in `egress_apply`; the decision has unit tests without an `App`.
 - Helpers stay inside the vault module where the copies are all there (`parse_args`, `named`),
   so the parallel MCP-argument cleanup (#656) is not raced.

@@ -20,7 +20,7 @@ use crate::manage::TaskChange;
 use crate::mcp_args::tool;
 use crate::person_tools::PERSON_TOOLS;
 use crate::shells::COCKPIT_TOKEN_PREFIX;
-use crate::vault::{SecretUser, WITHHELD};
+use crate::vault::{SecretUser, TEXT_WITHHELD};
 
 /// Maximum tool result text returned to the model.
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
@@ -1274,7 +1274,7 @@ impl App {
                 // text of the record is redacted before rendering, which indents multi-line text
                 // and could split what the matcher looks for, and the rendered text again.
                 let Some(value) = self.redact_json_for_sandbox(sandbox, value).await else {
-                    return text_result(WITHHELD, false);
+                    return text_result(TEXT_WITHHELD, false);
                 };
                 let text = crate::mcp_text::render(name, args, &value);
                 let mut text = self.redact_for_sandbox(sandbox, &text).await;

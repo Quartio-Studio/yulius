@@ -1305,139 +1305,182 @@ impl EgressPolicy for App {
                 "an agent secret holding a control character was not sent; a person replaces its value"
             );
         }
-        let resolve = |name: &str| -> Option<String> {
-            bound
-                .iter()
-                .find(|(r, _)| r.name == name)
-                .map(|(_, p)| p.value.clone())
-        };
-        let mut used: Vec<String> = Vec::new();
-        let mut chosen: Option<String> = None;
-        let mut headers: Vec<(String, Vec<u8>)> = Vec::with_capacity(request.headers.len() + 2);
-        for (name, value) in &request.headers {
-            match name.as_str() {
-                "x-yulius-secret" => {
-                    chosen = Some(String::from_utf8_lossy(value).trim().to_owned());
+        match decide(&request, &bound) {
+            Decided::Refuse(refusal) => refusal,
+            Decided::OutsideRules {
+                path_and_query,
+                denied,
+            } => {
+                let check = RuleCheck::of(&request, &path_and_query);
+                self.note_refusals(client, &check, &request.host, &denied)
+                    .await;
+                check.refusal(&request.host, &denied)
+            }
+            Decided::Forward {
+                path_and_query,
+                headers,
+                used,
+            } => {
+                for name in &used {
+                    if let Some((record, _)) = bound.iter().find(|(r, _)| &r.name == name) {
+                        self.note_agent_use(
+                            (client.use_key(), &client.actor()),
+                            record,
+                            "vault.agent.use",
+                            &request.host,
+                        )
+                        .await;
+                    }
                 }
-                "proxy-authorization" | "proxy-connection" | "accept-encoding" => {}
-                _ => {
-                    let value = substitute_header(name, value, &resolve, &mut used);
-                    headers.push((name.clone(), value));
-                }
-            }
-        }
-        let path_and_query = match substitute_placeholders(&request.path_and_query, resolve) {
-            Some(sub) => {
-                used.extend(sub.used);
-                sub.text
-            }
-            None => request.path_and_query.clone(),
-        };
-        if let Some(name) = &chosen
-            && !bound.iter().any(|(r, _)| &r.name == name)
-        {
-            return EgressDecision::Refuse {
-                status: 403,
-                message: format!(
-                    "Yulius: no agent secret named {name:?} is bound to {}",
-                    request.host
-                ),
-            };
-        }
-        // A secret with rules is used only by a request they allow (SPEC-627 MPR-002): its
-        // placeholder, its name in X-Yulius-Secret or its injected header outside them refuses
-        // the request, unless another secret's rules allow that header (MPR-003).
-        let check = RuleCheck::of(&request, &path_and_query);
-        let mut denied: Vec<&VaultSecretRecord> = Vec::new();
-        let named = used.iter().chain(chosen.iter());
-        for (record, _) in bound
-            .iter()
-            .filter(|(r, _)| named.clone().any(|n| n == &r.name))
-        {
-            if !check.fits(record) {
-                denied.push(record);
-            }
-        }
-        // Secrets that add a header the request lacks, grouped by header; those outside their
-        // rules apart.
-        let mut wanting: BTreeMap<String, Vec<&(VaultSecretRecord, AgentPayload)>> =
-            BTreeMap::new();
-        let mut unfit: BTreeMap<String, Vec<&VaultSecretRecord>> = BTreeMap::new();
-        for entry in &bound {
-            let (record, _) = entry;
-            if chosen.as_ref().is_some_and(|c| c != &record.name) {
-                continue;
-            }
-            if let Some(header) = injection_of(record).header_name()
-                && !headers.iter().any(|(n, _)| n == &header)
-            {
-                if check.fits(record) {
-                    wanting.entry(header).or_default().push(entry);
-                } else {
-                    unfit.entry(header).or_default().push(record);
+                EgressDecision::Forward {
+                    path_and_query,
+                    headers,
+                    used,
                 }
             }
-        }
-        for (header, records) in unfit {
-            if !wanting.contains_key(&header) {
-                denied.extend(records);
-            }
-        }
-        denied.sort_by(|a, b| a.name.cmp(&b.name));
-        denied.dedup_by(|a, b| a.id == b.id);
-        if !denied.is_empty() {
-            self.note_refusals(client, &check, &request.host, &denied)
-                .await;
-            return check.refusal(&request.host, &denied);
-        }
-        for (header, entries) in wanting {
-            if entries.len() > 1 {
-                let names: Vec<&str> = entries.iter().map(|(r, _)| r.name.as_str()).collect();
-                return EgressDecision::Refuse {
-                    status: 409,
-                    message: format!(
-                        "Yulius: several agent secrets add {header} for {}: {}. Choose one with the request header X-Yulius-Secret: <NAME>.",
-                        request.host,
-                        names.join(", ")
-                    ),
-                };
-            }
-            let (record, payload) = entries[0];
-            if let Some((name, value)) =
-                injection_of(record).render(payload.username.as_deref(), &payload.value)
-            {
-                headers.push((name, value.into_bytes()));
-                used.push(record.name.clone());
-            }
-        }
-        headers.push(("accept-encoding".into(), b"identity".to_vec()));
-        used.sort();
-        used.dedup();
-        for name in &used {
-            if let Some((record, _)) = bound.iter().find(|(r, _)| &r.name == name) {
-                self.note_agent_use(
-                    (client.use_key(), &client.actor()),
-                    record,
-                    "vault.agent.use",
-                    &request.host,
-                )
-                .await;
-            }
-        }
-        EgressDecision::Forward {
-            path_and_query,
-            headers,
-            used,
         }
     }
 
     async fn egress_redactor(&self, client: &EgressClient) -> Option<Arc<PlainMatcher>> {
-        self.agent_secret_matcher(&client.sandbox_id)
-            .await
-            .inspect_err(|err| {
-                tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
-            })
-            .ok()
+        self.redaction_matcher(&client.sandbox_id).await
+    }
+}
+
+/// What the proxy does with a request, decided without I/O.
+enum Decided<'a> {
+    /// Refuse it with this answer.
+    Refuse(EgressDecision),
+    /// Refuse it: it would use these secrets outside their rules (audited, then refused).
+    OutsideRules {
+        path_and_query: String,
+        denied: Vec<&'a VaultSecretRecord>,
+    },
+    /// Forward it; `used` names the secrets applied, sorted.
+    Forward {
+        path_and_query: String,
+        headers: Vec<(String, Vec<u8>)>,
+        used: Vec<String>,
+    },
+}
+
+/// Substitutes the placeholders, checks the secrets' rules and the header a secret adds, for a
+/// request to a host the `bound` secrets apply to.
+fn decide<'a>(
+    request: &EgressRequest,
+    bound: &'a [(VaultSecretRecord, AgentPayload)],
+) -> Decided<'a> {
+    let resolve = |name: &str| -> Option<String> {
+        bound
+            .iter()
+            .find(|(r, _)| r.name == name)
+            .map(|(_, p)| p.value.clone())
+    };
+    let mut used: Vec<String> = Vec::new();
+    let mut chosen: Option<String> = None;
+    let mut headers: Vec<(String, Vec<u8>)> = Vec::with_capacity(request.headers.len() + 2);
+    for (name, value) in &request.headers {
+        match name.as_str() {
+            "x-yulius-secret" => {
+                chosen = Some(String::from_utf8_lossy(value).trim().to_owned());
+            }
+            "proxy-authorization" | "proxy-connection" | "accept-encoding" => {}
+            _ => {
+                let value = substitute_header(name, value, &resolve, &mut used);
+                headers.push((name.clone(), value));
+            }
+        }
+    }
+    let path_and_query = match substitute_placeholders(&request.path_and_query, resolve) {
+        Some(sub) => {
+            used.extend(sub.used);
+            sub.text
+        }
+        None => request.path_and_query.clone(),
+    };
+    if let Some(name) = &chosen
+        && !bound.iter().any(|(r, _)| &r.name == name)
+    {
+        return Decided::Refuse(EgressDecision::Refuse {
+            status: 403,
+            message: format!(
+                "Yulius: no agent secret named {name:?} is bound to {}",
+                request.host
+            ),
+        });
+    }
+    // A secret with rules is used only by a request they allow (SPEC-627 MPR-002): its
+    // placeholder, its name in X-Yulius-Secret or its injected header outside them refuses
+    // the request, unless another secret's rules allow that header (MPR-003).
+    let check = RuleCheck::of(request, &path_and_query);
+    let mut denied: Vec<&VaultSecretRecord> = Vec::new();
+    let named = used.iter().chain(chosen.iter());
+    for (record, _) in bound
+        .iter()
+        .filter(|(r, _)| named.clone().any(|n| n == &r.name))
+    {
+        if !check.fits(record) {
+            denied.push(record);
+        }
+    }
+    // Secrets that add a header the request lacks, grouped by header; those outside their
+    // rules apart.
+    let mut wanting: BTreeMap<String, Vec<&(VaultSecretRecord, AgentPayload)>> = BTreeMap::new();
+    let mut unfit: BTreeMap<String, Vec<&VaultSecretRecord>> = BTreeMap::new();
+    for entry in bound {
+        let (record, _) = entry;
+        if chosen.as_ref().is_some_and(|c| c != &record.name) {
+            continue;
+        }
+        if let Some(header) = injection_of(record).header_name()
+            && !headers.iter().any(|(n, _)| n == &header)
+        {
+            if check.fits(record) {
+                wanting.entry(header).or_default().push(entry);
+            } else {
+                unfit.entry(header).or_default().push(record);
+            }
+        }
+    }
+    for (header, records) in unfit {
+        if !wanting.contains_key(&header) {
+            denied.extend(records);
+        }
+    }
+    denied.sort_by(|a, b| a.name.cmp(&b.name));
+    denied.dedup_by(|a, b| a.id == b.id);
+    if !denied.is_empty() {
+        return Decided::OutsideRules {
+            path_and_query,
+            denied,
+        };
+    }
+    for (header, entries) in wanting {
+        if entries.len() > 1 {
+            let names: Vec<&str> = entries.iter().map(|(r, _)| r.name.as_str()).collect();
+            return Decided::Refuse(EgressDecision::Refuse {
+                status: 409,
+                message: format!(
+                    "Yulius: several agent secrets add {header} for {}: {}. Choose one with the request header X-Yulius-Secret: <NAME>.",
+                    request.host,
+                    names.join(", ")
+                ),
+            });
+        }
+        let (record, payload) = entries[0];
+        if let Some((name, value)) =
+            injection_of(record).render(payload.username.as_deref(), &payload.value)
+        {
+            headers.push((name, value.into_bytes()));
+            used.push(record.name.clone());
+        }
+    }
+    headers.push(("accept-encoding".into(), b"identity".to_vec()));
+    used.sort();
+    used.dedup();
+    Decided::Forward {
+        path_and_query,
+        headers,
+        used,
     }
 }
 
@@ -1629,5 +1672,172 @@ mod tests {
         assert_eq!(used, vec!["PASS".to_owned()]);
         let untouched = substitute_header("x-other", b"plain", &resolve, &mut used);
         assert_eq!(untouched, b"plain".to_vec());
+    }
+
+    fn bound(
+        name: &str,
+        injection: &str,
+        rules: &[(&str, &str)],
+    ) -> (VaultSecretRecord, AgentPayload) {
+        let record = VaultSecretRecord {
+            id: format!("id-{name}"),
+            section: crate::ports::vault::VaultSection::Agent,
+            sandbox_id: None,
+            owner_id: None,
+            name: name.into(),
+            description: String::new(),
+            hosts: vec!["api.example.com".into()],
+            rules: rules
+                .iter()
+                .filter_map(|(method, path)| {
+                    yulius_domain::vault::rules::SecretRule::parse(&[(*method).into()], path).ok()
+                })
+                .collect(),
+            injection: injection.into(),
+            header_name: None,
+            fields: vec!["value".into()],
+            envelope: crate::ports::Envelope {
+                kek_id: 1,
+                wrapped_key: Vec::new(),
+                ciphertext: Vec::new(),
+            },
+            created_by: "u".into(),
+            created_at: yulius_domain::time::Timestamp(1),
+            updated_by: "u".into(),
+            updated_at: yulius_domain::time::Timestamp(1),
+            value_updated_at: yulius_domain::time::Timestamp(1),
+            last_used_at: None,
+            requested_hosts: Vec::new(),
+            requested_by: None,
+            env_files: crate::ports::vault::EnvFiles::No,
+            env_requested_by: None,
+            cd_prod: false,
+            auto_allow: false,
+        };
+        assert_eq!(
+            record.rules.len(),
+            rules.len(),
+            "a test rule does not parse"
+        );
+        let payload = AgentPayload {
+            username: None,
+            value: format!("value-of-{name}"),
+            totp: None,
+        };
+        (record, payload)
+    }
+
+    fn request(method: &str, path: &str, headers: &[(&str, &str)]) -> EgressRequest {
+        EgressRequest {
+            method: method.into(),
+            host: "api.example.com".into(),
+            port: 443,
+            path_and_query: path.into(),
+            headers: headers
+                .iter()
+                .map(|(n, v)| ((*n).into(), v.as_bytes().to_vec()))
+                .collect(),
+        }
+    }
+
+    /// The decision alone: placeholders are replaced, the proxy's own headers are
+    /// dropped, the one secret that adds a missing header adds it, and `used` is sorted.
+    #[test]
+    fn a_request_is_forwarded_with_its_secrets_applied() {
+        let secrets = [bound("TOKEN", "bearer", &[]), bound("KEY", "none", &[])];
+        let req = request(
+            "GET",
+            "/v1?key=yulius-secret-KEY",
+            &[
+                ("proxy-authorization", "x"),
+                ("accept-encoding", "gzip"),
+                ("x-a", "1"),
+            ],
+        );
+        let Decided::Forward {
+            path_and_query,
+            headers,
+            used,
+        } = decide(&req, &secrets)
+        else {
+            panic!("not forwarded");
+        };
+        assert_eq!(path_and_query, "/v1?key=value-of-KEY");
+        assert_eq!(
+            headers,
+            vec![
+                ("x-a".to_owned(), b"1".to_vec()),
+                (
+                    "authorization".to_owned(),
+                    b"Bearer value-of-TOKEN".to_vec()
+                ),
+                ("accept-encoding".to_owned(), b"identity".to_vec()),
+            ]
+        );
+        assert_eq!(used, vec!["KEY".to_owned(), "TOKEN".to_owned()]);
+    }
+
+    #[test]
+    fn x_yulius_secret_must_name_a_bound_secret_and_picks_the_one_that_adds_a_header() {
+        let secrets = [bound("A", "bearer", &[]), bound("B", "bearer", &[])];
+        let Decided::Refuse(EgressDecision::Refuse { status, message }) =
+            decide(&request("GET", "/", &[]), &secrets)
+        else {
+            panic!("two secrets adding one header are not refused");
+        };
+        assert_eq!(status, 409);
+        assert!(
+            message.contains("several agent secrets add authorization"),
+            "{message}"
+        );
+        let Decided::Refuse(EgressDecision::Refuse { status, message }) =
+            decide(&request("GET", "/", &[("x-yulius-secret", "C")]), &secrets)
+        else {
+            panic!("an unknown chosen secret is not refused");
+        };
+        assert_eq!(status, 403);
+        assert_eq!(
+            message,
+            "Yulius: no agent secret named \"C\" is bound to api.example.com"
+        );
+        let Decided::Forward { used, .. } = decide(
+            &request("GET", "/", &[("x-yulius-secret", " B ")]),
+            &secrets,
+        ) else {
+            panic!("the chosen secret is not forwarded");
+        };
+        assert_eq!(used, vec!["B".to_owned()]);
+    }
+
+    #[test]
+    fn a_secret_used_outside_its_rules_is_denied_unless_another_adds_its_header() {
+        let reader = bound("READER", "none", &[("GET", "/repos/*")]);
+        let req = request("POST", "/repos/x?t=yulius-secret-READER", &[]);
+        let secrets = [reader];
+        let Decided::OutsideRules {
+            path_and_query,
+            denied,
+        } = decide(&req, &secrets)
+        else {
+            panic!("a placeholder outside its rules is not denied");
+        };
+        assert_eq!(path_and_query, "/repos/x?t=value-of-READER");
+        assert_eq!(
+            denied.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["READER"]
+        );
+        let secrets = [
+            bound("GETTER", "bearer", &[("GET", "/*")]),
+            bound("ANY", "bearer", &[]),
+        ];
+        let Decided::Forward { used, .. } = decide(&request("POST", "/x", &[]), &secrets) else {
+            panic!("the header of a secret outside its rules, added by another, is refused");
+        };
+        assert_eq!(used, vec!["ANY".to_owned()]);
+        let secrets = [bound("GETTER", "bearer", &[("GET", "/*")])];
+        assert!(matches!(
+            decide(&request("POST", "/x", &[]), &secrets),
+            Decided::OutsideRules { .. }
+        ));
     }
 }
