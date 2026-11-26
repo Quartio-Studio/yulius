@@ -1,6 +1,6 @@
 ---
 yulius-task: 8bb13626-56f5-427f-9a6d-8a2b592cd63e
-status: in-progress
+status: done
 ---
 
 # SPEC-669: Cleanup of the secrets, vault and auth helpers (audit L4)
@@ -48,10 +48,10 @@ before and their existing tests pass unchanged.
 - [x] F7: independent review of the redaction PR
 - [x] F8: pure egress decision with unit tests
 - [x] F8: egress_apply calls the pure decision
-- [ ] F8: independent review of the egress PR
-- [ ] F3: one no-follow bounded reader for login files
-- [ ] F3: provide_cli and the shared credential constants
-- [ ] F3: independent review of the credential-reader PR
+- [x] F8: independent review of the egress PR
+- [x] F3: one no-follow bounded reader for login files
+- [x] F3: provide_cli and the shared credential constants
+- [x] F3: independent review of the credential-reader PR
 
 ## Acceptance criteria
 
@@ -102,5 +102,51 @@ before and their existing tests pass unchanged.
   `EgressRequest`, `RuleCheck` and the substitution helpers, all app types, and moving them is
   no cleanup. The liveness check, Vidoc, the loads, the audits and the control-character log
   stay in `egress_apply`; the decision has unit tests without an `App`.
+- F3: `files::read_bounded_at(dir, name, max)` opens with `O_NOFOLLOW | O_NONBLOCK`, reserves
+  the room, reads at most `max` bytes and zeroes a copy it does not hand back; each caller keeps
+  its own mapping of a missing file, a link and a read error to its own result or refusal text.
+  `read_login_file` keeps its path signature (its tests are unchanged): its folder is opened by
+  path and the file below it without following a link, so a link swapped in after the old
+  `symlink_metadata` check is no longer followed (the audit's one stated change; the texts stay).
+  The run readers zero an oversized or half-read Codex copy too, as the Antigravity one did. One
+  corner differs: a `codex` folder the server may search but not list (never made so: it is
+  created 0700) now refuses with "did not store credentials", as the folder is opened to read.
+- F3: the credential constants live once in `yulius_domain::harness` and `yulius-harness`
+  re-exports them: the app may not depend on an adapter crate, so "export them from
+  yulius-harness" would not reach `accounts.rs` and the supervisor.
+- F3: `HarnessPort::provide_cli(provider, install)` replaces the provider matches at the account
+  creation, the background warm-up after a key or file, the sign-in start and the start
+  preflight. The startup warm-up keeps its two calls (each logs its own line) and the launch its
+  two (they fill different fields).
 - Helpers stay inside the vault module where the copies are all there (`parse_args`, `named`),
   so the parallel MCP-argument cleanup (#656) is not raced.
+
+## Evidence
+
+- Delivered, each merged into `dev` on green Yulius CI after an independent review of its head:
+  - F2: PR #1780;
+  - F5: PR #1790;
+  - F6: PR #1822 (round 2 approved after the restored changes log and a whole-value assertion);
+  - F7: PR #1823;
+  - F8: PR #1827;
+  - F3: PR #1828 (approved; its two minors, a file refused unread by its metadata and a socket
+    as "not usable", are fixed in its last product commit).
+- For each PR: `cargo clippy --workspace --all-targets -- -D warnings` was clean, and
+  `cargo test -p yulius-app --lib` passed in full (741 to 744 tests). The touched crates'
+  tests passed: contracts, github, import, harness, store, server, egress and domain, as each
+  PR touched them.
+- `cargo test -p yulius --test main` (about 2,860 tests) passed for each PR except
+  `watches::run_bounds_are_enforced`. That test fails in this sandbox and on `dev` alike
+  (SIGXFSZ instead of EFBIG, #1795). `context_full::a_compaction_held_at_a_restart_is_taken_up_again`
+  failed once with `AddrInUse` on the shared host and passed 5/5 alone.
+- Q3: both authorisation gaps are real. They were reported to the owner (`needs_you`) and task
+  #659 (PR #1821, in review) fixes them, not this task:
+  - `hooks.rs` `agent_git_credential` gives a disabled person's runs a token;
+  - `handoffs.rs` `answer_handoff` checks the owner, not Control.
+- Not done:
+  - F6: the GitHub installation flag stays on `model::Secret`. The move breaks 28 app files,
+    most held by #651 and #652.
+  - F7: the URL and JWT scrubbers outside the domain stay, because sharing them changes what
+    is redacted.
+  - F1, F4, F9 and Q5: excluded by the request.
+- The security scan (Vidoc) is disabled for this project and was not run.

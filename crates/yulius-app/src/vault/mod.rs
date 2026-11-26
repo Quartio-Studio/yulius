@@ -585,7 +585,7 @@ impl App {
         Some(value)
     }
 
-    pub(super) async fn redaction_matcher(&self, sandbox: &SandboxId) -> Option<Arc<PlainMatcher>> {
+    async fn redaction_matcher(&self, sandbox: &SandboxId) -> Option<Arc<PlainMatcher>> {
         self.agent_secret_matcher(sandbox)
             .await
             .inspect_err(|err| {
@@ -636,6 +636,42 @@ fn instance_vidoc_record() -> VaultSecretRecord {
         updated_by: "instance".into(),
         updated_at: never,
         value_updated_at: never,
+        last_used_at: None,
+        requested_hosts: Vec::new(),
+        requested_by: None,
+        env_files: crate::ports::vault::EnvFiles::No,
+        env_requested_by: None,
+        cd_prod: false,
+        auto_allow: false,
+    }
+}
+
+/// An agent secret record for tests: no hosts, rules or injection, in no sandbox.
+#[cfg(test)]
+fn test_record(id: &str, name: &str) -> VaultSecretRecord {
+    use yulius_domain::time::Timestamp;
+    VaultSecretRecord {
+        id: id.into(),
+        section: VaultSection::Agent,
+        sandbox_id: None,
+        owner_id: None,
+        name: name.into(),
+        description: String::new(),
+        hosts: Vec::new(),
+        rules: Vec::new(),
+        injection: "none".into(),
+        header_name: None,
+        fields: vec!["value".into()],
+        envelope: crate::ports::Envelope {
+            kek_id: 1,
+            wrapped_key: Vec::new(),
+            ciphertext: Vec::new(),
+        },
+        created_by: "u".into(),
+        created_at: Timestamp(1),
+        updated_by: "u".into(),
+        updated_at: Timestamp(1),
+        value_updated_at: Timestamp(1),
         last_used_at: None,
         requested_hosts: Vec::new(),
         requested_by: None,
