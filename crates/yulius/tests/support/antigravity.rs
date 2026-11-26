@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `antigravity`.
+//! A Google account for Antigravity tasks and its API key.
 
 use yulius_app::context::App;
 use yulius_app::model::{AccountRecord, AccountStatus};

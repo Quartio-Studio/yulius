@@ -5,8 +5,8 @@
 use crate::support;
 use crate::support::BareRemote;
 use crate::support::git;
-use crate::support::live::Live;
-use crate::support::live::pool::pool;
+use crate::support::live::pool::{pool, pool_live};
+use crate::support::live::{Live, UNSERVED};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1062,7 +1062,7 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
 #[test]
 fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestResult {
     use crate::support::eventually;
-    use crate::support::live::pool::{ScriptedUsage, new_task, runtime, screen, seed, stop, temp};
+    use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::model::Secret;
     use yulius_app::ports::github::{GitHubPort, NewPull};
@@ -1082,7 +1082,11 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = pool(Live { usage: Arc::new(ScriptedUsage::default()), github: github.clone(), ..Live::new(Some(&fake), agent) }, &data, "http://127.0.0.1:9", |config| config.goal_ready_ms = 500)?;
+        let live = Live {
+            github: github.clone(),
+            ..pool_live(&fake, agent)
+        };
+        let app = pool(live, &data, UNSERVED, |config| config.goal_ready_ms = 500)?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         app.deps
             .store

@@ -182,7 +182,6 @@ async fn app_on(data: &Path, host: Arc<HoldingHost>) -> Result<Arc<App>, Error> 
     };
     let (app, _) = crate::support::live::Live {
         usage: Arc::new(ScriptedUsage::default()),
-        clock: Arc::new(yulius::wiring::clock::SystemClock),
         host: Some(host),
         ..crate::support::live::Live::new(Some(&fake), agent)
     }

@@ -1524,7 +1524,6 @@ fn a_restored_prompt_goal_waits_at_stop_before_attach() -> TestResult {
         };
         let (app, _) = Live {
             usage: Arc::new(ScriptedUsage::default()),
-            clock: Arc::new(SystemClock),
             host: Some(host.clone()),
             ..Live::new(Some(&fake), options)
         }

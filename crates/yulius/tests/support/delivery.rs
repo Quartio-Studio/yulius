@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `delivery`.
+//! A browser port whose lookups a test holds.
 
 use async_trait::async_trait;
 use std::path::Path;

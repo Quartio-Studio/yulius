@@ -1890,7 +1890,7 @@ async fn codex_with_pr_fixture(
         clock,
         ..Live::new(Some(&fake), options)
     }
-    .serve(data, accepting, |_| {}, |router| router)?;
+    .serve(data, accepting, |_| {})?;
     let (sandbox, user) = seed(&app, data, &[]).await?;
     crate::support::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#)
         .await?;
@@ -1938,12 +1938,7 @@ fn reattached_idle_codex_repaints_and_receives_its_ci_notice() -> TestResult {
             clock: Arc::new(ShiftedClock::new(0)),
             ..Live::new(Some(&fake), full_screen())
         }
-        .serve(
-            &data,
-            tokio::net::TcpListener::from_std(listener)?,
-            |_| {},
-            |router| router,
-        )?;
+        .serve(&data, tokio::net::TcpListener::from_std(listener)?, |_| {})?;
         app.reconcile().await?;
         let rt = app.runtime(&id);
         let (cols, rows) = rt.hub.size();
@@ -2048,12 +2043,7 @@ fn restarting_the_server_during_a_codex_repaint_restores_the_childs_size() -> Te
             clock: Arc::new(ShiftedClock::new(0)),
             ..Live::new(Some(&fake), fake_agent())
         }
-        .serve(
-            &data,
-            tokio::net::TcpListener::from_std(listener)?,
-            |_| {},
-            |router| router,
-        )?;
+        .serve(&data, tokio::net::TcpListener::from_std(listener)?, |_| {})?;
         app.reconcile().await?;
         assert_eq!(
             app.runtime(&id).hub.size(),
@@ -2609,7 +2599,12 @@ fn codex_paste_across_restart(interrupt_before_enter: bool) -> TestResult {
 
     runtime()?.block_on(async {
         let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-        let app = Live { usage: Arc::new(ScriptedUsage::default()), clock: Arc::new(ShiftedClock::new(0)), ..Live::new(Some(&fake), fake_agent()) }.serve(&data, tokio::net::TcpListener::from_std(listener)?, |_| {}, |router| router)?;
+        let live = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(ShiftedClock::new(0)),
+            ..Live::new(Some(&fake), fake_agent())
+        };
+        let app = live.serve(&data, tokio::net::TcpListener::from_std(listener)?, |_| {})?;
         app.reconcile().await?;
         paint_codex(
             &app,

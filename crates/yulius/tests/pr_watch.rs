@@ -35,7 +35,9 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000;
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         // The integration branch, `dev`, on the origin and in Yulius's clone.
         let seed_dir = data.join("seed");
@@ -412,7 +414,11 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = pool(Live { usage: Arc::new(crate::support::live::pool::ScriptedUsage::default()), github: github.clone(), ..Live::new(Some(&fake), agent) }, &data, "http://127.0.0.1:9", |config| config.goal_ready_ms = 2_000)?;
+        let live = Live {
+            github: github.clone(),
+            ..pool_live(&fake, agent)
+        };
+        let app = pool(live, &data, UNSERVED, |config| config.goal_ready_ms = 2_000)?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         yulius_app::ports::store::PermissionStore::put_access(
             app.deps.store.as_ref(),

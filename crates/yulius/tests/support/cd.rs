@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `cd`.
+//! A sandbox with CD environments, its container holders and a process host that records containment.
 
 use crate::support;
 use crate::support::BareRemote;

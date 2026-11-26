@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `subscription_moves`.
+//! Live runs on subscriptions and the notices a task's terminal shows.
 
 use crate::support::live::pool::{HOUR, ScriptedUsage, new_task, refresh, screen, seed, usage};
 use crate::support::{TestResult, eventually};

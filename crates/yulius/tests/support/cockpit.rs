@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `cockpit`.
+//! The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and records.
 
 use crate::support;
 use axum::http::{Method, StatusCode};

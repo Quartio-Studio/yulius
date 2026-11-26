@@ -6,11 +6,11 @@
 
 use crate::support;
 use crate::support::eventually;
-use crate::support::live::pool::pool;
 use crate::support::live::pool::{
     HOUR, ScriptedUsage, add_account, build, build_with, echoed, has_status, hold_pool_move,
     new_task, now, reading, refresh, runtime, screen, seed, stop, task, temp, usage,
 };
+use crate::support::live::pool::{pool, pool_live};
 use crate::support::live::{Live, UNSERVED};
 
 use std::collections::BTreeMap;
@@ -1571,7 +1571,6 @@ fn reattach_for_new_owner(revoked: bool) -> TestResult {
         pool(
             Live {
                 usage: Arc::new(ScriptedUsage::default()),
-                github: Arc::new(FakeGitHub::default()),
                 ..Live::new(Some(&fake), agent())
             },
             &data,
@@ -1734,7 +1733,6 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
         pool(
             Live {
                 usage: probe.clone(),
-                github: Arc::new(FakeGitHub::default()),
                 ..Live::new(Some(&fake), agent)
             },
             &data,
@@ -1976,7 +1974,11 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             transcript: true,
             ..FakeAgentOptions::default()
         };
-        let app = pool(Live { usage: Arc::new(ScriptedUsage::default()), github, ..Live::new(Some(&fake), agent) }, &data, UNSERVED, |_| {})?;
+        let live = Live {
+            github,
+            ..pool_live(&fake, agent)
+        };
+        let app = pool(live, &data, UNSERVED, |_| {})?;
         let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
         let bob = second_person(&app, &admin).await?;
         let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
@@ -3430,11 +3432,10 @@ fn build_slots(
     pool(
         Live {
             usage,
-            github: Arc::new(FakeGitHub::default()),
             ..Live::new(Some(fake), agent)
         },
         data,
-        "http://127.0.0.1:9",
+        UNSERVED,
         |config| {
             config.max_live_sessions = 1;
             if queue_max != u32::MAX {

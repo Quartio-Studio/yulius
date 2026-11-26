@@ -1410,41 +1410,41 @@ pub use wait::eventually;
 /// A bare repository behind the fake GitHub.
 pub mod remote;
 pub use remote::BareRemote;
-/// Fixtures shared with other files, moved from `antigravity`.
+/// A Google account for Antigravity tasks and its API key.
 pub mod antigravity;
-/// Fixtures shared with other files, moved from `cd`.
+/// A sandbox with CD environments, its container holders and a process host that records containment.
 pub mod cd;
-/// Fixtures shared with other files, moved from `cd_rollback`.
+/// A person's Superagent, by role.
 pub mod cd_rollback;
-/// Fixtures shared with other files, moved from `cockpit`.
+/// The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and records.
 pub mod cockpit;
-/// Fixtures shared with other files, moved from `codex`.
+/// A connected Codex account and Codex tasks.
 pub mod codex;
-/// Fixtures shared with other files, moved from `delivery`.
+/// A browser port whose lookups a test holds.
 pub mod delivery;
 /// A process host double answering what a test scripts.
 pub mod host;
 /// Real-process servers (the fake agent behind a real ptyhost).
 pub mod live;
-/// Fixtures shared with other files, moved from `parking`.
+/// Apps whose pull requests a test scripts, and reads of parked tasks.
 pub mod parking;
-/// Fixtures shared with other files, moved from `pr_watch`.
+/// CI runs of a pull request and a verification step a task leaves.
 pub mod pr_watch;
-/// Fixtures shared with other files, moved from `secrets`.
+/// A person enrolled for secrets and their unlocked browser session.
 pub mod secrets;
-/// Fixtures shared with other files, moved from `secrets_env`.
+/// Synthetic keys and what a run sources into its environment.
 pub mod secrets_env;
-/// Fixtures shared with other files, moved from `staging`.
+/// The integration branch's CI gates as staging reads them.
 pub mod staging;
 /// Stores copied from a migrated template.
 pub mod store;
-/// Fixtures shared with other files, moved from `subscription_moves`.
+/// Live runs on subscriptions and the notices a task's terminal shows.
 pub mod subscription_moves;
-/// Fixtures shared with other files, moved from `subscription_pool`.
+/// Subscriptions, running tasks on them and the hooks they send.
 pub mod subscription_pool;
-/// Fixtures shared with other files, moved from `task_message`.
+/// The fake agent's screen modes and a Superagent's terminal.
 pub mod task_message;
-/// Fixtures shared with other files, moved from `usage_credits`.
+/// Exhausted models, a person's context and a session's transcript lines.
 pub mod usage_credits;
 pub use host::ScriptedHost;
 /// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).

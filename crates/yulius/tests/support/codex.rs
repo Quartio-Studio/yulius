@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `codex`.
+//! A connected Codex account and Codex tasks.
 
 use crate::support::TestResult;
 use std::sync::Arc;

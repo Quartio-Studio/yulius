@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `subscription_pool`.
+//! Subscriptions, running tasks on them and the hooks they send.
 
 use crate::support;
 use axum::http::Method;
