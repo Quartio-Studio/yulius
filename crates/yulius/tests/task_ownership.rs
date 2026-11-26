@@ -2097,7 +2097,7 @@ async fn fixture_with_app() -> Result<Fixture, Box<dyn std::error::Error>> {
     Ok(f)
 }
 
-/// SPEC-675 L4Q3-001, L4Q3-002, ADR-0481: disabling a task's owner stops the task, and its run
+/// Disabling a task's owner stops the task, and its run
 /// is refused a git credential from then on; another person's task runs on.
 #[tokio::test]
 async fn a_disabled_owners_run_gets_no_git_credential_and_stops() -> TestResult {
@@ -2139,7 +2139,7 @@ async fn a_disabled_owners_run_gets_no_git_credential_and_stops() -> TestResult 
     Ok(())
 }
 
-/// SPEC-675 L4Q3-001: an owner who lost write access to the project no longer has their run
+/// An owner who lost write access to the project no longer has their run
 /// issued a git credential; Bob, who may still write, gets one for his own task.
 #[tokio::test]
 async fn an_owner_down_to_read_access_has_their_run_refused_a_git_credential() -> TestResult {

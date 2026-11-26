@@ -1112,8 +1112,8 @@ async fn the_agents_git_never_holds_the_owners_token() -> TestResult {
     assert!(notices(&mut watch).is_empty());
 
     // A task of an owner without a linked GitHub account, who therefore may not work in the
-    // project, gets no token at all, never a person's (SPEC-675 L4Q3-001; before it, the agent
-    // token). The superadmin, unlinked or not, keeps Admin and the agent token (above).
+    // project, gets no token at all, never a person's. The superadmin, unlinked or not, keeps
+    // Admin and the agent token (above).
     let store = &f.h.app.deps.store;
     let unlinked = UserRecord {
         id: UserId::parse("u-local")?,

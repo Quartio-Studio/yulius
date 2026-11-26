@@ -960,9 +960,9 @@ async fn a_refusal_names_its_source_and_what_was_asked() -> TestResult {
     Ok(())
 }
 
-/// SPEC-675 L4Q3-003: answering a handoff is control of the task (SPEC-490 OWN-001): an owner
-/// whose access to the project dropped to read approves and declines nothing, with the refusal
-/// every control path gives, and the request keeps waiting.
+/// Answering a handoff is control of the task: an owner whose access to the project dropped to
+/// read approves and declines nothing, with the refusal every control path gives, and the request
+/// keeps waiting.
 #[tokio::test]
 async fn an_owner_down_to_read_access_answers_no_handoff() -> TestResult {
     let w = world().await?;
