@@ -1,6 +1,6 @@
 ---
 yulius-task: 8ce90774-eb4a-4b3a-9da9-d30d8f595d33
-status: draft
+status: in-progress
 ---
 
 # SPEC-675: Close the two L4 Q3 authorisation gaps (git credential after disable, handoff answer)
@@ -48,13 +48,13 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
 
 ## Plan
 
-- [ ] Spec and ADR-0481: disabling a person stops their tasks
-- [ ] Failing integration tests for the three refusals
-- [ ] Agent git credential asks the shared enabled-and-Work check
-- [ ] Disabling a person stops the tasks they own
-- [ ] Handoff answers ask the task Control rule
-- [ ] Changes, architecture and API documents updated
-- [ ] Touched test binaries pass in full
+- [x] Spec and ADR-0481: disabling a person stops their tasks
+- [x] Failing integration tests for the three refusals
+- [x] Agent git credential asks the shared enabled-and-Work check
+- [x] Disabling a person stops the tasks they own
+- [x] Handoff answers ask the task Control rule
+- [x] Changes, architecture and API documents updated
+- [x] Touched test binaries pass in full
 - [ ] Independent review of the change
 
 ## Acceptance criteria
@@ -91,3 +91,30 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
   the agent token. That is gap 1 itself. The case now asserts the refusal, which is still never a
   person's token. The realistic unlinked owner, the superadmin (ACC-012), keeps getting the
   agent token.
+
+## Evidence
+
+- Red on `dev` (commit 1d69c6256, tests only): `cargo test -p yulius --test main --
+  a_disabled_owners_run an_owner_down_to_read_access` gave 3 failures. The disabled owner's run
+  got `200 {"token":"agent-inst"}` where `401` was expected. The read-only owner's run got `200`
+  where `403` was expected. The read-only owner's decline returned `200` and the handoff became
+  `declined`.
+- Green after the fixes: the same command passes 3/3, with
+  `agent_hooks::the_agents_git_never_holds_the_owners_token`,
+  `agent_hooks::git_credentials_are_scoped_to_the_project_repository`,
+  `task_ownership::the_agents_gh_never_gets_the_new_owners_token`,
+  `handoffs::ask_stores_a_request_the_owner_answers_in_a_browser` and
+  `handoffs::two_approvals_at_once_create_one_task`.
+- After merging `origin/dev` (0cd74ced5):
+  - `cargo test -p yulius-app --lib`: 741 passed, 0 failed.
+  - `cargo test -p yulius --test main`: 2834 passed, 1 failed, 26 ignored. The failure was
+    `telegram::a_reply_to_a_runs_notice_answers_that_run`, which passed 3/3 alone. It is a test
+    race in the Telegram brokered-command flow, outside this change, filed as #1820. The known
+    `watches::run_bounds_are_enforced` (#1795) and `parking::a_staging_outcome_reaches_its_task_once`
+    (#650) passed in this run.
+  - `cargo clippy -p yulius-app -p yulius --all-targets -- -D warnings`: clean.
+  - `scripts/dev quick`: passed.
+- Security scan: Vidoc is turned off for this project (`yulius security-scan` reports it as
+  disabled). Not run, not passed.
+- Not tested: a real agent process being stopped on disable. The harness has no host to reap the
+  seeded run, so the test accepts `Stopping`, as the existing stop tests do.
