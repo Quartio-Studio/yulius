@@ -56,8 +56,11 @@ Python 3.11+, rustup, Git and a platform C linker are prerequisites.
 
 ```sh
 python3 scripts/bootstrap.py
-scripts/dev doctor|quick|check|lint|macos|test|deps|ci|checks|security   # one per call
+scripts/dev quick
 ```
+
+The other gates are `scripts/dev doctor`, `check`, `lint`, `macos`, `test`, `deps`, `ci`, `checks`
+and `security` ([Development](docs/engineering/development.md)).
 
 - Before each commit you publish: `scripts/dev quick` (the repository contracts and
   `cargo fmt --check`, about 20 s); `ci` and `checks` run it first.
