@@ -468,32 +468,12 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
     use yulius_domain::time::Timestamp;
     use yulius_ptyhost::test_support::locate_fake_agent;
 
-    struct BareOrigin(std::path::PathBuf);
-    impl crate::support::FakeRemote for BareOrigin {
-        fn branch_sha(&self, branch: &str) -> Option<String> {
-            git(
-                &self.0,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("refs/heads/{branch}"),
-                ],
-            )
-            .ok()
-        }
-        fn merge(&self, _: &str, _: &str, _: &str, _: &str) -> Result<String, String> {
-            Err("merge not used in this test".into())
-        }
-        fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-            Err("fast_forward not used in this test".into())
-        }
-    }
-
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let github = Arc::new(crate::support::FakeGitHub::default());
-    github.set_remote(Arc::new(BareOrigin(data.join("origin.git"))));
+    github.set_remote(Arc::new(crate::support::BareRemote(
+        data.join("origin.git"),
+    )));
     github.add_user("code-admin", 1, "admin");
     github.set_perm("admin", "acme/pool", crate::support::perms("write"));
     let agent = crate::support::agents::FakeAgentOptions {

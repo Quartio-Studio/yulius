@@ -1405,6 +1405,12 @@ pub use repos::{git, git_stdout};
 /// Waiting on a condition.
 pub mod wait;
 pub use wait::eventually;
+/// A bare repository behind the fake GitHub.
+pub mod remote;
+pub use remote::BareRemote;
+/// A process host double answering what a test scripts.
+pub mod host;
+pub use host::ScriptedHost;
 /// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).
 pub mod updates;
 
