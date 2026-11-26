@@ -456,6 +456,62 @@ async fn production_deploys_wait_for_a_proven_rollback() -> TestResult {
     Ok(())
 }
 
+/// Audit L3 F2 (prove-on-dev dropped): dev moved on since its passed drill, so a person's
+/// production deploy is refused for that tree and deploys nothing, not even dev; once dev runs
+/// the commit and its drill passed, production deploys.
+#[tokio::test]
+async fn a_drill_of_another_tree_refuses_production_and_deploys_nothing() -> TestResult {
+    let f = fixture(&rollback_cd()).await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    let v2 = push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
+    f.deployed(&f.alice, "dev", None).await?;
+    assert_eq!(f.drill(1).await?["state"], "passed");
+    push(&f, "dev", &[("version", Some("3\n".to_owned()))])?;
+    let main = f.head("main")?;
+    let runs = |overview: &Value| overview["runs"].as_array().map_or(0, Vec::len);
+    let before = runs(&f.get("/api/sandboxes/s1/cd").await?);
+
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let why = refused.body.to_string();
+    assert!(
+        why.contains("rollback is not proven for this commit")
+            && why.contains(&format!("ran at {}", &v2[..7])),
+        "{why}"
+    );
+    let blocked = f.rollback_of("prod").await?["blocked"].clone();
+    assert!(
+        blocked
+            .as_str()
+            .is_some_and(|b| b.contains("rollback is not proven for this commit")),
+        "{blocked}"
+    );
+    assert_eq!(
+        runs(&f.get("/api/sandboxes/s1/cd").await?),
+        before,
+        "nothing was deployed, dev neither"
+    );
+    assert_eq!(f.head("main")?, main, "nothing was promoted by a refusal");
+    let entries = f.h.store.automation_audit("app/prod", 50).await?;
+    assert!(
+        entries.iter().any(|e| e.action == "cd.refused"
+            && e.detail.as_deref().is_some_and(|d| d.contains("not proven"))),
+        "{entries:?}"
+    );
+
+    f.deployed(&f.alice, "dev", None).await?;
+    assert_eq!(f.drill(2).await?["state"], "passed");
+    let run = f.deployed(&f.bob, "prod", Some("app")).await?;
+    assert!(
+        run["output"]
+            .as_str()
+            .is_some_and(|o| o.contains("verified v3")),
+        "{run}"
+    );
+    Ok(())
+}
+
 /// AC4 (RBK-021, RBK-041): an agent rolls dev back with `cd_rollback` and is refused production;
 /// production is an administrator's with the slug typed, and never promotes.
 #[tokio::test]
