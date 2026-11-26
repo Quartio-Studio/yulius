@@ -882,6 +882,13 @@ async fn stalled_armed_green_pr_checks_in_then_escalates_to_needs_you_and_auto_c
         !notice.action.is_empty() && !notice.link.is_empty(),
         "notice must include concrete action and link: {notice:?}"
     );
+    assert!(
+        notice
+            .problem
+            .as_deref()
+            .is_some_and(|p| p.contains("Yulius still sees the agent's turn as working")),
+        "notice must say why the PR waits: {notice:?}"
+    );
 
     // Verify tasks_list and task_get parity (SPEC-578).
     let caller = yulius_app::coordination::ProjectCaller {
@@ -1678,6 +1685,57 @@ async fn disarmed_pr_on_deferred_pass_resets_stall_clock_before_rearm() -> TestR
     assert!(
         summary_after.needs_you.is_none() && summary_after.needs_you_notice.is_none(),
         "re-arming the same head after a deferred disarm must not immediately re-escalate: {summary_after:?}"
+    );
+    Ok(())
+}
+
+/// An armed green pull request whose worktree Git cannot read is waiting for the same reason as a
+/// dirty one: the merge queue does not touch a branch it cannot read, and the Needs You notice
+/// says so instead of a generic sentence (audit L2 F2: one default for a failed read, dirty).
+#[tokio::test]
+async fn stalled_armed_green_pr_with_an_unreadable_worktree_says_uncommitted() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f
+        .task_with(
+            1,
+            Harness::Antigravity,
+            Activity::Waiting,
+            &[("a.txt", "x\n")],
+        )
+        .await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &head).await?;
+    f.advance_origin_dev("other.txt", "moved\n", true)?;
+    // A corrupt index: `git status` fails, so whether anything is uncommitted cannot be read.
+    let index = git(
+        &worktree,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    )?;
+    std::fs::write(&index, "not an index")?;
+    assert!(git(&worktree, &["status", "--porcelain"]).is_err());
+    let id = TaskId::parse("t1")?;
+
+    let bounds = WatchBounds::default();
+    let _ = app.watch_prs(&bounds).await;
+    f.h.clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+    f.h.clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+
+    let task = app.deps.store.task(&id).await?.ok_or("t1")?;
+    let summary = app.task_summary(&task).await?;
+    let notice = summary
+        .needs_you_notice
+        .as_ref()
+        .ok_or("expected a Needs You notice after the armed-PR stall bound")?;
+    assert!(
+        notice
+            .problem
+            .as_deref()
+            .is_some_and(|p| p.contains("Uncommitted changes remain in the task worktree")),
+        "a worktree Git cannot read counts as uncommitted: {notice:?}"
     );
     Ok(())
 }

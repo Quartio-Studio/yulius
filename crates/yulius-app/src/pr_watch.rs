@@ -25,7 +25,7 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
 
-use crate::agent_wait::{ArmObservation, ArmedNow, QueueNote};
+use crate::agent_wait::{ArmedNow, ArmedSnapshot, QueueNote, Readiness};
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
@@ -826,11 +826,10 @@ impl App {
             }
             let held =
                 update_holds || !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
-            let activation = self.arm_observation(&task.id);
-            let slot = self.armed_now(&task.id);
+            let seen = self.armed_snapshot(&task.id);
             let facts = if task.status == TaskStatus::Running && !held {
                 self.settle_codex_input_hold(&task, &attempt.id, None).await;
-                Box::pin(self.pr_facts(&task, &mut told, &mut runs, &activation, &slot)).await
+                Box::pin(self.pr_facts(&task, &mut told, &mut runs, &seen)).await
             } else {
                 None
             };
@@ -927,8 +926,7 @@ impl App {
                             // A changed free-slot note also changes this observation: only an
                             // arm, clear or completed queue decision publishes that note.
                             if self.update_holds_starts()
-                                || self.arm_observation(&task.id) != activation
-                                || self.armed_now(&task.id) != slot
+                                || !seen.same_arm(&self.armed_snapshot(&task.id))
                                 || self.watched_train(&task, facts.pr) != source.train
                                 || source.decision.is_some() && self.merge_is_armed(&task.id)
                             {
@@ -1056,8 +1054,7 @@ impl App {
                     action,
                 } = armed_action
                 && !self.update_holds_starts()
-                && self.arm_observation(&task.id) == activation
-                && self.armed_now(&task.id) == slot
+                && seen.same_arm(&self.armed_snapshot(&task.id))
                 && source
                     .as_ref()
                     .is_none_or(|s| self.watched_train(&task, facts.pr) == s.train)
@@ -1325,8 +1322,7 @@ impl App {
         task: &TaskRecord,
         told: &mut Told,
         runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
-        activation: &ArmObservation,
-        slot: &ArmedNow,
+        seen: &ArmedSnapshot,
     ) -> Option<(PrFacts, Option<QueueNoticeSource>)> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
@@ -1410,10 +1406,10 @@ impl App {
                 None,
             ))
         };
-        if activation.deciding {
+        if seen.observation.deciding {
             return observed_only();
         }
-        let arm_head = match slot {
+        let arm_head = match &seen.now {
             ArmedNow::Armed(arm) => Some(arm.head.as_str()),
             _ if armed => return observed_only(),
             _ => None,
@@ -1675,7 +1671,7 @@ impl App {
         }
         let green =
             own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
-        let arm_note = self.arm_queue_note(&task.id);
+        let arm_note = self.armed_snapshot(&task.id).note;
         let queue_note = train.map(|train| &train.note).or(arm_note.as_ref());
         if let (true, Some(head)) = (green, &head)
             && candidate.is_none_or(|run| run.state != RunState::Failed)
@@ -1718,7 +1714,7 @@ impl App {
         } else {
             no_ci_status(armed)
         };
-        let armed_head = match &slot {
+        let armed_head = match &seen.now {
             ArmedNow::Armed(merge) => merge.head.clone(),
             ArmedNow::None | ArmedNow::Deciding => String::new(),
         };
@@ -1824,8 +1820,7 @@ impl App {
             std::path::Path::new(task.id.as_str()),
         );
         if self.update_holds_starts()
-            || &self.arm_observation(&task.id) != activation
-            || &self.armed_now(&task.id) != slot
+            || !seen.same_arm(&self.armed_snapshot(&task.id))
             || self.merge_is_armed(&task.id) != armed
         {
             return observed_only();
@@ -2186,38 +2181,24 @@ impl App {
         if let Some(note) = queue_note {
             return note.text.clone();
         }
-        if !task
-            .activity
-            .is_some_and(yulius_domain::task::Activity::is_idle)
-        {
-            return format!(
+        match self.queue_readiness(task, None).await {
+            Readiness::Working => format!(
                 "Yulius still sees the agent's turn as working, so the merge queue waits for its \
                  turn to end before testing on `{integration}`."
-            );
-        }
-        if self.background_shells_of(&task.id).unwrap_or(0) > 0 {
-            return format!(
+            ),
+            Readiness::Shells => format!(
                 "A background command is still running in the task, so the merge queue waits for \
                  it to finish before updating `{integration}`."
-            );
-        }
-        if let Some(worktree) = task.worktree_path.as_deref()
-            && self
-                .deps
-                .git
-                .has_changes(std::path::Path::new(worktree))
-                .await
-                .unwrap_or(false)
-        {
-            return format!(
+            ),
+            Readiness::Dirty => format!(
                 "Uncommitted changes remain in the task worktree, so the merge queue cannot test \
                  it on top of `{integration}`."
-            );
+            ),
+            Readiness::NotRunning | Readiness::MovedOn | Readiness::Ready => format!(
+                "The armed green pull request has not entered a merge candidate or merged into \
+                 `{integration}`."
+            ),
         }
-        format!(
-            "The armed green pull request has not entered a merge candidate or merged into \
-             `{integration}`."
-        )
     }
 
     /// Persists an actionable Needs You request via SPEC-578 (`tasks.needs_you` + `publish_task`
