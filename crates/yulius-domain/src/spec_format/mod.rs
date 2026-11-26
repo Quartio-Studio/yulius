@@ -351,6 +351,8 @@ pub struct SpecReport {
     pub task_id: Option<String>,
     /// `status` value, if valid.
     pub status: Option<SpecStatus>,
+    /// The level-1 heading's text, if any.
+    pub title: Option<String>,
 }
 
 impl SpecReport {
@@ -364,7 +366,10 @@ impl SpecReport {
     #[must_use]
     pub fn agent_message(&self, spec_path: &str) -> String {
         if self.is_valid() {
-            return format!("The task spec `{spec_path}` satisfies the Yulius format.");
+            let hint = self
+                .name_hint(spec_path)
+                .map_or_else(String::new, |h| format!(" {h}"));
+            return format!("The task spec `{spec_path}` satisfies the Yulius format.{hint}");
         }
         let mut message =
             format!("The task spec `{spec_path}` does not satisfy the Yulius format:\n");
@@ -374,8 +379,57 @@ impl SpecReport {
             message.push('\n');
         }
         message.push_str("Fix the spec, then continue.");
+        message.push_str(
+            &self
+                .name_hint(spec_path)
+                .map_or_else(String::new, |h| format!("\n{h}")),
+        );
         message
     }
+
+    /// The rename an agent is asked for when the file name does not follow the heading (audit
+    /// L10 F5: files were named after the raw request). The number (`SPEC-674-`) or date
+    /// (`2026-10-07-`) before the name is kept; a `SPEC-674:` before the title is dropped.
+    fn name_hint(&self, spec_path: &str) -> Option<String> {
+        let title = self.title.as_deref()?;
+        let file = spec_path.rsplit('/').next().unwrap_or(spec_path);
+        let dir = &spec_path[..spec_path.len() - file.len()];
+        let stem = file.strip_suffix(".md")?;
+        let (prefix, name) = stem.split_at(prefix_len(stem));
+        let title = title
+            .split_once(':')
+            .filter(|(head, _)| prefix_len(&format!("{}-", head.trim())) > 0)
+            .map_or(title, |(_, rest)| rest);
+        let wanted = slug_or(title, name);
+        if wanted == name {
+            return None;
+        }
+        Some(format!(
+            "Its file name does not follow its heading: rename it to `{dir}{prefix}{wanted}.md` \
+             (`git mv`; Yulius follows a renamed spec by its frontmatter)."
+        ))
+    }
+}
+
+/// Length of a `SPEC-<digits>-` or `YYYY-MM-DD-` prefix of a spec file stem, else 0.
+fn prefix_len(stem: &str) -> usize {
+    let bytes = stem.as_bytes();
+    if let Some(rest) = stem.strip_prefix("SPEC-") {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && rest.as_bytes().get(digits) == Some(&b'-') {
+            return 5 + digits + 1;
+        }
+    }
+    let date = bytes.len() > 11
+        && bytes[..10].iter().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                *b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        })
+        && bytes[10] == b'-';
+    if date { 11 } else { 0 }
 }
 
 const REQUIRED_SECTIONS: [&str; 7] = [
@@ -584,11 +638,17 @@ pub fn validate_spec(markdown: &str) -> SpecReport {
         }
     }
 
+    let title = lines[body_start.min(lines.len())..]
+        .iter()
+        .find(|line| !line.code && line.content.starts_with("# "))
+        .map(|line| line.content[2..].trim().to_owned())
+        .filter(|title| !title.is_empty());
     SpecReport {
         problems,
         plan,
         task_id,
         status,
+        title,
     }
 }
 
@@ -1032,11 +1092,67 @@ mod tests {
             vec!["Frontmatter 'yulius-task' is 'task-1' but this task is 'task-2'."]
         );
         assert_eq!(
-            report.agent_message("docs/specs/x.md"),
-            "The task spec `docs/specs/x.md` does not satisfy the Yulius format:\n- Frontmatter 'yulius-task' is 'task-1' but this task is 'task-2'.\nFix the spec, then continue."
+            report.agent_message("docs/specs/checkout-api.md"),
+            "The task spec `docs/specs/checkout-api.md` does not satisfy the Yulius format:\n- Frontmatter 'yulius-task' is 'task-1' but this task is 'task-2'.\nFix the spec, then continue."
         );
         assert!(validate_spec_for(VALID, &TaskId::parse("task-1")?).is_valid());
         Ok(())
+    }
+
+    /// Audit L10 F5: a spec file is named after its heading, not the raw request it was created
+    /// from; the message says the name to give it, keeping its number or date.
+    #[test]
+    fn a_spec_named_after_the_request_is_told_its_heading_name() {
+        let valid = validate_spec(VALID);
+        let named = |path: &str| valid.agent_message(path);
+        assert_eq!(
+            named("docs/specs/checkout-api.md"),
+            "The task spec `docs/specs/checkout-api.md` satisfies the Yulius format."
+        );
+        for (path, wanted) in [
+            (
+                ".ai/specs/SPEC-674-bruh-fix-it-pls.md",
+                ".ai/specs/SPEC-674-checkout-api.md",
+            ),
+            (
+                "docs/specs/2026-10-07-lol.md",
+                "docs/specs/2026-10-07-checkout-api.md",
+            ),
+            ("docs/specs/raw-prompt.md", "docs/specs/checkout-api.md"),
+        ] {
+            let message = named(path);
+            assert!(message.starts_with("The task spec"), "{message}");
+            assert!(
+                message.ends_with(&format!(
+                    "Its file name does not follow its heading: rename it to `{wanted}` \
+                     (`git mv`; Yulius follows a renamed spec by its frontmatter)."
+                )),
+                "{message}"
+            );
+        }
+        // A numbered heading names the file without its number twice.
+        let numbered = validate_spec(&VALID.replace("# Checkout API", "# SPEC-674: Checkout API"));
+        assert!(
+            numbered
+                .agent_message(".ai/specs/SPEC-674-checkout-api.md")
+                .ends_with("format.")
+        );
+        // An invalid spec gets the hint after its problems; no heading, no hint.
+        let invalid = validate_spec_for(
+            VALID,
+            &TaskId::parse("task-2").unwrap_or_else(|_| unreachable!()),
+        );
+        assert!(
+            invalid
+                .agent_message("docs/specs/x.md")
+                .contains("Fix the spec, then continue.\nIts file name")
+        );
+        let untitled = validate_spec(&VALID.replace("# Checkout API\n", ""));
+        assert!(
+            !untitled
+                .agent_message("docs/specs/x.md")
+                .contains("file name")
+        );
     }
 
     #[test]
