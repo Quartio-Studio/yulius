@@ -11,6 +11,7 @@ pub mod import;
 pub mod mcp;
 pub mod migrate;
 pub mod ptyhost;
+pub mod redact;
 pub mod sandbox;
 pub mod scrub;
 pub mod secret;

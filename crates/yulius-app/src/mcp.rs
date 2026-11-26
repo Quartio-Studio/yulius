@@ -11,7 +11,6 @@ use yulius_domain::harness::{
     DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
 };
 use yulius_domain::ids::SandboxId;
-use yulius_domain::vault::redact::redact_text;
 
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
@@ -21,7 +20,7 @@ use crate::manage::TaskChange;
 use crate::mcp_args::tool;
 use crate::person_tools::PERSON_TOOLS;
 use crate::shells::COCKPIT_TOKEN_PREFIX;
-use crate::vault::SecretUser;
+use crate::vault::{SecretUser, WITHHELD};
 
 /// Maximum tool result text returned to the model.
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
@@ -1274,7 +1273,7 @@ impl App {
                 // messages, task prompts and everything else are redacted before the agent. Each
                 // text of the record is redacted before rendering, which indents multi-line text
                 // and could split what the matcher looks for, and the rendered text again.
-                let Some(value) = self.redact_strings(sandbox, value).await else {
+                let Some(value) = self.redact_json_for_sandbox(sandbox, value).await else {
                     return text_result(WITHHELD, false);
                 };
                 let text = crate::mcp_text::render(name, args, &value);
@@ -1302,24 +1301,7 @@ impl App {
             ),
         }
     }
-
-    /// The record with every text in it redacted of the sandbox's agent secrets; `None` when
-    /// they could not be loaded.
-    async fn redact_strings(&self, sandbox: &SandboxId, value: Value) -> Option<Value> {
-        match self.agent_secret_matcher(sandbox).await {
-            Ok(matcher) => Some(map_strings(value, &|text| {
-                redact_text(matcher.as_ref(), text).0
-            })),
-            Err(err) => {
-                tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
-                None
-            }
-        }
-    }
 }
-
-/// What a result says when its record could not be checked for agent secrets.
-const WITHHELD: &str = "[withheld: Yulius could not check this text for agent secrets]";
 
 /// A (redacted) record as `structuredContent`: an object, so another value is wrapped as
 /// `{"value": …}`, and one larger than [`MAX_RESULT_BYTES`] is withheld (results stay bounded).
@@ -1337,19 +1319,6 @@ fn structured_record(value: Value) -> Value {
 /// The `tools/call` `_meta` key with which a client asks for each result's record as
 /// `structuredContent` besides its text (SPEC-086 TOL-005).
 pub const STRUCTURED_META: &str = "yulius/structured";
-
-fn map_strings(value: Value, f: &dyn Fn(&str) -> String) -> Value {
-    match value {
-        Value::String(text) => Value::String(f(&text)),
-        Value::Array(items) => Value::Array(items.into_iter().map(|v| map_strings(v, f)).collect()),
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(key, v)| (key, map_strings(v, f)))
-                .collect(),
-        ),
-        other => other,
-    }
-}
 
 /// What a task-only tool (or a browser tool) gives back.
 pub(crate) enum TaskToolResult {

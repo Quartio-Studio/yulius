@@ -51,6 +51,9 @@ use crate::error::{AppError, AppResult};
 use crate::ports::vault::{VaultSecretRecord, VaultSection};
 use crate::vidoc_key::{VIDOC_HOST, VIDOC_SECRET, VIDOC_SECRET_ID};
 
+/// What a text says when it could not be checked for agent secrets.
+pub(crate) const WITHHELD: &str = "[withheld: Yulius could not check this text for agent secrets]";
+
 /// Bound of remembered "already audited" keys before the memory is cleared.
 const AUDITED_KEYS_MAX: usize = 10_000;
 
@@ -560,13 +563,34 @@ impl App {
     /// (MCP results, transcripts) applies it; on a failure the text is withheld, never shown
     /// unredacted.
     pub async fn redact_for_sandbox(&self, sandbox: &SandboxId, text: &str) -> String {
-        match self.agent_secret_matcher(sandbox).await {
-            Ok(matcher) => redact_text(matcher.as_ref(), text).0,
-            Err(err) => {
-                tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
-                "[withheld: Yulius could not check this text for agent secrets]".into()
-            }
+        match self.redaction_matcher(sandbox).await {
+            Some(matcher) => redact_text(matcher.as_ref(), text).0,
+            None => WITHHELD.into(),
         }
+    }
+
+    /// `value` with every text in it redacted as by [`App::redact_for_sandbox`]; `None` when the
+    /// agent secrets could not be loaded.
+    pub(crate) async fn redact_json_for_sandbox(
+        &self,
+        sandbox: &SandboxId,
+        mut value: serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let matcher = self.redaction_matcher(sandbox).await?;
+        yulius_contracts::redact::redact_json_strings(&mut value, &mut |_, text| {
+            *text = redact_text(matcher.as_ref(), text).0;
+            true
+        });
+        Some(value)
+    }
+
+    async fn redaction_matcher(&self, sandbox: &SandboxId) -> Option<Arc<PlainMatcher>> {
+        self.agent_secret_matcher(sandbox)
+            .await
+            .inspect_err(|err| {
+                tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
+            })
+            .ok()
     }
 
     /// Whether the egress proxy is wired: runs get the proxy environment.

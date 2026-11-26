@@ -12,9 +12,10 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use yulius_contracts::import::FileRef;
+use yulius_contracts::redact::redact_json_strings;
 use yulius_domain::redact::{
     RedactionTally, is_env_file, is_secret_name, mentions_env_file, redact, redact_env,
     redact_named,
@@ -75,31 +76,17 @@ fn redact_string(text: &mut String, env: bool, report: &mut RedactionReport) -> 
 
 /// Walks a JSON value: strings are redacted, secret-named keys lose literal values.
 fn walk(value: &mut Value, env: bool, report: &mut RedactionReport) -> bool {
-    match value {
-        Value::String(text) => redact_string(text, env, report),
-        Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |changed, item| walk(item, env, report) | changed),
-        Value::Object(map) => walk_object(map, env, report),
-        _ => false,
-    }
-}
-
-fn walk_object(map: &mut Map<String, Value>, env: bool, report: &mut RedactionReport) -> bool {
-    let mut changed = false;
-    for (key, item) in map.iter_mut() {
-        if let Value::String(text) = item
-            && is_secret_name(key)
-            && let Some(redacted) = redact_named(key, text)
-        {
+    redact_json_strings(value, &mut |key, text| match key
+        .filter(|key| is_secret_name(key))
+        .and_then(|key| redact_named(key, text))
+    {
+        Some(redacted) => {
             report.tally.add(&redacted.findings);
             *text = redacted.text;
-            changed = true;
-            continue;
+            true
         }
-        changed |= walk(item, env, report);
-    }
-    changed
+        None => redact_string(text, env, report),
+    })
 }
 
 /// Replaces image blocks (anywhere in the line) by a text block.
