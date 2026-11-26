@@ -563,7 +563,7 @@ watching, steering and unblocking.
   (agents fix findings in their own code and obtain re-review through approval under the task's existing authorization),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
-  promotions) that Yulius checks before every merge. Each task records what it delivered in the
+  promotions) that Yulius checks before every merge. Each task notes a user-visible change in the
   project's changes log, or, with `[docs] changes = "docs/changes/"` (a trailing `/` or an
   existing directory), in one new note of its own in that folder, named
   `YYYY-MM-DD-<task number>-<short-slug>.md`, so parallel pull requests never conflict on it; the
