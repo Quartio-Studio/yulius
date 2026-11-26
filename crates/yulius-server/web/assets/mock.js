@@ -2344,13 +2344,23 @@ function seedCi(params) {
         { revision: 'ef02b192abba', run_id: 'ci_gate', merge_task: 15, test: 'queue::serve' },
       ] : [],
       // SPEC-676: a red after-merge gate stops the merge queue.
-      merge_stop: params.get('merge_stop') === '1' ? {
-        failures: [{ test: 'delivery::gate', revision: '7713224a587f', merge_task: 12 }, { test: 'tests (2/4)', revision: 'ef02b192abba', merge_task: null }],
+      // `merge_stop=1` holds two armed merges; `one`, while the failure is still narrowed, one
+      // with no pull request; `none` nothing.
+      merge_stop: { 1: {
+        failures: [{ test: 'delivery::gate', revision: '7713224a587f', merge_task: 12 }, { test: 'queue::serve', revision: 'ef02b192abba', merge_task: 15 }],
         run_id: 'ci_gate',
         waiting: [{ task: 14, pull_request: 231 }, { task: 16, pull_request: 236 }],
-      } : null,
+      }, one: {
+        failures: [{ test: 'tests (2/4)', revision: 'ef02b192abba', merge_task: null }],
+        run_id: 'ci_gate',
+        waiting: [{ task: 14, pull_request: null }],
+      }, none: {
+        failures: [{ test: 'delivery::gate', revision: '7713224a587f', merge_task: 12 }],
+        run_id: 'ci_gate',
+        waiting: [],
+      } }[params.get('merge_stop')] || null,
       runs: [
-        ...(params.get('gate_notice') === '1' || params.get('merge_stop') === '1' ? [ciRun('ci_gate', 'branch/quartio', 'ef02b192abba', 'failed', 3, { failJob: 'test (2/2)' })] : []),
+        ...(params.get('gate_notice') === '1' || params.get('merge_stop') ? [ciRun('ci_gate', 'branch/quartio', 'ef02b192abba', 'failed', 3, { failJob: 'test (2/2)' })] : []),
         ciRun('ci_s4', 'branch/quartio', '9f3c2a1b7e4d', 'running', 1),
         // SPEC-162: a passed run whose "test (2/2)" exited with the skip code.
         ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22, { skipJob: 'test (2/2)' }),
@@ -2375,7 +2385,8 @@ function seedCi(params) {
     sb_three: {
       gate: { source: 'profile', jobs: [{ name: 'gate', command: 'make ci', matrix: null }] }, gate_problem: null, status_access: null, actions_workflows: [],
       gate_notices: params.get('gate_notice') === 'reader' ? [{ key: 'gate:store::retry', revision: '77aa01bc3d4e', run_id: 'ci_t1', merge_task: null, test: 'store::retry' }] : [],
-      runs: [params.get('gate_notice') === 'reader'
+      merge_stop: params.get('merge_stop') === 'reader' ? { failures: [{ test: 'store::retry', revision: '77aa01bc3d4e', merge_task: null }], run_id: 'ci_t1', waiting: [] } : null,
+      runs: [params.get('gate_notice') === 'reader' || params.get('merge_stop') === 'reader'
         ? ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'failed', 180, { failJob: 'test (1/2)' })
         : ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'passed', 180)],
       hygiene: { scanned_at: null, notes: [], items: [] },

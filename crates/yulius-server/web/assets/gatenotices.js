@@ -30,7 +30,7 @@ export function mergeStopBanner(sandbox, stop, canRun) {
   const project = `/s/${encodeURIComponent(sandbox.slug)}`;
   const path = `${project}/ci?run=${encodeURIComponent(stop.run_id)}`;
   const failures = stop.failures.map((failure) => {
-    const origin = failure.merge_task ? `task #${failure.merge_task}` : 'no task named yet';
+    const origin = failure.merge_task ? `task #${failure.merge_task}` : 'no task named';
     return h('li', null, `${failure.test} · first seen at ${failure.revision.slice(0, 12)} (${origin})`);
   });
   const waiting = stop.waiting || [];
@@ -41,6 +41,6 @@ export function mergeStopBanner(sandbox, stop, canRun) {
     h('div', { class: 'banner-text' },
       h('strong', null, 'Merges are stopped: the after-merge gate of the integration branch is red'),
       h('ul', null, failures),
-      `Only its repair merges. ${waiting.length ? `${count}: ${held}. ` : ''}They merge by themselves once a later revision's gate is green. `,
-      h('a', { href: href(path), dataset: { route: path, focusKey: `${project}/ci#stop-run` } }, canRun ? 'Review and run again' : 'Review the run')))];
+      `Only its repair merges. ${waiting.length ? `${count}: ${held}. ` : ''}Armed merges keep their places and merge by themselves once a later revision's gate is green. `,
+      h('a', { href: href(path), dataset: { route: path, focusKey: `${project}/ci#stop-run` } }, canRun ? 'Review and rerun the red run' : 'Review the red run')))];
 }

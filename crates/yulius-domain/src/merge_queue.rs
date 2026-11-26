@@ -260,7 +260,7 @@ impl MergeStop {
             .map(|failure| {
                 let origin = failure
                     .merge_task
-                    .map_or_else(|| "no task named yet".to_owned(), |n| format!("task #{n}"));
+                    .map_or_else(|| "no task named".to_owned(), |n| format!("task #{n}"));
                 let revision: String = failure.revision.chars().take(12).collect();
                 format!("`{}` (first at {revision}, {origin})", failure.test)
             })
@@ -647,7 +647,7 @@ mod tests {
             MergeStop::of(vec![flaky.clone()], &["app tests::flaky"], "r"),
             None
         );
-        let job = open("job tests (1/4)", None);
+        let job = open("tests (1/4)", None);
         let stop = MergeStop::of(vec![flaky, job.clone()], &["app tests::flaky"], "run-9");
         assert_eq!(
             stop,
@@ -681,14 +681,14 @@ mod tests {
     #[test]
     fn a_held_merge_is_told_why_it_waits() {
         let stop = MergeStop {
-            failures: vec![open("store::writes", Some(412)), open("job e2e", None)],
+            failures: vec![open("store::writes", Some(412)), open("e2e", None)],
             run: "ci_9".to_owned(),
         };
         let note = stop.waiting_note(415, "dev");
         for said in [
             "Pull request #415 waits: the after-merge gate of `dev` is red",
             "`store::writes` (first at 0123456789ab, task #412)",
-            "`job e2e` (first at 0123456789ab, no task named yet)",
+            "`e2e` (first at 0123456789ab, no task named)",
             "run ci_9",
             "it merges by itself then",
             "`repairs_gate: true`",

@@ -478,16 +478,54 @@ test('a red after-merge gate shows the stopped merge queue, what holds it and wh
   const banner = screen.getByRole('status', 'Merges stopped');
   await expect(banner.getByText(/Merges are stopped: the after-merge gate of the integration branch is red/)).toBeVisible();
   await expect(banner.getByText(/delivery::gate · first seen at 7713224a587f \(task #12\)/)).toBeVisible();
-  await expect(banner.getByText(/tests \(2\/4\) · first seen at ef02b192abba \(no task named yet\)/)).toBeVisible();
-  await expect(banner.getByText(/2 armed merges wait: #231 \(task #14\), #236 \(task #16\)/)).toBeVisible();
+  await expect(banner.getByText(/queue::serve · first seen at ef02b192abba \(task #15\)/)).toBeVisible();
+  await expect(banner.getByText(/Only its repair merges\. 2 armed merges wait: #231 \(task #14\), #236 \(task #16\)\. Armed merges keep their places/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
-  await banner.getByRole('link', 'Review and run again').click();
+  await banner.getByRole('link', 'Review and rerun the red run').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_gate$/);
+});
+
+test('the stopped queue names one waiting merge without a pull request, and a failure nobody is named for', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/ci', '&merge_stop=one'));
+  const banner = screen.getByRole('status', 'Merges stopped');
+  await expect(banner.getByText(/tests \(2\/4\) · first seen at ef02b192abba \(no task named\)/)).toBeVisible();
+  await expect(banner.getByText(/1 armed merge waits: task #14\. Armed merges keep their places/)).toBeVisible();
+});
+
+test('the stopped queue with nothing waiting says only that armed merges keep their places', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/ci', '&merge_stop=none'));
+  const banner = screen.getByRole('status', 'Merges stopped');
+  await expect(banner.getByText(/Only its repair merges\. Armed merges keep their places and merge by themselves/)).toBeVisible();
+  await expect(banner.getByText(/armed merges? waits?:/)).toHaveCount(0);
+});
+
+test('readers see the stopped queue and can review the red run, not rerun it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/sandbox-3/ci', '&merge_stop=reader'));
+  const banner = screen.getByRole('status', 'Merges stopped');
+  await expect(banner.getByRole('link', 'Review and rerun the red run')).toHaveCount(0);
+  await expect(banner.getByRole('link', 'Review the red run')).toHaveAttribute('href', /run=ci_t1$/);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('a focused stopped-queue link keeps the keyboard when its run moves, and lets go when the stop clears', async ({ app, browser, screen }) => {
+  type Mock = { __yuliusMock: { ci: { sb_studio: { merge_stop: { run_id: string } | null } } } };
+  await app.open(mock('/s/studio/ci', '&merge_stop=1'));
+  const focused = () => browser.evaluate(() => (document.activeElement as HTMLAnchorElement | null)?.getAttribute('href') ?? document.activeElement?.getAttribute('aria-label'));
+  await screen.getByRole('link', 'Review and rerun the red run').focus();
+  await browser.evaluate(() => {
+    const stop = (window as unknown as Mock).__yuliusMock.ci.sb_studio.merge_stop;
+    if (stop) stop.run_id = 'ci_s4';
+  });
+  await expect.poll(focused, { timeout: 15000 }).toMatch(/run=ci_s4$/);
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.ci.sb_studio.merge_stop = null; });
+  await expect(screen.getByRole('status', 'Merges stopped')).toHaveCount(0, { timeout: 15000 });
+  await expect.poll(focused).toBe('CI overview');
 });
 
 test('no stopped-queue banner while merges go on', async ({ app, screen }) => {
   await app.open(mock('/s/studio/ci'));
-  await expect(screen.getByRole('region', 'CI overview')).toBeVisible();
+  // Looked at once the overview is drawn, not before its first read answers.
+  await expect(screen.getByRole('heading', 'Runs')).toBeVisible();
   await expect(screen.getByRole('status', 'Merges stopped')).toHaveCount(0);
 });
 
