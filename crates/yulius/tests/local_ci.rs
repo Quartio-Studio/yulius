@@ -4,6 +4,7 @@
 //! deletions.
 
 use crate::support;
+use crate::support::BareRemote;
 use crate::support::git;
 
 use std::path::{Path, PathBuf};
@@ -15,8 +16,8 @@ use std::time::Duration;
 use axum::http::{Method, StatusCode};
 use serde_json::Value;
 use support::{
-    Creds, FakeRemote, HarnessOptions, call, configure_github_app, harness_with, perms,
-    seed_github_user, seed_sandbox,
+    Creds, HarnessOptions, call, configure_github_app, harness_with, perms, seed_github_user,
+    seed_sandbox,
 };
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::error::{AppError, AppResult};
@@ -34,41 +35,6 @@ type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 type TestResult = BoxResult<()>;
 
 const WAIT: Duration = Duration::from_secs(60);
-
-/// The bare `origin` as the fake GitHub's repository side.
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .ok()
-    }
-    fn merge(&self, _: &str, _: &str, _: &str, _: &str) -> Result<String, String> {
-        Err("not used".into())
-    }
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-        .map_err(|e| e.to_string())
-    }
-}
 
 const YULIUS_TOML: &str = r#"[[ci.jobs]]
 name = "lint"
@@ -163,7 +129,7 @@ async fn fixture_tuned(
     git(&work, &["commit", "-q", "-m", "feature"])?;
     git(&work, &["push", "-q", "origin", "feat/one"])?;
     let head = git(&work, &["rev-parse", "HEAD"])?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     if let Ok(mut pulls) = h.github.pulls.lock() {
         pulls.push(GhPull {
             number: 1,

@@ -4,6 +4,7 @@
 //! promoting.
 
 use crate::support;
+use crate::support::BareRemote;
 use crate::support::git;
 
 use std::path::{Path, PathBuf};
@@ -14,8 +15,8 @@ use std::time::Duration;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{
-    Creds, FakeRemote, HarnessOptions, call, configure_github_app, harness_with, perms,
-    seed_github_user, seed_sandbox,
+    Creds, HarnessOptions, call, configure_github_app, harness_with, perms, seed_github_user,
+    seed_sandbox,
 };
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::ci::cd::CdRunRecord;
@@ -31,65 +32,6 @@ pub(crate) type TestResult = BoxResult<()>;
 
 const WAIT: Duration = Duration::from_secs(60);
 pub(crate) const VALUE: &str = "dev-deploy-token-9q2w7e5r";
-
-/// The bare `origin` as the fake GitHub's repository side: promotions merge and fast-forward it.
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .ok()
-    }
-    fn merge(&self, base: &str, head_sha: &str, _: &str, message: &str) -> Result<String, String> {
-        let run = |args: &[&str]| git(&self.0, args).map_err(|e| e.to_string());
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = run(&["merge-tree", "--write-tree", &base_sha, head_sha])?;
-        let commit = run(&[
-            "commit-tree",
-            &tree,
-            "-p",
-            &base_sha,
-            "-p",
-            head_sha,
-            "-m",
-            message,
-        ])?;
-        run(&[
-            "update-ref",
-            &format!("refs/heads/{base}"),
-            &commit,
-            &base_sha,
-        ])?;
-        Ok(commit)
-    }
-    fn create_branch(&self, branch: &str, sha: &str) -> Result<(), String> {
-        git(
-            &self.0,
-            &["update-ref", &format!("refs/heads/{branch}"), sha, ""],
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-    }
-    fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String> {
-        git(
-            &self.0,
-            &["update-ref", &format!("refs/heads/{branch}"), sha],
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-    }
-    fn delete_branch(&self, _: &str) -> Result<bool, String> {
-        Ok(false)
-    }
-}
 
 /// The deploy script: proves what it got (the secret's value, `YULIUS_CD_*`, no task token) and
 /// leaves a mark the verify script checks. It prints the value, which the stored output redacts.
@@ -182,7 +124,7 @@ async fn fixture_configured(
     git(&work, &["add", "-A"])?;
     git(&work, &["commit", "-q", "-m", "init"])?;
     git(&work, &["push", "-q", "origin", "HEAD:main", "HEAD:dev"])?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     let repo = data.join("sandboxes/s1/repo");
     std::fs::create_dir_all(repo.parent().ok_or("parent")?)?;
     git(

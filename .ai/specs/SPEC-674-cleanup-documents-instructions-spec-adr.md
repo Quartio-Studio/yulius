@@ -73,8 +73,8 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 - [x] product.md trimmed to current behaviour
 - [x] Q5 false sentences fixed
 - [x] changes.md: entries merged in from branches cut before the new log
-- [ ] PR4c (operations.md, product.md) review approved
-- [ ] Spec file named from its heading (inside this task's paths)
+- [x] PR4c (operations.md, product.md) review approved
+- [x] Spec file named from its heading (inside this task's paths)
 - [ ] PR5 review approved
 - [ ] README: audience, what leaves the machine, not supported
 - [ ] PR6 review approved
@@ -137,6 +137,12 @@ and the link checker). The rest of the gate is Yulius CI's.
   name are kept; operations.md keeps the three unit files a test reads byte for byte. Its
   upgrade notes and the behaviour comments inside the sample unit (audit L6 F9) stay only in the
   archive.
+- Spec file names (L10 F5): inside this task's paths, `spec_check` (through
+  `SpecReport::agent_message`) adds the name the file should have when its name does not follow
+  its level-1 heading, keeping a `SPEC-NNN-` or date prefix; the template says to name the file
+  after its title. Allocating only the number (`allocate_spec_path`), titling the task from the
+  agent's heading instead of the request (`title_from_prompt`, `branch_for`) and PR titles are in
+  other tasks' paths. This task's own spec keeps its name: renaming it mid-delivery gains nothing.
 - Briefing rule 5 stays within the budget in both decision layouts: the directory arm drops its
   section list (the project docs check still names missing sections; "Alternatives" is implied
   by "two rejected alternatives"), the file arm drops its parts list, and "with at least one

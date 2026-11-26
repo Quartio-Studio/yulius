@@ -88,7 +88,11 @@ impl Stubs {
             std::fs::write(
                 &path,
                 format!(
-                    "#!/bin/sh\necho \"{tool} $*\" >> \"$XT_RECORD\"\necho \"stub {tool} $*\"\n\
+                    "#!/bin/sh\necho \"{tool} $*\" >> \"$XT_RECORD\"\n\
+                     if [ \"{tool} $1\" = 'cargo metadata' ]; then \
+                     echo '{{\"workspace_members\": [\"l\"], \"packages\": [{{\"id\": \"l\", \"name\": \"lib\", \
+                     \"targets\": [{{\"kind\": [\"lib\"], \"doctest\": true}}]}}]}}'; exit 0; fi\n\
+                     echo \"stub {tool} $*\"\n\
                      if [ -n \"$XT_HANDSHAKE\" ]; then other=''; case \"{tool} $*\" in \
                      *'-m unittest'*) other='cargo check';; 'cargo check'*) \
                      other='python -m unittest';; esac; if [ -n \"$other\" ]; then n=0; \
@@ -209,7 +213,8 @@ fn the_gates_run_each_command_once_with_quick_first() -> std::io::Result<()> {
     let mut ci = checks;
     ci.extend([
         "cargo nextest run".to_owned(),
-        "python scripts/doctests.py".to_owned(),
+        "cargo metadata --locked".to_owned(),
+        "cargo test --locked".to_owned(),
     ]);
     assert_eq!(sorted(calls), sorted(ci));
     let (code, _, calls) = stubs.run("check", "")?;
@@ -409,7 +414,8 @@ fn the_tests_leave_the_quarantined_ones_out_and_run_the_doctests() -> std::io::R
                 "cargo nextest list {flags} --list-type binaries-only --message-format oneline"
             ),
             format!("cargo nextest run {flags} -E not (test(=flaky_test))"),
-            "python scripts/doctests.py".to_owned(),
+            "cargo metadata --locked --no-deps --format-version 1".to_owned(),
+            "cargo test --locked --all-features --doc --package lib".to_owned(),
         ]
     );
     Ok(())

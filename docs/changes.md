@@ -6,6 +6,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-26
 
+- A project's `yulius.toml` with an invalid `[disk]` table is now refused by the whole-file check as the disk upkeep's own reader refuses it, and the Security scan card reads `.config/vidoc.toml` as TOML, as the scanner does: an inline `ignore = []`, a multi-line string or `1_0` no longer reads as unreadable (audit L3 F8).
 - A person's production deploy whose rollback is not proven for its commit is refused and no longer deploys dev first to prove it; the refusal says to deploy that commit on dev (audit L3 F2; [ADR-0282](decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md) superseded).
 - Agents write an ADR only for a reversible build or run choice, and note only user-visible changes in a project's changes log.
 

@@ -3,6 +3,7 @@
 //! bare repository, and a test-local `GitPort` over the real `git` command line.
 
 use crate::support;
+use crate::support::BareRemote;
 use crate::support::git;
 
 use std::net::SocketAddr;
@@ -15,7 +16,7 @@ use async_trait::async_trait;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::{Creds, FakeRemote, Resp, TestResult, call};
+use support::{Creds, Resp, TestResult, call};
 use yulius_app::agent_wait::WaitState;
 use yulius_app::delivery::profile_to_contract;
 use yulius_app::error::{AppError, AppResult};
@@ -25,9 +26,7 @@ use yulius_app::model::{
 };
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, MergeIntegration};
 use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState, GhPull};
-use yulius_app::ports::session::{
-    AttachedRun, Containment, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
-};
+use yulius_app::ports::session::{Containment, SessionHost};
 use yulius_app::ports::store::{
     AuditStore, CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
 };
@@ -59,24 +58,6 @@ const IDENTITY: [&str; 8] = [
     "-c",
     "core.fsync=none",
 ];
-
-fn git_sync(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(IDENTITY)
-        .args(args)
-        .current_dir(dir)
-        .envs(GIT_ENV)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    } else {
-        Err(format!(
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-    }
-}
 
 /// Test-local Git port over the real `git` command line (no network: "origin" is a local bare
 /// repository; URLs are ignored, and pushes record the token they carried).
@@ -605,97 +586,6 @@ impl GitPort for RealGit {
     }
 }
 
-/// The fake GitHub's repository: merges and fast-forwards happen directly in the bare origin
-/// (`merge-tree` + `commit-tree` + `update-ref`, no working tree).
-pub(crate) struct BareRemote {
-    pub(crate) origin: PathBuf,
-}
-
-impl FakeRemote for BareRemote {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        // Pushed refs are loose files in the bare repository; fall back to git for packed ones.
-        if let Ok(text) = std::fs::read_to_string(self.origin.join("refs/heads").join(branch)) {
-            return Some(text.trim().to_owned());
-        }
-        git_sync(
-            &self.origin,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .ok()
-    }
-    fn merge(
-        &self,
-        base: &str,
-        head_sha: &str,
-        method: &str,
-        message: &str,
-    ) -> Result<String, String> {
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = git_sync(
-            &self.origin,
-            &["merge-tree", "--write-tree", &base_sha, head_sha],
-        )?;
-        let commit = match method {
-            "merge" => git_sync(
-                &self.origin,
-                &[
-                    "commit-tree",
-                    &tree,
-                    "-p",
-                    &base_sha,
-                    "-p",
-                    head_sha,
-                    "-m",
-                    message,
-                ],
-            )?,
-            "squash" => git_sync(
-                &self.origin,
-                &["commit-tree", &tree, "-p", &base_sha, "-m", message],
-            )?,
-            other => return Err(format!("unsupported merge method {other}")),
-        };
-        git_sync(
-            &self.origin,
-            &[
-                "update-ref",
-                &format!("refs/heads/{base}"),
-                &commit,
-                &base_sha,
-            ],
-        )?;
-        Ok(commit)
-    }
-    fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String> {
-        let reference = format!("refs/heads/{branch}");
-        let current = self.branch_sha(branch);
-        if let Some(current) = &current {
-            git_sync(&self.origin, &["merge-base", "--is-ancestor", current, sha])
-                .map_err(|_| "not a fast-forward".to_owned())?;
-        }
-        let mut args = vec!["update-ref", reference.as_str(), sha];
-        if let Some(current) = &current {
-            args.push(current);
-        }
-        git_sync(&self.origin, &args).map(drop)
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git_sync(
-            &self.origin,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )?;
-        Ok(true)
-    }
-}
-
 /// #745 (SPEC-409 VTW-001): the spec's folder swapped for a link to a host folder after its path
 /// was found inside the worktree: the read goes through a handle whose real path is outside it,
 /// so the host's file is refused, not read as the spec.
@@ -893,9 +783,7 @@ async fn fixture_with(
         configure: Some(configure),
         ..support::HarnessOptions::default()
     })?;
-    h.github.set_remote(Arc::new(BareRemote {
-        origin: origin.clone(),
-    }));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     h.store.init_instance("https://yulius.test", "x").await?;
     let app_cfg = json!({"app_id": 1, "slug": "yulius-test", "client_id": "c", "client_secret": "s", "private_key_pem": "k", "webhook_secret": null});
     let sealed = h.app.deps.crypto.seal(app_cfg.to_string().as_bytes())?;
@@ -9607,46 +9495,13 @@ async fn a_relinked_run_log_never_reads_a_host_file() -> TestResult {
     Ok(())
 }
 
-/// Records the plan of the one run it is asked to start and refuses to start it.
-#[derive(Default)]
-struct RecordingHost {
-    plan: std::sync::Mutex<Option<(PathBuf, LaunchPlan)>>,
-}
-
-#[async_trait]
-impl SessionHost for RecordingHost {
-    async fn spawn(
-        &self,
-        run_dir: &Path,
-        _: &str,
-        _: &str,
-        plan: &LaunchPlan,
-        _: &[u8; 32],
-        _: (u16, u16),
-    ) -> AppResult<SpawnedRun> {
-        if let Ok(mut slot) = self.plan.lock() {
-            *slot = Some((run_dir.to_path_buf(), plan.clone()));
-        }
-        Err(AppError::Upstream("recorded, not started".into()))
-    }
-    async fn attach(&self, _: &Path, _: &[u8; 32]) -> AppResult<AttachedRun> {
-        Err(AppError::Upstream("nothing runs".into()))
-    }
-    fn inspect(&self, _: &Path) -> RunInspection {
-        RunInspection::Missing
-    }
-    fn terminate(&self, _: &Path) -> AppResult<()> {
-        Ok(())
-    }
-}
-
 /// #656 (SPEC-219 ENV-002/003, AC-2 where bubblewrap cannot run): a contained server starts an
 /// environment run in the sandbox's containment, as a CD dev run: its root is the sandbox, only its
 /// own directory is writable, its `HOME` is fresh there, and it runs the commit's files written into
 /// that directory, not the sandbox clone.
 #[tokio::test]
 async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> TestResult {
-    let host = Arc::new(RecordingHost::default());
+    let host = Arc::new(crate::support::ScriptedHost::default());
     let f = fixture_with(&DeliveryProfile::product(), contained(), Some(host.clone())).await?;
     deployable(&f).await?;
     let run = agent_deploys(&f).await?;
@@ -9654,12 +9509,7 @@ async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> Test
         run["state"], "error",
         "the recording host starts nothing: {run}"
     );
-    let (run_dir, plan) = host
-        .plan
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
-        .ok_or("no run was started")?;
+    let (run_dir, plan) = host.runs().pop().ok_or("no run was started")?;
     let runs = f.h.app.config.data_dir.join("runs");
     assert!(
         run_dir.starts_with(&runs)
@@ -9708,7 +9558,7 @@ async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> Test
 /// files are a production run's, in `<data>/cd/<sandbox>/runs` (SPEC-279 PDE-004).
 #[tokio::test]
 async fn a_production_environment_run_starts_in_production_containment() -> TestResult {
-    let host = Arc::new(RecordingHost::default());
+    let host = Arc::new(crate::support::ScriptedHost::default());
     let f = fixture_with(&DeliveryProfile::product(), contained(), Some(host.clone())).await?;
     let patched = f
         .req(
@@ -9757,12 +9607,7 @@ async fn a_production_environment_run_starts_in_production_containment() -> Test
         .wait_run(started.body["run_id"].as_str().ok_or("run id")?)
         .await?;
     assert_eq!(run["commit"], f.origin_sha("main")?.as_str(), "{run}");
-    let (run_dir, plan) = host
-        .plan
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
-        .ok_or("no run was started")?;
+    let (run_dir, plan) = host.runs().pop().ok_or("no run was started")?;
     let name = run_dir.file_name().ok_or("run directory")?;
     let work =
         f.h.app
