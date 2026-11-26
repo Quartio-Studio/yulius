@@ -794,6 +794,41 @@ pub fn claude_code_check(
     check("Claude Code in sandboxes", level, detail)
 }
 
+/// Options of `yulius doctor`.
+#[derive(Debug, Clone, clap::Args)]
+pub struct DoctorArgs {
+    /// Prove that sandboxes get Docker on this host, end to end, in a throwaway sandbox
+    /// (SPEC-196): run it as root or the service user; it uses the current base.
+    #[arg(long)]
+    pub docker_smoke: bool,
+    /// With --docker-smoke: one JSON line per check (what Settings → Instance reads).
+    #[arg(long, requires = "docker_smoke")]
+    pub json: bool,
+    /// Data directory.
+    #[arg(
+        long = "data-dir",
+        visible_alias = "data",
+        env = "YULIUS_DATA",
+        default_value = "/var/lib/yulius"
+    )]
+    pub data: PathBuf,
+    /// Require bubblewrap containment.
+    #[arg(long, env = "YULIUS_CONTAINED")]
+    pub contained: bool,
+    /// Extra paths visible inside containment (as for `serve`).
+    #[arg(long, env = "YULIUS_CONTAINED_READONLY", value_delimiter = ':')]
+    pub contained_readonly: Vec<PathBuf>,
+    /// The reverse proxy's secret file (as for `serve`): checked, never shown.
+    #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
+    pub proxy_secret_file: Option<PathBuf>,
+    /// Claude Code releases isolated sandboxes follow (as for `serve`, SPEC-421), unless
+    /// one was chosen in Settings, Instance.
+    #[arg(long, env = "YULIUS_CLAUDE_UPDATES",
+          default_value = crate::wiring::sandbox::DEFAULT_CHANNEL,
+          value_parser = crate::wiring::sandbox::parse_channel)]
+    pub claude_updates: yulius_domain::agent_cli::Channel,
+}
+
 /// `yulius doctor`: prints the checks; exits 1 when any check fails.
 pub fn doctor(
     data_dir: &Path,

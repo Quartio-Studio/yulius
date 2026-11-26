@@ -80,14 +80,21 @@ impl Mark {
 }
 
 /// Options of `yulius instance import`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct ImportOptions {
-    /// The archive; standard input when `None` or `-`.
+    /// The export; standard input when absent or `-`.
     pub file: Option<PathBuf>,
-    /// The data directory, chosen here (never by the copy) and refused unless it is the one the
-    /// copy was exported from.
+    /// Data directory; it must be the one the copy was exported from.
+    #[arg(
+        long = "data-dir",
+        visible_alias = "data",
+        env = "YULIUS_DATA",
+        default_value = "/var/lib/yulius"
+    )]
     pub data_dir: PathBuf,
-    /// The service user when the data directory does not exist yet (default: the exported one).
+    /// The service user to make when the data directory does not exist (default: the
+    /// exported one's name).
+    #[arg(long)]
     pub user: Option<String>,
 }
 
