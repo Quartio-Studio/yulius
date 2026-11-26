@@ -4,6 +4,7 @@ use crate::support;
 use crate::support::eventually;
 use crate::support::live::Live;
 use crate::support::live::pool::ScriptedUsage;
+pub(crate) use crate::support::live::{runtime, screen};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -143,10 +144,6 @@ pub(crate) async fn new_task(
         .id)
 }
 
-pub(crate) fn screen(app: &App, id: &TaskId) -> String {
-    app.runtime(id).hub.screen_text()
-}
-
 pub(crate) async fn activity(app: &App, id: &TaskId) -> Option<Activity> {
     app.deps
         .store
@@ -178,13 +175,6 @@ pub(crate) async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
             .is_some_and(|t| !t.status.is_live())
     })
     .await
-}
-
-pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
 }
 
 pub(crate) fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {

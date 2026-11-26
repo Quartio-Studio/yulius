@@ -3,12 +3,13 @@
 use crate::support;
 use crate::support::git;
 use crate::support::live::{Live, UNSERVED};
+pub(crate) use crate::support::live::{runtime, task};
 use std::path::Path;
 use std::sync::Arc;
 use support::TestResult;
 use support::agents::FakeAgentOptions;
 use yulius_app::context::App;
-use yulius_app::model::{AccountRecord, AccountStatus, SandboxRecord, TaskRecord, UserRecord};
+use yulius_app::model::{AccountRecord, AccountStatus, SandboxRecord, UserRecord};
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
@@ -133,17 +134,6 @@ pub(crate) async fn seed_records(
     Ok((sandbox.id, user.id))
 }
 
-pub(crate) async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn std::error::Error>> {
-    Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
-}
-
 pub(crate) async fn screen_contains(app: &App, id: &TaskId, needle: &str) -> bool {
     app.runtime(id).hub.screen_text().contains(needle)
-}
-
-pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
 }

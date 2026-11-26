@@ -126,6 +126,27 @@ impl Live {
     }
 }
 
+/// A two-thread runtime for a test that blocks on it.
+pub fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+}
+
+/// What task `id`'s terminal shows now.
+pub fn screen(app: &App, id: &yulius_domain::ids::TaskId) -> String {
+    app.runtime(id).hub.screen_text()
+}
+
+/// Task `id`'s record as the store holds it now.
+pub async fn task(
+    app: &App,
+    id: &yulius_domain::ids::TaskId,
+) -> Result<yulius_app::model::TaskRecord, BoxError> {
+    Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
+}
+
 /// Where runs reach a server on `listener`.
 pub fn url_of(listener: &tokio::net::TcpListener) -> Result<String, BoxError> {
     Ok(format!(

@@ -2,6 +2,7 @@
 
 use crate::support;
 use crate::support::live::{Live, UNSERVED};
+pub(crate) use crate::support::live::{runtime, screen, task};
 use crate::support::{eventually, git};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use yulius_app::auth::AuthContext;
 use yulius_app::context::{App, AppConfig};
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
-    AccountRecord, AccountStatus, SandboxRecord, Secret, TaskOrigin, TaskRecord, UserRecord,
+    AccountRecord, AccountStatus, SandboxRecord, Secret, TaskOrigin, UserRecord,
 };
 use yulius_app::ports::usage::{UsageFailure, UsageProbe};
 use yulius_domain::harness::{Harness, Provider};
@@ -325,16 +326,8 @@ async fn new_task_of(
     Ok(record.id)
 }
 
-pub(crate) async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn std::error::Error>> {
-    Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
-}
-
 pub(crate) async fn has_status(app: &App, id: &TaskId, status: TaskStatus) -> bool {
     task(app, id).await.is_ok_and(|t| t.status == status)
-}
-
-pub(crate) fn screen(app: &App, id: &TaskId) -> String {
-    app.runtime(id).hub.screen_text()
 }
 
 /// Every line the fake agent echoed: what the agent received as input.
@@ -354,13 +347,6 @@ pub(crate) async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
         task(app, id).await.is_ok_and(|t| t.status.is_resting())
     })
     .await
-}
-
-pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
 }
 
 pub(crate) fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
