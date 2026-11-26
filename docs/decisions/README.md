@@ -286,7 +286,7 @@ out of date.
 - [0279](0279-a-ci-job-s-limit-is-its-own-and-yulius-holds-its-one-at-a-time-lock.md): A CI job's limit is its own, and Yulius holds its one-run-at-a-time lock
 - [0280](0280-only-a-yulius-mcp-known-to-be-gone-is-reconnected.md): Only a Yulius MCP known to be gone is reconnected
 - [0281](0281-the-superagents-use-the-project-browser.md): The Superagents use the project browser
-- [0282](0282-a-production-deploy-proves-its-rollback-on-dev-first.md): A production deploy proves its rollback on dev first (superseded)
+- [0282](0282-a-production-deploy-proves-its-rollback-on-dev-first.md): A production deploy proves its rollback on dev first
 - [0283](0283-a-cancelled-update-s-build-stops-when-its-request-is-withdrawn.md): A cancelled update's build stops when its request is withdrawn
 - [0284](0284-agents-ask-for-a-copy-of-a-production-secret-and-a-person-allows-it.md): Agents ask for a copy of a production secret and a person allows it
 - [0285](0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md): Armed pull requests merge through a queue that never restarts a run

@@ -49,6 +49,7 @@ pub mod hygiene;
 mod opening;
 pub use opening::PullOpening;
 pub(crate) mod playground;
+mod prove;
 mod rollback;
 mod slots;
 pub(crate) mod staging;
@@ -426,6 +427,9 @@ pub struct CiState {
     running_jobs: Mutex<HashMap<SandboxId, (u32, u32)>>,
     /// Executing runs: their cancellation (the reason, once cancelled).
     executing: Mutex<HashMap<String, watch::Sender<Option<String>>>>,
+    /// Production deploys waiting for the dev deploy and drill that prove their rollback
+    /// (SPEC-438).
+    pub(crate) production_waits: Mutex<Vec<prove::ProductionWait>>,
     /// Lanes in use (`<sandbox>/<lane>` for an executing run) and whole-sandbox claims
     /// (`<sandbox>`, disk upkeep). Shared with [`CiClaim`], which ends a claim where it is
     /// dropped.

@@ -368,6 +368,7 @@ impl App {
                 env.name
             ),
             Some(CdDeployAction::RUNNING) => "a deploy of it is running: wait for it (`yulius wait`), then say how it ended".to_owned(),
+            Some(CdDeployAction::WAITING) => "it deploys by itself once the rollback drill it waits for passes: say so".to_owned(),
             _ => "name a person with write access in `who`, or say what they should decide".to_owned(),
         };
         Err(AppError::Invalid(format!(
