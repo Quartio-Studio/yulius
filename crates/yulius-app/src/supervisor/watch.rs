@@ -14,8 +14,9 @@ use yulius_domain::usage::{ModelFamily, ReportedLimit};
 
 use super::antigravity::antigravity_run_home;
 use super::codex::CodexInput;
+use super::stop::request_shutdown;
 use super::typing::CLAUDE_CREDENTIAL_DIGEST;
-use super::{ActiveRun, EndIntent, ObservationSource, is_could_not_end, request_shutdown};
+use super::{ActiveRun, EndIntent, ObservationSource, is_could_not_end};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::finish::{SHELL_PROBE_MS, TranscriptFacts};
