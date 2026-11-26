@@ -132,7 +132,7 @@ and the link checker). The rest of the gate is Yulius CI's.
   in another task's paths pins, and adds "Skip it for an internal change."
 - architecture.md, operations.md and product.md (L10 F3): each moves verbatim to
   `docs/archive/<name>-until-2026-11-26.md` (links rewritten for the folder in the next commit),
-  and a condensed document of current state replaces it within the Q9 budget (757, 1,749 and 397
+  and a condensed document of current state replaces it within the Q9 budget (757, 1,783 and 397
   lines), linking the archive's sections for detail. The headings other documents and the code
   name are kept; operations.md keeps the three unit files a test reads byte for byte. Its
   upgrade notes and the behaviour comments inside the sample unit (audit L6 F9) stay only in the
@@ -150,7 +150,7 @@ and the link checker). The rest of the gate is Yulius CI's.
 
 ## Evidence
 
-Six findings, delivered as seven pull requests into `dev`, each reviewed in a fresh session on
+Six findings, delivered as eight pull requests into `dev`, each reviewed in a fresh session on
 the exact head and merged by `delivery_merge` on green Yulius CI:
 
 - #1770 (F4, part of F1): ADR threshold in the briefing and templates; `check_repository.py`
@@ -164,7 +164,7 @@ the exact head and merged by `delivery_merge` on green Yulius CI:
   (221 → 65 KB); the slot script, its tests and the union line are gone. Tests replay two union
   merges in both orientations and a regeneration over an unsorted base; both fail with an exact
   comparison or a sorting regeneration.
-- #1797 (F6, F9): `docs/changes.md` 4,950 → 192 lines of user-visible changes, the old log archived
+- #1797 (F6, F9): `docs/changes.md` 4,954 → 192 lines of user-visible changes, the old log archived
   verbatim; briefing rule 6 asks for a line only for a user-visible change. `scripts/cargo test -p
   yulius-domain --lib` and the checker tests passed.
 - #1802 (F3): `docs/architecture.md` 5,455 → 757 lines, moved verbatim and condensed; the reviewer
