@@ -1,6 +1,6 @@
 ---
 yulius-task: 8ce90774-eb4a-4b3a-9da9-d30d8f595d33
-status: in-progress
+status: done
 ---
 
 # SPEC-675: Close the two L4 Q3 authorisation gaps (git credential after disable, handoff answer)
@@ -63,7 +63,7 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
 - [x] Touched test binaries pass in full
 - [x] Review round 1 answered: waiting statuses, failed stop and recovery tested, stop loop after the audit
 - [x] Review round 2 answered: loop past a failed stop and notice reset tested
-- [ ] Independent review of the change
+- [x] Independent review of the change
 
 ## Acceptance criteria
 
@@ -151,6 +151,8 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
 - After round 2: `cargo test -p yulius --test main` gave 2837 passed, 0 failed.
   `cargo test -p yulius-app --lib` gave 741 passed, 0 failed. Clippy `-D warnings` and
   `scripts/dev quick` passed.
+- Review round 3 (head 32dde1a7b) approved: no blocker, major or minor finding. Its two wording
+  nits (`docs/api.md`, the `credential_refused_said` comment) were fixed after the approval.
 - Security scan: Vidoc is turned off for this project (`yulius security-scan` reports it as
   disabled). Not run, not passed.
 - Not tested: a real agent process being stopped on disable. The harness has no host to reap the

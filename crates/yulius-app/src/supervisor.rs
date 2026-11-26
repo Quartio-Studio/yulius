@@ -500,7 +500,8 @@ pub struct TaskRuntime {
     /// (F 2026-10-11), so it is said once.
     pub(crate) acting_as_app_said: AtomicBool,
     /// The terminal already said that the agent gets no GitHub credential because of its owner's
-    /// standing (ADR-0481), so it is said once per owner.
+    /// standing (ADR-0481), so it is said once per refusal episode (a credential issued again or
+    /// a hand-over ends it).
     pub(crate) credential_refused_said: AtomicBool,
     /// When a switch of this task was last refused before it started (ms, 0 = never): an
     /// automatic switch waits [`SWITCH_COOLDOWN_MS`] before it tries again.
