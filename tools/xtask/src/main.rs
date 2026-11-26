@@ -9,6 +9,8 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   doctor    Verify pinned compiler and repository-local tool versions
   quick     The checks of seconds: repository contracts and Rust formatting (run it before each
             commit you publish; ci and checks run it first)
+  quality   The pull request's repository checks: doctor, quick and the checker's tests (no
+            compile: lint compiles every target)
   check     Validate repository contracts and compile every target
   fmt       Format Rust sources
   lint      Check formatting and Clippy warnings
@@ -35,7 +37,8 @@ fn stage_marker(name: &str) -> String {
     format!("::yulius-stage {name}")
 }
 
-/// Names the gate that starts now, when the job runs under Yulius CI (`YULIUS_CI=1`).
+/// Names the gate that starts now, when the job runs under Yulius CI (`YULIUS_CI=1`): a gate run
+/// alone (a CI job's `scripts/dev lint`) and each gate of `quality`, `checks` and `ci`.
 fn stage(name: &str) {
     if env::var_os("YULIUS_CI").is_some() {
         println!("{}", stage_marker(name));
@@ -154,10 +157,7 @@ fn gates(with_tests: bool, cargo: &str, python: &str) -> io::Result<()> {
         || checker_tests(python),
         || -> io::Result<()> {
             for gate in rest {
-                // `test` names its own stage.
-                if *gate != "test" {
-                    stage(gate);
-                }
+                stage(gate);
                 // The wait for the checker's tests is their stage's, not the last Rust gate's.
                 if let Err(error) = execute_in(gate, true, None) {
                     stage("checker-tests");
@@ -196,6 +196,14 @@ fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Resul
     let python = env::var("PYTHON").unwrap_or_else(|_| "python3".into());
     match task {
         "doctor" => run(&python, &["scripts/check_repository.py", "--doctor"]),
+        "quality" => {
+            for gate in ["doctor", "quick"] {
+                stage(gate);
+                execute_in(gate, true, None)?;
+            }
+            stage("checker-tests");
+            run(&python, &CHECKER_TESTS)
+        }
         "quick" => {
             run(&python, &["scripts/check_repository.py"])?;
             run(&cargo, &["fmt", "--all", "--", "--check"])
@@ -263,9 +271,6 @@ fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Resul
         }
         "docs" => docs(&cargo),
         "test" => {
-            // Its own stage, first (the quarantine's listing builds the tests), so the test
-            // stage's history goes on in the shards' job (SPEC-137).
-            stage("test");
             let mut args = vec!["nextest", "run"];
             if let Some(archive) = archive {
                 // The archive carries all build options. Fixtures and JUnit belong to this
@@ -442,6 +447,7 @@ fn main() -> ExitCode {
         || ![
             "doctor",
             "quick",
+            "quality",
             "check",
             "fmt",
             "lint",
@@ -492,6 +498,9 @@ fn main() -> ExitCode {
             }
         };
     }
+    if !["quality", "checks", "ci"].contains(&args[0].as_str()) {
+        stage(&args[0]);
+    }
     if let Err(error) =
         env::set_current_dir(root).and_then(|()| execute_in(&args[0], false, archive))
     {
@@ -529,8 +538,8 @@ mod tests {
     }
 
     /// SPEC-506 FST-006 (AC-4): the checks of seconds run first, right after the tool check, in
-    /// `ci` and in `checks` (the CI job `quality`), so a format or contract failure ends a run
-    /// before the build; `checks` leaves the tests to their own jobs.
+    /// `ci` and in `checks`, so a format or contract failure ends a run before the build; `checks`
+    /// leaves the tests to their own jobs.
     #[test]
     fn the_quick_checks_run_first() {
         assert_eq!(

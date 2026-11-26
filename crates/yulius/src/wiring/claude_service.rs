@@ -288,7 +288,7 @@ impl ClaudeCode {
         };
         if let Ok(mut last) = self.last.lock() {
             if result.is_some() {
-                last.checked_at_ms = Some(now_ms());
+                last.checked_at_ms = Some(super::clock::now().0);
             }
             last.latest = checked.latest.or(last.latest);
             last.stable = checked.stable.or(last.stable);
@@ -364,14 +364,6 @@ impl ClaudeCode {
             tracing::warn!(%error, "the Claude Code status file was not written");
         }
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .unwrap_or(0)
 }
 
 #[async_trait]
@@ -488,7 +480,9 @@ pub fn doctor_line(root: &Path, host_dir: Option<&Path>, configured: Channel) ->
                 newest_lacking_default(&NewestFacts {
                     channel,
                     read: file.registry_read(),
-                    read_ms_ago: file.checked_at_ms.map(|at| now_ms().saturating_sub(at)),
+                    read_ms_ago: file
+                        .checked_at_ms
+                        .map(|at| super::clock::now().0.saturating_sub(at)),
                     latest: file.latest.as_deref().and_then(Version::parse),
                     runs,
                 })

@@ -14,7 +14,7 @@ use yulius_domain::ids::SandboxId;
 use yulius_domain::stages::{SubjectKind, stored_figure_name};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{DbResult, SqliteStore, bad_column};
 
 const COLS: &str = "sandbox_id, subject_kind, subject_id, key, parent_key, kind, name, environment, \
     job, started_at, ended_at, outcome, source, detail";
@@ -24,7 +24,7 @@ const LATEST_MERGE_WAIT: &str = "subject_kind = 'task' AND subject_id = ?1
     AND kind = 'wait' AND name = 'merge_armed' AND ended_at IS NOT NULL
     ORDER BY started_at DESC, id DESC LIMIT 1";
 
-pub(crate) fn latest_merge_wait(conn: &Connection, task: &str) -> AppResult<Option<SpanRecord>> {
+pub(crate) fn latest_merge_wait(conn: &Connection, task: &str) -> DbResult<Option<SpanRecord>> {
     Ok(select(conn, LATEST_MERGE_WAIT, &[Value::Text(task.to_owned())])?.pop())
 }
 
@@ -49,14 +49,10 @@ fn span_row(row: &Row<'_>) -> rusqlite::Result<SpanRecord> {
     })
 }
 
-fn select(conn: &Connection, filter: &str, args: &[Value]) -> AppResult<Vec<SpanRecord>> {
-    let mut stmt = conn
-        .prepare(&format!("SELECT {COLS} FROM spans WHERE {filter}"))
-        .map_err(db)?;
-    let rows = stmt
-        .query_map(params_from_iter(args.iter()), span_row)
-        .map_err(db)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(db)
+fn select(conn: &Connection, filter: &str, args: &[Value]) -> DbResult<Vec<SpanRecord>> {
+    let mut stmt = conn.prepare(&format!("SELECT {COLS} FROM spans WHERE {filter}"))?;
+    let rows = stmt.query_map(params_from_iter(args.iter()), span_row)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 #[async_trait]
@@ -84,8 +80,7 @@ impl SpanStore for SqliteStore {
                         span.outcome,
                         span.detail,
                     ],
-                )
-                .map_err(db)?;
+                )?;
             Ok(inserted == 1)
         })
         .await
@@ -107,14 +102,12 @@ impl SpanStore for SqliteStore {
             outcome.map(str::to_owned),
         );
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE spans SET ended_at = MAX(started_at, ?5), outcome = COALESCE(?6, outcome) \
+            let changed = c.execute(
+                "UPDATE spans SET ended_at = MAX(started_at, ?5), outcome = COALESCE(?6, outcome) \
                      WHERE sandbox_id = ?1 AND subject_kind = ?2 AND subject_id = ?3 AND key = ?4 \
                      AND ended_at IS NULL",
-                    params![sandbox, kind.as_str(), subject, key, at.0, outcome],
-                )
-                .map_err(db)?;
+                params![sandbox, kind.as_str(), subject, key, at.0, outcome],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -141,7 +134,7 @@ impl SpanStore for SqliteStore {
             .cloned()
             .collect();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             for (name, value) in figures {
                 let path = format!("$.{name}");
                 tx.execute(
@@ -149,10 +142,9 @@ impl SpanStore for SqliteStore {
                      CASE WHEN ?7 THEN COALESCE(json_extract(detail, ?5), 0) + ?6 ELSE ?6 END) \
                      WHERE sandbox_id = ?1 AND subject_kind = ?2 AND subject_id = ?3 AND key = ?4",
                     params![sandbox, kind.as_str(), subject, key, path, value, add],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -172,7 +164,7 @@ impl SpanStore for SqliteStore {
                  AND outcome='dropped' AND key=?3 AND detail=?4
                  AND json_valid(detail) AND json_type(detail,'$.singleton')='object'"),
                 params![task, now.0, key, detail],
-            ).map_err(db)?;
+            )?;
             Ok(updated != 0)
         }).await
     }
@@ -284,8 +276,7 @@ impl SpanStore for SqliteStore {
                          AND w.subject_id = spans.subject_id AND w.kind = 'wait' AND w.name = 'merge_armed'
                          AND w.ended_at IS NOT NULL ORDER BY w.started_at DESC, w.id DESC LIMIT 1))",
                     params![before.0, before.0 - yulius_domain::stages::RETAIN_MS],
-                )
-                .map_err(db)?;
+                )?;
             Ok(u64::try_from(deleted).unwrap_or(0))
         })
         .await
@@ -295,6 +286,7 @@ impl SpanStore for SqliteStore {
 #[cfg(test)]
 mod tests {
     use serde_json::Value as Json;
+    use yulius_app::error::AppError;
     use yulius_app::model::{MetricsRecord, PauseKind, PauseRecord};
     use yulius_app::needs_you::NeedsYouRecord;
     use yulius_app::ports::store::{CoordinationStore as _, TaskStore as _};
@@ -310,14 +302,13 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
                        VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
                        VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'queued', 'ui', 'u1', 100, 100, 'u1');",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         Ok(store)
@@ -330,15 +321,14 @@ mod tests {
         let store = seeded().await?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO capacity_pauses (id, task_id, kind, started_at, ended_at, outcome) VALUES
                        ('p_a', 't1', 'limit', 300, 400, 'released'),
                        ('p_d', 't1', 'limit', 50, 60, 'released'),
                        ('p_c', 't1', 'limit', 200, NULL, NULL),
                        ('p_b2', 't1', 'limit', 100, 500, 'switched'),
                        ('p_b1', 't1', 'limit', 100, 450, 'switched');",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let ids: Vec<String> = store
@@ -354,7 +344,7 @@ mod tests {
     async fn spans(store: &SqliteStore, kind: SubjectKind, id: &str) -> AppResult<Vec<SpanRecord>> {
         store
             .subject_spans(
-                &SandboxId::parse("s1").map_err(|_| db(bad_column("s", "s1")))?,
+                &SandboxId::parse("s1").map_err(AppError::internal)?,
                 kind,
                 id,
                 1_000,
@@ -388,10 +378,9 @@ mod tests {
     async fn pruning_preserves_the_latest_merge_wait_for_each_existing_task() -> TestResult {
         let store = seeded().await?;
         store.call(|c| {
-            c.execute_batch("INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
+            Ok(c.execute_batch("INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
                 VALUES ('t2','s1',2,'Peer','p','codex','queued','ui','u1',100,100,'u1'),
-                       ('t3','s1',3,'Open','p','codex','queued','ui','u1',100,100,'u1')")
-                .map_err(db)
+                       ('t3','s1',3,'Open','p','codex','queued','ui','u1',100,100,'u1')")?)
         }).await?;
         let wait = NewSpan {
             sandbox_id: SandboxId::parse("s1")?,
@@ -625,12 +614,11 @@ mod tests {
             .await?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO steps (id, task_id, ordinal, title, status, effort) VALUES ('st1', 't1', 1, 'Spec written', 'pending', 2);
                      INSERT INTO attempts (id, task_id, seq, harness, launch_kind, state, run_dir, token_hash, host_token, started_at)
                        VALUES ('a1', 't1', 1, 'claude', 'new', 'live', '/r', 'h', x'00', 300);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let attempt = AttemptId::parse("a1")?;
@@ -786,14 +774,13 @@ mod tests {
         let store = seeded().await?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO ci_runs (id, sandbox_id, reference, sha, source, state, requested_by, queued_at) VALUES ('r1', 's1', 'pr/7', 'abc', 'yulius_toml', 'queued', 'yulius', 10);
                      INSERT INTO ci_jobs (id, run_id, ordinal, name, job_key, command, state) VALUES ('j1', 'r1', 0, 'test (1/2)', 'test', 'make', 'queued');
                      UPDATE ci_runs SET reason = 'waiting for disk space: 9 of 8 GiB used' WHERE id = 'r1';
                      UPDATE ci_runs SET state = 'running', reason = NULL, started_at = 20 WHERE id = 'r1';
                      UPDATE ci_jobs SET state = 'running', started_at = 25 WHERE id = 'j1';",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let sid = SandboxId::parse("s1")?;
@@ -835,7 +822,7 @@ mod tests {
             )
             .await?;
         store
-            .call(|c| c.execute_batch("UPDATE ci_jobs SET state = 'failed', exit_code = 2, ended_at = 40 WHERE id = 'j1';").map_err(db))
+            .call(|c| Ok(c.execute_batch("UPDATE ci_jobs SET state = 'failed', exit_code = 2, ended_at = 40 WHERE id = 'j1';")?))
             .await?;
         assert!(store.requeue_ci_run("r1", "again", Timestamp(50)).await?);
         let all = spans(&store, SubjectKind::CiRun, "r1").await?;
@@ -885,12 +872,11 @@ mod tests {
 
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO ci_runs (id, sandbox_id, reference, sha, source, state, reason, requested_by, queued_at, started_at, ended_at)
                        VALUES ('r2', 's1', 'branch/dev', 'abc', 'yulius_toml', 'passed', 'not run again: dev has the same tree as pr/7, which passed', 'yulius', 60, 60, 60);
                      INSERT INTO ci_runs (id, sandbox_id, reference, sha, source, state, requested_by, queued_at) VALUES ('r3', 's1', 'train/6+7', 'def', 'yulius_toml', 'queued', 'yulius', 70);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let reused = spans(&store, SubjectKind::CiRun, "r2").await?;
@@ -921,15 +907,14 @@ mod tests {
         let store = seeded().await?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO ci_runs (id, sandbox_id, reference, sha, source, state, requested_by, queued_at, started_at) VALUES ('r1', 's1', 'pr/7', 'abc', 'yulius_toml', 'running', 'yulius', 10, 20);
                      INSERT INTO ci_jobs (id, run_id, ordinal, name, job_key, command, state, started_at) VALUES ('j1', 'r1', 0, 'build', 'build', 'make', 'queued', NULL);
                      INSERT INTO ci_jobs (id, run_id, ordinal, name, job_key, command, state, started_at) VALUES ('j2', 'r1', 1, 'lint', 'lint', 'make', 'queued', NULL);
                      UPDATE ci_jobs SET state = 'running', started_at = 25;
                      INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at) VALUES ('cd1', 's1', 'dev', 'dev', 'abc', 'running', 'alice', 100);
                      INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at) VALUES ('cd2', 's1', 'prod', 'main', 'abc', 'running', 'alice', 100);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let used = ResourceUse {
@@ -1004,21 +989,19 @@ mod tests {
         // unmeasured never shows the earlier attempt's use.
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "UPDATE ci_runs SET state = 'running' WHERE id = 'r1';
                      UPDATE ci_jobs SET state = 'running', ended_at = NULL WHERE id = 'j1';",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         assert!(store.requeue_ci_run("r1", "again", Timestamp(50)).await?);
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "UPDATE ci_runs SET state = 'running', started_at = 60 WHERE id = 'r1';
                      UPDATE ci_jobs SET state = 'running', started_at = 65 WHERE id = 'j1';",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let again = CiJobUpdate {
@@ -1052,10 +1035,9 @@ mod tests {
         let store = seeded().await?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at) VALUES ('cd1', 's1', 'dev', 'dev', 'abc', 'running', 'task:#3', 100);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let sid = SandboxId::parse("s1")?;
@@ -1102,7 +1084,7 @@ mod tests {
         );
         store.insert_span(&phase("run/verify", 150)).await?;
         store
-            .call(|c| c.execute_batch("UPDATE cd_runs SET state = 'failed', exit_code = 3, ended_at = 170 WHERE id = 'cd1';").map_err(db))
+            .call(|c| Ok(c.execute_batch("UPDATE cd_runs SET state = 'failed', exit_code = 3, ended_at = 170 WHERE id = 'cd1';")?))
             .await?;
         let all = spans(&store, SubjectKind::CdRun, "cd1").await?;
         assert_eq!(
@@ -1152,14 +1134,13 @@ mod tests {
         let store = seeded().await?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     // The seeded task's queued span is id 1; these are ids 2 and 3, so the next
                     // span's key would be `…#4`: every later insert collides.
                     "INSERT INTO spans (sandbox_id, subject_kind, subject_id, key, kind, name, started_at) VALUES
                        ('s1', 'task', 't1', 'state#4', 'state', 'planted', 1),
                        ('s1', 'task', 't1', 'delivery#4', 'delivery', 'planted', 1);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let task = TaskId::parse("t1")?;
