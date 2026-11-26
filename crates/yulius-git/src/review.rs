@@ -244,8 +244,6 @@ impl Git {
                     "--numstat",
                     "-z",
                     "-M",
-                    "--no-ext-diff",
-                    "--no-textconv",
                     "--end-of-options",
                 ])
                 .arg(base)
@@ -301,8 +299,6 @@ fn diff_invocation<'a>(git: &Git, worktree: &'a Path, base: &str) -> Invocation<
             "core.quotePath=false",
             "diff",
             "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
             "-M",
             "-U3",
             "--src-prefix=a/",

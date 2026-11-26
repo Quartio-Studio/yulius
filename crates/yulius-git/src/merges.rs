@@ -132,10 +132,7 @@ impl Git {
                 .arg("-m")
                 .arg(message)
                 .arg(&tree)
-                .env("GIT_AUTHOR_NAME", author.name.as_str())
-                .env("GIT_AUTHOR_EMAIL", author.email.as_str())
-                .env("GIT_COMMITTER_NAME", author.name.as_str())
-                .env("GIT_COMMITTER_EMAIL", author.email.as_str()),
+                .author(author),
         )?;
         let commit = committed.stdout_trimmed();
         if !is_object_id(&commit) {
@@ -381,8 +378,6 @@ impl Git {
                         "diff-tree",
                         "-r",
                         "--no-renames",
-                        "--no-ext-diff",
-                        "--no-textconv",
                         "--no-color",
                         "--ignore-submodules=none",
                         "--text",

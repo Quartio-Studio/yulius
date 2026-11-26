@@ -287,6 +287,14 @@ impl<'a> Invocation<'a> {
         self
     }
 
+    /// Runs as `author`, who is also the committer.
+    pub(crate) fn author(self, author: &crate::Author) -> Self {
+        self.env("GIT_AUTHOR_NAME", author.name.as_str())
+            .env("GIT_AUTHOR_EMAIL", author.email.as_str())
+            .env("GIT_COMMITTER_NAME", author.name.as_str())
+            .env("GIT_COMMITTER_EMAIL", author.email.as_str())
+    }
+
     pub(crate) fn env(mut self, key: &'static str, value: impl Into<String>) -> Self {
         self.env.push((key, value.into()));
         self
