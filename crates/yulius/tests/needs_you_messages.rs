@@ -1170,7 +1170,7 @@ async fn parked_http_and_mcp_agree_on_cold_and_stale_observed_pulls() -> TestRes
     Ok(())
 }
 
-/// SPEC-578 (merge review finding #2): when a `needs_you` request is recorded on a parked task
+/// When a `needs_you` request is recorded on a parked task
 /// right after `parked_status` returned `Done`, `task_get` must merge the late request into its
 /// notice and `task_wait_messages` sync instead of returning `shows == "needs_you"` with no notice
 /// or resolving the wait history.

@@ -1,4 +1,4 @@
-//! A task's live transcript for the people who watch it (SPEC-179 WAT-001, AC-WAT-1): the tail of
+//! A task's live transcript for the people who watch it: the tail of
 //! the latest session, reading on from `end` as the file grows, an unchanged file answered without
 //! reading it, redaction as on session pages, read access, and a task without a session.
 
@@ -289,7 +289,7 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
     Ok(())
 }
 
-/// SPEC-483 slice 36 (QB5): a watcher's next poll goes on from where its last read ended, without
+/// A watcher's next poll goes on from where its last read ended, without
 /// reading the transcript's earlier lines again. A transcript is append-only (one rewritten in
 /// place is read afresh), so a newline slipped into an earlier line after a read does not
 /// renumber the lines read after it, which a read from the start would.

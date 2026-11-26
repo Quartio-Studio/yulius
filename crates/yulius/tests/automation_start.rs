@@ -81,7 +81,7 @@ fn choice(view: &Value) -> (Value, Value, Value, Value) {
     )
 }
 
-/// AC-AUT-13 and AC-AUT-14: the start choice is stored, read back, changed and cleared; invalid
+/// The start choice is stored, read back, changed and cleared; invalid
 /// choices answer 422 and change nothing.
 #[tokio::test]
 async fn an_automation_stores_its_start_choice() -> TestResult {
@@ -289,7 +289,7 @@ async fn merged_and_closed(h: &Harness, id: &str, at: i64) -> Result<(), Error> 
     Ok(())
 }
 
-/// AC-AUT-15: after a task that was Done and has ended, a run's task starts at once (the rule
+/// After a task that was Done and has ended, a run's task starts at once (the rule
 /// `#N done` is true); a rule already true releases the task at once; a full chain bound fails
 /// the run with the reason.
 #[tokio::test]
@@ -371,7 +371,7 @@ async fn run_now(h: &Harness, creds: &Creds, automation: &str) -> Result<Value, 
     Ok(r.body)
 }
 
-/// AC-AUT-15 and AC-AUT-16: each run creates its task with the automation's start choice; a
+/// Each run creates its task with the automation's start choice; a
 /// waiting task skips the next run; after a task that has ended, the task waits for `#N done`; a
 /// task to run after that was deleted fails the run with the reason.
 #[tokio::test]
@@ -410,7 +410,7 @@ async fn each_run_starts_its_task_with_the_start_choice() -> TestResult {
         (Some("t-one"), None)
     );
 
-    // AC-AUT-16: the waiting task is active, so the next day's run is skipped.
+    // The waiting task is active, so the next day's run is skipped.
     h.clock.0.store(slot + 24 * HOUR + 10_000, Ordering::SeqCst);
     h.app.automation_tick().await?;
     let history = h.store.runs(&after, 1).await?;
@@ -480,7 +480,7 @@ async fn each_run_starts_its_task_with_the_start_choice() -> TestResult {
     Ok(())
 }
 
-/// Run now with a start choice in its body (SPEC-093 AUT-023, AC-AUT-23).
+/// Run now with a start choice in its body.
 async fn run_with(
     h: &Harness,
     creds: &Creds,
@@ -511,7 +511,7 @@ async fn close(h: &Harness, task: &TaskRecord, at: i64) -> Result<(), Error> {
     Ok(())
 }
 
-/// AC-AUT-23: Run now creates its task with the start choice it is given, for that
+/// Run now creates its task with the start choice it is given, for that
 /// run only, checked like a save; without a body it uses the stored choice.
 #[tokio::test]
 async fn run_now_starts_its_task_with_the_choice_it_is_given() -> TestResult {
@@ -620,7 +620,7 @@ async fn run_now_starts_its_task_with_the_choice_it_is_given() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-17: agents set the start choice with `automation_create` and `automation_update`; in an
+/// Agents set the start choice with `automation_create` and `automation_update`; in an
 /// update any of the three replaces the choice; invalid choices change nothing.
 #[tokio::test]
 async fn agents_set_the_start_choice_with_the_automation_tools() -> TestResult {
@@ -697,7 +697,7 @@ async fn agents_set_the_start_choice_with_the_automation_tools() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-26: "When I decide" is stored as `prepared`, read back and cleared; it is
+/// "When I decide" is stored as `prepared`, read back and cleared; it is
 /// refused with any other start choice on create, update and Run now, and nothing changes.
 #[tokio::test]
 async fn an_automation_stores_when_i_decide() -> TestResult {
@@ -776,7 +776,7 @@ async fn act_on(h: &Harness, creds: &Creds, path: &str) -> Result<support::Resp,
     call(&h.router, Method::POST, path, None, creds).await
 }
 
-/// AC-AUT-27 and AC-AUT-28: each run of a prepared automation creates its task
+/// Each run of a prepared automation creates its task
 /// `prepared`, which waits across ticks; while it waits the next run is skipped; once it was
 /// started and ended the next run prepares a new one. Run now with `prepared` prepares a task of a
 /// start-now automation for that run only; a sandbox full of prepared tasks fails the run.
@@ -819,7 +819,7 @@ async fn each_run_of_a_prepared_automation_prepares_its_task() -> TestResult {
         TaskStatus::Prepared
     );
 
-    // AC-AUT-28: the next day's run is skipped while it waits.
+    // The next day's run is skipped while it waits.
     h.clock.0.store(slot + 24 * HOUR + 10_000, Ordering::SeqCst);
     h.app.automation_tick().await?;
     let history = h.store.runs(&id, 1).await?;
@@ -894,7 +894,7 @@ async fn each_run_of_a_prepared_automation_prepares_its_task() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-29: agents set "When I decide" with `prepared` in `automation_create` and
+/// Agents set "When I decide" with `prepared` in `automation_create` and
 /// `automation_update`; another choice replaces it; together with another choice it is refused.
 #[tokio::test]
 async fn agents_set_when_i_decide_with_the_automation_tools() -> TestResult {

@@ -1,4 +1,4 @@
-//! Yulius MCP: task awareness, messages and steps between parallel tasks (AC-COM-1/2, AC-STP-1).
+//! Yulius MCP: task awareness, messages and steps between parallel tasks.
 
 use crate::support;
 
@@ -225,7 +225,7 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     assert_eq!(tasks["tasks"][0]["harness"], "claude");
     assert_eq!(tasks["you"]["harness"], "claude");
 
-    // Scope claims (COM-003, AC-COM-3): an overlap is reported to the claiming task.
+    // Scope claims: an overlap is reported to the claiming task.
     let (claimed, err) = tool(
         &internal,
         "tok-claude",
@@ -813,7 +813,7 @@ async fn an_agent_request_records_its_tasks_mcp_contact() -> TestResult {
     assert_eq!(answer["result"], json!({}));
     assert!(h.app.mcp_contact_ms(&pinged) >= before);
     assert_eq!(h.app.mcp_contact_ms(&other), 0);
-    // Review round 1: a `yulius tool` call comes from the shell, not the session's MCP client.
+    // A `yulius tool` call comes from the shell, not the session's MCP client.
     let answer = call(
         &internal,
         Method::POST,

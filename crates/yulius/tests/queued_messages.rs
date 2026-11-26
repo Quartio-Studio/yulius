@@ -48,7 +48,7 @@ async fn queue(
     .await
 }
 
-/// AC-QMS-1: each waiting state that never started takes a message, under a line saying who
+/// Each waiting state that never started takes a message, under a line saying who
 /// added it and when; the detail shows the request and that the task has not started.
 #[tokio::test]
 async fn a_task_that_has_not_started_takes_a_message_into_its_request() -> TestResult {
@@ -111,7 +111,7 @@ async fn a_task_that_has_not_started_takes_a_message_into_its_request() -> TestR
     Ok(())
 }
 
-/// AC-QMS-1, AC-QMS-2: a task that has started — running, ended after a run, an imported session,
+/// A task that has started — running, ended after a run, an imported session,
 /// or moved to `starting` a moment ago — refuses a message and keeps its request.
 #[tokio::test]
 async fn a_task_that_has_started_refuses_a_message() -> TestResult {
@@ -178,7 +178,7 @@ async fn a_task_that_has_started_refuses_a_message() -> TestResult {
     Ok(())
 }
 
-/// AC-QMS-1: read access cannot queue; empty text and a request past the creation limit are
+/// Read access cannot queue; empty text and a request past the creation limit are
 /// refused with the request unchanged.
 #[tokio::test]
 async fn a_message_needs_write_access_and_fitting_text() -> TestResult {

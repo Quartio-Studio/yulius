@@ -111,7 +111,7 @@ fn opening_turn() -> FakeAgentOptions {
     }
 }
 
-/// SPEC-068 TYP-002, AC-TYP-2: clicking into and out of the terminal during a continued goal
+/// Clicking into and out of the terminal during a continued goal
 /// session's opening turn (focus and mouse reports through `terminal_input`) is not typing: the
 /// goal is still set, once, after that turn.
 #[test]
@@ -146,7 +146,7 @@ fn focus_and_mouse_reports_do_not_keep_the_goal_out() -> TestResult {
     Ok(())
 }
 
-/// SPEC-068 TYP-003, AC-TYP-3: a person's draft typed during a continued goal session's
+/// A person's draft typed during a continued goal session's
 /// opening turn does not get `/goal` appended; the task is flagged and told why.
 #[test]
 fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
@@ -316,7 +316,7 @@ fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestRes
     Ok(())
 }
 
-/// SPEC-483 slice 5 (review rounds 2 and 3): a terminal whose screen is withheld (an
+/// A terminal whose screen is withheld (an
 /// agent secret no longer opens) shows nothing of what the program draws, so Yulius cannot tell
 /// whether it reads input or asks something. It types nothing: no first message into a session
 /// that started behind the withheld screen (the task is flagged with what to do), and no
@@ -537,7 +537,7 @@ fn a_launch_goal_never_taken_flags_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-117 ONE-006, AC-ONE-3: keys a person types while Yulius types a prompt task's first
+/// Keys a person types while Yulius types a prompt task's first
 /// message with an image are not written into it, and the person is told to type once it is sent;
 /// after it, typing reaches the session again. Without a SessionStart hook the session reads input
 /// 10 s after its start (half of `goal_ready_ms`), so the keys surely come before the message.
@@ -743,7 +743,7 @@ fn an_unanswered_trust_prompt_before_a_typed_first_message_flags_the_task() -> T
     Ok(())
 }
 
-/// SPEC-068 OPN-002, AC-OPN-1: the server restarts while the first message of a task with
+/// The server restarts while the first message of a task with
 /// an image is being typed (the image pasted, no Enter yet). The new server reattaches the run
 /// and flags the task with a notice; nothing is submitted for it.
 #[test]
@@ -1448,7 +1448,7 @@ async fn typed_again_on_b_second(app: &Arc<App>, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// SPEC-068 OPN-003, AC-OPN-2: the first message of a task with an image is held for
+/// The first message of a task with an image is held for
 /// capacity and resumed on another subscription: a fresh session there gets the task's own
 /// opening, the image pasted, not the held prompt's text.
 #[test]

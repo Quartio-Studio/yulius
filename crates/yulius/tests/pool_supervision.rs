@@ -2,7 +2,7 @@
 //! agent, a scripted usage probe and real git worktrees (SPEC-001 ROT-004/010, AC-ROT-9..11,
 //! AC-ROT-14; SPEC-002 ADR-17). The fake agent has no hooks, so its turn boundary is the end of
 //! a turn in its transcript; hook holds are covered by `subscription_pool.rs`. MCP servers reach
-//! every run on every subscription (MCP-004, AC-MCP-3).
+//! every run on every subscription.
 
 use crate::support;
 use crate::support::eventually;
@@ -31,7 +31,7 @@ use yulius_domain::task::TaskStatus;
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::crypto::MasterKeyCrypto;
 
-/// AC-ROT-9: a new task starts on the subscription whose capacity expires first.
+/// A new task starts on the subscription whose capacity expires first.
 #[test]
 fn a_new_task_starts_on_the_capacity_that_expires_first() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1050,7 +1050,7 @@ fn a_goal_continuation_budget_resets_when_an_owners_message_is_delivered() -> Te
     Ok(())
 }
 
-/// AC-ROT-11: every subscription exhausted → new tasks wait before starting (no process); a
+/// Every subscription exhausted → new tasks wait before starting (no process); a
 /// subscription added later resumes them oldest first, one stagger apart, on it.
 #[test]
 fn a_new_subscription_resumes_waiting_tasks_oldest_first_and_staggered() -> TestResult {
@@ -1115,7 +1115,7 @@ fn a_new_subscription_resumes_waiting_tasks_oldest_first_and_staggered() -> Test
     Ok(())
 }
 
-/// AC-ROT-11: a task paused on an exhausted subscription resumes on another one whose window
+/// A task paused on an exhausted subscription resumes on another one whose window
 /// reset: a native resume of the same session there, with no prompt.
 #[test]
 fn a_paused_task_resumes_on_the_subscription_with_capacity_by_native_resume() -> TestResult {
@@ -1214,7 +1214,7 @@ fn run_mcp(
     Ok((serde_json::from_str(&text)?, text, secrets))
 }
 
-/// AC-MCP-3: MCP servers configured in Yulius reach every run, whichever subscription
+/// MCP servers configured in Yulius reach every run, whichever subscription
 /// it runs on. Each run gets its own `mcp.json` (`--mcp-config`, strict) with the configured
 /// servers and their secrets only as `${VAR}` references, and the values in the run's
 /// environment. After the task moves to another subscription by native resume, the new run has
@@ -2383,7 +2383,7 @@ fn a_task_run_gets_the_project_variables() -> TestResult {
                 var("OVH_ENDPOINT", "ovh-ca"),
                 var("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"),
                 var("SHOP_TOKEN", "plain"),
-                // Review round 1: Yulius's own environment wins over a variable of its name.
+                // Yulius's own environment wins over a variable of its name.
                 var("RUST_TEST_THREADS", "123456789"),
             ],
             false,
@@ -2608,7 +2608,7 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-10: a pause survives a Yulius restart — the new server reattaches the paused run,
+/// A pause survives a Yulius restart — the new server reattaches the paused run,
 /// keeps it paused, and resumes it in place once capacity returns.
 #[test]
 fn a_pause_survives_a_server_restart() -> TestResult {
@@ -2683,7 +2683,7 @@ fn a_pause_survives_a_server_restart() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-10, SPEC-034: a turn the CLI itself interrupted with a usage limit, with every
+/// A turn the CLI itself interrupted with a usage limit, with every
 /// subscription exhausted, pauses at the limit; it resumes on the subscription that recovers by a
 /// native resume that steps the transcript back over the limit and lets Claude Code continue the
 /// turn itself: no prompt, nothing typed, no "Continue.".

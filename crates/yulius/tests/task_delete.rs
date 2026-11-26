@@ -1,4 +1,4 @@
-//! Permanent task deletion (SPEC-001 TSK-009, AC-TSK-8): write users delete resting tasks with
+//! Permanent task deletion: write users delete resting tasks with
 //! their records and directories; live tasks and read users are refused.
 
 use crate::support;
@@ -42,7 +42,7 @@ async fn write_users_delete_resting_tasks_with_their_records() -> TestResult {
     .await?;
     assert_eq!(fb.status, StatusCode::NO_CONTENT, "{:?}", fb.body);
 
-    // AC-ANL-2: feedback is stored per user and shown with the task; a second answer replaces
+    // Feedback is stored per user and shown with the task; a second answer replaces
     // the first; a read user may answer too; an unknown verdict is refused.
     for (who, body) in [
         (

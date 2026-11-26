@@ -132,7 +132,7 @@ async fn docs_login(f: &Fixture, value: &str) -> TestResult {
     Ok(())
 }
 
-/// AC-SAB-1, AC-SAB-2: the sandbox Superagent is served the nine browser
+/// The sandbox Superagent is served the nine browser
 /// tools on its sandbox's browser, the reading ones run without asking; it signs in with an agent
 /// secret it never sees, only on the secret's hosts, audited as its own; viewers see its cursor
 /// as its person's Superagent; its hand-over flags no task.
@@ -308,7 +308,7 @@ async fn audited(f: &Fixture, action: &str) -> Result<Vec<Value>, Box<dyn std::e
         .collect())
 }
 
-/// AC-SAB-3: the Global Superagent is served the nine browser tools with a required
+/// The Global Superagent is served the nine browser tools with a required
 /// `project` and drives that project's browser for a person who works there; a person who only
 /// reads it, and a project they cannot see, are refused.
 #[tokio::test]

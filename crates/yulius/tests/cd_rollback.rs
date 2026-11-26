@@ -844,7 +844,7 @@ async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
         "the page says why before the button: {}",
         parts[1]
     );
-    // Review M4: a secret printed in a barrier is redacted before it is kept.
+    // A secret printed in a barrier is redacted before it is kept.
     assert!(
         parts[1]["releases"][0]["barrier"]
             .as_str()
@@ -900,7 +900,7 @@ async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
     assert_eq!(parts[0]["current"], "e1");
     assert_eq!(releases(&parts[1]), ["i3", "i2", "i1"]);
 
-    // Review M2: a deploy that ships no part still drills the parts with an earlier release, so
+    // A deploy that ships no part still drills the parts with an earlier release, so
     // production at its commit can be proven.
     let before = f.rollbacks().len();
     push(
@@ -915,7 +915,7 @@ async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
     Ok(())
 }
 
-/// Review M1: a drill that fails after going back leaves dev on the earlier release, which the
+/// A drill that fails after going back leaves dev on the earlier release, which the
 /// page says, and rolling forward to the new release is offered and works.
 #[tokio::test]
 async fn a_failed_drill_says_where_it_left_dev() -> TestResult {
@@ -940,7 +940,7 @@ async fn a_failed_drill_says_where_it_left_dev() -> TestResult {
     Ok(())
 }
 
-/// Review (low): a drill that cannot start (here its secret was no longer allowed when the deploy
+/// A drill that cannot start (here its secret was no longer allowed when the deploy
 /// ended) is recorded as an error saying why, audited, and production stays refused.
 #[tokio::test]
 async fn a_drill_that_cannot_start_is_recorded() -> TestResult {
@@ -1001,7 +1001,7 @@ async fn a_drill_that_cannot_start_is_recorded() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a release deployed again without its barrier (the migration ran the first
+/// A release deployed again without its barrier (the migration ran the first
 /// time) keeps the barrier, so the release before it stays blocked.
 #[tokio::test]
 async fn a_redeployed_release_keeps_its_barrier() -> TestResult {

@@ -1897,7 +1897,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-512 PRK-002 (review round 3 of part 1, Q1): an idle session whose Claude Code queue
+    /// An idle session whose Claude Code queue
     /// holds a prompt is not parked: the prompt would end with the session.
     #[test]
     fn a_prompt_in_the_queue_keeps_an_idle_session_from_parking() -> TestResult {
@@ -2465,7 +2465,7 @@ mod moves {
         Ok(())
     }
 
-    /// Review round 1, finding 7: a goal task that is Done is not restarted at the end of a
+    /// A goal task that is Done is not restarted at the end of a
     /// follow-up turn: its goal would be typed again, which is work nobody asked for.
     #[test]
     fn a_done_goal_task_keeps_its_session_after_a_follow_up() -> TestResult {
@@ -3325,7 +3325,7 @@ mod moves {
         Ok(())
     }
 
-    /// Review round 2 (minor 5): the decision is made inside the Stop hook's request, which its
+    /// The decision is made inside the Stop hook's request, which its
     /// client gives up on after 5 s. A look at the session that does not end in the time it has
     /// (none here) leaves the session where it is, and the turn's end goes on.
     #[test]
@@ -3356,7 +3356,7 @@ mod moves {
         Ok(())
     }
 
-    /// Review round 2 (minor 4): a restart that cannot start now (its subscription is at its
+    /// A restart that cannot start now (its subscription is at its
     /// limit) says nothing, records nothing, and keeps no subscription switch waiting: it has
     /// its own wait.
     #[test]

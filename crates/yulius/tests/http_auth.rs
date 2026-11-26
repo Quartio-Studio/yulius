@@ -1,5 +1,5 @@
 //! End-to-end HTTP tests: setup, sign-in, CSRF, admission, GitHub-mirrored visibility and
-//! access on every sandbox and task route (AC-ACC-1..5).
+//! access on every sandbox and task route.
 
 use crate::support;
 
@@ -279,7 +279,7 @@ fn fill(path: &str, sandbox: &str, task: &str) -> String {
     path.replace("{sid}", sandbox).replace("{tid}", task)
 }
 
-/// AC-ACC-4: a sandbox the user cannot see answers exactly like one that does not exist
+/// A sandbox the user cannot see answers exactly like one that does not exist
 /// on every sandbox and task route, and a read user is refused every change to a task.
 #[tokio::test]
 async fn invisible_sandboxes_answer_like_missing_ones_and_read_users_cannot_change_tasks()
@@ -380,7 +380,7 @@ async fn github_callback(
     h: &support::Harness,
     query: &str,
 ) -> Result<support::Resp, Box<dyn std::error::Error>> {
-    // As the browser that started the sign-in: it holds the state's cookie (SPEC-483 A2).
+    // As the browser that started the sign-in: it holds the state's cookie.
     let state = query
         .split('&')
         .find_map(|pair| pair.strip_prefix("state="))
@@ -597,7 +597,7 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
         "invisible sandbox is not found"
     );
 
-    // Upgrade on GitHub: visible after the cache TTL (AC-ACC-5).
+    // Upgrade on GitHub: visible after the cache TTL.
     h.github.set_perm(
         "alice",
         "Quartio-Studio/studio",
@@ -633,7 +633,7 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
     let gone = call(&h.router, Method::GET, "/api/sandboxes", None, &alice).await?;
     assert_eq!(gone.body.as_array().map(Vec::len), Some(0));
 
-    // Disabling ends alice's sessions (AC-ACC-3).
+    // Disabling ends alice's sessions.
     let users = call(&h.router, Method::GET, "/api/admin/users", None, &admin).await?;
     let alice_id = users.body[0]["id"].as_str().ok_or("id")?.to_owned();
     let disable = call(
@@ -703,7 +703,7 @@ async fn a_reused_github_login_does_not_take_over_a_linked_account() -> TestResu
     Ok(())
 }
 
-/// SPEC-483 A2: a GitHub sign-in completes only in the browser that started it. Its callback
+/// A GitHub sign-in completes only in the browser that started it. Its callback
 /// link, handed to someone else, would sign them in as whoever made it (what they then enter as
 /// "themselves" lands in that account); without the start's cookie, or with another start's, it
 /// is refused and the state is not spent, so the starting browser still finishes.
@@ -783,7 +783,7 @@ async fn a_github_sign_in_completes_only_in_the_browser_that_started_it() -> Tes
     Ok(())
 }
 
-/// SPEC-483 A4: anyone may start a GitHub sign-in and each start stores a state, so starts are
+/// Anyone may start a GitHub sign-in and each start stores a state, so starts are
 /// limited per client: the eleventh within a minute is refused with a reason, storing nothing.
 #[tokio::test]
 async fn github_sign_in_starts_are_limited_per_client() -> TestResult {
@@ -812,7 +812,7 @@ async fn github_sign_in_starts_are_limited_per_client() -> TestResult {
 
 /// The same-window case (F 2026-10-09): the browser's GitHub account is refused, GitHub's
 /// account picker is offered, and a reload or a denial lands on the sign-in page, never on a raw
-/// error (ACC-004, AC-ACC-3).
+/// error.
 #[tokio::test]
 async fn refused_github_sign_ins_return_to_the_sign_in_page_with_their_reason() -> TestResult {
     let h = harness()?;
@@ -1144,7 +1144,7 @@ async fn device_grants_disappear_within_one_purge() -> TestResult {
     Ok(())
 }
 
-/// OPS-002 / AC-OPS-2: another frontend (for example a desktop app) uses the API with a bearer
+/// Another frontend (for example a desktop app) uses the API with a bearer
 /// token from an allowlisted origin; other origins get neither CORS headers nor WebSockets.
 #[tokio::test]
 async fn allowlisted_origins_get_cors_and_websockets() -> TestResult {
@@ -1229,7 +1229,7 @@ async fn public_responses_carry_security_headers() -> TestResult {
         // W1b of SPEC-483: scripts, styles, fonts, images, media, connections and workers only
         // from Yulius itself (the editor's workers, pasted images and attached recordings are
         // `blob:`, icons `data:`), no plugins, frames or `<base>`, and nothing may frame Yulius.
-        // No `form-action`: the GitHub App's manifest is posted to GitHub (review round 1, F1).
+        // No `form-action`: the GitHub App's manifest is posted to GitHub (review round 1).
         assert_eq!(
             header("content-security-policy").as_deref(),
             Some(

@@ -648,7 +648,7 @@ async fn a_bad_watch_is_refused() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: a removed project's watches neither run nor post, and its going run ends.
+/// A removed project's watches neither run nor post, and its going run ends.
 #[tokio::test]
 async fn a_removed_projects_watches_stop() -> TestResult {
     let w = world().await?;
@@ -918,7 +918,7 @@ async fn reports_keep_their_text_redacted_and_scripts_are_never_options() -> Tes
     Ok(())
 }
 
-/// Review round 1: a project's watch files, outside the sandbox's quota, are bounded: a run that
+/// A project's watch files, outside the sandbox's quota, are bounded: a run that
 /// grows them past the bound is stopped.
 #[tokio::test]
 async fn a_run_that_fills_the_watch_files_is_stopped() -> TestResult {
@@ -944,7 +944,7 @@ async fn a_run_that_fills_the_watch_files_is_stopped() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a run that was going when its project was removed is still recovered at the
+/// A run that was going when its project was removed is still recovered at the
 /// next start, and runs write no core file.
 #[tokio::test]
 async fn a_removed_projects_lost_run_is_recovered_and_runs_write_no_core() -> TestResult {

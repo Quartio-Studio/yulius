@@ -1257,7 +1257,7 @@ async fn the_hosts_ci_load_is_kept_each_minute_and_read_by_hour() -> TestResult 
     Ok(())
 }
 
-/// Review round 2 of SPEC-493 fix 4: the merge queue's audit read keeps the newest entries
+/// The merge queue's audit read keeps the newest entries
 /// within its limit (oldest first), reads `<slug>` and `<slug>#<n>` but not `<slug>2#<n>`, and the
 /// task ids it is given.
 #[tokio::test]

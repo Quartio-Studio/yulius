@@ -1512,7 +1512,7 @@ mod real {
         a_cut_off_reviewer(false, b"/reviewer-limit yulius-reviewer\r")
     }
 
-    /// Review round 1 of fix 7: a reviewer refused at its first request, before any answer of
+    /// A reviewer refused at its first request, before any answer of
     /// it is read, meets its round's model's limit, not the session's.
     #[test]
     fn a_reviewer_refused_before_any_answer_meets_its_own_models_limit() -> TestResult {
@@ -1593,7 +1593,7 @@ mod real {
         Ok(())
     }
 
-    /// Review round 1 of fix 7: a cut-off reviewer superseded by a new one is forgotten (here
+    /// A cut-off reviewer superseded by a new one is forgotten (here
     /// the new start moves the session for Fable, REV-007, whose prompt asks for the review
     /// again and names no reviewer to resume); a subagent that is no round's, refused before any
     /// answer, is no one's limit: nothing moves.

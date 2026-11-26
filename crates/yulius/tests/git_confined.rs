@@ -1,4 +1,4 @@
-//! The server's own Git, confined (SPEC-483 G1): the real adapter exactly as the
+//! The server's own Git, confined: the real adapter exactly as the
 //! server builds it, in the server's folder layout, against a clone whose every file an agent
 //! writes. Whatever the clone's configuration names is not run, and a link in the clone leads
 //! Git nowhere outside the sandbox's folders.
@@ -146,7 +146,7 @@ async fn a_sandboxes_everyday_git_works_confined() -> TestResult {
     Ok(())
 }
 
-/// G1: what the clone's configuration names is never run by the server's Git. Each case sets
+/// What the clone's configuration names is never run by the server's Git. Each case sets
 /// what an agent can set (the clone's `.git/config`, a `.gitattributes`) so that the named
 /// command would leave a marker, and then lets the server do its ordinary work.
 #[tokio::test]
@@ -330,7 +330,7 @@ async fn the_loader_is_never_started_with_a_file_of_the_clone() -> TestResult {
     Ok(())
 }
 
-/// G1: a link in the clone leads the server's Git nowhere outside the sandbox's folders: a
+/// A link in the clone leads the server's Git nowhere outside the sandbox's folders: a
 /// file of the host it would overwrite stays, one it would read is not repeated in an error,
 /// and another sandbox's objects are not read through an alternate.
 #[tokio::test]
@@ -382,7 +382,7 @@ async fn a_link_in_the_clone_leads_git_nowhere_outside() -> TestResult {
     Ok(())
 }
 
-/// G1: of the folders of this machine, a transfer by the remote's name goes only to the
+/// Of the folders of this machine, a transfer by the remote's name goes only to the
 /// sandbox's own origin. A configuration that names another sandbox's origin, another
 /// sandbox's clone or a folder of the host gets no transfer: nothing arrives there and nothing
 /// comes from there.
@@ -432,7 +432,7 @@ async fn only_the_sandboxes_own_origin_is_taken_from_its_configuration() -> Test
     Ok(())
 }
 
-/// G2: a transfer with a remote on the web carries the server's token, and in the
+/// A transfer with a remote on the web carries the server's token, and in the
 /// clone it would be shaped by the clone's configuration, where a key for a URL beats the
 /// server's own. Here the clone names a proxy (for every address and for the remote's) and
 /// switches the certificate check off; the remote itself answers nobody. The server's fetch,

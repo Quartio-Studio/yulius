@@ -1,4 +1,4 @@
-//! Account usage in the accounts section (SPEC-001 ROT-009, AC-ROT-7): provider windows from
+//! Account usage in the accounts section: provider windows from
 //! the usage probe, failures recorded without losing the last snapshot, and the tokens Yulius
 //! observed per account in the last 24 hours and 7 days (unknown stays null). A `setup-token`
 //! sign-in the usage endpoint refuses (HTTP 403, F 2026-10-10) is not an error: its sessions
@@ -598,7 +598,7 @@ impl UsageProbe for CodexProbe {
     }
 }
 
-/// SPEC-503 CDX-008 (slice C2 review): Refresh of a Codex subscription whose limit is in effect
+/// Refresh of a Codex subscription whose limit is in effect
 /// reads its usage and asks nothing about a model's limit, which Codex does not have: an API-key
 /// subscription (no windows to read) and a ChatGPT one whose reading says the limit is reached
 /// both answer 200 with no note on the card.

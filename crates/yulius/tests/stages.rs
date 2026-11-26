@@ -501,7 +501,7 @@ async fn spans_export_as_csv_and_json_and_stay_inside_their_sandbox() -> TestRes
     Ok(())
 }
 
-/// Review L9: a task of another sandbox read through this sandbox's timeline shows nothing: not
+/// A task of another sandbox read through this sandbox's timeline shows nothing: not
 /// its spans and not this sandbox's CI runs that share its pull request's number.
 #[tokio::test]
 async fn a_task_of_another_sandbox_shows_no_timeline_here() -> TestResult {

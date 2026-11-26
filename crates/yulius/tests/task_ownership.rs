@@ -93,7 +93,7 @@ async fn a_task_is_owned_by_its_creator() -> TestResult {
     Ok(())
 }
 
-/// R2: what a task does on GitHub uses its owner's token, not its creator's.
+/// What a task does on GitHub uses its owner's token, not its creator's.
 #[tokio::test]
 async fn a_task_acts_on_github_as_its_owner() -> TestResult {
     let f = fixture().await?;
@@ -169,7 +169,7 @@ fn says_whose_and_how(message: &str) -> bool {
         && message.contains("You can still stop, archive or delete it")
 }
 
-/// SPEC-490 OWN-004, AC-3 (SPEC-070 R3): a person who may work in the project but does not own
+/// A person who may work in the project but does not own
 /// the task steers nothing of it, and is told whose it is, how to ask and what they may do; an
 /// instance administrator is refused the same; the owner passes the ownership check.
 #[tokio::test]
@@ -408,7 +408,7 @@ async fn a_reader_tidies_nothing() -> TestResult {
     Ok(())
 }
 
-/// R3: the terminal opens read-only for a non-owner, and their input is refused.
+/// The terminal opens read-only for a non-owner, and their input is refused.
 #[tokio::test]
 async fn a_non_owner_watches_the_terminal_read_only() -> TestResult {
     let f = fixture().await?;
@@ -618,7 +618,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFram
     seen
 }
 
-/// R4, R6, AC2, AC4: Bob asks, a second person waits for none, Alice declines; Bob asks again
+/// Bob asks, a second person waits for none, Alice declines; Bob asks again
 /// and Alice hands over: Bob owns the task, its Git acts as Bob, and Alice now only watches.
 #[tokio::test]
 async fn the_owner_hands_control_over_on_request() -> TestResult {
@@ -689,7 +689,7 @@ async fn the_owner_hands_control_over_on_request() -> TestResult {
     Ok(())
 }
 
-/// R4: the person who asked may withdraw; a request then waits no more.
+/// The person who asked may withdraw; a request then waits no more.
 #[tokio::test]
 async fn the_requester_withdraws() -> TestResult {
     let f = fixture().await?;
@@ -706,7 +706,7 @@ async fn the_requester_withdraws() -> TestResult {
     Ok(())
 }
 
-/// R5, AC5: with the owner gone, a request passes control at once.
+/// With the owner gone, a request passes control at once.
 #[tokio::test]
 async fn an_absent_owners_task_passes_at_once() -> TestResult {
     let f = fixture().await?;
@@ -735,7 +735,7 @@ async fn an_absent_owners_task_passes_at_once() -> TestResult {
     Ok(())
 }
 
-/// R4, AC6: a hand-over to someone who can no longer work in the project is refused and drops
+/// A hand-over to someone who can no longer work in the project is refused and drops
 /// their request; a person who may only read cannot ask.
 #[tokio::test]
 async fn control_passes_only_to_someone_who_may_work() -> TestResult {
@@ -767,7 +767,7 @@ async fn control_passes_only_to_someone_who_may_work() -> TestResult {
     Ok(())
 }
 
-/// R6, AC2: after a hand-over, the task's worktree commits as the new owner.
+/// After a hand-over, the task's worktree commits as the new owner.
 #[tokio::test]
 async fn a_hand_over_moves_the_commit_identity() -> TestResult {
     let h = crate::support::harness_with(crate::support::HarnessOptions {
@@ -808,7 +808,7 @@ async fn a_hand_over_moves_the_commit_identity() -> TestResult {
     Ok(())
 }
 
-/// R3 (review): the task's worktree is the owner's too: a non-owner reads its files but cannot
+/// The task's worktree is the owner's too: a non-owner reads its files but cannot
 /// write, create, delete or upload there, nor open a shell in it; the owner can.
 #[tokio::test]
 async fn a_non_owner_cannot_write_into_the_task_worktree() -> TestResult {
@@ -901,7 +901,7 @@ async fn disable(h: &Harness, id: &str) -> TestResult {
     Ok(())
 }
 
-/// R5 (review): a request that waits never locks a task. When the owner becomes absent, asking
+/// A request that waits never locks a task. When the owner becomes absent, asking
 /// again passes control whatever request waits; a waiting requester who can no longer work is
 /// replaced by the next person who asks.
 #[tokio::test]
@@ -929,7 +929,7 @@ async fn a_waiting_request_never_locks_the_task() -> TestResult {
     Ok(())
 }
 
-/// R4 (review): with the owner present, a waiting requester who can no longer work no longer
+/// With the owner present, a waiting requester who can no longer work no longer
 /// blocks others; a disabled requester's request cannot be accepted and is dropped, audited.
 #[tokio::test]
 async fn a_requester_who_cannot_work_gives_way() -> TestResult {
@@ -981,7 +981,7 @@ async fn the_agents_gh_never_gets_the_new_owners_token() -> TestResult {
     Ok(())
 }
 
-/// R4 (review round 2): when GitHub cannot tell whether the asker may still work, their request
+/// When GitHub cannot tell whether the asker may still work, their request
 /// is neither dropped nor accepted: the hand-over fails as unreachable and the request waits.
 #[tokio::test]
 async fn an_unknown_access_keeps_the_request_waiting() -> TestResult {
@@ -1028,7 +1028,7 @@ async fn an_unknown_access_keeps_the_request_waiting() -> TestResult {
     Ok(())
 }
 
-/// R4 (review round 3): an asker whose GitHub sign-in can no longer be renewed cannot work; the
+/// An asker whose GitHub sign-in can no longer be renewed cannot work; the
 /// owner's hand-over drops their request (409), never answering 401, which would sign the owner
 /// out.
 #[tokio::test]

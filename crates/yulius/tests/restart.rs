@@ -745,7 +745,7 @@ fn failing_server() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
-/// Review round 2: bad answers do not keep a wait past its deadline.
+/// Bad answers do not keep a wait past its deadline.
 #[test]
 fn bad_answers_end_the_wait_at_its_deadline() -> TestResult {
     let port = failing_server()?;
@@ -758,7 +758,7 @@ fn bad_answers_end_the_wait_at_its_deadline() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: an answer that is not an outage (a 500 every time) ends the wait after a few
+/// An answer that is not an outage (a 500 every time) ends the wait after a few
 /// tries, not at its deadline as if Yulius were restarting.
 #[test]
 fn a_server_failing_every_request_ends_the_wait_after_a_few_tries() -> TestResult {
@@ -796,7 +796,7 @@ async fn a_start_reads_alive_at_and_refreshes_it() -> TestResult {
         assert!(Instant::now() < deadline, "alive-at was not refreshed");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // Review round 2: restarted again before its wakes ran, the next start still covers the
+    // Restarted again before its wakes ran, the next start still covers the
     // first outage, not only the moment the start before it was alive.
     let third = App::new(h.app.config.clone(), h.app.deps.clone());
     assert_eq!(third.start_outage_watch().down_since, Some(before));

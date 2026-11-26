@@ -574,7 +574,6 @@ async fn antigravity_armed_green_pr_with_yulius_wait_merges_and_is_not_working()
     Ok(())
 }
 
-/// SPEC-580 AC-2:
 /// An Antigravity Stop with `fullyIdle: false` while a NON-wait background command/subagent runs
 /// (no `yulius wait`) settles `activity = Waiting` (the agent is idle at its prompt) while keeping
 /// `background_shells >= 1` (`shows = working`, preserving SPEC-528 so it never falsely shows
@@ -657,7 +656,7 @@ async fn antigravity_stop_with_non_wait_background_work_preserves_spec_528_and_w
 /// is still stale (unfetched) and GitHub reports `mergeable = false`, `task_delivery` must report
 /// `pr.conflicts = true` and `merge_armed` must drop the arm telling the agent to resolve the
 /// conflict (rather than waiting with `"as soon as your turn ends"`). A union-driver collision on
-/// `CHANGES.md` must still report `pr.conflicts = false` after refresh (SPEC-491 M1).
+/// `CHANGES.md` must still report `pr.conflicts = false` after refresh.
 #[tokio::test]
 async fn armed_green_pr_conflict_reports_conflicts_true_and_drops_arm() -> TestResult {
     let f = fixture().await?;
@@ -715,7 +714,6 @@ async fn armed_green_pr_conflict_reports_conflicts_true_and_drops_arm() -> TestR
     Ok(())
 }
 
-/// SPEC-580 AC-4:
 /// An armed green PR that makes no progress past the stated bound must send a check-in to the
 /// agent, and if that does not move it, escalate to Needs You via SPEC-578 (`needs_you_notice`,
 /// `tasks_list` / `task_get`, `wait_history`), and auto-clear when the PR later moves/merges.
@@ -959,7 +957,7 @@ async fn antigravity_stop_with_both_shell_and_wait_holds_until_shell_exits() -> 
     );
 
     // Real shell exits; only `yulius wait` remains. `probe_idle_shells` alone (without another
-    // Stop hook) must clear `background_shells` to 0 and unblock `decidable_in` (SPEC-580 F2).
+    // Stop hook) must clear `background_shells` to 0 and unblock `decidable_in`.
     f.shells.store(0, Ordering::SeqCst);
     f.waits.store(1, Ordering::SeqCst);
     app.probe_idle_shells(&id).await;
@@ -1026,7 +1024,7 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
 
     // Local `origin/dev` now matches `pull.base_sha`: even if `origin` becomes temporarily
     // unreachable (fetch fails), `pull_conflicts` must skip fetching, keep `conflicts = false`,
-    // and never drop the armed merge on a transient fetch failure (SPEC-580 review F3).
+    // and never drop the armed merge on a transient fetch failure.
     git(
         &f.repo,
         &["remote", "set-url", "origin", "/nonexistent/origin.git"],
@@ -1201,7 +1199,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         app.restore_armed_merges().await;
 
         // Use a generous escalation bound during the check-in loop so heavy CI load cannot skip
-        // past `CheckIn` straight to `Escalate` before the PTY quiet window opens (SPEC-580 F6).
+        // past `CheckIn` straight to `Escalate` before the PTY quiet window opens.
         let check_in_bounds = WatchBounds {
             check_in_after_ms: 60 * 60 * 1000,
             stall_after_ms: 60 * 60 * 1000,
@@ -1284,7 +1282,6 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
     })
 }
 
-/// SPEC-580 review F1:
 /// An active `/internal/agent/wait` long-poll alone (even when `host.background_probe` reports
 /// `waits = 0, shells = 0`, e.g. on platforms or wrapper trees without `/proc` visibility) lets
 /// Antigravity `Stop { fullyIdle: false }` settle cleanly (`activity = Waiting`, `yulius_wait =
@@ -1382,7 +1379,6 @@ async fn antigravity_stop_with_active_agent_wait_rpc_settles_without_probe_waits
     Ok(())
 }
 
-/// SPEC-580 review F4:
 /// When a dirty-worktree armed green PR is merged directly on GitHub while local delivery is still
 /// `PrOpen`, `watch_prs` checks GitHub before escalating and must NOT falsely open a Needs You
 /// notice for an already-merged PR.
@@ -1430,7 +1426,6 @@ async fn stalled_armed_green_pr_already_merged_on_github_does_not_escalate() -> 
     Ok(())
 }
 
-/// SPEC-580 merge review F2:
 /// When a stalled armed green PR disarms and the unarmed `watch_prs` pass defers via
 /// `observed_only()` (e.g. GitHub installation lookup unavailable while checking a dropped
 /// singleton), all four armed-stall fields (`armed_green_key`, `armed_green_since_ms`,

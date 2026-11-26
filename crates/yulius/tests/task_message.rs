@@ -71,7 +71,7 @@ async fn running(app: &Arc<App>, data: &Path) -> Result<(TaskId, ProjectCaller),
     Ok((id, superagent(&sandbox, &user, "admin")))
 }
 
-/// SPEC-483 slice 5 (review round 4): a running task whose screen became unknown (a
+/// A running task whose screen became unknown (a
 /// secret stopped opening, output was dropped) gets no message typed, and its person learns it:
 /// the first refusal flags the task with what to do, once, however many messages follow.
 #[test]
@@ -829,7 +829,7 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
 
         // A prompt Yulius held for the person's decision is back in the box: it is
         // theirs to decide on its card, and no message carries it to the agent (review round
-        // 1, F6).
+        // 1).
         let held = yulius_app::intake::HoldRecord {
             id: "h-1".into(),
             task_id: id.clone(),
@@ -914,7 +914,7 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 TCT-006 (review round 1, F1): a draft typed before a restart of the server is
+/// A draft typed before a restart of the server is
 /// known from its mark alone, and a prompt Yulius types does not end such
 /// a draft. The owner's message sent past it does: it carried the text to the agent, so the
 /// mark leaves the run's folder and the next plain message is typed. It used to answer "the
@@ -2395,7 +2395,7 @@ fn the_codex_rate_limit_picker_holds_messages_until_it_is_dismissed() -> TestRes
     })
 }
 
-/// Review round 1: a person's hold after a refused Codex write is no delivery
+/// A person's hold after a refused Codex write is no delivery
 /// problem. Only a refusal of the write itself counts towards raising PR news.
 #[test]
 fn a_key_that_dismisses_the_codex_picker_raises_no_pr_news_request() -> TestResult {

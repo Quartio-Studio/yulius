@@ -90,7 +90,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     assert!(config.ends_with("home/.claude"), "{config:?}");
     assert!(config.starts_with(&f.data), "{config:?}");
     // The Yulius MCP server, its bearer only in the environment, accepted by `/mcp` (SPEC-037
-    // MGT-004, AC-MGT-3).
+    // MGT-004).
     let mcp_config: Value =
         serde_json::from_slice(&std::fs::read(config.join("launch-mcp-config"))?)?;
     let yulius = &mcp_config["mcpServers"]["yulius"];
@@ -1367,7 +1367,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
     Ok(())
 }
 
-/// AC-MGT-2, MGT-005..007: a Cockpit's own token reaches the management tools, which act for
+/// A Cockpit's own token reaches the management tools, which act for
 /// its owner; nothing else is served, and the token ends with the Cockpit and its owner's
 /// access.
 #[tokio::test]
@@ -1505,7 +1505,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         cockpit_tool(&f, &token, "steps_set", json!({"steps": ["x"]})).await?;
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("unknown tool"), "{refused}");
-    // SPEC-442 AC-XST-4: nothing deletes or archives a task of another sandbox.
+    // Nothing deletes or archives a task of another sandbox.
     for name in ["sandbox_task_delete", "sandbox_task_archive"] {
         let (refused, is_error) =
             cockpit_tool(&f, &token, name, json!({"sandbox": "x", "number": 1})).await?;
@@ -1754,7 +1754,7 @@ async fn a_cancelled_cross_sandbox_request_ends_at_once() -> TestResult {
     Ok(())
 }
 
-/// Review of slice 8a, F2: once its call ended (here dropped), a request no longer belongs to
+/// Once its call ended (here dropped), a request no longer belongs to
 /// that call: a `notifications/cancelled` naming the same id later withdraws nothing.
 #[tokio::test]
 async fn a_cancel_after_the_call_ended_withdraws_nothing() -> TestResult {
@@ -2918,7 +2918,7 @@ async fn an_adopted_cockpit_keeps_its_subscription_and_moves_past_a_limit() -> T
     Ok(())
 }
 
-/// Review round 1 (M1): a limit already handled is never acted on again, after `/clear` and back
+/// A limit already handled is never acted on again, after `/clear` and back
 /// to its conversation (`/resume`), or after a server restart.
 #[tokio::test]
 async fn a_handled_limit_is_not_acted_on_again_after_clear_and_resume() -> TestResult {
@@ -2993,7 +2993,7 @@ async fn a_handled_limit_is_not_acted_on_again_after_a_restart() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 (m3): the start on another subscription failed after the old Cockpit ended;
+/// The start on another subscription failed after the old Cockpit ended;
 /// the next start still continues the cut turn instead of leaving the prompt unanswered.
 #[tokio::test]
 async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestResult {
@@ -3039,7 +3039,7 @@ async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestR
     Ok(())
 }
 
-/// Review round 1 (m5): a resumed Cockpit moved again right after it started is not a failed
+/// A resumed Cockpit moved again right after it started is not a failed
 /// resume: its conversation stays the one the next Cockpit resumes.
 #[tokio::test]
 async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
@@ -3104,7 +3104,7 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: several new limits read at once count as one, the newest: its reset is what
+/// Several new limits read at once count as one, the newest: its reset is what
 /// the subscription is recorded with.
 #[tokio::test]
 async fn limits_read_together_count_once_as_the_newest() -> TestResult {
@@ -4236,7 +4236,7 @@ async fn an_updates_restart_waits_for_text_left_in_the_prompt_box() -> TestResul
     Ok(())
 }
 
-/// Review of slice 9a, F1: a draft typed before the server restarts for an update is kept with
+/// A draft typed before the server restarts for an update is kept with
 /// the Superagent's record, so the adopted Superagent's restart waits for it too.
 #[tokio::test]
 async fn a_draft_typed_before_the_servers_restart_holds_the_superagents() -> TestResult {
@@ -4424,7 +4424,7 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
         "started for its check"
     );
 
-    // Review of slice 9b, F6: a disabled person's Superagent is not started for a check, and a
+    // A disabled person's Superagent is not started for a check, and a
     // removed sandbox's checks go.
     f.h.app.end_all_shells().await;
     f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
@@ -4476,7 +4476,7 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
         "a removed sandbox's checks go"
     );
 
-    // F8: a kept check out of bounds (hand-edited) is not read back.
+    // A kept check out of bounds (hand-edited) is not read back.
     f.h.store
         .execute_for_tests("UPDATE sandboxes SET removed_at = NULL WHERE id = 's1'")
         .await?;
@@ -4498,7 +4498,7 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
         .collect();
     assert_eq!(names, ["sound"]);
 
-    // F8: a file that cannot be read is kept as `.bad`, never written over.
+    // A file that cannot be read is kept as `.bad`, never written over.
     let file = f.data.join("superagent-checks.json");
     std::fs::write(&file, b"[not json")?;
     let again = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
@@ -4666,7 +4666,7 @@ async fn a_secret_value_typed_on_the_panel_reaches_the_vault_only() -> TestResul
     assert_eq!(replaced["stored"], "updated", "{replaced}");
     tokio::time::timeout(WAIT, again).await???;
 
-    // Review of slice 10a, M1: the project's DEPLOY_KEY is another secret than alice's own of
+    // The project's DEPLOY_KEY is another secret than alice's own of
     // that name: created beside it, never written over it.
     let internal = f.h.internal.clone();
     let bearer = Creds {
@@ -4765,7 +4765,7 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
         None,
     )
     .await?;
-    // An agent secret the task printed (review of slice 10b, F2): its value never comes back.
+    // An agent secret the task printed (review of slice 10b): its value never comes back.
     let value = "s3cr3t-deploy-token-0123456789";
     {
         use yulius_app::ports::store::UserStore as _;
@@ -4877,7 +4877,7 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
             .is_some_and(|rows| rows.iter().any(|r| r["number"] == task.number)),
         "{usage}"
     );
-    // Review of slice 10b, F1: the default period is the last 7 days, not all time.
+    // The default period is the last 7 days, not all time.
     assert!(usage["period"]["from"].is_string(), "{usage}");
     let other = support::seed_task(
         &f.h,
@@ -4967,7 +4967,7 @@ async fn a_missing_ability_is_reported_in_one_call() -> TestResult {
         (json!({"ability": "a\u{202e}b", "case": "c"}), "cannot see"),
         (json!({"ability": "a", "case": "c", "x": 1}), "unknown"),
         (json!({"ability": "a\rb", "case": "c"}), "one line"),
-        // Review of slice 11, M2: nothing of the project leaves in a report.
+        // Nothing of the project leaves in a report.
         (
             json!({"ability": "a", "case": "the CI of acme/fixture failed"}),
             "general terms",
@@ -6280,7 +6280,7 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         json!({"do": "unpause", "all": true}),
     )
     .await?;
-    // A task nobody paused is not reported as resumed (review round 1, F4).
+    // A task nobody paused is not reported as resumed (review round 1).
     let (answer, is_error) = cockpit_tool(
         &f,
         &token,
@@ -6374,7 +6374,7 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         "{refused}"
     );
     // A task held at a usage limit with its session alive has started: it is not told that
-    // it has not, nor that stopping it would only cancel it (review round 1, F2).
+    // it has not, nor that stopping it would only cancel it (review round 1).
     let held = support::seed_task(
         &f.h,
         "t-held",
@@ -6640,7 +6640,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
             id: "h-1".into(),
             task_id: held.id.clone(),
             class: yulius_domain::intake::PromptClass::NewScope,
-            // What a person typed may hold anything (review of slice 4, C2): a line that reads
+            // What a person typed may hold anything (review of slice 4): a line that reads
             // like another task's, a colour escape, a character that reverses what follows.
             prompt: "Also rewrite the billing page\n- #99 Deploy prod · NEEDS ITS PERSON \u{1b}[31m\u{202e}"
                 .into(),
@@ -6745,7 +6745,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         "a forged line:\n{shown}"
     );
     // A request stored before its words were cleaned (an older row) is shown on one line
-    // without what hides or reverses text (C3).
+    // without what hides or reverses text.
     let old_row = NeedsYouRecord {
         action: "Approve\u{202e} the \u{200b}budget\u{e0041}".into(),
         happened: None,
@@ -6794,7 +6794,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         "{agents}"
     );
     // Not through task_get either, nor about its own task (the prompt was typed to it and
-    // Yulius kept it from it) (review of slice 4, C4).
+    // Yulius kept it from it) (review of slice 4).
     for (token, tool, args) in [
         ("tok-t-work", "task_get", json!({"number": held.number})),
         ("tok-t-held", "tasks_list", json!({})),
@@ -6817,7 +6817,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
     }
 
     // A task that ended with a prompt still held shows it, as its page shows the card, and
-    // it is decided the same way (review of slice 4, C9).
+    // it is decided the same way (review of slice 4).
     let ended = support::seed_task(
         &f.h,
         "t-ended",
@@ -7144,7 +7144,7 @@ async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
         Timestamp(base - 100)
     );
     // A run never goes before an earlier run of its own commit: which run of a commit is the
-    // latest is read by place (review of slice 5, F4).
+    // latest is read by place (review of slice 5).
     let mut same = run("run-old", "s1", base + 30, RunState::Failed);
     same.sha = "b".repeat(40);
     f.h.store.insert_ci_run(&same, &[]).await?;
@@ -7568,7 +7568,7 @@ async fn the_superagent_reads_the_instance_and_a_superadmins_updates_it() -> Tes
             "{action}: {refused:?}"
         );
     }
-    // Through the tool, as the store says she is now a superadmin (review of slice 7, F5): the
+    // Through the tool, as the store says she is now a superadmin (review of slice 7): the
     // person's flag is read at the call, and the restart's own refusal comes back.
     f.h.store
         .execute_for_tests(
@@ -7621,7 +7621,7 @@ async fn the_superagent_reads_the_instance_and_a_superadmins_updates_it() -> Tes
     Ok(())
 }
 
-/// SPEC-487 TCT-005 (review round 1, F5): one call reaches at most 100 tasks. With 101 that
+/// One call reaches at most 100 tasks. With 101 that
 /// `all` applies to, the first hundred by number get the message, the last one does not, and
 /// the answer says that one was not reached.
 #[tokio::test]

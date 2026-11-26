@@ -208,7 +208,7 @@ async fn a_read_token_only_reads_the_rest_api() -> TestResult {
     Ok(())
 }
 
-/// SPEC-247 RMT-001 (SPEC-483 A1): the scope of a token only narrows what its person may do,
+/// The scope of a token only narrows what its person may do,
 /// whatever the request's method. A writer's `read` token reads what view access allows and
 /// nothing a GET shows only to people who work there: the working tree (an ignored `.env` with
 /// copied secrets included), their shells, the previews, the Superagent's link and requests.
@@ -705,7 +705,7 @@ async fn a_persons_agent_edits_orders_and_stops_tasks_remotely() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 TCT-005 (review round 1, F7): a bulk call a person's agent made goes on to its
+/// A bulk call a person's agent made goes on to its
 /// last task and its audit entry when the client goes away meanwhile (a client timeout during
 /// a long call), as the Superagent's does. The request is dropped as soon as the first task
 /// has the message; every task still gets it, and `remote.tool` records the call.
@@ -1461,7 +1461,7 @@ async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
         "nothing was requested: {said}"
     );
 
-    // SPEC-483 V5: a secret allowed use by use goes somewhere new only by its person
+    // A secret allowed use by use goes somewhere new only by its person
     // in the browser, after a two-factor code; a token still describes it and dismisses.
     use yulius_app::ports::vault::VaultStore as _;
     let guarded = call(
@@ -3583,7 +3583,7 @@ async fn a_laptops_operator_state_moves_into_the_sandbox_with_one_writer() -> Te
     .await?;
     assert_eq!(code, Some(1), "{err}");
 
-    // A read-only token of the same person never downloads it (review of SPEC-271, M4).
+    // A read-only token of the same person never downloads it (review of SPEC-271).
     let read = text(&make_token(&w, &browser, "reader", "read").await?["token"]).to_owned();
     let refused = call(
         &w.h.router,
@@ -3724,7 +3724,7 @@ async fn variables_are_set_from_a_laptop_and_listed_in_plain() -> TestResult {
         err.contains("SHOP_API_KEY") && err.contains("yulius secrets import"),
         "{err}"
     );
-    // Review round 1: a value that carries a credential is refused whatever its name, and a
+    // A value that carries a credential is refused whatever its name, and a
     // malformed argument is not echoed.
     let (code, out, err) = cli(vars(&["set", "DATABASE_URL=postgres://u:p4ss@db/app"])).await?;
     assert_eq!(code, Some(2), "{out}{err}");
@@ -4037,7 +4037,7 @@ impl Address {
     }
 }
 
-/// SPEC-466 MVC-030 to MVC-032: after a move the CLI on a laptop follows the old URL's redirect:
+/// After a move the CLI on a laptop follows the old URL's redirect:
 /// the saved sign-in moves to the new URL, one line says so, the call is repeated once, and the
 /// old name keeps working. No other redirect is followed.
 #[tokio::test]
@@ -4362,7 +4362,7 @@ async fn the_cli_finds_its_way_back_after_a_move_that_was_undone() -> TestResult
     Ok(())
 }
 
-/// SPEC-483 slice 33 (QB7): every tool the remote MCP lists for a person's token is dispatched:
+/// Every tool the remote MCP lists for a person's token is dispatched:
 /// called with only its project, each answers (often refusing the missing arguments) and none is
 /// an "unknown tool", which a tool listed but missing from the shared dispatch would be. The
 /// Global Superagent's browser tools are not called: they would open a browser.

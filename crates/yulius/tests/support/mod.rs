@@ -944,7 +944,7 @@ pub struct Creds {
 }
 
 /// The browser that started the GitHub sign-in with `state`: it holds the cookie the callback
-/// asks for (SPEC-483 A2).
+/// asks for.
 pub fn started(state: &str) -> Creds {
     Creds {
         oauth: Some(state.to_owned()),

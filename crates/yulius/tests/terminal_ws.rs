@@ -356,7 +356,7 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
     );
     drop(c);
 
-    // AC-ACC-5: a downgrade on GitHub reaches open sockets once the permission cache expires.
+    // A downgrade on GitHub reaches open sockets once the permission cache expires.
     h.github.set_perm("alice", "acme/fixture", perms("read"));
     h.clock
         .0

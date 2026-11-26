@@ -52,7 +52,7 @@ fn usage(five: f64, five_resets: Timestamp, week: f64, week_resets: Timestamp) -
     .to_string()
 }
 
-/// AC-ROT-10: with every subscription at 98 % or limited, the Stop hook of a task that would
+/// With every subscription at 98 % or limited, the Stop hook of a task that would
 /// work on (goal mode) is held: `202` with `Retry-After` and an empty body — nothing reaches
 /// the agent — and it stays held while the pause lasts, also through a server restart. When
 /// the account's window resets, the resume loop releases it in place and the next poll answers
@@ -128,7 +128,7 @@ async fn an_exhausted_pool_holds_the_turn_until_capacity_returns() -> TestResult
     Ok(())
 }
 
-/// SPEC-503 (slice C1 review): a Codex task follows no goal of Yulius's (it gets its request as its
+/// A Codex task follows no goal of Yulius's (it gets its request as its
 /// first message and its turns end it), so with every Codex subscription used up its Stop is not
 /// held as a goal's would be: the turn ends, and its next prompt waits for capacity instead.
 #[tokio::test]
@@ -323,7 +323,7 @@ async fn a_stop_ends_a_pending_first_message() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-10: a prompt submitted while the pool is exhausted waits at `UserPromptSubmit`; the
+/// A prompt submitted while the pool is exhausted waits at `UserPromptSubmit`; the
 /// prompt is kept for a resume on another account. A task in prompt mode that only goes idle
 /// at Stop is not held.
 #[tokio::test]
@@ -364,7 +364,7 @@ async fn a_prompt_waits_at_submit_and_an_idle_turn_end_is_not_held() -> TestResu
     Ok(())
 }
 
-/// AC-ROT-12: `GET /api/capacity` reports the pool, the burn rate, the forecast and the
+/// `GET /api/capacity` reports the pool, the burn rate, the forecast and the
 /// recommendation from the readings, runs and pauses of the last week, by the formula of
 /// SPEC-002 ADR-17 §2.4; ids and task counts only for administrators.
 #[tokio::test]

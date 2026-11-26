@@ -1,4 +1,4 @@
-//! Git page and delivery flows end to end (AC-DLV-1..3, AC-GIT-1/2, AC-DSC-2): the HTTP API
+//! Git page and delivery flows end to end: the HTTP API
 //! over the application with a fake GitHub whose pull requests and refs are backed by a real
 //! bare repository, and a test-local `GitPort` over the real `git` command line.
 
@@ -1256,7 +1256,7 @@ async fn adds_to_and_preview_merge_differ_with_several_merge_bases() -> TestResu
     Ok(())
 }
 
-/// AC-DSC-2, AC-GIT-1: the PR is refused until the task has a valid committed spec, which is
+/// The PR is refused until the task has a valid committed spec, which is
 /// discovered and registered; the Git page shows the branch facts, the PR and its checks.
 #[tokio::test]
 async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
@@ -1378,7 +1378,7 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 D5: an automatic promotion (`auto_promote`) is part of the merge it follows. With
+/// An automatic promotion (`auto_promote`) is part of the merge it follows. With
 /// required checks and Yulius CI, the merge needs the pull request's head green; the
 /// integration head that merge makes has no run of its own yet, and the fast-forward goes on
 /// the merge's checks instead of waiting for ever on a run nobody would act on.
@@ -1424,7 +1424,7 @@ async fn an_automatic_promotion_goes_on_the_checks_of_its_merge() -> TestResult 
     Ok(())
 }
 
-/// SPEC-483 D5: an automatic promotion goes while the integration head's checks have not
+/// An automatic promotion goes while the integration head's checks have not
 /// reported, wherever it starts (after a merge, after an integration environment), and is
 /// stopped by a verdict that is there: with a failed run of Yulius CI at that head, the
 /// environment's confirmation promotes nothing and says why; a person promotes once the run
@@ -1576,7 +1576,7 @@ pub(super) async fn insert_ci_attempt(
     Ok(())
 }
 
-/// AC-DLV-1: standard profile — merging waits for green checks and nothing waits for a person
+/// Standard profile — merging waits for green checks and nothing waits for a person
 /// after it; promotion opens a promotion PR dev → main and merges it on a later request.
 #[tokio::test]
 async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult {
@@ -1741,7 +1741,7 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         unknown.body
     );
     f.h.github.set_checks(&promotion_head, ChecksState::Success);
-    // SPEC-483 D5: a promotion asks what every merge asks. With a run of Yulius CI at that
+    // A promotion asks what every merge asks. With a run of Yulius CI at that
     // head, the run alone decides, whatever GitHub shows from elsewhere: failed, the promotion
     // is refused; run again and passed, it goes.
     use yulius_domain::ci::RunState;
@@ -1799,7 +1799,7 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
     Ok(())
 }
 
-/// AC-DLV-2: product profile — PR into quartio, the dev-VM deployment runs only on an explicit
+/// Product profile — PR into quartio, the dev-VM deployment runs only on an explicit
 /// confirmed request and records its output, then main fast-forwards and the rollout step is
 /// confirmed. Only repository admins change the profile.
 #[tokio::test]
@@ -1984,7 +1984,7 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
 
     // Fast-forward main to the integration head, then confirm the rollout step.
     let quartio = f.origin_sha("quartio")?;
-    // SPEC-483 D5: what goes to production is the integration head, and its checks decide
+    // What goes to production is the integration head, and its checks decide
     // for a fast-forward as for a promotion pull request: a failed run of Yulius CI there
     // refuses it, the run passed again lets it go.
     use yulius_domain::ci::RunState;
@@ -2117,7 +2117,7 @@ async fn an_environment_run_whose_request_is_dropped_after_its_record_still_runs
     Ok(())
 }
 
-/// AC-DLV-3: studio — after a merge into quartio, main fast-forwards automatically even with
+/// Studio — after a merge into quartio, main fast-forwards automatically even with
 /// failing checks (none are required); switching the profile to gated disables it.
 #[tokio::test]
 async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
@@ -2552,7 +2552,7 @@ async fn a_review_start_delivers_the_head_and_queues_its_run() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 3: a review's start syncs CI beside the 60 s loop, so two
+/// A review's start syncs CI beside the 60 s loop, so two
 /// syncs of one sandbox may overlap. Each reads the runs before it queues, so both would queue the
 /// same head. One sync of a sandbox runs at a time, and the head is queued once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
@@ -2627,7 +2627,7 @@ async fn start_delivery_attempt(f: &Fixture) -> TestResult {
             exit_reason: None,
         })
         .await?;
-    // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+    // A live run is a running task (an armed merge lives with it).
     f.h.store
         .transition_task(
             &task,
@@ -2713,7 +2713,7 @@ fn assert_follow_up_accepted((refused, said, audited): (bool, String, String), c
     assert!(audited.contains(counted), "the audit entry: {audited}");
 }
 
-/// SPEC-493 APR-001 to APR-004: an approval carries across a follow-up of at most 20
+/// An approval carries across a follow-up of at most 20
 /// product lines, counted commit by commit, with tests and documents not counted; more, a file of
 /// the reviewed change reverted out of it, or a conflicted merge, needs a new review. Accepted
 /// calls say what was counted.
@@ -2994,7 +2994,7 @@ async fn follow_up_approval_counts_files_loaded_by_product_code() -> TestResult 
     Ok(())
 }
 
-/// AC-GIT-2, AC-DLV-8: agents deliver their own work only through the gated delivery
+/// Agents deliver their own work only through the gated delivery
 /// tools — a merge needs passed checks and an independent review of the exact head — while reads,
 /// task tokens on the REST API and read-only users never merge, promote or deploy.
 #[tokio::test]
@@ -3254,7 +3254,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         assert_eq!(rounds[0]["reported"], true);
         assert!(f.h.store.review_rounds(&task.id, true).await?.is_empty());
     }
-    // F 2026-10-11 (AC-GIT-3): on GitHub the creator merged and promoted, not the App.
+    // F 2026-10-11: on GitHub the creator merged and promoted, not the App.
     assert_eq!(f.h.github.actors_of("merge_pull"), ["bob"]);
     assert_eq!(f.h.github.actors_of("fast_forward"), ["bob"]);
 
@@ -3464,7 +3464,7 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     assert_eq!(d["pr"]["head"], "feat/1-checkout-api");
     let head = git(&wt, &["rev-parse", "HEAD"])?;
     assert_eq!(f.origin_sha("feat/1-checkout-api")?, head, "pushed first");
-    // F 2026-10-11 (AC-GIT-3): the task's creator pushes and opens it, never the App.
+    // F 2026-10-11: the task's creator pushes and opens it, never the App.
     assert_eq!(
         f.pushes(),
         ["feat/1-checkout-api->feat/1-checkout-api token=token-bob"]
@@ -3608,7 +3608,7 @@ async fn live_agent(f: &Fixture, task: &str, token: &str) -> BoxResult<Creds> {
             exit_reason: None,
         })
         .await?;
-    // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+    // A live run is a running task (an armed merge lives with it).
     f.h.store
         .transition_task(
             &TaskId::parse(task)?,
@@ -4350,7 +4350,7 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
     Ok(())
 }
 
-/// F 2026-10-11 (AC-GIT-3): a task whose creator has no usable GitHub token — here the
+/// F 2026-10-11: a task whose creator has no usable GitHub token — here the
 /// superadmin, with no GitHub identity — still delivers: Yulius pushes and opens its pull request
 /// as the App, and its agent merges as the App instead of being refused; the task's terminal
 /// says once why the App appears.
@@ -5837,7 +5837,7 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 D3: a task's change merges into the integration branch only. An agent's own token
+/// A task's change merges into the integration branch only. An agent's own token
 /// may change its pull request's base; a pull request pointed at another branch (production)
 /// is not merged by the armed merge, cannot be armed, and is refused to a person too, until it
 /// goes into the integration branch again.
@@ -6302,7 +6302,7 @@ async fn an_armed_merge_green_during_a_restart_merges_at_the_start() -> TestResu
     Ok(())
 }
 
-/// SPEC-483 D6: an armed merge lives with the run that armed it, by one rule with and without
+/// An armed merge lives with the run that armed it, by one rule with and without
 /// a restart. A task whose run only waits (no capacity, a subscription switch) keeps its armed
 /// merge across a restart. A task that was closed loses it: the next pass says so instead of
 /// merging the pull request behind the person's back once its checks pass, and a new server
@@ -6514,7 +6514,7 @@ fn saved_arms(path: &Path) -> BoxResult<Value> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
-/// SPEC-615 CMA-001 (issue #1564): a fresh server reading the entry of an activation the ordinary
+/// A fresh server reading the entry of an activation the ordinary
 /// queue already decided does not arm it again; the restore clears it.
 #[tokio::test]
 async fn an_ordinary_verdict_consumes_its_saved_arm_when_the_clear_failed() -> TestResult {
@@ -6652,7 +6652,7 @@ async fn a_newly_reviewed_head_gets_a_new_place_and_an_immediate_merge_clears_it
     Ok(())
 }
 
-/// SPEC-116 DMG-001 (task #101): a goal task whose evaluator keeps its turn going never reaches
+/// A goal task whose evaluator keeps its turn going never reaches
 /// the clean end of turn that opens its pull request, so `delivery_merge` delivers the head
 /// itself: pushed, the pull request opened by the task's creator, then the merge armed. A head
 /// that cannot be delivered yet is refused with why, and nothing opens or arms.
@@ -7094,7 +7094,7 @@ async fn a_merge_call_delivers_nothing_while_no_step_is_finished() -> TestResult
     Ok(())
 }
 
-/// SPEC-425 FUP-001 to FUP-003: work committed on a task's branch after its pull request
+/// Work committed on a task's branch after its pull request
 /// merged is delivered again, as a new pull request of the same task, at the end of a turn and
 /// on `delivery_merge`; a head that adds nothing to the merged one (Git's own merges of the
 /// integration branch) keeps the task merged, and `delivery_merge` never arms a merge of a pull
@@ -8783,7 +8783,7 @@ async fn a_merge_names_the_change_by_its_most_significant_commit() -> TestResult
     Ok(())
 }
 
-/// SPEC-108 PRL-002 (task #93): a moved delivery stage tells the sandbox's browsers to read its
+/// A moved delivery stage tells the sandbox's browsers to read its
 /// pull requests again, whoever moved it; a read that moves nothing announces nothing.
 #[tokio::test]
 async fn pull_request_changes_are_announced_to_the_sandbox() -> TestResult {

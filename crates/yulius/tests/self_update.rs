@@ -202,7 +202,7 @@ async fn an_unreadable_ci_observation_adds_no_install_delay() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-6: the build is known; a newer `main` is offered to superadmins only, with a summary
+/// The build is known; a newer `main` is offered to superadmins only, with a summary
 /// of its new commits; "Check now" is cached; an unreadable repository is reported.
 #[tokio::test]
 async fn a_newer_main_is_offered_to_superadmins_only() -> TestResult {
@@ -459,7 +459,7 @@ async fn concurrent_checks_make_one_compare() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-7: "Update now" needs the superadmin, the confirmation, the offered head of `main`
+/// "Update now" needs the superadmin, the confirmation, the offered head of `main`
 /// and an installed helper; one run at a time; tasks keep working while it builds.
 #[tokio::test]
 async fn update_now_needs_confirmation_the_offered_commit_and_a_helper() -> TestResult {
@@ -528,7 +528,7 @@ async fn support_ctx(
     })
 }
 
-/// AC-OPS-8: after the build, every turn boundary is held (`202`, `Retry-After`, no output) and
+/// After the build, every turn boundary is held (`202`, `Retry-After`, no output) and
 /// starts queue; the install is requested once every live task is at a pause point.
 #[tokio::test]
 async fn tasks_pause_at_their_turn_boundary_before_the_install() -> TestResult {
@@ -621,7 +621,7 @@ async fn tasks_pause_at_their_turn_boundary_before_the_install() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-8/9: the server that starts after the install still holds every boundary until the
+/// The server that starts after the install still holds every boundary until the
 /// helper reports, then releases the tasks one by one and ends the run; a rolled-back install
 /// releases them as well and says why.
 #[tokio::test]
@@ -779,7 +779,7 @@ async fn a_rolled_back_install_releases_the_tasks_and_says_why() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-8: pausing is bounded (the update is cancelled after 30 minutes and nothing stays
+/// Pausing is bounded (the update is cancelled after 30 minutes and nothing stays
 /// held), a person can cancel while it builds or pauses, and a helper that never answers fails
 /// the update.
 #[tokio::test]
@@ -903,7 +903,7 @@ async fn the_cancel_message_counts_every_task_still_in_a_turn() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-12: with a host that freezes, both tasks — one mid-turn — are frozen on the
+/// With a host that freezes, both tasks — one mid-turn — are frozen on the
 /// first round after the build, no hook is held, and the install follows on the next round.
 #[tokio::test]
 async fn every_task_freezes_at_once_and_the_install_follows() -> TestResult {
@@ -945,7 +945,7 @@ async fn every_task_freezes_at_once_and_the_install_follows() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-11/12: a run the host cannot freeze still pauses at its turn boundary, and nothing is
+/// A run the host cannot freeze still pauses at its turn boundary, and nothing is
 /// frozen while it works (the others would sit frozen for up to the 30-minute bound); once it is
 /// held, the others freeze and the install follows.
 #[tokio::test]
@@ -982,7 +982,7 @@ async fn a_run_that_cannot_be_frozen_is_waited_for_before_any_freeze() -> TestRe
     Ok(())
 }
 
-/// AC-OPS-11: a run the kernel never confirms frozen is thawed after five passes and paused at
+/// A run the kernel never confirms frozen is thawed after five passes and paused at
 /// its turn boundary instead, and the others are thawed while it works.
 #[tokio::test]
 async fn a_run_that_never_settles_falls_back_to_its_turn_boundary() -> TestResult {
@@ -1046,7 +1046,7 @@ async fn the_cancel_message_counts_a_run_still_being_frozen() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-13 (review): a cancel that lands while a freeze pass runs never leaves a run frozen.
+/// A cancel that lands while a freeze pass runs never leaves a run frozen.
 #[tokio::test]
 async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
     let (i, host) = freezing_instance().await?;
@@ -1095,7 +1095,7 @@ async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-13: after the restart the runs thaw one by one as their tasks are released, and the
+/// After the restart the runs thaw one by one as their tasks are released, and the
 /// rest is swept; a server that starts with no update thaws what a crash left frozen, one that
 /// starts while the update installs keeps the runs frozen.
 #[tokio::test]
@@ -1144,7 +1144,7 @@ async fn frozen_tasks_thaw_one_by_one_after_the_restart() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-13: a cancel while pausing thaws every frozen run at once; so does a rolled-back
+/// A cancel while pausing thaws every frozen run at once; so does a rolled-back
 /// install.
 #[tokio::test]
 async fn a_cancel_or_a_rollback_thaws_every_frozen_task() -> TestResult {
@@ -1196,7 +1196,7 @@ async fn a_cancel_or_a_rollback_thaws_every_frozen_task() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: "Continue without waiting" freezes every run that can be frozen, even while a
+/// "Continue without waiting" freezes every run that can be frozen, even while a
 /// run that cannot be frozen is still in its turn; a server restarted mid-drain sweeps the runs
 /// its predecessor froze while such a run works.
 #[tokio::test]
@@ -1249,7 +1249,7 @@ fn published_pauses(
     seen
 }
 
-/// AC-PAU-1: an update's pause is in the summary of every live task, as
+/// An update's pause is in the summary of every live task, as
 /// `pending` until its run is frozen, and the lists hear about it as it goes on and off.
 #[tokio::test]
 async fn an_update_s_pause_is_in_the_task_summary_and_published() -> TestResult {
@@ -1298,7 +1298,7 @@ async fn an_update_s_pause_is_in_the_task_summary_and_published() -> TestResult 
     Ok(())
 }
 
-/// AC-PER-2: a task a person paused stays frozen through an update: the
+/// A task a person paused stays frozen through an update: the
 /// install, the restart, the release one by one and every sweep leave its run frozen, while the
 /// other task thaws; the restarted server freezes it again.
 #[tokio::test]
@@ -1354,7 +1354,7 @@ async fn an_update_never_wakes_a_task_a_person_paused() -> TestResult {
     Ok(())
 }
 
-/// AC-PER-4: resumed while an update holds it, a task stays frozen until the
+/// Resumed while an update holds it, a task stays frozen until the
 /// update releases it with the others.
 #[tokio::test]
 async fn a_task_resumed_during_an_update_waits_for_the_update() -> TestResult {
@@ -1899,7 +1899,7 @@ async fn a_superadmin_restarts_yulius_with_its_tasks_frozen_then_thawed() -> Tes
     Ok(())
 }
 
-/// SPEC-432 review round 1 (M2): a restart while a deploy runs is refused before any task pauses
+/// A restart while a deploy runs is refused before any task pauses
 /// (an update waits for deploys while it builds; a restart has nothing to build), and deploys are
 /// not held by it.
 #[tokio::test]

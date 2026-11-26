@@ -1,4 +1,4 @@
-//! A move asked from Settings → Instance (SPEC-470 MVB-020 to MVB-023), through the API with a
+//! A move asked from Settings → Instance, through the API with a
 //! fake of the root helper's files: what the superadmin is told, what is written for root, what
 //! is refused and what is audited. The real helper: `src/migrate_helper/tests.rs`; the real
 //! files: `src/wiring/migrate_files.rs`.
@@ -331,7 +331,7 @@ async fn only_the_superadmin_sees_and_asks_for_a_move() -> TestResult {
     Ok(())
 }
 
-/// MVB-020 to MVB-022: a plan is written once for root with the values the person gave, is
+/// A plan is written once for root with the values the person gave, is
 /// audited, and its state is told from the helper's files.
 #[tokio::test]
 async fn a_plan_is_written_for_root_audited_and_followed() -> TestResult {

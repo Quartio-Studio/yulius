@@ -853,7 +853,7 @@ fn summaries_of(
     found
 }
 
-/// SPEC-628 FRK-008 (UI review round 1): the source's page learns of its fork without a reload:
+/// The source's page learns of its fork without a reload:
 /// a fork publishes the source's summary with the fork in `forks`; deleting the fork publishes
 /// the source without it, and deleting the source publishes the fork with its origin's id gone.
 #[test]

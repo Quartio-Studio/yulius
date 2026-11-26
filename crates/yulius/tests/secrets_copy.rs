@@ -600,7 +600,7 @@ async fn copies_are_answered_only_where_and_by_whom_they_may_be() -> TestResult 
     )
     .await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
-    // Review round 2 (minor 1): an instance administrator manages the global secret, yet one who
+    // An instance administrator manages the global secret, yet one who
     // only reads the project answers neither way: the copy would be a project secret of it.
     let carol = support::admit_and_sign_in(&w.h, &w.admin, "carol", 601, true).await?;
     w.h.github.set_perm("carol", "acme/app", perms("read"));

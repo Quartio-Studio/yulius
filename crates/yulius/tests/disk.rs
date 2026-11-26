@@ -1056,7 +1056,7 @@ async fn a_linked_ci_jobs_folder_never_reaches_another_sandbox() -> BoxResult<()
     Ok(())
 }
 
-/// Review round 2 of SPEC-493 fix 1d: an upkeep cut off while it removes a CI checkout's cache
+/// An upkeep cut off while it removes a CI checkout's cache
 /// (its caller gave up waiting) does not keep the sandbox's CI claimed: the claim ends once the
 /// removal it was taken for has ended, and runs start again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -49,7 +49,7 @@ async fn task_create(
     ))
 }
 
-/// AC-MGT-1: an agent creates a task, also chained after its own; the task belongs to the
+/// An agent creates a task, also chained after its own; the task belongs to the
 /// agent's creator, has origin `agent` and is queued like one from New task.
 #[tokio::test]
 async fn an_agent_creates_tasks_for_its_creator() -> TestResult {
@@ -238,7 +238,7 @@ async fn audits(h: &support::Harness, target: &str) -> Result<Vec<(String, Strin
         .collect())
 }
 
-/// AC-MGT-5: an agent stops, archives and deletes another task of its
+/// An agent stops, archives and deletes another task of its
 /// project as the UI would, each audited with the agent as the actor.
 #[tokio::test]
 async fn an_agent_stops_archives_and_deletes_another_task() -> TestResult {
@@ -312,7 +312,7 @@ async fn an_agent_stops_archives_and_deletes_another_task() -> TestResult {
     Ok(())
 }
 
-/// AC-MGT-6: a task's agent cannot stop, archive or delete its own task.
+/// A task's agent cannot stop, archive or delete its own task.
 #[tokio::test]
 async fn an_agent_cannot_stop_archive_or_delete_its_own_task() -> TestResult {
     let h = world().await?;
@@ -372,7 +372,7 @@ async fn task_tools_follow_the_uis_rules() -> TestResult {
     Ok(())
 }
 
-/// AC-MGT-7: once the creator lost write access, the agent stops, deletes
+/// Once the creator lost write access, the agent stops, deletes
 /// and runs nothing.
 #[tokio::test]
 async fn an_agent_whose_creator_lost_access_stops_and_deletes_nothing() -> TestResult {
@@ -771,7 +771,7 @@ async fn after_all_tasks_names_every_task_that_has_not_ended() -> TestResult {
         None,
     )
     .await?;
-    // Tasks that will not become done by themselves are not waited for (review round 1, M4):
+    // Tasks that will not become done by themselves are not waited for (review round 1):
     // one that is stopping, and a session that answered and has nothing open (the list reads
     // "Answered" under Done; it never becomes `done` and would hold the rule for ever).
     seed_task(
@@ -948,7 +948,7 @@ async fn after_all_tasks_with_nothing_left_starts_now() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 CHN-004, CHN-005 (review round 1, L8): `task_update` with `after_all_tasks` and
+/// `task_update` with `after_all_tasks` and
 /// nothing left starts the task now and says so, and a task that has started no longer answers
 /// how it waited.
 #[tokio::test]
@@ -1006,7 +1006,7 @@ async fn task_update_after_all_tasks_with_nothing_left_starts_now() -> TestResul
     Ok(())
 }
 
-/// Review round 1, L11: a caller whose person may not work in the project learns nothing of
+/// A caller whose person may not work in the project learns nothing of
 /// its tasks from `after_all_tasks`' bound.
 #[tokio::test]
 async fn after_all_tasks_counts_nothing_for_a_person_without_access() -> TestResult {

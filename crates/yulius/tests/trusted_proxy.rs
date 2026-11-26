@@ -112,7 +112,7 @@ async fn exhaust(s: &Server, headers: &[(&str, &str)]) -> TestResult {
     Ok(())
 }
 
-/// AC-ACC-9: with the secret configured, two clients behind the proxy have separate buckets;
+/// With the secret configured, two clients behind the proxy have separate buckets;
 /// an IPv6 client is its /64 network.
 #[tokio::test]
 async fn proxied_clients_have_separate_sign_in_limits() -> TestResult {
@@ -153,7 +153,7 @@ async fn proxied_clients_have_separate_sign_in_limits() -> TestResult {
     Ok(())
 }
 
-/// AC-ACC-9: a missing, wrong, partial or repeated secret, or the secret with an unusable
+/// A missing, wrong, partial or repeated secret, or the secret with an unusable
 /// address, counts against the TCP peer, whatever address the request names.
 #[tokio::test]
 async fn a_missing_or_wrong_secret_falls_back_to_the_peer_bucket() -> TestResult {
@@ -204,7 +204,7 @@ async fn a_missing_or_wrong_secret_falls_back_to_the_peer_bucket() -> TestResult
     Ok(())
 }
 
-/// AC-ACC-9: a process that reaches the listener on loopback (a sandbox without isolation)
+/// A process that reaches the listener on loopback (a sandbox without isolation)
 /// forging a new client address per request stays in the peer's bucket, with or without a
 /// secret configured; without the setting, every request is keyed on the peer as before.
 #[tokio::test]
@@ -276,7 +276,7 @@ impl Logs {
     }
 }
 
-/// AC-ACC-9: the secret never appears in a response (success, failure, limit, untrusted
+/// The secret never appears in a response (success, failure, limit, untrusted
 /// requests, the signed-in user's own views), in a log at any level, in the configuration's
 /// debug form, or in what loading the secret file logs, usable or not.
 #[tokio::test]
@@ -386,7 +386,7 @@ async fn the_proxy_secret_never_reaches_a_response_or_a_log() -> TestResult {
     Ok(())
 }
 
-/// The limiter's memory is bounded (SPEC-002 §9): clients idle for a minute are forgotten first;
+/// The limiter's memory is bounded: clients idle for a minute are forgotten first;
 /// with the table full of active clients, a new client waits, while known clients keep their
 /// buckets.
 #[tokio::test]

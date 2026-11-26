@@ -497,7 +497,7 @@ async fn removing_the_sandbox_cancels_its_ci_runs() -> TestResult {
     Ok(())
 }
 
-/// SPEC-108 PRL-003 (task #93): a run's queueing and its end change what a pull request's checks
+/// A run's queueing and its end change what a pull request's checks
 /// say, so each tells the sandbox's browsers to read them again, even when GitHub refuses the
 /// commit status.
 #[tokio::test]
@@ -1407,7 +1407,7 @@ async fn a_run_takes_the_lane_that_last_built_its_pull_request() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 CJP-001 to CJP-004: a job naming the files it tests ends skipped, with the
+/// A job naming the files it tests ends skipped, with the
 /// reason and without running, for a pull request touching none of them, which still passes and
 /// gates nothing; the integration branch's own run runs it; a pull request touching one of them
 /// runs it.
@@ -1551,7 +1551,7 @@ fn job_named(detail: &Value, name: &str) -> BoxResult<Value> {
         .ok_or("job")?)
 }
 
-/// Review round 2 of SPEC-493 fix 5: a pull request whose change touches none of its jobs'
+/// A pull request whose change touches none of its jobs'
 /// `paths` gets a run that passed when it was queued: no lane, no dispatch, its status success
 /// with every job skipped, and the gate's answer Passed.
 #[tokio::test]
@@ -1586,7 +1586,7 @@ async fn a_run_of_skipped_jobs_passes_when_it_is_queued() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 5: a run queued again (a restart, the disk quota) keeps a job
+/// A run queued again (a restart, the disk quota) keeps a job
 /// skipped for its `paths` skipped, with its reason; the other jobs go back to the queue.
 #[tokio::test]
 async fn a_requeued_run_keeps_its_paths_skip() -> TestResult {
@@ -1666,7 +1666,7 @@ async fn a_requeued_run_keeps_its_paths_skip() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 5: a squash merge of a pull request that skipped a `paths` job
+/// A squash merge of a pull request that skipped a `paths` job
 /// gives the integration branch the tree that pull request's run tested, but that run never ran
 /// the job: the integration branch's own run runs it instead of reusing the result.
 #[tokio::test]
@@ -2355,7 +2355,7 @@ async fn squash_after_run(
     Ok(merged)
 }
 
-/// Review round 3 of SPEC-493 fix 5: tree reuse into the integration branch's run looks past a
+/// Tree reuse into the integration branch's run looks past a
 /// same-tree source that skipped a `paths` job, to an older one that ran it.
 #[tokio::test]
 async fn a_branch_reuses_a_same_tree_run_that_ran_its_paths_job() -> TestResult {
@@ -2444,7 +2444,7 @@ async fn a_branch_reuses_a_same_tree_run_that_ran_its_paths_job() -> TestResult 
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 5: a job skipped for its `paths` waits for nothing: not for its
+/// A job skipped for its `paths` waits for nothing: not for its
 /// `exclusive` turn while another run's job of that name runs, nor for a slot.
 #[tokio::test]
 async fn a_skipped_exclusive_job_does_not_wait_for_its_turn() -> TestResult {
@@ -6300,7 +6300,7 @@ fn finding_line(severity: &str, file: &str, fingerprint: &str) -> String {
     )
 }
 
-/// SPEC-217 VSI-004 (review round 1, M2): a filed finding's issue follows the integration branch.
+/// A filed finding's issue follows the integration branch.
 /// Closed while Vidoc still reports the finding and its code is on dev, it is reopened; once its
 /// line is gone from dev, it is closed, also when a branch behind dev still reports it, and that
 /// stale report reopens nothing; a finding already gone from dev is never filed.
@@ -7028,7 +7028,7 @@ async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> Test
     Ok(())
 }
 
-/// SPEC-483 D4, SPEC-504 CFG-001: a run again tests a pull request with the jobs the scheduler
+/// A run again tests a pull request with the jobs the scheduler
 /// gave it: a pull request that changes the CI is tested with the integration branch's jobs and
 /// its own changed ones beside them, by its first run and by a run again (by a person, by the
 /// agent's `ci_rerun`, by Yulius after an errored run).
@@ -7118,7 +7118,7 @@ async fn a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now() ->
     Ok(())
 }
 
-/// SPEC-483 D5: the verdict of a commit that Yulius CI will test is "pending" before its first
+/// The verdict of a commit that Yulius CI will test is "pending" before its first
 /// run exists, also when the integration branch has no CI and the commit brings it: a merge
 /// that requires checks waits for that run instead of reading "no checks" in the meantime.
 #[tokio::test]
@@ -7435,7 +7435,7 @@ async fn a_contained_granted_job_reads_its_ca_bundle() -> TestResult {
     Ok(())
 }
 
-/// SPEC-142 CSE-002, review B1: a CI job can write the sandbox's shared clone, so what it plants
+/// A CI job can write the sandbox's shared clone, so what it plants
 /// there (a `git replace` of the integration branch's `yulius.toml`) must not change any grant:
 /// grants come from the integration head GitHub reports, taken into a mirror only Yulius writes.
 /// A production-deploy secret is never granted.

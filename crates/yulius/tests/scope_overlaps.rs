@@ -1,4 +1,4 @@
-//! SPEC-493 SCO-001 to SCO-003: a claim that overlaps a live task's claim is told to both. The
+//! A claim that overlaps a live task's claim is told to both. The
 //! claiming agent's answer names the holding task, what it changes and where its pull request
 //! stands; the holding task's session gets one message naming the claiming task and the paths.
 //! A fake agent echoes what it is typed.
@@ -115,7 +115,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         })
         .await;
         assert!(again.is_err(), "told twice: {}", screen(&app, &a));
-        // Review round 2: once A has a pull request, the answer says its stage and the state of
+        // Once A has a pull request, the answer says its stage and the state of
         // Yulius CI's newest run of it.
         let open = yulius_app::delivery::DeliveryRecord {
             task_id: a.clone(),
@@ -228,7 +228,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         app.tool_scope_release(&holder, &json!({})).await?;
         assert!(view(a.clone()).await?.is_empty());
         assert!(view(b.clone()).await?.is_empty());
-        // Review round 1: claimed again after the release, the holder is told again; a claim
+        // Claimed again after the release, the holder is told again; a claim
         // widened by a new pair tells only that pair.
         let pastes = |app: &std::sync::Arc<yulius_app::context::App>| {
             screen(app, &a).matches("200~Yulius: task #").count()

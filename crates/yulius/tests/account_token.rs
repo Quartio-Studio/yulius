@@ -1052,7 +1052,7 @@ async fn a_token_is_only_a_claude_subscriptions_credential() -> TestResult {
 const CODEX_DEVICE: &str = r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-device-access","refresh_token":"SYNTHETIC-device-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-09T10:00:00Z"}"#;
 const CODEX_IMPORT: &str = r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-import-access","refresh_token":"SYNTHETIC-import-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-09T12:00:00Z"}"#;
 
-/// SPEC-503 IMP-001 (slice C2 review): an import cancels every sign-in of the Codex subscription
+/// An import cancels every sign-in of the Codex subscription
 /// that runs, not the first found: "Sign in again" replaced one that holds a complete
 /// `auth.json` and is still stopping, and neither may write over the imported sign-in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1132,7 +1132,7 @@ async fn an_import_cancels_every_running_sign_in() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-015 (slice C2 review): a token pasted for a Codex subscription is refused up
+/// A token pasted for a Codex subscription is refused up
 /// front in its own words, not as a token Claude refused, and the sign-in running for the
 /// subscription goes on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1178,7 +1178,7 @@ async fn a_token_for_a_codex_subscription_is_refused_up_front() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-011 (slice C2 review): an import body of another shape is refused in a fixed
+/// An import body of another shape is refused in a fixed
 /// sentence, never with serde's, which would quote the `auth.json`; and nothing is stored.
 #[tokio::test]
 async fn a_malformed_import_never_echoes_the_auth_json() -> TestResult {

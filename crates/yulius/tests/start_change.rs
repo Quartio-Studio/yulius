@@ -86,7 +86,7 @@ async fn started(h: &Harness, id: &str) -> Result<bool, Error> {
     ))
 }
 
-/// AC-CHS-1: a prepared task becomes chained after a task or on a rule, and back to prepared
+/// A prepared task becomes chained after a task or on a rule, and back to prepared
 /// with or without a time; each change replaces the one before.
 #[tokio::test]
 async fn a_prepared_task_changes_to_a_chain_a_rule_or_a_time() -> TestResult {
@@ -127,7 +127,7 @@ async fn a_prepared_task_changes_to_a_chain_a_rule_or_a_time() -> TestResult {
     Ok(())
 }
 
-/// AC-CHS-2: a waiting task changed to Start now or Supertask is released to the normal start; a
+/// A waiting task changed to Start now or Supertask is released to the normal start; a
 /// prepared task changed to run after a task that is already Done starts at once; while
 /// onboarding blocks the sandbox, Start now waits after the preparation as a new task does.
 #[tokio::test]
@@ -185,7 +185,7 @@ async fn a_waiting_task_changes_to_start_now_or_a_supertask() -> TestResult {
     Ok(())
 }
 
-/// AC-CHS-3: a task that started, ended or is in line for a session keeps its start; a reader
+/// A task that started, ended or is in line for a session keeps its start; a reader
 /// and a writer who does not own the task change nothing; an invalid choice changes nothing.
 #[tokio::test]
 async fn a_start_change_is_refused_for_started_tasks_strangers_and_bad_choices() -> TestResult {
@@ -251,7 +251,7 @@ async fn a_start_change_is_refused_for_started_tasks_strangers_and_bad_choices()
     Ok(())
 }
 
-/// AC-CHS-4: a wait never waits for itself, directly or through other waiting tasks' predecessors
+/// A wait never waits for itself, directly or through other waiting tasks' predecessors
 /// and rules.
 #[tokio::test]
 async fn a_wait_never_waits_for_itself() -> TestResult {
@@ -290,7 +290,7 @@ async fn a_wait_never_waits_for_itself() -> TestResult {
     Ok(())
 }
 
-/// AC-CHS-5: the sandbox's bounds count a task moving into chains or prepared tasks, not one
+/// The sandbox's bounds count a task moving into chains or prepared tasks, not one
 /// changing its chain.
 #[tokio::test]
 async fn the_bounds_count_only_a_move_into_another_wait() -> TestResult {
@@ -321,7 +321,7 @@ async fn the_bounds_count_only_a_move_into_another_wait() -> TestResult {
     Ok(())
 }
 
-/// AC-CHS-7: a rule written by a change judges the tasks that existed when it was written: a task
+/// A rule written by a change judges the tasks that existed when it was written: a task
 /// created after the waiting task, before the change, answers for it.
 #[tokio::test]
 async fn a_changed_rule_judges_tasks_from_when_it_was_written() -> TestResult {

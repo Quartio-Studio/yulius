@@ -1,5 +1,5 @@
 //! Opt-in checks of the streamed sandbox browser on Linux with Xvfb, ffmpeg and a real Chrome
-//! (SPEC-002 ADR-15; SPEC-001 BRW-004..008, AC-BRW-9..12). They run the whole server path — the
+//! (SPEC-002 ADR-15; SPEC-001 BRW-004..008). They run the whole server path — the
 //! viewer WebSocket, the virtual display, the encoder, XTest — and read the page back over CDP
 //! and the video back through ffmpeg:
 //!

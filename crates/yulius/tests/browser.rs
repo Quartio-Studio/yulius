@@ -617,7 +617,7 @@ async fn agent_tools_drive_the_tabs_the_viewer_sees() -> TestResult {
     .await
 }
 
-/// `browser_fill_secret` (SPEC-002 ADR-20, AC-VLT-6): an agent secret is typed into a page of a
+/// `browser_fill_secret`: an agent secret is typed into a page of a
 /// bound host without the agent receiving it; another host's page is refused; the page text the
 /// agent reads back is redacted.
 #[tokio::test]
@@ -714,7 +714,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
         );
         assert_eq!(f.fake.calls_for("Input.dispatchKeyEvent").len(), before);
 
-        // SPEC-483 E3: the tab went on to another site and Yulius has not heard of it yet (it
+        // The tab went on to another site and Yulius has not heard of it yet (it
         // still lists the bound host's page). The page is asked where the typing begins:
         // nothing is typed, and the answer names where the tab is.
         mcp_tool(
@@ -839,10 +839,10 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
     .await
 }
 
-/// SPEC-483 E8 and E9: the page rule also covers where the keys can end up besides the tab's
+/// The page rule also covers where the keys can end up besides the tab's
 /// own document: a frame of another site with the focus, and the page a navigation under way
 /// is bringing. Both answer as a page the secret is not for, naming the site, with no key sent.
-/// E10: so for the secret's user name (and its one-time code, typed the same way), which was
+/// So for the secret's user name (and its one-time code, typed the same way), which was
 /// typed on what Yulius had last heard of the tab.
 #[tokio::test]
 async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving() -> TestResult
@@ -1704,7 +1704,7 @@ async fn the_display_streams_video_from_a_keyframe_and_follows_the_viewport() ->
     .await
 }
 
-/// SPEC-483 E1: on a virtual display a viewer's clicks and keys are real input that
+/// On a virtual display a viewer's clicks and keys are real input that
 /// reaches Chrome's own windows (its file chooser, DevTools), which run on the host. They are
 /// refused (a button press, a key press, typed text), with what an administrator runs, until
 /// the browser itself answers that the host's managed policy is in force; moving the pointer
@@ -1807,7 +1807,7 @@ async fn an_enter_typed_before_the_policy_keeps_input_off_until_a_restart() -> T
     chooser_before_the_policy("browser_type", |tab| json!({"tab_id": tab, "text": "\n"})).await
 }
 
-/// Review round 1 of fix 10b: on a host set up from the start, an agent that clicks or types
+/// On a host set up from the start, an agent that clicks or types
 /// before any viewer pressed anything (the policy was never asked yet) opens no chooser, and
 /// the viewer it hands over to (a captcha, a sign-in) gets input. The first rule took "never
 /// asked" for "not in force" and locked such a browser until its restart.
@@ -1843,7 +1843,7 @@ async fn an_agent_first_on_a_host_with_the_policy_keeps_viewers_input() -> TestR
     Ok(())
 }
 
-/// Review round 2 of fix 10b: on a host without the policy an agent clicks before anything
+/// On a host without the policy an agent clicks before anything
 /// asked it; its own look finds "no" and marks the browser, so once the policy appears the
 /// viewer is still refused, for the restart's reason (the reviewer's probe).
 #[tokio::test]
@@ -1890,7 +1890,7 @@ async fn an_agent_first_without_the_policy_keeps_input_off_until_a_restart() -> 
     .await
 }
 
-/// Review round 2 of fix 10b: one look at the policy that fails during an agent's click (Chrome
+/// One look at the policy that fails during an agent's click (Chrome
 /// busy) is asked once more before it counts as "no": on a host with the policy the browser is
 /// not marked for a hiccup, and its viewer keeps input.
 #[tokio::test]
@@ -2420,7 +2420,7 @@ async fn a_headless_paste_is_typed_as_key_presses() -> TestResult {
     .await
 }
 
-/// ADR-0318 (review of slice 6): the policy probe's tab is known by the id Chrome gave it, never
+/// The policy probe's tab is known by the id Chrome gave it, never
 /// by its address. A page that opens a window at the probe's address gets an ordinary tab: it
 /// is listed and, on the display, becomes the shown tab, so the panel never shows one tab's
 /// address over another window's picture.
@@ -2453,7 +2453,7 @@ async fn a_page_cannot_hide_a_window_behind_the_probes_address() -> TestResult {
     .await
 }
 
-/// ADR-0318 (review of slice 6, round 2): what Chrome announces while a probe waits for the id
+/// What Chrome announces while a probe waits for the id
 /// of its own tab is listed once the id is known, unless it is the probe's; and a tab that
 /// goes to a page of Chrome's own stays a tab (Chrome still shows it).
 #[tokio::test]
@@ -2503,7 +2503,7 @@ async fn tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_st
     .await
 }
 
-/// ADR-0318 (review of slice 6, round 3): a page made and closed again while a probe waits for
+/// A page made and closed again while a probe waits for
 /// the id of its own tab is no tab afterwards.
 #[tokio::test]
 async fn a_tab_made_and_closed_while_the_probe_waits_is_no_tab() -> TestResult {
@@ -2692,7 +2692,7 @@ async fn the_display_stops_with_the_browser() -> TestResult {
 }
 
 /// An `Authorization` header of another scheme is refused, never taken as absent: the request
-/// does not fall back to the session cookie it also carries (SPEC-483 slice 29, review).
+/// does not fall back to the session cookie it also carries.
 #[tokio::test]
 async fn another_authorization_scheme_beside_a_session_cookie_is_refused() -> TestResult {
     let h = support::harness()?;

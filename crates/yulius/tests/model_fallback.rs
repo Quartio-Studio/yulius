@@ -686,7 +686,7 @@ fn a_task_refused_for_both_models_is_retried_once_then_asks_a_person() -> TestRe
     Ok(())
 }
 
-/// Review round 1: Fable is used up for 40 more hours, as Claude Code 2.1.322
+/// Fable is used up for 40 more hours, as Claude Code 2.1.322
 /// says it, and the fallback is refused without a word on when that ends. Each provider reading
 /// ends the fallback's limit, and the pool, which places with the fallback, started the session
 /// on it again at every reading until Fable's reset: a loop of refused restarts nobody heard
@@ -809,7 +809,7 @@ fn a_run_on_the_fallback_moves_off_the_subscription_that_refused_it() -> TestRes
     Ok(())
 }
 
-/// Review round 1: a restart that keeps its subscription (here the fresh
+/// A restart that keeps its subscription (here the fresh
 /// session after a full context that compacting did not help) asked for the run's own
 /// subscription as a person would. A run on the fallback sits where Fable is used up, so once
 /// another subscription ran Fable again the request was refused ("… is at its usage limit")

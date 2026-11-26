@@ -3945,7 +3945,7 @@ async fn a_failed_own_run_beats_a_passed_candidate() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 4: a failed candidate waits for a member's own run that still
+/// A failed candidate waits for a member's own run that still
 /// goes (it may say why) for at most the wait limit, then it is bisected as before.
 #[tokio::test]
 async fn a_failed_candidate_waits_for_own_runs_within_the_wait_limit() -> TestResult {
@@ -3980,7 +3980,7 @@ async fn a_failed_candidate_waits_for_own_runs_within_the_wait_limit() -> TestRe
     Ok(())
 }
 
-/// Review round 3 of SPEC-493 fix 5: a run that passed when it was queued (every job skipped
+/// A run that passed when it was queued (every job skipped
 /// for its `paths`) never reaches the executor, whose run end starts the merge pass: the
 /// dispatcher starts it, so a merge armed before the run merges at once, with no other pass.
 #[tokio::test]
@@ -4699,7 +4699,7 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     Ok(())
 }
 
-/// Review M2: a candidate whose run was cancelled (or errored) says
+/// A candidate whose run was cancelled (or errored) says
 /// nothing about its members, so they go one by one: each brought up to date after its own run
 /// passed, that head's run decides, and it merges. No second candidate forms from them.
 #[tokio::test]
@@ -4747,7 +4747,7 @@ async fn a_cancelled_candidate_sends_its_members_one_by_one() -> TestResult {
     Ok(())
 }
 
-/// Review M2: a member whose agent is busy when a passed candidate reaches it
+/// A member whose agent is busy when a passed candidate reaches it
 /// is waited for, not dropped from the candidate; it merges once its agent is idle. A member
 /// busy beyond the bound (`WAIT_LIMIT_MS`) ends the candidate and stays armed.
 #[tokio::test]
@@ -4887,7 +4887,7 @@ async fn an_errored_run_says_to_rerun_it() -> TestResult {
     Ok(())
 }
 
-/// Review round 2, M3: a member whose branch cannot be brought up to date at
+/// A member whose branch cannot be brought up to date at
 /// its turn (here a stale `index.lock` in its worktree) ends the candidate and goes one by one,
 /// still armed and told where it stands; the same candidate is not formed and run again.
 #[tokio::test]
@@ -5127,7 +5127,7 @@ async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> Tes
     Ok(())
 }
 
-/// SPEC-491 DON-001 (review of SPEC-491, M1): GitHub knows nothing of the union rule Yulius gives
+/// GitHub knows nothing of the union rule Yulius gives
 /// the changes log, so two pull requests that each add an entry at its top read "not mergeable"
 /// there while Yulius's own merge resolves them. Where the clone answers, it decides: the pull
 /// request is tested, the overview says no conflict, and the task chained after it starts.
@@ -5193,7 +5193,7 @@ async fn github_s_flag_does_not_hold_a_pull_request_the_clone_merges() -> TestRe
     Ok(())
 }
 
-/// SPEC-483 GRP-003 (finding D8): an agent that armed its merge and whose goal was then judged
+/// An agent that armed its merge and whose goal was then judged
 /// achieved is not Done while the merge is armed: a task chained after it waits, a supertask
 /// waits for it, Home counts it as working, and archiving it is refused (it would have ended the
 /// armed merge, said to nobody); the merge stays armed.
@@ -5374,7 +5374,7 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
     let queue = app.merge_queue_for_person(&ctx, &f.sandbox).await?;
     assert_eq!(queue["armed"], json!([]), "{queue}");
     // The merge is the person's, not a reviewed agent's: under their name, and said so
-    // (review of slice 5, F2).
+    // (review of slice 5).
     let merged: Vec<(String, String, String)> =
         yulius_app::ports::store_ext::AutomationStore::automation_audit(&f.h.store, "app#1", 100)
             .await?
@@ -5415,7 +5415,7 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
         false
     );
 
-    // A task whose run ended keeps no armed merge: it is not armed for nothing (F1).
+    // A task whose run ended keeps no armed merge: it is not armed for nothing.
     let third = f.task(3, &[("c.txt", "z\n")]).await?;
     let third_head = git(&third, &["rev-parse", "HEAD"])?;
     TaskStore::transition_task(
@@ -5441,7 +5441,7 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
         false
     );
     // Once its checks passed it merges at once, as the page's Merge does, and nothing is left
-    // armed (F6).
+    // armed.
     f.record_passed(&app, 3, &third_head).await?;
     let merged = app.merge_for_person(&owner_ctx(&f, 3).await?, "t3").await?;
     assert_eq!(
@@ -5455,7 +5455,7 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
         false
     );
 
-    // A commit not pushed yet is not armed: what would merge is the branch on GitHub (F5).
+    // A commit not pushed yet is not armed: what would merge is the branch on GitHub.
     let fourth = f.task(4, &[("d.txt", "w\n")]).await?;
     std::fs::write(fourth.join("later.txt"), "later\n")?;
     git(&fourth, &["add", "-A"])?;
@@ -5511,7 +5511,7 @@ async fn status_of_task(f: &Fixture, id: &TaskId) -> Option<TaskStatus> {
         .map(|task| task.status)
 }
 
-/// SPEC-487 CHN-001 (review round 1, M1): a server that started again knows a merge is armed
+/// A server that started again knows a merge is armed
 /// before it put the armed merges back, so a chain pass in between (any task's turn end) does not
 /// find the green pull request Done.
 #[tokio::test]
@@ -5534,7 +5534,7 @@ async fn a_restarted_server_keeps_a_chained_task_waiting_for_an_armed_merge() ->
     Ok(())
 }
 
-/// SPEC-487 CHN-002 (review round 1, M3): an armed merge that ended without merging leaves a
+/// An armed merge that ended without merging leaves a
 /// green, open pull request and an idle agent that has not heard how it ended. That is not
 /// Done either: the task goes on by itself once the watch says so.
 #[tokio::test]

@@ -54,7 +54,7 @@ async fn summary(h: &Harness, creds: &Creds, id: &str) -> Result<Value, Error> {
     .body)
 }
 
-/// AC-SUP-1: New task and `task_create` make a supertask; it cannot also run after a task or a
+/// New task and `task_create` make a supertask; it cannot also run after a task or a
 /// rule (422, nothing created).
 #[tokio::test]
 async fn a_task_is_created_as_a_supertask() -> TestResult {

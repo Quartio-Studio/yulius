@@ -359,7 +359,7 @@ async fn paths_and_overrides_that_could_escape_the_rules_are_refused() -> TestRe
         "/v1/x\\..\\admin",
         "/v1/x%5Cadmin",
         "/v1/admin%00/read",
-        // Review round 1: the proxy's own client drops single-dot segments, Java servers read
+        // The proxy's own client drops single-dot segments, Java servers read
         // `;` as path parameters, and a server decoding twice reads `%252e` as a dot.
         "/v1/./items",
         "/v1/items/.",
@@ -509,7 +509,7 @@ async fn secrets_list_shows_the_rules_to_agents() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 1: another secret's value placed in the path cannot move it
+/// Another secret's value placed in the path cannot move it
 /// outside the rules once replaced (`..` resolved by the proxy's client, `?` starting a query,
 /// `#` a fragment): the rules hold for the path as sent and as it goes out.
 #[tokio::test]
@@ -560,7 +560,7 @@ async fn a_placeholder_value_cannot_move_the_path_outside_the_rules() -> TestRes
             )
             .await;
     assert_eq!(outcome(&fine), Ok(Some(format!("Bearer {READ}"))));
-    // Review round 3: a wrong method is not blamed on the value in the path.
+    // A wrong method is not blamed on the value in the path.
     let wrong =
         w.h.app
             .egress_apply(
@@ -577,7 +577,7 @@ async fn a_placeholder_value_cannot_move_the_path_outside_the_rules() -> TestRes
     Ok(())
 }
 
-/// Review round 1, finding 6: a placeholder inside Basic credentials is a use
+/// A placeholder inside Basic credentials is a use
 /// too, and a CI job's request outside the rules is refused and audited as `ci:<run>`.
 #[tokio::test]
 async fn basic_credentials_and_ci_jobs_are_held_to_the_rules() -> TestResult {
@@ -638,7 +638,7 @@ async fn basic_credentials_and_ci_jobs_are_held_to_the_rules() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 3: a run's distinct refusals of one secret are audited up to
+/// A run's distinct refusals of one secret are audited up to
 /// a bound, then once as "further refusals not listed", so varying the path cannot flood the trail.
 #[tokio::test]
 async fn a_runs_distinct_refusals_are_audited_up_to_a_bound() -> TestResult {
@@ -675,7 +675,7 @@ async fn a_runs_distinct_refusals_are_audited_up_to_a_bound() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 2: a secret with rules is not bound to hosts an agent asks
+/// A secret with rules is not bound to hosts an agent asks
 /// for, even with `auto_allow`: a person allows them, so an agent cannot send it to a server of
 /// its own and learn the value there. A secret without rules still binds them at once.
 #[tokio::test]

@@ -1,4 +1,4 @@
-//! Exact-value redaction of agent secrets with real processes (SPEC-002 ADR-20, AC-VLT-4): the
+//! Exact-value redaction of agent secrets with real processes: the
 //! `yulius --scrub-exec` Bash wrapper and the `PostToolUse` hook as Claude Code runs them, and a
 //! fake agent in the real ptyhost whose terminal people watch.
 
@@ -127,7 +127,7 @@ fn scrub_exec(
     child.output()
 }
 
-/// AC-VLT-4: a value echoed by a command, written to a file and read back, base64-encoded or
+/// A value echoed by a command, written to a file and read back, base64-encoded or
 /// split across output chunks never reaches the agent; the command's status is kept; without
 /// fingerprints a run's command does not run.
 #[tokio::test]

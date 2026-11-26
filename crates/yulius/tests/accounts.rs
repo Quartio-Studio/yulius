@@ -2063,7 +2063,7 @@ async fn state_says(
     tokio::time::timeout(Duration::from_secs(10), wait).await?
 }
 
-/// SPEC-515 (issue #1421): the Antigravity CLI's setup goes on after it wrote its token file
+/// The Antigravity CLI's setup goes on after it wrote its token file
 /// (the data-use choice and more), so the sign-in is not stopped then. The terminal says
 /// `signed_in` and keeps taking input; the person ends it (Done is the cancel route), and the
 /// token file as it is then is sealed: here one the CLI rewrote during its setup.
@@ -2375,7 +2375,7 @@ async fn the_antigravity_cli_installs_for_a_new_google_account() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-007 (review round 2 of slice C2): a Google sign-in's CLI is installed before its
+/// A Google sign-in's CLI is installed before its
 /// account exists, so a request that goes away while the install runs leaves no account waiting
 /// for a sign-in that never starts.
 #[tokio::test]

@@ -54,7 +54,7 @@ async fn create_team_secret(
     Ok(created.body["id"].as_str().ok_or("id")?.to_owned())
 }
 
-/// AC-VLT-1, AC-VLT-2, SPEC-040 AC1/AC3: a title, a value and notes; shared list, reveals
+/// A title, a value and notes; shared list, reveals
 /// behind a two-factor unlock, and the activity trail.
 #[tokio::test]
 async fn team_secrets_are_shared_and_reveals_need_a_two_factor_code() -> TestResult {
@@ -70,7 +70,7 @@ async fn team_secrets_are_shared_and_reveals_need_a_two_factor_code() -> TestRes
     assert!(list.body[0].get("username").is_none());
     assert_hidden(&list.body, &[MAIL_PASSWORD, "1111-2222"]);
 
-    // Only a title, a value and notes (SPEC-040 R1).
+    // Only a title, a value and notes.
     for legacy in ["url", "username", "password", "totp"] {
         let refused = call(
             &h.router,
@@ -83,8 +83,7 @@ async fn team_secrets_are_shared_and_reveals_need_a_two_factor_code() -> TestRes
         assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{legacy}");
     }
 
-    // Signed in a moment ago, even with the password confirmed: two-factor is mandatory
-    // (SPEC-040 R4).
+    // Signed in a moment ago, even with the password confirmed: two-factor is mandatory.
     let reveal = format!("/api/team-secrets/{id}/reveal");
     let refused = call(&h.router, Method::POST, &reveal, Some(json!({})), &admin).await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
@@ -710,7 +709,7 @@ async fn instance_administrators_see_the_people_and_their_two_factor() -> TestRe
     Ok(())
 }
 
-/// R6: ten wrong codes in a row lock two-factor (a stolen session cannot keep guessing) until
+/// Ten wrong codes in a row lock two-factor (a stolen session cannot keep guessing) until
 /// the person confirms it is them again; the lock is audited.
 #[tokio::test]
 async fn ten_wrong_codes_lock_two_factor_until_identity_is_confirmed() -> TestResult {
@@ -803,7 +802,7 @@ async fn setting_up_two_factor_needs_a_recent_sign_in() -> TestResult {
     Ok(())
 }
 
-/// AC2 (SPEC-040 R2): a team secret stored in the old form keeps every value: the password is the
+/// A team secret stored in the old form keeps every value: the password is the
 /// value, and the address, user name and seed lead the notes.
 #[tokio::test]
 async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
@@ -1410,7 +1409,7 @@ async fn a_revealed_key_block_comes_back_as_its_key_file() -> TestResult {
     Ok(())
 }
 
-/// AC-VLT-5, SPEC-040 AC5: who may see, manage and read agent secrets; values come back only
+/// Who may see, manage and read agent secrets; values come back only
 /// from a reveal by someone who manages the secret, after a two-factor unlock.
 #[tokio::test]
 async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> TestResult {
@@ -1520,7 +1519,7 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
             json!({"name": "BASIC", "hosts": ["a.test"], "injection": "basic", "value": "12345678"}),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
-        // No per-secret two-factor seed; a user name only for Basic (SPEC-040 R3).
+        // No per-secret two-factor seed; a user name only for Basic.
         (
             json!({"name": "SEEDED", "hosts": ["a.test"], "value": "12345678", "totp": SEED}),
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1572,7 +1571,7 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
     .await?;
     assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.body);
 
-    // People who manage it read it back after a two-factor unlock (SPEC-040 R7); readers
+    // People who manage it read it back after a two-factor unlock; readers
     // cannot, outsiders do not see it, API tokens never reveal.
     let reveal = format!("/api/agent-secrets/{id}/reveal");
     let writer = browser_session(&w.h, "u-alice").await?;
@@ -1671,7 +1670,7 @@ fn header<'a>(decision: &'a EgressDecision, name: &str) -> Option<&'a str> {
     }
 }
 
-/// AC-VLT-3: the application's egress policy — credentials only for bound hosts of the run's
+/// The application's egress policy — credentials only for bound hosts of the run's
 /// sandbox, placeholders, Basic credentials, a named header, conflicts and choices.
 #[tokio::test]
 async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
@@ -2221,7 +2220,7 @@ async fn agents_list_names_and_read_redacted_results() -> TestResult {
     Ok(())
 }
 
-/// VLT-009, AC-VLT-8: MCP servers' `${secret:NAME}` references resolve to agent secrets.
+/// MCP servers' `${secret:NAME}` references resolve to agent secrets.
 #[tokio::test]
 async fn mcp_secret_references_resolve_to_agent_secrets() -> TestResult {
     let w = world().await?;
@@ -2396,7 +2395,7 @@ async fn existing_secrets_are_assigned_to_every_sandbox_once() -> TestResult {
     Ok(())
 }
 
-/// AC-VLT-7: no value, user name or seed in the database file, its WAL or a backup; the API
+/// No value, user name or seed in the database file, its WAL or a backup; the API
 /// still reads them back.
 #[tokio::test]
 async fn nothing_is_stored_in_clear() -> TestResult {
@@ -2538,7 +2537,7 @@ async fn the_proxy_shares_the_internal_listener() -> TestResult {
     Ok(())
 }
 
-/// SPEC-121 ASH-002, AC-ASH-2: a secret added with a name, a value and a description only is
+/// A secret added with a name, a value and a description only is
 /// bound to no host and has no injection: the proxy sends it nowhere until hosts are allowed.
 #[tokio::test]
 async fn a_secret_without_hosts_is_sent_nowhere() -> TestResult {
@@ -2615,7 +2614,7 @@ async fn agent_secret_of(w: &World, name: &str) -> Result<Value, Box<dyn std::er
         .ok_or(name.to_owned())?)
 }
 
-/// SPEC-483 V5: sending a value to a server of one's choice reads it. For a secret
+/// Sending a value to a server of one's choice reads it. For a secret
 /// people allow use by use, a host it is not bound to and `.env` copies need what a reveal
 /// needs: a browser session with the two-factor unlock; an API token is refused. What sends it
 /// nowhere new (a description, fewer hosts, a dismissal, a revocation) needs neither, and a
@@ -2839,7 +2838,7 @@ async fn answer_request(
     .await
 }
 
-/// SPEC-121 ASH-003/004/006, AC-ASH-3/4: an agent proposes the hosts of a secret, which binds
+/// An agent proposes the hosts of a secret, which binds
 /// nothing; a person who manages it allows them (bound) or dismisses them; others cannot.
 #[tokio::test]
 async fn agents_request_hosts_and_people_allow_them() -> TestResult {
@@ -2947,7 +2946,7 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     assert_eq!(reader.status, StatusCode::FORBIDDEN, "{}", reader.body);
     let outsider = answer_request(&w, &w.outsider, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(outsider.status, StatusCode::NOT_FOUND, "{}", outsider.body);
-    // SPEC-483 V5: allowing sends the value somewhere new, which reads it: an API token is
+    // Allowing sends the value somewhere new, which reads it: an API token is
     // refused, a browser session needs the two-factor unlock first; neither binds anything.
     let token = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
@@ -3086,7 +3085,7 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     let listed = tool_text(&mcp_tool(&w.h, TOKEN_S1, "secrets_list", json!({})).await?);
     assert_eq!(listed["secrets"][0]["auto_allow"], true, "{listed}");
 
-    // Review round 2: an Edit dialog opened before the binding names the hosts it showed; saving
+    // An Edit dialog opened before the binding names the hosts it showed; saving
     // it never drops the bound host unseen. An edit that leaves the hosts alone keeps it.
     let path = format!("/api/agent-secrets/{id}");
     let stale = call(
@@ -3098,7 +3097,7 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     )
     .await?;
     assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
-    // Review round 4: hosts of a secret agents set up change only against those seen.
+    // Hosts of a secret agents set up change only against those seen.
     let unseen = call(
         &w.h.router,
         Method::PATCH,
@@ -3169,7 +3168,7 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     .await?;
 
     // On again: a host that waited is bound when an agent asks for it; the others keep waiting.
-    // Agents then send it where they choose, so switching it on needs the unlock (SPEC-483 V5).
+    // Agents then send it where they choose, so switching it on needs the unlock.
     let token = call(
         &w.h.router,
         Method::PATCH,

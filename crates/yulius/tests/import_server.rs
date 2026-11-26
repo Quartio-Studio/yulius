@@ -1,7 +1,7 @@
 //! Server side of `yulius import` over HTTP with real Git: guarded job creation, resumable
 //! idempotent chunks, bundle/snapshot/session application, sessions stored as attributed,
 //! deduplicated session documents, idempotent re-runs and the native continuation of imported
-//! sessions (AC-IMP-1, AC-IMP-2, AC-IMP-4..6, AC-SES-1).
+//! sessions.
 
 use crate::support;
 use crate::support::git_stdout;
@@ -715,7 +715,7 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     assert_eq!(summary["status"], "closed", "{summary:?}");
     assert_eq!(summary["not_started"], true, "{summary:?}");
     assert_eq!(summary["awaits_start_onboarding"], true, "{summary:?}");
-    // SPEC-483 GRP-002 (finding W2): Home's cards and the tabs count both where the sidebar
+    // Home's cards and the tabs count both where the sidebar
     // lists them, in line under Working.
     let counted = call(
         &w.h.router,
@@ -883,7 +883,7 @@ async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult
     assert_eq!(listed[0]["title"], "Prepare this repository for Yulius");
     assert_eq!(listed[0]["archived"], false);
     assert_ne!(listed[0]["status"], "closed", "it started: {listed:?}");
-    // SPEC-141 R5: the preparation agent raises a production branch agents could write with a
+    // The preparation agent raises a production branch agents could write with a
     // person, who alone can protect it.
     let task =
         w.h.store
@@ -957,7 +957,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
         task.prompt
     );
 
-    // R2: only the onboarding task may protect production; another task is refused.
+    // Only the onboarding task may protect production; another task is refused.
     support::seed_task(
         &w.h,
         "t-bob",
@@ -1134,7 +1134,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     let sandbox = sandboxes[0].clone();
     assert_eq!(sandbox.onboarding_state, "pending");
 
-    // AC-IMP-1: an interrupted upload resumes at the received length.
+    // An interrupted upload resumes at the received length.
     let bundle = offer.contents.get("repo.bundle").ok_or("bundle")?;
     let half = bundle.len() / 2;
     let first = put_chunk(&w, &alice, &job, "repo.bundle", 0, &bundle[..half], None).await?;
@@ -1232,7 +1232,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "{:?}",
         result.body["onboarding_status"]
     );
-    // SPEC-141 R5: onboarding reports a production branch the agents could write, naming the
+    // Onboarding reports a production branch the agents could write, naming the
     // ruleset a repository admin must add; with that ruleset in place it says nothing.
     let warnings = result.body["onboarding_status"]["warnings"].to_string();
     assert!(
@@ -1421,7 +1421,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "continuing a session starts a task: gated while preparing"
     );
 
-    // AC-IMP-6: a re-run uploads nothing and stores nothing twice.
+    // A re-run uploads nothing and stores nothing twice.
     let rerun = create_job(&w, &alice, offer.body()?).await?;
     assert_eq!(rerun.status, StatusCode::OK);
     assert_ne!(
@@ -1549,7 +1549,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         .ok_or("main")?;
     assert_eq!(main["author"]["login"], "alice");
 
-    // AC-IMP-5: once the sandbox is ready, another member continues imported sessions natively.
+    // Once the sandbox is ready, another member continues imported sessions natively.
     let skip = call(
         &w.h.router,
         Method::POST,

@@ -107,7 +107,7 @@ fn session_of(response: &support::Resp) -> String {
         .to_owned()
 }
 
-/// AC-411-2: two writers edit at the same revision; both edits land, the later one transformed,
+/// Two writers edit at the same revision; both edits land, the later one transformed,
 /// and both steps go to the sandbox's writers only, in order.
 #[tokio::test]
 async fn concurrent_edits_of_two_writers_land_in_one_order_for_writers_only() -> TestResult {
@@ -182,7 +182,7 @@ async fn concurrent_edits_of_two_writers_land_in_one_order_for_writers_only() ->
     Ok(())
 }
 
-/// AC-411-2: only the people who may read the folder see the text; a task worktree's
+/// Only the people who may read the folder see the text; a task worktree's
 /// text is changed by its owner only, and nobody else starts it from their own text.
 #[tokio::test]
 async fn only_writers_see_the_text_and_only_a_worktrees_owner_changes_it() -> TestResult {
@@ -249,7 +249,7 @@ async fn only_writers_see_the_text_and_only_a_worktrees_owner_changes_it() -> Te
     Ok(())
 }
 
-/// AC-411-2: edits that do not fit, cut a character, name another or an ended document, come
+/// Edits that do not fit, cut a character, name another or an ended document, come
 /// too late or too often are refused, and nothing of them is applied.
 #[tokio::test]
 async fn edits_that_do_not_fit_are_refused() -> TestResult {
@@ -388,7 +388,7 @@ async fn edits_that_do_not_fit_are_refused() -> TestResult {
     Ok(())
 }
 
-/// AC-411-3: a save writes the shared text with the document's base and marks it saved
+/// A save writes the shared text with the document's base and marks it saved
 /// for everyone; text already saved writes nothing.
 #[tokio::test]
 async fn a_save_writes_the_shared_text_once() -> TestResult {
@@ -423,7 +423,7 @@ async fn a_save_writes_the_shared_text_once() -> TestResult {
     Ok(())
 }
 
-/// AC-411-3: a disk change under saved text becomes one step; under unsaved text it is
+/// A disk change under saved text becomes one step; under unsaved text it is
 /// kept as a conflict, which a save reports without writing, Keep mine writes over and Take disk
 /// version replaces.
 #[tokio::test]
@@ -619,7 +619,7 @@ async fn presence_carries_the_live_revision() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 (B1): counts past any text are refused before they can wrap, and the document
+/// Counts past any text are refused before they can wrap, and the document
 /// keeps working after a refused edit.
 #[tokio::test]
 async fn an_edit_with_counts_beyond_any_text_is_refused_and_the_document_keeps_working()
@@ -665,7 +665,7 @@ async fn an_edit_with_counts_beyond_any_text_is_refused_and_the_document_keeps_w
     Ok(())
 }
 
-/// Review round 1 (M1): an edit sent again (its answer lost) is applied once.
+/// An edit sent again (its answer lost) is applied once.
 #[tokio::test]
 async fn an_edit_sent_twice_is_applied_once() -> TestResult {
     let (h, alice, dave, _) = fixture().await?;
@@ -734,7 +734,7 @@ async fn large_steps_are_announced_without_their_text_and_steps_name_their_perso
     Ok(())
 }
 
-/// Review round 1 (minor 2): a worktree's owner alone saves or takes the disk there; a reader of
+/// A worktree's owner alone saves or takes the disk there; a reader of
 /// the sandbox reaches nothing.
 #[tokio::test]
 async fn only_a_worktrees_owner_saves_or_takes_the_disk_there() -> TestResult {
@@ -802,7 +802,7 @@ async fn only_a_worktrees_owner_saves_or_takes_the_disk_there() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 (minor 1): saves of one document run one at a time, and a take of the disk that
+/// Saves of one document run one at a time, and a take of the disk that
 /// meets unsaved text keeps the conflict whichever runs first.
 #[tokio::test]
 async fn concurrent_saves_write_once_and_a_concurrent_disk_change_stays_a_conflict() -> TestResult {
@@ -857,7 +857,7 @@ async fn concurrent_saves_write_once_and_a_concurrent_disk_change_stays_a_confli
     Ok(())
 }
 
-/// Review round 2: an edit sent as the page goes asks to be saved with it, also when it is the
+/// An edit sent as the page goes asks to be saved with it, also when it is the
 /// same edit sent again.
 #[tokio::test]
 async fn an_edit_may_ask_to_be_saved_with_it() -> TestResult {

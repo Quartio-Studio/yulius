@@ -1,6 +1,6 @@
 //! The task follows its Claude Code session, however the session ends or stops (F 2026-10-10:
 //! "tasks are not synchronised with the session — when I stop Claude, task status should
-//! change"; SPEC-001 HRN-002, TSK-014, SPEC-002 §6.1), and a prompt a person types into the
+//! change"; SPEC-001 HRN-002), and a prompt a person types into the
 //! session passes the scope check.
 //!
 //! End to end: supervisor → detached `yulius ptyhost` → the fake agent shaped like Claude Code
@@ -561,7 +561,7 @@ async fn lineage(app: &App, id: &TaskId) -> Result<Vec<String>, BoxError> {
         .collect())
 }
 
-/// AC-TSK-4, SPEC-281 (#862, task #266): a `claude` the agent runs in its worktree writes its transcript
+/// A `claude` the agent runs in its worktree writes its transcript
 /// next to the TUI's, but only the TUI's own hooks change the task's session. The nested session
 /// is never adopted (watchers kept reading it, and a Continue would have resumed it); `/clear` in
 /// the TUI (`SessionStart` with the new id) is, and becomes the session watchers read.

@@ -122,7 +122,7 @@ fn runs_survive_a_server_restart_and_stop_cleanly() -> TestResult {
         let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
         assert!(worktree.join("README.md").is_file(), "worktree checked out");
         assert!(record.branch.is_some_and(|b| b.starts_with("feat/")));
-        // F 2026-10-11 (AC-GIT-3): commits are the creator's, with the address GitHub links to
+        // F 2026-10-11: commits are the creator's, with the address GitHub links to
         // their account; the run's `gh` shim is in place.
         let email = Command::new("git")
             .args(["config", "user.email"])
@@ -358,7 +358,7 @@ fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult 
     Ok(())
 }
 
-/// AC-TSK-9, SPEC-117 ONE-001: a goal-mode task gets its prompt as `/goal <prompt>`, the launch
+/// A goal-mode task gets its prompt as `/goal <prompt>`, the launch
 /// prompt of its session, not typed into it. This agent runs no hooks (an old CLI); it answers
 /// the prompt argument with its echo.
 #[test]
@@ -522,7 +522,7 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
     Ok(())
 }
 
-/// AC-TSK-7: a closed task continues by resuming the same provider session. AC-ROT-5: a manual
+/// A closed task continues by resuming the same provider session. AC-ROT-5: a manual
 /// switch to a chosen account resumes it there with the task's model and effort. These are the
 /// runs `POST /continue` and `POST /switch` start after their access checks (see `access.rs`).
 #[test]
@@ -624,7 +624,7 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
             attempts[2].provider_session_id,
             attempts[0].provider_session_id
         );
-        // Every launch asked for the task's model and effort (AC-ROT-5).
+        // Every launch asked for the task's model and effort.
         for attempt in &attempts {
             let launch =
                 std::fs::read_to_string(Path::new(&attempt.run_dir).join("fake-launch.txt"))?;
@@ -850,9 +850,9 @@ fn a_switch_that_cannot_start_leaves_the_running_session_alone() -> TestResult {
     Ok(())
 }
 
-/// AC-DSC-5: a task worktree refuses the agent's pushes to the integration and production
+/// A task worktree refuses the agent's pushes to the integration and production
 /// branches (the agent's own Git runs the Yulius pre-push guard) and lets the task branch go.
-/// AC-UI-3: status transitions reach the UI as task events within 2 s.
+/// Status transitions reach the UI as task events within 2 s.
 #[test]
 fn task_worktrees_guard_protected_branches_and_status_changes_reach_the_ui() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1027,7 +1027,7 @@ fn live_runs_report_metrics_before_they_end() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-6: no capacity anywhere → the task waits for capacity instead of failing, and says
+/// No capacity anywhere → the task waits for capacity instead of failing, and says
 /// when it resumes. The fake writes Claude Code 2.1.292's usage-limit record (F 2026-10-09).
 #[test]
 fn without_capacity_the_task_waits() -> TestResult {
@@ -1067,7 +1067,7 @@ fn without_capacity_the_task_waits() -> TestResult {
     Ok(())
 }
 
-/// AC-NFR-3: beyond the live-session limit tasks queue and start when capacity frees up.
+/// Beyond the live-session limit tasks queue and start when capacity frees up.
 #[test]
 fn tasks_queue_at_the_session_limit_and_start_when_a_slot_frees() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1274,7 +1274,7 @@ fn removing_a_subscription_closes_done_tasks_and_moves_working_ones() -> TestRes
     Ok(())
 }
 
-/// AC-TSK-3: an agent's normal exit closes its task; another task of the sandbox keeps running.
+/// An agent's normal exit closes its task; another task of the sandbox keeps running.
 #[test]
 fn a_normal_exit_closes_the_task() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1602,7 +1602,7 @@ async fn stop_and_wait(app: &Arc<App>, id: &TaskId) -> TestResult {
     support::stop_tasks(app, &[id]).await
 }
 
-/// AC-SUP-2: with real runs, a supertask waits for the
+/// With real runs, a supertask waits for the
 /// project's running task, then runs while a task created after it waits; once it ends, that
 /// task starts.
 #[test]
@@ -1658,7 +1658,7 @@ fn a_supertask_runs_alone_after_the_running_task() -> TestResult {
     Ok(())
 }
 
-/// AC-SUP-5: at the session limit, a supertask queued after another task takes the
+/// At the session limit, a supertask queued after another task takes the
 /// next free slot first.
 #[test]
 fn a_queued_supertask_takes_the_next_slot_first() -> TestResult {

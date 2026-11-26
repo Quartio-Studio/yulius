@@ -955,7 +955,7 @@ async fn a_channel_change_and_check_now_take_effect_without_a_restart() -> TestR
     Ok(())
 }
 
-/// Review finding 1: a host package laid out otherwise (its `claude` is not `bin/claude.exe`)
+/// A host package laid out otherwise (its `claude` is not `bin/claude.exe`)
 /// is neither updated nor bound over: runs keep the host's.
 #[tokio::test]
 async fn a_host_package_of_another_layout_is_left_alone() -> TestResult {
@@ -977,7 +977,7 @@ async fn a_host_package_of_another_layout_is_left_alone() -> TestResult {
     Ok(())
 }
 
-/// Review finding 2: a version a running process executes is kept past the switches, and removed
+/// A version a running process executes is kept past the switches, and removed
 /// by the first check after it ended.
 #[tokio::test]
 async fn a_version_a_process_runs_is_not_removed() -> TestResult {
@@ -1235,7 +1235,7 @@ fn the_composer_offers_the_models_the_server_checks() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: requests that arrive together (a channel changed twice before the loop woke)
+/// Requests that arrive together (a channel changed twice before the loop woke)
 /// never leave the card "checking": the loop runs the follow-up itself, whatever became of its
 /// wake-ups.
 #[tokio::test]
@@ -1268,7 +1268,7 @@ async fn requests_that_arrive_together_do_not_leave_it_checking() -> TestResult 
     Ok(())
 }
 
-/// Review round 1: when runs already get npm's newest release and it does not know the default
+/// When runs already get npm's newest release and it does not know the default
 /// model, the doctor does not promise a check or the host's install: no release knows it yet.
 #[tokio::test]
 async fn the_doctor_says_when_no_release_knows_the_default_model() -> TestResult {
@@ -1305,7 +1305,7 @@ async fn the_doctor_says_when_no_release_knows_the_default_model() -> TestResult
     Ok(())
 }
 
-/// Review round 2 (major 1): "no release knows it yet" is said only from a fresh read of npm's
+/// "no release knows it yet" is said only from a fresh read of npm's
 /// registry on a channel that reads it: not after a check that failed, not with updates off, and
 /// not from a read of hours ago, whatever `latest` the server remembers.
 #[tokio::test]
@@ -1364,7 +1364,7 @@ async fn a_remembered_latest_is_not_called_the_newest_release() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: requests made while a check runs (a channel changed twice) are answered by
+/// Requests made while a check runs (a channel changed twice) are answered by
 /// one more check, and nothing is left over that starts another: each read of the registry needs
 /// the test's pass here, so a check nobody asked for would never end.
 #[tokio::test]

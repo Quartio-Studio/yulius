@@ -1,4 +1,4 @@
-//! Skill catalog and MCP configuration end to end (AC-SKL-1..3, AC-MCP-1/2): sources,
+//! Skill catalog and MCP configuration end to end: sources,
 //! toggles, the run skill set installed into both harness homes, the Open Mercato config, write-
 //! only sealed MCP secrets, attachments with scope override, and the connection test against a
 //! loopback HTTP server and a stdio child.
@@ -625,7 +625,7 @@ async fn skill_catalog_sources_toggles_and_run_set() -> TestResult {
         "default enabled"
     );
 
-    // AC-SKL-1: the run set (enabled instance and pack skills) installs into both harness homes.
+    // The run set (enabled instance and pack skills) installs into both harness homes.
     let sandbox =
         w.h.store
             .sandbox(&SandboxId::parse("s1")?)
@@ -819,7 +819,7 @@ async fn mcp_secrets_are_write_only_sealed_and_attached_with_overrides() -> Test
     assert_eq!(kept.status, StatusCode::OK, "{}", kept.body);
     assert_eq!(kept.body["env_keys"], json!(["APIFY_TOKEN"]));
 
-    // AC-MCP-1: attachments carry opened secrets; the sandbox server overrides the instance one.
+    // Attachments carry opened secrets; the sandbox server overrides the instance one.
     let sandbox =
         w.h.store
             .sandbox(&SandboxId::parse("s1")?)

@@ -1,4 +1,4 @@
-//! SPEC-442 end to end (AC-XST-1, AC-XST-2): from the Superagent of one sandbox, a task asked for
+//! SPEC-442 end to end: from the Superagent of one sandbox, a task asked for
 //! prepared in another is started, then messaged, each once its person approves the request on
 //! the panel, with real processes: supervisor → detached `yulius ptyhost` → fake agent.
 

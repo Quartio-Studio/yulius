@@ -204,7 +204,7 @@ async fn summary(i: &Intake, task: &str) -> Result<Value, Box<dyn std::error::Er
     Ok(detail.body)
 }
 
-/// AC-TSK-10: short prompts are one task without asking Jev; a request mixing UI and backend
+/// Short prompts are one task without asking Jev; a request mixing UI and backend
 /// work gets a two-workstream proposal; one task per item, too many tasks or a single task are
 /// never shown as a split; without Jev or with Jev down the answer is "one".
 #[tokio::test]
@@ -453,7 +453,7 @@ async fn intake_check_asks_split_and_breadth_at_once() -> TestResult {
     Ok(())
 }
 
-/// AC-TSK-10/11: the composer's actions — parallel tasks, a chain, one task — through the
+/// The composer's actions — parallel tasks, a chain, one task — through the
 /// public API; a chained task waits as `chained` and both tasks show the link.
 #[tokio::test]
 async fn split_card_creates_parallel_tasks_or_a_chain() -> TestResult {
@@ -507,7 +507,7 @@ async fn split_card_creates_parallel_tasks_or_a_chain() -> TestResult {
     Ok(())
 }
 
-/// AC-TSK-11: a chained task starts once its predecessor is Done; when the predecessor ends any
+/// A chained task starts once its predecessor is Done; when the predecessor ends any
 /// other way it needs a person (never starts by itself); Start now and Cancel work; continuing
 /// the predecessor puts the chain back to waiting; deleting it blocks the chain too.
 #[tokio::test]
@@ -1001,7 +1001,7 @@ async fn running_task(i: &Intake) -> Result<TaskId, Box<dyn std::error::Error>> 
     Ok(task.id)
 }
 
-/// AC-TSK-12: slash commands, short answers, Claude Code's own turns, the task's own prompt,
+/// Slash commands, short answers, Claude Code's own turns, the task's own prompt,
 /// prompts nobody typed and every Jev failure pass untouched; a confident `new_scope` is held
 /// with a reason for the person (never the agent) and a card; "Send anyway" lets the identical
 /// prompt through once and records the override; parallel and "after" create tasks.
@@ -1144,7 +1144,7 @@ async fn user_prompt_submit_holds_new_scope_and_passes_everything_else() -> Test
     Ok(())
 }
 
-/// AC-TSK-12: drops scope — the chosen steps become `skipped` (finished), the agent gets a
+/// Drops scope — the chosen steps become `skipped` (finished), the agent gets a
 /// message, the new direction is chained after this task.
 #[tokio::test]
 async fn drops_scope_skips_the_chosen_steps_and_chains_the_new_direction() -> TestResult {
@@ -1369,7 +1369,7 @@ async fn a_skip_with_no_chosen_step_says_so() -> TestResult {
     Ok(())
 }
 
-/// AC-TSK-12: redirect — reverting needs an explicit confirmation; then the task is cancelled
+/// Redirect — reverting needs an explicit confirmation; then the task is cancelled
 /// and archived, its committed and uncommitted work kept on a `yulius/reverted/…` branch, its
 /// worktree reset, and a new task started with the prompt.
 #[tokio::test]

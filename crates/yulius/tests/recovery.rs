@@ -1,4 +1,4 @@
-//! Superadmin recovery code (SPEC-001 ACC-002/011, AC-ACC-7): shown once at setup, three wrong
+//! Superadmin recovery code: shown once at setup, three wrong
 //! codes lock recovery for good (also under parallel guessing), a recovery resets the password,
 //! ends sessions and issues a new code, and a signed-in superadmin can regenerate the code.
 

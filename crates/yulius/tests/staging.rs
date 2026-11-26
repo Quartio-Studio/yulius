@@ -1,4 +1,4 @@
-//! Merge-first staging end to end (SPEC-575 MFS-003 to MFS-008): a project whose `[cd.staging]`
+//! Merge-first staging end to end: a project whose `[cd.staging]`
 //! is the merge-first target, the real Git adapter and process host deploying it, tasks' agents
 //! asking through `cd_deploy`, and the full gate's verdicts recorded at exact revisions.
 
@@ -2316,7 +2316,7 @@ async fn refused(f: &Fixture, task: &str) -> BoxResult<String> {
     Ok(answer.to_string())
 }
 
-/// SPEC-575 review round 1 of slice 2 (B1): staging deploys for a task under its owner's write
+/// Staging deploys for a task under its owner's write
 /// access, as every deploy for a task does. A request is refused without it, and a request
 /// whose owner lost it before its turn ends `deploy_failed` with nothing deployed.
 #[tokio::test]
@@ -2389,7 +2389,7 @@ async fn a_staging_deploy_is_the_requesting_tasks_cd_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 review round 1 of slice 2: a person's cancel of a staging deploy stands. The request
+/// A person's cancel of a staging deploy stands. The request
 /// ends `deploy_failed` saying so, and nothing deploys that revision again by itself.
 #[tokio::test]
 async fn a_cancelled_staging_deploy_is_not_started_again() -> TestResult {
@@ -2437,7 +2437,7 @@ async fn a_cancelled_staging_deploy_is_not_started_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 review round 1 of slice 2: while another run of the environment goes on (a person's
+/// While another run of the environment goes on (a person's
 /// rollback, a drill), a ready request waits for it, costing no attempt, then deploys.
 #[tokio::test]
 async fn a_ready_request_waits_for_another_run_of_the_environment() -> TestResult {
@@ -2625,7 +2625,7 @@ async fn a_test_that_moves_cells_keeps_its_origin_until_the_new_cell_passes() ->
     Ok(())
 }
 
-/// SPEC-575 MFS-003 (review round 1 of slice 2): the candidate run queued for a revision is not
+/// The candidate run queued for a revision is not
 /// superseded when the branch moves on, CI runs it to its verdict, the request deploys on that
 /// verdict, and the branch reaching the same commit queues no second full run of it.
 #[tokio::test]
@@ -2674,7 +2674,7 @@ async fn a_candidate_run_survives_the_branch_moving_on_and_decides() -> TestResu
     Ok(())
 }
 
-/// SPEC-575 MFS-004 and MFS-005 (review round 1 of slice 2): a task with an open step is
+/// A task with an open step is
 /// refused, a project with no CI gate is refused, and a newer landing of the same task
 /// supersedes its waiting request.
 #[tokio::test]
@@ -2726,7 +2726,7 @@ async fn requests_are_refused_or_superseded_as_the_task_stands() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 MFS-006 (review round 1 of slice 2): a waiting request whose revision left the
+/// A waiting request whose revision left the
 /// integration branch's own history, or whose environment stopped being the merge-first target,
 /// is superseded, saying why, and never deploys.
 #[tokio::test]
@@ -2860,7 +2860,7 @@ async fn a_failed_deploy_past_a_rollback_barrier_is_not_restored() -> TestResult
     Ok(())
 }
 
-/// SPEC-575 (review round 2 of slice 2): after a person's rollback of staging, the queue shows
+/// After a person's rollback of staging, the queue shows
 /// what staging serves, not the newest verified request, and production would promote that.
 #[tokio::test]
 async fn the_queue_shows_what_staging_serves_after_a_rollback() -> TestResult {
@@ -2898,7 +2898,7 @@ async fn the_queue_shows_what_staging_serves_after_a_rollback() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 MFS-008 (review round 2 of slice 2): while an update holds new deploys, a ready
+/// While an update holds new deploys, a ready
 /// request waits, costing no attempt, and deploys once the gate opens.
 #[tokio::test]
 async fn a_ready_request_waits_while_an_update_holds_deploys() -> TestResult {
@@ -2931,7 +2931,7 @@ async fn a_ready_request_waits_while_an_update_holds_deploys() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 MFS-003 (review rounds 1 and 2 of slice 2): a pinned deploy runs only a full
+/// A pinned deploy runs only a full
 /// commit of the integration head's own first-parent history, and only for a dev-stage
 /// environment.
 #[tokio::test]
@@ -3436,7 +3436,7 @@ async fn promote_page(f: &Fixture) -> BoxResult<support::Resp> {
     .await
 }
 
-/// SPEC-575 MFS-009 (review round 3 of slice 2): the Delivery page's promotion waits, like a
+/// The Delivery page's promotion waits, like a
 /// production deploy, until staging serves the integration head, verified. It reads that through
 /// the verified CD mirror: an agent rewriting the `yulius.toml` object in its clone only makes
 /// it refuse. Once staging verified the head, the same promotion promotes exactly it.
@@ -3540,7 +3540,7 @@ async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult
     Ok(())
 }
 
-/// SPEC-575 MFS-009 (review round 3 of slice 2): with the profile's automatic promotion, a merge
+/// With the profile's automatic promotion, a merge
 /// promotes nothing while staging has not verified it. The queue's verified deploy of that
 /// revision runs the promotion that waited, and production gets exactly it.
 #[tokio::test]
@@ -3636,7 +3636,7 @@ async fn a_promotion_whose_verified_head_cannot_be_read_is_refused() -> TestResu
     Ok(())
 }
 
-/// SPEC-575 MFS-009 (review round 1 of slice 4): with automatic promotion, staging verifying an
+/// With automatic promotion, staging verifying an
 /// older revision while the integration head moved on promotes nothing; the verified deploy of
 /// the head promotes exactly it.
 #[tokio::test]
@@ -4074,7 +4074,7 @@ async fn a_carried_request_whose_deploy_failed_is_not_deployed_again() -> TestRe
     Ok(())
 }
 
-/// Review round 1, finding 4: after a rollback of staging, a person's ask for the head deploys
+/// After a rollback of staging, a person's ask for the head deploys
 /// it again instead of answering with its old verified request.
 #[tokio::test]
 async fn a_persons_ask_after_a_rollback_deploys_the_head_again() -> TestResult {
@@ -4116,7 +4116,7 @@ async fn a_persons_ask_after_a_rollback_deploys_the_head_again() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 2: a deleted task's request (its task id cleared, `task:<n>` kept)
+/// A deleted task's request (its task id cleared, `task:<n>` kept)
 /// stays a task's: its red gate fails as a task's does, nothing is carried for it, it never
 /// answers a person's ask, and the page names a deleted task.
 #[tokio::test]
@@ -4154,7 +4154,7 @@ async fn a_deleted_tasks_request_is_never_taken_for_a_persons() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 6: a person's red request moves on once a rerun of its revision
+/// A person's red request moves on once a rerun of its revision
 /// passed the full gate, without a new merge.
 #[tokio::test]
 async fn a_persons_red_request_deploys_once_a_rerun_passes() -> TestResult {
@@ -4183,7 +4183,7 @@ async fn a_persons_red_request_deploys_once_a_rerun_passes() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 7: who may ask, and who a request deploys as.
+/// Who may ask, and who a request deploys as.
 /// - A reader is refused, and so is an environment that is not the target.
 /// - A second person's ask answers the pending request.
 /// - A request whose asker lost write access before its deploy fails, saying why; the next
@@ -4295,7 +4295,7 @@ async fn who_asks_for_staging_and_who_it_deploys_as() -> TestResult {
     Ok(())
 }
 
-/// Review round 2, finding 1: a rerun that passes with a skipped job moves a person's red request
+/// A rerun that passes with a skipped job moves a person's red request
 /// on when nothing is left open in that job, as a first verdict does; a rerun that skipped the
 /// job that failed leaves it waiting.
 #[tokio::test]
@@ -4336,7 +4336,7 @@ async fn a_rerun_with_a_skipped_job_moves_a_red_request_only_when_nothing_is_ope
     Ok(())
 }
 
-/// Review round 2, finding 2: a deleted task's inherited request is never carried for a person;
+/// A deleted task's inherited request is never carried for a person;
 /// only the person's own waiting request is.
 #[tokio::test]
 async fn a_deleted_tasks_inherited_request_is_not_carried() -> TestResult {

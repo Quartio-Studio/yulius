@@ -1,4 +1,4 @@
-//! SPEC-141 (issue #486): only a person moves the production branch. The production
+//! Only a person moves the production branch. The production
 //! GitHub adapter over the in-process fake GitHub, which models GitHub's rulesets (`update` and
 //! `deletion` rules, bypass actors) and narrowed installation tokens: the token an agent's Git and
 //! `gh` hold can neither merge into, fast-forward nor delete the production branch Yulius protects,
@@ -181,7 +181,7 @@ async fn without_the_ruleset_the_agents_token_could_write_production() -> TestRe
     Ok(())
 }
 
-/// SPEC-495 (task #477): a person's production deploy opens the dev → main promotion
+/// A person's production deploy opens the dev → main promotion
 /// pull request and merges it at once, through the production adapter. GitHub answers that first
 /// merge "405 Base branch was modified" while it computes the new pull request's mergeability;
 /// the merge waits and goes through, so the deploy goes on. A promotion with a real conflict still
@@ -296,7 +296,7 @@ async fn under_the_production_ruleset_each_refusal_names_its_own_reason() -> Tes
     Ok(())
 }
 
-/// SPEC-184 (issue #574): CD and promotion read the integration and production heads through the
+/// CD and promotion read the integration and production heads through the
 /// adapter, with the installation token and with a person's. The adapter asks GitHub for them;
 /// a branch GitHub does not have is `None`, and a nested branch name is one branch.
 #[tokio::test]

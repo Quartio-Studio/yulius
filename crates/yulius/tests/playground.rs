@@ -1216,7 +1216,7 @@ async fn agent_tool(h: &Harness, token: &str, name: &str, arguments: Value) -> B
     Ok(called.body["result"].clone())
 }
 
-/// Review B1: a playground has no deploy, so its maker — anyone signed in —
+/// A playground has no deploy, so its maker — anyone signed in —
 /// can never make the server run a command: not through the profile, not through an uploaded
 /// `yulius.toml`, not through an environment run.
 #[tokio::test]
@@ -1338,7 +1338,7 @@ async fn a_playgrounds_agent_gets_no_github_token_or_tool() -> TestResult {
     Ok(())
 }
 
-/// Review M1: a browser cannot read file modes or links, so a repository's executable
+/// A browser cannot read file modes or links, so a repository's executable
 /// files and links stay as committed when only that differs in the upload.
 #[tokio::test]
 async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestResult {
@@ -1386,7 +1386,7 @@ async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestRe
     Ok(())
 }
 
-/// Review M2: a shallow repository keeps its branches and history.
+/// A shallow repository keeps its branches and history.
 #[tokio::test]
 async fn a_shallow_repository_keeps_its_branches() -> TestResult {
     let (h, owner) = world().await?;
@@ -1466,7 +1466,7 @@ async fn a_person_makes_at_most_ten_playgrounds() -> TestResult {
     Ok(())
 }
 
-/// Review M3: a client that goes away while the playground is being set up (a closed
+/// A client that goes away while the playground is being set up (a closed
 /// tab) leaves no directory without its playground: the setup ends on its own.
 #[tokio::test]
 async fn a_closed_tab_during_setup_leaves_no_stray_directory() -> TestResult {
@@ -1530,7 +1530,7 @@ async fn a_closed_tab_during_setup_leaves_no_stray_directory() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: the clone's `origin` URL is the sandbox's to write, so the server
+/// The clone's `origin` URL is the sandbox's to write, so the server
 /// fetches and lands a playground's merges by the playground's own path, never by that URL: a
 /// clone pointed at another playground neither reads it nor changes its `dev`.
 #[tokio::test]
@@ -1563,7 +1563,7 @@ async fn a_rewritten_origin_url_is_never_followed() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a removed playground keeps its repository on the server's disk, so it still
+/// A removed playground keeps its repository on the server's disk, so it still
 /// counts toward its maker's ten.
 #[tokio::test]
 async fn a_removed_playground_still_counts_toward_the_ten() -> TestResult {
@@ -1591,7 +1591,7 @@ async fn a_removed_playground_still_counts_toward_the_ten() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a playground's profile has no environment and no
+/// A playground's profile has no environment and no
 /// automatic promotion, whose confirmation would promote through GitHub.
 #[tokio::test]
 async fn a_playground_profile_has_no_environment_or_automatic_promotion() -> TestResult {
@@ -1627,7 +1627,7 @@ async fn a_playground_profile_has_no_environment_or_automatic_promotion() -> Tes
     Ok(())
 }
 
-/// Review round 3: `yulius onboard`'s import is for GitHub repositories; an import or a
+/// `yulius onboard`'s import is for GitHub repositories; an import or a
 /// plan naming a playground (its empty owner) is refused before anything asks GitHub.
 #[tokio::test]
 async fn the_cli_import_never_reaches_a_playground() -> TestResult {
@@ -1662,7 +1662,7 @@ async fn the_cli_import_never_reaches_a_playground() -> TestResult {
     Ok(())
 }
 
-/// Review round 3: a long path holding ` size=` is a name, not a PAX size override.
+/// A long path holding ` size=` is a name, not a PAX size override.
 #[tokio::test]
 async fn a_long_path_with_size_in_its_name_is_uploaded() -> TestResult {
     let (h, owner) = world().await?;
@@ -2083,7 +2083,7 @@ async fn a_task_with_an_invalid_yulius_toml_fails_its_merges_run() -> TestResult
     Ok(())
 }
 
-/// SPEC-483 D4 (review of slice 13), SPEC-504 CFG-003: a playground whose `dev` has a
+/// A playground whose `dev` has a
 /// `yulius.toml` nobody can read, and no earlier valid gate, is repaired by a task, and that
 /// task's merge is tested with the configuration it brings: a broken file never blocks its own
 /// repair.
@@ -2574,7 +2574,7 @@ async fn a_reset_head_never_takes_a_later_heads_verdict() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: a person's merge follows the profile's `require_checks` as on
+/// A person's merge follows the profile's `require_checks` as on
 /// GitHub: without required checks it squashes at once.
 #[tokio::test]
 async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
@@ -2859,7 +2859,7 @@ async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
     let again = again.map_err(|err| format!("{err}\n{output}"))?;
     assert_eq!(again.sessions_sent, 0, "{output}");
     assert_eq!(playgrounds_named(&h, "shop").await?.len(), 1);
-    // Review round 1: branches it already has are not imported again under `import/`.
+    // Branches it already has are not imported again under `import/`.
     let clone = sandbox_dir(&h, &sandbox).join("repo");
     let local = branches(&clone)?;
     assert!(!local.iter().any(|b| b.starts_with("import/")), "{local:?}");
@@ -3436,7 +3436,7 @@ async fn complete_job(h: &Harness, creds: &Creds, job: &str) -> BoxResult<suppor
     .await
 }
 
-/// Review round 1 (major): a new playground that cannot be made when its upload completes (here:
+/// A new playground that cannot be made when its upload completes (here:
 /// another playground took the person's tenth place meanwhile) keeps the uploaded files, so
 /// completing again once there is room makes it.
 #[tokio::test]
@@ -3490,7 +3490,7 @@ async fn a_cli_upload_refused_at_completion_keeps_its_files_and_completes_later(
     Ok(())
 }
 
-/// Review round 1: a person has one new-playground upload open at a time; starting another
+/// A person has one new-playground upload open at a time; starting another
 /// supersedes the earlier one, whose files go, so abandoned uploads cannot pile up on the disk.
 #[tokio::test]
 async fn a_new_playground_upload_supersedes_an_unfinished_one() -> TestResult {
@@ -3539,7 +3539,7 @@ async fn a_new_playground_upload_supersedes_an_unfinished_one() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: the purge waits for a CI run of the sandbox too (its checkouts are
+/// The purge waits for a CI run of the sandbox too (its checkouts are
 /// claimed while a run executes), and an already purged playground is not purged or audited again.
 #[tokio::test]
 async fn a_purge_waits_for_a_ci_run_and_is_done_once() -> TestResult {

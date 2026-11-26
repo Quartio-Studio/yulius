@@ -1315,7 +1315,7 @@ async fn the_loopback_routes_need_the_server_s_key() -> BoxResult<()> {
         );
     }
     assert_eq!(get(Some(format!("Bearer {key}"))).await?, StatusCode::OK);
-    // The one bearer reader trims the token, the key included (SPEC-483 slice 29).
+    // The one bearer reader trims the token, the key included.
     assert_eq!(get(Some(format!("Bearer {key} "))).await?, StatusCode::OK);
     Ok(())
 }

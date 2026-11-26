@@ -943,7 +943,7 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: while the bot is active, what happens before anyone links is remembered, so
+/// While the bot is active, what happens before anyone links is remembered, so
 /// the first person to link is not told of hours-old states as new.
 #[tokio::test]
 async fn a_state_entered_before_anyone_linked_is_not_told_later() -> TestResult {
@@ -1012,7 +1012,7 @@ fn account_event(w: &World, status: &str) {
     );
 }
 
-/// Review round 1: a summary held for a chat is never sent after that chat was unlinked.
+/// A summary held for a chat is never sent after that chat was unlinked.
 #[tokio::test]
 async fn a_summary_never_reaches_a_chat_unlinked_meanwhile() -> TestResult {
     let w = world().await?;
@@ -1055,7 +1055,7 @@ async fn a_summary_never_reaches_a_chat_unlinked_meanwhile() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: subscription problems reach instance administrators who chose them, redacted;
+/// Subscription problems reach instance administrators who chose them, redacted;
 /// a disabled person gets nothing; a chat taken by another person is audited for the first.
 #[tokio::test]
 async fn subscription_problems_reach_administrators_and_disabled_people_get_nothing() -> TestResult
@@ -1809,7 +1809,7 @@ async fn the_digest_is_off_by_default_and_set_by_an_instance_administrator() -> 
     Ok(())
 }
 
-/// SPEC-512 DIG-004 to DIG-006: one digest per person with something to report: what waits for
+/// One digest per person with something to report: what waits for
 /// them first, what was parked since the last one, how many still work; its texts redacted as
 /// the sandbox's transcripts are; in the browser and the linked chat, unless the person turned
 /// digests off there. A person with nothing gets none.
@@ -2613,7 +2613,7 @@ async fn prompts_by_number(
     Ok(out)
 }
 
-/// SPEC-512 TGI-002, TGI-003 (review of task #538): a whole poll answer from one chat (20
+/// A whole poll answer from one chat (20
 /// messages, as after a restart) is handled, each message in its turn: while the first (a
 /// photo) is still being fetched, the 19 behind it wait, and every one starts its task in the
 /// order it was sent.
@@ -2655,7 +2655,7 @@ async fn a_chats_whole_poll_answer_is_handled_in_order() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 TGI-002, TGI-003 (review of task #538): while a chat's message is being handled, 20
+/// While a chat's message is being handled, 20
 /// more wait their turn; one past that is not dropped silently: the chat is told some were not
 /// handled, and the waiting ones still run.
 #[tokio::test]
@@ -2711,7 +2711,7 @@ async fn a_message_past_the_chats_waiting_bound_is_answered() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 TGI-004 (review of task #538): `/start` without a code in a chat whose intake is on
+/// `/start` without a code in a chat whose intake is on
 /// gets the intake help, not "turn on Telegram intake".
 #[tokio::test]
 async fn a_start_with_intake_on_gets_the_intake_help() -> TestResult {
@@ -2746,7 +2746,7 @@ async fn photo_held_with_waiting(
     Ok(before)
 }
 
-/// SPEC-512 TGI-001 (review round 2 of task #538): turning intake off, or `/stop`, ends what
+/// Turning intake off, or `/stop`, ends what
 /// waits in the chat's lane too: a message queued behind a slow one starts nothing and gets
 /// the answer it would get now (the help with intake off, the unlinked reply after `/stop`).
 #[tokio::test]
@@ -2809,7 +2809,7 @@ async fn intake_off_or_stop_ends_what_waits_in_the_lane() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 TGI-001 (review round 3 of task #538): a message that waited while the chat was one
+/// A message that waited while the chat was one
 /// person's never runs as the person the chat is linked to by its turn.
 #[tokio::test]
 async fn what_waits_never_runs_as_the_chats_next_person() -> TestResult {
@@ -3033,7 +3033,7 @@ async fn a_reply_to_a_runs_notice_answers_that_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-626 BRK-015 (review round 1 of slice 3): a reply to a run's notice is an answer or
+/// A reply to a run's notice is an answer or
 /// nothing; a reader may not answer; a line the notice could not show whole is approved on the
 /// Secrets page only (a reply rejects it); an approval by reply runs the command.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

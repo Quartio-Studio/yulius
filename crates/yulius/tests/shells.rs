@@ -415,7 +415,7 @@ async fn scenario(f: &Fixture) -> TestResult {
     let served = serve(f.h.router.clone()).await?;
     let task_before = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("t1")?;
 
-    // Read users cannot open a shell (AC-UI-7); foreign tasks are invisible.
+    // Read users cannot open a shell; foreign tasks are invisible.
     assert_eq!(
         create(f, &f.reader, "s1", None).await?.status,
         StatusCode::FORBIDDEN
@@ -988,8 +988,7 @@ async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestRe
 }
 
 /// A contained shell runs as the user's sandbox identity: their login, root inside the
-/// sandbox, `sudo` works, and files written to `~` land in their own persistent home
-/// (UI-016, AC-UI-8).
+/// sandbox, `sudo` works, and files written to `~` land in their own persistent home.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn contained_shells_run_as_the_user_with_root_in_their_own_home() -> TestResult {
@@ -1102,7 +1101,7 @@ async fn a_task_shell_stops_taking_input_once_the_task_is_handed_over() -> TestR
     Ok(())
 }
 
-/// SPEC-118 KEY-001, KEY-005 (task #103): once the shell's viewer is confirmed, its keystrokes and
+/// Once the shell's viewer is confirmed, its keystrokes and
 /// resizes reach the shell and the echo comes back while every permission check hangs — GitHub
 /// stops answering and the permission cache has expired, so the 300 ms re-check that starts
 /// meanwhile never finishes: the viewer's loop does not wait for it.

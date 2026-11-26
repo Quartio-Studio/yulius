@@ -443,7 +443,7 @@ async fn check_now_starts_a_check_and_the_view_says_what_is_wrong() -> TestResul
     assert!(fix.contains("2.1.322, the newest, does not"), "{fix}");
     assert!(!fix.contains(HOST_INSTALL), "{fix}");
 
-    // Review round 2 (major 1): that is said only from a fresh read of npm on a channel that
+    // That is said only from a fresh read of npm on a channel that
     // reads it. With updates off nobody reads it, whatever the last check on another channel
     // found a minute ago.
     if let Ok(mut status) = cli.status.lock() {

@@ -432,7 +432,7 @@ async fn a_waiting_task_is_shown_again_when_an_account_is_connected() -> TestRes
     Ok(())
 }
 
-/// SPEC-505 (review round 1 of slice C2): a paused Antigravity task's `waits_for_account` follows
+/// A paused Antigravity task's `waits_for_account` follows
 /// the Google accounts as a Claude task's follows the Claude ones: once a Google account is
 /// connected (with no capacity left, so it keeps waiting) the next resume pass shows it again.
 #[tokio::test]

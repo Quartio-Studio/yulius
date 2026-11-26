@@ -1,4 +1,4 @@
-//! A task whose goal Claude Code records as achieved is Done (SPEC-001 TSK-014, AC-TSK-13).
+//! A task whose goal Claude Code records as achieved is Done.
 //!
 //! End to end: supervisor → detached `yulius ptyhost` → fake agent shaped like Claude Code
 //! 2.1.292 (goal records in its transcript, Bash-tool background shells) running Claude Code's
@@ -1327,7 +1327,7 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
     Ok(())
 }
 
-/// SPEC-052 AC-QMS-3: a message queued while the task waited reaches the agent with its request
+/// A message queued while the task waited reaches the agent with its request
 /// when it starts: in the request file and the goal of a goal task, in the first message of a
 /// prompt task.
 ///
@@ -2154,7 +2154,7 @@ fn a_done_task_whose_shell_ends_frees_its_slot_at_once() -> TestResult {
     Ok(())
 }
 
-/// STA-001 (SPEC-032, tasks #24 and #25): the goal turn ends with a background agent still
+/// The goal turn ends with a background agent still
 /// working (Claude Code's `turn_duration` says one is pending): the task is not Done, it is
 /// Working with that background work said, until the agent finishes and wakes the session.
 #[test]
@@ -2210,7 +2210,7 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
     Ok(())
 }
 
-/// SPEC-079 BGW-006 (task #74): the goal turn's background agent first stops with background work
+/// The goal turn's background agent first stops with background work
 /// of its own still running. Its notification (`completed`, the note that its result may be
 /// interim) wakes the session, and the turn record after it counts no agent. The task stays
 /// Working, the agent counted, until the same agent's final notification; then it is idle with
@@ -8251,7 +8251,7 @@ fn a_hand_over_during_a_launch_restarts_a_run_holding_personal_mcp_servers() -> 
 /// SPEC-487 CHN-002 (13 November 2026: #466, #467 and #468 were started "after #465" while it
 /// went from one merged slice to the next): a merged slice with explicit work left makes a running task Done only
 /// once the task was told of the merge and the turn that news starts has ended. A task chained
-/// after it waits through all of it: while the news is not typed, and (review round 1, H1) while
+/// after it waits through all of it: while the news is not typed, and (review round 1) while
 /// it is typed and its turn has not begun. Real hooks: the prompt hook of the news is held at
 /// its check, where the task still reads idle.
 #[test]

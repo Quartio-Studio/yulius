@@ -492,7 +492,7 @@ async fn a_preview_opens_after_a_single_use_handshake() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 PRV-001 (finding E5): nothing frames a preview since ADR-15 (the browser panel opens
+/// Nothing frames a preview since ADR-15 (the browser panel opens
 /// it in its own window), so a document reaches the browser as the app sent it: its framing
 /// headers kept and only framed by the preview itself, its body byte for byte, its length and
 /// its encoding (the browser's `Accept-Encoding` reaches the app); no script is appended.

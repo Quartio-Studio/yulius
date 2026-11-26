@@ -482,7 +482,7 @@ async fn the_digest_lists_live_notices_only() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: a reader's notices are found behind many newer ones of a project they cannot
+/// A reader's notices are found behind many newer ones of a project they cannot
 /// see; the read's limit applies to what they may see.
 #[tokio::test]
 async fn hidden_notices_never_crowd_out_a_readers_own() -> TestResult {
@@ -516,7 +516,7 @@ async fn hidden_notices_never_crowd_out_a_readers_own() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: dismissing changes the person's own state: a read-only token may not, and an
+/// Dismissing changes the person's own state: a read-only token may not, and an
 /// operate token's call is audited; someone else's personal notice cannot be dismissed.
 #[tokio::test]
 async fn a_dismissal_is_a_change_of_ones_own() -> TestResult {
@@ -574,7 +574,7 @@ async fn a_dismissal_is_a_change_of_ones_own() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: a secret is redacted before a long text is cut, so no prefix of it is kept;
+/// A secret is redacted before a long text is cut, so no prefix of it is kept;
 /// a link a browser reads as another host and a key Yulius keeps for its own notices are
 /// refused.
 #[tokio::test]
@@ -638,7 +638,7 @@ async fn texts_are_redacted_whole_and_links_and_keys_checked() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: pages hear of each notice the cap drops; a notice dropped at once (its scope
+/// Pages hear of each notice the cap drops; a notice dropped at once (its scope
 /// is full of decisions) is refused, not published; a replacement that narrows who sees the
 /// notice tells the others it is gone; a title is one line.
 #[tokio::test]
@@ -697,7 +697,7 @@ async fn the_cap_and_a_narrowed_replacement_are_heard() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a scope full of decisions refuses a notice that would be dropped at once.
+/// A scope full of decisions refuses a notice that would be dropped at once.
 #[tokio::test]
 async fn a_scope_full_of_decisions_refuses_a_report() -> TestResult {
     use yulius_app::notices::NOTICES_KEPT;
@@ -726,7 +726,7 @@ async fn a_scope_full_of_decisions_refuses_a_report() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: `notice_dismiss` takes only a notice of its project or an instance-wide one,
+/// `notice_dismiss` takes only a notice of its project or an instance-wide one,
 /// and the Cockpit audits it as a change.
 #[tokio::test]
 async fn a_dismissal_names_its_own_project() -> TestResult {

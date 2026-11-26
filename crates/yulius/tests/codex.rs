@@ -1513,7 +1513,7 @@ fn a_stopped_codex_task_with_only_stale_lineage_cannot_resume_the_wrong_session(
     })
 }
 
-/// SPEC-503 CDX-002, CDX-003, CDX-004, CDX-006, AC-503-1/3/5: a Codex task runs Codex on a Codex
+/// A Codex task runs Codex on a Codex
 /// account (never the Claude one) in `<sandbox>/codex/<account>`, whose `auth.json`, `config.toml`
 /// and `hooks.json` are private and whose `sessions` is the sandbox's; its session is learnt from
 /// the rollout; its turns, usage and rate limits are read; a restart reattaches the same process
@@ -1815,7 +1815,7 @@ async fn admin_ctx(
     })
 }
 
-/// SPEC-503 CLI-002, AC-503-6: a Codex task starts the Codex CLI Yulius provides by its absolute
+/// A Codex task starts the Codex CLI Yulius provides by its absolute
 /// path, never `codex` from a `PATH` that may not have it.
 #[test]
 fn a_codex_task_starts_the_provided_codex_cli() -> TestResult {
@@ -1985,7 +1985,7 @@ fn a_codex_start_without_a_codex_cli_says_why() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-009, AC-503-2: a Codex task at its usage limit moves to another Codex account by
+/// A Codex task at its usage limit moves to another Codex account by
 /// a native resume of the same session, never to the Claude account, and the limited account is
 /// marked; Codex does not go on by itself, so the resume asks it to.
 #[test]
@@ -2481,7 +2481,7 @@ fn a_gone_accounts_codex_credentials_leave_the_sandbox() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C1 review): a Codex run Yulius records as lost (here its processes died
+/// A Codex run Yulius records as lost (here its processes died
 /// with the server, and the next server finds them gone) still gets its write-back: the refreshed
 /// `auth.json` reaches the vault and the file leaves the sandbox, as after a run that ended.
 #[test]
@@ -2569,7 +2569,7 @@ fn a_lost_codex_run_keeps_its_refresh_and_leaves_no_credentials() -> TestResult 
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C1 review): the file stays while another run of the subscription lives
+/// The file stays while another run of the subscription lives
 /// in the sandbox, and goes once the last one ended: two Codex tasks of one sandbox on one
 /// subscription, the usual case.
 #[test]
@@ -2630,7 +2630,7 @@ fn the_file_stays_while_another_run_of_the_subscription_lives() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 (slice C1 review): a Codex task in goal mode, the default for a task from the API and
+/// A Codex task in goal mode, the default for a task from the API and
 /// every automation's, gets its whole request as its first message: no `/goal`, which Codex takes
 /// only typed, and no goal for Yulius to watch.
 #[test]
@@ -2762,7 +2762,7 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 (slice C1 review): a Codex task takes no Claude model later either: setting one is
+/// A Codex task takes no Claude model later either: setting one is
 /// refused as at creation, since the run would fail at start; going back to the default works.
 #[test]
 fn a_codex_task_refuses_a_claude_model_set_later() -> TestResult {
@@ -2810,7 +2810,7 @@ fn a_codex_task_refuses_a_claude_model_set_later() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C1 review): a sign-in made between the read of a run's refresh and its
+/// A sign-in made between the read of a run's refresh and its
 /// write wins: the refresh, of the sign-in before, is not stored over it.
 #[test]
 fn a_sign_in_made_meanwhile_wins_over_a_runs_refresh() -> TestResult {
@@ -2878,7 +2878,7 @@ fn a_sign_in_made_meanwhile_wins_over_a_runs_refresh() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C2 review): another run of the subscription (in another sandbox)
+/// Another run of the subscription (in another sandbox)
 /// stored its refresh between this run's read and its write. This run's refresh, the newer of the
 /// same sign-in, is still kept: losing the swap to an older refresh is no reason to drop it.
 #[test]
@@ -2955,7 +2955,7 @@ fn a_newer_refresh_is_kept_after_an_older_one_was_stored_first() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C2 review round 2): the swap was lost and what the account holds now
+/// The swap was lost and what the account holds now
 /// cannot be told (a credential that does not open, as after a failed read): the run's file may
 /// be the only copy of rotated tokens, so it stays, as when the swap itself fails.
 #[test]
@@ -3036,7 +3036,7 @@ fn a_refresh_stays_when_what_the_account_holds_cannot_be_read() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C1 review round 3): a server that stopped between a run's end and the
+/// A server that stopped between a run's end and the
 /// removal of its `auth.json` left the file in the sandbox; the next start's reconciliation keeps
 /// a genuine refresh in it and removes it, since no run of the subscription is left there.
 #[test]

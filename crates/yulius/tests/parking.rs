@@ -1359,7 +1359,7 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
     Ok(())
 }
 
-/// PRK-003 (review round 1, M1): a stop that lands while the parked run's end is being recorded
+/// A stop that lands while the parked run's end is being recorded
 /// (after it took the park's intent) leaves the task stopped, never `stopping` with no run.
 #[test]
 fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
@@ -1402,7 +1402,7 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
     Ok(())
 }
 
-/// PRK-004 (review round 1, M3): a task chained after one that is Done and parked starts, as it
+/// A task chained after one that is Done and parked starts, as it
 /// starts after a Done one that kept its session.
 #[test]
 fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
@@ -1479,7 +1479,7 @@ fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
     Ok(())
 }
 
-/// PRK-001 (review round 1, M4): a parked task keeps its scope claims: another task claiming
+/// A parked task keeps its scope claims: another task claiming
 /// the same paths is told of it.
 #[test]
 fn a_parked_task_keeps_its_claims() -> TestResult {
@@ -1535,7 +1535,7 @@ fn a_parked_task_keeps_its_claims() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 1, M5): a session is parked only on a fresh look at its background work;
+/// A session is parked only on a fresh look at its background work;
 /// a look that gives no answer counts as work running and keeps the session.
 #[test]
 fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
@@ -1571,7 +1571,7 @@ fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 1, M6): what the person still has to answer in the session, or a
+/// What the person still has to answer in the session, or a
 /// person's pause, keeps the session, whatever the grace period.
 #[test]
 fn a_question_in_the_terminal_or_a_pause_keeps_the_session() -> TestResult {
@@ -1608,7 +1608,7 @@ fn a_question_in_the_terminal_or_a_pause_keeps_the_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-005 (review round 1, M6): a message to a parked task while every session is in use
+/// A message to a parked task while every session is in use
 /// queues the resume with its prompt; once a session is free it resumes with that message.
 #[test]
 fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
@@ -1655,7 +1655,7 @@ fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
     Ok(())
 }
 
-/// PRK-003 (review round 1, F11): a park whose session cannot be ended gives up: the session
+/// A park whose session cannot be ended gives up: the session
 /// goes on and a message is typed into it again, not refused as "parking" for ever.
 #[test]
 fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
@@ -2071,7 +2071,7 @@ fn the_onboarding_task_is_not_parked() -> TestResult {
     Ok(())
 }
 
-/// PRK-003 (review round 3, L1): the session exits on the park's request and its reader takes
+/// The session exits on the park's request and its reader takes
 /// the park's intent, then holds; the escalation finds the run still recorded live and records
 /// its loss first. The task is parked all the same, not stopped as lost.
 #[test]

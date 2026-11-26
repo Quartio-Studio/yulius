@@ -169,7 +169,7 @@ async fn recorded(
         .map(|r| (r.revision, r.task_id.map(|t| t.as_str().to_owned()))))
 }
 
-/// SPEC-575 MFS-012 (review round 1 of slice 4): a linked upgrade task a person deletes is not
+/// A linked upgrade task a person deletes is not
 /// made again, and playgrounds, removed sandboxes and ones whose creator is no longer active get
 /// none.
 #[tokio::test]

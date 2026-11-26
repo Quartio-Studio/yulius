@@ -1,4 +1,4 @@
-//! A session whose context is full (SPEC-060, issue #213) with real processes: supervisor →
+//! A session whose context is full with real processes: supervisor →
 //! detached `yulius ptyhost` → fake agent that answers "Prompt is too long" like Claude Code
 //! 2.1.292. Yulius compacts it once, continues the task in a fresh session when compacting
 //! fails, and flags the task when the fresh session is full too.

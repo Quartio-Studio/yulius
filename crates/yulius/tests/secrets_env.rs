@@ -124,7 +124,7 @@ async fn activity(w: &World) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
     Ok(got.body.as_array().cloned().unwrap_or_default())
 }
 
-/// SPEC-129 R4, AC5: a person who manages the secret allows, dismisses or revokes copying it
+/// A person who manages the secret allows, dismisses or revokes copying it
 /// into `.env` files; readers cannot; there must be something to answer.
 #[tokio::test]
 async fn people_allow_dismiss_and_revoke_env_copies() -> TestResult {
@@ -207,7 +207,7 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// SPEC-129 R1, R3, R6, R7, AC1, AC4: an agent asks to copy a secret, which writes nothing and
+/// An agent asks to copy a secret, which writes nothing and
 /// waits for a person; once allowed, the same call writes the real value into the ignored `.env`
 /// (mode 0600) and the name into `.env.example`, and the agent never sees the value.
 #[tokio::test]
@@ -343,7 +343,7 @@ async fn task_activity(
     Ok(task.activity)
 }
 
-/// SPEC-213 SRA-001 to SRA-003: the answer to the last request a task waits for ends the
+/// The answer to the last request a task waits for ends the
 /// "Needs your action" its request raised; a task with a request still waiting, or flagged by
 /// something else, keeps it.
 #[tokio::test]
@@ -636,7 +636,7 @@ async fn deleting_the_asked_secret_ends_the_flag() -> TestResult {
     Ok(())
 }
 
-/// SPEC-129 R2, AC2: nothing is written where Git could commit it, outside the worktree, into a
+/// Nothing is written where Git could commit it, outside the worktree, into a
 /// template or through a link; unknown secrets and unallowed ones are not copied either.
 #[tokio::test]
 async fn copies_are_refused_where_git_could_commit_them() -> TestResult {
@@ -717,7 +717,7 @@ async fn copies_are_refused_where_git_could_commit_them() -> TestResult {
     Ok(())
 }
 
-/// SPEC-129 R8, AC6: `secrets_list` says whether each secret may be copied into `.env` files and
+/// `secrets_list` says whether each secret may be copied into `.env` files and
 /// that keys live in the git-ignored `.env`, copied with `secret_copy_to_env`.
 #[tokio::test]
 async fn secrets_list_teaches_the_env_default() -> TestResult {

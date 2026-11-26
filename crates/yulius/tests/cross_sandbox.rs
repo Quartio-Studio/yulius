@@ -180,7 +180,7 @@ async fn the_superagent_lists_the_other_sandboxes_its_person_can_work_in() -> Te
     Ok(())
 }
 
-/// AC-XSR-1: the request waits, shows its whole prompt to its person only, and on approval from
+/// The request waits, shows its whole prompt to its person only, and on approval from
 /// a browser session the task is created in the other sandbox for the person, exactly as shown.
 #[tokio::test]
 async fn an_approved_request_creates_the_task_in_the_other_sandbox() -> TestResult {
@@ -262,7 +262,7 @@ async fn a_request_names_the_agent_of_its_task() -> TestResult {
     Ok(())
 }
 
-/// AC-XSR-2: a declined request creates nothing and the call says so.
+/// A declined request creates nothing and the call says so.
 #[tokio::test]
 async fn a_declined_request_creates_nothing() -> TestResult {
     let w = world(60_000).await?;
@@ -476,7 +476,7 @@ async fn a_waiting_request_is_amended_or_withdrawn() -> TestResult {
             .any(|row| row["outcome"] == "withdrawn"),
         "withdrawn is audited"
     );
-    // Review of slice 8a, F3: the Superagent reads that it was withdrawn.
+    // The Superagent reads that it was withdrawn.
     let mine = w.h.app.tool_sandbox_requests(&caller).await?;
     assert_eq!(mine["answered"][0]["request"], other.as_str(), "{mine}");
     assert_eq!(
@@ -574,7 +574,7 @@ async fn waiting_requests_are_kept_across_a_restart() -> TestResult {
     Ok(())
 }
 
-/// Review of slice 8a, F7: the server takes calls before it has put the saved requests back;
+/// The server takes calls before it has put the saved requests back;
 /// a request asked meanwhile neither overwrites the file nor is lost: once restored, both wait.
 #[tokio::test]
 async fn a_request_asked_before_the_restore_loses_none() -> TestResult {
@@ -698,7 +698,7 @@ async fn a_decision_waits_on_the_panel_and_its_answer_is_kept() -> TestResult {
         .filter_map(|a| a["outcome"]["answer"].as_str())
         .collect();
     assert_eq!(answers, ["no", "yes"], "{mine}");
-    // Review of slice 8a, F6: its own sandbox is both sides: one row per answer.
+    // Its own sandbox is both sides: one row per answer.
     assert_eq!(audited(&w, "s1").await?.len(), 2);
     for question in ["", &"x".repeat(5000)] {
         let refused = w
@@ -712,7 +712,7 @@ async fn a_decision_waits_on_the_panel_and_its_answer_is_kept() -> TestResult {
     Ok(())
 }
 
-/// AC-XSR-3: an API token cannot answer (the Superagent could hold one), and another person
+/// An API token cannot answer (the Superagent could hold one), and another person
 /// cannot answer someone else's request; the request still waits.
 #[tokio::test]
 async fn only_the_person_in_a_browser_answers() -> TestResult {
@@ -754,7 +754,7 @@ async fn alice_api_token(w: &World) -> Result<Creds, Error> {
     })
 }
 
-/// AC-XSR-4: what cannot be asked is refused at once, and nothing waits.
+/// What cannot be asked is refused at once, and nothing waits.
 #[tokio::test]
 async fn what_cannot_be_asked_is_refused_without_asking() -> TestResult {
     let w = world(60_000).await?;
@@ -1081,7 +1081,7 @@ async fn answer_the_one(
     Ok((request, outcome))
 }
 
-/// SPEC-442 XST-001 (AC-XST-6): the Superagent reads a task of another sandbox its person can
+/// The Superagent reads a task of another sandbox its person can
 /// work in, without asking; its own sandbox, a sandbox its person only reads and a task of
 /// another sandbox are refused.
 #[tokio::test]
@@ -1137,7 +1137,7 @@ async fn the_superagent_reads_a_task_of_another_sandbox_without_asking() -> Test
     Ok(())
 }
 
-/// SPEC-442 XST-002, XST-003, XST-006 (AC-XST-1): a prepared task of another sandbox is started
+/// A prepared task of another sandbox is started
 /// now through `sandbox_task_update` once the person approves the card that says so.
 #[tokio::test]
 async fn an_approved_start_starts_a_prepared_task_of_another_sandbox() -> TestResult {
@@ -1241,7 +1241,7 @@ async fn approved_messages_and_stops_reach_the_task_of_another_sandbox() -> Test
     Ok(())
 }
 
-/// SPEC-442 AC-XST-3: a declined start, message or stop changes nothing.
+/// A declined start, message or stop changes nothing.
 #[tokio::test]
 async fn a_declined_change_changes_nothing() -> TestResult {
     let w = world(60_000).await?;
@@ -1404,7 +1404,7 @@ async fn an_approval_refused_by_the_target_is_the_answer() -> TestResult {
     assert!(!refused.status.is_success(), "{:?}", refused.body);
     assert!(call_.await?.is_err());
     assert!(matches!(status_of(&w, &id).await?, TaskStatus::Stopped(_)));
-    // Review round 1: in both sandboxes.
+    // In both sandboxes.
     for sandbox in ["s2", "s1"] {
         let rows = audited(&w, sandbox).await?;
         let last = rows.last().ok_or("no audit")?;
@@ -1414,7 +1414,7 @@ async fn an_approval_refused_by_the_target_is_the_answer() -> TestResult {
     Ok(())
 }
 
-/// SPEC-442 XST-005 (AC-XST-5): every answer is in the audit of both sandboxes, with the action
+/// Every answer is in the audit of both sandboxes, with the action
 /// and the task, never the message.
 #[tokio::test]
 async fn every_cross_sandbox_answer_is_audited_in_both_sandboxes() -> TestResult {
@@ -1514,7 +1514,7 @@ async fn an_unanswered_change_waits_and_is_audited_when_answered() -> TestResult
     Ok(())
 }
 
-/// Review round 1 (major): the card says whether an update starts the task now, from the
+/// The card says whether an update starts the task now, from the
 /// arguments that will run. `false` flags and blank texts mean nothing, as `task_update` reads
 /// them, so they are dropped before anyone is asked; a supertask starts now too.
 #[tokio::test]
@@ -1576,7 +1576,7 @@ async fn an_update_card_says_whether_the_task_starts_now() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: an update that cannot apply is refused before anyone is asked, as the
+/// An update that cannot apply is refused before anyone is asked, as the
 /// target's `task_update` would refuse it, so no card is sure to fail.
 #[tokio::test]
 async fn an_update_that_cannot_apply_is_refused_without_asking() -> TestResult {
@@ -1631,7 +1631,7 @@ async fn an_update_that_cannot_apply_is_refused_without_asking() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: the card names the task as it is now, not as it was when the Superagent
+/// The card names the task as it is now, not as it was when the Superagent
 /// asked: a stop card of a task that started meanwhile says so.
 #[tokio::test]
 async fn the_card_names_the_task_as_it_is_now() -> TestResult {
@@ -1661,7 +1661,7 @@ async fn the_card_names_the_task_as_it_is_now() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: a request naming a task twice (`number` and another task's `task_id`) acts on
+/// A request naming a task twice (`number` and another task's `task_id`) acts on
 /// the task its card names, the one `number` names, as `task_get` reads it.
 #[tokio::test]
 async fn a_task_named_twice_is_the_one_its_card_names() -> TestResult {
@@ -1849,7 +1849,7 @@ async fn onboarding_starts_on_the_persons_click() -> TestResult {
     Ok(())
 }
 
-/// Review of slice 8a, N2: a file of saved requests that cannot be read is kept beside the new
+/// A file of saved requests that cannot be read is kept beside the new
 /// one (`.bad`), never overwritten by the save after the restore.
 #[tokio::test]
 async fn a_saved_requests_file_that_cannot_be_read_is_kept() -> TestResult {

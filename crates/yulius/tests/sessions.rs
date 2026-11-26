@@ -1,7 +1,7 @@
 //! Sessions as read-only documents: the Sessions API by sandbox access, full-text search,
 //! redaction on serve, the agent tools `sessions_search`/`session_read` scoped to the agent's
 //! sandbox, the onboarding plan of `yulius onboard` and the onboarding gate (AC-SES-1..5,
-//! AC-IMP-4, AC-IMP-7).
+//! AC-IMP-4).
 
 use crate::support;
 
@@ -1267,7 +1267,7 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
         (&json!(true), &json!(40)),
         "{end}"
     );
-    // A session whose tools gave long results (review of slice 4, C1): the read is bounded
+    // A session whose tools gave long results (review of slice 4): the read is bounded
     // by the text it shows, where a tool's result is cut to a few lines, not by what the
     // transcript holds. Twenty steps of a call and its 12 000-character result: the end
     // shows far more than the last few entries.
@@ -1411,7 +1411,7 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     Ok(())
 }
 
-/// SPEC-575 MFS-012 (review round 1 of slice 4): a sandbox created after the release (imported
+/// A sandbox created after the release (imported
 /// here through the real path) is recorded at the current bootstrap revision, so even once
 /// onboarded it never gets an upgrade task: its onboarding laid that default already.
 #[tokio::test]

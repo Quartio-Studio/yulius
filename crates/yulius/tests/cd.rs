@@ -312,7 +312,7 @@ async fn environments_that_deploy_nothing_need_no_rollback() -> TestResult {
             .is_some_and(|why| why.contains("reverting it on dev and promoting again")),
         "{overview}"
     );
-    // Review L3: rolling back what deploys nothing says so, not what to configure.
+    // Rolling back what deploys nothing says so, not what to configure.
     let refused =
         support::mcp_tool(&f.h, TOKEN, "cd_rollback", json!({"environment": "dev"})).await?;
     assert_eq!(refused["isError"], true, "{refused}");
@@ -1070,7 +1070,7 @@ async fn a_typed_prompt_ends_a_needs_you_request() -> TestResult {
     Ok(())
 }
 
-/// Review C1: nothing an agent can write in the sandbox changes what a deploy runs. A
+/// Nothing an agent can write in the sandbox changes what a deploy runs. A
 /// replacement planted in the sandbox clone (`git replace`) and files planted where checkouts
 /// used to live are ignored: the run executes the commit GitHub reports, from Yulius's own mirror.
 #[tokio::test]
@@ -1278,7 +1278,7 @@ async fn production_never_gets_a_secret_bound_to_hosts() -> TestResult {
     Ok(())
 }
 
-/// Review H1: production runs get only secrets a person allowed for production; an
+/// Production runs get only secrets a person allowed for production; an
 /// allowance for `.env` files (which any agent of the project could use) is not enough.
 #[tokio::test]
 async fn production_secrets_need_their_own_allowance() -> TestResult {
@@ -1414,7 +1414,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         "{text}"
     );
     // A production secret is never given to agents: no .env copy, no hosts (round 2, M-B) and no
-    // MCP `${secret:NAME}` (round 3, M2).
+    // MCP `${secret:NAME}` (round 3).
     let env = call(
         &f.h.router,
         Method::POST,
@@ -1448,7 +1448,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         f.h.app.resolve_secret_ref(&sandbox, "DEV_TOKEN").await?,
         None
     );
-    // Agents cannot even ask for it (round 3, L3); task #1 is the agent seeded above.
+    // Agents cannot even ask for it (round 3); task #1 is the agent seeded above.
     for (tool, args) in [
         ("secret_copy_to_env", json!({"secrets": ["DEV_TOKEN"]})),
         (
@@ -1466,7 +1466,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
     Ok(())
 }
 
-/// Review H2: a run left by a restart has its process host stopped and its files
+/// A run left by a restart has its process host stopped and its files
 /// removed, not only its row closed.
 #[tokio::test]
 async fn a_lost_run_leaves_no_files_behind() -> TestResult {
@@ -1771,8 +1771,8 @@ async fn named_environments_deploy_by_their_stage() -> TestResult {
             "{refused}"
         );
     }
-    // The same for a person's own agent, by the tool it shares with their Superagent
-    // (SPEC-487, review of slice 2, F16): a production-stage environment by any name.
+    // The same for a person's own agent, by the tool it shares with their Superagent:
+    // a production-stage environment by any name.
     let operate = {
         use yulius_app::ports::store::SessionStore as _;
         let token = "yul_test_operate_alice";
@@ -1927,7 +1927,7 @@ async fn a_relabelled_environment_takes_the_integration_heads_stage() -> TestRes
         .ok_or("platform")?;
     assert_eq!(platform["stage"], "dev", "{overview}");
 
-    // Review H1: what a dev-stage run leaves in its cache never reaches the production-stage
+    // What a dev-stage run leaves in its cache never reaches the production-stage
     // environment of the same name, nor does its commit count as deployed there.
     let planting = relabelled.replace(
         "deploy = \"test ! -e",
@@ -2428,7 +2428,7 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
     Ok(())
 }
 
-/// SPEC-278 failure paths (review of SPEC-278, M2): a deploy that leaves its state alone keeps
+/// SPEC-278 failure paths (review of SPEC-278): a deploy that leaves its state alone keeps
 /// the version; one that replaces its folder with a link ends as an error naming the state, the
 /// link is not followed and the version stays; a deploy cancelled while it waits for the hold
 /// ends cancelled and the holder keeps it.

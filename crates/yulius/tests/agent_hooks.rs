@@ -1,6 +1,6 @@
 //! Internal agent endpoints over HTTP: hook events (briefing, the Stop
 //! discipline gate) and repository-scoped Git credentials, the task creator's own (SPEC-002
-//! §7.5, §8; AC-DSC-3, AC-COM-2, AC-COM-4, AC-GIT-3).
+//! §7.5, §8; AC-DSC-3).
 
 use crate::support;
 use crate::support::git;
@@ -409,7 +409,7 @@ async fn session_start_returns_the_project_briefing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-363 (task #346): a project whose change notes are a folder, one file per pull request,
+/// A project whose change notes are a folder, one file per pull request,
 /// is told to add one new file there instead of an entry at the top of a shared log, and its
 /// Recent changes quote the newest notes.
 #[tokio::test]
@@ -1226,7 +1226,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for Isolated {
     fn release(&self, _: &SandboxId) {}
 }
 
-/// SPEC-173 CTR-001 (task #163): the briefing says there is no container engine exactly
+/// The briefing says there is no container engine exactly
 /// when the server runs sandboxes isolated (an isolation adapter is installed).
 #[tokio::test]
 async fn an_isolated_sandboxs_briefing_names_the_missing_container_engine() -> TestResult {

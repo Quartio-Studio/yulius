@@ -1,4 +1,4 @@
-//! The built-in editor's file API (SPEC-001 EDT-001..004, AC-EDT-1): write users list, read and
+//! The built-in editor's file API: write users list, read and
 //! change files of the sandbox repository or a task worktree; paths never leave the folder;
 //! `.git` stays hidden; a file changed on disk is not overwritten silently.
 
@@ -715,7 +715,7 @@ async fn presence_is_rate_limited() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: one person's many files cannot use up the counters everyone shares.
+/// One person's many files cannot use up the counters everyone shares.
 #[tokio::test]
 async fn presence_counters_are_bounded_per_person() -> TestResult {
     let (h, alice, bob, _) = presence_fixture().await?;

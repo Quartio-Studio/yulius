@@ -1,5 +1,5 @@
 //! Projects end to end over HTTP with real Git on local remotes: listings, import, create from
-//! a template, onboarding gate and removal (AC-PRJ-1, AC-PRJ-3..5, AC-IMP-2, AC-IMP-4).
+//! a template, onboarding gate and removal.
 
 use crate::support;
 use crate::support::git_stdout;
@@ -345,7 +345,7 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     );
     assert_eq!(ready["profile"]["preset"], "standard");
 
-    // AC-IMP-4: the preparation task exists and blocks other tasks.
+    // The preparation task exists and blocks other tasks.
     let tasks = call(
         &w.h.router,
         Method::GET,
@@ -1056,7 +1056,7 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
         "{calls:?}"
     );
 
-    // The sandbox clone validates against the enforced format (AC-PRJ-3).
+    // The sandbox clone validates against the enforced format.
     let sid = text(&sandbox["id"]).to_owned();
     let sandbox_dir = w.data_dir().join("sandboxes").join(&sid);
     let (report, _) = yulius_app::onboarding::validate_checkout(&sandbox_dir.join("repo"));
