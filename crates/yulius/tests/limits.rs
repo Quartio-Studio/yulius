@@ -1,4 +1,4 @@
-//! The instance's resource limits (SPEC-459): sized from the host by default, a unit value or a
+//! The instance's resource limits: sized from the host by default, a unit value or a
 //! setting on top, every pin recorded with the host it was configured on, flagged after a move
 //! and adapted by the start that follows `yulius instance import`.
 
@@ -563,7 +563,7 @@ async fn an_instance_that_is_not_set_up_starts_with_host_sized_limits() -> TestR
     Ok(())
 }
 
-/// HSL-006: more live sessions apply while the server runs: the queued task is offered the new
+/// More live sessions apply while the server runs: the queued task is offered the new
 /// slot at once, without waiting for another run to end.
 #[tokio::test]
 async fn a_queued_task_is_started_when_the_session_limit_is_raised() -> TestResult {
@@ -752,7 +752,7 @@ async fn a_raise_whose_audit_fails_still_starts_the_queued_task() -> TestResult 
     until_started(&h, &waiting).await
 }
 
-/// HSL-003, HSL-004: a number saved in Settings remembers its host like a unit value: on a
+/// A number saved in Settings remembers its host like a unit value: on a
 /// host of another size it is flagged, "keep" records it for this host (the setting stays as
 /// it was saved), "adapt" makes it host-sized.
 #[tokio::test]
@@ -815,7 +815,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for Quota {
     }
 }
 
-/// HSL-006: a sandbox's disk quota changes while the server runs: the isolation is told the
+/// A sandbox's disk quota changes while the server runs: the isolation is told the
 /// new quota in bytes, and "no quota" for 0.
 #[tokio::test]
 async fn the_sandbox_disk_quota_reaches_the_isolation_at_once() -> TestResult {

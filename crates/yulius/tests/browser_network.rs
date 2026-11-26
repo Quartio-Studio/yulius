@@ -1,4 +1,4 @@
-//! The sandbox browsers' way out (SPEC-483 E2, ADR-0321) as the server wires it: a proxy of its
+//! The sandbox browsers' way out as the server wires it: a proxy of its
 //! own per browser, bound to the egress proxy and to the application's record of a sandbox's
 //! ports. With `YULIUS_TEST_CHROMIUM` (never in CI), a real Chromium behind it.
 
@@ -167,7 +167,7 @@ fn status(answer: &str) -> &str {
     answer.lines().next().unwrap_or_default()
 }
 
-/// SPEC-483 E2: each browser's proxy knows its sandbox from the application: `s1`'s reaches a
+/// Each browser's proxy knows its sandbox from the application: `s1`'s reaches a
 /// dev server in `s1`'s ports and not one in `s2`'s, and the other way round; neither reaches a
 /// service of the host; of Yulius's listener both get the welcome page only. A lease that is
 /// let go closes its proxy, and a sandbox that does not exist gets none that answers.

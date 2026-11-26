@@ -1,4 +1,4 @@
-//! Brokered commands (SPEC-626, ADR-0459): a project's administrators define CLIs that need an
+//! Brokered commands: a project's administrators define CLIs that need an
 //! agent secret as a file; agents and the Superagent list them; task agents run them by name
 //! outside their sandbox.
 
@@ -107,7 +107,7 @@ async fn define(
     .await
 }
 
-/// BRK-001, BRK-002, AC-1: an administrator defines, changes and removes a command; each change
+/// An administrator defines, changes and removes a command; each change
 /// is audited without a value; a writer is refused.
 #[tokio::test]
 async fn administrators_define_change_and_remove_commands() -> TestResult {
@@ -224,7 +224,7 @@ async fn administrators_define_change_and_remove_commands() -> TestResult {
     Ok(())
 }
 
-/// BRK-001, BRK-003, AC-1: refused definitions; a production secret is refused.
+/// Refused definitions; a production secret is refused.
 #[tokio::test]
 async fn refused_definitions_store_nothing() -> TestResult {
     let w = world().await?;
@@ -233,7 +233,7 @@ async fn refused_definitions_store_nothing() -> TestResult {
         (json!({"env": {"LD_PRELOAD": "/x"}}), "set by Yulius"),
         (json!({"fixed": ["{url:api}"]}), "not a placeholder"),
         (json!({"fixed": ["--token={secret}"]}), "only in env"),
-        // Review round 2: what a person reads holds nothing they cannot see, and is bounded.
+        // What a person reads holds nothing they cannot see, and is bounded.
         (json!({"fixed": ["--to", "prod\u{202e}dev"]}), "cannot see"),
         (
             json!({"description": "x".repeat(1900), "fixed": vec!["y".repeat(4000); 5]}),
@@ -288,7 +288,7 @@ async fn refused_definitions_store_nothing() -> TestResult {
     Ok(())
 }
 
-/// BRK-004, AC-2: an agent lists its project's commands, never another project's, and is told
+/// An agent lists its project's commands, never another project's, and is told
 /// whether its task may run each.
 #[tokio::test]
 async fn agents_list_their_projects_commands_only() -> TestResult {
@@ -434,8 +434,8 @@ async fn binding_a_guarded_secret_needs_a_fresh_two_factor_unlock() -> TestResul
     Ok(())
 }
 
-/// BRK-003 (review round 1): only a project's own or a switched-on global secret is bound, a
-/// global one only by an instance administrator (ADR-0186), never a personal one; the command
+/// Only a project's own or a switched-on global secret is bound, a
+/// global one only by an instance administrator, never a personal one; the command
 /// keeps the secret it was saved with, so another one of that name, or the same made a
 /// production secret, reaches no run until it is saved again.
 #[tokio::test]
@@ -527,7 +527,7 @@ async fn a_command_keeps_the_secret_it_was_saved_with() -> TestResult {
     Ok(())
 }
 
-/// BRK-002 (review round 1): an edit made from what an editor read is not saved over a change
+/// An edit made from what an editor read is not saved over a change
 /// made since, and a rename onto another command's name is refused; neither changes anything.
 #[tokio::test]
 async fn edits_never_overwrite_a_newer_definition() -> TestResult {
@@ -646,7 +646,7 @@ async fn runs_world_on(
     let contained = host.is_some();
     // A short data directory: run sockets live at <data>/runs/cmd-<id>/pty.sock.
     let data = tempfile::Builder::new().prefix("ybc").tempdir_in("/tmp")?;
-    // The binary is the host's own, outside /tmp and the data directory (BRK-001).
+    // The binary is the host's own, outside /tmp and the data directory.
     let bin = tempfile::Builder::new()
         .prefix("ybc")
         .tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
@@ -736,7 +736,7 @@ async fn run_deploy(r: &Runs, args: Value) -> Result<Value, Error> {
     .map_err(|e| format!("refused: {e}").into())
 }
 
-/// BRK-008..BRK-012, AC-3: the run gets its key as a file outside its fresh, empty home and its
+/// The run gets its key as a file outside its fresh, empty home and its
 /// value in env only; nothing of the server's environment; the output, the stored run and the
 /// audit show `[secret:DEPLOY_KEY]`; no file under the sandbox holds the key while it runs; its
 /// files are gone after it.
@@ -813,7 +813,7 @@ async fn the_key_never_reaches_the_sandbox_or_the_output() -> TestResult {
     Ok(())
 }
 
-/// BRK-006, AC-4: paths, refused flags and other subcommands are refused, audited, and run
+/// Paths, refused flags and other subcommands are refused, audited, and run
 /// nothing.
 #[tokio::test]
 async fn paths_refused_flags_and_other_subcommands_run_nothing() -> TestResult {
@@ -855,7 +855,7 @@ async fn paths_refused_flags_and_other_subcommands_run_nothing() -> TestResult {
     Ok(())
 }
 
-/// BRK-005, AC-5: another project's task, and a task outside `tasks`, are refused; a run is read
+/// Another project's task, and a task outside `tasks`, are refused; a run is read
 /// only by the task that started it.
 #[tokio::test]
 async fn other_projects_and_other_tasks_are_refused() -> TestResult {
@@ -896,7 +896,7 @@ async fn other_projects_and_other_tasks_are_refused() -> TestResult {
     Ok(())
 }
 
-/// BRK-010, AC-7: a run past its time limit is stopped and says so; output past 96 KiB comes
+/// A run past its time limit is stopped and says so; output past 96 KiB comes
 /// back cut, saying how much was left out.
 #[tokio::test]
 async fn time_and_output_are_bounded() -> TestResult {
@@ -923,7 +923,7 @@ async fn time_and_output_are_bounded() -> TestResult {
     Ok(())
 }
 
-/// BRK-009: a server that starts records a run it did not see end as lost, ends its process and
+/// A server that starts records a run it did not see end as lost, ends its process and
 /// removes its files, the key's among them (review round 1 of slice 2: with a live run).
 #[tokio::test]
 async fn a_restart_loses_a_running_run_and_removes_its_files() -> TestResult {
@@ -972,7 +972,7 @@ async fn a_restart_loses_a_running_run_and_removes_its_files() -> TestResult {
     Ok(())
 }
 
-/// BRK-001 (review round 2): no binary in Yulius's data directory, where sandboxes keep what their
+/// No binary in Yulius's data directory, where sandboxes keep what their
 /// agents write.
 #[tokio::test]
 async fn no_binary_of_the_data_directory() -> TestResult {
@@ -993,7 +993,7 @@ async fn no_binary_of_the_data_directory() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 of slice 2: what comes back is read through the handles Yulius made before the
+/// What comes back is read through the handles Yulius made before the
 /// run. A run that puts a link to a host file at its output's path, or a FIFO, gets neither read:
 /// the agent sees what the CLI wrote and the run ends.
 #[tokio::test]
@@ -1007,7 +1007,7 @@ async fn output_is_read_from_the_files_yulius_made_not_from_their_paths() -> Tes
     Ok(())
 }
 
-/// BRK-010 (review round 1 of slice 2): a run whose files pass 16 MiB is stopped and says so.
+/// A run whose files pass 16 MiB is stopped and says so.
 #[tokio::test]
 async fn a_run_whose_files_pass_the_bound_is_stopped() -> TestResult {
     let r = runs_world(json!({"timeout_seconds": 60})).await?;
@@ -1022,7 +1022,7 @@ async fn a_run_whose_files_pass_the_bound_is_stopped() -> TestResult {
     Ok(())
 }
 
-/// BRK-012 (review round 1 of slice 2): a refused argument holding a value is audited without it,
+/// A refused argument holding a value is audited without it,
 /// and the agent is told which argument by its place.
 #[tokio::test]
 async fn a_refusal_audits_no_value() -> TestResult {
@@ -1064,7 +1064,7 @@ async fn a_refusal_audits_no_value() -> TestResult {
     Ok(())
 }
 
-/// RUN-003 (review round 1 of slice 2): at most four runs of a project's commands at once; the
+/// At most four runs of a project's commands at once; the
 /// fifth is refused, audited, and runs nothing.
 #[tokio::test]
 async fn at_most_four_runs_of_a_project_at_once() -> TestResult {
@@ -1117,7 +1117,7 @@ async fn at_most_four_runs_of_a_project_at_once() -> TestResult {
     Ok(())
 }
 
-/// BRK-007 (review round 1 of slice 2): `yulius run` against Yulius's own `/mcp` prints the run's
+/// `yulius run` against Yulius's own `/mcp` prints the run's
 /// redacted streams and exits with its code; `command_result` without an id reads the task's
 /// newest run.
 #[tokio::test]
@@ -1155,7 +1155,7 @@ async fn yulius_run_prints_the_run_and_exits_with_its_code() -> TestResult {
     Ok(())
 }
 
-/// BRK-008 (review round 1 of slice 2): on a contained server the run joins the project's
+/// On a contained server the run joins the project's
 /// production holder (never the agents' sandbox) on the host's read-only system, with only its own
 /// folder and without Docker.
 #[tokio::test]
@@ -1198,7 +1198,7 @@ async fn a_contained_run_joins_the_production_holder_without_docker() -> TestRes
     Ok(())
 }
 
-/// BRK-003 (review round 2 of slice 2): a run reads its command again before it runs, and runs
+/// A run reads its command again before it runs, and runs
 /// nothing when the command was changed or removed since it was asked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_command_changed_or_removed_before_its_run_runs_nothing() -> TestResult {
@@ -1316,7 +1316,7 @@ async fn answer(r: &Runs, id: &str, approve: bool, who: &Creds) -> Result<suppor
     .await
 }
 
-/// BRK-013..BRK-015, AC-6: an `always` run waits; its task is in Needs you with the full command
+/// An `always` run waits; its task is in Needs you with the full command
 /// line and how to answer; an API token cannot answer it; a person who manages the project's
 /// secrets approves it in a browser and it runs once; every step is audited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1377,7 +1377,7 @@ async fn an_always_run_waits_for_a_person_and_runs_once_approved() -> TestResult
     Ok(())
 }
 
-/// BRK-015, AC-6: a rejected run runs nothing, and a later approval of it is refused.
+/// A rejected run runs nothing, and a later approval of it is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rejected_run_runs_nothing() -> TestResult {
     let r = runs_world(json!({"approve": "always"})).await?;
@@ -1408,7 +1408,7 @@ async fn a_rejected_run_runs_nothing() -> TestResult {
     Ok(())
 }
 
-/// BRK-016, AC-6: no answer by the deadline is a no: the run ends `expired`, runs nothing, its
+/// No answer by the deadline is a no: the run ends `expired`, runs nothing, its
 /// request ends, and an answer after it is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_answer_in_time_is_a_no() -> TestResult {
@@ -1447,7 +1447,7 @@ async fn no_answer_in_time_is_a_no() -> TestResult {
     Ok(())
 }
 
-/// BRK-016: the answer's own condition holds the deadline, also when nothing expired the run
+/// The answer's own condition holds the deadline, also when nothing expired the run
 /// yet (a restart lost its timer): an approval past it is refused and runs nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_approval_past_the_deadline_is_refused_by_its_write() -> TestResult {
@@ -1520,7 +1520,7 @@ async fn an_approval_past_the_deadline_is_refused_by_its_write() -> TestResult {
     Ok(())
 }
 
-/// BRK-013: `send` asks only for a run the agent says changes something or that sets a send
+/// `send` asks only for a run the agent says changes something or that sets a send
 /// flag; one run of a task waits at a time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_asks_only_for_a_run_that_changes_something() -> TestResult {
@@ -1601,7 +1601,7 @@ async fn stored_run(
     })
 }
 
-/// BRK-014 (review round 1 of slice 3): one run of a task waits at a time, held by the store's
+/// One run of a task waits at a time, held by the store's
 /// own transaction, also for calls made together.
 #[tokio::test]
 async fn one_run_of_a_task_waits_at_a_time_in_the_store() -> TestResult {
@@ -1621,7 +1621,7 @@ async fn one_run_of_a_task_waits_at_a_time_in_the_store() -> TestResult {
     Ok(())
 }
 
-/// BRK-015 (review round 1 of slice 3): an answer needs write access to the project (it manages
+/// An answer needs write access to the project (it manages
 /// its secrets) from a browser; another project's run id is not found there; the list says who
 /// may answer; a non-member sees nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1681,7 +1681,7 @@ async fn who_answers_a_run_and_where() -> TestResult {
     Ok(())
 }
 
-/// BRK-014 (review round 1 of slice 3): the run's request replaces the agent's open one; the
+/// The run's request replaces the agent's open one; the
 /// agent's request opened after it stays when the run is answered; the agent's call answers
 /// `waiting` with the deadline after its wait, and `command_result` reads the end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1739,7 +1739,7 @@ async fn the_agent_waits_and_its_own_request_survives_the_runs_answer() -> TestR
     Ok(())
 }
 
-/// BRK-015 (review round 1 of slice 3): an approval while four runs of the project run is
+/// An approval while four runs of the project run is
 /// refused and the run still waits; once one ended it is approved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_approval_waits_for_a_free_run() -> TestResult {
@@ -1789,7 +1789,7 @@ async fn an_approval_waits_for_a_free_run() -> TestResult {
     Ok(())
 }
 
-/// BRK-016 (review round 1 of slice 3): a run that waited past its deadline while Yulius was
+/// A run that waited past its deadline while Yulius was
 /// down is expired at the start, and its request ends.
 #[tokio::test]
 async fn a_start_expires_a_run_past_its_deadline() -> TestResult {

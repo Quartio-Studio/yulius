@@ -1,4 +1,4 @@
-//! A session's first message and a person's typing (SPEC-068, SPEC-117): only keystrokes count as
+//! A session's first message and a person's typing: only keystrokes count as
 //! typing, so a continued goal session leaves a person's draft alone; a goal task's `/goal` waits
 //! behind a folder-trust dialog; a first message Yulius types with images is never lost by a
 //! server restart or carried without its images after a capacity hold.
@@ -55,11 +55,11 @@ fn a_shifted_clock_reads_a_stamp_with_the_offset_of_its_time() {
     assert!(clock.now().0 >= later.0 - 90_000);
 }
 
-/// A goal task that got its goal (its launch prompt, SPEC-117), then moved by a person to
+/// A goal task that got its goal (its launch prompt), then moved by a person to
 /// another subscription while the goal's turn still runs (`--goal-delay-ms` holds it open; a
-/// task moved after its turn ended gets nothing typed, SPEC-447 MOV-001): the new session opens
+/// task moved after its turn ended gets nothing typed): the new session opens
 /// with a turn on "Continue the task …" of 12 s (`--opening-turn-ms`), after which its goal is
-/// typed again (ONE-007). Returns the task, its creator's context and a writer's terminal on the
+/// typed again. Returns the task, its creator's context and a writer's terminal on the
 /// new session during that turn.
 async fn goal_in_a_continued_turn(
     app: &Arc<App>,
@@ -111,7 +111,7 @@ fn opening_turn() -> FakeAgentOptions {
     }
 }
 
-/// SPEC-068 TYP-002, AC-TYP-2: clicking into and out of the terminal during a continued goal
+/// Clicking into and out of the terminal during a continued goal
 /// session's opening turn (focus and mouse reports through `terminal_input`) is not typing: the
 /// goal is still set, once, after that turn.
 #[test]
@@ -146,7 +146,7 @@ fn focus_and_mouse_reports_do_not_keep_the_goal_out() -> TestResult {
     Ok(())
 }
 
-/// SPEC-068 TYP-003, AC-TYP-3 (#252): a person's draft typed during a continued goal session's
+/// A person's draft typed during a continued goal session's
 /// opening turn does not get `/goal` appended; the task is flagged and told why.
 #[test]
 fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
@@ -166,7 +166,7 @@ fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
         .await?;
         let said = notices(&mut watch);
         assert!(said.iter().any(|n| n.contains("no goal yet")), "{said:?}");
-        // The task says it to whoever opens it later (SPEC-472 ATN-004).
+        // The task says it to whoever opens it later.
         assert_eq!(
             support::attention(&app, id.as_str()).await?,
             serde_json::json!({
@@ -187,7 +187,7 @@ fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
     Ok(())
 }
 
-/// SPEC-106 OTR-002 (#425): Claude Code opens on its folder-trust prompt and a person answers it
+/// Claude Code opens on its folder-trust prompt and a person answers it
 /// before the goal. Yulius types nothing into the prompt, the answer is not a draft, and the goal
 /// is set once the prompt is gone, with no flag.
 #[test]
@@ -249,7 +249,7 @@ fn a_trust_prompt_answered_before_the_goal_keeps_the_goal() -> TestResult {
     Ok(())
 }
 
-/// SPEC-106 OTR-002 (#425): a trust prompt nobody answers gets nothing typed into it; once the
+/// A trust prompt nobody answers gets nothing typed into it; once the
 /// time to answer it is over the task is flagged and says why.
 #[test]
 fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestResult {
@@ -316,7 +316,7 @@ fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestRes
     Ok(())
 }
 
-/// SPEC-483 slice 5 (review rounds 2 and 3, ADR-0317): a terminal whose screen is withheld (an
+/// A terminal whose screen is withheld (an
 /// agent secret no longer opens) shows nothing of what the program draws, so Yulius cannot tell
 /// whether it reads input or asks something. It types nothing: no first message into a session
 /// that started behind the withheld screen (the task is flagged with what to do), and no
@@ -453,7 +453,7 @@ fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-106 OTR-002: the trust dialog's words in a session that has started (here a person's
+/// The trust dialog's words in a session that has started (here a person's
 /// draft) are no trust prompt: the draft is left alone and the task flagged, as in #252.
 #[test]
 fn trust_words_after_the_session_started_are_no_trust_prompt() -> TestResult {
@@ -485,7 +485,7 @@ fn trust_words_after_the_session_started_are_no_trust_prompt() -> TestResult {
     Ok(())
 }
 
-/// SPEC-117 ONE-001, TSK-010: a `/goal` launch prompt that Claude Code never takes (no goal
+/// A `/goal` launch prompt that Claude Code never takes (no goal
 /// recorded within `launch_goal_ms` once the session reads input) flags the task and says so, as
 /// a typed goal that was never taken does.
 #[test]
@@ -500,7 +500,7 @@ fn a_launch_goal_never_taken_flags_the_task() -> TestResult {
             ..hooked()
         };
         let (app, _) = start_with(&data, &fake, agent, 0, probe, |config| {
-            // 75 s in production (the typed goal's submit waits): shortened (SPEC-082 TST-001).
+            // 75 s in production (the typed goal's submit waits): shortened.
             config.launch_goal_ms = 3_000;
         })
         .await?;
@@ -537,7 +537,7 @@ fn a_launch_goal_never_taken_flags_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-117 ONE-006, AC-ONE-3: keys a person types while Yulius types a prompt task's first
+/// Keys a person types while Yulius types a prompt task's first
 /// message with an image are not written into it, and the person is told to type once it is sent;
 /// after it, typing reaches the session again. Without a SessionStart hook the session reads input
 /// 10 s after its start (half of `goal_ready_ms`), so the keys surely come before the message.
@@ -585,7 +585,7 @@ fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
         eventually("the first message", Duration::from_secs(60), || async {
             {
                 let shown = screen(&app, &id);
-                // The image is pasted where it sits: after the text (SPEC-124).
+                // The image is pasted where it sits: after the text.
                 shown
                     .find("ECHO: Make it blue")
                     .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
@@ -614,7 +614,7 @@ fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
     Ok(())
 }
 
-/// SPEC-117 ONE-006: the folder-trust dialog in front of a prompt task's typed first message is
+/// The folder-trust dialog in front of a prompt task's typed first message is
 /// answered by a person: those keys pass (only a person answers it), and the message with its
 /// image is typed once the dialog is gone.
 #[test]
@@ -656,7 +656,7 @@ fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult 
         eventually("the first message", Duration::from_secs(60), || async {
             {
                 let shown = screen(&app, &id);
-                // The image is pasted where it sits: after the text (SPEC-124).
+                // The image is pasted where it sits: after the text.
                 shown
                     .find("ECHO: Make it blue")
                     .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
@@ -681,7 +681,7 @@ fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult 
     Ok(())
 }
 
-/// SPEC-106 OTR-002, SPEC-472 ATN-004: a trust prompt nobody answers in front of a prompt task's
+/// A trust prompt nobody answers in front of a prompt task's
 /// typed first message gets nothing typed into it; once the time to answer it is over the task
 /// is flagged, and it says what its person does: answer, then type the first message.
 #[test]
@@ -743,7 +743,7 @@ fn an_unanswered_trust_prompt_before_a_typed_first_message_flags_the_task() -> T
     Ok(())
 }
 
-/// SPEC-068 OPN-002, AC-OPN-1 (#266): the server restarts while the first message of a task with
+/// The server restarts while the first message of a task with
 /// an image is being typed (the image pasted, no Enter yet). The new server reattaches the run
 /// and flags the task with a notice; nothing is submitted for it.
 #[test]
@@ -790,7 +790,7 @@ fn a_first_message_cut_by_a_restart_flags_the_task() -> TestResult {
                 .any(|n| n.contains("first message was never sent")),
             "{said:?}"
         );
-        // No viewer is connected when a server starts: the task itself says it (SPEC-472).
+        // No viewer is connected when a server starts: the task itself says it.
         assert_eq!(
             support::attention(&app, id.as_str()).await?,
             serde_json::json!({
@@ -868,7 +868,7 @@ fn first_message_held_by_an_update(
     Ok((dir, data, port, id))
 }
 
-/// SPEC-068 OPN-002: the first message's submit reached Yulius but an instance update held it
+/// The first message's submit reached Yulius but an instance update held it
 /// when the server restarted. The new server does not flag the task: the held submit goes on and
 /// the agent gets the message once.
 #[test]
@@ -884,7 +884,7 @@ fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestR
         eventually("the first message", Duration::from_secs(60), || async {
             {
                 let shown = screen(&app, &id);
-                // The image is pasted where it sits: after the text (SPEC-124).
+                // The image is pasted where it sits: after the text.
                 shown
                     .find("ECHO: Make it blue")
                     .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
@@ -908,7 +908,7 @@ fn unjudged() -> FakeAgentOptions {
     }
 }
 
-/// ADR-0095: a goal run started by an older server typed a first message before its goal; that
+/// A goal run started by an older server typed a first message before its goal; that
 /// message was submitted and held when the server restarted into this version, which types no
 /// goal after it. The task is flagged and says why, instead of going on without a goal.
 #[test]
@@ -969,7 +969,7 @@ fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResu
     Ok(())
 }
 
-/// SPEC-483 TYP-002: a person starts to type just before Yulius types a resumed session's
+/// A person starts to type just before Yulius types a resumed session's
 /// `/goal` (the opening turn is over and nobody had typed; Yulius may wait for the typing mark
 /// there). Asked again with the mark held, their key keeps the goal out, and the task says that
 /// it has no goal, as when they typed earlier.
@@ -1009,7 +1009,7 @@ fn a_key_just_before_the_goal_keeps_it_out_and_is_said() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-002: while Yulius types a resumed session's `/goal` (the line is in the prompt
+/// While Yulius types a resumed session's `/goal` (the line is in the prompt
 /// box, its Enter not sent yet), a message for the task is refused as while another message is
 /// being typed, and the goal is set as it was typed.
 #[test]
@@ -1068,12 +1068,12 @@ fn nothing_is_typed_between_the_goal_and_its_enter() -> TestResult {
     Ok(())
 }
 
-/// The run directory's marker of a `/goal` Yulius still has to type (SPEC-483 RST-002).
+/// The run directory's marker of a `/goal` Yulius still has to type.
 fn typed_goal_marker(run_dir: &str) -> PathBuf {
     Path::new(run_dir).join("typed-goal-pending")
 }
 
-/// SPEC-483 RST-002: Yulius restarts while it still has to type a resumed session's `/goal`
+/// Yulius restarts while it still has to type a resumed session's `/goal`
 /// (the session's opening turn runs). The new server has no typist for it; it waits that turn
 /// out, watches whether Claude Code recorded a goal and, as it did not, flags the task and says
 /// why, instead of leaving a goal task idle without a goal and without a word. The flag comes
@@ -1160,7 +1160,7 @@ fn restart_before_goal_is_typed(agent: FakeAgentOptions) -> Result<bool, BoxErro
     Ok(flagged)
 }
 
-/// SPEC-483 RST-002: Claude Code recorded the typed goal, and the server stopped before it
+/// Claude Code recorded the typed goal, and the server stopped before it
 /// removed the marker. The new server's watch finds the goal in the run's transcript: no flag,
 /// and the marker goes.
 #[test]
@@ -1211,7 +1211,7 @@ fn a_typed_goal_recorded_before_a_restart_is_not_flagged() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 RST-002: a goal Yulius typed and Claude Code took leaves no marker, so no later
+/// A goal Yulius typed and Claude Code took leaves no marker, so no later
 /// server watches it or flags the task.
 #[test]
 fn a_typed_goal_that_was_taken_leaves_no_marker() -> TestResult {
@@ -1239,12 +1239,12 @@ fn a_typed_goal_that_was_taken_leaves_no_marker() -> TestResult {
     Ok(())
 }
 
-/// The run directory's marker of a launch `/goal` not confirmed yet (SPEC-146 GWR-001).
+/// The run directory's marker of a launch `/goal` not confirmed yet.
 fn launch_goal_marker(run_dir: &str) -> PathBuf {
     Path::new(run_dir).join("launch-goal-pending")
 }
 
-/// SPEC-146 GWR-002 (#453): the server restarts while a goal task's launch `/goal` is not
+/// The server restarts while a goal task's launch `/goal` is not
 /// recorded (the agent ignores it). The new server watches it again: once the session reads input
 /// and `launch_goal_ms` passed, the task is flagged with the notice, as without a restart.
 #[test]
@@ -1266,7 +1266,7 @@ fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Tidy the parser", TaskMode::Goal).await?;
         // The run is up, not only recorded: a server stopped while it spawns leaves no run the
-        // next server can reattach, so that server ends it as lost instead of watching it (#514).
+        // next server can reattach, so that server ends it as lost instead of watching it.
         eventually("the run", Duration::from_secs(30), || async {
             matches!(
                 app.deps.store.live_attempt(&id).await,
@@ -1300,7 +1300,7 @@ fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
                 .any(|n| n.contains("Claude Code did not take the task's goal")),
             "{said:?}"
         );
-        // Flagged once: no later restart flags it again (GWR-001).
+        // Flagged once: no later restart flags it again.
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         let marker = launch_goal_marker(&attempt.run_dir);
         eventually("the marker's removal", Duration::from_secs(10), || async {
@@ -1313,7 +1313,7 @@ fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-146 GWR-001, GWR-003 (#453): a launch goal Claude Code recorded is never flagged after a
+/// A launch goal Claude Code recorded is never flagged after a
 /// restart. Recorded while the server runs, its marker goes; recorded while the server was down
 /// (the marker left), the reattached run's transcript replay gives it to the new watch, which
 /// ends without a flag (its marker goes then).
@@ -1423,7 +1423,7 @@ async fn typed_again_on_b_second(app: &Arc<App>, id: &TaskId) -> TestResult {
     eventually("the first message", Duration::from_secs(60), || async {
         {
             let shown = screen(app, id);
-            // The image is pasted where it sits: after the text (SPEC-124).
+            // The image is pasted where it sits: after the text.
             shown
                 .find("ECHO: Make it blue")
                 .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
@@ -1448,7 +1448,7 @@ async fn typed_again_on_b_second(app: &Arc<App>, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// SPEC-068 OPN-003, AC-OPN-2 (#266): the first message of a task with an image is held for
+/// The first message of a task with an image is held for
 /// capacity and resumed on another subscription: a fresh session there gets the task's own
 /// opening, the image pasted, not the held prompt's text.
 #[test]
@@ -1468,7 +1468,7 @@ fn a_held_first_message_resumes_elsewhere_with_its_image() -> TestResult {
     Ok(())
 }
 
-/// SPEC-068 OPN-003: a person switches the account of a task whose first message is held: the
+/// A person switches the account of a task whose first message is held: the
 /// same fresh session on the chosen account, not "continue where you left off" in an empty one.
 #[test]
 fn a_manual_switch_of_a_held_first_message_keeps_its_image() -> TestResult {

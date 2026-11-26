@@ -1,4 +1,4 @@
-//! Moving a playground into a GitHub repository (SPEC-176, ADR-0142): its branches and tags are
+//! Moving a playground into a GitHub repository: its branches and tags are
 //! pushed to an empty repository of the instance owner, its clone's `origin` and its record become
 //! GitHub's, and its tasks stay. Real Git and a real store; the fake GitHub answers permissions,
 //! and `https://github.com/` is a directory of local bare repositories
@@ -146,7 +146,7 @@ fn refs(repo: &Path) -> BoxResult<Vec<String>> {
     Ok(out.lines().map(str::to_owned).collect())
 }
 
-/// MPG-001, MPG-003, MPG-004: the maker, admin of the empty repository on GitHub, moves the
+/// The maker, admin of the empty repository on GitHub, moves the
 /// playground. GitHub holds its branches and tags, the clone's `origin` is GitHub, the bare
 /// `origin` is gone, the sandbox is a GitHub sandbox with the same slug and its task stays.
 #[tokio::test]
@@ -213,7 +213,7 @@ async fn a_playground_moves_into_an_empty_github_repository() -> TestResult {
     assert_eq!(moved.body["id"], sid.as_str());
     assert_eq!(moved.body["repo"]["owner"], OWNER);
     assert_eq!(moved.body["repo"]["name"], "alices-lab");
-    // Built by the server, never stored: the UI's "Open on GitHub" opens only this (#741).
+    // Built by the server, never stored: the UI's "Open on GitHub" opens only this.
     assert_eq!(
         moved.body["repo"]["url"],
         format!("https://github.com/{OWNER}/alices-lab")
@@ -272,7 +272,7 @@ async fn a_playground_moves_into_an_empty_github_repository() -> TestResult {
     Ok(())
 }
 
-/// MPG-001, MPG-004: only an admin of the playground who could import the repository moves it.
+/// Only an admin of the playground who could import the repository moves it.
 /// The superadmin moves one into a repository the App can access; its maker then has only what
 /// GitHub gives them.
 #[tokio::test]
@@ -282,7 +282,7 @@ async fn only_who_could_import_the_repository_moves_a_playground() -> TestResult
     let github = w.empty_repository("alices-lab")?;
     let repo = format!("{OWNER}/alices-lab");
 
-    // `write` on GitHub is not enough to link a repository (IMP-002).
+    // `write` on GitHub is not enough to link a repository.
     w.h.github.set_perm("alice", &repo, support::perms("write"));
     let refused = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
@@ -339,7 +339,7 @@ async fn only_who_could_import_the_repository_moves_a_playground() -> TestResult
     Ok(())
 }
 
-/// MPG-001: without the GitHub App, a playground has nowhere to go.
+/// Without the GitHub App, a playground has nowhere to go.
 #[tokio::test]
 async fn a_move_needs_github_connected() -> TestResult {
     let h = harness_with(HarnessOptions {
@@ -388,7 +388,7 @@ async fn assert_as_it_was(
     Ok(())
 }
 
-/// MPG-002, MPG-005: a repository with anything of its own is refused before any push.
+/// A repository with anything of its own is refused before any push.
 #[tokio::test]
 async fn a_repository_that_is_not_empty_is_refused() -> TestResult {
     let w = world().await?;
@@ -426,7 +426,7 @@ async fn a_repository_that_is_not_empty_is_refused() -> TestResult {
     assert_as_it_was(&w, &sandbox, &origin, &before).await
 }
 
-/// MPG-005: a push GitHub refuses changes nothing.
+/// A push GitHub refuses changes nothing.
 #[tokio::test]
 async fn a_failed_push_leaves_the_playground_as_it_was() -> TestResult {
     let w = world().await?;
@@ -453,7 +453,7 @@ async fn a_failed_push_leaves_the_playground_as_it_was() -> TestResult {
     Ok(())
 }
 
-/// MPG-002: a move whose push completed but which failed after it is retried: the repository holds
+/// A move whose push completed but which failed after it is retried: the repository holds
 /// exactly the playground's branches and tags, so nothing more is pushed and the move completes.
 #[tokio::test]
 async fn a_move_retried_after_its_push_completes() -> TestResult {
@@ -484,7 +484,7 @@ async fn a_move_retried_after_its_push_completes() -> TestResult {
     Ok(())
 }
 
-/// MPG-005: a live or queued task holds the move; one prepared for later does not count.
+/// A live or queued task holds the move; one prepared for later does not count.
 #[tokio::test]
 async fn a_live_task_holds_the_move() -> TestResult {
     let w = world().await?;
@@ -518,7 +518,7 @@ async fn a_live_task_holds_the_move() -> TestResult {
     assert_as_it_was(&w, &sandbox, &origin, &before).await
 }
 
-/// MPG-005 (review round 1): a move that fails after its push (here the clone's fetch: a ref it
+/// A move that fails after its push (here the clone's fetch: a ref it
 /// must write is locked) points the clone back at its own `origin` and leaves the playground as it
 /// was; once the cause is gone, the move is retried and completes with what GitHub already holds.
 #[tokio::test]
@@ -556,7 +556,7 @@ async fn a_move_failing_after_its_push_points_the_clone_back_and_is_retried() ->
     Ok(())
 }
 
-/// MPG-002 (review round 1): a playground that moved on after a failed move (a merge landed) is
+/// A playground that moved on after a failed move (a merge landed) is
 /// still taken by its repository: GitHub's refs are behind the playground's, and the non-forcing
 /// push fast-forwards them.
 #[tokio::test]
@@ -601,7 +601,7 @@ async fn a_retry_after_the_playground_moved_on_fast_forwards() -> TestResult {
     Ok(())
 }
 
-/// MPG-001 (review round 1): a repository another sandbox holds is refused.
+/// A repository another sandbox holds is refused.
 #[tokio::test]
 async fn a_repository_that_is_already_a_sandbox_is_refused() -> TestResult {
     let w = world().await?;
@@ -631,7 +631,7 @@ async fn a_repository_that_is_already_a_sandbox_is_refused() -> TestResult {
     assert_as_it_was(&w, &sandbox, &origin, &before).await
 }
 
-/// MPG-005 (review round 1): a CI run of the playground that is queued or running holds the move:
+/// A CI run of the playground that is queued or running holds the move:
 /// it tests a commit that may exist only on this server.
 #[tokio::test]
 async fn an_active_ci_run_holds_the_move() -> TestResult {
@@ -673,7 +673,7 @@ async fn an_active_ci_run_holds_the_move() -> TestResult {
     assert_as_it_was(&w, &sandbox, &origin, &before).await
 }
 
-/// MPG-005 (review round 1): a move outlives its request. The client goes away while the move
+/// A move outlives its request. The client goes away while the move
 /// waits for GitHub; the move still ends, completed, not half done.
 #[tokio::test]
 async fn a_move_ends_when_its_client_goes_away() -> TestResult {

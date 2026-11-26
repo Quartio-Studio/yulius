@@ -1,4 +1,4 @@
-//! The pinned Codex CLI Yulius provides to Codex runs (SPEC-503 CLI-001): a registry stub serves
+//! The pinned Codex CLI Yulius provides to Codex runs: a registry stub serves
 //! a platform tarball laid out as `@openai/codex@0.170.0-linux-x64` is, whose `bin/codex` is a
 //! synthetic ELF header. No test reaches npm.
 
@@ -195,7 +195,7 @@ fn entries(root: &Path) -> Vec<String> {
     names
 }
 
-/// CLI-001: the pinned release is downloaded once, checked and unpacked as its own tree into
+/// The pinned release is downloaded once, checked and unpacked as its own tree into
 /// `<root>/0.170.0-linux-x64` (the binary, its `rg` and resources, nothing outside `vendor/`),
 /// readable and runnable by every sandbox user; callers at the same time wait for one install;
 /// an earlier release and an interrupted install's leftovers go.
@@ -254,7 +254,7 @@ async fn the_pinned_release_is_installed_once_as_its_own_tree() -> TestResult {
 /// the tarball's) and a smaller unpacked bound.
 type RefusedCase = (&'static str, Vec<u8>, Option<Vec<u8>>, Option<u64>);
 
-/// CLI-001: the release is readable and runnable by every sandbox user whatever the service's
+/// The release is readable and runnable by every sandbox user whatever the service's
 /// umask (here 077, on a thread with its own): in an isolated sandbox root maps to another user.
 #[cfg(target_os = "linux")]
 #[test]
@@ -292,7 +292,7 @@ fn the_release_is_open_to_sandbox_users_whatever_the_umask() -> TestResult {
     Ok(())
 }
 
-/// CLI-001: an earlier release left by a process that ran it at the last install goes once this
+/// An earlier release left by a process that ran it at the last install goes once this
 /// process looks again, without a download.
 #[tokio::test]
 async fn an_earlier_release_goes_once_nothing_runs_it() -> TestResult {
@@ -316,7 +316,7 @@ async fn an_earlier_release_goes_once_nothing_runs_it() -> TestResult {
     Ok(())
 }
 
-/// CLI-002: a platform without a provided CLI says so to a caller that must not wait, not that
+/// A platform without a provided CLI says so to a caller that must not wait, not that
 /// the CLI is still being installed.
 #[tokio::test]
 async fn an_unsupported_platform_gives_its_reason() -> TestResult {
@@ -336,7 +336,7 @@ async fn an_unsupported_platform_gives_its_reason() -> TestResult {
     Ok(())
 }
 
-/// CLI-001: a tarball that is not the pinned one, that names a path outside its release or a
+/// A tarball that is not the pinned one, that names a path outside its release or a
 /// link, that holds no binary or one for another machine, or that is too large is refused, and
 /// nothing is left installed or behind.
 #[tokio::test]
@@ -406,7 +406,7 @@ async fn a_refused_tarball_installs_nothing() -> TestResult {
     Ok(())
 }
 
-/// CLI-001: a tarball larger than the download bound installs nothing, whether the registry says
+/// A tarball larger than the download bound installs nothing, whether the registry says
 /// its size (`Content-Length`) or streams it without one: the download stops at the bound.
 #[tokio::test]
 async fn a_tarball_over_the_download_bound_installs_nothing() -> TestResult {
@@ -428,7 +428,7 @@ async fn a_tarball_over_the_download_bound_installs_nothing() -> TestResult {
     Ok(())
 }
 
-/// CLI-001: an earlier release a process still runs (a Codex session from before a pin bump) is
+/// An earlier release a process still runs (a Codex session from before a pin bump) is
 /// kept by the install, and goes at the next start once nothing runs it.
 #[tokio::test]
 async fn an_earlier_release_a_process_runs_is_kept() -> TestResult {
@@ -462,7 +462,7 @@ async fn an_earlier_release_a_process_runs_is_kept() -> TestResult {
     Ok(())
 }
 
-/// CLI-001: the download lies in a staging folder only Yulius can enter, whatever the umask (here
+/// The download lies in a staging folder only Yulius can enter, whatever the umask (here
 /// a common 022, on a thread with its own), so nobody swaps the hashed tarball before it is
 /// unpacked.
 #[cfg(target_os = "linux")]
@@ -512,7 +512,7 @@ fn the_staging_folder_is_private() -> TestResult {
     Ok(())
 }
 
-/// CLI-002: a failed install answers the next callers at once with its reason instead of each
+/// A failed install answers the next callers at once with its reason instead of each
 /// waiting for a download, and is tried again after a while.
 #[tokio::test]
 async fn a_failed_install_is_not_retried_by_every_start() -> TestResult {
@@ -542,7 +542,7 @@ async fn a_failed_install_is_not_retried_by_every_start() -> TestResult {
     Ok(())
 }
 
-/// CLI-002: the adapter gives Codex runs the provided CLI; while it cannot be installed it falls
+/// The adapter gives Codex runs the provided CLI; while it cannot be installed it falls
 /// back to the host's `codex`, and with neither the start fails with the reason (never
 /// `codex: not found`). Without a provider runs keep `codex` from `PATH`.
 #[tokio::test]
@@ -606,7 +606,7 @@ async fn codex_runs_get_the_provided_cli_or_a_reason() -> TestResult {
     Ok(())
 }
 
-/// CLI-001 (and SPEC-505 AGY-007): at start, Yulius installs the Codex CLI in the background
+/// At start, Yulius installs the Codex CLI in the background
 /// only when a Codex subscription exists, and the Antigravity CLI only when a Google one does:
 /// an instance with none, or with Claude subscriptions only, downloads nothing.
 #[tokio::test]

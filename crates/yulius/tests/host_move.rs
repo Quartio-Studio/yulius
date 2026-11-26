@@ -1,4 +1,4 @@
-//! The first start after a move to another host (SPEC-460 MIG-050): the copy carries a mark, and
+//! The first start after a move to another host: the copy carries a mark, and
 //! the start that finds it puts the tasks whose runs were lost with the old host back in the
 //! queue, whoever owns them.
 
@@ -110,7 +110,7 @@ async fn a_mark_that_cannot_be_read_still_brings_the_tasks_back() -> TestResult 
     Ok(())
 }
 
-/// SPEC-483 MOV-002: a mark that is not even text (a damaged file) is still a mark: the lost
+/// A mark that is not even text (a damaged file) is still a mark: the lost
 /// tasks come back and the mark goes, rather than being met again at every start.
 #[tokio::test]
 async fn a_mark_that_is_not_text_still_brings_the_tasks_back_and_goes() -> TestResult {
@@ -157,7 +157,7 @@ async fn ended_while_down() -> Result<Harness, Box<dyn std::error::Error>> {
     Ok(h)
 }
 
-/// SPEC-483 SWT-002 (review, round 3): the server died while a task was switching, and the run
+/// The server died while a task was switching, and the run
 /// that switch had asked to end is found ended at the next start. The switch was lost with the
 /// server: the task is lost to the restart, as one found with no run is, and a move brings it
 /// back. It is not closed as a task whose session left by itself is.

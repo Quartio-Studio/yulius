@@ -1,4 +1,4 @@
-//! SPEC-494 DFJ-007: while a sandbox's Docker front is full (a `docker` connection trouble), each
+//! While a sandbox's Docker front is full (a `docker` connection trouble), each
 //! live task of the sandbox is told once in its session not to ask a person, and once the
 //! trouble stayed ended, the tasks told hear that it is no longer full. A fake agent echoes what it is
 //! typed.
@@ -32,7 +32,7 @@ async fn until_typed(
     }
 }
 
-/// AC-5: told once per trouble, then told it is no longer full; another sandbox's trouble says nothing.
+/// Told once per trouble, then told it is no longer full; another sandbox's trouble says nothing.
 #[test]
 fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResult {
     use yulius_ptyhost::test_support::locate_fake_agent;
@@ -154,7 +154,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
     })
 }
 
-/// AC-7 (DFJ-011): requests about the sandbox's Docker are one shared problem. A person's
+/// Requests about the sandbox's Docker are one shared problem. A person's
 /// answer to one task (a message through the Superagent) answers the others asked before and
 /// tells them so; the end of the Docker trouble (Yulius's repair) answers those asked before its
 /// end, and they hear that Docker works again. A request without the cause, and one asked after
@@ -243,7 +243,7 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
         ask(&first, now - 2_000, Some("docker")).await?;
         ask(&second, now - 1_000, Some("docker")).await?;
         ask(&other, now - 1_000, None).await?;
-        // One episode for both, named by the oldest request (one notification, SPEC-494).
+        // One episode for both, named by the oldest request (one notification).
         let episode = |id: &yulius_domain::ids::TaskId| {
             let app = std::sync::Arc::clone(&app);
             let id = id.clone();

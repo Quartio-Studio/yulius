@@ -1,4 +1,4 @@
-//! The instance Vidoc key managed by the superadmin (SPEC-195 VDK-001, VDK-002): set, replaced,
+//! The instance Vidoc key managed by the superadmin: set, replaced,
 //! removed, adopted from `YULIUS_VIDOC_API_KEY_FILE` and tested through the API, sealed at rest,
 //! in use at once, optional, and never returned.
 
@@ -112,7 +112,7 @@ fn in_use(i: &Instance) -> Option<String> {
     i.h.app.vidoc_key().map(|k| k.expose().to_owned())
 }
 
-/// VDK-001, VDK-002: optional; set, replaced, tested and removed, in use at once, sealed at rest,
+/// Optional; set, replaced, tested and removed, in use at once, sealed at rest,
 /// read back after a restart, and never in a response.
 #[tokio::test]
 async fn the_superadmin_manages_the_optional_key() -> TestResult {
@@ -224,7 +224,7 @@ async fn the_superadmin_manages_the_optional_key() -> TestResult {
     Ok(())
 }
 
-/// VDK-002: only the superadmin reads or changes the key.
+/// Only the superadmin reads or changes the key.
 #[tokio::test]
 async fn only_the_superadmin_manages_the_vidoc_key() -> TestResult {
     let i = instance(Ok(None)).await?;
@@ -249,7 +249,7 @@ async fn only_the_superadmin_manages_the_vidoc_key() -> TestResult {
     Ok(())
 }
 
-/// VDK-001: `YULIUS_VIDOC_API_KEY_FILE` is used while nothing is saved, a saved key wins,
+/// `YULIUS_VIDOC_API_KEY_FILE` is used while nothing is saved, a saved key wins,
 /// removing it falls back to the file, and adopt moves the file's key into settings.
 #[tokio::test]
 async fn the_vidoc_key_file_is_honoured_as_config_and_can_move_into_settings() -> TestResult {
@@ -310,7 +310,7 @@ async fn the_vidoc_key_file_is_honoured_as_config_and_can_move_into_settings() -
     Ok(())
 }
 
-/// VDK-001: an instance built without Vidoc services still answers: no key, nothing to manage.
+/// An instance built without Vidoc services still answers: no key, nothing to manage.
 #[tokio::test]
 async fn without_vidoc_services_the_key_is_simply_off() -> TestResult {
     let h = harness()?;
@@ -374,7 +374,7 @@ async fn proxied(i: &Instance) -> TestResult {
     Ok(())
 }
 
-/// VDK-005: the instance key is the virtual agent secret `VIDOC_API_KEY`: its placeholder is
+/// The instance key is the virtual agent secret `VIDOC_API_KEY`: its placeholder is
 /// replaced toward model.vidocsecurity.com only, the value is redacted, `secrets_list` names it,
 /// a project's own `VIDOC_API_KEY` wins, and a CI job gets it only when granted.
 #[tokio::test]
@@ -488,7 +488,7 @@ async fn the_instance_key_reaches_vidoc_through_the_proxy_only() -> TestResult {
     Ok(())
 }
 
-/// VDK-005: the instance key is never handed out in clear: no `.env` copy, no MCP reference, no
+/// The instance key is never handed out in clear: no `.env` copy, no MCP reference, no
 /// browser filling, and the Secrets page does not list it.
 #[tokio::test]
 async fn the_instance_key_is_never_handed_out_in_clear() -> TestResult {

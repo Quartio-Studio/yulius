@@ -1,6 +1,6 @@
 //! Opt-in live measurement of how a task's terminal appears (F 2026-10-09: "when I open Claude
 //! the font size changes 3 times and it loads for a while"), and of the Shell panel opening a
-//! working terminal without a click (UI-016). Real server, real detached ptyhost, the fake agent
+//! working terminal without a click. Real server, real detached ptyhost, the fake agent
 //! drawing full screen like Claude Code (`--tui`: redrawn in full on every resize) and the real UI
 //! in headless Chrome over an emulated remote connection (80 ms round trips).
 //!

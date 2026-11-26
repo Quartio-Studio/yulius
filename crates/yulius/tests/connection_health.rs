@@ -1,4 +1,4 @@
-//! Connection troubles on the panel (SPEC-361): a run that fills its sandbox's share of the real
+//! Connection troubles on the panel: a run that fills its sandbox's share of the real
 //! egress proxy is listed by `GET /api/connections` with its task and count, to the sandbox's
 //! people only, with one `connections.updated` when it begins and one when it ends.
 
@@ -153,7 +153,7 @@ async fn a_full_share_is_listed_with_the_runs_task_until_its_tunnels_end() -> Te
     Ok(())
 }
 
-/// SPEC-361 CHR-004: the proxy's own trouble reaches everyone, naming only the sandboxes they can
+/// The proxy's own trouble reaches everyone, naming only the sandboxes they can
 /// view; a relay trouble reaches its sandbox's viewers only.
 #[tokio::test]
 async fn the_proxys_trouble_names_only_sandboxes_the_person_can_view() -> TestResult {

@@ -1,4 +1,4 @@
-//! SPEC-353 LAP-003/LAP-004: the strays of a run (processes its sandbox init adopted, other than
+//! The strays of a run (processes its sandbox init adopted, other than
 //! the agent) are reported and, once an idle task has had them for the bound, reaped, while a
 //! working task's are left alone. On 2026-10-30 about 60 leaked test jobs, each polling
 //! `sleep 0.05`, lived for days in an idle session's sandbox.
@@ -164,7 +164,7 @@ impl World {
     }
 }
 
-/// LAP-004: an idle task's strays live the bound from when they were first seen, then their
+/// An idle task's strays live the bound from when they were first seen, then their
 /// whole trees are reaped; a stray seen later gets its own bound.
 #[tokio::test]
 async fn an_idle_task_s_strays_are_reaped_after_the_bound() -> BoxResult<()> {
@@ -196,7 +196,7 @@ async fn an_idle_task_s_strays_are_reaped_after_the_bound() -> BoxResult<()> {
     Ok(())
 }
 
-/// LAP-004: a working task's processes are not probed, so its strays are left to its turn.
+/// A working task's processes are not probed, so its strays are left to its turn.
 #[tokio::test]
 async fn a_working_task_s_strays_are_left_alone() -> BoxResult<()> {
     let w = world(Activity::Working).await?;
@@ -208,7 +208,7 @@ async fn a_working_task_s_strays_are_left_alone() -> BoxResult<()> {
     Ok(())
 }
 
-/// LAP-004 (review round 1): a turn that starts while the probe runs keeps the strays: Yulius
+/// A turn that starts while the probe runs keeps the strays: Yulius
 /// reaps only while the task is still idle.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_that_starts_during_the_probe_keeps_its_strays() -> BoxResult<()> {

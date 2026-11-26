@@ -1,4 +1,4 @@
-//! SPEC-141 (issue #486, ADR-0114): only a person moves the production branch. The production
+//! Only a person moves the production branch. The production
 //! GitHub adapter over the in-process fake GitHub, which models GitHub's rulesets (`update` and
 //! `deletion` rules, bypass actors) and narrowed installation tokens: the token an agent's Git and
 //! `gh` hold can neither merge into, fast-forward nor delete the production branch Yulius protects,
@@ -92,7 +92,7 @@ impl World {
     }
 }
 
-/// AC2: with the rulesets Yulius gives a new project, the agent's token is refused every way of
+/// With the rulesets Yulius gives a new project, the agent's token is refused every way of
 /// moving `main` (merge, fast-forward, deletion) and cannot delete the protection itself; the
 /// repository admin's promotion goes through.
 #[tokio::test]
@@ -181,7 +181,7 @@ async fn without_the_ruleset_the_agents_token_could_write_production() -> TestRe
     Ok(())
 }
 
-/// SPEC-495 (task #477, MRG-005): a person's production deploy opens the dev → main promotion
+/// A person's production deploy opens the dev → main promotion
 /// pull request and merges it at once, through the production adapter. GitHub answers that first
 /// merge "405 Base branch was modified" while it computes the new pull request's mergeability;
 /// the merge waits and goes through, so the deploy goes on. A promotion with a real conflict still
@@ -221,7 +221,7 @@ async fn a_promotion_merged_at_once_waits_for_github_and_a_conflict_still_stops(
     Ok(())
 }
 
-/// SPEC-495 review round 2: under the production ruleset Yulius gives a new project, GitHub reads
+/// Under the production ruleset Yulius gives a new project, GitHub reads
 /// the promotion pull request `blocked` even for the repository admin who may bypass it. The
 /// admin's promotion, opened and merged at once, still goes through GitHub's transient 405.
 #[tokio::test]
@@ -249,7 +249,7 @@ async fn an_admins_promotion_past_the_production_ruleset_goes_through_the_transi
     Ok(())
 }
 
-/// SPEC-495 review round 3: under the production ruleset, a transient 405 that never clears ends
+/// Under the production ruleset, a transient 405 that never clears ends
 /// the admin's promotion saying GitHub kept refusing, not blaming the rule the admin bypasses;
 /// the agent's merge, which the rule really refuses, ends at its next 405 with the rule's reason.
 #[tokio::test]
@@ -296,7 +296,7 @@ async fn under_the_production_ruleset_each_refusal_names_its_own_reason() -> Tes
     Ok(())
 }
 
-/// SPEC-184 (issue #574): CD and promotion read the integration and production heads through the
+/// CD and promotion read the integration and production heads through the
 /// adapter, with the installation token and with a person's. The adapter asks GitHub for them;
 /// a branch GitHub does not have is `None`, and a nested branch name is one branch.
 #[tokio::test]

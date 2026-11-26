@@ -1,4 +1,4 @@
-//! SPEC-493 SCO-001 to SCO-003: a claim that overlaps a live task's claim is told to both. The
+//! A claim that overlaps a live task's claim is told to both. The
 //! claiming agent's answer names the holding task, what it changes and where its pull request
 //! stands; the holding task's session gets one message naming the claiming task and the paths.
 //! A fake agent echoes what it is typed.
@@ -31,7 +31,7 @@ async fn agent(
     })
 }
 
-/// AC-21 (SCO-001): B claims `crates/a/**` while live task A holds `crates/a/src/x.rs`. B's
+/// B claims `crates/a/**` while live task A holds `crates/a/src/x.rs`. B's
 /// answer names A, its title, its note, its step in progress and its pull request (none yet);
 /// A's session gets one message naming B and the paths, and a second claim of the same paths
 /// types nothing again.
@@ -115,7 +115,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         })
         .await;
         assert!(again.is_err(), "told twice: {}", screen(&app, &a));
-        // Review round 2: once A has a pull request, the answer says its stage and the state of
+        // Once A has a pull request, the answer says its stage and the state of
         // Yulius CI's newest run of it.
         let open = yulius_app::delivery::DeliveryRecord {
             task_id: a.clone(),
@@ -153,7 +153,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         assert_eq!(pull_request["stage"], "pr_open", "{answer}");
         assert_eq!(pull_request["checks"], "passed", "{answer}");
         assert_eq!(pull_request["merge_armed"], false, "{answer}");
-        // SCO-002: both tasks' views (the page's and the list's) carry the overlap.
+        // Both tasks' views (the page's and the list's) carry the overlap.
         let b_number = app.deps.store.task(&b).await?.ok_or("b")?.number;
         let view = |id: yulius_domain::ids::TaskId| {
             let app = app.clone();
@@ -176,7 +176,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
             "{seen_by_b:?}"
         );
         assert_eq!(seen_by_b[0].patterns, ["crates/a/**"]);
-        // AC-22 (SCO-004): a task created with paths a live task holds is not made blind: the
+        // A task created with paths a live task holds is not made blind: the
         // answer names the holder and offers to run it after that task; with `after_task` it
         // is made, waiting behind it, holding its paths.
         let caller = claimer.caller();
@@ -228,7 +228,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         app.tool_scope_release(&holder, &json!({})).await?;
         assert!(view(a.clone()).await?.is_empty());
         assert!(view(b.clone()).await?.is_empty());
-        // Review round 1: claimed again after the release, the holder is told again; a claim
+        // Claimed again after the release, the holder is told again; a claim
         // widened by a new pair tells only that pair.
         let pastes = |app: &std::sync::Arc<yulius_app::context::App>| {
             screen(app, &a).matches("200~Yulius: task #").count()

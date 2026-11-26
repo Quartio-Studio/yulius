@@ -50,7 +50,7 @@ async fn instance() -> Result<Instance, Box<dyn std::error::Error>> {
     instance_on(harness()?).await
 }
 
-/// An instance whose process host freezes runs (SPEC-160).
+/// An instance whose process host freezes runs.
 async fn freezing_instance() -> Result<(Instance, Arc<FreezingHost>), Box<dyn std::error::Error>> {
     let host = FreezingHost::new();
     let i = instance_on(harness_with_host(host.clone())?).await?;
@@ -202,7 +202,7 @@ async fn an_unreadable_ci_observation_adds_no_install_delay() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-6: the build is known; a newer `main` is offered to superadmins only, with a summary
+/// The build is known; a newer `main` is offered to superadmins only, with a summary
 /// of its new commits; "Check now" is cached; an unreadable repository is reported.
 #[tokio::test]
 async fn a_newer_main_is_offered_to_superadmins_only() -> TestResult {
@@ -277,7 +277,7 @@ fn compares(source: &FakeSource) -> usize {
     source.tokens.lock().map(|t| t.len()).unwrap_or_default()
 }
 
-/// #1124 (SPEC-443 UCF-002): a failed automatic check is tried again 5 minutes later, so the
+/// A failed automatic check is tried again 5 minutes later, so the
 /// warning of a GitHub outage clears by itself; a successful one waits the hour.
 #[tokio::test]
 async fn a_failed_automatic_check_is_retried_within_minutes() -> TestResult {
@@ -314,7 +314,7 @@ async fn a_failed_automatic_check_is_retried_within_minutes() -> TestResult {
     Ok(())
 }
 
-/// SPEC-443 UCF-002: a failed "Check now" (or the check of a page opening) also brings the next
+/// A failed "Check now" (or the check of a page opening) also brings the next
 /// automatic check to 5 minutes away, since its warning replaced the offer for everyone.
 #[tokio::test]
 async fn a_failed_check_now_brings_the_automatic_check_closer() -> TestResult {
@@ -354,7 +354,7 @@ async fn a_failed_check_now_brings_the_automatic_check_closer() -> TestResult {
     Ok(())
 }
 
-/// SPEC-443 UCF-003: a check that fails, and one that succeeds again, are published even when
+/// A check that fails, and one that succeeds again, are published even when
 /// the offer stays the same (here none: the build is `main`), so an open page shows and clears
 /// the warning without a reload.
 #[tokio::test]
@@ -391,7 +391,7 @@ async fn a_failed_and_a_recovered_check_are_published() -> TestResult {
     Ok(())
 }
 
-/// SPEC-443 UCF-002: a rate limit is waited out (the next check keeps the interval), and an
+/// A rate limit is waited out (the next check keeps the interval), and an
 /// interval shorter than 5 minutes is kept after a failure.
 #[tokio::test]
 async fn a_rate_limit_waits_the_interval_and_a_short_interval_stays() -> TestResult {
@@ -414,7 +414,7 @@ async fn a_rate_limit_waits_the_interval_and_a_short_interval_stays() -> TestRes
     Ok(())
 }
 
-/// #502 (SPEC-226 UPC-001): a "Check now" sent while another check compares (two tabs opening
+/// A "Check now" sent while another check compares (two tabs opening
 /// the instance page) waits for it and reuses its result: one compare for both.
 #[tokio::test]
 async fn concurrent_checks_make_one_compare() -> TestResult {
@@ -459,7 +459,7 @@ async fn concurrent_checks_make_one_compare() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-7: "Update now" needs the superadmin, the confirmation, the offered head of `main`
+/// "Update now" needs the superadmin, the confirmation, the offered head of `main`
 /// and an installed helper; one run at a time; tasks keep working while it builds.
 #[tokio::test]
 async fn update_now_needs_confirmation_the_offered_commit_and_a_helper() -> TestResult {
@@ -528,7 +528,7 @@ async fn support_ctx(
     })
 }
 
-/// AC-OPS-8: after the build, every turn boundary is held (`202`, `Retry-After`, no output) and
+/// After the build, every turn boundary is held (`202`, `Retry-After`, no output) and
 /// starts queue; the install is requested once every live task is at a pause point.
 #[tokio::test]
 async fn tasks_pause_at_their_turn_boundary_before_the_install() -> TestResult {
@@ -621,7 +621,7 @@ async fn tasks_pause_at_their_turn_boundary_before_the_install() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-8/9: the server that starts after the install still holds every boundary until the
+/// The server that starts after the install still holds every boundary until the
 /// helper reports, then releases the tasks one by one and ends the run; a rolled-back install
 /// releases them as well and says why.
 #[tokio::test]
@@ -695,7 +695,7 @@ async fn the_hold_survives_the_restart_and_tasks_resume_staggered() -> TestResul
     Ok(())
 }
 
-/// SPEC-203 HST-012: the update succeeded, but the new version's re-check found that sandboxes
+/// The update succeeded, but the new version's re-check found that sandboxes
 /// lost Docker: the outcome says so, with the reason, not only the helper's log.
 #[tokio::test]
 async fn a_docker_regression_after_an_update_is_in_its_outcome() -> TestResult {
@@ -779,7 +779,7 @@ async fn a_rolled_back_install_releases_the_tasks_and_says_why() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-8: pausing is bounded (the update is cancelled after 30 minutes and nothing stays
+/// Pausing is bounded (the update is cancelled after 30 minutes and nothing stays
 /// held), a person can cancel while it builds or pauses, and a helper that never answers fails
 /// the update.
 #[tokio::test]
@@ -859,7 +859,7 @@ async fn pausing_is_bounded_and_updates_can_be_cancelled() -> TestResult {
     Ok(())
 }
 
-/// SPEC-319 (#533): the 30-minute cancel message counts every task still in a turn, not the
+/// The 30-minute cancel message counts every task still in a turn, not the
 /// page's list, which shows at most 20 of them.
 #[tokio::test]
 async fn the_cancel_message_counts_every_task_still_in_a_turn() -> TestResult {
@@ -903,7 +903,7 @@ async fn the_cancel_message_counts_every_task_still_in_a_turn() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-12 (SPEC-160): with a host that freezes, both tasks — one mid-turn — are frozen on the
+/// With a host that freezes, both tasks — one mid-turn — are frozen on the
 /// first round after the build, no hook is held, and the install follows on the next round.
 #[tokio::test]
 async fn every_task_freezes_at_once_and_the_install_follows() -> TestResult {
@@ -945,7 +945,7 @@ async fn every_task_freezes_at_once_and_the_install_follows() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-11/12: a run the host cannot freeze still pauses at its turn boundary, and nothing is
+/// A run the host cannot freeze still pauses at its turn boundary, and nothing is
 /// frozen while it works (the others would sit frozen for up to the 30-minute bound); once it is
 /// held, the others freeze and the install follows.
 #[tokio::test]
@@ -982,7 +982,7 @@ async fn a_run_that_cannot_be_frozen_is_waited_for_before_any_freeze() -> TestRe
     Ok(())
 }
 
-/// AC-OPS-11: a run the kernel never confirms frozen is thawed after five passes and paused at
+/// A run the kernel never confirms frozen is thawed after five passes and paused at
 /// its turn boundary instead, and the others are thawed while it works.
 #[tokio::test]
 async fn a_run_that_never_settles_falls_back_to_its_turn_boundary() -> TestResult {
@@ -1026,7 +1026,7 @@ async fn a_run_that_never_settles_falls_back_to_its_turn_boundary() -> TestResul
     Ok(())
 }
 
-/// SPEC-319 (#533): a run still being frozen at the 30-minute bound is not paused: the cancel
+/// A run still being frozen at the 30-minute bound is not paused: the cancel
 /// message counts it, though the page does not list it as still in a turn.
 #[tokio::test]
 async fn the_cancel_message_counts_a_run_still_being_frozen() -> TestResult {
@@ -1046,7 +1046,7 @@ async fn the_cancel_message_counts_a_run_still_being_frozen() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-13 (review): a cancel that lands while a freeze pass runs never leaves a run frozen.
+/// A cancel that lands while a freeze pass runs never leaves a run frozen.
 #[tokio::test]
 async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
     let (i, host) = freezing_instance().await?;
@@ -1085,7 +1085,7 @@ async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
     // Thawed by the cancel itself, before any later round's backstop.
     assert!(host.frozen().is_empty(), "left frozen: {:?}", host.frozen());
     // The overtaken pass closed the deploy gate after the cancel opened it; the next round, with
-    // no update open, opens it again (SPEC-342 DPU-007, review round 2).
+    // no update open, opens it again.
     assert!(
         i.h.app.deploy_permit().is_err(),
         "the overtaken pass closed it"
@@ -1095,7 +1095,7 @@ async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-13: after the restart the runs thaw one by one as their tasks are released, and the
+/// After the restart the runs thaw one by one as their tasks are released, and the
 /// rest is swept; a server that starts with no update thaws what a crash left frozen, one that
 /// starts while the update installs keeps the runs frozen.
 #[tokio::test]
@@ -1144,7 +1144,7 @@ async fn frozen_tasks_thaw_one_by_one_after_the_restart() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-13: a cancel while pausing thaws every frozen run at once; so does a rolled-back
+/// A cancel while pausing thaws every frozen run at once; so does a rolled-back
 /// install.
 #[tokio::test]
 async fn a_cancel_or_a_rollback_thaws_every_frozen_task() -> TestResult {
@@ -1196,7 +1196,7 @@ async fn a_cancel_or_a_rollback_thaws_every_frozen_task() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: "Continue without waiting" freezes every run that can be frozen, even while a
+/// "Continue without waiting" freezes every run that can be frozen, even while a
 /// run that cannot be frozen is still in its turn; a server restarted mid-drain sweeps the runs
 /// its predecessor froze while such a run works.
 #[tokio::test]
@@ -1249,7 +1249,7 @@ fn published_pauses(
     seen
 }
 
-/// AC-PAU-1 (SPEC-191 PAU-001/002): an update's pause is in the summary of every live task, as
+/// An update's pause is in the summary of every live task, as
 /// `pending` until its run is frozen, and the lists hear about it as it goes on and off.
 #[tokio::test]
 async fn an_update_s_pause_is_in_the_task_summary_and_published() -> TestResult {
@@ -1298,7 +1298,7 @@ async fn an_update_s_pause_is_in_the_task_summary_and_published() -> TestResult 
     Ok(())
 }
 
-/// AC-PER-2 (SPEC-191 PER-002/003): a task a person paused stays frozen through an update: the
+/// A task a person paused stays frozen through an update: the
 /// install, the restart, the release one by one and every sweep leave its run frozen, while the
 /// other task thaws; the restarted server freezes it again.
 #[tokio::test]
@@ -1354,7 +1354,7 @@ async fn an_update_never_wakes_a_task_a_person_paused() -> TestResult {
     Ok(())
 }
 
-/// AC-PER-4 (SPEC-191 PER-002): resumed while an update holds it, a task stays frozen until the
+/// Resumed while an update holds it, a task stays frozen until the
 /// update releases it with the others.
 #[tokio::test]
 async fn a_task_resumed_during_an_update_waits_for_the_update() -> TestResult {
@@ -1380,7 +1380,7 @@ async fn a_task_resumed_during_an_update_waits_for_the_update() -> TestResult {
     Ok(())
 }
 
-/// Review N-L2 (SPEC-191 PER-004): stopping a task nobody paused does not wait for an update's
+/// Review N-L2: stopping a task nobody paused does not wait for an update's
 /// freeze pass in progress.
 #[tokio::test]
 async fn a_stop_does_not_wait_for_a_freeze_pass() -> TestResult {
@@ -1509,7 +1509,7 @@ async fn build_reported(i: &Instance) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// SPEC-342 DPU-001/DPU-007: once the build is done no deploy starts until the update ended:
+/// Once the build is done no deploy starts until the update ended:
 /// a person's CD deploy and an environment command run are refused before anything ran; the
 /// cancel opens the gate again.
 #[tokio::test]
@@ -1572,7 +1572,7 @@ async fn new_deploys_are_refused_while_the_update_installs() -> TestResult {
     Ok(())
 }
 
-/// SPEC-342 DPU-003/DPU-006: a deploy running when the build is done keeps the update building
+/// A deploy running when the build is done keeps the update building
 /// (nothing frozen, nothing held, no install) and is listed; once it ended, tasks pause and the
 /// install follows.
 #[tokio::test]
@@ -1630,7 +1630,7 @@ async fn a_running_deploy_is_waited_for_before_tasks_pause() -> TestResult {
     Ok(())
 }
 
-/// SPEC-342 DPU-003: a delivery environment run running when the build is done is waited for as a
+/// A delivery environment run running when the build is done is waited for as a
 /// CD run is.
 #[tokio::test]
 async fn a_running_environment_run_is_waited_for() -> TestResult {
@@ -1677,7 +1677,7 @@ async fn a_running_environment_run_is_waited_for() -> TestResult {
     Ok(())
 }
 
-/// SPEC-348 ERD-003 (#952): an environment run still recorded as running past its lost-run limit
+/// An environment run still recorded as running past its lost-run limit
 /// (job timeout + 35 minutes + 5 minutes) has no runner any more; the update's wait ends it as an
 /// error, as a read would, and goes on before its own bound.
 #[tokio::test]
@@ -1721,7 +1721,7 @@ async fn an_environment_run_past_its_lost_run_limit_is_not_waited_for() -> TestR
     Ok(())
 }
 
-/// SPEC-342 DPU-004: the longest a deploy can legitimately last (an agent-state wait and its
+/// The longest a deploy can legitimately last (an agent-state wait and its
 /// deploy, each up to the 30-minute job timeout; an environment run's 35-minute preparation) and
 /// 5 minutes is waited for; a deploy still running past it cancels the update and opens the gate.
 #[tokio::test]
@@ -1754,7 +1754,7 @@ async fn a_deploy_past_the_bound_cancels_the_update() -> TestResult {
     Ok(())
 }
 
-/// SPEC-342 DPU-002: a deploy past the gate and not recorded yet (it holds its permit) keeps the
+/// A deploy past the gate and not recorded yet (it holds its permit) keeps the
 /// update waiting; once it is gone, tasks pause.
 #[tokio::test]
 async fn a_starting_deploy_is_waited_for() -> TestResult {
@@ -1777,7 +1777,7 @@ async fn a_starting_deploy_is_waited_for() -> TestResult {
     Ok(())
 }
 
-/// SPEC-342 DPU-005: a deploy running while the update pauses tasks (a server restarted mid-drain)
+/// A deploy running while the update pauses tasks (a server restarted mid-drain)
 /// keeps the install from being requested, even after "Continue without waiting".
 #[tokio::test]
 async fn a_deploy_running_while_draining_holds_the_install() -> TestResult {
@@ -1811,7 +1811,7 @@ async fn a_deploy_running_while_draining_holds_the_install() -> TestResult {
     Ok(())
 }
 
-/// SPEC-458 RST-003: where the server's unit would not start again, Restart and Update now are
+/// Where the server's unit would not start again, Restart and Update now are
 /// refused with the reason before a task is paused or anything is built.
 #[tokio::test]
 async fn restart_and_update_now_are_refused_where_the_server_would_not_come_back() -> TestResult {
@@ -1849,7 +1849,7 @@ async fn restart_and_update_now_are_refused_where_the_server_would_not_come_back
     Ok(())
 }
 
-/// SPEC-432 RST-002: a superadmin restarts Yulius with the build it runs: every task freezes,
+/// A superadmin restarts Yulius with the build it runs: every task freezes,
 /// the helper restarts that build, and the tasks thaw. Others are refused, a confirmation is
 /// needed, and a second run conflicts.
 #[tokio::test]
@@ -1899,7 +1899,7 @@ async fn a_superadmin_restarts_yulius_with_its_tasks_frozen_then_thawed() -> Tes
     Ok(())
 }
 
-/// SPEC-432 review round 1 (M2): a restart while a deploy runs is refused before any task pauses
+/// A restart while a deploy runs is refused before any task pauses
 /// (an update waits for deploys while it builds; a restart has nothing to build), and deploys are
 /// not held by it.
 #[tokio::test]

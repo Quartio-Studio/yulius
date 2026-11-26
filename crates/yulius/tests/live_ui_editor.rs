@@ -1,4 +1,4 @@
-//! Opt-in browser check of the built-in editor (SPEC-001 EDT-001..005): the real UI in headless
+//! Opt-in browser check of the built-in editor: the real UI in headless
 //! Chrome opens the editor panel, lists the repository, opens a file in Monaco with syntax
 //! colors and suggestions, saves an edit to disk, and turns word wrap on with Alt+Z (⌥Z) for
 //! every open file, which a reload keeps.
@@ -124,7 +124,7 @@ async fn the_editor_panel_opens_colors_suggests_saves_and_wraps() -> TestResult 
         eprintln!("skipped: set YULIUS_LIVE_CHROME");
         return Ok(());
     };
-    // The UI's origin must be the server's: cookie sessions refuse other origins (ADR-14).
+    // The UI's origin must be the server's: cookie sessions refuse other origins.
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = listener.local_addr()?;
     let h = harness_with(HarnessOptions {
