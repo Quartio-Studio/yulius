@@ -1202,7 +1202,7 @@ impl App {
     /// Store failures.
     pub async fn capacity_view(&self, ctx: &AuthContext) -> AppResult<CapacityView> {
         let store = &self.deps.store;
-        let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+        let admin = ctx.user.is_admin();
         let now = self.now();
         let threshold = rotation::THRESHOLD;
         let records = store.accounts().await?;

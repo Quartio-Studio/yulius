@@ -111,6 +111,12 @@ pub struct UserRecord {
 }
 
 impl UserRecord {
+    /// Whether the person administers the instance: an instance administrator or the superadmin.
+    #[must_use]
+    pub fn is_admin(&self) -> bool {
+        self.is_superadmin || self.is_instance_admin
+    }
+
     /// How the person is named wherever others read it (an audit actor, a task's owner): their
     /// GitHub login, `superadmin`, or for a playground's guest, the only other account without a
     /// GitHub login, `<name> (guest)` (SPEC-410 GST-006).
