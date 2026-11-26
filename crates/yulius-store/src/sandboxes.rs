@@ -8,7 +8,7 @@ use yulius_app::ports::store::SandboxStore;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_i64, to_u64};
+use crate::{SqliteStore, bad_column, to_i64, to_u64};
 
 const COLS: &str = "id, slug, repo_owner, repo_name, github_repo_id, default_branch, profile, port_base, \
     port_count, onboarding_state, onboarding_task_id, created_by, created_at, removed_at";
@@ -49,13 +49,12 @@ impl SqliteStore {
         args: Vec<String>,
     ) -> AppResult<Option<SandboxRecord>> {
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM sandboxes WHERE {clause}"),
                 rusqlite::params_from_iter(args.iter()),
                 from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -84,8 +83,7 @@ impl SandboxStore for SqliteStore {
                     s.created_at.0,
                     s.removed_at.map(|t| t.0),
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -111,26 +109,22 @@ impl SandboxStore for SqliteStore {
 
     async fn sandboxes(&self) -> AppResult<Vec<SandboxRecord>> {
         self.call(|c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM sandboxes WHERE removed_at IS NULL ORDER BY created_at"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM sandboxes WHERE removed_at IS NULL ORDER BY created_at"
+            ))?;
+            let rows = stmt.query_map([], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
 
     async fn removed_sandboxes(&self) -> AppResult<Vec<SandboxRecord>> {
         self.call(|c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM sandboxes WHERE removed_at IS NOT NULL ORDER BY removed_at"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM sandboxes WHERE removed_at IS NOT NULL ORDER BY removed_at"
+            ))?;
+            let rows = stmt.query_map([], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -139,9 +133,9 @@ impl SandboxStore for SqliteStore {
         self.call(|c| {
             let mut stmt = c.prepare(&format!(
                 "SELECT {COLS} FROM sandboxes WHERE removed_at IS NOT NULL AND ports_released=0 ORDER BY port_base"
-            )).map_err(db)?;
-            let rows = stmt.query_map([], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map([], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         }).await
     }
 
@@ -151,8 +145,7 @@ impl SandboxStore for SqliteStore {
             c.execute(
                 "UPDATE sandboxes SET ports_released = 1 WHERE id = ?1 AND removed_at IS NOT NULL",
                 [id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -160,20 +153,16 @@ impl SandboxStore for SqliteStore {
 
     async fn next_port_base(&self, start: u16, count: u16) -> AppResult<u16> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare("SELECT port_base FROM sandboxes WHERE ports_released=0")
-                .map_err(db)?;
+            let mut stmt = c.prepare("SELECT port_base FROM sandboxes WHERE ports_released=0")?;
             let used: Vec<i64> = stmt
-                .query_map([], |r| r.get(0))
-                .map_err(db)?
-                .collect::<Result<_, _>>()
-                .map_err(db)?;
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
             let mut base = i64::from(start);
             let step = i64::from(count.max(1));
             while used.contains(&base) {
                 base += step;
             }
-            u16::try_from(base).map_err(|_| AppError::Capacity("no free port range".into()))
+            Ok(u16::try_from(base).map_err(|_| AppError::Capacity("no free port range".into()))?)
         })
         .await
     }
@@ -184,8 +173,7 @@ impl SandboxStore for SqliteStore {
             c.execute(
                 "UPDATE sandboxes SET profile = ?1 WHERE id = ?2",
                 params![p, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -197,8 +185,7 @@ impl SandboxStore for SqliteStore {
             c.execute(
                 "UPDATE sandboxes SET default_branch = ?1 WHERE id = ?2",
                 params![branch, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -219,8 +206,7 @@ impl SandboxStore for SqliteStore {
             c.execute(
                 "UPDATE sandboxes SET onboarding_state = ?1, onboarding_task_id = COALESCE(?2, onboarding_task_id) WHERE id = ?3",
                 params![st, t, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -233,8 +219,7 @@ impl SandboxStore for SqliteStore {
                 .execute(
                     "UPDATE sandboxes SET onboarding_state = ?1 WHERE id = ?2 AND onboarding_state = ?3",
                     params![to, id, from],
-                )
-                .map_err(db)?;
+                )?;
             Ok(changed > 0)
         })
         .await
@@ -246,8 +231,7 @@ impl SandboxStore for SqliteStore {
             c.execute(
                 "UPDATE sandboxes SET removed_at = ?1 WHERE id = ?2 AND removed_at IS NULL",
                 params![at.0, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -262,13 +246,11 @@ impl SandboxStore for SqliteStore {
     ) -> AppResult<bool> {
         let (id, owner, name) = (id.as_str().to_owned(), owner.to_owned(), name.to_owned());
         self.call_access(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE sandboxes SET repo_owner = ?1, repo_name = ?2, github_repo_id = ?3 \
+            let changed = c.execute(
+                "UPDATE sandboxes SET repo_owner = ?1, repo_name = ?2, github_repo_id = ?3 \
                      WHERE id = ?4 AND repo_owner = '' AND removed_at IS NULL",
-                    params![owner, name, github_repo_id.map(to_i64), id],
-                )
-                .map_err(db)?;
+                params![owner, name, github_repo_id.map(to_i64), id],
+            )?;
             Ok(changed > 0)
         })
         .await
@@ -277,13 +259,11 @@ impl SandboxStore for SqliteStore {
     async fn request_purge(&self, id: &SandboxId, by: &UserId, at: Timestamp) -> AppResult<bool> {
         let (id, by) = (id.as_str().to_owned(), by.as_str().to_owned());
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "INSERT OR IGNORE INTO playground_purges (sandbox_id, requested_by, requested_at) \
+            let changed = c.execute(
+                "INSERT OR IGNORE INTO playground_purges (sandbox_id, requested_by, requested_at) \
                      VALUES (?1, ?2, ?3)",
-                    params![id, by, at.0],
-                )
-                .map_err(db)?;
+                params![id, by, at.0],
+            )?;
             Ok(changed > 0)
         })
         .await
@@ -291,17 +271,13 @@ impl SandboxStore for SqliteStore {
 
     async fn pending_purges(&self) -> AppResult<Vec<SandboxId>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT sandbox_id FROM playground_purges WHERE purged_at IS NULL \
+            let mut stmt = c.prepare(
+                "SELECT sandbox_id FROM playground_purges WHERE purged_at IS NULL \
                      ORDER BY requested_at, sandbox_id",
-                )
-                .map_err(db)?;
+            )?;
             let ids = stmt
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(ids
                 .iter()
                 .filter_map(|id| SandboxId::parse(id).ok())
@@ -317,8 +293,7 @@ impl SandboxStore for SqliteStore {
                 .execute(
                     "UPDATE playground_purges SET purged_at = ?1 WHERE sandbox_id = ?2 AND purged_at IS NULL",
                     params![at.0, id],
-                )
-                .map_err(db)?;
+                )?;
             Ok(changed > 0)
         })
         .await
@@ -327,14 +302,12 @@ impl SandboxStore for SqliteStore {
     async fn release_removed_slug(&self, slug: &str, owner: &str, name: &str) -> AppResult<bool> {
         let (slug, owner, name) = (slug.to_owned(), owner.to_owned(), name.to_owned());
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE sandboxes SET slug = slug || '-removed-' || removed_at \
+            let changed = c.execute(
+                "UPDATE sandboxes SET slug = slug || '-removed-' || removed_at \
                      WHERE slug = ?1 AND removed_at IS NOT NULL \
                      AND lower(repo_owner) = lower(?2) AND lower(repo_name) = lower(?3)",
-                    params![slug, owner, name],
-                )
-                .map_err(db)?;
+                params![slug, owner, name],
+            )?;
             Ok(changed > 0)
         })
         .await

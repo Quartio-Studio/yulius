@@ -11,7 +11,7 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
+use crate::{SqliteStore, bad_column, to_i64, to_u32, to_u64};
 
 const COLS: &str = "id, sandbox_id, kind, task_id, harness, session_id, title, author_id, \
     git_branch, cwd_relative, base, transcript_path, sha256, bytes, redactions, started_at, \
@@ -103,8 +103,7 @@ impl SessionDocStore for SqliteStore {
                     d.created_at.0,
                     d.updated_at.0,
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -113,36 +112,33 @@ impl SessionDocStore for SqliteStore {
     async fn replace_session_doc(&self, doc: &SessionDocRecord) -> AppResult<bool> {
         let d = doc.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "DELETE FROM session_chunks WHERE doc_id = ?1",
                 [d.id.as_str()],
-            )
-            .map_err(db)?;
-            let changed = tx
-                .execute(
-                    "UPDATE session_docs SET title = ?1, author_id = ?2, git_branch = ?3, \
+            )?;
+            let changed = tx.execute(
+                "UPDATE session_docs SET title = ?1, author_id = ?2, git_branch = ?3, \
                      cwd_relative = ?4, base = ?5, transcript_path = ?6, sha256 = ?7, bytes = ?8, \
                      redactions = ?9, started_at = ?10, ended_at = ?11, indexed_bytes = 0, \
                      indexed_lines = 0, index_full = 0, updated_at = ?12 WHERE id = ?13",
-                    params![
-                        d.title,
-                        d.author_id.as_ref().map(UserId::as_str),
-                        d.git_branch,
-                        d.cwd_relative,
-                        d.base,
-                        d.transcript_path,
-                        d.sha256,
-                        to_i64(d.bytes),
-                        i64::from(d.redactions),
-                        d.started_at.map(|t| t.0),
-                        d.ended_at.map(|t| t.0),
-                        d.updated_at.0,
-                        d.id,
-                    ],
-                )
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+                params![
+                    d.title,
+                    d.author_id.as_ref().map(UserId::as_str),
+                    d.git_branch,
+                    d.cwd_relative,
+                    d.base,
+                    d.transcript_path,
+                    d.sha256,
+                    to_i64(d.bytes),
+                    i64::from(d.redactions),
+                    d.started_at.map(|t| t.0),
+                    d.ended_at.map(|t| t.0),
+                    d.updated_at.0,
+                    d.id,
+                ],
+            )?;
+            tx.commit()?;
             Ok(changed > 0)
         })
         .await
@@ -151,13 +147,12 @@ impl SessionDocStore for SqliteStore {
     async fn session_doc(&self, id: &str) -> AppResult<Option<SessionDocRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM session_docs WHERE id = ?1"),
                 [id],
                 from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -170,7 +165,7 @@ impl SessionDocStore for SqliteStore {
     ) -> AppResult<Option<SessionDocRecord>> {
         let (sandbox, session) = (sandbox.as_str().to_owned(), session_id.to_owned());
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!(
                     "SELECT {COLS} FROM session_docs WHERE sandbox_id = ?1 AND kind = 'imported' \
                      AND harness = ?2 AND session_id = ?3"
@@ -178,8 +173,7 @@ impl SessionDocStore for SqliteStore {
                 params![sandbox, harness.as_str(), session],
                 from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -187,14 +181,12 @@ impl SessionDocStore for SqliteStore {
     async fn session_docs(&self, sandbox: &SandboxId) -> AppResult<Vec<SessionDocRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM session_docs WHERE sandbox_id = ?1 \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM session_docs WHERE sandbox_id = ?1 \
                      ORDER BY COALESCE(ended_at, updated_at) DESC, id"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map([sandbox], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -205,36 +197,32 @@ impl SessionDocStore for SqliteStore {
     ) -> AppResult<Vec<ProviderSessionRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT p.id, p.sandbox_id, p.task_id, p.harness, p.session_id, \
+            let mut stmt = c.prepare(
+                "SELECT p.id, p.sandbox_id, p.task_id, p.harness, p.session_id, \
                      p.transcript_ref, p.origin, p.first_seen, p.last_seen \
                      FROM provider_sessions p WHERE p.sandbox_id = ?1 AND NOT EXISTS ( \
                        SELECT 1 FROM session_docs d WHERE d.kind = 'task' \
                        AND d.task_id = p.task_id AND d.harness = p.harness \
                        AND d.session_id = p.session_id) \
                      ORDER BY p.first_seen",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([sandbox], |r| {
-                    let sb: String = r.get(1)?;
-                    let tk: String = r.get(2)?;
-                    let h: String = r.get(3)?;
-                    Ok(ProviderSessionRecord {
-                        id: r.get(0)?,
-                        sandbox_id: parse("sandbox id", &sb, SandboxId::parse)?,
-                        task_id: parse("task id", &tk, TaskId::parse)?,
-                        harness: Harness::parse(&h).map_err(|_| bad_column("harness", &h))?,
-                        session_id: r.get(4)?,
-                        transcript_ref: r.get(5)?,
-                        origin: r.get(6)?,
-                        first_seen: Timestamp(r.get(7)?),
-                        last_seen: Timestamp(r.get(8)?),
-                    })
+            )?;
+            let rows = stmt.query_map([sandbox], |r| {
+                let sb: String = r.get(1)?;
+                let tk: String = r.get(2)?;
+                let h: String = r.get(3)?;
+                Ok(ProviderSessionRecord {
+                    id: r.get(0)?,
+                    sandbox_id: parse("sandbox id", &sb, SandboxId::parse)?,
+                    task_id: parse("task id", &tk, TaskId::parse)?,
+                    harness: Harness::parse(&h).map_err(|_| bad_column("harness", &h))?,
+                    session_id: r.get(4)?,
+                    transcript_ref: r.get(5)?,
+                    origin: r.get(6)?,
+                    first_seen: Timestamp(r.get(7)?),
+                    last_seen: Timestamp(r.get(8)?),
                 })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -242,16 +230,13 @@ impl SessionDocStore for SqliteStore {
     async fn delete_session_doc(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "DELETE FROM session_chunks WHERE doc_id = ?1",
                 [id.as_str()],
-            )
-            .map_err(db)?;
-            let deleted = tx
-                .execute("DELETE FROM session_docs WHERE id = ?1", [id.as_str()])
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            let deleted = tx.execute("DELETE FROM session_docs WHERE id = ?1", [id.as_str()])?;
+            tx.commit()?;
             Ok(deleted > 0)
         })
         .await
@@ -260,24 +245,21 @@ impl SessionDocStore for SqliteStore {
     async fn set_session_doc_path(&self, id: &str, expected: &str, path: &str) -> AppResult<bool> {
         let (id, expected, path) = (id.to_owned(), expected.to_owned(), path.to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let changed = tx
-                .execute(
-                    "UPDATE session_docs SET transcript_path = ?1, indexed_bytes = 0, \
+            let tx = c.transaction()?;
+            let changed = tx.execute(
+                "UPDATE session_docs SET transcript_path = ?1, indexed_bytes = 0, \
                      indexed_lines = 0, index_full = 0 WHERE id = ?2 \
                      AND transcript_path = ?3 AND transcript_path <> ?1",
-                    params![path, id, expected],
-                )
-                .map_err(db)?;
+                params![path, id, expected],
+            )?;
             if changed == 0 {
                 return Ok(false);
             }
             tx.execute(
                 "DELETE FROM session_chunks WHERE doc_id = ?1",
                 [id.as_str()],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -289,8 +271,7 @@ impl SessionDocStore for SqliteStore {
             c.execute(
                 "UPDATE session_docs SET continued_task_id = ?1 WHERE id = ?2",
                 params![task, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -304,40 +285,34 @@ impl SessionDocStore for SqliteStore {
     ) -> AppResult<bool> {
         let (doc, chunks) = (doc_id.to_owned(), chunks.to_vec());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let moved = tx
-                .execute(
-                    "UPDATE session_docs SET indexed_bytes = ?1, indexed_lines = ?2, \
+            let tx = c.transaction()?;
+            let moved = tx.execute(
+                "UPDATE session_docs SET indexed_bytes = ?1, indexed_lines = ?2, \
                      index_full = ?3, bytes = MAX(bytes, ?4), updated_at = MAX(updated_at, ?5) \
                      WHERE id = ?6 AND indexed_bytes = ?7",
-                    params![
-                        to_i64(advance.bytes),
-                        to_i64(advance.lines),
-                        i64::from(advance.full),
-                        to_i64(advance.size),
-                        advance.at.0,
-                        doc,
-                        to_i64(advance.expected_bytes),
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    to_i64(advance.bytes),
+                    to_i64(advance.lines),
+                    i64::from(advance.full),
+                    to_i64(advance.size),
+                    advance.at.0,
+                    doc,
+                    to_i64(advance.expected_bytes),
+                ],
+            )?;
             if moved == 0 {
                 return Ok(false);
             }
             {
-                let mut insert = tx
-                    .prepare(
-                        "INSERT INTO session_chunks (doc_id, line, role, text) \
+                let mut insert = tx.prepare(
+                    "INSERT INTO session_chunks (doc_id, line, role, text) \
                          VALUES (?1, ?2, ?3, ?4)",
-                    )
-                    .map_err(db)?;
+                )?;
                 for chunk in &chunks {
-                    insert
-                        .execute(params![doc, to_i64(chunk.line), chunk.role, chunk.text])
-                        .map_err(db)?;
+                    insert.execute(params![doc, to_i64(chunk.line), chunk.role, chunk.text])?;
                 }
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -350,22 +325,19 @@ impl SessionDocStore for SqliteStore {
     ) -> AppResult<()> {
         let doc = doc_id.to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let changed = tx
-                .execute(
-                    "UPDATE session_docs SET indexed_bytes = 0, indexed_lines = 0, index_full = 0 \
+            let tx = c.transaction()?;
+            let changed = tx.execute(
+                "UPDATE session_docs SET indexed_bytes = 0, indexed_lines = 0, index_full = 0 \
                  WHERE id = ?1 AND (?2 IS NULL OR indexed_bytes = ?2)",
-                    params![doc, expected_bytes.map(to_i64)],
-                )
-                .map_err(db)?;
+                params![doc, expected_bytes.map(to_i64)],
+            )?;
             if changed != 0 {
                 tx.execute(
                     "DELETE FROM session_chunks WHERE doc_id = ?1",
                     [doc.as_str()],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(())
         })
         .await
@@ -379,29 +351,25 @@ impl SessionDocStore for SqliteStore {
     ) -> AppResult<Vec<SessionSearchHit>> {
         let (sandbox, query) = (sandbox.as_str().to_owned(), fts_query.to_owned());
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT k.doc_id, k.line, k.role, \
+            let mut stmt = c.prepare(
+                "SELECT k.doc_id, k.line, k.role, \
                      snippet(session_fts, 0, char(2), char(3), '…', 24), bm25(session_fts) \
                      FROM session_fts \
                      JOIN session_chunks k ON k.id = session_fts.rowid \
                      JOIN session_docs d ON d.id = k.doc_id \
                      WHERE session_fts MATCH ?1 AND d.sandbox_id = ?2 \
                      ORDER BY bm25(session_fts) LIMIT ?3",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map(params![query, sandbox, i64::from(limit)], |r| {
-                    Ok(SessionSearchHit {
-                        doc_id: r.get(0)?,
-                        line: to_u64(r.get(1)?),
-                        role: r.get(2)?,
-                        snippet: r.get(3)?,
-                        rank: r.get(4)?,
-                    })
+            )?;
+            let rows = stmt.query_map(params![query, sandbox, i64::from(limit)], |r| {
+                Ok(SessionSearchHit {
+                    doc_id: r.get(0)?,
+                    line: to_u64(r.get(1)?),
+                    role: r.get(2)?,
+                    snippet: r.get(3)?,
+                    rank: r.get(4)?,
                 })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -409,13 +377,12 @@ impl SessionDocStore for SqliteStore {
     async fn imported_session_usage(&self, sandbox: &SandboxId) -> AppResult<(u64, u64)> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM session_docs \
                  WHERE sandbox_id = ?1 AND kind = 'imported'",
                 [sandbox],
                 |r| Ok((to_u64(r.get(0)?), to_u64(r.get(1)?))),
-            )
-            .map_err(db)
+            )?)
         })
         .await
     }
@@ -432,14 +399,13 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 1, 1, 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 'a', 'o', 'a', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s2', 'b', 'o', 'b', 'main', '{}', 20010, 10, 'u1', 'not_needed', 1);
                      INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u1', 1, 1);
                      INSERT INTO provider_sessions (id, sandbox_id, task_id, harness, session_id, transcript_ref, origin, first_seen, last_seen) VALUES ('p1', 's1', 't1', 'claude', 'sess-task', NULL, 'native', 1, 1);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         Ok(store)
