@@ -1,4 +1,5 @@
-//! Opening and pushing pull requests, by a person and automatically, and push problems.
+//! Opening and pushing pull requests, by a person and automatically, push problems, and the
+//! task review's commits and changes.
 
 use super::*;
 
