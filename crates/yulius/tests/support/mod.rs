@@ -910,7 +910,7 @@ pub fn harness_with_git(
     )
 }
 
-/// The shared builder: in-memory store, fake GitHub, fixed clock and system metrics.
+/// The shared builder: a migrated store of its own, fake GitHub, fixed clock and system metrics.
 pub fn build_harness(
     git: Arc<dyn yulius_app::ports::git::GitPort>,
     session_host: Arc<dyn yulius_app::ports::session::SessionHost>,
@@ -1766,7 +1766,7 @@ pub struct HarnessOptions {
     pub harness: Option<Arc<dyn yulius_app::ports::harness::HarnessPort>>,
     /// Provider usage probe (default: unavailable).
     pub usage: Option<Arc<dyn yulius_app::ports::usage::UsageProbe>>,
-    /// Store (default: a new in-memory database).
+    /// Store (default: a copy of the migrated template in a folder of its own).
     pub store: Option<SqliteStore>,
     /// Crypto (default: [`test_crypto`]).
     pub crypto: Option<Arc<dyn yulius_app::ports::Crypto>>,

@@ -18,7 +18,8 @@ pub fn migrated(path: &Path) -> Result<SqliteStore, BoxError> {
 }
 
 /// The template this test binary migrated, shared by its test processes: one file per schema
-/// version and build of the binary, written once under a temporary name and renamed into place.
+/// version and build of the binary, written under a temporary name and renamed into place (on a
+/// cold start each process that finds none writes its own; the last rename wins).
 fn template() -> Result<&'static Path, BoxError> {
     static TEMPLATE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     TEMPLATE
@@ -44,9 +45,34 @@ fn write_template() -> Result<PathBuf, BoxError> {
         return Ok(path);
     }
     std::fs::create_dir_all(dir)?;
-    let partial = path.with_extension(format!("{}.partial", std::process::id()));
-    std::fs::File::create(&partial)?;
-    yulius_store::migrate_file(&partial)?;
-    std::fs::rename(&partial, &path)?;
+    let partial = tempfile::NamedTempFile::with_prefix_in("store-template-", dir)?;
+    yulius_store::migrate_file(partial.path())?;
+    partial.persist(&path)?;
+    remove_old_templates(dir);
     Ok(path)
+}
+
+/// Removes templates of earlier builds (each commit relinks the test binary) once they are a day
+/// old, so a binary of that build still running keeps its file.
+fn remove_old_templates(dir: &Path) {
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age > day);
+        if old
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("store-template-")
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
