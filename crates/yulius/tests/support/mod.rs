@@ -1401,6 +1401,10 @@ pub mod gated;
 pub mod pending;
 /// Repository fixtures (real Git over local remotes) for project and import tests.
 pub mod repos;
+pub use repos::{git, git_stdout};
+/// Waiting on a condition.
+pub mod wait;
+pub use wait::eventually;
 /// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).
 pub mod updates;
 
@@ -2212,7 +2216,7 @@ pub async fn replace_park_at(
         .join("worktrees")
         .join(target.as_str());
     std::fs::create_dir_all(&tree)?;
-    repos::git(&tree, &["init", "--quiet"])?;
+    git_stdout(&tree, &["init", "--quiet"])?;
     seed_live_attempt(h, target.as_str(), "first parked attempt").await?;
     let mut run = h
         .store

@@ -3,6 +3,7 @@
 //! bare repository, and a test-local `GitPort` over the real `git` command line.
 
 use crate::support;
+use crate::support::git;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -75,10 +76,6 @@ fn git_sync(dir: &Path, args: &[&str]) -> Result<String, String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
-}
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    Ok(git_sync(dir, args)?)
 }
 
 /// Test-local Git port over the real `git` command line (no network: "origin" is a local bare

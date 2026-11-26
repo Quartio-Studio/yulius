@@ -3,6 +3,7 @@
 //! (supervisor → detached `yulius ptyhost` → fake agent). A session host wrapping the real one
 //! injects synthetic output into a run's own reader and holds it there until the test releases it.
 
+use crate::support::{TestResult, eventually};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -23,10 +24,9 @@ use yulius_domain::ids::{TaskId, UserId};
 
 use super::{
     Error, FakeAgentOptions, Point, answered, data_dir, hooked, locate_fake_agent,
-    park_through_terminal_exit, pause_at_key, request_one_park, runtime, screen, wait_for,
+    park_through_terminal_exit, pause_at_key, request_one_park, runtime, screen,
 };
 use crate::pool_supervision::ScriptedUsage;
-use crate::support::TestResult;
 
 /// What a held reader hands on once released, and the signals around it.
 struct Held {
@@ -225,7 +225,7 @@ async fn resume_in_replacement(
         )
         .await?;
     assert_eq!(answer["delivered"], "resumed");
-    let answered = wait_for(
+    let answered = eventually(
         "the replacement's answer",
         Duration::from_secs(30),
         || async { screen(app, id).contains("Text for the second run only") },
@@ -318,7 +318,7 @@ fn held_event_of_an_old_run(held: fn(u64) -> RunEvent) -> TestResult {
             &json!({"number": 1, "text": "Later text of the replacement"}),
         )
         .await?;
-        wait_for(
+        eventually(
             "the replacement's later answer",
             Duration::from_secs(30),
             || async { screen(&app, &id).contains("Later text of the replacement") },

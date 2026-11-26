@@ -7,12 +7,12 @@
 //! worktrees over a local origin.
 
 use crate::pool_supervision::{
-    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, task, temp, wait_for,
+    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, task, temp,
 };
 use crate::support;
+use crate::support::{eventually, git};
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,21 +35,6 @@ type BoxError = Box<dyn std::error::Error>;
 /// What the source said before it was forked: the fork's agent must have it.
 const FIXTURE_WORD: &str = "pelican-fixture-628";
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, BoxError> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
 async fn ctx(app: &App, user: &UserId) -> Result<AuthContext, BoxError> {
     Ok(AuthContext {
         user: app.deps.store.user(user).await?.ok_or("user")?,
@@ -60,7 +45,7 @@ async fn ctx(app: &App, user: &UserId) -> Result<AuthContext, BoxError> {
 }
 
 async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
-    wait_for("the run", Duration::from_secs(30), || {
+    eventually("the run", Duration::from_secs(30), || {
         let (app, id) = (app.clone(), id.clone());
         async move { screen(&app, &id).contains("FAKE-AGENT READY") }
     })
@@ -226,7 +211,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
             fork.worktree_path.as_deref().ok_or("worktree")?
         );
         assert!(!fork_text.contains("partial"));
-        wait_for("the opening turn", Duration::from_secs(30), || {
+        eventually("the opening turn", Duration::from_secs(30), || {
             let (app, id) = (app.clone(), fork_id.clone());
             async move { screen(&app, &id).contains("Try a hand-written parser instead.") }
         })
@@ -454,7 +439,7 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
         )
         .await?;
         let source_id = crate::codex::new_codex_task(&app, &sandbox, &user, "Parser").await?;
-        wait_for(
+        eventually(
             "the source's conversation",
             Duration::from_secs(30),
             || async {
@@ -491,7 +476,7 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
             .ok_or("the fork's start is kept")?;
         assert_eq!(kept.account_id.as_ref(), Some(&named));
         support::stop_tasks(&app, &[&source_id]).await?;
-        wait_for(
+        eventually(
             "the fork's own session",
             Duration::from_secs(30),
             || async {
@@ -538,7 +523,7 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
         support::stop_tasks(&app, &[&fork_id]).await?;
         app.continue_task(&ctx, fork_id.as_str(), &Default::default())
             .await?;
-        wait_for("the fork's second run", Duration::from_secs(30), || async {
+        eventually("the fork's second run", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .live_attempt(&fork_id)
@@ -593,7 +578,7 @@ fn a_fork_whose_first_launch_failed_launches_as_a_fork_again() -> TestResult {
             .fork_task(&ctx, source_id.as_str(), &ForkTask::default())
             .await?;
         let fork_id = TaskId::parse(&summary.id)?;
-        wait_for("the failed launch", Duration::from_secs(30), || {
+        eventually("the failed launch", Duration::from_secs(30), || {
             let (app, id) = (app.clone(), fork_id.clone());
             async move { task(&app, &id).await.is_ok_and(|t| t.status.is_resting()) }
         })

@@ -4,6 +4,7 @@
 //! loopback HTTP server and a stdio child.
 
 use crate::support;
+use crate::support::eventually;
 
 use std::path::Path;
 
@@ -226,23 +227,6 @@ async fn a_server_start_refreshes_every_sandboxs_skills() -> TestResult {
     Ok(())
 }
 
-/// Waits until `done` holds, at most 30 s (a condition, not a sleep: it is looked at again
-/// every 50 ms).
-async fn until<F, Fut>(what: &str, mut done: F) -> Result<(), Error>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !done().await {
-        if std::time::Instant::now() > deadline {
-            return Err(format!("timed out waiting for {what}").into());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    Ok(())
-}
-
 /// SPEC-507 review round 2: a repository `SKILL.md` an agent swaps for a FIFO after the catalog
 /// checked it, right before the open, never holds the server's start.
 #[tokio::test]
@@ -364,19 +348,24 @@ async fn a_switch_dropped_while_it_waits_still_refreshes_the_home() -> TestResul
     go_tx.send(())?;
     start.await?;
     let store = w.h.store.clone();
-    until("the switch's refresh", || {
-        let store = store.clone();
-        let gone = !skills.join("om-fix").exists();
-        async move {
-            gone && store
-                .audit_details("studio", REFRESHED_AUDIT, 10)
-                .await
-                .is_ok_and(|d| {
-                    d.iter()
-                        .any(|e| e.starts_with("skill switched") && e.ends_with("removed om-fix"))
-                })
-        }
-    })
+    eventually(
+        "the switch's refresh",
+        std::time::Duration::from_secs(30),
+        || {
+            let store = store.clone();
+            let gone = !skills.join("om-fix").exists();
+            async move {
+                gone && store
+                    .audit_details("studio", REFRESHED_AUDIT, 10)
+                    .await
+                    .is_ok_and(|d| {
+                        d.iter().any(|e| {
+                            e.starts_with("skill switched") && e.ends_with("removed om-fix")
+                        })
+                    })
+            }
+        },
+    )
     .await?;
     Ok(())
 }

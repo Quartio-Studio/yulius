@@ -2,10 +2,11 @@
 //! a template, onboarding gate and removal (AC-PRJ-1, AC-PRJ-3..5, AC-IMP-2, AC-IMP-4).
 
 use crate::support;
+use crate::support::git_stdout;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::repos::{OWNER, World, git};
+use support::repos::{OWNER, World};
 use support::{TestResult, call};
 use yulius_app::error::AppError;
 use yulius_app::model::{
@@ -1029,10 +1030,10 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
         .join("remotes")
         .join(OWNER)
         .join("new-shop.git");
-    let main = git(&remote, &["rev-parse", "refs/heads/main"])?;
-    let dev = git(&remote, &["rev-parse", "refs/heads/dev"])?;
+    let main = git_stdout(&remote, &["rev-parse", "refs/heads/main"])?;
+    let dev = git_stdout(&remote, &["rev-parse", "refs/heads/dev"])?;
     assert_eq!(main, dev, "dev starts at the scaffold commit");
-    let tree = git(&remote, &["ls-tree", "-r", "--name-only", "main"])?;
+    let tree = git_stdout(&remote, &["ls-tree", "-r", "--name-only", "main"])?;
     for path in [
         "AGENTS.md",
         "CLAUDE.md",
@@ -1467,7 +1468,7 @@ async fn remove_stops_tasks_and_keeps_the_repository() -> TestResult {
         assert_eq!(mode, 0o600);
     }
     // PRJ-009: GitHub repository and files are kept.
-    assert!(git(&remote, &["rev-parse", "refs/heads/main"]).is_ok());
+    assert!(git_stdout(&remote, &["rev-parse", "refs/heads/main"]).is_ok());
     assert!(w.github.created().is_empty());
     assert!(
         w.data_dir()
@@ -1885,10 +1886,10 @@ async fn subscription(w: &World) -> TestResult {
 
 /// The remote's branches, `name sha` per line.
 fn remote_heads(remote: &std::path::Path) -> Result<String, Error> {
-    Ok(git(
+    git_stdout(
         remote,
         &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
-    )?)
+    )
 }
 
 // SPEC-241 EMP-001: an empty clone's HEAD names the host's local default (here `master`), not
@@ -1928,14 +1929,20 @@ async fn onboarding_an_empty_repository_pushes_a_first_commit_and_starts() -> Te
 
     // GitHub's default branch holds one commit adding only README.md, pushed as the App.
     assert_eq!(remote_heads(&remote)?.trim(), "main");
-    assert_eq!(git(&remote, &["rev-list", "--count", "main"])?.trim(), "1");
     assert_eq!(
-        git(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
+        git_stdout(&remote, &["rev-list", "--count", "main"])?.trim(),
+        "1"
+    );
+    assert_eq!(
+        git_stdout(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
         "README.md"
     );
-    assert_eq!(git(&remote, &["show", "main:README.md"])?, "# fresh\n");
     assert_eq!(
-        git(&remote, &["log", "-1", "--format=%an", "main"])?.trim(),
+        git_stdout(&remote, &["show", "main:README.md"])?,
+        "# fresh\n"
+    );
+    assert_eq!(
+        git_stdout(&remote, &["log", "-1", "--format=%an", "main"])?.trim(),
         "ALICE",
         "authored by the person who started onboarding"
     );
@@ -1964,8 +1971,8 @@ async fn onboarding_an_empty_repository_pushes_a_first_commit_and_starts() -> Te
         .worktree_path
         .ok_or("the onboarding task has a worktree")?;
     assert_eq!(
-        git(std::path::Path::new(&worktree), &["rev-parse", "HEAD"])?,
-        git(&remote, &["rev-parse", "main"])?
+        git_stdout(std::path::Path::new(&worktree), &["rev-parse", "HEAD"])?,
+        git_stdout(&remote, &["rev-parse", "main"])?
     );
     assert!(std::path::Path::new(&worktree).join("README.md").exists());
     Ok(())
@@ -2002,12 +2009,13 @@ async fn start_onboarding_corrects_the_branch_and_leaves_repositories_with_commi
     assert_eq!(remote_heads(&remote)?.trim(), "main");
 
     let pushes = |calls: Vec<String>| calls.iter().filter(|c| c.starts_with("push")).count();
-    let (shop_before, pushed_before) = (git(&shop, &["for-each-ref"])?, pushes(w.git.calls()));
+    let (shop_before, pushed_before) =
+        (git_stdout(&shop, &["for-each-ref"])?, pushes(w.git.calls()));
     let shop_box = import(&w, &alice_browser, "Quartio-Studio/shop").await?;
     assert_eq!(shop_box.status, StatusCode::CREATED, "{:?}", shop_box.body);
     assert_eq!(shop_box.body["onboarding"], "preparing");
     assert_eq!(
-        git(&shop, &["for-each-ref"])?,
+        git_stdout(&shop, &["for-each-ref"])?,
         shop_before,
         "nothing pushed"
     );
@@ -2023,7 +2031,7 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     let (alice_user, _) = w.user("alice", false).await?;
     let alice_browser = w.browser(&alice_user).await?;
     let remote = w.empty_remote(OWNER, "fresh", "main")?;
-    git(&remote, &["config", "receive.maxInputSize", "1"])?;
+    git_stdout(&remote, &["config", "receive.maxInputSize", "1"])?;
     w.grant("alice", "fresh", "admin");
     let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
     assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
@@ -2046,7 +2054,7 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     );
     assert_eq!(remote_heads(&remote)?, "");
 
-    git(&remote, &["config", "--unset", "receive.maxInputSize"])?;
+    git_stdout(&remote, &["config", "--unset", "receive.maxInputSize"])?;
     // The first commit is made in a folder of the server's own (SPEC-483 TKR-006): what the
     // sandbox holds where it once was made is nothing to it, and nothing is left of it.
     let sandbox_dir = w.data_dir().join("sandboxes").join(text(&fresh.body["id"]));
@@ -2056,7 +2064,7 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     assert_eq!(started.body["onboarding"], "preparing");
     assert_eq!(remote_heads(&remote)?.trim(), "main");
     assert_eq!(
-        git(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
+        git_stdout(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
         "README.md"
     );
     assert!(sandbox_dir.join("seed").is_file());
@@ -2171,7 +2179,7 @@ async fn a_repository_pushed_to_since_import_heals_the_recorded_branch() -> Test
 
     // Someone pushes a first commit to GitHub's `main` (and a feature branch) themselves.
     let seed = w.scratch.path().join("someone");
-    git(
+    git_stdout(
         w.scratch.path(),
         &[
             "clone",
@@ -2181,14 +2189,14 @@ async fn a_repository_pushed_to_since_import_heals_the_recorded_branch() -> Test
         ],
     )?;
     std::fs::write(seed.join("app.txt"), "theirs\n")?;
-    git(&seed, &["checkout", "--quiet", "-b", "main"])?;
-    git(&seed, &["add", "-A"])?;
-    git(&seed, &["commit", "--quiet", "-m", "theirs"])?;
-    git(
+    git_stdout(&seed, &["checkout", "--quiet", "-b", "main"])?;
+    git_stdout(&seed, &["add", "-A"])?;
+    git_stdout(&seed, &["commit", "--quiet", "-m", "theirs"])?;
+    git_stdout(
         &seed,
         &["push", "--quiet", "origin", "main", "main:feature"],
     )?;
-    let theirs = git(&remote, &["rev-parse", "main"])?;
+    let theirs = git_stdout(&remote, &["rev-parse", "main"])?;
 
     let started = call(
         &w.h.router,
@@ -2202,7 +2210,7 @@ async fn a_repository_pushed_to_since_import_heals_the_recorded_branch() -> Test
     assert_eq!(started.body["default_branch"], "main", "{}", started.body);
     assert_eq!(started.body["onboarding"], "preparing");
     assert_eq!(
-        git(&remote, &["rev-parse", "main"])?,
+        git_stdout(&remote, &["rev-parse", "main"])?,
         theirs,
         "nothing pushed"
     );

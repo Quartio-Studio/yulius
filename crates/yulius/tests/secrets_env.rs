@@ -3,6 +3,7 @@
 //! file of the task's worktree, and the name into `.env.example`, without the agent seeing it.
 
 use crate::support;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,21 +20,6 @@ use yulius_domain::task::TaskStatus;
 
 const VALUE: &str = concat!("sk_live_", "51EnvCopyValue9q2w");
 const TOKEN: &str = "env-task-token-s1-0123456789abcdef";
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
-}
 
 struct World {
     h: support::Harness,

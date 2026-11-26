@@ -5,12 +5,12 @@
 //! every run on every subscription (MCP-004, AC-MCP-3).
 
 use crate::support;
+use crate::support::{eventually, git};
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
 use support::{FakeGitHub, TestResult};
@@ -219,21 +219,6 @@ pub(crate) fn build_served_tuned(
     Ok(App::new(config, deps))
 }
 
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
-}
-
 fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
     let origin = data.join("origin.git");
     std::fs::create_dir_all(&origin)?;
@@ -402,21 +387,6 @@ async fn new_task_of(
     Ok(record.id)
 }
 
-pub(crate) async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if check().await {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 pub(crate) async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn std::error::Error>> {
     Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
 }
@@ -442,7 +412,7 @@ pub(crate) async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
         return Ok(());
     }
     app.stop_task_now(id).await?;
-    wait_for("the stop", Duration::from_secs(30), || async {
+    eventually("the stop", Duration::from_secs(30), || async {
         task(app, id).await.is_ok_and(|t| t.status.is_resting())
     })
     .await
@@ -477,7 +447,7 @@ fn a_new_task_starts_on_the_capacity_that_expires_first() -> TestResult {
         refresh(&app, &user, "a-far").await?;
         refresh(&app, &user, "b-soon").await?;
         let id = new_task(&app, &sandbox, &user, "Placement").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -509,7 +479,7 @@ fn one_exhausted_subscription_pauses_at_the_boundary_and_resumes_in_place() -> T
         let app = build(&data, &fake, probe.clone())?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let id = new_task(&app, &sandbox, &user, "Pause").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -523,7 +493,7 @@ fn one_exhausted_subscription_pauses_at_the_boundary_and_resumes_in_place() -> T
             "never mid-turn"
         );
         app.send_input(&id, b"first turn\r").await?;
-        wait_for("the pause at the boundary", Duration::from_secs(30), || {
+        eventually("the pause at the boundary", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -549,7 +519,7 @@ fn one_exhausted_subscription_pauses_at_the_boundary_and_resumes_in_place() -> T
         tokio::time::sleep(Duration::from_millis(1_500)).await;
         assert_eq!(echoed(&app, &id), ["first turn"], "still nothing typed");
         app.send_input(&id, b"second turn\r").await?;
-        wait_for("the next turn", Duration::from_secs(10), || {
+        eventually("the next turn", Duration::from_secs(10), || {
             let app = app.clone();
             let id = id.clone();
             async move { echoed(&app, &id).len() == 2 }
@@ -628,7 +598,7 @@ fn a_goal_continuation_recovers_a_process_free_capacity_hold() -> TestResult {
             .live_attempt(id)
             .await?
             .ok_or("resumed run")?;
-        wait_for("the resumed launch", Duration::from_secs(30), || async {
+        eventually("the resumed launch", Duration::from_secs(30), || async {
             Path::new(&run.run_dir).join("fake-launch.txt").is_file()
         })
         .await?;
@@ -829,7 +799,7 @@ fn a_manual_move_delivers_saved_fresh_and_resumed_goals_across_harnesses() -> Te
                 let run = store.live_attempt(&id).await?.ok_or("replacement run")?;
                 assert_eq!(run.launch_kind, launch_kind, "{harness:?}");
                 let launch = Path::new(&run.run_dir).join("fake-launch.txt");
-                wait_for(
+                eventually(
                     "the moved goal instruction",
                     Duration::from_secs(30),
                     || async {
@@ -874,7 +844,7 @@ fn check_replaced_goal_stop(point: yulius_app::race::Point) -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
         let id = start_verification_goal(&app, sandbox, user).await?;
         let limit = Duration::from_secs(30);
-        wait_for("the first goal run", limit, || async {
+        eventually("the first goal run", limit, || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         })
         .await?;
@@ -932,7 +902,7 @@ fn check_replaced_goal_stop(point: yulius_app::race::Point) -> TestResult {
         assert_eq!(task(&app, &id).await?.activity, Some(Activity::Working));
         release.send(())?;
         old_stop.await??;
-        let ended = wait_for(
+        let ended = eventually(
             "an old Stop settling the replacement",
             yulius_app::finish::GOAL_VERDICT_WAIT + Duration::from_secs(2),
             || async {
@@ -1054,7 +1024,7 @@ fn check_delayed_native_met(replace: bool) -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
         let id = start_verification_goal(&app, sandbox, user).await?;
         let limit = Duration::from_secs(35);
-        wait_for("first run", limit, || async {
+        eventually("first run", limit, || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         })
         .await?;
@@ -1128,12 +1098,12 @@ fn check_delayed_native_met(replace: bool) -> TestResult {
             )
             .await?;
             write_native_goal(&app, &data, &id, &second, false).await?;
-            wait_for("replacement's own open goal", limit, || async {
+            eventually("replacement's own open goal", limit, || async {
                 app.goal_is_open(&id)
             })
             .await?;
         } else {
-            wait_for("timeout settlement", limit, || async {
+            eventually("timeout settlement", limit, || async {
                 task(&app, &id)
                     .await
                     .is_ok_and(|task| task.activity == Some(Activity::Waiting))
@@ -1184,7 +1154,7 @@ fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
             model: None, effort: None, origin: TaskOrigin::Ui, automation_run: None, start: true,
             mode: yulius_app::model::TaskMode::Goal, supertask: false,
         }).await?.id;
-        wait_for("the run", Duration::from_secs(30), || async {
+        eventually("the run", Duration::from_secs(30), || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         }).await?;
         app.deps.store.update_task(&id, &yulius_app::ports::store::TaskFieldUpdate {
@@ -1216,7 +1186,7 @@ fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
         moved??;
         progressed?;
         let second = app.deps.store.live_attempt(&id).await?.ok_or("resumed run")?;
-        wait_for("the resumed launch", Duration::from_secs(30), || async {
+        eventually("the resumed launch", Duration::from_secs(30), || async {
             std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))
                 .is_ok_and(|launch| launch.contains("Verify dev"))
         }).await?;
@@ -1290,7 +1260,7 @@ async fn check_held_owner_prompt(
         )
         .await?;
     Box::pin(app.resume_round()).await;
-    wait_for(
+    eventually(
         "the new owner instruction on the returned subscription",
         Duration::from_secs(30),
         || async {
@@ -1328,7 +1298,7 @@ fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestRes
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
         let id = legacy_goal_hold(&app, &sandbox, &user).await?;
         Box::pin(app.resume_round()).await;
-        wait_for("the run", Duration::from_secs(30), || async {
+        eventually("the run", Duration::from_secs(30), || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         })
         .await?;
@@ -1404,7 +1374,7 @@ fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestRes
                         .map(|condition| format!("/goal {condition}"))
                 })
         };
-        wait_for(
+        eventually(
             "the restored native goal",
             Duration::from_secs(30),
             || async { screen(&app, &id).contains("GOAL SET") && restored().is_some() },
@@ -1446,7 +1416,7 @@ fn a_goal_continuation_budget_resets_when_an_owners_message_is_delivered() -> Te
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = legacy_goal_hold(&app, &sandbox, &user).await?;
         app.resume_round().await;
-        wait_for("the run", Duration::from_secs(30), || async {
+        eventually("the run", Duration::from_secs(30), || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         })
         .await?;
@@ -1494,12 +1464,12 @@ fn a_new_subscription_resumes_waiting_tasks_oldest_first_and_staggered() -> Test
         probe.set("a-full", usage(40.0, 3 * HOUR, 99.0, 50));
         refresh(&app, &user, "a-full").await?;
         let first = new_task(&app, &sandbox, &user, "First").await?;
-        wait_for("the first pause", Duration::from_secs(30), || {
+        eventually("the first pause", Duration::from_secs(30), || {
             has_status(&app, &first, TaskStatus::WaitingCapacity)
         })
         .await?;
         let second = new_task(&app, &sandbox, &user, "Second").await?;
-        wait_for("the second pause", Duration::from_secs(30), || {
+        eventually("the second pause", Duration::from_secs(30), || {
             has_status(&app, &second, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -1517,7 +1487,7 @@ fn a_new_subscription_resumes_waiting_tasks_oldest_first_and_staggered() -> Test
         refresh(&app, &user, "b-new").await?;
         let _ = app.resume_round().await;
         for id in [&first, &second] {
-            wait_for("the resumed run", Duration::from_secs(30), || {
+            eventually("the resumed run", Duration::from_secs(30), || {
                 let app = app.clone();
                 let id = id.clone();
                 async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -1557,7 +1527,7 @@ fn a_paused_task_resumes_on_the_subscription_with_capacity_by_native_resume() ->
         let app = build(&data, &fake, probe.clone())?;
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
         let id = new_task(&app, &sandbox, &user, "Move").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -1573,7 +1543,7 @@ fn a_paused_task_resumes_on_the_subscription_with_capacity_by_native_resume() ->
         refresh(&app, &user, "a-first").await?;
         refresh(&app, &user, "b-second").await?;
         app.send_input(&id, b"work\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -1582,7 +1552,7 @@ fn a_paused_task_resumes_on_the_subscription_with_capacity_by_native_resume() ->
         probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let _ = app.resume_round().await;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -1690,7 +1660,7 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
             .await?;
 
         let id = new_task(&app, &sandbox, &user, "Tools").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=") }
@@ -1752,14 +1722,14 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
         refresh(&app, &user, "a-first").await?;
         refresh(&app, &user, "b-second").await?;
         app.send_input(&id, b"work\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
         probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let _ = app.resume_round().await;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -1791,7 +1761,7 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
         ] {
             assert!(secrets.iter().any(|n| n == name), "{name} in {secrets:?}");
         }
-        wait_for("the new run's environment", Duration::from_secs(30), || {
+        eventually("the new run's environment", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move {
@@ -1911,7 +1881,7 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
         let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
         let (fleet, fleet_id) = personal_and_shared_servers(&app, &admin_ctx, &sandbox).await?;
         let id = new_task(&app, &sandbox, &admin, "Mine").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Running)
         })
         .await?;
@@ -1957,7 +1927,7 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
         app.request_task_control(&ctx_of(bob.clone()), id.as_str())
             .await?;
         app.accept_task_control(&admin_ctx, id.as_str()).await?;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -2011,7 +1981,7 @@ fn reattach_for_new_owner(revoked: bool) -> TestResult {
         let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
         personal_and_shared_servers(&app, &admin_ctx, &sandbox).await?;
         let id = new_task(&app, &sandbox, &admin, "Mine").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Running)
         })
         .await?;
@@ -2045,7 +2015,7 @@ fn reattach_for_new_owner(revoked: bool) -> TestResult {
                 .await?;
         }
         app.reconcile().await?;
-        wait_for("the restarted run", Duration::from_secs(60), || async {
+        eventually("the restarted run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             task(&app, &id)
                 .await
@@ -2182,7 +2152,7 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
         let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
         personal_and_shared_servers(&app, &admin_ctx, &sandbox).await?;
         let id = new_task(&app, &sandbox, &admin, "Mine").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -2192,7 +2162,7 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
         if matches!(order, LimitRestartRace::SwitchedModel) {
             crate::usage_credits::append_switched_fable_limit(&app, &data).await?;
         }
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -2243,7 +2213,7 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
         } else {
             None
         };
-        wait_for("the hand-over restart", Duration::from_secs(60), || async {
+        eventually("the hand-over restart", Duration::from_secs(60), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|task| task.status.is_resting())
@@ -2269,7 +2239,7 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
                 TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled)
             );
             assert_eq!(attempts.len(), 1);
-            wait_for(
+            eventually(
                 "the previous owner's host to exit",
                 Duration::from_secs(30),
                 || async {
@@ -2378,7 +2348,7 @@ async fn spend_blind_retry(
         let finished = limit_move_finished(id);
         app.send_input(id, b"again\r").await?;
         support::point_reached(finished).await?;
-        wait_for(
+        eventually(
             "the pause after another refusal",
             Duration::from_secs(30),
             || has_status(app, id, TaskStatus::WaitingCapacity),
@@ -2428,7 +2398,7 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
 
         let id = new_task(&app, &sandbox, &admin, "Mine").await?;
         // Running, not only spawned: control waits while a launch settles its servers.
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Running)
         })
         .await?;
@@ -2456,7 +2426,7 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             .id;
         // Its launch files, not only its attempt: the attempt is recorded before the spawn writes
         // them (#1084).
-        wait_for("the automation's run", Duration::from_secs(30), || {
+        eventually("the automation's run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = automated.clone();
             async move {
@@ -2507,7 +2477,7 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
         app.request_task_control(&ctx(bob.clone()), id.as_str())
             .await?;
         app.accept_task_control(&admin_ctx, id.as_str()).await?;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -2583,7 +2553,7 @@ fn a_hand_over_stops_a_run_holding_personal_mcp_servers_it_cannot_restart() -> T
             .await?;
         let id = new_task(&app, &sandbox, &admin, "Mine").await?;
         // Running, not only spawned: control waits while a launch settles its servers.
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Running)
         })
         .await?;
@@ -2596,7 +2566,7 @@ fn a_hand_over_stops_a_run_holding_personal_mcp_servers_it_cannot_restart() -> T
         app.request_task_control(&ctx(bob.clone()), id.as_str())
             .await?;
         app.accept_task_control(&admin_ctx, id.as_str()).await?;
-        wait_for("the stopped run", Duration::from_secs(60), || async {
+        eventually("the stopped run", Duration::from_secs(60), || async {
             app.deps
                 .store
                 .live_attempt(&id)
@@ -2655,7 +2625,7 @@ fn an_agent_run_gets_the_instance_vidoc_key_as_a_placeholder() -> TestResult {
         app.load_vidoc_key().await;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Scan").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ENV VIDOC_API_KEY=") }
@@ -2709,7 +2679,7 @@ fn a_switched_off_project_runs_without_vidoc() -> TestResult {
         )
         .await?;
         let id = new_task(&app, &sandbox, &user, "Scan").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ENV YULIUS_VIDOC=") }
@@ -2767,7 +2737,7 @@ fn a_run_follows_the_instance_vidoc_switch() -> TestResult {
         .await?;
         app.load_vidoc_key().await;
         let id = new_task(&app, &sandbox, &user, "Scan").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ENV YULIUS_VIDOC=") }
@@ -2861,7 +2831,7 @@ fn a_task_run_gets_the_project_variables() -> TestResult {
         assert!(app.deps.store.vault_update(&legacy, &saved).await?);
 
         let id = new_task(&app, &sandbox, &user, "Vars").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ENV RUST_TEST_THREADS=") }
@@ -2953,7 +2923,7 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
         .await?;
 
         let id = new_task(&app, &sandbox, &user, "Tools").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=") }
@@ -3058,7 +3028,7 @@ fn a_pause_survives_a_server_restart() -> TestResult {
         let app = build(&data, &fake, probe.clone())?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let id = new_task(&app, &sandbox, &user, "Restart").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -3067,7 +3037,7 @@ fn a_pause_survives_a_server_restart() -> TestResult {
         probe.set("a-only", usage(99.0, HOUR, 40.0, 100));
         refresh(&app, &user, "a-only").await?;
         app.send_input(&id, b"before\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -3100,7 +3070,7 @@ fn a_pause_survives_a_server_restart() -> TestResult {
         assert_eq!(live.child_pid, child, "the same process, never respawned");
         assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
         app.send_input(&id, b"after\r").await?;
-        wait_for(
+        eventually(
             "the echo after the restart",
             Duration::from_secs(10),
             || {
@@ -3143,14 +3113,14 @@ fn a_turn_interrupted_by_a_limit_resumes_without_a_typed_continue() -> TestResul
         probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -3164,7 +3134,7 @@ fn a_turn_interrupted_by_a_limit_resumes_without_a_typed_continue() -> TestResul
         probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let _ = app.resume_round().await;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -3176,7 +3146,7 @@ fn a_turn_interrupted_by_a_limit_resumes_without_a_typed_continue() -> TestResul
         );
         let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
         assert!(problems.is_empty(), "{problems:?}");
-        wait_for("the flag in the agent's environment", Duration::from_secs(30), || {
+        eventually("the flag in the agent's environment", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ENV CLAUDE_CODE_RESUME_INTERRUPTED_TURN=set") }
@@ -3214,7 +3184,7 @@ fn a_refused_subscription_moves_the_task_to_a_working_one() -> TestResult {
         probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let id = new_task(&app, &sandbox, &user, "Refused").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -3230,7 +3200,7 @@ fn a_refused_subscription_moves_the_task_to_a_working_one() -> TestResult {
 
         app.send_input(&id, b"hello\r").await?;
         // The run's attempt is live a moment before its task is Running (two writes): wait for both.
-        wait_for("the move to b-second", Duration::from_secs(60), || async {
+        eventually("the move to b-second", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2
                 && attempts[1].state == yulius_domain::task::AttemptState::Live
@@ -3334,7 +3304,7 @@ fn resume_live_limit(reattach: bool) -> TestResult {
         let app = second.block_on(async {
             let app = build()?;
             app.reconcile().await?;
-            wait_for("the transcript replay", Duration::from_secs(30), || async {
+            eventually("the transcript replay", Duration::from_secs(30), || async {
                 app.runtime(&id).transcript_rounds() >= 2
             })
             .await?;
@@ -3348,7 +3318,7 @@ fn resume_live_limit(reattach: bool) -> TestResult {
         let (paused, go) = hold_pool_move(yulius_app::race::Point::LimitPauseStored, &id);
         app.send_input(&id, b"hello\r").await?;
         support::point_reached(paused).await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -3368,7 +3338,7 @@ fn resume_live_limit(reattach: bool) -> TestResult {
             TaskStatus::Running,
             "a live limit pause resumes in this round"
         );
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -3422,14 +3392,14 @@ fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
         probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -3450,7 +3420,7 @@ fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
             },
         )
         .await?;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -3499,14 +3469,14 @@ fn the_cli_continuation_ends_the_limit_pause(answer_only: bool) -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let since = now();
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for(
+        eventually(
             "the pause at the limit",
             Duration::from_secs(30),
             || async {
@@ -3517,7 +3487,7 @@ fn the_cli_continuation_ends_the_limit_pause(answer_only: bool) -> TestResult {
             },
         )
         .await?;
-        wait_for(
+        eventually(
             "the CLI's own continuation",
             Duration::from_secs(30),
             || {
@@ -3527,7 +3497,7 @@ fn the_cli_continuation_ends_the_limit_pause(answer_only: bool) -> TestResult {
             },
         )
         .await?;
-        wait_for("the pause to end", Duration::from_secs(30), || {
+        eventually("the pause to end", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Running)
         })
         .await?;
@@ -3546,7 +3516,7 @@ fn the_cli_continuation_ends_the_limit_pause(answer_only: bool) -> TestResult {
         let attempts = app.deps.store.attempts(&id).await?;
         assert_eq!(attempts.len(), 1, "no second run: {attempts:?}");
         assert_eq!(attempts[0].state, yulius_domain::task::AttemptState::Live);
-        wait_for("the continued turn's end", Duration::from_secs(30), || {
+        eventually("the continued turn's end", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("DONE continued") }
@@ -3589,7 +3559,7 @@ fn a_manual_switch_after_a_refused_limit_switch_resumes_past_the_limit() -> Test
             .set_account_credential(&b, &foreign, AccountStatus::Ok, now())
             .await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -3603,7 +3573,7 @@ fn a_manual_switch_after_a_refused_limit_switch_resumes_past_the_limit() -> Test
             Some("a-first")
         );
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the refused switch", Duration::from_secs(30), || async {
+        eventually("the refused switch", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .switches(&id)
@@ -3634,7 +3604,7 @@ fn a_manual_switch_after_a_refused_limit_switch_resumes_past_the_limit() -> Test
             },
         )
         .await?;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -3719,14 +3689,14 @@ fn a_resume_past_a_limit_keeps_the_index_of_a_transcript_it_did_not_rewrite() ->
         let app = build_with(&data, &fake, probe.clone(), agent)?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -3784,14 +3754,14 @@ fn a_limit_pause_without_a_process_resumes_past_the_limit() -> TestResult {
         probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -3825,7 +3795,7 @@ fn a_limit_pause_without_a_process_resumes_past_the_limit() -> TestResult {
         probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let _ = app.resume_round().await;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -3890,7 +3860,7 @@ async fn slot_holder(
     user: &UserId,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
     let holder = new_task(app, sandbox, user, "Holds the slot").await?;
-    wait_for("the holder's run", Duration::from_secs(30), || {
+    eventually("the holder's run", Duration::from_secs(30), || {
         let app = app.clone();
         let holder = holder.clone();
         async move { screen(&app, &holder).contains("FAKE-AGENT READY") }
@@ -3923,14 +3893,14 @@ fn a_resume_past_a_limit_that_waits_in_the_queue_is_still_one() -> TestResult {
             refresh(&app, &user, full).await?;
         }
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -3957,7 +3927,7 @@ fn a_resume_past_a_limit_that_waits_in_the_queue_is_still_one() -> TestResult {
         refresh(&app, &user, "b-second").await?;
         let holder = slot_holder(&app, &sandbox, &user).await?;
         let _ = app.resume_round().await;
-        wait_for("the start in the queue", Duration::from_secs(30), || {
+        eventually("the start in the queue", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Queued)
         })
         .await?;
@@ -3969,7 +3939,7 @@ fn a_resume_past_a_limit_that_waits_in_the_queue_is_still_one() -> TestResult {
         refresh(&app, &user, "b-second").await?;
         refresh(&app, &user, "c-third").await?;
         stop(&app, &holder).await?;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -4012,7 +3982,7 @@ fn a_continue_on_a_chosen_subscription_keeps_it_through_the_queue() -> TestResul
         refresh(&app, &user, "a-first").await?;
         refresh(&app, &user, "b-second").await?;
         let id = new_task(&app, &sandbox, &user, "Continued").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -4093,7 +4063,7 @@ fn a_continue_on_a_chosen_subscription_keeps_it_through_the_queue() -> TestResul
         assert_eq!(task(&app, &id).await?.status, TaskStatus::Queued);
         assert_eq!(task(&app, &holder).await?.status, TaskStatus::Running);
         stop(&app, &holder).await?;
-        wait_for("the continued run", Duration::from_secs(60), || async {
+        eventually("the continued run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -4131,7 +4101,7 @@ fn a_chosen_subscription_that_filled_up_while_waiting_is_given_up() -> TestResul
         refresh(&app, &user, "a-first").await?;
         refresh(&app, &user, "b-second").await?;
         let id = new_task(&app, &sandbox, &user, "Continued").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -4161,7 +4131,7 @@ fn a_chosen_subscription_that_filled_up_while_waiting_is_given_up() -> TestResul
         refresh(&app, &user, "b-second").await?;
         stop(&app, &holder).await?;
         // The run's attempt is live a moment before its task is Running (two writes): wait for both.
-        wait_for("the continued run", Duration::from_secs(60), || async {
+        eventually("the continued run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2
                 && attempts[1].state == yulius_domain::task::AttemptState::Live
@@ -4221,14 +4191,14 @@ fn a_resume_that_finds_the_queue_full_keeps_its_pause() -> TestResult {
         probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -4268,18 +4238,18 @@ fn a_resume_that_finds_the_queue_full_keeps_its_pause() -> TestResult {
         // The queue's place frees (its task takes the slot): the next round queues the start,
         // and it runs past the limit when its turn comes.
         stop(&app, &holder).await?;
-        wait_for("the queue's task running", Duration::from_secs(30), || {
+        eventually("the queue's task running", Duration::from_secs(30), || {
             has_status(&app, &filler, TaskStatus::Running)
         })
         .await?;
         let _ = app.resume_round().await;
-        wait_for("the start in the queue", Duration::from_secs(30), || {
+        eventually("the start in the queue", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Queued)
         })
         .await?;
         assert!(app.deps.store.open_pause(&id).await?.is_none());
         stop(&app, &filler).await?;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -4313,24 +4283,24 @@ fn a_restart_does_not_replay_a_limit_the_cli_continued_past() -> TestResult {
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
-        wait_for("the continued turn's end", Duration::from_secs(30), || {
+        eventually("the continued turn's end", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("DONE continued") }
         })
         .await?;
-        wait_for("the pause to end", Duration::from_secs(30), || {
+        eventually("the pause to end", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Running)
         })
         .await?;
@@ -4350,7 +4320,7 @@ fn a_restart_does_not_replay_a_limit_the_cli_continued_past() -> TestResult {
         let app = build_with(&data, &fake, probe.clone(), agent)?;
         app.reconcile().await?;
         // The replay is applied once caught up: the continued turn ended, so the task waits.
-        wait_for(
+        eventually(
             "the replay's final state",
             Duration::from_secs(30),
             || async {
@@ -4401,14 +4371,14 @@ fn a_continuation_while_yulius_is_down_ends_the_limit_pause_at_restart() -> Test
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || {
+        eventually("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -4428,7 +4398,7 @@ fn a_continuation_while_yulius_is_down_ends_the_limit_pause_at_restart() -> Test
 
     let second = runtime()?;
     second.block_on(async {
-        wait_for(
+        eventually(
             "the continuation while Yulius is down",
             Duration::from_secs(30),
             || {
@@ -4447,10 +4417,9 @@ fn a_continuation_while_yulius_is_down_ends_the_limit_pause_at_restart() -> Test
             "still paused"
         );
         app.reconcile().await?;
-        wait_for(
+        eventually(
             "the pause to end at the replay",
-            Duration::from_secs(30),
-            // The pause closes, then the task runs: wait for both.
+            Duration::from_secs(30), // The pause closes, then the task runs: wait for both.
             || async {
                 app.deps
                     .store

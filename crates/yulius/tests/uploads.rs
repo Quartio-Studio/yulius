@@ -6,10 +6,11 @@
 //! with its task or shell.
 
 use crate::support;
+use crate::support::{eventually, git_stdout};
+use std::future::ready;
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -603,17 +604,6 @@ async fn task_attachments_get_safe_names_outside_git_and_go_with_the_task() -> T
     Ok(())
 }
 
-async fn wait_for(what: &str, timeout: Duration, mut check: impl FnMut() -> bool) -> TestResult {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if check() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 #[tokio::test]
 async fn composer_drafts_are_kept_per_user_outside_git_and_need_write_access() -> TestResult {
     let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
@@ -777,16 +767,16 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
         )
         .await?;
         assert_eq!(closed.status, StatusCode::NO_CONTENT);
-        wait_for("the shell to be forgotten", Duration::from_secs(20), || {
-            h.app.sandbox_shells(&sandbox).len() == left
+        eventually("the shell to be forgotten", Duration::from_secs(20), || {
+            ready(h.app.sandbox_shells(&sandbox).len() == left)
         })
         .await?;
     }
     // Closing a shell nobody names removes its attachments.
-    wait_for(
+    eventually(
         "the shell's attachments to go",
         Duration::from_secs(20),
-        || !folder.exists(),
+        || ready(!folder.exists()),
     )
     .await?;
     // The start-up prune below checks it again, deterministically.
@@ -802,21 +792,6 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
     assert_eq!(std::fs::read(&shot)?, b"png", "still named at start-up");
     drop(reaper);
     Ok(())
-}
-
-fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// A task running the fake agent (contained or not); returns the harness, alice's credentials
@@ -872,24 +847,24 @@ async fn agent_task(
     let data = h.app.config.data_dir.clone();
     let origin = data.join("origin.git");
     std::fs::create_dir_all(&origin)?;
-    git(&origin, &["init", "--bare", "-q", "-b", "main"])?;
+    git_stdout(&origin, &["init", "--bare", "-q", "-b", "main"])?;
     let seed = data.join("seed");
     std::fs::create_dir_all(&seed)?;
-    git(&seed, &["init", "-q", "-b", "main"])?;
+    git_stdout(&seed, &["init", "-q", "-b", "main"])?;
     std::fs::write(seed.join("README.md"), "# fixture\n")?;
-    git(&seed, &["add", "README.md"])?;
-    git(&seed, &["commit", "-q", "-m", "init"])?;
-    git(
+    git_stdout(&seed, &["add", "README.md"])?;
+    git_stdout(&seed, &["commit", "-q", "-m", "init"])?;
+    git_stdout(
         &seed,
         &["remote", "add", "origin", &origin.to_string_lossy()],
     )?;
-    git(&seed, &["push", "-q", "origin", "main"])?;
+    git_stdout(&seed, &["push", "-q", "origin", "main"])?;
     let repo = data
         .join("sandboxes")
         .join(sandbox.id.as_str())
         .join("repo");
     std::fs::create_dir_all(repo.parent().ok_or("parent")?)?;
-    git(
+    git_stdout(
         &data,
         &[
             "clone",
@@ -909,12 +884,14 @@ async fn agent_task(
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
     let id = TaskId::parse(created.body["id"].as_str().ok_or("task id")?)?;
     let app = h.app.clone();
-    let ready = id.clone();
-    wait_for("the agent", Duration::from_secs(30), move || {
-        app.runtime(&ready)
-            .hub
-            .screen_text()
-            .contains("FAKE-AGENT READY")
+    let task = id.clone();
+    eventually("the agent", Duration::from_secs(30), move || {
+        ready(
+            app.runtime(&task)
+                .hub
+                .screen_text()
+                .contains("FAKE-AGENT READY"),
+        )
     })
     .await?;
     Ok((h, alice, id))
@@ -943,8 +920,8 @@ async fn agent_reads_an_attachment(contained: bool) -> TestResult {
     let app = h.app.clone();
     let probe = id.clone();
     let needle = expected.clone();
-    let seen = wait_for(&expected, Duration::from_secs(15), move || {
-        app.runtime(&probe).hub.screen_text().contains(&needle)
+    let seen = eventually(&expected, Duration::from_secs(15), move || {
+        ready(app.runtime(&probe).hub.screen_text().contains(&needle))
     })
     .await;
     if seen.is_err() {
@@ -954,7 +931,7 @@ async fn agent_reads_an_attachment(contained: bool) -> TestResult {
     let task = h.store.task(&id).await?.ok_or("task")?;
     let worktree = PathBuf::from(task.worktree_path.ok_or("worktree")?);
     assert_eq!(
-        git(
+        git_stdout(
             &worktree,
             &["status", "--porcelain", "--untracked-files=all"]
         )?,
@@ -1003,7 +980,7 @@ async fn the_agent_reads_a_dropped_file_by_path_and_git_stays_clean() -> TestRes
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_contained_agent_reads_a_dropped_file_by_its_path() -> TestResult {
-    let probe = Command::new("bwrap")
+    let probe = std::process::Command::new("bwrap")
         .args([
             "--die-with-parent",
             "--unshare-pid",

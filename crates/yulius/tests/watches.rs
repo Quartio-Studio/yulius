@@ -3,6 +3,7 @@
 //! The scripts run for real through the detached process host, uncontained (as CI jobs do in
 //! tests), on the test clock.
 
+use crate::support::eventually;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -20,6 +21,9 @@ use yulius_domain::watch::RunBounds;
 use crate::support::{
     self, Creds, Harness, HarnessOptions, call, harness_with, perms, seed_github_user, seed_sandbox,
 };
+
+/// How long a condition may take to hold.
+const WAIT: Duration = Duration::from_secs(30);
 
 type Error = Box<dyn std::error::Error>;
 type TestResult = Result<(), Error>;
@@ -69,22 +73,6 @@ async fn world_with(
 
 async fn world() -> Result<World, Error> {
     world_with(None, |_| {}, false).await
-}
-
-/// Waits until `check` holds, for at most 30 s.
-async fn until<F, Fut>(what: &str, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<bool, Error>>,
-{
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !check().await? {
-        if Instant::now() > deadline {
-            return Err(format!("never: {what}").into());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Ok(())
 }
 
 fn new_watch(name: &str, script: &str) -> Result<NewWatch, Error> {
@@ -409,7 +397,7 @@ async fn watches_survive_a_restart() -> TestResult {
             .join("watches/s1/state")
             .join(&watch.id)
             .join("pid");
-    until("the second run started", || {
+    eventually("the second run started", WAIT, || {
         let pid_file = pid_file.clone();
         async move { Ok(pid_file.exists()) }
     })
@@ -429,10 +417,9 @@ async fn watches_survive_a_restart() -> TestResult {
 
     let after = Arc::new(App::new(w.h.app.config.clone(), w.h.app.deps.clone()));
     after.watch_startup().await;
-    until(
-        "the lost run's process ended",
-        || async move { Ok(!alive()) },
-    )
+    eventually("the lost run's process ended", WAIT, || async move {
+        Ok(!alive())
+    })
     .await?;
     assert!(
         !after
@@ -686,7 +673,7 @@ async fn a_removed_projects_watches_stop() -> TestResult {
             .join("watches/s1/state")
             .join(&hanging.id)
             .join("pid");
-    until("the run started", || {
+    eventually("the run started", WAIT, || {
         let pid = pid.clone();
         async move { Ok(pid.exists()) }
     })
@@ -773,7 +760,7 @@ async fn a_runs_secrets_reach_it_only_through_its_proxy_credential() -> TestResu
             .join("watches/s1/state")
             .join(&watch.id);
     let proxy = state.join("proxy");
-    until("the run wrote its proxy", || {
+    eventually("the run wrote its proxy", WAIT, || {
         let proxy = proxy.clone();
         async move { Ok(std::fs::read_to_string(&proxy).is_ok_and(|p| !p.is_empty())) }
     })
@@ -1186,7 +1173,7 @@ async fn people_manage_watches_over_http() -> TestResult {
     )
     .await?;
     assert_eq!(ran.status, StatusCode::ACCEPTED, "{}", ran.body);
-    until("the run ended", || async {
+    eventually("the run ended", WAIT, || async {
         Ok(w.watch(&id).await?.state.runs == 1)
     })
     .await?;
@@ -1404,7 +1391,7 @@ async fn the_person_tools_manage_watches() -> TestResult {
     .await?;
     assert!(!error, "{text}");
     let id = made["id"].as_str().ok_or("id")?.to_owned();
-    until("the run ended", || async {
+    eventually("the run ended", WAIT, || async {
         Ok(w.watch(&id).await?.state.runs == 1)
     })
     .await?;
@@ -1503,7 +1490,7 @@ async fn removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule() ->
             .data_dir
             .join("watches/s1/state")
             .join(&hold.id);
-    until("the held run started", || {
+    eventually("the held run started", WAIT, || {
         let pid = hold_state.join("pid");
         async move { Ok(pid.exists()) }
     })
@@ -1541,11 +1528,11 @@ async fn removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule() ->
         full.body
     );
     std::fs::write(hold_state.join("go"), "")?;
-    until("the held run ended", || async {
+    eventually("the held run ended", WAIT, || async {
         Ok(w.watch(&hold.id).await?.state.runs == 1)
     })
     .await?;
-    until("its permit is free", || async {
+    eventually("its permit is free", WAIT, || async {
         let r = http(
             &w,
             Method::POST,
@@ -1557,7 +1544,7 @@ async fn removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule() ->
         Ok(r.status == StatusCode::ACCEPTED)
     })
     .await?;
-    until("the other run ended", || async {
+    eventually("the other run ended", WAIT, || async {
         Ok(w.watch(&other.id).await?.state.runs == 1)
     })
     .await?;
@@ -1633,7 +1620,7 @@ async fn removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule() ->
     )
     .await?;
     assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.body);
-    until("the writer runs", || {
+    eventually("the writer runs", WAIT, || {
         let late = writer_state.join("late");
         async move { Ok(late.exists()) }
     })
@@ -1647,7 +1634,7 @@ async fn removal_frees_state_run_now_is_bounded_and_edits_keep_the_schedule() ->
     )
     .await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
-    until("its state is gone after its run ended", || {
+    eventually("its state is gone after its run ended", WAIT, || {
         let state = writer_state.clone();
         async move { Ok(!state.exists()) }
     })
