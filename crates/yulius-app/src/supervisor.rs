@@ -5,6 +5,12 @@
 //! - capacity is released only after the run's exit was observed or the run was declared lost;
 //! - every attempt records exactly one terminal outcome;
 //! - a record that says "running" is never respawned automatically after a restart.
+//!
+//! This module holds the per-task state (`TaskRuntime`, `SupervisorState`); the lifecycle lives
+//! in its children: `start` (admission and the queue), `launch`, `typing` (the opening message
+//! and the goal), `watch`, `input`, `switch`, `placement` (subscriptions, limits, rotation),
+//! `stop`, `park`, `end` (a run's end and the restart's reconcile), and the `codex` and
+//! `antigravity` specifics.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;

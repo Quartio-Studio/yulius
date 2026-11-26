@@ -790,7 +790,7 @@ reason = "each paste is bracketed and Request::parse already dropped its control
 # Pinned by task_ownership.rs a_non_owner_watches_the_terminal_read_only and task_message.rs
 # escape_sequences_and_control_characters_never_reach_the_session.
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/input.rs"
 title = "send_input accepts arbitrary bytes without PTY-level sanitization"
 reason = "raw keystrokes by design for writers only (terminal_input checks may_write); Yulius's own callers type cleaned or constant text (SPEC-393, #692)"
 
@@ -800,7 +800,7 @@ reason = "raw keystrokes by design for writers only (terminal_input checks may_w
 # Pinned by rotation.rs manual_account_choice_rules and task_ownership.rs
 # only_the_owner_writes_to_a_task.
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/switch.rs"
 title = "Missing authorization check on requested account in preflight_start"
 reason = "accounts are an ownerless pool; switch_task requires Work on the task, rotation::manual refuses unknown or unusable accounts, and the checked credential is dropped (SPEC-393, #691)"
 
@@ -1045,7 +1045,7 @@ reason = "no asker name can hold \", \" (#N, GitHub logins, [a-z0-9-] slugs) and
 path = "crates/yulius-app/src/supervisor/launch.rs"
 title = "Sealed credential decrypted without additional access control check"
 function = "open_credential"
-line = 1151
+line = 1152
 reason = "every caller gets the account from the server's pool choice after its own authorization; the token is never returned to a caller (SPEC-405, #815)"
 
 # SPEC-403 (task #384): the Vidoc findings on CD environments and CD run environments, triaged as
@@ -1127,7 +1127,7 @@ function = "read"
 # executable's path.
 [[ignore]]
 path = "crates/yulius-app/src/supervisor/launch.rs"
-line = 652
+line = 653
 title = "Run directory created with filesystem default permissions"
 reason = "the data directory above it is 0700 (prepare_data_dir) and the process host makes the run directory 0700 before the launch (prepare_run_dir); its secret-bearing files are 0600 (SPEC-408, #814)"
 
