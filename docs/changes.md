@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-26
 
+- A task whose spec is not registered finds it again in a specs directory of more than 500 files. Discovery read the first 500 directory entries in directory order and sorted only those, so with `.ai/specs` past 600 entries a renamed or unregistered spec could be missed. It now lists every Markdown file (up to 2,000) and reads the file named with the task's branch slug first. [SPEC-667](../.ai/specs/SPEC-667-cleanup-delivery-merge-queue-git-github.md)
 - Yulius CI's own job commands are `scripts/dev <gate>`: under Yulius CI `scripts/dev` bootstraps the toolchain and the gate prints its stage line, so `yulius.toml` no longer repeats `python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage …"` in every job (audit L3 F7, F11). The fallbacks for pull requests older than 2026-11-21 are gone, including the `file-contracts` one that failed on such heads. A pull request whose head lacks this change fails `quality` ("Invalid command") until it merges `dev`. The pull request's `quality` job is the new `scripts/dev quality` (doctor, quick, the checker's tests): it no longer compiles the workspace, which `lint`'s Clippy already does.
 
 ## 2026-11-25
