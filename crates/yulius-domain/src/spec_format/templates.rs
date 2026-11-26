@@ -135,7 +135,7 @@ pub fn spec_template(title: &str, task_id: &TaskId, date: CivilDate) -> String {
          \n\
          ## Decisions\n\
          \n\
-         <!-- Technology and design choices with reasons; record lasting ones as ADRs. -->\n\
+         <!-- Technology and design choices with reasons; an ADR only for one someone may want to reverse. -->\n\
          \n\
          ## Evidence\n\
          \n\
@@ -353,9 +353,10 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          4. Tests prove behavior: a test that fails without the change, then the change; strong\n   \
             unit and integration tests; wait on conditions, never on sleeps; no retries of\n   \
             flaky tests.\n\
-         5. Make technology and design decisions yourself: compare options, choose, justify,\n   \
-            and record each lasting decision as an ADR in `docs/decisions/NNNN-<slug>.md`\n   \
-            (Status, Context, Decision, Alternatives, Consequences).\n\
+         5. Make technology and design decisions yourself: compare options, choose, justify.\n   \
+            Write an ADR in `docs/decisions/NNNN-<slug>.md` (Status, Context, Decision,\n   \
+            Alternatives, Consequences) only for a choice of how the system is built or run\n   \
+            that someone may want to reverse, with two rejected alternatives.\n\
          6. Keep `docs/architecture.md` (with its Mermaid diagram), `docs/product.md` and this\n   \
             file true in the same change. Production-grade defaults: explicit error handling,\n   \
             no secrets in the repository.\n\
@@ -468,9 +469,10 @@ sessions cannot see why earlier choices were made and decisions drift.\n\
 \n\
 ## Decision\n\
 \n\
-Record every lasting technology or design decision as an architecture decision record in\n\
-`docs/decisions/NNNN-<slug>.md` with the sections Status, Context, Decision, Alternatives and\n\
-Consequences. A superseded record keeps its file and links to its replacement.\n\
+Record a choice of how the system is built or run that someone may want to reverse as an\n\
+architecture decision record in `docs/decisions/NNNN-<slug>.md` with the sections Status,\n\
+Context, Decision, Alternatives (at least two rejected ones) and Consequences. Product behaviour\n\
+goes in `docs/product.md`. A superseded record keeps its file and links to its replacement.\n\
 \n\
 ## Alternatives\n\
 \n\
@@ -479,7 +481,7 @@ Consequences. A superseded record keeps its file and links to its replacement.\n
 \n\
 ## Consequences\n\
 \n\
-Every task that makes a lasting decision adds or supersedes a record. The Yulius briefing lists\n\
+A record is refined in place; a new one is written only to reverse it. The Yulius briefing lists\n\
 record titles so new sessions stay consistent with earlier decisions.\n";
 
 fn changes_md(template: TemplateKind) -> String {
@@ -836,8 +838,14 @@ mod tests {
             "no `git stash` as a tool",
             "never add GitHub Actions",
             "## Layout (the docs index)",
+            "only for a choice of how the system is built or run\n   that someone may want to reverse",
         ] {
             assert!(agents.contains(needle), "AGENTS.md lacks {needle}");
+        }
+        let adr = file(&web, "docs/decisions/0001-record-architecture-decisions.md")?;
+        assert!(adr.contains("someone may want to reverse"), "{adr}");
+        for scaffold in [agents, adr] {
+            assert!(!scaffold.contains("lasting"), "{scaffold}");
         }
         let python = scaffold_files("Online Shop", TemplateKind::PythonData);
         assert!(file(&python, "online_shop/stats.py").is_ok());
