@@ -2069,3 +2069,315 @@ async fn names_that_could_never_answer_are_refused_with_why() -> TestResult {
     assert!(f.h.store.task_needs_you(&f.task.id).await?.is_none());
     Ok(())
 }
+
+/// The answer of `/internal/git-credential` to the run with task token `token`.
+async fn agent_credential(
+    h: &Harness,
+    token: &str,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com", "path": "acme/repo.git"})),
+        &Creds {
+            bearer: Some(token.into()),
+            ..Creds::default()
+        },
+    )
+    .await
+}
+
+/// [`fixture`] with the GitHub App installed, so a run may be issued its agent token.
+async fn fixture_with_app() -> Result<Fixture, Box<dyn std::error::Error>> {
+    let f = fixture().await?;
+    f.h.store.init_instance("https://yulius.test", "x").await?;
+    crate::support::configure_github_app(&f.h).await?;
+    f.h.store.set_installation(Some(7)).await?;
+    Ok(f)
+}
+
+/// Disabling a task's owner stops the task, and its run
+/// is refused a git credential from then on; another person's task runs on.
+#[tokio::test]
+async fn a_disabled_owners_run_gets_no_git_credential_and_stops() -> TestResult {
+    let f = fixture_with_app().await?;
+    let admin = crate::support::setup_superadmin_creds(&f.h).await?;
+    let mut bobs = f.task.clone();
+    bobs.id = TaskId::parse("t2")?;
+    bobs.number = 2;
+    bobs.owner = UserId::parse("u-b")?;
+    f.h.store.insert_task(&bobs).await?;
+    let before = agent_credential(&f.h, "tt").await?;
+    assert_eq!(before.status, 200, "{}", before.body);
+
+    let disable = call(
+        &f.h.router,
+        Method::PATCH,
+        "/api/admin/users/u-a",
+        Some(json!({"disabled": true})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(disable.status, 200, "{}", disable.body);
+    let refused = agent_credential(&f.h, "tt").await?;
+    // Refused as a person's own git is after a disable (`workspace_git_credential`).
+    assert_eq!(refused.status, 401, "{}", refused.body);
+    assert!(refused.body.get("token").is_none(), "{}", refused.body);
+    // Asked to stop: its run ends as the supervisor reaps it.
+    let status = f.h.store.task(&f.task.id).await?.ok_or("task")?.status;
+    assert!(
+        status.is_resting() || status == TaskStatus::Stopping,
+        "{status:?}"
+    );
+    assert_eq!(audited(&f.h, "t1", "task.stopped").await?, 1);
+    // Bob's task, in the same project, runs on.
+    assert_eq!(
+        f.h.store.task(&bobs.id).await?.ok_or("t2")?.status,
+        TaskStatus::Running
+    );
+    Ok(())
+}
+
+/// An owner who lost write access to the project no longer has their run
+/// issued a git credential; Bob, who may still write, gets one for his own task.
+#[tokio::test]
+async fn an_owner_down_to_read_access_has_their_run_refused_a_git_credential() -> TestResult {
+    let f = fixture_with_app().await?;
+    let mut bobs = f.task.clone();
+    bobs.id = TaskId::parse("t2")?;
+    bobs.number = 2;
+    bobs.owner = UserId::parse("u-b")?;
+    f.h.store.insert_task(&bobs).await?;
+    seed_live_attempt(&f.h, "t2", "tt2").await?;
+
+    f.h.github.set_perm("alice", "acme/repo", perms("read"));
+    f.h.store
+        .put_access(
+            &UserId::parse("u-a")?,
+            &f.task.sandbox_id,
+            yulius_domain::permission::AccessLevel::Read,
+            f.h.app.now(),
+        )
+        .await?;
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+    let refused = agent_credential(&f.h, "tt").await?;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(refused.body.get("token").is_none(), "{}", refused.body);
+    // The terminal says why the agent's git fails, once however often it asks.
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    let said: Vec<String> = notices(&mut watch)
+        .into_iter()
+        .filter(|n| n.contains("no GitHub credential"))
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("@alice"), "{said:?}");
+    let bob = agent_credential(&f.h, "tt2").await?;
+    assert_eq!(bob.status, 200, "{}", bob.body);
+    assert_eq!(bob.body["token"], "agent-inst");
+
+    // Alice is absent from her task now: Bob takes control at once, and its run gets the token
+    // again, on his standing.
+    let taken = control(&f, Method::POST, "", &f.bob).await?;
+    assert_eq!(taken.status, 200, "{}", taken.body);
+    assert_eq!(taken.body["owner"]["login"], "bob");
+    // The refusal notice is the new owner's to see: Bob down to read hears it once, naming him.
+    level(&f, "u-b", "read").await?;
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    let said: Vec<String> = notices(&mut watch)
+        .into_iter()
+        .filter(|n| n.contains("no GitHub credential"))
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("@bob"), "{said:?}");
+    level(&f, "u-b", "write").await?;
+    let again = agent_credential(&f.h, "tt").await?;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.body["token"], "agent-inst");
+    // A credential issued again ends the episode: a later loss is said anew.
+    level(&f, "u-b", "read").await?;
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    let said = notices(&mut watch)
+        .into_iter()
+        .filter(|n| n.contains("no GitHub credential"))
+        .count();
+    assert_eq!(said, 1);
+    Ok(())
+}
+
+/// Sets `user`'s access to `acme/repo` to `perm` on GitHub and in the access cache.
+async fn level(f: &Fixture, user: &str, perm: &str) -> TestResult {
+    let login = if user == "u-a" { "alice" } else { "bob" };
+    f.h.github.set_perm(login, "acme/repo", perms(perm));
+    let level = match perm {
+        "read" => yulius_domain::permission::AccessLevel::Read,
+        _ => yulius_domain::permission::AccessLevel::Write,
+    };
+    f.h.store
+        .put_access(
+            &UserId::parse(user)?,
+            &f.task.sandbox_id,
+            level,
+            f.h.app.now(),
+        )
+        .await?;
+    Ok(())
+}
+
+/// The audit entries `action` of task `task`.
+async fn audits_of(
+    h: &Harness,
+    task: &str,
+    action: &str,
+) -> Result<Vec<yulius_app::automations::AuditEntry>, Box<dyn std::error::Error>> {
+    Ok(h.store
+        .automation_audit(task, 50)
+        .await?
+        .into_iter()
+        .filter(|e| e.action == action)
+        .collect())
+}
+
+/// Disables `u-a` (Alice) through the admin API.
+async fn disable_alice(f: &Fixture) -> TestResult {
+    let admin = crate::support::setup_superadmin_creds(&f.h).await?;
+    let disable = call(
+        &f.h.router,
+        Method::PATCH,
+        "/api/admin/users/u-a",
+        Some(json!({"disabled": true})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(disable.status, 200, "{}", disable.body);
+    Ok(())
+}
+
+/// Disabling a person stops every task of theirs that would start by itself, not only a
+/// running one, each audited with the reason and said in the task's terminal; a waiting task of
+/// another person stays.
+#[tokio::test]
+async fn disabling_stops_every_waiting_task_of_the_owner_and_says_why() -> TestResult {
+    let f = fixture().await?;
+    let waiting = [
+        ("t-q", TaskStatus::Queued),
+        ("t-c", TaskStatus::Chained),
+        ("t-p", TaskStatus::Prepared),
+        ("t-k", TaskStatus::Parked),
+        ("t-w", TaskStatus::WaitingCapacity),
+    ];
+    for (id, status) in waiting {
+        seed_task(&f.h, id, "s1", "u-a", status, None).await?;
+    }
+    seed_task(&f.h, "t-b", "s1", "u-b", TaskStatus::Queued, None).await?;
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+
+    disable_alice(&f).await?;
+    for (id, before) in waiting {
+        let task = f.h.store.task(&TaskId::parse(id)?).await?.ok_or(id)?;
+        assert_eq!(
+            task.status, RESTING,
+            "{id} was {before:?}, is {:?}",
+            task.status
+        );
+    }
+    let running = f.h.store.task(&f.task.id).await?.ok_or("t1")?.status;
+    assert!(
+        running.is_resting() || running == TaskStatus::Stopping,
+        "{running:?}"
+    );
+    for (id, _) in waiting.iter().chain([&("t1", TaskStatus::Running)]) {
+        let entries = audits_of(&f.h, id, "task.stopped").await?;
+        assert_eq!(entries.len(), 1, "{id}: {entries:?}");
+        let detail: serde_json::Value =
+            serde_json::from_str(entries[0].detail.as_deref().ok_or("no detail")?)?;
+        assert_eq!(
+            (
+                entries[0].actor.as_str(),
+                &detail["owner"],
+                &detail["reason"]
+            ),
+            ("superadmin", &json!("alice"), &json!("owner disabled")),
+            "{id}: {detail}"
+        );
+    }
+    assert!(
+        notices(&mut watch).contains(&"Stopped: its owner @alice was disabled.".to_owned()),
+        "the terminal says why"
+    );
+    let bobs = f.h.store.task(&TaskId::parse("t-b")?).await?.ok_or("t-b")?;
+    assert_eq!(bobs.status, TaskStatus::Queued);
+    assert!(audits_of(&f.h, "t-b", "task.stopped").await?.is_empty());
+    Ok(())
+}
+
+/// A stop that keeps losing to the task's own changes fails: the person stays disabled,
+/// their other tasks still stop, the failed one is not audited as stopped, and its run is refused
+/// a git credential all the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_that_fails_on_disable_leaves_the_rest_stopped_and_the_credential_refused()
+-> TestResult {
+    let f = fixture_with_app().await?;
+    seed_task(&f.h, "t-q", "s1", "u-a", TaskStatus::Queued, None).await?;
+    // A task id of its own: a hook left after this test's runtime ends would fire anywhere.
+    seed_task(&f.h, "t-stuck", "s1", "u-a", TaskStatus::Running, None).await?;
+    seed_live_attempt(&f.h, "t-stuck", "tt-stuck").await?;
+    // Handled after `t-stuck`: it shows the loop goes on past a failed stop.
+    seed_task(&f.h, "t-after", "s1", "u-a", TaskStatus::Running, None).await?;
+    seed_live_attempt(&f.h, "t-after", "tt-after").await?;
+    // Every round of its stop (4, the stop's bound) loses: between its read and its change the
+    // task moves between Running and Switching, from both of which a stop goes on.
+    for _ in 0..4 {
+        let store = f.h.store.clone();
+        let handle = tokio::runtime::Handle::current();
+        let now = f.h.app.now();
+        yulius_app::race::on(
+            yulius_app::race::Point::StopDecided,
+            std::path::Path::new("t-stuck"),
+            move || {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        let id = TaskId::parse("t-stuck").ok()?;
+                        let status = store.task(&id).await.ok()??.status;
+                        let next = if status == TaskStatus::Running {
+                            TaskStatus::Switching
+                        } else {
+                            TaskStatus::Running
+                        };
+                        store
+                            .transition_task(&id, Some(status), next, None, now)
+                            .await
+                            .ok()
+                    })
+                });
+            },
+        );
+    }
+
+    disable_alice(&f).await?;
+    let alice = f.h.store.user(&UserId::parse("u-a")?).await?.ok_or("u-a")?;
+    assert!(alice.disabled_at.is_some(), "the disable stays");
+    let queued = f.h.store.task(&TaskId::parse("t-q")?).await?.ok_or("t-q")?;
+    assert_eq!(queued.status, RESTING);
+    assert_eq!(audits_of(&f.h, "t-q", "task.stopped").await?.len(), 1);
+    let stuck = TaskId::parse("t-stuck")?;
+    let live = f.h.store.task(&stuck).await?.ok_or("t-stuck")?.status;
+    assert!(
+        matches!(live, TaskStatus::Running | TaskStatus::Switching),
+        "{live:?}"
+    );
+    assert!(audits_of(&f.h, "t-stuck", "task.stopped").await?.is_empty());
+    // Her other live tasks stop all the same, also the one handled after the failed stop.
+    for id in ["t1", "t-after"] {
+        let other = f.h.store.task(&TaskId::parse(id)?).await?.ok_or(id)?.status;
+        assert!(
+            other.is_resting() || other == TaskStatus::Stopping,
+            "{id}: {other:?}"
+        );
+        assert_eq!(audits_of(&f.h, id, "task.stopped").await?.len(), 1, "{id}");
+    }
+    let refused = agent_credential(&f.h, "tt-stuck").await?;
+    assert_eq!(refused.status, 401, "{}", refused.body);
+    Ok(())
+}

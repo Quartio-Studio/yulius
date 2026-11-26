@@ -301,7 +301,9 @@ read-only binds by descriptor ([decision
   is withheld. Credentials and keys are sealed in the database; a pasted token is never echoed,
   logged or audited, and the CLI's secret values never reach its output. The server's GitHub token
   never enters a sandbox's folder, the agent never holds a person's token, and the agent's own token
-  cannot write the production branch. Yulius writes a key into a worktree only as a Git-ignored,
+  cannot write the production branch. A run is issued that token only while its task's owner is
+  enabled and may work in the project, and disabling a person stops every task they own
+  ([decision 0481](decisions/0481-disabling-a-person-stops-their-tasks.md)). Yulius writes a key into a worktree only as a Git-ignored,
   untracked `.env` (0600); `.env.example` names keys without values.
 
 ## Data flow of a task
