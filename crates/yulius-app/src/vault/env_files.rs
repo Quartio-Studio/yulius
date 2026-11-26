@@ -434,8 +434,7 @@ impl App {
         user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: CopyArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: CopyArgs = super::parse_args(args)?;
         let mut names: Vec<String> = Vec::new();
         for name in &args.secrets {
             let name = name.trim().to_owned();
@@ -454,23 +453,8 @@ impl App {
             .await?;
         let mut records: Vec<VaultSecretRecord> = Vec::with_capacity(names.len());
         for name in &names {
-            let record = all.iter().find(|r| &r.name == name).ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "no agent secret named {name:?} applies to this project (see secrets_list)"
-                ))
-            })?;
-            if matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
-                return Err(AppError::Forbidden(format!(
-                    "{name}: {}",
-                    super::PERSONAL_SECRET_ENV
-                )));
-            }
-            if record.cd_prod {
-                return Err(AppError::Forbidden(format!(
-                    "{name}: {}",
-                    super::PRODUCTION_SECRET
-                )));
-            }
+            let record = super::named(&all, name)?;
+            super::refuse_personal_or_prod(record, super::PERSONAL_SECRET_ENV)?;
             records.push(record.clone());
         }
 
