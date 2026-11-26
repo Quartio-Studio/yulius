@@ -72,9 +72,6 @@ pub struct TaskSummary {
     pub harness_choice: String,
     /// Status wire name (domain `TaskStatus::as_str`).
     pub status: String,
-    /// The task's sidebar group, decided by the server (domain `AttentionFacts::group`):
-    /// `needs_you`, `working`, `queued`, `done` or `ended`.
-    pub group: String,
     /// `working`, `waiting`, `needs_attention`, `done` (the goal is achieved and the turn ended,
     /// TSK-014), or null.
     pub activity: Option<String>,

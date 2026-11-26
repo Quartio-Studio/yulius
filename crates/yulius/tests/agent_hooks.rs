@@ -5230,7 +5230,6 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
     let detail = f.h.app.task_detail(&owner, f.task.as_str()).await?;
     let summary = serde_json::to_value(detail)?;
     assert_eq!(summary["parked_needs_you"], false);
-    assert_ne!(summary["group"], "needs_you");
     assert_eq!(summary["parked_pr"], json!({"number": 1461, "open": true}));
     let held = f.h.github.hold_checks();
     let app = f.h.app.clone();
@@ -5544,7 +5543,6 @@ async fn a_parked_detail_keeps_a_direct_merge_when_the_branch_still_lists_it_ope
         .map_err(|_| "pull")? = Some(1461);
     let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(detail["parked_needs_you"], false);
-    assert_ne!(detail["group"], "needs_you");
     assert_eq!(detail["parked_pr"], json!({"number":1461,"open":false}));
     Ok(())
 }
@@ -5798,7 +5796,6 @@ async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged(
         .await?;
     let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(detail["parked_needs_you"], false);
-    assert_ne!(detail["group"], "needs_you");
     assert_eq!(detail["parked_pr"], json!({"number":1461,"open":false}));
     let ctx = f.h.app.agent_context(TOKEN).await?;
     f.h.app
@@ -5806,7 +5803,6 @@ async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged(
         .await?;
     let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(detail["parked_needs_you"], true);
-    assert_eq!(detail["group"], "needs_you");
     assert_eq!(detail["parked_pr"], json!({"number":1461, "open":false}));
     let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let brief =
@@ -5893,7 +5889,6 @@ async fn a_parked_merge_survives_unavailable_followup_discovery_on_every_display
         .find(|r| r.id == f.task.as_str())
         .ok_or("task")?;
     assert_eq!(row.parked_needs_you, Some(false));
-    assert_ne!(row.group, "needs_you");
     assert!(row.needs_you_notice.is_none());
     let history = app.task_detail(&owner, f.task.as_str()).await?.wait_history;
     assert_eq!(history.len(), 1);
@@ -6420,7 +6415,6 @@ async fn parked_lists_share_one_budget_for_unreadable_pr_heads() -> TestResult {
         .find(|task| task.id == f.task.as_str())
         .ok_or("parked row")?;
     assert_eq!(local.parked_needs_you, Some(true));
-    assert_eq!(local.group, "needs_you");
     assert_eq!(
         local.parked_pr.map(|pr| (pr.number, pr.open)),
         Some((1461, true)),

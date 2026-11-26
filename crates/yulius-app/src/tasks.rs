@@ -253,7 +253,6 @@ impl App {
             github_display_paused: false,
             parked_pr: None,
             parked_needs_you: None,
-            group: crate::task_questions::group_name(facts.group()).to_owned(),
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
             number: task.number,
