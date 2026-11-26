@@ -53,8 +53,7 @@ impl App {
         user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: CopyArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: CopyArgs = super::parse_args(args)?;
         let name = agent_made_name(&args.name)?;
         name.check_assignment().map_err(invalid)?;
         let hosts: Vec<String> = parse_hosts(&args.hosts)
@@ -70,15 +69,7 @@ impl App {
         let resolved = self
             .resolved_agent_secrets(user.sandbox(), user.holder())
             .await?;
-        let source = resolved
-            .iter()
-            .find(|r| r.name == args.secret.trim())
-            .ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "no agent secret named {:?} applies to this project (see secrets_list)",
-                    args.secret
-                ))
-            })?;
+        let source = super::named(&resolved, &args.secret)?;
         if !source.cd_prod {
             return Err(AppError::Invalid(format!(
                 "{} is no production secret: agents use it as it is. Ask for its hosts with \

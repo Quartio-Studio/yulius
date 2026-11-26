@@ -16,7 +16,7 @@
 //! | [`front_repair`] | the server: when a sandbox's Docker front is restarted by itself (ADR-0344) |
 //! | [`front_gate`] | the Docker front: admission, bounded connection ends, its state (ADR-0344) |
 //! | [`relay`], [`procnet`] | both sides of the network boundary |
-//! | [`cgroup`], [`freeze`], [`usage`], [`subid`], [`units`], [`userns`], [`seccomp`] | building blocks |
+//! | [`cgroup`], [`freeze`], [`usage`], [`subid`], [`units`], [`userns`], [`seccomp`], [`system_layer`] | building blocks |
 //!
 //! Namespaces, mounts and `setns` are Linux-only; elsewhere the functions that need them
 //! return errors and the server keeps the previous containment.
@@ -42,6 +42,7 @@ pub mod procnet;
 pub mod relay;
 pub mod seccomp;
 pub mod subid;
+pub mod system_layer;
 pub mod units;
 pub mod usage;
 pub mod userns;
