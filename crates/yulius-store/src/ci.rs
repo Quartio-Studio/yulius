@@ -13,7 +13,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::resources::{LoadMinute, Need};
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column, to_u32};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_as, text_parsed, to_u32};
 
 const RUN_COLS: &str = "id, sandbox_id, reference, sha, source, state, reason, requested_by, \
     status_for, status_note, status_attempts, queued_at, started_at, ended_at";
@@ -60,34 +60,31 @@ fn state(text: &str) -> rusqlite::Result<RunState> {
 }
 
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<CiRunRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
     let reference: String = row.get("reference")?;
     let source: String = row.get("source")?;
-    let run_state: String = row.get("state")?;
     let status_for: Option<String> = row.get("status_for")?;
     Ok(CiRunRecord {
         id: row.get("id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         reference: CiRef::parse(&reference)
             .ok_or_else(|| bad_column("CI reference", &reference))?,
         sha: row.get("sha")?,
         // A source a later release wrote reads as the integration branch's configuration, so a
         // rollback keeps reading its runs (SPEC-504 review round 1: `last_valid_yulius_toml`).
         source: GateSource::parse(&source).unwrap_or(GateSource::ProjectConfig),
-        state: state(&run_state)?,
+        state: text_as(row, "state", "CI state", RunState::parse)?,
         reason: row.get("reason")?,
         requested_by: row.get("requested_by")?,
         status_for: status_for.as_deref().map(state).transpose()?,
         status_note: row.get("status_note")?,
         status_attempts: to_u32(row.get("status_attempts")?),
         queued_at: Timestamp(row.get("queued_at")?),
-        started_at: row.get::<_, Option<i64>>("started_at")?.map(Timestamp),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        started_at: opt_ts(row, "started_at")?,
+        ended_at: opt_ts(row, "ended_at")?,
     })
 }
 
 fn job_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CiJobRecord> {
-    let job_state: String = row.get("state")?;
     Ok(CiJobRecord {
         id: row.get("id")?,
         run_id: row.get("run_id")?,
@@ -96,7 +93,7 @@ fn job_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CiJobRecor
         key: row.get("job_key")?,
         command: row.get("command")?,
         matrix: row.get("matrix")?,
-        state: state(&job_state)?,
+        state: text_as(row, "state", "CI state", RunState::parse)?,
         reason: row.get("reason")?,
         exit_code: row.get("exit_code")?,
         output: if with_output {
@@ -109,8 +106,8 @@ fn job_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CiJobRecor
         } else {
             None
         },
-        started_at: row.get::<_, Option<i64>>("started_at")?.map(Timestamp),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        started_at: opt_ts(row, "started_at")?,
+        ended_at: opt_ts(row, "ended_at")?,
         need: Need {
             cpus: row
                 .get::<_, Option<i64>>("cpus")?

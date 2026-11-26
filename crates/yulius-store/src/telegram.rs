@@ -9,7 +9,7 @@ use yulius_domain::ids::UserId;
 use yulius_domain::notify::NotifyChoices;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column};
+use crate::{SqliteStore, bad_column, text_parsed};
 
 /// The bot's messages remembered per chat (SPEC-512 TGI-002).
 const SENT_KEPT: i64 = 500;
@@ -18,9 +18,8 @@ const LINK_COLUMNS: &str = "user_id, chat_id, linked_at, notify_needs_you, notif
                             notify_failed, notify_account, notify_digest, intake, intake_sandbox";
 
 fn link_row(row: &Row<'_>) -> rusqlite::Result<ChatLink> {
-    let id: String = row.get(0)?;
     Ok(ChatLink {
-        user: UserId::parse(&id).map_err(|_| bad_column("user id", &id))?,
+        user: text_parsed(row, 0, "user id", UserId::parse)?,
         chat: row.get(1)?,
         linked_at: Timestamp(row.get(2)?),
         choices: NotifyChoices {

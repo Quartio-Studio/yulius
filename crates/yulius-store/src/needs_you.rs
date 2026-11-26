@@ -11,7 +11,7 @@ use yulius_app::ports::store_ext::{NeedsYouStore, WaitMessageRecord};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column};
+use crate::{SqliteStore, bad_column, opt_ts, text_parsed};
 
 #[async_trait]
 impl NeedsYouStore for SqliteStore {
@@ -151,8 +151,7 @@ impl NeedsYouStore for SqliteStore {
                 c.prepare("SELECT id FROM tasks WHERE sandbox_id = ?1 AND needs_you IS NOT NULL")?;
             let ids = stmt
                 .query_map([sandbox], |row| {
-                    let id: String = row.get(0)?;
-                    TaskId::parse(&id).map_err(|_| bad_column("task id", &id))
+                    text_parsed(row, 0, "task id", TaskId::parse)
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(ids)
@@ -234,7 +233,7 @@ impl NeedsYouStore for SqliteStore {
                         link: row.get(6)?,
                         decision: decision != 0,
                         created_at: Timestamp(row.get(8)?),
-                        resolved_at: row.get::<_, Option<i64>>(9)?.map(Timestamp),
+                        resolved_at: opt_ts(row, 9)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;

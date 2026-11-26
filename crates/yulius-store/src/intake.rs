@@ -13,7 +13,7 @@ use yulius_domain::intake::PromptClass;
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, to_u32};
+use crate::{SqliteStore, bad_column, opt_ts, parsed, text_as, text_parsed, to_u32};
 
 const CHAIN_COLS: &str = "task_id, after_task_id, after_number, blocked_reason, created_at, rule";
 const FORK_COLS: &str = "task_id, source_task_id, source_number, source_title, source_branch, \
@@ -22,18 +22,14 @@ const AUTO_COLS: &str = "task_id, mode_by, workflow_by, workflow_name, created_a
 const HOLD_COLS: &str = "id, task_id, class, prompt, prompt_sha256, percent, typed_by, state, \
     created_at, resolved_by, resolved_at, new_task_id";
 
-fn task_id(column: &str, text: &str) -> rusqlite::Result<TaskId> {
-    TaskId::parse(text).map_err(|_| bad_column(column, text))
-}
-
 fn chain_from_row(row: &Row<'_>) -> rusqlite::Result<ChainRecord> {
     let task: String = row.get("task_id")?;
     let after: Option<String> = row.get("after_task_id")?;
     Ok(ChainRecord {
-        task_id: task_id("task id", &task)?,
+        task_id: parsed("task id", &task, TaskId::parse)?,
         after_task_id: after
             .as_deref()
-            .map(|a| task_id("after task id", a))
+            .map(|a| parsed("after task id", a, TaskId::parse))
             .transpose()?,
         after_number: to_u32(row.get("after_number")?),
         blocked_reason: row.get("blocked_reason")?,
@@ -46,10 +42,10 @@ fn fork_from_row(row: &Row<'_>) -> rusqlite::Result<ForkRecord> {
     let task: String = row.get("task_id")?;
     let source: Option<String> = row.get("source_task_id")?;
     Ok(ForkRecord {
-        task_id: task_id("task id", &task)?,
+        task_id: parsed("task id", &task, TaskId::parse)?,
         source_task_id: source
             .as_deref()
-            .map(|s| task_id("source task id", s))
+            .map(|s| parsed("source task id", s, TaskId::parse))
             .transpose()?,
         source_number: to_u32(row.get("source_number")?),
         source_title: row.get("source_title")?,
@@ -64,13 +60,12 @@ fn fork_from_row(row: &Row<'_>) -> rusqlite::Result<ForkRecord> {
 
 fn hold_from_row(row: &Row<'_>) -> rusqlite::Result<HoldRecord> {
     let task: String = row.get("task_id")?;
-    let class: String = row.get("class")?;
     let typed_by: Option<String> = row.get("typed_by")?;
     let new_task: Option<String> = row.get("new_task_id")?;
     Ok(HoldRecord {
         id: row.get("id")?,
-        task_id: task_id("task id", &task)?,
-        class: PromptClass::parse(&class).ok_or_else(|| bad_column("prompt class", &class))?,
+        task_id: parsed("task id", &task, TaskId::parse)?,
+        class: text_as(row, "class", "prompt class", PromptClass::parse)?,
         prompt: row.get("prompt")?,
         prompt_sha256: row.get("prompt_sha256")?,
         percent: to_u32(row.get("percent")?),
@@ -81,10 +76,10 @@ fn hold_from_row(row: &Row<'_>) -> rusqlite::Result<HoldRecord> {
         state: row.get("state")?,
         created_at: Timestamp(row.get("created_at")?),
         resolved_by: row.get("resolved_by")?,
-        resolved_at: row.get::<_, Option<i64>>("resolved_at")?.map(Timestamp),
+        resolved_at: opt_ts(row, "resolved_at")?,
         new_task_id: new_task
             .as_deref()
-            .map(|t| task_id("new task id", t))
+            .map(|t| parsed("new task id", t, TaskId::parse))
             .transpose()?,
     })
 }
@@ -95,9 +90,8 @@ fn chosen_by(column: &str, text: Option<String>) -> rusqlite::Result<Option<Chos
 }
 
 fn auto_from_row(row: &Row<'_>) -> rusqlite::Result<AutoChoiceRecord> {
-    let task: String = row.get("task_id")?;
     Ok(AutoChoiceRecord {
-        task_id: task_id("task id", &task)?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         mode_by: chosen_by("auto mode", row.get("mode_by")?)?,
         workflow_by: chosen_by("auto workflow", row.get("workflow_by")?)?,
         workflow_name: row.get("workflow_name")?,
@@ -261,8 +255,7 @@ impl IntakeStore for SqliteStore {
                      ORDER BY s.start_at, s.task_id LIMIT 100",
             )?;
             let rows = stmt.query_map(params![TaskStatus::Prepared.as_str(), now.0], |row| {
-                let id: String = row.get(0)?;
-                task_id("task id", &id)
+                text_parsed(row, 0, "task id", TaskId::parse)
             })?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })

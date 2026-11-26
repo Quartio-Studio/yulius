@@ -10,13 +10,12 @@ use yulius_app::ports::vault::{AgentStateRecord, AgentStateStore, StateRestore};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, to_i64, to_u32};
+use crate::{SqliteStore, text_parsed, to_i64, to_u32};
 
 const COLS: &str = "id, sandbox_id, name, description, version, bytes, files, created_by, \
      created_at, updated_by, updated_at, restored_path, restored_version, restored_by, restored_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<AgentStateRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
     let restored = match row.get::<_, Option<String>>("restored_path")? {
         Some(path) => Some(StateRestore {
             path,
@@ -30,7 +29,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<AgentStateRecord> {
     };
     Ok(AgentStateRecord {
         id: row.get("id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         name: row.get("name")?,
         description: row.get("description")?,
         version: to_u32(row.get("version")?),
