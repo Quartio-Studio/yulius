@@ -33,8 +33,8 @@ less code doing the same thing, one pull request per finding. Behaviour stays th
 - [x] F2: independent review approves the exact head
 - [x] F5.1+F8: shared MCP argument helpers (str_arg, opt_str, flag, schema, tool)
 - [x] F5.1+F8: store row-parse helpers (text_as, ts, opt_ts) used by every *_from_row
-- [ ] F5.1+F8: tests pass; independent review approves
-- [ ] F4 PR1: TaskSummary carries the server-computed group, with a test
+- [x] F5.1+F8: tests pass; independent review approves
+- [x] F4 PR1: TaskSummary carries the server-computed group, with a test
 - [ ] F4 PR1: independent review approves
 - [ ] F4 PR2: status.js reads the group; JS derivation and scrape tests deleted
 - [ ] F4 PR2: e2e and tests pass; independent review approves
