@@ -692,6 +692,8 @@ impl App {
         checkout: &str,
         mut cancel: watch::Receiver<Option<String>>,
     ) -> bool {
+        // Bindings of one pattern drop right to left: the permit (turn, slot, reservation) before
+        // the turn's entry, as the turn needs.
         let Some((_turn_entry, permit, budget, started_at, waited_ms)) =
             self.ci_job_admit(run, job, share, &mut cancel).await
         else {

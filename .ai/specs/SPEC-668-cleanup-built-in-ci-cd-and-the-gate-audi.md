@@ -1,6 +1,6 @@
 ---
 yulius-task: 5827cfb1-ecdb-452d-aa9a-c60afa00bdba
-status: done
+status: in-progress
 ---
 
 # SPEC-668: Cleanup: built-in CI/CD and the gate (audit L3)
@@ -44,7 +44,9 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 - [x] PR5: move-only split of cd_prepare into cd_resolve_target and cd_promote_for
 - [x] PR5: F6 checked against product's CD and reported to the owner, not changed
 - [x] PR5: review approved
-- [x] Closing summary with what changed, verification and Not done
+- [ ] PR6: prove-on-dev restored by reverting #1799, since product relies on it
+- [ ] PR6: review approved
+- [ ] Closing summary with what changed, verification and Not done
 
 ## Acceptance criteria
 
@@ -59,9 +61,11 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 
 - Bootstrap runs in `scripts/dev` under `YULIUS_CI`, not in xtask: xtask is compiled by the
   toolchain bootstrap installs.
-- F6 is not done: Quartio-Studio/product (`[cd.prod] promote = true`, no rollback, dev without
-  `merge_first`) reaches the pinning branches on its CD page and before its production deploy's
-  rollback refusal, so removing them changes what it shows. That is the owner's decision.
+- F2 and F6 are not done: Quartio-Studio/product's integration branch `quartio` (52200f00,
+  2026-11-26) has `[cd.dev]` and `[cd.prod]` with deploy and rollback, `promote = true`, and no
+  `merge_first`. Its production deploys reach prove-on-dev (F2), and the pinning picks which
+  commit its production promotes (F6). PR3 read product's stale `main` (7956caf7) and deleted
+  prove-on-dev; PR6 reverts it. Both are the owner's decision.
 
 ## Evidence
 
@@ -70,8 +74,9 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 - PR2 #1785 (F1) merged at f7c17b14f: one `test` job. Dev run before `6e8a3467` 6m39s (shards
   6m06s and 4m41s); after `ca4bd9b0` 7m12s (`test` 6m04s; e2e 7m00s sets the run).
 - PR3 #1799 (F2) merged at 5ed478be5: prove-on-dev deleted after reading the CD tables of
-  yulius, quartio-v2, autoresearch, product, studio, Branding and VistulaValley. 5027 tests and
-  the CD e2e spec (27) passed.
+  yulius, quartio-v2, autoresearch, studio, Branding and VistulaValley at their integration
+  branches, but product at `main` instead of its integration branch `quartio`, which relies on
+  it; reverted by PR6.
 - PR4 #1806 (F8a, F12) merged at 1986071cc: shared config readers, `[disk]` checked, vidoc.toml
   read as TOML; 5061 tests passed; reviewer differentials of 13k config and 19k frontmatter files.
 - PR5 (F5): move-only splits of `ci_job` and `cd_prepare`; 4946 tests of yulius, yulius-app and
