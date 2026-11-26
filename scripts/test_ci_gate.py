@@ -21,11 +21,10 @@ class Gate(unittest.TestCase):
         }.items():
             with self.subTest(name=name):
                 self.assertFalse(jobs[name].get("after_merge"))
-                for command in commands:
-                    self.assertIn(command, jobs[name]["command"])
+                self.assertEqual(jobs[name]["command"], " && ".join(commands))
         self.assertTrue(jobs["e2e"]["after_merge"])
         self.assertTrue(jobs["test"]["after_merge"])
-        self.assertIn("scripts/dev test-shard", jobs["test"]["command"])
+        self.assertEqual(jobs["test"]["command"], "scripts/dev test-shard")
         self.assertFalse(jobs["security"].get("after_merge"))
 
 

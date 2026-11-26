@@ -538,8 +538,8 @@ mod tests {
     }
 
     /// SPEC-506 FST-006 (AC-4): the checks of seconds run first, right after the tool check, in
-    /// `ci` and in `checks` (the CI job `quality`), so a format or contract failure ends a run
-    /// before the build; `checks` leaves the tests to their own jobs.
+    /// `ci` and in `checks`, so a format or contract failure ends a run before the build; `checks`
+    /// leaves the tests to their own jobs.
     #[test]
     fn the_quick_checks_run_first() {
         assert_eq!(

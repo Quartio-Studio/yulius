@@ -20,8 +20,8 @@ versions are in `.config/tools.toml`, with the zig release (version and SHA-256 
 that compiles dependencies' vendored C for the macOS check; on Linux bootstrap downloads it once
 per home cache (`scripts/zig_install.py`, verified before it is unpacked) and links
 `.tools/bin/zig`, `macos-cc` and `macos-ar` (`scripts/zig_macos.py`); doctor checks them.
-Under Yulius CI (`YULIUS_CI` set) `scripts/dev` runs `scripts/bootstrap.py --install-rustup`
-itself before the gate, so each CI job's command is just `scripts/dev <gate>`, and the gate prints
+Under Yulius CI (`YULIUS_CI=1`) `scripts/dev` runs `scripts/bootstrap.py --install-rustup`
+itself before the gate, once per job (`YULIUS_BOOTSTRAPPED` marks it for nested calls), so each CI job's command is just `scripts/dev <gate>`, and the gate prints
 its `::yulius-stage` lines.
 Bootstrap installs tools from locked crates.io
 packages into ignored `.tools/`, skips matching installed versions and can be rerun

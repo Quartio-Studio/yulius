@@ -873,7 +873,7 @@ print('received '+input(), flush=True)
                        "os.execv(os.environ['CARGO'],[os.environ['CARGO'],*sys.argv[1:]])")
         jobs = tomllib.loads((SCRIPTS.parent / "yulius.toml").read_text())["ci"]["jobs"]
         for job in jobs:
-            if job["name"] in {"quality", "test"}:
+            if job["name"] in {"lint", "test"}:
                 script = "exec >ci.log 2>&1 </dev/null\n" + f"{sys.executable} -c 'import os;print(os.getsid(0))'\n" + job["command"]
                 result = subprocess.run(["script", "-qec", script, os.devnull], cwd=self.task, env=env,
                                         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)

@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-26
 
-- Yulius CI's own job commands are `scripts/dev <gate>`: under Yulius CI `scripts/dev` bootstraps the toolchain and the gate prints its stage line, so `yulius.toml` no longer repeats `python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage …"` in every job (audit L3 F7, F11). The fallbacks for pull requests older than 2026-11-21 are gone, including the `file-contracts` one that failed on such heads; an older pull request merges `dev` first. The pull request's `quality` job is the new `scripts/dev quality` (doctor, quick, the checker's tests): it no longer compiles the workspace, which `lint`'s Clippy already does.
+- Yulius CI's own job commands are `scripts/dev <gate>`: under Yulius CI `scripts/dev` bootstraps the toolchain and the gate prints its stage line, so `yulius.toml` no longer repeats `python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage …"` in every job (audit L3 F7, F11). The fallbacks for pull requests older than 2026-11-21 are gone, including the `file-contracts` one that failed on such heads. A pull request whose head lacks this change fails `quality` ("Invalid command") until it merges `dev`. The pull request's `quality` job is the new `scripts/dev quality` (doctor, quick, the checker's tests): it no longer compiles the workspace, which `lint`'s Clippy already does.
 
 ## 2026-11-25
 
