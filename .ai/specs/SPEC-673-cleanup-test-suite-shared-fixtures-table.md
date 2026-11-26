@@ -28,18 +28,18 @@ before the next starts.
 ## Plan
 
 - [x] PR1a: support::git and support::eventually replace the per-file copies
-- [ ] PR1a: review, CI and merge
+- [x] PR1a: review findings answered (macOS import, description)
 - [ ] PR1b: support::BareRemote and support::ScriptedHost replace the FakeRemote and SessionHost copies
-- [ ] PR1b: review, CI and merge
+- [ ] PR1b: review findings answered
 - [ ] PR2: support::live real-process builder replaces start_holding, build_tuned and start_hosted
 - [ ] PR2: hand-wired Deps and sibling-file imports moved into support
-- [ ] PR2: review, CI and merge
+- [ ] PR2: review findings answered
 - [ ] PR3: migrated-template store, test time measured before and after
-- [ ] PR3: review, CI and merge
+- [ ] PR3: review findings answered
 - [ ] PR4a: tables for the five near-duplicate families and store_at
-- [ ] PR4a: review, CI and merge
+- [ ] PR4a: review findings answered
 - [ ] PR4b: comments that only cite spec IDs deleted
-- [ ] PR4b: review, CI and merge
+- [ ] PR4b: review findings answered
 
 ## Acceptance criteria
 
