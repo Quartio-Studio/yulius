@@ -1330,9 +1330,6 @@ pub(crate) fn native_goal_pending(run_dir: &Path) -> bool {
 const GOAL_LEFT_TO_DRAFT: &str = "Someone typed in the terminal before Yulius set the task's \
                                   goal, so their draft was left alone";
 
-/// How long the restart of a reattached run waits for the replay of its transcript.
-const REPLAY_WAIT: Duration = Duration::from_secs(30);
-
 /// File in a run directory whose run was started with its owner's personal MCP servers: the
 /// owner's id (SPEC-332 MSC-009). A live run keeps its MCP configuration, and which person's
 /// servers it holds decides who may message it and whether a hand-over restarts it; a restarted
