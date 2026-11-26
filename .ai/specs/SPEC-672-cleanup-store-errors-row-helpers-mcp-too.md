@@ -39,7 +39,7 @@ less code doing the same thing, one pull request per finding. Behaviour stays th
 - [x] F4: checked and reported: the server-owned group would change what the sidebar shows
 - [x] F5.2: one tool table derives COCKPIT/PROJECT/PERSON lists and descriptors
 - [x] F5.2: authorisation tests pass unchanged; independent review approves
-- [ ] F6: typed contracts structs for the MCP results mcp_text renders
+- [x] F6: typed contracts structs for the MCP results mcp_text renders
 - [ ] F6: tests pass; independent review approves
 
 ## Acceptance criteria
