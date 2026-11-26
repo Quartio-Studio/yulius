@@ -389,6 +389,36 @@ impl Fixture {
         Ok(app.deps.store.ci_runs(&self.sandbox, 200).await?)
     }
 
+    /// Arms tasks 1 and 2 at their worktrees once CI knows them.
+    async fn arm_both(
+        &self,
+        app: &App,
+        sandbox: &yulius_app::model::SandboxRecord,
+        one: &Path,
+        two: &Path,
+    ) -> TestResult {
+        app.ci_sync_sandbox(sandbox).await?;
+        self.arm(1, one).await?;
+        self.arm(2, two).await
+    }
+
+    /// Moves dev on so that the armed members need a candidate, forms it and returns its run.
+    async fn first_candidate(
+        &self,
+        app: &Arc<App>,
+        sandbox: &yulius_app::model::SandboxRecord,
+    ) -> BoxResult<CiRunRecord> {
+        self.advance_dev("other.txt")?;
+        app.ci_sync_sandbox(sandbox).await?;
+        app.merge_armed(&self.sandbox).await;
+        Ok(self
+            .train_runs(app)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("no candidate")?)
+    }
+
     /// The runs of merge trains.
     async fn train_runs(&self, app: &App) -> BoxResult<Vec<CiRunRecord>> {
         Ok(self
@@ -3414,9 +3444,7 @@ async fn a_candidate_runs_beside_its_members_own_runs() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let heads = [
         git(&one, &["rev-parse", "HEAD"])?,
         git(&two, &["rev-parse", "HEAD"])?,
@@ -3485,15 +3513,7 @@ async fn a_passed_candidate_merges_while_a_members_own_run_goes() -> TestResult 
     app.ci_sync_sandbox(&sandbox).await?;
     f.arm(1, &one).await?;
     let own = hold_own_run(&f, &app, 1).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     f.decide_until(&app, || async {
         app.ci_sync_sandbox(&sandbox).await?;
@@ -3623,19 +3643,9 @@ async fn a_stuck_own_run_holds_nothing_back() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let stuck = hold_own_run(&f, &app, 1).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     f.decide_until(&app, || async {
         app.ci_sync_sandbox(&sandbox).await?;
@@ -3662,20 +3672,10 @@ async fn a_member_whose_own_run_is_cancelled_or_errors_stays_in_the_candidate() 
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held_one = hold_own_run(&f, &app, 1).await?;
     let held_two = hold_own_run(&f, &app, 2).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     end_own_run(&app, &held_one, RunState::Cancelled).await?;
     end_own_run(&app, &held_two, RunState::Error).await?;
     app.merge_armed(&f.sandbox).await;
@@ -3886,20 +3886,10 @@ async fn a_member_whose_own_run_fails_during_the_merges_is_not_merged() -> TestR
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held = hold_own_run(&f, &app, 2).await?;
     let (at, go) = support::hold_point(yulius_app::race::Point::TrainMemberMerging, "t2");
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     // A pass merges #1 and stops before #2; #2's own run fails there.
     let pass = {
@@ -3932,19 +3922,9 @@ async fn a_failed_own_run_beats_a_passed_candidate() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held = hold_own_run(&f, &app, 2).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     end_own_run(&app, &held, RunState::Failed).await?;
     app.merge_armed(&f.sandbox).await;
@@ -3975,19 +3955,9 @@ async fn a_failed_candidate_waits_for_own_runs_within_the_wait_limit() -> TestRe
     // Each passes alone; together they fail the check.
     let one = f.task(1, &[("clash-1", "x\n")]).await?;
     let two = f.task(2, &[("clash-2", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held = hold_own_run(&f, &app, 2).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Failed);
     f.settle_but(&app, &held).await?;
     app.merge_armed(&f.sandbox).await;
@@ -4074,9 +4044,7 @@ async fn failed_member_leaves(fail_during_decision: bool) -> TestResult {
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     // Its own change fails the check alone.
     let two = f.task(2, &[("clash-1", "x\n"), ("clash-2", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let own = if fail_during_decision {
         Some(hold_own_run(&f, &app, 2).await?)
     } else {
