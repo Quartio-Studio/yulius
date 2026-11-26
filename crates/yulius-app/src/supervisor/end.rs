@@ -11,11 +11,13 @@ use yulius_domain::ids::{AttemptId, TaskId};
 use yulius_domain::task::{Activity, AttemptState, StopReason, TaskEvent, TaskStatus};
 use yulius_domain::time::Timestamp;
 
+use super::typing::{
+    PendingGoal, opening_pending, opening_unsubmitted, person_typed_marked, personal_mcp_marked,
+    save_screen, session_started_marked, typed_goal_awaits_opening,
+};
 use super::{
-    EndIntent, FlagPending, PendingGoal, REPLAY_WAIT, STOP_ROUNDS, SwitchEnd, TakenRequest,
-    TaskRuntime, could_not_end, opening_pending, opening_unsubmitted, person_typed_marked,
-    personal_mcp_marked, replace_intent, save_screen, session_started_marked,
-    typed_goal_awaits_opening,
+    EndIntent, FlagPending, STOP_ROUNDS, SwitchEnd, TakenRequest, TaskRuntime, could_not_end,
+    replace_intent,
 };
 use crate::attention::AttentionRecord;
 use crate::context::App;
@@ -73,6 +75,9 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
     TaskStatus::Stopping,
     TaskStatus::Running,
 ];
+
+/// How long the restart of a reattached run waits for the replay of its transcript.
+const REPLAY_WAIT: Duration = Duration::from_secs(30);
 
 /// Exit codes of a process ended by SIGHUP, SIGINT, SIGKILL or SIGTERM as a shell — or
 /// bubblewrap for its sandboxed child — reports them (128 + the signal); Claude Code's own
