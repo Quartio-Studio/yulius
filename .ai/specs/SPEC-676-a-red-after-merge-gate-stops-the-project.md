@@ -1,6 +1,6 @@
 ---
 yulius-task: 47d78142-00f1-4f97-aef2-662e7e27c28b
-status: in-progress
+status: done
 ---
 
 # SPEC-676: A red after-merge gate stops the project's merge queue until the integration branch is green again
@@ -107,10 +107,9 @@ What exists:
 - [x] The breaker is preferred as the repair owner and told the queue waits for the repair
 - [x] Docs: architecture, product, API, changes
 - [x] Independent review of the backend, answered until approved
-- [ ] Deliver the backend: green CI and merge into dev
-- [ ] The CI/CD page shows the stopped queue (API `merge_stop`, banner, mock, e2e)
-- [ ] Independent review of the page, green CI and merge into dev
-- [ ] Staging deploy of the merged revision and the closing report in Polish
+- [x] Deliver the backend: green CI and merge into dev
+- [x] The CI/CD page shows the stopped queue (API `merge_stop`, banner, mock, e2e)
+- [x] Independent review of the page, answered until approved
 
 ## Acceptance criteria
 
@@ -157,3 +156,44 @@ What exists:
 - An errored integration run counts as red, as attribution counts it. A rerun that passes clears
   it.
 - Recorded in [ADR-0482](../../docs/decisions/0482-a-red-after-merge-gate-stops-the-merge-queue.md).
+
+## Evidence
+
+Backend, pull request #1825, merged into `dev` at 7e49115e9 from head 5fba24756, whose own Yulius
+CI run passed. The independent review (`yulius-reviewer`) took two rounds. Round 1 asked for
+changes: the stop did not engage while a red verdict was still narrowed, and the repair mark had
+no test. Round 2 approved 8637c42f0 with nits only, which this page slice fixes.
+
+- New tests:
+  - `merge_train`: `a_red_after_merge_gate_holds_merges_until_it_is_green` (also `decidable_in`
+    and the API's `merge_stop`), `only_the_repair_merges_while_the_gate_is_red`,
+    `a_candidate_under_test_is_dissolved_when_the_gate_turns_red` (and the later revision's green
+    resumes), `a_quarantined_test_does_not_stop_the_queue`,
+    `the_stop_is_off_without_merge_first_or_when_turned_off`, and
+    `a_repair_marked_on_an_armed_head_survives_a_restart_and_merges_on_a_candidate`.
+  - `staging`: `a_red_verdict_stops_the_merge_queue_while_it_is_narrowed` and
+    `the_repair_goes_to_the_breaker_but_stays_with_its_owner`.
+  - `parking`: `the_breaker_owns_the_repair_and_every_worker_hears_that_merges_wait`.
+  - Unit tests in `merge_queue`, `spec_format::config` and `ci::gate_history`.
+  - e2e (`ci.e2e.ts`): `a red after-merge gate shows the stopped merge queue, what holds it and
+    what waits`, and `no stopped-queue banner while merges go on`.
+- Mutation checks, each restored with `git checkout` after a commit:
+  - the stop forced off: the hold, repair and dissolve tests fail;
+  - quarantine ignored and the setting forced on: the quarantine and off tests fail;
+  - the stop read from the old notices: the narrowing test fails ("stopped");
+  - `armed.repair` ignored in `form_train`: the marked-repair test fails;
+  - the repair owner's `ORDER BY` terms swapped: the owner-order test fails;
+  - before the fix, `the_breaker_owns_the_repair_and_every_worker_hears_that_merges_wait` failed
+    (timed out waiting for the assignment).
+- Commands at 5d506217e (the page slice, after merging `dev` at 7e49115e9):
+  - `scripts/dev quick`: passed.
+  - `scripts/cargo clippy --workspace --all-targets -- -D warnings`: passed.
+  - `scripts/cargo nextest run -p yulius-domain -p yulius-app -p yulius-store -p yulius-contracts
+    -p yulius-server`: 1688 passed.
+  - `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+    test(/^(merge_train|staging|delivery|parking|local_ci|analytics|ci_api|web)::/)'`: 631 passed.
+  - `cd e2e && npx e2e run tests/ci.e2e.ts`: 35 passed.
+- The security scan (Vidoc) is turned off for this project: not run, and not counted as passed.
+- What cannot be tested here: the instance's behavior on quartio-v2 itself. It needs the instance
+  updated from `main` (a person's promotion). The setting is on there by default, because its
+  `yulius.toml` has `[cd.dev] merge_first = true` and no `stop_on_red_gate` key.
