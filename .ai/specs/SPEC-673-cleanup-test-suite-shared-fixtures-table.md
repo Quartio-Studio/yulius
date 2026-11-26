@@ -30,7 +30,7 @@ before the next starts.
 - [x] PR1a: support::git and support::eventually replace the per-file copies
 - [x] PR1a: review findings answered (macOS import, description)
 - [x] PR1b: support::BareRemote and support::ScriptedHost replace the FakeRemote and SessionHost copies
-- [ ] PR1b: review findings answered
+- [x] PR1b: review findings answered
 - [ ] PR2: support::live real-process builder replaces start_holding, build_tuned and start_hosted
 - [ ] PR2: hand-wired Deps and sibling-file imports moved into support
 - [ ] PR2: review findings answered
