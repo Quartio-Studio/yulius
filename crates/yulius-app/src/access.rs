@@ -240,7 +240,7 @@ impl App {
         action: Action,
     ) -> AppResult<(SandboxRecord, AccessLevel)> {
         let found = self.require(&ctx.user, sandbox_id, action).await?;
-        if ctx.scope().is_some_and(|scope| !scope.allows(action)) {
+        if !ctx.token_allows(action) {
             return Err(AppError::Forbidden(
                 "this API token is read-only; make an operate token on Settings to do this".into(),
             ));

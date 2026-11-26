@@ -260,10 +260,7 @@ impl App {
     ) -> AppResult<(SandboxRecord, bool)> {
         let sid = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
         let (sandbox, level) = self.require_for(ctx, &sid, action).await?;
-        let can_edit = level.allows(Action::Administer)
-            && ctx
-                .scope()
-                .is_none_or(|scope| scope.allows(Action::Administer));
+        let can_edit = level.allows(Action::Administer) && ctx.token_allows(Action::Administer);
         Ok((sandbox, can_edit))
     }
 
