@@ -4,6 +4,9 @@
 //! tools and redaction of MCP results, fingerprints and MCP `${secret:NAME}` references.
 
 use crate::support;
+use crate::support::secrets::{
+    admit_again, browser_session, code_at, enroll, minutes, unlock, unlocked, user_id,
+};
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -25,10 +28,6 @@ const SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 const STRIPE: &str = concat!("sk_test_", "51NzQ9vaultValue8f3a");
 const TOKEN_S1: &str = "vault-task-token-s1-0123456789abcdef";
 const TOKEN_S2: &str = "vault-task-token-s2-0123456789abcdef";
-
-fn minutes(n: i64) -> i64 {
-    n * 60 * 1000
-}
 
 fn assert_hidden(body: &Value, values: &[&str]) {
     let text = body.to_string();
@@ -233,23 +232,6 @@ async fn team_secrets_are_shared_and_reveals_need_a_two_factor_code() -> TestRes
     Ok(())
 }
 
-/// The current code of a base32 `seed` at the test clock's time, `steps` periods away.
-pub(crate) fn code_at(
-    h: &support::Harness,
-    seed: &str,
-    steps: i64,
-) -> Result<String, Box<dyn std::error::Error>> {
-    use yulius_domain::vault::totp::{code_from_hmac, counter, parse_otp};
-    let config = parse_otp(seed)?;
-    let now = h.app.now().0 + steps * 30_000;
-    let hmac = h
-        .app
-        .deps
-        .crypto
-        .totp_hmac(config.algorithm, &config.secret, counter(now, 30));
-    Ok(code_from_hmac(&hmac, 6))
-}
-
 /// A code that is not the current one (nor the ones a step away).
 fn wrong_code(h: &support::Harness, seed: &str) -> Result<String, Box<dyn std::error::Error>> {
     let taken = [
@@ -261,34 +243,6 @@ fn wrong_code(h: &support::Harness, seed: &str) -> Result<String, Box<dyn std::e
         .map(|n| format!("{n}{n}{n}{n}{n}{n}"))
         .find(|c| !taken.contains(c))
         .ok_or("no wrong code")?)
-}
-
-pub(crate) async fn unlock(
-    h: &support::Harness,
-    creds: &Creds,
-    code: &str,
-) -> Result<support::Resp, Box<dyn std::error::Error>> {
-    call(
-        &h.router,
-        Method::POST,
-        "/api/auth/unlock",
-        Some(json!({"code": code})),
-        creds,
-    )
-    .await
-}
-
-/// Sets up and confirms two-factor for `creds`; returns the seed.
-pub(crate) async fn enroll(
-    h: &support::Harness,
-    creds: &Creds,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let setup = call(&h.router, Method::POST, "/api/auth/two-factor", None, creds).await?;
-    assert_eq!(setup.status, StatusCode::CREATED, "{}", setup.body);
-    let seed = setup.body["secret"].as_str().ok_or("secret")?.to_owned();
-    let confirmed = unlock(h, creds, &code_at(h, &seed, 0)?).await?;
-    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
-    Ok(seed)
 }
 
 /// AC3, AC4 (SPEC-040 R4–R6): two-factor is set up once per person, confirmed by a first code,
@@ -510,24 +464,6 @@ async fn a_code_confirms_only_the_seed_it_was_checked_against() -> TestResult {
     assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
     assert_eq!(confirmed.body["two_factor"], "on");
     Ok(())
-}
-
-/// The id of the admitted user `login`.
-async fn user_id(
-    h: &support::Harness,
-    superadmin: &Creds,
-    login: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let users = call(&h.router, Method::GET, "/api/admin/users", None, superadmin).await?;
-    Ok(users
-        .body
-        .as_array()
-        .ok_or("users")?
-        .iter()
-        .find(|u| u["github_login"] == login)
-        .and_then(|u| u["id"].as_str())
-        .ok_or("no such user")?
-        .to_owned())
 }
 
 async fn reset(
@@ -1005,44 +941,6 @@ async fn members_confirm_with_a_new_github_sign_in() -> TestResult {
     Ok(())
 }
 
-/// The GitHub sign-in of an already admitted user (a new session).
-pub(crate) async fn admit_again(
-    h: &support::Harness,
-    login: &str,
-    id: u64,
-) -> Result<Creds, Box<dyn std::error::Error>> {
-    let code = format!("code-{login}");
-    h.github.add_user(&code, id, login);
-    let start = call(
-        &h.router,
-        Method::GET,
-        "/api/auth/github/start?next=/secrets",
-        None,
-        &Creds::default(),
-    )
-    .await?;
-    let location = start.location.ok_or("location")?;
-    let state = location.split("state=").nth(1).ok_or("state")?.to_owned();
-    let callback = call(
-        &h.router,
-        Method::GET,
-        &format!("/api/auth/github/callback?code={code}&state={state}"),
-        None,
-        &support::started(&state),
-    )
-    .await?;
-    let cookie = support::session_from(&callback.set_cookie).ok_or("cookie")?;
-    let creds = Creds {
-        cookie: Some(cookie),
-        ..Creds::default()
-    };
-    let me = call(&h.router, Method::GET, "/api/me", None, &creds).await?;
-    Ok(Creds {
-        csrf: me.body["csrf_token"].as_str().map(str::to_owned),
-        ..creds
-    })
-}
-
 struct World {
     h: support::Harness,
     writer: Creds,
@@ -1100,44 +998,6 @@ async fn get_as(
     creds: &Creds,
 ) -> Result<support::Resp, Box<dyn std::error::Error>> {
     call(&w.h.router, Method::GET, path, None, creds).await
-}
-
-/// A browser session of `user` with two-factor set up and the vault unlocked: what a person
-/// needs to let the value of a secret allowed use by use go somewhere new (ADR-0317).
-pub(crate) async fn unlocked(
-    h: &support::Harness,
-    user: &str,
-) -> Result<Creds, Box<dyn std::error::Error>> {
-    let session = browser_session(h, user).await?;
-    enroll(h, &session).await?;
-    Ok(session)
-}
-
-/// A browser session for a seeded user (signed in now).
-pub(crate) async fn browser_session(
-    h: &support::Harness,
-    user: &str,
-) -> Result<Creds, Box<dyn std::error::Error>> {
-    use yulius_app::model::WebSessionRecord;
-    use yulius_app::ports::store::SessionStore as _;
-    let cookie = format!("session-cookie-of-{user}");
-    let now = h.app.now();
-    h.store
-        .insert_web_session(&WebSessionRecord {
-            id_hash: h.app.deps.crypto.sha256_hex(cookie.as_bytes()),
-            user_id: yulius_domain::ids::UserId::parse(user)?,
-            csrf_token: format!("csrf-of-{user}"),
-            created_at: now,
-            expires_at: now.plus_millis(minutes(600)),
-            revoked_at: None,
-        })
-        .await?;
-    Ok(Creds {
-        cookie: Some(cookie),
-        csrf: Some(format!("csrf-of-{user}")),
-        bearer: None,
-        oauth: None,
-    })
 }
 
 /// SPEC-216 SCO-001/002, AC-5: a team secret belongs to a sandbox (the default) or is team-wide;

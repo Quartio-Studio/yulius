@@ -1059,10 +1059,10 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
 /// SPEC-578 `needs_you_notice` mentioning `"even after a check-in to the agent"`.
 #[test]
 fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestResult {
-    use crate::pool_supervision::{
+    use crate::support::eventually;
+    use crate::support::live::pool::{
         ScriptedUsage, build_served_tuned, new_task, runtime, screen, seed, stop, temp,
     };
-    use crate::support::eventually;
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::model::Secret;
     use yulius_app::ports::github::{GitHubPort, NewPull};

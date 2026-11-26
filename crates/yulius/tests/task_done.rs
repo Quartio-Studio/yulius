@@ -5520,7 +5520,7 @@ fn a_goal_cleared_while_a_retry_is_armed_leaves_the_task_waiting() -> TestResult
         let seen = activities_until(&app, &id, Activity::Waiting, Duration::from_secs(20)).await?;
         assert_eq!(seen.last(), Some(&Some(Activity::Waiting)));
         assert!(
-            crate::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
+            crate::support::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
             "a cleared goal leaves the red branch with the project"
         );
         stop(&app, &id).await
@@ -8299,7 +8299,7 @@ fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8442,7 +8442,7 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8595,7 +8595,7 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,

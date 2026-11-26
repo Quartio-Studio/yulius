@@ -2,13 +2,13 @@
 //! past a harness's rebalance threshold, idle moves, pins and "nothing has room", with real
 //! processes as in `subscription_moves.rs`.
 
-use crate::pool_supervision::{
+use crate::support::agents::FakeAgentOptions;
+use crate::support::eventually;
+use crate::support::live::pool::{
     HOUR, ScriptedUsage, build_served_tuned, build_with, new_task, refresh, runtime, screen, seed,
     stop, task, temp, usage,
 };
-use crate::subscription_moves::{live_run, notices, ready, run_accounts};
-use crate::support::agents::FakeAgentOptions;
-use crate::support::eventually;
+use crate::support::subscription_moves::{live_run, notices, ready, run_accounts};
 use crate::support::{FakeGitHub, TestResult};
 
 use std::sync::Arc;

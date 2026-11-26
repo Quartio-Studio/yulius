@@ -6,10 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::pool_supervision::{
+use crate::support::agents::FakeAgentOptions;
+use crate::support::live::pool::{
     ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, temp,
 };
-use crate::support::agents::FakeAgentOptions;
 use crate::support::{TestResult, eventually};
 use std::sync::Arc;
 use yulius_app::auth::AuthContext;

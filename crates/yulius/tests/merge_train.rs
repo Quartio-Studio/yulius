@@ -2347,7 +2347,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         _ => "prior-train",
     };
     let (mut red, mut job) =
-        crate::pr_watch::run(&f.sandbox, run_id, &sha, RunState::Failed, None, 1);
+        crate::support::pr_watch::run(&f.sandbox, run_id, &sha, RunState::Failed, None, 1);
     red.reference = CiRef::Train(vec![8, 9]);
     job.name = "shard 2".into();
     job.state = RunState::Running;
@@ -2448,7 +2448,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             tokio::spawn(async move { app.merge_armed(&sandbox).await })
         };
         support::point_reached(at).await?;
-        let (mut newer, job) = crate::pr_watch::run(
+        let (mut newer, job) = crate::support::pr_watch::run(
             &f.sandbox,
             "new-train-verdict",
             "another-tree",
@@ -2556,7 +2556,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             tokio::spawn(async move { app.merge_armed(&sandbox).await })
         };
         support::point_reached(at).await?;
-        let (mut rerun, job) = crate::pr_watch::run(
+        let (mut rerun, job) = crate::support::pr_watch::run(
             &f.sandbox,
             "later-rerun",
             &head,
@@ -2609,7 +2609,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                         }
                         _ => RunState::Failed,
                     };
-                    let (mut own, job) = crate::pr_watch::run(
+                    let (mut own, job) = crate::support::pr_watch::run(
                         &f.sandbox,
                         "ordinary-rerun",
                         &head,
@@ -2624,7 +2624,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                     } else {
                         RunState::Passed
                     };
-                    let (mut peer, job) = crate::pr_watch::run(
+                    let (mut peer, job) = crate::support::pr_watch::run(
                         &f.sandbox,
                         "peer",
                         &head,
@@ -2874,7 +2874,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         // Both the live slot and its durable decision still name this failure. A new
         // ordinary rerun must enter its bounded wait even before the daemon restarts.
         f.h.clock.0.fetch_add(1, Ordering::SeqCst);
-        let (mut rerun, job) = crate::pr_watch::run(
+        let (mut rerun, job) = crate::support::pr_watch::run(
             &f.sandbox,
             "recheck-owner",
             &head,

@@ -26,7 +26,7 @@ use super::{
     Error, FakeAgentOptions, Point, answered, data_dir, hooked, locate_fake_agent,
     park_through_terminal_exit, pause_at_key, request_one_park, runtime, screen,
 };
-use crate::pool_supervision::ScriptedUsage;
+use crate::support::live::pool::ScriptedUsage;
 
 /// What a held reader hands on once released, and the signals around it.
 struct Held {
@@ -180,7 +180,7 @@ async fn app_on(data: &Path, host: Arc<HoldingHost>) -> Result<Arc<App>, Error> 
         resume_prompts: true,
         ..hooked()
     };
-    let (app, _, _) = crate::first_message::start_hosted_with_github(
+    let (app, _, _) = crate::support::live::first_message::start_hosted_with_github(
         data,
         &fake,
         agent,

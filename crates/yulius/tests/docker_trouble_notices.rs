@@ -8,8 +8,8 @@ use std::time::Duration;
 use yulius_app::docker_trouble::{DOCKER_BACK, DOCKER_FULL};
 use yulius_domain::connection_health::{Limit, Refusal};
 
-use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop, temp};
 use crate::support::eventually;
+use crate::support::live::pool::{build_tuned, new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

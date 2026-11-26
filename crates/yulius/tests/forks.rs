@@ -6,10 +6,10 @@
 //! transcript under its new session id as `claude --resume <id> --fork-session` does; real
 //! worktrees over a local origin.
 
-use crate::pool_supervision::{
+use crate::support;
+use crate::support::live::pool::{
     ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, task, temp,
 };
-use crate::support;
 use crate::support::{eventually, git};
 
 use std::path::{Path, PathBuf};
@@ -375,7 +375,7 @@ fn forks_that_cannot_continue_are_refused_and_create_nothing() -> TestResult {
                 .await,
         )?;
         // A subscription of another provider, or one that is gone (FRK-002).
-        crate::codex::connect_codex(&app).await?;
+        crate::support::codex::connect_codex(&app).await?;
         for (account, said) in [
             ("a-codex", "is not a Claude subscription"),
             ("gone", "no longer exists"),
@@ -413,7 +413,7 @@ fn launch_of(attempt: &yulius_app::model::AttemptRecord) -> Result<String, BoxEr
 /// once the slot frees, adopts a session of its own, and its next launch resumes that session.
 #[test]
 fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> TestResult {
-    use crate::supervision::{build_full, screen_contains, seed_records, seed_repo};
+    use crate::support::live::supervision::{build_full, screen_contains, seed_records, seed_repo};
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -427,8 +427,8 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
         let app = build_full(&data, Some(&fake), agent, 1)?;
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
-        crate::codex::connect_codex(&app).await?;
-        let named = crate::codex::add_codex_account(
+        crate::support::codex::connect_codex(&app).await?;
+        let named = crate::support::codex::add_codex_account(
             &app,
             "a-codex-2",
             concat!(
@@ -438,7 +438,8 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
             ),
         )
         .await?;
-        let source_id = crate::codex::new_codex_task(&app, &sandbox, &user, "Parser").await?;
+        let source_id =
+            crate::support::codex::new_codex_task(&app, &sandbox, &user, "Parser").await?;
         eventually(
             "the source's conversation",
             Duration::from_secs(30),

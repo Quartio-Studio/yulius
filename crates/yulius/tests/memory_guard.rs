@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::supervision::{runtime, seed_records, seed_repo};
 use crate::support;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::supervision::{runtime, seed_records, seed_repo};
 use crate::support::{TestResult, eventually};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::harness::HarnessAdapter;
@@ -69,7 +69,7 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
         let (sandbox, user) = seed_records(&app).await?;
         match harness {
             Harness::Codex => {
-                crate::codex::add_codex_account(
+                crate::support::codex::add_codex_account(
                     &app,
                     "a-codex",
                     r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-access","refresh_token":"SYNTHETIC-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-01T10:00:00Z"}"#,
@@ -77,10 +77,10 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
                 .await?;
             }
             Harness::Antigravity => {
-                crate::antigravity::add_google_account(
+                crate::support::antigravity::add_google_account(
                     &app,
                     "a-google",
-                    &crate::antigravity::api_key()?,
+                    &crate::support::antigravity::api_key()?,
                 )
                 .await?;
             }

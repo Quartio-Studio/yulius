@@ -4,6 +4,7 @@
 
 use crate::support;
 use crate::support::BareRemote;
+use crate::support::delivery::HeldBrowserLookup;
 use crate::support::git;
 
 use std::net::SocketAddr;
@@ -4765,115 +4766,7 @@ async fn answer_with_a_successor(f: &Fixture) -> BoxResult<(TaskId, TaskId)> {
     Ok((before, child))
 }
 
-/// Chromium startup can hold the final lookup for outstanding browser decisions.
-#[derive(Default)]
-pub(super) struct HeldBrowserLookup {
-    session: Option<Arc<dyn BrowserSession>>,
-    publication_reader: Option<Arc<std::sync::Mutex<Option<tokio::task::Id>>>>,
-    calls: std::sync::atomic::AtomicUsize,
-    entered: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
-}
-
-impl HeldBrowserLookup {
-    pub(super) fn with_session(session: Arc<dyn BrowserSession>) -> Self {
-        Self {
-            session: Some(session),
-            ..Self::default()
-        }
-    }
-
-    pub(super) fn for_publication() -> Self {
-        Self {
-            publication_reader: Some(Arc::default()),
-            ..Self::default()
-        }
-    }
-
-    pub(super) fn hold_lookup_for(
-        &self,
-        reader: tokio::task::Id,
-    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        if let Some(target) = &self.publication_reader {
-            *target
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reader);
-        }
-        (self.entered.clone(), self.release.clone())
-    }
-
-    pub(super) fn hold_publication_lookup(
-        &self,
-        task: &TaskId,
-    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        if let Some(reader) = self.publication_reader.clone() {
-            yulius_app::race::on(
-                yulius_app::race::Point::ArmedNoticePublicationRead,
-                Path::new(task.as_str()),
-                move || {
-                    *reader
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some(tokio::task::id());
-                },
-            );
-        }
-        (self.entered.clone(), self.release.clone())
-    }
-}
-
 use yulius_app::ports::browser::{BrowserFailure, BrowserPort, BrowserSession};
-
-#[async_trait]
-impl BrowserPort for HeldBrowserLookup {
-    async fn ensure(
-        &self,
-        sandbox: &SandboxId,
-        profile_dir: &Path,
-    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
-        yulius::wiring::browser::UnavailableBrowser
-            .ensure(sandbox, profile_dir)
-            .await
-    }
-
-    async fn restart(
-        &self,
-        sandbox: &SandboxId,
-        profile_dir: &Path,
-    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
-        yulius::wiring::browser::UnavailableBrowser
-            .restart(sandbox, profile_dir)
-            .await
-    }
-
-    async fn running(&self, _: &SandboxId) -> Option<Arc<dyn BrowserSession>> {
-        let hold = match &self.publication_reader {
-            Some(reader) => reader
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take_if(|watcher| Some(*watcher) == tokio::task::try_id())
-                .is_some(),
-            None => self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1,
-        };
-        if hold {
-            self.entered.notify_one();
-            self.release.notified().await;
-        }
-        self.session.clone()
-    }
-
-    async fn reap_idle(&self) -> Vec<SandboxId> {
-        Vec::new()
-    }
-
-    async fn stop(&self, _: &SandboxId) -> bool {
-        false
-    }
-
-    async fn shutdown_all(&self) -> Vec<SandboxId> {
-        Vec::new()
-    }
-}
 
 #[tokio::test]
 async fn a_parked_detail_bounds_its_initial_browser_lookup_and_keeps_the_recorded_pr() -> TestResult
@@ -4929,7 +4822,7 @@ async fn parked_mcp_uses_the_visible_plan_when_browser_verification_times_out() 
         )
         .await?;
     set_steps(&f, "t1", &["done", "in_progress"]).await?;
-    let caller = crate::task_message::superagent(
+    let caller = crate::support::task_message::superagent(
         &SandboxId::parse("s1")?,
         &UserId::parse("alice")?,
         "admin",
@@ -11183,7 +11076,8 @@ async fn after_all_tasks_includes_a_new_failing_followup_before_discovery() -> T
     let (f, task, owner, head) = parked_primary_with_external_followup().await?;
     support::exhausted_subscription(&f.h).await?;
     let predecessor = f.h.store.task(&task).await?.ok_or("predecessor")?;
-    let caller = crate::task_message::superagent(&predecessor.sandbox_id, &owner.user.id, "bob");
+    let caller =
+        crate::support::task_message::superagent(&predecessor.sandbox_id, &owner.user.id, "bob");
     f.h.github.set_checks(&head, ChecksState::Failure);
     let created =
         f.h.app

@@ -3,6 +3,10 @@
 //! is parked after the grace period, frees its session for a queued task, keeps its place, and
 //! resumes in its own session when someone writes to it.
 
+use crate::support::parking::{
+    app, app_with_pulls, app_with_pulls_and_clock, ask, asks, assert_cold_screen,
+    configured_app_with_pulls, parked, parked_within, status_of,
+};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,77 +23,19 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
-use crate::first_message::{data_dir, hooked, new_task, runtime, screen, start_hosted, start_with};
-use crate::pool_supervision::{ScriptedUsage, seed};
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::first_message::{
+    data_dir, hooked, new_task, runtime, screen, start_hosted, start_with,
+};
+use crate::support::live::pool::{ScriptedUsage, seed};
+use crate::support::task_message::superagent;
 use crate::support::{TestResult, eventually};
-use crate::task_message::superagent;
 
 mod armed_notice;
 mod candidate;
 mod replaced_output;
 
 type Error = Box<dyn std::error::Error>;
-
-/// A hooked app whose idle sessions park at once (`park_after_ms` 1) under a limit of `slots`.
-async fn app(data: &Path, slots: u32, park_after_ms: u64) -> Result<Arc<App>, Error> {
-    Ok(app_with_pulls(data, slots, park_after_ms).await?.0)
-}
-
-async fn app_with_pulls(
-    data: &Path,
-    slots: u32,
-    park_after_ms: u64,
-) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
-    configured_app_with_pulls(data, slots, park_after_ms, |_| {}).await
-}
-
-async fn configured_app_with_pulls(
-    data: &Path,
-    slots: u32,
-    park_after_ms: u64,
-    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
-) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
-    app_with_pulls_and_clock(
-        data,
-        slots,
-        park_after_ms,
-        Arc::new(yulius::wiring::clock::SystemClock),
-        configure,
-    )
-    .await
-}
-
-async fn app_with_pulls_and_clock(
-    data: &Path,
-    slots: u32,
-    park_after_ms: u64,
-    clock: Arc<dyn yulius_app::ports::Clock>,
-    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
-) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let agent = FakeAgentOptions {
-        answers_first_message: true,
-        // A resume's prompt reaches the agent, as `claude --resume <id> <prompt>` gives it.
-        resume_prompts: true,
-        ..hooked()
-    };
-    let (app, _, github) = crate::first_message::start_hosted_with_github(
-        data,
-        &fake,
-        agent,
-        (0, Arc::new(ScriptedUsage::default()), clock),
-        None,
-        None,
-        |config| {
-            config.max_live_sessions = slots;
-            config.park_after_ms = park_after_ms;
-            configure(config);
-        },
-    )
-    .await?;
-    Ok((app, github))
-}
 
 /// Give the real parking decision a readable open PR at the head the fixture controls.
 async fn open_pull_at(
@@ -170,98 +116,6 @@ async fn answered(app: &Arc<App>, data: &Path) -> Result<(TaskId, ProjectCaller)
     })
     .await?;
     Ok((id, superagent(&sandbox, &user, "admin")))
-}
-
-async fn status_of(app: &App, id: &TaskId) -> (Option<TaskStatus>, Option<Activity>) {
-    match TaskStore::task(app.deps.store.as_ref(), id).await {
-        Ok(Some(task)) => (Some(task.status), task.activity),
-        _ => (None, None),
-    }
-}
-
-/// How long [`parked`] waits for a park.
-const PARK_WAIT: Duration = Duration::from_secs(30);
-
-/// Parks `id`: a pass runs at each look until it parked, so a pass that came in the millisecond
-/// its state last changed (quiet 0 of a 1 ms grace) is followed by another.
-async fn parked(app: &Arc<App>, id: &TaskId) -> TestResult {
-    parked_within(app, id, PARK_WAIT).await
-}
-
-/// [`parked`] with its own bound (#1649). The bound covers the whole wait: a pass still running
-/// at the deadline is cancelled there. The failure says whether a pass was still running or
-/// the last one ended without parking, and the last park stage the task reached.
-async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) -> TestResult {
-    let key = Path::new(id.as_str());
-    let began = std::time::Instant::now();
-    let deadline = tokio::time::Instant::now() + bound;
-    let mut passes = 0_u32;
-    // When a pass first decided a park: later passes find the task still Running while its
-    // session ends, and overwrite the last stage with where they gave up.
-    let mut decided = None;
-    let mut outcome = "no pass ran";
-    while tokio::time::Instant::now() < deadline {
-        let look = async {
-            if status_of(app, id).await.0 == Some(TaskStatus::Running) {
-                passes += 1;
-                if app.park_idle_sessions_now().await > 0 && decided.is_none() {
-                    decided = Some(began.elapsed());
-                }
-            }
-            status_of(app, id).await.0 == Some(TaskStatus::Parked)
-        };
-        match tokio::time::timeout_at(deadline, look).await {
-            Ok(true) => return Ok(()),
-            Ok(false) if passes == 0 => outcome = "the task was not running, so no pass ran",
-            Ok(false) => outcome = "the last pass ended without parking",
-            Err(_) => {
-                outcome = "a pass was still running at the deadline";
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let last = yulius_app::race::last_reached(key).filter(|(_, at)| *at >= began);
-    let begun = decided.map_or_else(String::new, |at: Duration| {
-        format!("; a pass began a park {at:.1?} into the wait (its count covers every task)")
-    });
-    let stage = match last {
-        Some((point, at)) => format!(
-            "{} ({:.1?} into the wait)",
-            park_stage(point),
-            at.duration_since(began)
-        ),
-        None => "none: no pass reached this task's park (idle facts or another task)".into(),
-    };
-    let (status, activity) = tokio::time::timeout(Duration::from_secs(1), status_of(app, id))
-        .await
-        .unwrap_or_default();
-    Err(format!(
-        "timed out waiting for the task to park within {bound:?}: {outcome} after {passes} \
-         pass(es){begun}; last stage reached: {stage}; task {status:?}, {activity:?}"
-    )
-    .into())
-}
-
-/// What a park pass does after reaching `point` (#1649).
-fn park_stage(point: Point) -> String {
-    match point {
-        Point::ParkVerifying => {
-            "verifying the task's pull requests (GitHub reads, local Git checks)"
-        }
-        Point::ParkPrsVerified => "probing the session's processes",
-        Point::ParkProbed => "taking the launch lock and rechecking the idle facts",
-        Point::ParkPrepared => {
-            "rechecking delivery, plan, spec and pull requests under the launch lock"
-        }
-        Point::ParkDecided => "asking the session to end after the park was decided",
-        Point::ParkStateRecorded => "restoring the parked screen",
-        Point::LiveRowPrNews => {
-            "reading the idle facts (a pass that ended here found the task not parkable)"
-        }
-        other => return format!("{other:?}"),
-    }
-    .into()
 }
 
 #[test]
@@ -757,29 +611,6 @@ async fn past_the_grace(app: &App, id: &TaskId) -> TestResult {
             .is_some_and(|times| app.now().0 - times.state_at.0 > 2)
     })
     .await
-}
-
-/// The task's agent asks its person to choose (`needs_you`).
-pub(crate) async fn ask(app: &App, id: &TaskId) -> TestResult {
-    let asked = NeedsYouRecord {
-        action: "Choose the colour".into(),
-        happened: None,
-        problem: Some("Two options".into()),
-        decision: true,
-        link: None,
-        at: 1,
-        cause: None,
-        named: Default::default(),
-    };
-    app.deps
-        .store
-        .set_task_needs_you(id, Some(&asked), app.now())
-        .await?;
-    Ok(())
-}
-
-async fn asks(app: &App, id: &TaskId) -> Result<bool, Error> {
-    Ok(app.deps.store.task_needs_you(id).await?.is_some())
 }
 
 fn audited(data: &Path, action: &str, id: &TaskId) -> Result<Vec<String>, Error> {
@@ -1880,66 +1711,6 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
-}
-
-pub(crate) async fn assert_cold_screen(
-    data: &Path,
-    id: &TaskId,
-    caller: &ProjectCaller,
-    expected: &str,
-) -> TestResult {
-    let restart = self::app(data, 8, 1).await?;
-    let ctx = AuthContext {
-        user: restart
-            .deps
-            .store
-            .user(&caller.user)
-            .await?
-            .ok_or("owner")?,
-        csrf_token: None,
-        session_hash: None,
-        token: None,
-    };
-    // Read through MCP first, before a page can warm the terminal hub.
-    let remote = yulius_app::remote::RemoteCaller {
-        ctx: ctx.clone(),
-        token_id: "cold-screen".into(),
-        scope: yulius_domain::permission::TokenScope::Read,
-        login: "admin".into(),
-        superagent: None,
-    };
-    let request = serde_json::from_value(json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "task_screen", "arguments": {"project":"acme/pool","task_id":id.as_str()},
-            "_meta": {"yulius/structured":true}}
-    }))?;
-    let result = restart
-        .remote_mcp_handle(&remote, request)
-        .await
-        .and_then(|reply| reply.result)
-        .ok_or("task_screen")?;
-    assert_eq!(
-        crate::support::tool_text(&result)["screen"],
-        expected.trim_end()
-    );
-    let terminal = restart
-        .terminal_open(
-            &ctx,
-            id.as_str(),
-            matches!(
-                status_of(&restart, id).await.0,
-                Some(TaskStatus::Queued | TaskStatus::WaitingCapacity | TaskStatus::Starting)
-            )
-            .then_some((22, 5)),
-        )
-        .await?;
-    assert_eq!(screen(&restart, id), expected);
-    assert_eq!(
-        restart.terminal_state(id).await?.parked_screen,
-        expected.contains("Yulius parked")
-    );
-    drop(terminal);
     Ok(())
 }
 
@@ -3772,7 +3543,7 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
                 status_of(&app, &id).await.1 == Some(Activity::Waiting)
             })
             .await?;
-            crate::pr_watch::leave_verification_step(&app, &id).await?;
+            crate::support::pr_watch::leave_verification_step(&app, &id).await?;
             ids.push(id);
         }
         let repo = data
@@ -3799,7 +3570,7 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
                 .transition_with_landing(&DeliveryStage::None, &merged, None, Some(&landing))
                 .await?
         );
-        crate::staging::recorded_gate(
+        crate::support::staging::recorded_gate(
             &app,
             &project.id,
             &sha,
@@ -3807,7 +3578,8 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
             Some("---- delivery::gate stdout ----\nassertion failed\n"),
         )
         .await?;
-        let (owner, terminal) = crate::task_message::terminal(&app, &caller, &ids[0]).await?;
+        let (owner, terminal) =
+            crate::support::task_message::terminal(&app, &caller, &ids[0]).await?;
         app.terminal_input(&owner, &terminal, b"keep my draft", false)
             .await?;
         let messages = || async { app.tell_gate_repairs(&project).await };
@@ -3853,7 +3625,8 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
             || async { screen(&app, &ids[2]).contains("You own this repair") },
         )
         .await?;
-        let (_, last_terminal) = crate::task_message::terminal(&app, &caller, &ids[2]).await?;
+        let (_, last_terminal) =
+            crate::support::task_message::terminal(&app, &caller, &ids[2]).await?;
         app.terminal_input(&owner, &last_terminal, b"another draft", false)
             .await?;
         assert_eq!(messages().await?, 0);
@@ -3876,15 +3649,15 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let browser = Arc::new(crate::delivery::HeldBrowserLookup::for_publication());
+        let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::for_publication());
         let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-        let (app, _, _) = crate::first_message::start_hosted_with_github(
+        let (app, _, _) = crate::support::live::first_message::start_hosted_with_github(
             &data, &fake, FakeAgentOptions { answers_first_message: true, ..hooked() },
             (0, Arc::new(ScriptedUsage::default()), Arc::new(yulius::wiring::clock::SystemClock)),
             None, Some(browser.clone()), |config| { config.max_live_sessions = 8; },
         ).await?;
         let (id, caller) = answered(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let task = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
@@ -4069,7 +3842,7 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
     rt.block_on(async {
         let app = app(&data, 8, 0).await?;
         let (id, _) = answered(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let source = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("source")?;
@@ -4331,7 +4104,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let clock = Arc::new(crate::support::TestClock(PRIOR_OBSERVATION.into()));
         let (app, github) = app_with_pulls_and_clock(&data, 8, 1, clock.clone(), |_| {}).await?;
         let (id, caller) = answered(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let worktree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
         let head = crate::support::git(worktree, &["rev-parse", "HEAD"])?;
@@ -4413,7 +4186,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         } else if matches!(case, QueueWatch::KeptDuringRead) {
             std::fs::write(&arms, &saved_arm)?;
             app.restore_armed_merges().await;
-            let (mut green, job) = crate::pr_watch::run(
+            let (mut green, job) = crate::support::pr_watch::run(
                 &caller.sandbox,
                 "green",
                 &head,
@@ -4507,7 +4280,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
                         .transition_delivery(&DeliveryStage::PrOpen, &old)
                         .await?
                 );
-                let (mut run, job) = crate::pr_watch::run(
+                let (mut run, job) = crate::support::pr_watch::run(
                     &caller.sandbox,
                     "old",
                     &head,
@@ -4669,7 +4442,7 @@ fn a_busy_terminal_writer_leaves_the_armed_notice_unheard() -> TestResult {
                 },
             )
             .await?;
-        let (mut run, job) = crate::pr_watch::run(
+        let (mut run, job) = crate::support::pr_watch::run(
             &caller.sandbox,
             "held-writer-ci",
             &head,

@@ -5,14 +5,17 @@
 //! account at a limit by resuming the conversation, a goal task gets its request as its first
 //! message, and a refreshed sign-in is kept. No test calls Google.
 
+use crate::support::antigravity::{API_KEY, add_google_account, api_key};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::supervision::{build_full, runtime, screen_contains, seed_records, seed_repo, task};
 use crate::support;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::supervision::{
+    build_full, runtime, screen_contains, seed_records, seed_repo, task,
+};
 use crate::support::{TestResult, eventually};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::harness::HarnessAdapter;
@@ -29,38 +32,6 @@ use yulius_harness::login::{antigravity_api_key_credential, antigravity_sign_in_
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
-
-const API_KEY: &str = "SYNTHETIC-gemini-api-key-0123456789";
-
-pub(super) async fn add_google_account(
-    app: &App,
-    id: &str,
-    credential: &[u8],
-) -> Result<AccountId, Box<dyn std::error::Error>> {
-    let account = AccountId::parse(id)?;
-    app.deps
-        .store
-        .insert_account(&AccountRecord {
-            id: account.clone(),
-            provider: Provider::Google,
-            label: format!("Antigravity {id}"),
-            credential: Some(app.deps.crypto.seal(credential)?),
-            status: AccountStatus::Ok,
-            usage_json: None,
-            last_error: None,
-            created_at: Timestamp(1),
-            updated_at: Timestamp(1),
-            email: None,
-            email_checked_at: None,
-            email_typed: false,
-        })
-        .await?;
-    Ok(account)
-}
-
-pub(super) fn api_key() -> Result<Vec<u8>, String> {
-    antigravity_api_key_credential(API_KEY).ok_or_else(|| "an API key envelope".to_owned())
-}
 
 async fn new_agy_task(
     app: &Arc<App>,
@@ -284,13 +255,17 @@ exec "${0%/*}/fake-agent" "$@"
             answers_first_message: true,
             resume_prompts: true,
             turn_hold_file: Some(release.clone()),
-            ..crate::first_message::hooked()
+            ..crate::support::live::first_message::hooked()
         };
-        let (app, _) =
-            crate::first_message::start_with(&data, &cli, options, 0, Arc::default(), |config| {
-                config.park_after_ms = 1
-            })
-            .await?;
+        let (app, _) = crate::support::live::first_message::start_with(
+            &data,
+            &cli,
+            options,
+            0,
+            Arc::default(),
+            |config| config.park_after_ms = 1,
+        )
+        .await?;
         let (sandbox, user) = seed_records(&app).await?;
         add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
@@ -1044,7 +1019,7 @@ fn a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes() -> TestResul
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = crate::supervision::build_tuned(
+        let app = crate::support::live::supervision::build_tuned(
             &data,
             Some(&fake),
             FakeAgentOptions::default(),

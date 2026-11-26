@@ -7,11 +7,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::pool_supervision::{
+use crate::support::agents::FakeAgentOptions;
+use crate::support::live::pool::{
     ScriptedUsage, build_tuned, build_with, echoed, new_task, runtime, screen, seed, stop, task,
     temp,
 };
-use crate::support::agents::FakeAgentOptions;
 use crate::support::{TestResult, eventually};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::TryRecvError;
@@ -365,7 +365,7 @@ async fn served_on(
     tune: impl FnOnce(&mut yulius_app::context::AppConfig),
 ) -> Result<(Arc<App>, u16), Box<dyn std::error::Error>> {
     let usage = Arc::new(ScriptedUsage::default());
-    crate::first_message::start_with(data, fake, agent, port, usage, tune).await
+    crate::support::live::first_message::start_with(data, fake, agent, port, usage, tune).await
 }
 
 /// Waits for a notice that contains `words` and fails when the terminal never says it.

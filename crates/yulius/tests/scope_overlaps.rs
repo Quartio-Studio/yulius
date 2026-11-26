@@ -8,8 +8,8 @@ use std::time::Duration;
 use serde_json::json;
 use yulius_app::coordination::AgentContext;
 
-use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop, temp};
 use crate::support::eventually;
+use crate::support::live::pool::{build_tuned, new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

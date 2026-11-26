@@ -7,9 +7,13 @@
 //! through the real `yulius hook` client against the internal listener; real worktrees; a
 //! scripted usage probe for the subscription pool.
 
-use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support;
 use crate::support::eventually;
+use crate::support::live::first_message::{
+    ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start,
+    start_hosted, start_with, stop,
+};
+use crate::support::live::pool::{HOUR, ScriptedUsage, refresh, seed, usage};
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -41,94 +45,6 @@ use yulius_store::crypto::MasterKeyCrypto;
 
 type BoxError = Box<dyn std::error::Error>;
 
-/// A server: the app and its internal listener on `port` (0 = any free port), as `yulius serve`
-/// would start it, with `probe` reading the subscriptions' usage.
-pub(crate) async fn start(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    port: u16,
-    probe: Arc<ScriptedUsage>,
-) -> Result<(Arc<App>, u16), BoxError> {
-    start_with(data, fake, agent, port, probe, |_| {}).await
-}
-
-/// [`start`] with `configure` applied to the app's configuration.
-pub(crate) async fn start_with(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    port: u16,
-    probe: Arc<ScriptedUsage>,
-    configure: impl FnOnce(&mut AppConfig),
-) -> Result<(Arc<App>, u16), BoxError> {
-    start_on(
-        data,
-        fake,
-        agent,
-        port,
-        probe,
-        Arc::new(SystemClock),
-        configure,
-    )
-    .await
-}
-
-/// The system clock plus an offset (ms) the test moves: real processes and their hooks keep
-/// their pace while minutes pass for the server. Start it behind and move it forward. A hook's
-/// send time, which its client stamps on the system clock, reads with the offset in force when
-/// it was sent, so it keeps its order with the server's times also when it arrives late, after
-/// a move (SPEC-636; it used to read as its arrival, #1615).
-pub(crate) struct ShiftedClock(std::sync::Mutex<Vec<(i64, i64)>>);
-
-impl ShiftedClock {
-    /// A clock `offset_ms` from the system's.
-    pub(crate) fn new(offset_ms: i64) -> Self {
-        Self(std::sync::Mutex::new(vec![(i64::MIN, offset_ms)]))
-    }
-
-    /// Runs the clock `offset_ms` from the system's from now on.
-    pub(crate) fn shift(&self, offset_ms: i64) {
-        let at = SystemClock.now().0;
-        self.shifts().push((at, offset_ms));
-    }
-
-    /// Moves the clock `ms` forward from now on.
-    pub(crate) fn advance(&self, ms: i64) {
-        let at = SystemClock.now().0;
-        let mut shifts = self.shifts();
-        let offset = shifts.last().map_or(0, |(_, offset)| *offset) + ms;
-        shifts.push((at, offset));
-    }
-
-    /// The offset in force at the system clock's `wall_ms`.
-    fn offset_at(&self, wall_ms: i64) -> i64 {
-        let shifts = self.shifts();
-        shifts
-            .iter()
-            .rev()
-            .find(|(from, _)| *from <= wall_ms)
-            .map_or(0, |(_, offset)| *offset)
-    }
-
-    fn shifts(&self) -> std::sync::MutexGuard<'_, Vec<(i64, i64)>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-impl yulius_app::ports::Clock for ShiftedClock {
-    fn now(&self) -> Timestamp {
-        let system = SystemClock.now().0;
-        Timestamp(system + self.offset_at(system))
-    }
-
-    fn of_wall(&self, wall: Timestamp) -> Timestamp {
-        Timestamp(wall.0 + self.offset_at(wall.0))
-    }
-}
-
 /// A send time stamped before a move of the clock reads with the offset of its sending.
 #[test]
 fn a_shifted_clock_reads_a_stamp_with_the_offset_of_its_time() {
@@ -145,212 +61,6 @@ fn a_shifted_clock_reads_a_stamp_with_the_offset_of_its_time() {
     let later = SystemClock.now();
     assert_eq!(clock.of_wall(later).0, later.0 - 90_000);
     assert!(clock.now().0 >= later.0 - 90_000);
-}
-
-/// [`start_with`] on the clock `clock`.
-pub(crate) async fn start_on(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    port: u16,
-    probe: Arc<ScriptedUsage>,
-    clock: Arc<dyn yulius_app::ports::Clock>,
-    configure: impl FnOnce(&mut AppConfig),
-) -> Result<(Arc<App>, u16), BoxError> {
-    start_hosted(data, fake, agent, (port, probe, clock), None, configure).await
-}
-
-/// [`start_on`] whose runs go through `host` (the real one when `None`).
-pub(crate) async fn start_hosted(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    settings: (u16, Arc<ScriptedUsage>, Arc<dyn yulius_app::ports::Clock>),
-    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
-    configure: impl FnOnce(&mut AppConfig),
-) -> Result<(Arc<App>, u16), BoxError> {
-    let (app, port, _) =
-        start_hosted_with_github(data, fake, agent, settings, host, None, configure).await?;
-    Ok((app, port))
-}
-
-/// The same hosted fixture with access to the upstream pull and its current head.
-pub(crate) async fn start_hosted_with_github(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    (port, probe, clock): (u16, Arc<ScriptedUsage>, Arc<dyn yulius_app::ports::Clock>),
-    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
-    browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
-    configure: impl FnOnce(&mut AppConfig),
-) -> Result<(Arc<App>, u16, Arc<support::FakeGitHub>), BoxError> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
-    let listener = socket.listen(64)?;
-    start_hosted_on_listener(
-        data,
-        fake,
-        agent,
-        (listener, probe, clock),
-        host,
-        browser,
-        configure,
-    )
-    .await
-}
-
-/// Starts the fixture on a listener the test can keep bound across a server restart.
-pub(crate) async fn start_on_listener(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    listener: tokio::net::TcpListener,
-    probe: Arc<ScriptedUsage>,
-    clock: Arc<dyn yulius_app::ports::Clock>,
-) -> Result<Arc<App>, BoxError> {
-    let (app, _, _) = start_hosted_on_listener(
-        data,
-        fake,
-        agent,
-        (listener, probe, clock),
-        None,
-        None,
-        |_| {},
-    )
-    .await?;
-    Ok(app)
-}
-
-async fn start_hosted_on_listener(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    (listener, probe, clock): (
-        tokio::net::TcpListener,
-        Arc<ScriptedUsage>,
-        Arc<dyn yulius_app::ports::Clock>,
-    ),
-    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
-    browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
-    configure: impl FnOnce(&mut AppConfig),
-) -> Result<(Arc<App>, u16, Arc<support::FakeGitHub>), BoxError> {
-    let port = listener.local_addr()?.port();
-    let url = format!("http://127.0.0.1:{port}");
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
-    config.contained = false;
-    configure(&mut config);
-    let github = Arc::new(support::FakeGitHub::default());
-    let deps = Deps {
-        store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-        clock,
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: github.clone(),
-        session_host: host.unwrap_or_else(|| Arc::new(PtySessionHost::new(exe.clone()))),
-        harness: Arc::new(FakeAgentHarness {
-            inner: HarnessAdapter::new(exe.clone(), url),
-            fake: fake.to_path_buf(),
-            options: agent,
-            yulius_exe: exe,
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: browser.unwrap_or_else(|| Arc::new(yulius::wiring::browser::UnavailableBrowser)),
-        usage: probe,
-    };
-    let app = App::new(config, deps);
-    let internal = yulius_server::internal_router(app.clone())
-        .into_make_service_with_connect_info::<SocketAddr>();
-    tokio::spawn(async move { axum::serve(listener, internal).await });
-    Ok((app, port, github))
-}
-
-pub(crate) fn hooked() -> FakeAgentOptions {
-    FakeAgentOptions {
-        transcript: true,
-        hooks: true,
-        ..FakeAgentOptions::default()
-    }
-}
-
-pub(crate) async fn new_task(
-    app: &Arc<App>,
-    sandbox: &SandboxId,
-    user: &UserId,
-    prompt: &str,
-    mode: TaskMode,
-) -> Result<TaskId, BoxError> {
-    Ok(app
-        .create_task_internal(NewTask {
-            sandbox: sandbox.clone(),
-            created_by: user.clone(),
-            prompt: prompt.into(),
-            harness: Harness::ClaudeCode,
-            title: Some("First message".into()),
-            workflow_id: None,
-            steps: Vec::new(),
-            model: None,
-            effort: None,
-            origin: TaskOrigin::Ui,
-            automation_run: None,
-            start: true,
-            mode,
-            supertask: false,
-        })
-        .await?
-        .id)
-}
-
-pub(crate) fn screen(app: &App, id: &TaskId) -> String {
-    app.runtime(id).hub.screen_text()
-}
-
-pub(crate) async fn activity(app: &App, id: &TaskId) -> Option<Activity> {
-    app.deps
-        .store
-        .task(id)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|t| t.activity)
-}
-
-/// The notices sent to the task's viewers so far on `watch`.
-pub(crate) fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> Vec<String> {
-    let mut out = Vec::new();
-    while let Ok(frame) = watch.try_recv() {
-        if let HubFrame::Notice(text) = frame {
-            out.push(text);
-        }
-    }
-    out
-}
-
-pub(crate) async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
-    app.stop_task_now(id).await?;
-    eventually("the stop", Duration::from_secs(30), || async {
-        TaskStore::task(app.deps.store.as_ref(), id)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|t| !t.status.is_live())
-    })
-    .await
-}
-
-pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-}
-
-pub(crate) fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
-    // A short base: run sockets live at <data>/runs/<uuid>/pty.sock (Unix path limit).
-    let dir = tempfile::Builder::new().prefix("yf").tempdir_in("/tmp")?;
-    let data = dir.path().canonicalize()?;
-    Ok((dir, data))
 }
 
 /// A goal task that got its goal (its launch prompt, SPEC-117), then moved by a person to
@@ -714,7 +424,7 @@ fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
             "{said:?}"
         );
         // A message from the project's Superagent is not typed either, and says why.
-        let caller = crate::task_message::superagent(&sandbox, &user, "admin");
+        let caller = crate::support::task_message::superagent(&sandbox, &user, "admin");
         let message = serde_json::json!({"task_id": id.as_str(), "text": "Go on"});
         let refused = app
             .tool_task_message(&caller, &message)
@@ -1835,14 +1545,14 @@ fn a_restored_prompt_goal_waits_at_stop_before_attach() -> TestResult {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pool_supervision::add_account(&app, "b-second").await?;
+        crate::support::live::pool::add_account(&app, "b-second").await?;
         app.send_input(&id, b"/goal keep the header blue\r").await?;
         eventually("the idle open goal", Duration::from_secs(30), || async {
             app.goal_is_open(&id) && activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
         assert!(
-            !crate::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
+            !crate::support::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
             "the prompt-mode task has an outstanding native goal"
         );
         host.arm();

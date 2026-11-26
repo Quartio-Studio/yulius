@@ -2,6 +2,9 @@
 //! task's session (real processes: supervisor → detached `yulius ptyhost` → fake agent), or adds
 //! it to the request of a task that has not started, and refuses what cannot take one.
 
+use crate::support::task_message::{
+    app, fake_agent, fixture_box_empty, full_screen, full_screen_terminal, superagent, terminal,
+};
 use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
@@ -25,30 +28,18 @@ use yulius_ptyhost::test_support::locate_fake_agent;
 
 use yulius_app::model::TaskMode;
 
-use crate::first_message::{
+use crate::support::agents::FakeAgentOptions;
+use crate::support::eventually;
+use crate::support::live::first_message::{
     ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
     start_on_listener, start_with, stop,
 };
-use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
-use crate::support::agents::FakeAgentOptions;
-use crate::support::eventually;
+use crate::support::live::pool::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support::{
     self, TestResult, add_sandbox, harness_configured, perms, seed_task, user_with_token,
 };
 
 type Error = Box<dyn std::error::Error>;
-
-/// The Superagent of `user` in `sandbox`, as `cockpit_caller` makes it.
-pub(crate) fn superagent(sandbox: &SandboxId, user: &UserId, login: &str) -> ProjectCaller {
-    ProjectCaller {
-        sandbox: sandbox.clone(),
-        user: user.clone(),
-        task: None,
-        channel: Channel::Superagent,
-        actor: format!("cockpit:{login}"),
-        detail: json!({"via": "cockpit", "shell": "sh-test"}),
-    }
-}
 
 /// The audit rows of messages to `id`, as (actor, detail).
 fn audited(data: &Path, id: &TaskId) -> Result<Vec<(String, String)>, Error> {
@@ -59,14 +50,6 @@ fn audited(data: &Path, id: &TaskId) -> Result<Vec<(String, String)>, Error> {
     )?;
     let rows = query.query_map([id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))?;
     Ok(rows.filter_map(Result::ok).collect())
-}
-
-/// A hooked app (its hook server up, so Claude Code's SessionStart reaches it) whose fake agent
-/// runs as `agent`.
-async fn app(data: &Path, agent: FakeAgentOptions) -> Result<Arc<App>, Error> {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let (app, _) = start(data, &fake, agent, 0, Arc::new(ScriptedUsage::default())).await?;
-    Ok(app)
 }
 
 /// A running task whose agent answered its first message.
@@ -85,13 +68,6 @@ async fn running(app: &Arc<App>, data: &Path) -> Result<(TaskId, ProjectCaller),
     })
     .await?;
     Ok((id, superagent(&sandbox, &user, "admin")))
-}
-
-fn fake_agent() -> FakeAgentOptions {
-    FakeAgentOptions {
-        answers_first_message: true,
-        ..hooked()
-    }
 }
 
 /// SPEC-483 slice 5 (review round 4, ADR-0317): a running task whose screen became unknown (a
@@ -681,25 +657,6 @@ async fn app_behind(data: &Path, behind_ms: i64) -> Result<(Arc<App>, Arc<Shifte
     Ok((app, clock))
 }
 
-/// A writer's terminal on `id` for the person `caller` acts for: what they type goes the way a
-/// viewer's keys go.
-pub(crate) async fn terminal(
-    app: &Arc<App>,
-    caller: &ProjectCaller,
-    id: &TaskId,
-) -> Result<(AuthContext, TerminalAttach), Error> {
-    let ctx = AuthContext {
-        user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
-        csrf_token: None,
-        session_hash: None,
-        token: None,
-    };
-    let attach = app
-        .terminal_open(&ctx, id.as_str(), Some((120, 40)))
-        .await?;
-    Ok((ctx, attach))
-}
-
 /// Whether the agent read `line` as a prompt of its own (the fake agent answers each prompt
 /// with `ECHO: <prompt>`).
 fn read_alone(app: &App, id: &TaskId, line: &str) -> bool {
@@ -1170,7 +1127,7 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
     rt.block_on(async {
         let (app, clock) = app_behind(&data, 13 * MINUTE).await?;
         let (id, caller) = running(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
@@ -1251,16 +1208,6 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
-}
-
-/// A fake agent that draws full screen as Claude Code does: its prompt box (a row `❯` between
-/// two rules) with the cursor in it. The PTY echoes what a person types into that row, so a
-/// draft shows in the box, and `Ctrl+U` erases it there.
-pub(super) fn full_screen() -> FakeAgentOptions {
-    FakeAgentOptions {
-        tui: true,
-        ..fake_agent()
-    }
 }
 
 /// [`app_behind`] with the full-screen agent, and a running task whose first turn ended: its
@@ -1401,25 +1348,6 @@ async fn draft_mark(app: &App, id: &TaskId) -> Result<std::path::PathBuf, Error>
     Ok(Path::new(&run_dir).join("person-typed"))
 }
 
-/// Read the fake agent's rendered input independently of the production screen recognizer.
-fn fixture_box_empty(app: &App, id: &TaskId) -> bool {
-    screen(app, id).lines().any(|row| row.trim_end() == "❯")
-}
-
-/// Wait for the fake agent's SIGWINCH redraw before sending PTY-echoed draft text.
-pub(super) async fn full_screen_terminal(
-    app: &Arc<App>,
-    caller: &ProjectCaller,
-    id: &TaskId,
-) -> Result<(AuthContext, TerminalAttach), Error> {
-    let terminal = terminal(app, caller, id).await?;
-    eventually("the resized box", Duration::from_secs(30), || async {
-        fixture_box_empty(app, id) && screen(app, id).contains("120×40")
-    })
-    .await?;
-    Ok(terminal)
-}
-
 /// A key that leaves nothing in the prompt box: Backspace in an empty one.
 const KEY_WITHOUT_TEXT: &[u8] = b"\x7f";
 
@@ -1483,7 +1411,7 @@ fn a_message_of_yulius_is_typed_into_a_box_a_key_left_empty() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
         let mut watch = app.runtime(&id).hub.watch();
         let bounds = WatchBounds {
@@ -1557,7 +1485,7 @@ fn draft_held_until_cleared(late: Late) -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
         let held = if late == Late::Nothing {
             None
@@ -1648,7 +1576,7 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
         })
         .await?;
         let (id, caller) = running(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         // Without a Stop hook the task never reads idle; the watch asks the transcript whether
         // a turn is open, so its passes are repeated until the first turn has closed.
         eventually("the empty prompt box", Duration::from_secs(30), || async {
@@ -1933,8 +1861,9 @@ async fn codex_with_pr_fixture(
     let accepting = tokio::net::TcpListener::from_std(listener.try_clone()?)?;
     let app = start_on_listener(data, &fake, options, accepting, probe, clock).await?;
     let (sandbox, user) = seed(&app, data, &[]).await?;
-    crate::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#).await?;
-    let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
+    crate::support::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#)
+        .await?;
+    let id = crate::support::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
     eventually(
         "first Codex turn ended",
         Duration::from_secs(30),
@@ -1947,7 +1876,8 @@ async fn codex_with_pr_fixture(
     let task = app.deps.store.task(&id).await?.ok_or("task")?;
     let head = open_pull_for_news(&app, data, &task).await?;
     assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
-    let (red, job) = crate::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
+    let (red, job) =
+        crate::support::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
     app.deps.store.insert_ci_run(&red, &[job]).await?;
     Ok((app, id, superagent(&sandbox, &user, "admin"), listener))
 }
@@ -2708,9 +2638,14 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
     rt.block_on(async {
         let (app, clock) = app_behind(&data, 13 * MINUTE).await?;
         let (sandbox, user) = seed(&app, &data, &[]).await?;
-        crate::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#)
-            .await?;
-        let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
+        crate::support::codex::add_codex_account(
+            &app,
+            "a-codex",
+            r#"{"OPENAI_API_KEY":"synthetic"}"#,
+        )
+        .await?;
+        let id =
+            crate::support::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
         let caller = superagent(&sandbox, &user, "admin");
         eventually("first Codex answer", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Codex PR news")
@@ -2728,7 +2663,8 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
             screen(&app, &id).contains("draft to erase")
         })
         .await?;
-        let (red, job) = crate::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
+        let (red, job) =
+            crate::support::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
         app.deps.store.insert_ci_run(&red, &[job]).await?;
         clock.shift(-2 * MINUTE);
         assert!(app.watch_prs(&bounds).await.is_empty());
@@ -2785,7 +2721,7 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
 /// used to stand, with the news untyped, until a prompt was sent.
 #[test]
 fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult {
-    use crate::pr_watch::run;
+    use crate::support::pr_watch::run;
     use yulius_app::pr_watch::WatchBounds;
     use yulius_domain::ci::RunState;
     let (_dir, data) = data_dir()?;
@@ -2882,7 +2818,7 @@ fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult
         let probe = Arc::new(ScriptedUsage::default());
         let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
         let (id, caller) = running(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
@@ -3276,7 +3212,7 @@ fn a_mark_ahead_of_the_clock_is_read_as_typed_now() -> TestResult {
         let probe = Arc::new(ScriptedUsage::default());
         let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
         let (id, caller) = running(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
@@ -3842,7 +3778,7 @@ async fn restored_draft(submit: &str, response: &str) -> TestResult {
     )
     .await?;
     let (id, caller) = running(&app, &data).await?;
-    crate::pr_watch::leave_verification_step(&app, &id).await?;
+    crate::support::pr_watch::leave_verification_step(&app, &id).await?;
     let (ctx, attach) = terminal(&app, &caller, &id).await?;
     app.terminal_input(&ctx, &attach, b"my draft\x13", false)
         .await?;
