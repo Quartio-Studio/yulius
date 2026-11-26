@@ -7,7 +7,7 @@ use yulius_contracts::api::auth::{
     DevicePoll, DeviceStart, DeviceStatus, InstanceInfo, Me, MeGuest, MeUser,
 };
 use yulius_domain::ids::UserId;
-use yulius_domain::permission::TokenScope;
+use yulius_domain::permission::{Action, TokenScope};
 use yulius_domain::time::Timestamp;
 
 use crate::context::App;
@@ -109,6 +109,13 @@ impl AuthContext {
     #[must_use]
     pub fn read_only(&self) -> bool {
         self.scope() == Some(TokenScope::Read)
+    }
+
+    /// Whether the caller's token, if any, allows `action`; a cookie session's always does. The
+    /// person's own access is checked apart.
+    #[must_use]
+    pub fn token_allows(&self, action: Action) -> bool {
+        self.scope().is_none_or(|scope| scope.allows(action))
     }
 
     /// The token's scope; `None` for a cookie session.
@@ -513,7 +520,7 @@ impl App {
                 display_name: user.display_name.clone(),
                 avatar_url: user.avatar_url.clone(),
                 is_superadmin: user.is_superadmin,
-                is_instance_admin: user.is_instance_admin || user.is_superadmin,
+                is_instance_admin: user.is_admin(),
                 github_linked: user.github_id.is_some(),
                 control_ask_first: self.deps.store.control_ask_first(&user.id).await?,
                 guest,
@@ -926,7 +933,7 @@ impl App {
     /// # Errors
     /// `Forbidden` otherwise.
     pub fn require_instance_admin(&self, ctx: &AuthContext) -> AppResult<()> {
-        if ctx.user.is_superadmin || ctx.user.is_instance_admin {
+        if ctx.user.is_admin() {
             Ok(())
         } else {
             Err(AppError::Forbidden("instance administrators only".into()))

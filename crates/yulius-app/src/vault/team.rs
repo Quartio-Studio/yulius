@@ -541,7 +541,7 @@ impl App {
         limit: u32,
     ) -> AppResult<Vec<VaultActivity>> {
         use std::collections::HashMap;
-        let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+        let admin = ctx.user.is_admin();
         let store = &self.deps.store;
         let secrets: HashMap<String, (Option<SandboxId>, Option<yulius_domain::ids::UserId>)> =
             store
