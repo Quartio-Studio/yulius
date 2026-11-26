@@ -41,7 +41,7 @@ PR 0.
 - [x] Spec discovery: failing test for >500 specs
 - [x] Spec discovery: sort before the cut, prefer the slug file
 - [x] Spec discovery: independent review answered
-- [ ] Split delivery.rs: verbatim move into 8 files
+- [x] Split delivery.rs: verbatim move into 8 files
 - [ ] Split delivery.rs: independent review answered
 - [ ] Queue: queue_readiness and armed_snapshot
 - [ ] Queue: bring_armed_up_to_date for both drivers
@@ -94,3 +94,15 @@ PR 0 (#1774), spec discovery (CLN-001):
   `scripts/dev quick` and `clippy -p yulius-app --all-targets -D warnings`: clean.
 - Independent review (Fable 5.2) approved `3b589768e`; its minors and nits are answered in the
   next commit (test order, `docs/api.md`, bound and wording, sort without clones, no audit label).
+
+PR 1, the split of `delivery.rs` (audit L2 F8, CLN-002):
+- Commit `5845fc850` moves eight regions verbatim into `delivery/{profile,text,view,open,parking,
+  merge,promote,environments}.rs`, each inside its own `impl App` block; `switch_tests` moves with
+  the profile code it tests. `delivery.rs` goes from 8,236 to 1,195 lines.
+- A line-multiset comparison of the old file against the parent and the eight files finds no line
+  lost; the only lines added are the module declarations, three glob re-exports, the file
+  headers, `use super::*;`, the `impl App {`/`}` wrappers and 26 `pub(super)` tokens on items
+  reached from another file (one of them the test-read field `FollowupDiscovery::open`).
+- `scripts/cargo nextest run -p yulius-app`: 740 passed; `-p yulius --test main`: 2829 passed;
+  `clippy --workspace --all-targets -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc -p
+  yulius-app` and `scripts/dev quick`: clean.
