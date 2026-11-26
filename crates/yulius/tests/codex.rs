@@ -20,8 +20,8 @@ use crate::support::live::supervision::{
 use crate::support::{TestResult, eventually};
 use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{AccountRecord, AccountStatus, LaunchKind, TaskMode, TaskOrigin};
-use yulius_domain::harness::{Harness, Provider};
+use yulius_app::model::{AccountStatus, LaunchKind, TaskMode, TaskOrigin};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;

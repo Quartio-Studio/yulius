@@ -1,12 +1,9 @@
 //! Shared fixtures moved from `cockpit`.
 
 use crate::support;
-use crate::support::{eventually, git};
-use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
-use std::future::ready;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,23 +12,17 @@ use std::time::Duration;
 use support::gated::GatedHost;
 use support::{
     Creds, Harness, HarnessOptions, TestResult, call, harness_with, perms, seed_github_user,
-    seed_sandbox, send, serve, ws_connect, ws_refusal_status,
+    seed_sandbox, ws_connect,
 };
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{AccountRecord, AccountStatus};
-use yulius_app::ports::harness::{
-    CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
-    WatchFrom,
-};
-use yulius_app::ports::session::{LaunchPlan, SessionHost};
+use yulius_app::ports::session::SessionHost;
 use yulius_app::ports::store::AccountStore;
-use yulius_app::shells::{MAX_SHELLS_PER_SANDBOX, SHELL_IDLE_MS};
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
 use yulius_domain::harness::Provider;
-use yulius_domain::ids::{AccountId, SandboxId};
+use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;

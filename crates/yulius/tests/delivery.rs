@@ -4766,8 +4766,6 @@ async fn answer_with_a_successor(f: &Fixture) -> BoxResult<(TaskId, TaskId)> {
     Ok((before, child))
 }
 
-use yulius_app::ports::browser::{BrowserFailure, BrowserPort, BrowserSession};
-
 #[tokio::test]
 async fn a_parked_detail_bounds_its_initial_browser_lookup_and_keeps_the_recorded_pr() -> TestResult
 {

@@ -15,12 +15,11 @@ use support::{
 };
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::ci::cd::CdRunRecord;
-use yulius_app::ports::store_ext::{AutomationStore as _, CdStore as _};
+use yulius_app::ports::store_ext::CdStore as _;
 use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
 use yulius_domain::cd::CdStage;
 use yulius_domain::ci::RunState;
 use yulius_domain::ids::SandboxId;
-use yulius_domain::time::Timestamp;
 
 pub(crate) type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 

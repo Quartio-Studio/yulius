@@ -1,33 +1,16 @@
 //! Shared fixtures moved from `usage_credits`.
 
-use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
+use crate::support::TestResult;
 use crate::support::eventually;
-use crate::support::live::pool::{
-    HOUR, ScriptedUsage, build_with, has_status, new_fable_task, reading, refresh, runtime, seed,
-    stop, temp, usage,
-};
-use crate::support::subscription_moves::{
-    fable_running_on_first, live_run, notices, ready, run_accounts,
-};
-use crate::support::{TestResult, hold_point, point_reached};
+use crate::support::live::pool::HOUR;
 use serde_json::{Value, json};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 use yulius_app::auth::{AuthContext, rfc3339};
 use yulius_app::context::App;
-use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{AccountStatus, PauseKind, TaskMode, TaskOrigin};
-use yulius_app::race::Point;
-use yulius_contracts::api::tasks::ContinueTask;
-use yulius_domain::harness::Harness;
-use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::ids::{AccountId, UserId};
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, ModelAnswer, UsageWindow};
-use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::crypto::MasterKeyCrypto;
 
 /// Opus 5.5 is used up on `accounts` too, for six more days: a task of a Fable model has no
 /// model to fall back to there (SPEC-482), so what SPEC-464 says about a model no subscription

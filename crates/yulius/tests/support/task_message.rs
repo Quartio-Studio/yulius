@@ -2,33 +2,17 @@
 
 use crate::support::agents::FakeAgentOptions;
 use crate::support::eventually;
-use crate::support::live::first_message::{
-    ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
-    start_on_listener, start_with, stop,
-};
-use crate::support::live::pool::{HOUR, ScriptedUsage, refresh, seed, usage};
-use crate::support::{
-    self, TestResult, add_sandbox, harness_configured, perms, seed_task, user_with_token,
-};
-use serde_json::{Value, json};
-use std::net::TcpListener;
+use crate::support::live::first_message::{hooked, screen, start};
+use crate::support::live::pool::ScriptedUsage;
+use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::{Duration, Instant};
-use yulius_app::auth::{AuthContext, TokenGrant};
+use std::time::Duration;
+use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::coordination::{Channel, ProjectCaller};
-use yulius_app::error::AppError;
-use yulius_app::model::TaskMode;
-use yulius_app::needs_you::NeedsYouRecord;
-use yulius_app::ports::store::TaskStore;
-use yulius_app::remote::RemoteCaller;
 use yulius_app::terminal::TerminalAttach;
-use yulius_contracts::mcp::RpcRequest;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
-use yulius_domain::permission::TokenScope;
-use yulius_domain::task::{Activity, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
 type Error = Box<dyn std::error::Error>;

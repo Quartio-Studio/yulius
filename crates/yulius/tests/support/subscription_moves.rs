@@ -1,23 +1,14 @@
 //! Shared fixtures moved from `subscription_moves`.
 
-use crate::support::agents::FakeAgentOptions;
-use crate::support::live::pool::{
-    HOUR, ScriptedUsage, add_account, build_with, has_status, new_task, refresh, runtime, screen,
-    seed, stop, temp, usage,
-};
+use crate::support::live::pool::{HOUR, ScriptedUsage, new_task, refresh, screen, seed, usage};
 use crate::support::{TestResult, eventually};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
-use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::hub::HubFrame;
-use yulius_app::model::AccountStatus;
-use yulius_contracts::api::admin::ReplaceAccountToken;
-use yulius_contracts::api::tasks::ContinueTask;
-use yulius_domain::ids::{AccountId, TaskId, UserId};
-use yulius_domain::task::{AttemptState, TaskStatus};
-use yulius_ptyhost::test_support::locate_fake_agent;
+use yulius_domain::ids::{TaskId, UserId};
+use yulius_domain::task::AttemptState;
 
 /// The subscription of every run of `id`, oldest first.
 pub(crate) async fn run_accounts(app: &App, id: &TaskId) -> Vec<Option<String>> {

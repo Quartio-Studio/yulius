@@ -1,22 +1,11 @@
 //! Shared fixtures moved from `staging`.
 
-use crate::support;
-use crate::support::cd::{BoxResult, Fixture, TestResult, fixture};
-use serde_json::{Value, json};
-use std::time::Duration;
+use crate::support::cd::{BoxResult, Fixture};
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
-use yulius_app::ports::store::{
-    AuditStore as _, SandboxStore as _, TaskStore as _, UserStore as _,
-};
-use yulius_app::ports::store_ext::{
-    CdStore as _, CiStore as _, DeliveryStore as _, StagingChange, StagingRequestRecord,
-    StagingStore as _,
-};
+use yulius_app::ports::store::SandboxStore as _;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
-use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::ids::SandboxId;
 use yulius_domain::resources::Need;
-use yulius_domain::staging::StagingState;
-use yulius_domain::task::TaskStatus;
 
 pub(crate) fn token(task: &str) -> String {
     format!("staging-task-token-{task}-0123456789abcdef")

@@ -1,18 +1,7 @@
 //! Shared fixtures moved from `secrets_env`.
 
-use crate::support;
-use crate::support::git;
-use axum::http::{Method, StatusCode};
-use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::sync::Arc;
-use support::{
-    Creds, TestResult, call, harness_with_git, perms, seed_github_user, seed_live_attempt,
-    seed_sandbox, seed_task,
-};
-use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
-use yulius_domain::task::TaskStatus;
 
 /// A synthetic key file: `-----BEGIN <label>-----`, `body`, `-----END <label>-----`, each on
 /// its own line, with a final line break (the armour is built at run time so no scanner takes

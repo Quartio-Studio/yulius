@@ -1,17 +1,9 @@
 //! Shared fixtures moved from `pr_watch`.
 
-use crate::support::live::pool::{build_tuned, new_task, runtime, screen, seed, stop, temp};
-use crate::support::{eventually, git};
-use std::path::Path;
-use std::time::Duration;
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
-use yulius_app::delivery::DeliveryRecord;
-use yulius_app::pr_watch::WatchBounds;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
-use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::resources::Need;
-use yulius_domain::task::Activity;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

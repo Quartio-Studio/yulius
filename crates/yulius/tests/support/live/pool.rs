@@ -2,11 +2,11 @@
 
 use crate::support;
 use crate::support::{eventually, git};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
+use support::agents::{FakeAgentHarness, FakeAgentOptions};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::session::PtySessionHost;
@@ -14,17 +14,14 @@ use yulius_app::auth::AuthContext;
 use yulius_app::context::{App, AppConfig, Deps};
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
-    AccountRecord, AccountStatus, LaunchKind, PauseKind, SandboxRecord, Secret, TaskOrigin,
-    TaskRecord, UserRecord,
+    AccountRecord, AccountStatus, SandboxRecord, Secret, TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::usage::{UsageFailure, UsageProbe};
-use yulius_contracts::api::mcp::McpServerInput;
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, ModelAnswer, UsageWindow};
-use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 

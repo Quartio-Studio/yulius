@@ -6,7 +6,6 @@ use crate::support::staging::{gate, recorded_gate_as, sandbox, token};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use yulius_app::ci::{CiJobRecord, CiRunRecord};
 use yulius_app::ports::store::{
     AuditStore as _, SandboxStore as _, TaskStore as _, UserStore as _,
 };
@@ -14,9 +13,8 @@ use yulius_app::ports::store_ext::{
     CdStore as _, CiStore as _, DeliveryStore as _, StagingChange, StagingRequestRecord,
     StagingStore as _,
 };
-use yulius_domain::ci::{CiRef, GateSource, RunState};
+use yulius_domain::ci::{CiRef, RunState};
 use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::resources::Need;
 use yulius_domain::staging::StagingState;
 use yulius_domain::task::TaskStatus;
 

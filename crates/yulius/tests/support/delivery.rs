@@ -1,39 +1,10 @@
 //! Shared fixtures moved from `delivery`.
 
-use crate::support;
-use crate::support::BareRemote;
-use crate::support::git;
 use async_trait::async_trait;
-use axum::extract::connect_info::MockConnectInfo;
-use axum::http::{Method, StatusCode};
-use serde_json::{Value, json};
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
-use support::{Creds, Resp, TestResult, call};
-use yulius_app::agent_wait::WaitState;
-use yulius_app::delivery::profile_to_contract;
-use yulius_app::error::{AppError, AppResult};
-use yulius_app::model::{
-    AttemptRecord, GitHubTokenRecord, LaunchKind, SandboxRecord, Sealed, Secret, StepRecord,
-    TaskOrigin, TaskRecord, UserRecord,
-};
 use yulius_app::ports::browser::{BrowserFailure, BrowserPort, BrowserSession};
-use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, MergeIntegration};
-use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState, GhPull};
-use yulius_app::ports::session::{Containment, SessionHost};
-use yulius_app::ports::store::{
-    AuditStore, CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
-};
-use yulius_app::ports::store_ext::DeliveryStore;
-use yulius_domain::delivery::{DeliveryProfile, DeliveryStage};
-use yulius_domain::harness::Harness;
-use yulius_domain::ids::{AttemptId, SandboxId, StepId, TaskId, UserId};
-use yulius_domain::permission::GitHubPermissions;
-use yulius_domain::task::{Activity, AttemptState, TaskStatus};
-use yulius_domain::time::Timestamp;
+use yulius_domain::ids::{SandboxId, TaskId};
 
 /// Chromium startup can hold the final lookup for outstanding browser decisions.
 #[derive(Default)]

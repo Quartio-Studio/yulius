@@ -1,12 +1,9 @@
 //! Shared fixtures moved from `parking`.
 
+use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
-use crate::support::live::first_message::{
-    data_dir, hooked, new_task, runtime, screen, start_hosted, start_with,
-};
-use crate::support::live::pool::{ScriptedUsage, seed};
-use crate::support::task_message::superagent;
-use crate::support::{TestResult, eventually};
+use crate::support::live::first_message::{hooked, screen};
+use crate::support::live::pool::ScriptedUsage;
 use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,12 +11,11 @@ use std::time::Duration;
 use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::coordination::ProjectCaller;
-use yulius_app::model::{LaunchKind, TaskMode};
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store::TaskStore;
 use yulius_app::race::Point;
 use yulius_domain::ids::TaskId;
-use yulius_domain::task::{Activity, StopReason, TaskStatus};
+use yulius_domain::task::{Activity, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
 type Error = Box<dyn std::error::Error>;

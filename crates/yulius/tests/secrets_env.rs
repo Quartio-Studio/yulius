@@ -7,7 +7,6 @@ use crate::support::git;
 use crate::support::secrets_env::{key_file, openssh_key, pem_key, sourced};
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};

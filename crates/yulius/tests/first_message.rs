@@ -15,33 +15,24 @@ use crate::support::live::first_message::{
 };
 use crate::support::live::pool::{HOUR, ScriptedUsage, refresh, seed, usage};
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use support::TestResult;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
+use support::agents::FakeAgentOptions;
 use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius::wiring::session::PtySessionHost;
 use yulius_app::auth::AuthContext;
-use yulius_app::context::{App, AppConfig, Deps};
-use yulius_app::hub::HubFrame;
-use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{LaunchKind, PauseKind, TaskMode, TaskOrigin};
+use yulius_app::context::App;
+use yulius_app::model::{LaunchKind, PauseKind, TaskMode};
 use yulius_app::ports::Clock as _;
-use yulius_app::ports::store::TaskStore;
 use yulius_app::updates::UpdateRunRecord;
 use yulius_contracts::api::tasks::ContinueTask;
-use yulius_domain::harness::Harness;
-use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
+use yulius_domain::ids::{AccountId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState};
 use yulius_domain::time::Timestamp;
 use yulius_domain::update::RunState;
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 type BoxError = Box<dyn std::error::Error>;
 

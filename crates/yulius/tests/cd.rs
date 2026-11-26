@@ -4,23 +4,18 @@
 //! promoting.
 
 use crate::support;
-use crate::support::BareRemote;
 use crate::support::cd::{
     DEPLOY, Holders, Recording, TOKEN, VALUE, WAIT, fixture, fixture_configured, fixture_with,
 };
 use crate::support::git;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::{
-    Creds, HarnessOptions, call, configure_github_app, harness_with, perms, seed_github_user,
-    seed_sandbox,
-};
+use support::{Creds, call};
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::ci::cd::CdRunRecord;
 use yulius_app::ports::store_ext::{AutomationStore as _, CdStore as _};

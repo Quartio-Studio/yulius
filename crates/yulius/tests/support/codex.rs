@@ -1,23 +1,13 @@
 //! Shared fixtures moved from `codex`.
 
-use crate::support;
-use crate::support::agents::FakeAgentOptions;
-use crate::support::live::supervision::{
-    build_full, runtime, screen_contains, seed_records, seed_repo, task,
-};
-use crate::support::{TestResult, eventually};
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
+use crate::support::TestResult;
 use std::sync::Arc;
-use std::time::Duration;
 use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{AccountRecord, AccountStatus, LaunchKind, TaskMode, TaskOrigin};
+use yulius_app::model::{AccountRecord, AccountStatus, TaskOrigin};
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
-use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
-use yulius_ptyhost::test_support::locate_fake_agent;
 
 /// A synthetic Codex `auth.json` refreshed at `last_refresh`.
 pub(crate) fn codex_auth(last_refresh: &str) -> String {

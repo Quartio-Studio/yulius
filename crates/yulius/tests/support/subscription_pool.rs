@@ -1,31 +1,17 @@
 //! Shared fixtures moved from `subscription_pool`.
 
 use crate::support;
-use async_trait::async_trait;
-use axum::extract::connect_info::MockConnectInfo;
 use axum::http::Method;
-use serde_json::json;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use support::{
-    Creds, Harness, HarnessOptions, TestResult, admit_and_sign_in, call, configure_github_app,
-    harness, harness_with, seed_sandbox, setup_superadmin_creds,
-};
-use yulius_app::context::App;
-use yulius_app::model::Secret;
+use std::sync::atomic::Ordering;
+use support::{Harness, TestResult, seed_sandbox};
 use yulius_app::model::{
-    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MessageRecord, MetricsRecord,
-    PauseKind, PauseRecord, TaskMode, TaskOrigin, TaskRecord, UsageSampleRecord,
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, TaskMode, TaskOrigin, TaskRecord,
 };
-use yulius_app::ports::store::{AccountStore, CoordinationStore, TaskStore, UserStore};
-use yulius_app::ports::store_ext::CapacityStore;
-use yulius_app::ports::usage::{UsageFailure, UsageProbe};
+use yulius_app::ports::store::{AccountStore, TaskStore, UserStore};
 use yulius_domain::harness::{Harness as Agent, Provider};
 use yulius_domain::ids::{AccountId, AttemptId, TaskId};
 use yulius_domain::task::{AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, UsageWindow};
 
 pub(crate) const TOKEN: &str = "pool-task-token-0123456789abcdef";
 

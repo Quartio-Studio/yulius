@@ -5,15 +5,14 @@
 
 use crate::support;
 use crate::support::cockpit::{
-    Fixture, ORIGIN, TOKEN, WAIT, answer_record, at, attach, cockpit_id, cockpit_tool,
-    conversation, fixture, fixture_ending, fixture_with, insert_account, limit_record,
-    limited_conversation, mcp, open_cockpit, predate_launch_digest, printed, project_of,
-    prompt_record, read_message, read_until, task_rests, transcript_record,
+    Fixture, ORIGIN, TOKEN, WAIT, answer_record, attach, cockpit_id, cockpit_tool, conversation,
+    fixture, fixture_ending, fixture_with, insert_account, limit_record, limited_conversation, mcp,
+    open_cockpit, predate_launch_digest, printed, project_of, prompt_record, read_message,
+    read_until, task_rests, transcript_record,
 };
 use crate::support::{eventually, git};
 use std::future::ready;
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -23,7 +22,6 @@ use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
-use support::gated::GatedHost;
 use support::{
     Creds, Harness, HarnessOptions, TestResult, call, harness_with, perms, seed_github_user,
     seed_sandbox, send, serve, ws_connect, ws_refusal_status,
@@ -37,7 +35,7 @@ use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
     WatchFrom,
 };
-use yulius_app::ports::session::{LaunchPlan, SessionHost};
+use yulius_app::ports::session::LaunchPlan;
 use yulius_app::ports::store::AccountStore;
 use yulius_app::shells::{MAX_SHELLS_PER_SANDBOX, SHELL_IDLE_MS};
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};

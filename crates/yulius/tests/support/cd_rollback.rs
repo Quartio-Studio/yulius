@@ -1,12 +1,7 @@
 //! Shared fixtures moved from `cd_rollback`.
 
-use crate::support;
-use crate::support::cd::{BoxResult, Fixture, TOKEN, TestResult, VALUE, fixture};
-use axum::http::{Method, StatusCode};
-use serde_json::{Value, json};
-use std::time::Duration;
-use support::{Creds, call};
-use yulius_app::ports::store_ext::AutomationStore as _;
+use crate::support::cd::BoxResult;
+use serde_json::json;
 
 /// Bob's (an administrator's) or alice's (a writer's) Superagent in `app`.
 pub(crate) fn superagent(

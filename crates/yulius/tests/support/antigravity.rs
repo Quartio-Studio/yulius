@@ -1,30 +1,11 @@
 //! Shared fixtures moved from `antigravity`.
 
-use crate::support;
-use crate::support::agents::FakeAgentOptions;
-use crate::support::live::supervision::{
-    build_full, runtime, screen_contains, seed_records, seed_repo, task,
-};
-use crate::support::{TestResult, eventually};
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius::wiring::session::PtySessionHost;
 use yulius_app::context::App;
-use yulius_app::context::{AppConfig, Deps};
-use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{AccountRecord, AccountStatus, LaunchKind, TaskMode, TaskOrigin};
-use yulius_domain::harness::{Harness, Provider};
-use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
-use yulius_domain::task::TaskStatus;
+use yulius_app::model::{AccountRecord, AccountStatus};
+use yulius_domain::harness::Provider;
+use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
-use yulius_harness::login::{antigravity_api_key_credential, antigravity_sign_in_credential};
-use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
+use yulius_harness::login::antigravity_api_key_credential;
 
 pub(crate) const API_KEY: &str = "SYNTHETIC-gemini-api-key-0123456789";
 

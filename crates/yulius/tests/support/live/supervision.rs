@@ -1,31 +1,20 @@
 //! Shared fixtures moved from `supervision`.
 
 use crate::support;
-use crate::support::{eventually, git};
+use crate::support::git;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
+use support::agents::{FakeAgentHarness, FakeAgentOptions};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius::wiring::session::PtySessionHost;
-use yulius_app::auth::AuthContext;
 use yulius_app::context::{App, AppConfig, Deps};
-use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{
-    AccountRecord, AccountStatus, LaunchKind, SandboxRecord, Secret, TaskOrigin, TaskRecord,
-    UserRecord,
-};
+use yulius_app::model::{AccountRecord, AccountStatus, SandboxRecord, TaskRecord, UserRecord};
 use yulius_app::ports::usage::UsageProbe;
-use yulius_app::supervisor::RunStart;
-use yulius_domain::harness::{Harness, Provider};
+use yulius_domain::harness::Provider;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
-use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, UsageWindow};
-use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
