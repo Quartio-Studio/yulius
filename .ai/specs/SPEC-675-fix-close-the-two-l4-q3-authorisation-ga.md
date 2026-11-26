@@ -119,6 +119,24 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
     (#650) passed in this run.
   - `cargo clippy -p yulius-app -p yulius --all-targets -- -D warnings`: clean.
   - `scripts/dev quick`: passed.
+- Review round 1 (Fable 5.2, head b703a94b8) requested changes. Answered in this order:
+  - Tests now cover every waiting status (queued, chained, prepared, parked, waiting for capacity),
+    the audit detail and the terminal notice, a stop that fails (a race hook moves the task in
+    each of the stop's 4 rounds), and the recovery: Bob takes control, and the run gets the token
+    again. Cutting `NOT_RESTING` down to `[Running]` fails
+    `disabling_stops_every_waiting_task_of_the_owner_and_says_why`
+    (`t-q was Queued, is Queued`).
+  - The stop loop now runs on its own task after the `user.updated` audit, waiting tasks first,
+    and re-reads each owner. It names the owner with `login_of`.
+  - The agent's terminal says once why it gets no GitHub credential (test red first: 0 notices).
+  - ADR-0481, `docs/api.md` and the disable dialog were corrected.
+  - The pre-existing automation gap was filed as #1824.
+- After round 1:
+  - `cargo test -p yulius --test main`: 2837 passed, 0 failed, 26 ignored.
+  - `cargo test -p yulius-app --lib`: 740 passed, 1 failed. The failure was
+    `sweep::tests::over_its_cap_a_build_directory_loses_its_least_recently_used_incremental_units`
+    (`busy: true`), which passed 3/3 alone. `sweep.rs` is untouched here; filed as #1826.
+  - Clippy with `-D warnings`: clean. `cargo doc -p yulius-app --no-deps`: no warnings.
 - Security scan: Vidoc is turned off for this project (`yulius security-scan` reports it as
   disabled). Not run, not passed.
 - Not tested: a real agent process being stopped on disable. The harness has no host to reap the
