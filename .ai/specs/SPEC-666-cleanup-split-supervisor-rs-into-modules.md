@@ -45,7 +45,8 @@ lives in files named by what they do. Behaviour unchanged.
 - [x] Start admission and queue drain moved into supervisor/start.rs
 - [x] Launch moved into supervisor/launch.rs
 - [x] Run-dir markers and opening/goal typing moved into supervisor/typing.rs
-- [ ] Independent review of PR (c) answered
+- [x] Independent review of PR (c) answered
+- [x] Integration gate repaired: parking::a_staging_outcome_reaches_its_task_once green on dev
 - [ ] Subscription switching moved into supervisor/switch.rs
 - [ ] Attach and watch loop moved into supervisor/watch.rs
 - [ ] Stop and close moved into supervisor/stop.rs
