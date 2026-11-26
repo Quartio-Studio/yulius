@@ -8,7 +8,8 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::task::TaskStatus;
 
-use super::{CONTINUE_TASK_PROMPT, RunStart, SESSION_WRITER_BUSY, TaskRuntime, write_private_file};
+use super::typing::write_private_file;
+use super::{CONTINUE_TASK_PROMPT, RunStart, SESSION_WRITER_BUSY, TaskRuntime};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{LaunchKind, Secret, TaskRecord};

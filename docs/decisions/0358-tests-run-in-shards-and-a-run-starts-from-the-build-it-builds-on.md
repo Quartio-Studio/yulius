@@ -3,7 +3,8 @@
 ## Status
 
 Accepted. Specified in [SPEC-497](../../.ai/specs/SPEC-497-an-armed-pull-request-merges-in-about-on.md)
-slice D (task #479), SHR-001 and SHR-002.
+slice D (task #479), SHR-001 and SHR-002. `matrix` shards and lane choice stand; this repository's
+own two test shards are superseded: Since 2026-11-26 (audit L3 F1) one `test` job with 42 CPUs runs this repository's whole suite and then the doctests: the archive handoff is gone. Unpacking the 2.3 GB archive in each shard filled a bounded temporary directory (ENOSPC on `main`), and the split shortened no run while `e2e` was the full suite's longest job.
 
 ## Context
 
