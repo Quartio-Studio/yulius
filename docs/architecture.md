@@ -3894,9 +3894,7 @@ production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::
 before it obtains secrets or promotes a revision. Rollback must be configured and the drill must
 have passed for the deployed tree. While another dev commit is drilling, the last completed drill
 can prove that tree. A refused production deploy says to get its commit deployed on the drill
-environment first; Yulius no longer does that for the person ([decision
-0282](decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md), superseded on
-2026-11-26). An environment whose table has no `deploy` and no `rollback` (empty, or a production that
+environment first. An environment whose table has no `deploy` and no `rollback` (empty, or a production that
 only promotes) needs no rollback: `mark_rollback_not_needed`
 (`crates/yulius-app/src/ci/rollback.rs`) sets its `not_needed` reason once per CD overview, which
 `cd_status` and the CD page show, unless a production-stage environment with a deploy command drills

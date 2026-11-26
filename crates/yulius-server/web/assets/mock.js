@@ -2551,12 +2551,10 @@ function cdDeployAction(env, sandbox, runs) {
   const word = env.name === 'prod' ? 'production' : env.name;
   const rank = RANK[sandbox.access] || 0;
   const running = runs.some((r) => r.environment === env.name && r.state === 'running');
-  const waiting = prod ? ((env.rollback || {}).waiting || null) : null;
   const [reason, why] = prod && rank < RANK.admin ? ['administrator', 'Only an administrator deploys production']
     : rank < RANK.write ? ['write', 'Requires write access']
       : env.state !== 'ready' ? ['nothing', 'Nothing to deploy yet']
-        : running && !env.staging ? ['running', 'A deploy is running']
-          : waiting ? ['waiting', waiting] : [null, null];
+        : running && !env.staging ? ['running', 'A deploy is running'] : [null, null];
   return { label: prod ? `Deploy ${word}…` : `Deploy ${word}`, enabled: !why, ...(why ? { why, reason } : {}) };
 }
 
