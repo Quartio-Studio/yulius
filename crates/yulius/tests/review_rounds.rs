@@ -301,7 +301,7 @@ async fn a_resumed_reviewer_and_other_subagents_change_no_round() -> TestResult 
 #[tokio::test]
 async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestResult {
     use crate::subscription_pool::hook_sent_at;
-    use crate::support::{confined_git, harness_with_git, repos::git};
+    use crate::support::{confined_git, git_stdout, harness_with_git};
     use std::sync::{Arc, atomic::Ordering};
     use yulius_app::ports::store::TaskFieldUpdate;
     let h = harness_with_git(Arc::new(confined_git()))?;
@@ -310,9 +310,9 @@ async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestR
     let task = running_task(&h, TaskMode::Prompt, &account).await?;
     let repo = h._dir.path().join("sandboxes/s1/worktrees/review");
     std::fs::create_dir_all(&repo)?;
-    git(&repo, &["init"])?;
-    git(&repo, &["commit", "--allow-empty", "-m", "first head"])?;
-    let first_head = git(&repo, &["rev-parse", "HEAD"])?;
+    git_stdout(&repo, &["init"])?;
+    git_stdout(&repo, &["commit", "--allow-empty", "-m", "first head"])?;
+    let first_head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
     let start_at = h.clock.0.load(Ordering::SeqCst);
     h.store
         .update_task(
@@ -351,8 +351,8 @@ async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestR
         std::slice::from_ref(&first)
     );
 
-    git(&repo, &["commit", "--allow-empty", "-m", "review fixes"])?;
-    let fixed_head = git(&repo, &["rev-parse", "HEAD"])?;
+    git_stdout(&repo, &["commit", "--allow-empty", "-m", "review fixes"])?;
+    let fixed_head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
     hook(&h.internal, "SubagentStart", start.clone()).await?;
     hook(&h.internal, "SubagentStart", start).await?;
     hook_sent_at(
@@ -653,7 +653,7 @@ async fn a_reviewer_resuming_during_the_limit_write_cancels_the_move() -> TestRe
 /// The detached start handler can still be reading Git when the reviewer reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult {
-    use crate::support::{confined_git, harness_with_git, repos::git};
+    use crate::support::{confined_git, git_stdout, harness_with_git};
     use std::sync::{Arc, atomic::Ordering, mpsc};
     use std::time::Duration;
     use yulius_app::ports::store::TaskFieldUpdate;
@@ -664,9 +664,9 @@ async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult 
     a_round(&h, "rev", Some("Verdict: request changes")).await?;
     let repo = h._dir.path().join("sandboxes/s1/worktrees/slow-review");
     std::fs::create_dir_all(&repo)?;
-    git(&repo, &["init"])?;
-    git(&repo, &["commit", "--allow-empty", "-m", "fixes"])?;
-    let head = git(&repo, &["rev-parse", "HEAD"])?;
+    git_stdout(&repo, &["init"])?;
+    git_stdout(&repo, &["commit", "--allow-empty", "-m", "fixes"])?;
+    let head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
     h.store
         .update_task(
             &task,
