@@ -715,13 +715,12 @@ impl App {
 
     /// Waits for `job`'s turn, slot and budget and moves it to Running: what it holds until its
     /// end, or `None` when it ended meanwhile.
-    #[allow(clippy::needless_borrow)] // Moved verbatim; the next commit drops the borrows.
     async fn ci_job_admit(
         self: &Arc<Self>,
         run: &CiRunRecord,
         job: &CiJobRecord,
         share: usize,
-        mut cancel: &mut watch::Receiver<Option<String>>,
+        cancel: &mut watch::Receiver<Option<String>>,
     ) -> Option<Admitted> {
         let store = &self.deps.store;
         let waiting = self.now();
@@ -801,7 +800,7 @@ impl App {
         };
         let permit = tokio::select! {
             permit = held => permit,
-            reason = wait_cancel(&mut cancel) => {
+            reason = wait_cancel(cancel) => {
                 let cancelled = self.now();
                 let _ = store
                     .transition_ci_job(
@@ -851,7 +850,6 @@ impl App {
 
     /// Runs the admitted `job`, once more after an infrastructure failure: its stages, output and
     /// how its runs ended.
-    #[allow(clippy::needless_borrow)] // Moved verbatim; the next commit drops the borrows.
     #[allow(clippy::too_many_arguments)] // One job's whole context.
     async fn ci_job_run(
         self: &Arc<Self>,
@@ -862,11 +860,11 @@ impl App {
         checkout: &str,
         permit: &Held,
         started_at: Timestamp,
-        mut cancel: &mut watch::Receiver<Option<String>>,
+        cancel: &mut watch::Receiver<Option<String>>,
     ) -> (OutputStages, OutputRing, Outcome) {
         let store = &self.deps.store;
         // It weighs on its sandbox until its process ended (SPEC-362 CSW-002).
-        let weight = super::JobWeight::new(Arc::clone(&self), &run.sandbox_id, permit.2.cpus());
+        let weight = super::JobWeight::new(Arc::clone(self), &run.sandbox_id, permit.2.cpus());
         // The first reading of its sandbox's use, so the next job's wait measures over the time
         // since it started (SPEC-497 HBA-002).
         let _ = self.ci_measured();
@@ -920,7 +918,7 @@ impl App {
                     budget,
                     checkout,
                     (&mut ring, &mut stages, &mut failures),
-                    &mut cancel,
+                    cancel,
                 )
                 .await
             {
@@ -964,7 +962,7 @@ impl App {
                         let _ = store.set_ci_job_output(&job.id, &ring.text()).await;
                         let room = tokio::select! {
                             () = self.ci_network_room(&run.sandbox_id, &job.id) => None,
-                            reason = wait_cancel(&mut cancel) => Some(Ok(reason)),
+                            reason = wait_cancel(cancel) => Some(Ok(reason)),
                             () = tokio::time::sleep(wait_limit) => Some(Err(())),
                         };
                         match room {
