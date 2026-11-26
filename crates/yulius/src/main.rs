@@ -638,7 +638,7 @@ fn main() -> ExitCode {
         } => yulius::instance::import::main(&options),
         Command::Instance {
             action: InstanceAction::Migrate(options),
-        } => yulius::instance::migrate::main(&options, options.action()),
+        } => yulius::instance::migrate::main(&options),
         Command::Instance {
             action: InstanceAction::MigrateTarget { receive },
         } => yulius::instance::migrate::target::main(receive),
@@ -694,6 +694,7 @@ where
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser as _};
+    use yulius::instance::migrate::Action;
     use yulius::migrate_helper::{MoveHelperArgs, command_args};
     use yulius_contracts::migrate::{MoveAction, MoveRequest};
 
@@ -749,6 +750,7 @@ mod tests {
             // And says which request it answers, for the checklist it writes.
             assert_eq!(options.request.as_deref(), Some("0123abcd-request"));
             assert!(!options.status && !options.abort);
+            assert_eq!(options.action(), Action::Run);
             assert_eq!(options.data_dir, std::path::Path::new("/srv/yulius"));
             assert_eq!(options.service, "yulius-b.service");
             assert_eq!(options.update_service, "yulius-b-update.service");
@@ -771,6 +773,7 @@ mod tests {
             return Err("not `instance migrate`".into());
         };
         assert!(options.abort && !options.yes && options.no_sign_in);
+        assert_eq!(options.action(), Action::Abort);
         assert_eq!(options.request.as_deref(), Some("0123abcd-request"));
         assert_eq!(options.target, None);
         assert_eq!(options.service, "yulius-b.service");

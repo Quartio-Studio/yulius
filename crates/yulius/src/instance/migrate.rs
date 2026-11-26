@@ -3152,7 +3152,8 @@ pub fn lock(dir: &Path) -> Result<std::fs::File, String> {
 
 /// `yulius instance migrate`.
 #[must_use]
-pub fn main(opts: &Options, action: Action) -> ExitCode {
+pub fn main(opts: &Options) -> ExitCode {
+    let action = opts.action();
     use std::os::unix::fs::PermissionsExt as _;
     let refused = |why: &str| {
         eprintln!("yulius instance migrate: {why}");
