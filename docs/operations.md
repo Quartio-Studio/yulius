@@ -849,7 +849,7 @@ other instead of overlapping.
 **Where things live.**
 - `<data>/system/base-<n>/`: the base (`current.json` names it). The server rebuilds it when the host's packages, `/usr/local` or `/opt` change; it waits until they have been unchanged for 10 minutes and checks every 30 minutes. A sandbox moves to the new base the next time its holder starts; the packages it installed stay.
 - `<data>/sysroots/<sandbox>/`: a sandbox's installed packages (the overlay's upper layer, `upper/`) and its Docker engine's images, containers and volumes (`docker/`).
-- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets, the sandbox's Docker directory (`docker/docker.sock`, served by its Docker front: `docker.json`, `docker-front.json`, `docker-front.log`), the engine's own socket (`engine/`), sysfs (`sys/`) and log (`engine.log`). A holder of SPEC-187 also serves `docker.sock` itself.
+- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets, the sandbox's Docker directory (`docker/docker.sock`, served by its Docker front: `docker.json`, `docker-front.json`, `docker-front.log`), the engine's own socket (`engine/`), sysfs (`sys/`) and log (`engine.log`).
 
 `yulius sandbox-base status` tells whether the base matches the host.
 
@@ -1214,7 +1214,7 @@ from a sandbox, and no daemon needs to run on the host.
     in the unit, including the `engine` leaf of a sandbox whose engine stopped as idle. Holders
     and fronts keep running (`KillMode=process`). Before each engine start, the front makes the
     leaf (and `inside` below it) again under the sandbox's group, and so does the server's
-    upkeep tick (30 s) for an engine or relay front it keeps (SPEC-201, #614). Before that fix,
+    upkeep tick (30 s) for an engine front it keeps (SPEC-201, #614). Before that fix,
     `docker` answered "cannot join …/sandboxes/<sandbox>/engine: No such file or directory"
     after every update, until a new run prepared the sandbox.
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth

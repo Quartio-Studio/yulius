@@ -37,34 +37,35 @@ RUST_TEST_THREADS = "{cpus}"
 # `scripts/dev ci` on a Mac before a release to link and test there. Each job without `cpus`
 # gets an equal share of CI's budget (ADR-0350); CI's measured use, not the shares, decides when
 # a job starts (ADR-0353).
-# Each quality pass has an independent checkout, CPU budget and verdict.
+# Each quality pass has an independent checkout, CPU budget and verdict. Under Yulius CI
+# scripts/dev bootstraps the toolchain first, and each gate names its stages.
+# `quality` compiles nothing: `lint` compiles every target.
 [[ci.jobs]]
 name = "quality"
-command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage doctor" && scripts/dev doctor && echo "::yulius-stage check" && scripts/dev check'
+command = "scripts/dev quality"
 
 [[ci.jobs]]
 name = "lint"
-command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage lint" && scripts/dev lint'
+command = "scripts/dev lint"
 
 [[ci.jobs]]
 name = "macos"
-command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage macos" && scripts/dev macos'
+command = "scripts/dev macos"
 
 [[ci.jobs]]
 name = "docs"
-command = "python3 scripts/bootstrap.py --install-rustup && echo '::yulius-stage docs' && if test -f scripts/ci_test_shard.py; then scripts/dev docs; elif scripts/dev help | grep -q '^  checks '; then scripts/dev checks; else scripts/dev ci; fi"
+command = "scripts/dev docs"
 
 [[ci.jobs]]
 name = "deps"
 cpus = 2
-command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage deps" && scripts/dev deps'
+command = "scripts/dev deps"
 
 # File-reading Rust contracts run on the head and the merge train (SPEC-610).
 [[ci.jobs]]
 name = "file-contracts"
 paths = ["crates/**", "tools/**", "catalog/**", "docs/**", ".apm/**", ".agents/skills/**", ".claude/skills/**", ".ai/**", ".config/**", "deploy/**", "scripts/**", "AGENTS.md", "README.md", "LICENSE", "yulius.toml"]
-# An older PR may predate this script. Use the protected copy to inspect that PR's checkout.
-command = """if test -f scripts/repository_tests.py; then python3 scripts/repository_tests.py; else python3 -c 'import subprocess; __file__ = "scripts/repository_tests.py"; exec(subprocess.check_output(["git", "show", "refs/remotes/origin/dev:" + __file__]))'; fi"""
+command = "python3 scripts/repository_tests.py"
 
 # The full suite (SPEC-591, ADR-0436): both test shards and e2e run on the merged revision, once,
 # not on pull requests; `[cd.dev]`, the merge-first staging target, changes only to a revision
@@ -77,7 +78,7 @@ name = "test"
 cpus = 21
 matrix = "1/2 2/2"
 after_merge = true
-command = "python3 scripts/bootstrap.py --install-rustup && if test -f scripts/ci_test_shard.py; then scripts/dev test-shard; else scripts/dev test; fi"
+command = "scripts/dev test-shard"
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and

@@ -9,7 +9,7 @@ use yulius_app::ports::variables::{
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{SqliteStore, bad_column};
 
 const COLS: &str =
     "sandbox_id, name, value, description, created_by, created_at, updated_by, updated_at";
@@ -36,13 +36,11 @@ impl ProjectVariableStore for SqliteStore {
     ) -> AppResult<Vec<ProjectVariableRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM project_variables WHERE sandbox_id = ?1 ORDER BY name"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM project_variables WHERE sandbox_id = ?1 ORDER BY name"
+            ))?;
+            let rows = stmt.query_map([sandbox], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -57,7 +55,7 @@ impl ProjectVariableStore for SqliteStore {
     ) -> AppResult<Option<Vec<(String, VariableOutcome)>>> {
         let (sandbox, by) = (sandbox.as_str().to_owned(), by.to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let mut outcomes = Vec::with_capacity(writes.len());
             for w in writes {
                 let before: Option<(String, String)> = tx
@@ -67,8 +65,7 @@ impl ProjectVariableStore for SqliteStore {
                         params![sandbox, w.name],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
-                    .optional()
-                    .map_err(db)?;
+                    .optional()?;
                 let outcome = match before {
                     None => {
                         tx.execute(
@@ -83,8 +80,7 @@ impl ProjectVariableStore for SqliteStore {
                                 by,
                                 at.0
                             ],
-                        )
-                        .map_err(db)?;
+                        )?;
                         VariableOutcome::Created
                     }
                     Some(_) if only_new => VariableOutcome::Existing,
@@ -105,26 +101,23 @@ impl ProjectVariableStore for SqliteStore {
                                  updated_by = ?5, updated_at = ?6 \
                                  WHERE sandbox_id = ?1 AND name = ?2",
                                 params![sandbox, w.name, w.value, next, by, at.0],
-                            )
-                            .map_err(db)?;
+                            )?;
                             VariableOutcome::Changed(fields)
                         }
                     }
                 };
                 outcomes.push((w.name, outcome));
             }
-            let held: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM project_variables WHERE sandbox_id = ?1",
-                    [&sandbox],
-                    |row| row.get(0),
-                )
-                .map_err(db)?;
+            let held: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM project_variables WHERE sandbox_id = ?1",
+                [&sandbox],
+                |row| row.get(0),
+            )?;
             if usize::try_from(held).unwrap_or(usize::MAX) > cap {
                 // Dropped without commit: rolled back.
                 return Ok(None);
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(Some(outcomes))
         })
         .await
@@ -133,12 +126,10 @@ impl ProjectVariableStore for SqliteStore {
     async fn project_variable_delete(&self, sandbox: &SandboxId, name: &str) -> AppResult<bool> {
         let (sandbox, name) = (sandbox.as_str().to_owned(), name.to_owned());
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "DELETE FROM project_variables WHERE sandbox_id = ?1 AND name = ?2",
-                    [sandbox, name],
-                )
-                .map_err(db)?;
+            let n = c.execute(
+                "DELETE FROM project_variables WHERE sandbox_id = ?1 AND name = ?2",
+                [sandbox, name],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -155,12 +146,11 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 1, 1, 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 'a', 'o', 'a', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s2', 'b', 'o', 'b', 'main', '{}', 20010, 10, 'u1', 'not_needed', 1);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         Ok(store)
@@ -278,10 +268,7 @@ mod tests {
         assert_eq!(store.project_variables(&s1).await?.len(), 2);
 
         store
-            .call(|c| {
-                c.execute("DELETE FROM sandboxes WHERE id = 's1'", [])
-                    .map_err(db)
-            })
+            .call(|c| Ok(c.execute("DELETE FROM sandboxes WHERE id = 's1'", [])?))
             .await?;
         assert!(store.project_variables(&s1).await?.is_empty());
         Ok(())

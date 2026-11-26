@@ -865,24 +865,15 @@ print('received '+input(), flush=True)
         import tomllib
         env = self.caller_fixture("print('cargo-session',os.getsid(0))")
         env.update(YULIUS_CI="1", YULIUS_CI_RUN="fixture-run")
-        tools = self.task / "fixture-bin"
-        tools.mkdir()
-        # Let the checked-in CI command skip its bootstrap in this synthetic checkout.
-        bootstrap = tools / "python3"
-        bootstrap.write_text(f'#!/bin/sh\n[ "$1" = scripts/bootstrap.py ] && exit 0\nexec "{sys.executable}" "$@"\n')
-        bootstrap.chmod(0o755)
-        env["PATH"] = str(tools) + os.pathsep + env["PATH"]
         dev = self.task / "scripts/dev"
-        dev.write_text(f"#!{sys.executable}\nimport os,sys\n"
-                       "if sys.argv[1]=='help': print('  checks ');sys.exit(0)\n"
-                       "os.execv('scripts/cargo',['scripts/cargo','check'])")
+        dev.write_text(f"#!{sys.executable}\nimport os\nos.execv('scripts/cargo',['scripts/cargo','check'])")
         dev.chmod(0o755)
         mbx = self.task / ".tools/bin/mbx"
         mbx.write_text(f"#!{sys.executable}\nimport os,sys\nprint('cache-session',os.getsid(0),flush=True)\n"
                        "os.execv(os.environ['CARGO'],[os.environ['CARGO'],*sys.argv[1:]])")
         jobs = tomllib.loads((SCRIPTS.parent / "yulius.toml").read_text())["ci"]["jobs"]
         for job in jobs:
-            if job["name"] in {"quality", "test"}:
+            if job["name"] in {"lint", "test"}:
                 script = "exec >ci.log 2>&1 </dev/null\n" + f"{sys.executable} -c 'import os;print(os.getsid(0))'\n" + job["command"]
                 result = subprocess.run(["script", "-qec", script, os.devnull], cwd=self.task, env=env,
                                         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
