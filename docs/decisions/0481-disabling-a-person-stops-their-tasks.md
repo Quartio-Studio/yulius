@@ -28,7 +28,8 @@ the one way left that acted on the disabled person's authority.
   covers an owner who only lost write access on GitHub, with no disable at all, and an owner whose
   access cannot be settled now (their GitHub sign-in can no longer be refreshed and the cached
   access is past its staleness bound): refusing is the safe side of an unknown. The task's
-  terminal says once why the agent's git fails, and again after a hand-over.
+  terminal says why the agent's git fails once per refusal episode, which a credential issued
+  again or a hand-over ends.
 - **Disabling a person stops every task they own that is not resting.** That covers live runs and
   tasks that would start by themselves: queued, chained, prepared, parked and waiting for capacity.
   It uses the ordinary stop path (`stop_task_now`), waiting tasks first, on a task of its own
