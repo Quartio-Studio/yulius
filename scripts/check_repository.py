@@ -2,6 +2,7 @@
 """Validate the repository's narrow, documented engineering contracts."""
 from collections import Counter
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -200,6 +201,51 @@ def decision_errors(directory):
         if (number, path.name) not in links:
             errors.append(f"{path}: list it in {directory.name}/README.md as \"- [{number}]({path.name}): <title>\"")
     return errors
+
+
+
+DECISIONS = "docs/decisions/"
+WEB_UI = "crates/yulius-server/web/"
+
+
+def new_decision_errors(added, changed):
+    """An ADR records a choice about how the system is built or run that someone may want to
+    reverse: it names at least two rejected alternatives, a branch adds at most one, and a web UI
+    change alone records none (its conventions live next to the UI). `added` maps each new record's
+    path to its text; `changed` lists every path the branch changed."""
+    errors = []
+    if len(added) > 1:
+        errors.append(f"{', '.join(sorted(added))}: a branch adds at most one decision record; "
+                      "put product behaviour in docs/product.md and refine an existing record in place")
+    for path, text in sorted(added.items()):
+        section = re.search(r"^## Alternatives[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+        items = re.findall(r"^(?:[-*]|\d+\.) \S", section[1] if section else "", re.M)
+        if len(items) < 2:
+            errors.append(f"{path}: name at least two rejected alternatives, one list item each, under ## Alternatives")
+    code = [p for p in changed if not p.startswith(DECISIONS) and not p.endswith(".md")]
+    if added and code and all(p.startswith(WEB_UI) for p in code):
+        errors.append(f"{', '.join(sorted(added))}: a web UI change records no ADR; "
+                      "keep the convention next to the UI")
+    return errors
+
+
+def branch_decision_changes(root, integration):
+    """The decision records the branch adds and every path it changes, committed or not, against
+    its merge base with `origin/<integration>`; None when that ref is not fetched."""
+    def git(*args):
+        result = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True)
+        return result.stdout if result.returncode == 0 else None
+    base = git("merge-base", "HEAD", f"refs/remotes/origin/{integration}")
+    if base is None:
+        return None
+    base = base.strip()
+    changed = set(filter(None, (git("diff", "--name-only", "-z", base) or "").split("\0")))
+    changed |= set(filter(None, (git("ls-files", "--others", "--exclude-standard", "-z") or "").split("\0")))
+    before = set(filter(None, (git("ls-tree", "--name-only", "-z", base, DECISIONS) or "").split("\0")))
+    added = {path: (Path(root) / path).read_text() for path in sorted(changed)
+             if re.fullmatch(r"docs/decisions/\d{4}-[^/]+\.md", path) and path not in before
+             and (Path(root) / path).is_file()}
+    return added, sorted(changed)
 
 
 CONFLICT_MARKER = re.compile(r"(?:<{7}|\|{7}|>{7})(?: .*)?|={7}")
@@ -793,6 +839,10 @@ def check():
         errors.extend(skill_errors(path))
     errors.extend(skill_deployment_errors(ROOT / ".apm/skills", [ROOT / ".agents/skills", ROOT / ".claude/skills"]))
     errors.extend(decision_errors(ROOT / "docs/decisions"))
+    integration = os.environ.get("YULIUS_INTEGRATION_BRANCH") or "dev"
+    branch = branch_decision_changes(ROOT, integration)
+    if branch is not None:
+        errors.extend(new_decision_errors(*branch))
     errors.extend(instruction_errors())
     errors.extend(ui_errors())
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
@@ -806,7 +856,8 @@ def check():
     errors.extend(integration_test_errors(packages))
     if errors:
         raise ValueError("\n".join(errors))
-    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, no conflict markers, unique decision numbers, delivery instructions, UI design tokens, one product test binary")
+    against = f"origin/{integration}" if branch is not None else f"nothing (origin/{integration} not fetched)"
+    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, no conflict markers, unique decision numbers, new ADRs against {against}, delivery instructions, UI design tokens, one product test binary")
 
 
 if __name__ == "__main__":
