@@ -812,9 +812,10 @@ impl App {
             None => None,
         };
         let blocked = match (stage, deploying) {
-            (CdStage::Prod, Some(sha)) => self
-                .cd_rollback_gate(sandbox, target, sha, &self.sandbox_repo(&sandbox.id))
-                .await?,
+            (CdStage::Prod, Some(sha)) => {
+                self.cd_rollback_gate(sandbox, target, sha, &self.sandbox_repo(&sandbox.id))
+                    .await?
+            }
             (CdStage::Prod, None) => production_gate(target, None),
             (CdStage::Dev, _) => None,
         };
