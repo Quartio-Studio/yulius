@@ -21,8 +21,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use sha2::{Digest, Sha512};
-use tokio::io::AsyncWriteExt as _;
 use yulius_app::ports::harness::ProvidedCli;
 use yulius_domain::agent_cli::REGISTRY_HOST;
 use yulius_domain::agent_cli::{antigravity, codex};
@@ -30,14 +28,13 @@ use yulius_domain::agent_cli::{antigravity, codex};
 use crate::wiring::claude_cli::{
     REGISTRY, UpdateError, running_executables, sha512_of, unique_suffix,
 };
+use crate::wiring::tarball::{self, DownloadError, set_mode};
 
 /// The largest tarball downloaded (Codex 0.169.0's linux-x64 package is 167 MB packed,
 /// Antigravity 1.5.10's 100 MB).
 pub const MAX_TARBALL: u64 = 512 * 1024 * 1024;
 /// The largest unpacked release (Codex 0.169.0's is 423 MB, Antigravity 1.5.10's 267 MB).
 pub const MAX_UNPACKED: u64 = 1536 * 1024 * 1024;
-/// Deadline of the download.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Deadline of connecting to the registry.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Prefix of temporary entries in the root, removed by the next install.
@@ -417,50 +414,22 @@ impl PinnedCli {
         url: &str,
         to: &Path,
     ) -> Result<Vec<u8>, UpdateError> {
-        let mut response = self
-            .http
-            .get(url)
-            .timeout(DOWNLOAD_TIMEOUT)
-            .send()
+        let label = release.label;
+        tarball::download(&self.http, url, self.max_tarball, to)
             .await
-            .map_err(|_| UpdateError::new(format!("{} is unreachable", release.host)))?;
-        if !response.status().is_success() {
-            return fail(format!(
-                "the {} download answered HTTP {}",
-                release.label,
-                response.status().as_u16()
-            ));
-        }
-        if response
-            .content_length()
-            .is_some_and(|n| n > self.max_tarball)
-        {
-            return fail(format!(
-                "the {} tarball is larger than allowed",
-                release.label
-            ));
-        }
-        let write = |e: std::io::Error| UpdateError::new(format!("cannot write the tarball: {e}"));
-        let mut file = tokio::fs::File::create(to).await.map_err(write)?;
-        let mut hasher = Sha512::new();
-        let mut size = 0u64;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| UpdateError::new(format!("the {} download stopped", release.label)))?
-        {
-            size += chunk.len() as u64;
-            if size > self.max_tarball {
-                return fail(format!(
-                    "the {} tarball is larger than allowed",
-                    release.label
-                ));
-            }
-            hasher.update(&chunk);
-            file.write_all(&chunk).await.map_err(write)?;
-        }
-        file.flush().await.map_err(write)?;
-        Ok(hasher.finalize().to_vec())
+            .map_err(|e| {
+                UpdateError::new(match e {
+                    DownloadError::Unreachable => format!("{} is unreachable", release.host),
+                    DownloadError::Status(code) => {
+                        format!("the {label} download answered HTTP {code}")
+                    }
+                    DownloadError::TooLarge => {
+                        format!("the {label} tarball is larger than allowed")
+                    }
+                    DownloadError::Stopped => format!("the {label} download stopped"),
+                    DownloadError::Write(e) => format!("cannot write the tarball: {e}"),
+                })
+            })
     }
 
     /// Removes releases other than `keep`'s that no process runs (an earlier pin).
@@ -518,14 +487,6 @@ fn unsupported(label: &str) -> UpdateError {
         std::env::consts::OS,
         std::env::consts::ARCH
     ))
-}
-
-/// Sets `path`'s permission bits.
-async fn set_mode(path: &Path, mode: u32) -> Result<(), UpdateError> {
-    use std::os::unix::fs::PermissionsExt as _;
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .await
-        .map_err(|e| UpdateError::new(format!("cannot set the mode of {}: {e}", path.display())))
 }
 
 /// Unpacks the tarball's release tree (its `archive_dir`) into `to`: regular files (0755 when
@@ -614,11 +575,7 @@ fn unpack(tarball: &Path, to: &Path, release: &Release, max: u64) -> Result<(), 
     if !read {
         return fail(format!("the {label} tarball holds no {}", release.binary));
     }
-    let elf = header[..4] == *b"\x7fELF"
-        && header[4] == 2
-        && header[5] == 1
-        && u16::from_le_bytes([header[18], header[19]]) == release.machine;
-    if !elf {
+    if !tarball::elf64_for(&header, release.machine) {
         return fail(format!(
             "the {label} is not a 64-bit ELF for machine {}",
             release.machine

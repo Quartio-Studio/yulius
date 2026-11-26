@@ -19,6 +19,7 @@ pub mod sandbox;
 pub mod session;
 pub mod split;
 pub mod system;
+pub(crate) mod tarball;
 pub mod telegram;
 #[cfg(target_os = "linux")]
 pub(crate) mod tunnel_handoff;

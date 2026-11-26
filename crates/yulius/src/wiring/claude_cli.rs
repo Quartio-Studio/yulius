@@ -29,8 +29,6 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::Value;
-use sha2::{Digest, Sha512};
-use tokio::io::AsyncWriteExt as _;
 use yulius_app::ports::session::Bind;
 use yulius_domain::agent_cli::{
     self as policy, Channel, PACKAGE, REGISTRY_HOST, Version, elf_machine, gap_text, lacks_default,
@@ -39,6 +37,7 @@ use yulius_domain::agent_cli::{
 
 use crate::wiring::claude_models::{BuildScan, Known};
 use crate::wiring::http::BodyError;
+use crate::wiring::tarball::{self, DownloadError, set_mode};
 
 /// npm's registry.
 pub const REGISTRY: &str = "https://registry.npmjs.org";
@@ -50,8 +49,6 @@ pub const MAX_BINARY: u64 = 1024 * 1024 * 1024;
 pub const BINARY: &str = "bin/claude.exe";
 /// Deadline of a registry document.
 const DOCUMENT_TIMEOUT: Duration = Duration::from_secs(15);
-/// Deadline of a tarball download.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Largest registry document read.
 const MAX_DOCUMENT: usize = 1024 * 1024;
 /// Names of temporary entries in the updater's directory, removed by the next check.
@@ -528,48 +525,19 @@ impl ClaudeUpdater {
 
     /// Streams the tarball to `to`, bounded; its sha512.
     async fn download(&self, url: &str, to: &Path) -> Result<Vec<u8>, UpdateError> {
-        let mut response = self
-            .http
-            .get(url)
-            .timeout(DOWNLOAD_TIMEOUT)
-            .send()
+        tarball::download(&self.http, url, self.max_tarball, to)
             .await
-            .map_err(|_| UpdateError::new("the tarball could not be downloaded"))?;
-        if !response.status().is_success() {
-            return fail(format!(
-                "the tarball's download answered HTTP {}",
-                response.status().as_u16()
-            ));
-        }
-        if response
-            .content_length()
-            .is_some_and(|n| n > self.max_tarball)
-        {
-            return fail("the tarball is larger than allowed");
-        }
-        let mut file = tokio::fs::File::create(to)
-            .await
-            .map_err(|e| UpdateError::new(format!("cannot write the tarball: {e}")))?;
-        let mut hasher = Sha512::new();
-        let mut size = 0u64;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| UpdateError::new("the tarball's download stopped"))?
-        {
-            size += chunk.len() as u64;
-            if size > self.max_tarball {
-                return fail("the tarball is larger than allowed");
-            }
-            hasher.update(&chunk);
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| UpdateError::new(format!("cannot write the tarball: {e}")))?;
-        }
-        file.flush()
-            .await
-            .map_err(|e| UpdateError::new(format!("cannot write the tarball: {e}")))?;
-        Ok(hasher.finalize().to_vec())
+            .map_err(|e| {
+                UpdateError::new(match e {
+                    DownloadError::Unreachable => "the tarball could not be downloaded".to_owned(),
+                    DownloadError::Status(code) => {
+                        format!("the tarball's download answered HTTP {code}")
+                    }
+                    DownloadError::TooLarge => "the tarball is larger than allowed".to_owned(),
+                    DownloadError::Stopped => "the tarball's download stopped".to_owned(),
+                    DownloadError::Write(e) => format!("cannot write the tarball: {e}"),
+                })
+            })
     }
 
     /// Moves the verified package to `versions/<v>` and points `current` at it atomically.
@@ -781,14 +749,6 @@ pub fn host_version(host_dir: &Path) -> Option<Version> {
     Version::parse(manifest.get("version")?.as_str()?)
 }
 
-/// Sets `path`'s permission bits.
-async fn set_mode(path: &Path, mode: u32) -> Result<(), UpdateError> {
-    use std::os::unix::fs::PermissionsExt as _;
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .await
-        .map_err(|e| UpdateError::new(format!("cannot set the mode of {}: {e}", path.display())))
-}
-
 /// Whether the host package's `claude` is `bin/claude.exe`, the file Yulius's copies hold: the
 /// sandbox's `claude` link points there, so a copy bound over another layout would leave it
 /// dangling (review finding 1).
@@ -941,12 +901,7 @@ fn extract_binary(
             scan.feed(chunk);
             out.write_all(chunk).map_err(write)?;
         }
-        let elf = header.len() == 20
-            && header[..4] == *b"\x7fELF"
-            && header[4] == 2
-            && header[5] == 1
-            && u16::from_le_bytes([header[18], header[19]]) == expect.machine;
-        if !elf {
+        if !tarball::elf64_for(&header, expect.machine) {
             return fail(format!(
                 "the binary is not a 64-bit ELF for machine {}",
                 expect.machine
