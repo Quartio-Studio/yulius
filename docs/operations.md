@@ -2,9 +2,10 @@
 
 Yulius is one Rust binary, `yulius`, that serves the web UI and API, supervises agent sessions and
 provides the CLI (`yulius onboard` alias `yulius import`, `yulius login`, `yulius secrets import`,
-and `yulius remote|project|task|ci` for a laptop's agent, [remote-control.md](remote-control.md)). This guide covers a single Linux VM with a TLS
-reverse proxy in front. It satisfies SPEC-001 AC-OPS-1 as documentation only: **a deployment has not
-been performed or verified** as part of the implementation work.
+and `yulius remote|project|task|ci` for a laptop's agent, [remote-control.md](remote-control.md)).
+This guide covers a single Linux VM with a TLS reverse proxy in front: install, configure, run,
+upgrade, back up and move a server. The guide as it stood until 2026-11-26, with history and notes
+for past upgrades, is in [archive/operations-until-2026-11-26.md](archive/operations-until-2026-11-26.md).
 
 ## 1. Prerequisites
 
@@ -12,37 +13,35 @@ been performed or verified** as part of the implementation work.
 | --- | --- | --- |
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service; `yulius host setup` installs it. |
-| Landlock in the kernel (Linux ≥ 5.13, `landlock` in `/sys/kernel/security/lsm`) | the server's own Git, which runs confined to Git's programs and its sandbox's folders (ADR-0322) | Ubuntu 22.04 and later and Debian 12 have it. Without it the server runs no Git (clones, worktrees, fetches and merges fail with that reason); `yulius doctor` checks it as "git confinement". |
-| Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses (see [Docker in sandboxes](#docker-in-sandboxes)). |
-| Codex CLI (`codex`; SPEC-503) | Codex tasks and Codex account sign-in | nothing to install: Yulius downloads the pinned release (0.170.0, its sha512 in the source) from `registry.npmjs.org` into `<data>/codex-cli/` on the first Codex use, or at start when Codex accounts exist (about 167 MB, 423 MB unpacked), and Codex runs start it by its path, binding its directory read-only into a contained run, and so do Codex sign-ins ([ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)). Without access to the registry it uses a host `codex` if there is one; otherwise a Codex start says why it could not install. A host move leaves `codex-cli/` behind: the new host installs its own. |
-| Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves, each checked for Yulius's default model first: see [Claude Code updates](#claude-code-updates). |
-| GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
-| Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). If the panel says a file dialog may still be open after the policy takes effect, choose **Restart browser** beside the message. This restarts just that sandbox’s Chrome, keeps its profile and reopens its web tabs. If Chrome reports too many tabs, close excess tabs and retry. The managed policy applies to every Chrome on the host: no file dialogs, downloads, printing or extension installs, and only web addresses (no `file:` or `chrome:` pages, no links to other programs). |
-| bubblewrap (`bwrap`) ≥ 0.10.0, or a distribution update with `--ro-bind-fd` | containment (`--contained`); every contained session binds its harness's memory through open descriptors ([ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. Ubuntu 24.04's `0.9.0-1ubuntu0.1` and Debian 12's `0.8.0-2+deb12u1` carry `--ro-bind-fd`; an older one fails every contained start, and `yulius doctor` fails its "bubblewrap" line. |
-| An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
-| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
+| Landlock in the kernel (Linux ≥ 5.13, `landlock` in `/sys/kernel/security/lsm`) | the server's own Git, confined to Git's programs and its sandbox's folders | Ubuntu 22.04+ and Debian 12 have it. Without it the server runs no Git (clones, worktrees, fetches and merges fail with that reason); `yulius doctor` checks it as "git confinement". |
+| Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses ([Docker in sandboxes](#docker-in-sandboxes)). |
+| Codex CLI (`codex`) | Codex tasks and Codex account sign-in | nothing to install: Yulius downloads the pinned release (0.170.0, sha512 in the source) from `registry.npmjs.org` into `<data>/codex-cli/` on the first Codex use, or at start when Codex accounts exist (about 167 MB, 423 MB unpacked). Without the registry it uses a host `codex` if there is one. A host move leaves `codex-cli/` behind: the new host installs its own. |
+| Claude Code (`claude`) | Claude tasks and Claude account login | install with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves: [Claude Code updates](#claude-code-updates). |
+| GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or with the App's restricted token (agents; [GitHub App permissions](#github-app-permissions)) | install from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's (Ubuntu 24.04 ships 2.45; `gh pr edit` and `gh issue view --comments` fail below 2.82.1). Rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
+| Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys. It applies to every Chrome on the host: no file dialogs, downloads, printing or extension installs, only web addresses. |
+| bubblewrap (`bwrap`) ≥ 0.10.0, or a distribution update with `--ro-bind-fd` | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. Ubuntu 24.04's `0.9.0-1ubuntu0.1` and Debian 12's `0.8.0-2+deb12u1` carry `--ro-bind-fd`; an older one fails every contained start, and `yulius doctor` fails its "bubblewrap" line. |
+| An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand ([Sandbox isolation](#sandbox-isolation)). Debian needs none. |
+| `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation: `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids; `yulius host setup` installs both. |
 | `slirp4netns` | sandbox egress (isolation) | `yulius host setup` installs it. |
-| Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium` (`YULIUS_CHROMIUM`). Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
-| `xvfb` | the sandbox browser's virtual display (SPEC-002 ADR-15) | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed (Yulius writes the cookie itself); `x11-utils` (`xdpyinfo`) only for diagnostics. |
+| Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium` (`YULIUS_CHROMIUM`). Google Chrome (`google-chrome`) is recommended: it plays H.264 pages and is what captchas expect. |
+| `xvfb` | the sandbox browser's virtual display | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed; `x11-utils` (`xdpyinfo`) only for diagnostics. |
 | `ffmpeg` with libx264 and x11grab | the browser video | `apt install ffmpeg` (Ubuntu's build has both; `yulius doctor` checks). |
 | Fonts | pages in the sandbox browser | at least `fonts-noto-core fonts-noto-color-emoji fonts-liberation` (Ubuntu 24.04 names); add `fonts-noto-cjk` for CJK pages. |
 
-Inside containment an agent sees only `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/opt`, its own
-sandbox directory and the `yulius` binary (with isolation, `/usr`, `/etc`, `/var` and `/opt` come
-from the sandbox's own system layer, a copy-on-write view of the host system). Install Claude Code system-wide under `/usr/local` or
-`/opt`; a per-user install such as Claude Code's
-default `~/.local/bin/claude` is invisible to contained runs unless its directories are added with
+Contained runs see only `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/opt` (with isolation, the
+sandbox's own system layer), their sandbox directory and the `yulius` binary. Install Claude Code
+system-wide under `/usr/local` or `/opt`; a per-user install (`~/.local/bin/claude`) needs
 `--contained-readonly <dir>[:<dir>…]` (`YULIUS_CONTAINED_READONLY`).
 
 `yulius host setup` (§2) installs and fixes what it can of these. Run `yulius doctor --data-dir
-/var/lib/yulius [--contained]` to check all of them, the data directory
-permissions and the session socket path budget (the data directory path must be short enough that
+/var/lib/yulius [--contained]` to check all of them, the data directory permissions and the session
+socket path budget (the data directory path must be short enough that
 `<data>/logins/<uuid>/pty.sock` fits the 103-byte Unix socket path limit).
 
 ## 2. Build and install
 
-Two commands on a fresh Ubuntu 24.04 or Ubuntu 26.04 (or Debian) host: install the binary, then
-run the host setup as root (SPEC-203, [ADR-0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
+Two commands on a fresh Ubuntu 24.04 or 26.04 (or Debian) host: install the binary, then run the
+host setup as root.
 
 ```sh
 cargo build --release -p yulius            # from a checkout; output: target/release/yulius
@@ -58,91 +57,60 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
    first outside an update pauses no task; a restart of the second ends every session.
 2. **host packages**: `git`, `uidmap`, `slirp4netns`, `bubblewrap`.
 3. **Docker Engine**: `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin` and
-   `docker-compose-plugin` from Docker's repository. The source goes to
-   `/etc/apt/sources.list.d/docker.sources` and the key to `/etc/apt/keyrings/docker.asc`, unless
-   a source already names `download.docker.com`. A host with Ubuntu's `docker.io` keeps it and
-   only gets `docker-buildx` and `docker-compose-v2`. A broken third-party apt source does not
-   stop the install.
-4. **host Docker units**: `docker.socket`, `docker.service` and `containerd.service` are
-   disabled and stopped; sandboxes run their own engines. A host Docker or containerd that runs
-   containers (`docker ps`, and `ctr` tasks outside Docker's namespace), or whose containers
-   cannot be counted, is left running, and the item says so (manual).
-5. **kernel modules**: `/etc/modules-load.d/yulius-docker.conf` lists the engine's modules for
-   every boot, and missing ones are loaded now.
-6. **service user**: the data directory's owner, else `--user` (default `yulius`), created as a
-   system user with the data directory (mode 0700) as its home.
+   `docker-compose-plugin` from Docker's repository (`/etc/apt/sources.list.d/docker.sources`, key
+   `/etc/apt/keyrings/docker.asc`). A host with Ubuntu's `docker.io` keeps it and only gets
+   `docker-buildx` and `docker-compose-v2`.
+4. **host Docker units**: `docker.socket`, `docker.service` and `containerd.service` are disabled
+   and stopped, unless they run containers (manual).
+5. **kernel modules**: `/etc/modules-load.d/yulius-docker.conf`, loaded now and at every boot.
+6. **service user**: the data directory's owner, else `--user` (default `yulius`), a system user
+   with the data directory (mode 0700) as its home.
 7. **subordinate ids**: a range of 65,536 ids after every range in use.
-8. **bwrap namespaces**: starts bwrap as the service user in a user namespace whose child mounts
-   a tmpfs, which is what a sandbox does first. When that works, nothing is written. When
-   AppArmor restricts user namespaces (Ubuntu 24.04 and later), it writes and loads
-   `/etc/apparmor.d/yulius-bwrap`; on Ubuntu 26.04 it first disables the package's
-   `bwrap-userns-restrict` with a link in `/etc/apparmor.d/disable/` (the file itself is never
-   edited). With its profile it loads the directory's other profiles as a boot does, and proves
-   then; where bwrap starts only without Yulius's profile, a person's profile lets it in: that
-   one is adopted and Yulius's removed. A step that fails is undone and the line says so. A
-   rule a person wrote for `/usr/bin/bwrap` is left as it is and named.
-   See [Sandbox isolation](#sandbox-isolation).
-9. **yulius.service**: written from §3 and enabled when missing (`--public-url` is needed then).
-   Otherwise, a drop-in `yulius.service.d/10-yulius-sandboxes.conf` adds `Delegate=yes`,
-   `DelegateSubgroup=server` and `KillMode=process` if they are missing. The restart that applies
-   it is manual: run it when it suits. A unit file systemd has not loaded is never overwritten.
-10. **yulius binary**: the running binary and the unit's, links resolved, are made root-owned,
-    writable by root alone. A binary in a directory the service user or others may write fails
-    instead: fixing the file would not stop it being replaced.
+8. **bwrap namespaces**: the AppArmor rule where needed ([Sandbox isolation](#sandbox-isolation)).
+9. **yulius.service**: written from §3 and enabled when missing (`--public-url` is needed then);
+   otherwise a drop-in `yulius.service.d/10-yulius-sandboxes.conf` adds `Delegate=yes`,
+   `DelegateSubgroup=server` and `KillMode=process` if missing (restart by hand when it suits).
+10. **yulius binary**: the running binary and the unit's are made root-owned, writable by root
+    alone; one in a directory the service user or others may write fails.
 11. **sessions unit**: `yulius-sandboxes.service`, `yulius-adopt.service` and the drop-in
-    `yulius.service.d/20-yulius-sessions.conf` ([Where sessions live](#where-sessions-live),
-    [ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)) are written when they differ,
-    and the sessions unit is started. A running server is not restarted: its next restart moves
-    its sessions there and keeps them. The adopt unit runs the server's binary as root, so the
-    item writes nothing and fails unless the path the server's unit names is a regular file
-    that only root may write, in directories that are root's and not writable by everyone or
-    by a group the service user is in. A path through a link is refused: name the file itself
-    in `ExecStart=`. Units that systemd has not loaded (files copied in without `systemctl
-    daemon-reload`) are loaded, and a sessions unit that does not run is started. `yulius host
-    check` only reports this item, in each of these cases.
-12. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
-    write `/etc/modules-load.d`, `/etc/needrestart/conf.d` and Chrome's managed policy
-    directories (§8). A unit or drop-in from before the browser policy lacks those
-    directories: the setup writes the drop-in anew.
-13. **sandbox base**: built now, as the service user, when there is none, when it lacks the
-    host's `dockerd`, or when it no longer matches the host. Live sandboxes' bases are kept
-    ([ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
-    safe while sandboxes run.
-14. A unit it wrote is started; then "sandbox Docker", the verdict `yulius doctor` gives; the
-    contained doctor as the service user; and the Docker smoke test (`--no-smoke` skips it; it
-    needs Docker Hub).
+    `yulius.service.d/20-yulius-sessions.conf` ([Where sessions live](#where-sessions-live)) are
+    written and the sessions unit started; the server's next restart moves its sessions there. It
+    fails unless the server's `ExecStart=` path is a regular file (not a link) only root may write,
+    in root's directories.
+12. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check write
+    `/etc/modules-load.d`, `/etc/needrestart/conf.d` and Chrome's managed policy directories (§8).
+13. **sandbox base**: built as the service user when missing, without the host's `dockerd`, or out of
+    date; live sandboxes' bases are kept, so it is safe while sandboxes run.
+14. Units it wrote are started; then "sandbox Docker" as `yulius doctor` judges it, the contained
+    doctor and the Docker smoke test (`--no-smoke` skips it; it needs Docker Hub).
 
 Running it again changes nothing ("nothing to change"); it is safe on a running instance.
-`--dry-run` prints what it would change and changes nothing. With a unit named other than
-`yulius.service`, pass `--service <name>` (the update helper passes its `YULIUS_UPDATE_SERVICE`).
-A setup or `yulius host check` run keeps its report in `/var/lib/yulius-update/host-check.json`
-when that directory exists, so Settings → Instance shows the latest root check. A helper with
-another `YULIUS_UPDATE_STATE` needs `--update-state <dir>`.
+`--dry-run` prints what it would change. With a unit named other than `yulius.service`, pass
+`--service <name>` (the update helper passes its `YULIUS_UPDATE_SERVICE`). A setup or `yulius host
+check` run keeps its report in `/var/lib/yulius-update/host-check.json` when that directory exists,
+so Settings → Instance shows the latest root check; a helper with another `YULIUS_UPDATE_STATE`
+needs `--update-state <dir>`.
 
-**Still manual**, and why:
+**Still manual**: the reverse proxy and TLS (§4); Claude Code, once, system-wide with npm (§1); the
+GitHub CLI from GitHub's repository (§1); the sandbox browser's packages (Chrome, `xvfb`, `ffmpeg`,
+fonts; optional); the update helper (§8), which needs root's Rust toolchain and this server's values.
 
-- the reverse proxy and TLS (§4): they depend on your domain;
-- Claude Code: install it once system-wide with npm (§1); Yulius keeps the version isolated
-  sandboxes run current by itself ([Claude Code updates](#claude-code-updates));
-- the GitHub CLI: it comes from GitHub's own repository (§1), and the doctor warns without it;
-- the sandbox browser's packages (Chrome, `xvfb`, `ffmpeg`, fonts): optional;
-- the update helper (§8): it needs root's Rust toolchain and this server's values.
+The agent CLIs must be installed for the `yulius` user, and logged-in state is never taken from it:
+Claude subscriptions are added inside Yulius (user menu → Administration → Subscriptions), not with
+the CLIs' own `login` on the VM.
 
-The agent CLIs must be installed for (and logged-in state is never taken from) the `yulius` user:
-Claude subscriptions are added inside Yulius (user menu → Administration → Subscriptions), not with the CLIs' own
-`login` on the VM.
+[details](archive/operations-until-2026-11-26.md#2-build-and-install)
 
 ## 3. systemd unit
 
 `yulius host setup` writes this unit when there is none (§2), and gives an existing one
 `Delegate=yes`, `DelegateSubgroup=server` and `KillMode=process` by a drop-in.
 
-`KillMode=process` is required: each agent session and each user terminal (sandbox shell) runs in
-its own detached `yulius ptyhost` process so that they survive a restart or upgrade of the server
-(NFR-001, UI-016; the next start adopts the terminals from `shells/<id>/shell.json`). With the
-default `KillMode=control-group`, stopping the service would kill what the server itself started
-and still holds in its unit. The sessions themselves live in a unit of their own, which a restart
-of the server never touches: see [Where sessions live](#where-sessions-live).
+`KillMode=process` is required: each agent session and each user terminal runs in its own detached
+`yulius ptyhost` process so that it survives a restart or upgrade of the server (the next start
+adopts the terminals from `shells/<id>/shell.json`). With the default `KillMode=control-group`,
+stopping the service would kill what the server itself started and still holds in its unit. The
+sessions themselves live in a unit of their own: see [Where sessions live](#where-sessions-live).
 
 ```ini
 # /etc/systemd/system/yulius.service
@@ -163,101 +131,16 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # Settings → Instance, which wins over this file.
 #Environment=YULIUS_MAX_SESSIONS=8
 # Minutes a finished task (its turn ended, it waits for a person) keeps its idle session before it
-# is parked: the process ends, the task resumes in the same session when someone writes to it
-# (default 30; 0 never; SPEC-512).
-# The terminal and task_screen retain the last screen plus the time idle after the turn.
-# Send the task a message or choose Resume on its page to reopen the recorded provider session.
-# A message to a parked Codex task resumes its recorded rollout with the message as its next prompt.
-# While it waits for a subscription the message is retained and its last parked screen stays visible.
-# An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
-# A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
-# A failed integration candidate keeps the author live while its PR head and tested base match.
-# A live author with a completed goal still uses a session slot while its recorded
-# integration failure applies or the open delivery cannot be verified.
-# After parking, the delivery shows the verdict. A person can message or resume the task.
-# A change to the saved merge decision during verification also keeps the session live.
-# A failed single-PR merge candidate names its source run, failing job and a redacted
-# excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
-# If it cannot verify them, read ordinary CI at that head or safely read the failing job,
-# the queue keeps the candidate for up to 15 minutes.
-# After a continuous outage, its arm can proceed one by one.
-# Restart reconciles a failed single-PR candidate with its saved merge request. An interrupted
-# receipt write keeps the original request recoverable. A later request keeps its queue position
-# while its earlier receipt is retired, including when a retry finds the PR already merged.
-# When a person merges the armed head from the task page, yulius wait reports the accepted merge.
-# The first PR watch can occur while the queue decides its arm. Advice waits for the decision.
-# The owner still hears the merge once if a new arm finishes between watch observations.
-# While a saved merge request is being restored, the owner’s PR check-in waits.
-# When a passed train updates a member’s head, yulius wait keeps its position while GitHub catches up.
-# If a saved arm is ahead of the train checkpoint, yulius wait reports that the queue is verifying the head.
-# An excluded PR’s conflict files belong to the request and head that were tested.
-# A legacy exclusion or later request reports that the PR waits behind the train.
-# Hourly history cleanup retains the latest merge wait of each existing task, even when
-# its activation began more than 180 days ago. Removing the task releases this history.
-# The PR watcher delivers actionable failures once and waits for a pending human decision.
-# The armed owner hears an ordinary CI failure once, even while its train runs or the train
-# registry cannot be read. A train failure names the PRs currently held by its run.
-# An armed notice checks the hosted PR head even if another clone published the repair.
-# A pending scope decision holds the notice until the person resolves it. Once a train failure
-# has been reported, further check-ins wait for the queue to act on it.
-
-# When a failed train has one PR left, its owner gets the run ID while Yulius verifies the head
-# and checks. The accepted decision provides the bounded, redacted job diagnostic.
-# If the server restarts after the queue drops the arm, the owner hears the recorded job failure
-# once. A newer ordinary run gets 15 minutes from the watcher’s first observation, including across restart.
-# A replacement head gets its current CI or conflict.
-# A busy terminal writer defers the notice. On its next pass the watcher checks the owner again.
-# When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
-# rerun for the owner takes precedence in yulius wait and in its merge queue decision.
-# If a later run finds the integration CI configuration invalid, earlier completed runs
-# at that head become obsolete. After repair, even an owner that passed can show queued.
-# If a parked task resumes and parks again while your message is being prepared,
-# read the current screen and send the message again. Its current decision stays open.
-# If Yulius says the parked screen is still being saved, send the message again after
-# parking finishes. The task keeps its question open and the timed-out message starts no turn.
-# A merge request being armed keeps the session live. If Yulius says the session
-# is parking, resume it before requesting the merge again.
-# If you stopped the task during parking and Continue says the previous session is still
-# settling, retry after terminal exit. The settlement timeout preserves the archive and question.
-# If Continue on a named subscription reports that it needs a new sign-in or has no room
-# for the model, the task keeps its archive and question. You can choose another subscription.
-# A bulk message lists the changed task under refused. A Telegram reply or remote restart
-# also reports the change so you can check the latest turn.
-# A partial Git overview keeps a known failing PR under Needs you. A complete lookup
-# can clear it. Refreshing this display sends no message to the parked task.
-# A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor
-# has unfinished work, an owner decision or failing or unreadable checks on a recorded or replacement PR.
-# An explicit #N merged rule follows the recorded merge.
-# The HTTP task detail names the ordinary PR blocking Done. Unreadable checks keep
-# the parked task under Needs you until a later read verifies its state.
-# Task lists and Home share the 750 ms PR lookup budget across their parked rows.
-# An unreadable PR counts toward Needs you while later healthy PRs can show Done.
-# If two task list requests overlap, the sidebar keeps the newest successful snapshot.
-# A task page that initially showed a list error opens when the other request succeeds.
-# A parked task with unfinished work in its summary stays under Needs you even if its Git chip is green.
-# A CI rerun refreshes the open sidebar while its Git overview is loading. If the task list
-# cannot verify a known open PR, the row stays under Needs you until verification succeeds.
-# The parked terminal updates its step count and clears resolved owner notices when the list refreshes.
-# A terminal that discovers a missed park updates the active task list with the verified work.
-# Opening a parked terminal also corrects a missed resume in the sidebar.
-# Undo restores a resting task to Tasks. An open terminal can discover the restoration through
-# task detail or a refreshed list. A newer removal takes precedence. When the terminal receives
-# Closed and then discovers the archive in detail, it removes the task from the active task list.
-# Opening the terminal or Task Info refreshes the parked sidebar row. Task Info uses the same
-# verified status in its header and Now tile. An unavailable refresh keeps a known
-# open PR under Needs you until verification succeeds. The Git chip shows the last overview.
-# Use task_get for the current parked wait reason or tasks_list with scope needs_you
-# for the ordered page of tasks that currently need attention.
+# is parked: the process ends, and the task resumes in the same session when someone writes to it
+# (default 30; 0 never). Before rolling back to a server older than parking, set 0 and resume or
+# archive the tasks marked "parked". What parking does: docs/product.md, "Waiting and parking".
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # Percent of a window binding a task's model past which a subscription of that harness gets no
 # new task while another has room, and its idle tasks move to the one with the most room every 2
-# minutes (SPEC-629): 50 to 98, default 95; 98 turns it off (the pool's own pause threshold).
+# minutes: 50 to 98, default 95; 98 turns it off.
 #Environment=YULIUS_REBALANCE_PERCENT_CLAUDE_CODE=95
 #Environment=YULIUS_REBALANCE_PERCENT_CODEX=95
 #Environment=YULIUS_REBALANCE_PERCENT_ANTIGRAVITY=95
-# A server older than parking cannot read the status `parked`: before rolling back past it,
-# resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task
-# parks meanwhile.
 Environment=YULIUS_CONTAINED=true
 # Largest file dropped onto the editor or a terminal, in MiB (default 1024; keep the proxy's body
 # limit above it).
@@ -283,15 +166,13 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 #Environment=YULIUS_CI_MAX_JOBS=4
 #Environment=YULIUS_CI_LANES=2
 # CPUs an agent session, terminal or Cockpit plans for (YULIUS_CPUS; default a third of a
-# sandbox's, at least 2). CI jobs get what they declare in yulius.toml (SPEC-082).
+# sandbox's, at least 2). CI jobs get what they declare in yulius.toml.
 #Environment=YULIUS_AGENT_CPUS=4
 Environment=YULIUS_CI_JOB_TIMEOUT_MIN=30
 Environment=YULIUS_CI_POLL_SECS=60
-# GB a CD or delivery environment run's files and cache may use (ADR-0216; a resource limit,
-# host-sized).
+# GB a CD or delivery environment run's files and cache may use (a resource limit, host-sized).
 #Environment=YULIUS_CD_RUN_DISK_GB=20
-# Sandbox isolation (SPEC-002 ADR-22): auto (default), namespaces or legacy; see "Sandbox
-# isolation" below for limits and egress.
+# Sandbox isolation: auto (default), namespaces or legacy; see "Sandbox isolation" below.
 #Environment=YULIUS_ISOLATION=auto
 ExecStart=/usr/local/bin/yulius serve
 KillMode=process
@@ -315,11 +196,11 @@ journalctl -u yulius -f
 
 ### Where sessions live
 
-Sessions and sandboxes do not live in `yulius.service`'s own cgroup. systemd 258 and later
-(Ubuntu 26.04 has 259) start a unit inside the unit's own group, and the kernel refuses that
-while a sandbox there holds a process: a server whose sessions lived in its unit could be stopped
-and never started again while one session ran (the outage of 2026-11-11,
-[ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)). `yulius host setup` therefore
+Sessions and sandboxes do not live in `yulius.service`'s own cgroup. systemd 258 and later (Ubuntu
+26.04 has 259) start a unit inside the unit's own group, and the kernel refuses that while a
+sandbox there holds a process: a server whose sessions lived in its unit could be stopped and never
+started again while one session ran
+([ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)). `yulius host setup` therefore
 writes three more files and starts the first unit; `deploy/systemd/` holds the same files for
 `yulius.service`, the user `yulius` and `/usr/local/bin/yulius`.
 
@@ -372,51 +253,38 @@ Slice=yulius.slice
 ```
 
 - **`yulius-sandboxes.service`** holds every sandbox's groups, under
-  `/sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/`. Its one process is
-  a `sleep` that belongs to root, so no signal of the service user reaches it (a stray `pkill`
-  cannot end it). **Stopping or restarting this unit ends every agent session, terminal and
-  sandbox engine.** Nothing does so by itself: the needrestart rule of §2 names it. If it was
-  stopped or restarted all the same, restart `yulius.service` afterwards: the server prepares
-  the unit's groups only when it starts, and sandboxes started before that restart run without
-  their limits ("cannot apply the sandbox's limits" in the log).
-- **`yulius-adopt.service`** runs before every start of `yulius.service` (`yulius host
-  adopt-sessions`, as root, at most 2 minutes). Sessions that an earlier layout left in
-  `yulius.service`'s own group move to the sessions unit with their limits; a sandbox's Docker
-  engine found there is killed with its containers (no shutdown: what a container had not
-  written is lost) and starts again on demand. Nothing to move is the normal case, and while the
-  server runs the step moves nothing (`systemctl start` on a running unit starts it again). Its
-  output is in `journalctl -u yulius-adopt`. Because it runs the server's binary as root, that
-  binary must be a regular file only root may write, reached through directories that are
-  root's (§2, item 11), and not through a link; `yulius host setup` refuses to write the unit
-  otherwise.
-- `systemctl restart yulius`, a crash (`Restart=on-failure`), Restart… and an update then keep
-  every session, on systemd 255 and on 259.
-- `yulius doctor` says which holds in its line "restart with sessions", and `yulius host check`
-  (after every update, shown on the Sandbox Docker card) reports "sessions unit" when a file is
-  missing or differs.
-- A host without the files keeps sessions in `yulius.service`'s own group
-  (`/sys/fs/cgroup/system.slice/yulius.service/sandboxes/…`). That still restarts on systemd 257
-  and earlier. On 258 and later, Restart… and Update now are refused while a session runs
-  ("yulius.service would not start again: … nothing was stopped"), by the server and again by
-  the update helper before it stops anything; they are refused the same way where the files are
-  there but `yulius-sandboxes.service` does not run (the adopt step needs it). `sudo yulius host setup` writes the files and
-  restarts nothing; the next restart then moves the sessions and keeps them. A plain `systemctl
-  restart yulius` is not guarded: on such a host it leaves the server down until the steps under
-  "the way back" in §8 are done.
-- With another unit name (`--service yulius-dev.service`) the files are
-  `yulius-dev-sandboxes.service`, `yulius-dev-adopt.service` and
-  `yulius-dev.service.d/20-yulius-sessions.conf`, and the slice is `yulius_dev.slice`.
+  `/sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/`. **Stopping or
+  restarting it ends every agent session, terminal and sandbox engine**; nothing does so by itself.
+  If it happened anyway, restart `yulius.service` afterwards, or sandboxes run without their limits
+  ("cannot apply the sandbox's limits" in the log).
+- **`yulius-adopt.service`** runs `yulius host adopt-sessions` as root before every start of
+  `yulius.service` (at most 2 minutes): sessions an earlier layout left in `yulius.service`'s group
+  move to the sessions unit; a sandbox Docker engine found there is killed with its containers and
+  starts again on demand. Output: `journalctl -u yulius-adopt`.
+- `systemctl restart yulius`, a crash, Restart… and an update then keep every session.
+  `yulius doctor` ("restart with sessions") and `yulius host check` ("sessions unit") report it.
+- Without the files, sessions stay in `/sys/fs/cgroup/system.slice/yulius.service/sandboxes/…`; on
+  systemd 258 and later Restart… and Update now are then refused while a session runs
+  ("yulius.service would not start again: … nothing was stopped"), as where `yulius-sandboxes.service`
+  does not run. `sudo yulius host setup` writes the files without restarting. A plain `systemctl
+  restart yulius` there leaves the server down until "The way back" in the
+  [archived upgrade notes](archive/operations-until-2026-11-26.md#notes-for-specific-upgrades).
+- With `--service yulius-dev.service` the files are `yulius-dev-sandboxes.service`,
+  `yulius-dev-adopt.service`, `yulius-dev.service.d/20-yulius-sessions.conf`; slice `yulius_dev.slice`.
+
+Limits that bound all sandboxes together (`TasksMax=`, `MemoryMax=`, `CPUQuota=`) belong on
+`yulius-sandboxes.service`, not `yulius.service`: `sudo systemctl set-property
+yulius-sandboxes.service TasksMax=…` applies at once (never restart that unit for it), and the
+server reads the task limit at its next start. A move (`yulius instance migrate`) carries drop-ins
+under `/etc/systemd/system/yulius-sandboxes.service.d/`, not what `set-property` wrote.
 
 ## 4. Reverse proxy (TLS, WebSockets)
 
 Only the public listener (`YULIUS_BIND`) is proxied. The internal listener (`YULIUS_INTERNAL_BIND`)
 serves agents' MCP, hooks and Git credentials; it must stay on loopback and is never proxied.
-WebSockets are used for terminals, the event stream and the browser panel; import
-chunks are up to 8 MiB and a dropped file up to the upload limit (`YULIUS_UPLOAD_MAX_MB`, 1 GiB
-by default, for screen recordings: ADR-0219), so the proxy's body limit must be above it (1100 MB
-below; change both together). Let the proxy compress responses: Yulius serves its web UI uncompressed,
-and compression cuts the first load from about 1 MB to about 300 KB (the editor's first open from
-4.6 MB to about 1.2 MB), which matters most on phones.
+WebSockets are used for terminals, the event stream and the browser panel. The proxy's body limit
+must be above the upload limit (`YULIUS_UPLOAD_MAX_MB`, 1 GiB by default; 1100 MB below; change
+both together). Let the proxy compress responses: Yulius serves its web UI uncompressed.
 
 Caddy:
 
@@ -456,30 +324,23 @@ server {
 }
 ```
 
-`YULIUS_PUBLIC_URL` must be the exact external origin: cookies are `Secure` (and the session
-cookie `__Host-` prefixed) for `https` URLs, and the `Origin` of WebSockets and of every
-cookie-authenticated API request is checked against it.
+`YULIUS_PUBLIC_URL` must be the exact external origin: cookies are `Secure` (the session cookie
+`__Host-` prefixed) for `https` URLs, and the `Origin` of WebSockets and cookie-authenticated API
+requests is checked against it. Yulius sends `X-Frame-Options: DENY`, a strict
+`Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin` and
+`X-Yulius: <process tag>`; the proxy must pass these on, not replace them. HSTS is the TLS proxy's
+job, as above; add it once the domain is meant to stay on HTTPS.
 
-Yulius itself sends `X-Frame-Options: DENY`, a strict `Content-Security-Policy` (scripts and
-connections from Yulius itself only, no `eval`; styles, fonts, images and media also inline or
-as `data:`/`blob:`; and `frame-ancestors 'none'`:
-nothing may frame Yulius, not even its own browser panel; ADR-0338),
-`X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin` and `X-Yulius: <process tag>`
-on every response (stricter route policies are kept). A proxy in front must pass these headers
-on, not replace them. HSTS is the TLS proxy's job, as in the examples above; add it once the
-domain is meant to stay on HTTPS.
+[details](archive/operations-until-2026-11-26.md#4-reverse-proxy-tls-websockets)
 
 ### Per-client sign-in limits (trusted proxy header)
 
-Password sign-in allows 5 attempts per minute **per client** (SPEC-001 ACC-013). Behind the proxy
-every connection comes from `127.0.0.1`, so without this setup all clients share one limit and
-anyone can keep the superadmin's password sign-in locked by sending 5 wrong passwords a minute.
-The proxy therefore passes the client's address in `X-Yulius-Client-Ip` together with a secret
-that only it and Yulius know in `X-Yulius-Proxy-Secret`, overwriting whatever a client sent in
-either. Yulius uses the address only when the secret matches (a constant-time comparison);
-otherwise it keys on the TCP peer, as without the setting. An IPv6 client is limited by its /64
-network. `X-Forwarded-For` alone is not trusted: a process that reaches the listener directly
-could name a new address on every request.
+Password sign-in allows 5 attempts per minute **per client**. Behind the proxy every connection
+comes from `127.0.0.1`, so without this setup all clients share one limit and anyone can keep the
+superadmin locked out. The proxy passes the client's address in `X-Yulius-Client-Ip` with a secret
+only it and Yulius know in `X-Yulius-Proxy-Secret`, overwriting what a client sent. Yulius uses the
+address only when the secret matches; otherwise it keys on the TCP peer. An IPv6 client is limited
+by its /64 network. `X-Forwarded-For` alone is not trusted.
 
 1. **Create the secret** once, as root, without printing it. Yulius's copy is owned by the service
    user, mode `0600`; the proxy's copy is root's, mode `0600`:
@@ -501,16 +362,11 @@ could name a new address on every request.
 2. **Yulius**: `Environment=YULIUS_PROXY_SECRET_FILE=/var/lib/yulius/proxy.secret` in the unit
    (§3), then `systemctl daemon-reload && systemctl restart yulius` (sessions survive). The file
    must be a regular file of 32–4096 printable characters readable by its owner only; the start
-   log says `trusted reverse proxy: …`, and an unusable file is logged (`the proxy secret file is
-   not usable: … make it 0600`) and changes nothing. `sudo -u yulius yulius doctor --proxy-secret-file
-   /var/lib/yulius/proxy.secret` checks it. The secret is never logged, returned by the API or
-   shown by `doctor`.
+   log says `trusted reverse proxy: …`, or `the proxy secret file is not usable: … make it 0600`.
+   `sudo -u yulius yulius doctor --proxy-secret-file /var/lib/yulius/proxy.secret` checks it.
 
-3. **The proxy**, on the Yulius site only (sign-in is never served on preview hosts, and Yulius
-   removes both headers before a preview request reaches a sandbox's app).
-
-   Caddy reads the secret from its environment at run time, so it stays out of the Caddyfile and
-   out of Caddy's config API (which shows only the placeholder):
+3. **The proxy**, on the Yulius site only (not on preview hosts). Caddy reads the secret from its
+   environment, so it stays out of the Caddyfile and Caddy's config API:
 
    ```ini
    # /etc/systemd/system/caddy.service.d/yulius-proxy.conf
@@ -528,14 +384,10 @@ could name a new address on every request.
    }
    ```
 
-   `systemctl daemon-reload && systemctl restart caddy` (a restart, not a reload: the environment
-   is read when Caddy starts). `header_up` replaces a header the client sent. `{remote_host}` is
-   the address that connected to Caddy; if another proxy or a CDN is in front of Caddy, configure
-   Caddy's `trusted_proxies` and use `{client_ip}` instead.
-
-   nginx (it reads its configuration as root, so the included file stays root-only;
-   `proxy_set_header` replaces the client's header of the same name, and a `location` that sets
-   any header inherits none from `server`, so keep these next to the others):
+   `systemctl daemon-reload && systemctl restart caddy` (a restart, not a reload). With another
+   proxy or a CDN in front of Caddy, configure `trusted_proxies` and use `{client_ip}` instead of
+   `{remote_host}`. nginx (a `location` that sets any header inherits none from `server`, so keep
+   these next to the others):
 
    ```nginx
        location / {
@@ -551,55 +403,27 @@ could name a new address on every request.
 4. **Check**: five wrong passwords from one network, then signing in from another (a phone on
    mobile data) works; the first network can try again after a minute.
 
-Either side can be configured first: until both are, requests key on the peer as before (Yulius
-logs once that it saw an untrusted `X-Yulius-Client-Ip`). To rotate the secret, repeat step 1 and
-restart Yulius and the proxy.
+Either side can be configured first: until both are, requests key on the peer. To rotate the
+secret, repeat step 1 and restart Yulius and the proxy.
 
-**Sandboxes and the secret.** Isolated sandboxes (ADR-22) cannot reach Yulius's public listener at
-all: `slirp4netns` runs with `--disable-host-loopback`, so the gateway `10.0.2.2` and every host
-loopback port refuse their connections (AC-NFR-8; the opt-in `tests/isolation.rs` on the VM). Through the VM's public address they
-reach the proxy like any internet client and are limited as one client, the VM's address. Runs
-without isolation (legacy containment, `YULIUS_CONTAINED=false`, or a `YULIUS_SANDBOX_FORWARD` of
-the public port, which you should never configure) can connect to the listener directly; they do
-not know the secret, so whatever headers they send count against `127.0.0.1`. Neither copy of the
-secret is visible to contained runs: `/var/lib/yulius` is never bound into them, and root-only
-files under `/etc` are unreadable to the service user and skipped when the sandbox base is built.
-Without containment (`YULIUS_CONTAINED=false`) agents run as the service user and could read
-Yulius's copy, like `master.key`. Task runs and the Superagent then also keep Claude Code's
-approvals (no `--dangerously-skip-permissions`), so a person answers each prompt
-([decision 0165](decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)); the
-Global Superagent has only Yulius's tools, each checked at the call, and they stay pre-allowed
-([decision 0274](decisions/0274-the-global-superagent-takes-its-persons-keys.md)). Keep Caddy's admin API unreachable from runs without
-isolation: it can rewrite the proxy.
+**Sandboxes and the secret.** Isolated sandboxes cannot reach the public listener (`slirp4netns
+--disable-host-loopback`); runs without isolation can, but do not know the secret (never set
+`YULIUS_SANDBOX_FORWARD` to the public port). Without containment (`YULIUS_CONTAINED=false`) agents
+could read Yulius's copy, like `master.key`. Keep Caddy's admin API unreachable from such runs.
+
+[details](archive/operations-until-2026-11-26.md#per-client-sign-in-limits-trusted-proxy-header)
 
 ### Optional: live previews (wildcard DNS and TLS)
 
-The browser panel is the sandbox's Chrome streamed from the VM (§ "Sandbox browser" below) and
-needs nothing here. Previews add one action to it: **Open live in a new window** on a tab that
-shows a sandbox dev server, which opens the app in the user's own browser (with their devtools)
-through a per-port **preview origin** (SPEC-002 ADR-14). Every sandbox port gets its own preview
-origin: a subdomain of the Yulius host,
-`<port>-<key>.<yulius host>` (for example `20001-0123456789ab.yulius.example.com`). The public
-listener serves them too. The proxy in front only has to:
-
-1. **Resolve** every subdomain of the host to the VM: a wildcard DNS record
-   `*.yulius.example.com A <VM IP>`. With `sslip.io` nothing is needed:
-   `20001-0123456789ab.109-199-123-240.sslip.io` already resolves to 109.199.123.240.
-2. **Terminate TLS** for them and forward them, `Host` unchanged, to the same `YULIUS_BIND`, with
-   WebSockets and streaming as for the main host.
-
-Preview origins must be subdomains of the Yulius host (the default): they are then the same site
-as Yulius, so the handshake's redirects between Yulius and a preview are same-site navigations
-whose grant cookie no browser treats as third-party, and Yulius never relies on `SameSite` for
-its own protection. `YULIUS_PREVIEW_DOMAIN` (or
-`--preview-domain`) sets another parent domain or `off`. A public URL that is an IP address has no
-previews. For local development use a name such as `http://yulius.localhost:8080`: browsers
-resolve `*.yulius.localhost` by themselves, and a bare `localhost` would not work
-(`*.localhost` hosts are sites of their own).
-
-Caddy (on-demand TLS, one certificate per preview host on its first visit; Yulius approves only
-preview hosts of existing sandbox ports through the `ask` endpoint on the internal listener —
-use your `YULIUS_INTERNAL_BIND` and `YULIUS_BIND` addresses):
+**Open live in a new window** (browser panel) opens a sandbox dev server in the user's own browser
+through a per-port **preview origin** `<port>-<key>.<yulius host>` (e.g.
+`20001-0123456789ab.yulius.example.com`). The proxy must resolve every subdomain to the VM (a
+wildcard record `*.yulius.example.com A <VM IP>`; `sslip.io` names such as
+`20001-0123456789ab.109-199-123-240.sslip.io` resolve by themselves), terminate TLS for them and
+forward them, `Host` unchanged, to `YULIUS_BIND` with WebSockets. `YULIUS_PREVIEW_DOMAIN`
+(`--preview-domain`) sets another parent domain or `off`; an IP-address public URL has no previews;
+for local development use a name such as `http://yulius.localhost:8080`. Caddy (on-demand TLS; the
+`ask` endpoint on the internal listener approves only existing sandbox ports' hosts):
 
 ```caddyfile
 {
@@ -623,16 +447,10 @@ https:// {
 }
 ```
 
-The first visit to a new preview host waits a few seconds for its certificate; the panel waits
-up to 30 s and then offers the sandbox Chrome instead. Certificates come from Let's Encrypt
-(ZeroSSL as Caddy's fallback). `sslip.io` hosts share sslip.io's Let's Encrypt rate limits with
-all its users, and every `*.sslip.io` site is the same site as yours (sslip.io is not on the
-Public Suffix List): Yulius does not depend on either for security, but a domain of your own is
-the better production setup. Certificate Transparency logs publish each preview host name; the
-key in it is opaque.
-
-nginx (a wildcard certificate for `*.yulius.example.com`, which needs the ACME DNS challenge,
-e.g. certbot with your DNS provider's plugin):
+The first visit to a new preview host waits a few seconds for its certificate. `sslip.io` shares
+its Let's Encrypt rate limits with all its users: a domain of your own is the better production
+setup. nginx (a wildcard certificate for `*.yulius.example.com`, which needs the ACME DNS
+challenge, e.g. certbot with your DNS provider's plugin):
 
 ```nginx
 server {
@@ -653,232 +471,131 @@ server {
 }
 ```
 
-Without DNS or TLS for the previews everything else keeps working; only "Open live in a new
-window" fails to load.
+Without DNS or TLS for the previews everything else keeps working; only "Open live in a new window"
+fails to load.
+
+[details](archive/operations-until-2026-11-26.md#optional-live-previews-wildcard-dns-and-tls)
 
 ### Sandbox browser (virtual displays)
 
-Each sandbox has one Chrome, shared by its users and agents (SPEC-002 ADR-15). With `xvfb` and
-`ffmpeg` installed it runs **headful on its own virtual display**: Yulius starts one `Xvfb` per
-running sandbox browser (as the service user, numbers from `:100`), shows it to viewers as H.264
-video over the browser WebSocket (nothing to open in the firewall: it is the same HTTPS
-connection) and passes their mouse and keys as real input, so captchas and sign-in popups work.
-Encoding runs only while someone watches.
+Each sandbox has one Chrome, shared by its users and agents. With `xvfb` and `ffmpeg` installed it
+runs **headful on its own virtual display** (one `Xvfb` per running browser, as the service user,
+numbers from `:100`), shown to viewers as H.264 video over the browser WebSocket with their mouse
+and keys as real input. Nothing to open in the firewall; the reverse proxy needs nothing more.
 
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |
 | `--browser-display` / `YULIUS_BROWSER_DISPLAY` | `auto` | `xvfb`: always a virtual display (the browser does not start without Xvfb); `headless`: never (JPEG frames, CDP input); `auto`: `xvfb` on Linux when Xvfb and ffmpeg are found, else `headless`. |
 | `--xvfb` / `YULIUS_XVFB`, `--ffmpeg` / `YULIUS_FFMPEG` | `Xvfb`, `ffmpeg` | The executables (a path or a name on `PATH`). |
-| `--browser-fps` / `YULIUS_BROWSER_FPS` | 60 | Highest video frames per second (5–60); the stream uses fewer on slow links. 30 halves the encoder's CPU. |
+| `--browser-fps` / `YULIUS_BROWSER_FPS` | 60 | Highest video frames per second (5–60). 30 halves the encoder's CPU. |
 | `--browser-max-size` / `YULIUS_BROWSER_MAX_SIZE` | `1920x1200` | Largest viewport in CSS pixels; larger panels show the page scaled down. |
 | `--browser-scale` / `YULIUS_BROWSER_SCALE` | 1 | Device pixels per CSS pixel (1–3). 2 gives crisp text on HiDPI screens at about three times the CPU and bandwidth. |
 | `--browser-display-base` / `YULIUS_BROWSER_DISPLAY_BASE` | 100 | First X display number; numbers in use are skipped. |
 | `--chromium` / `YULIUS_CHROMIUM` | found on `PATH` or in the usual install locations | The Chromium or Google Chrome executable. |
-| `--chromium-no-sandbox` / `YULIUS_CHROMIUM_NO_SANDBOX` | off | Starts Chromium with `--no-sandbox`: only on a host where Chromium's own sandbox cannot run (a container without user namespaces). The sandbox browsers run on the host as the service user, outside every project's sandbox, so without Chromium's sandbox a compromised page renderer has the service user's rights (the data directory, the vault key). |
+| `--chromium-no-sandbox` / `YULIUS_CHROMIUM_NO_SANDBOX` | off | Starts Chromium with `--no-sandbox`: only where Chromium's own sandbox cannot run (a container without user namespaces). The browsers run on the host as the service user, so a compromised renderer would have the service user's rights (the data directory, the vault key). |
 
-Resources (measured on a 12-vCPU VM, Chrome 155, ffmpeg 6.1; SPEC-002 ADR-15): the encoder takes
-about one core per watched browser at 1280×800 and 60 fps (three quarters of one on a static page),
-about 1.5 cores at 1920×1080, and nothing when nobody watches; 30 fps saves a third to a half.
-Video is about 0.02 Mbit/s on a static page and at most the stream's cap while scrolling: the
-viewers acknowledge frames, and the bitrate (12 down to 0.8 Mbit/s) and frame rate (60 down to 30)
-follow the slowest viewer's link, so a slow link gets a softer picture rather than a growing delay
-(SPEC-002 ADR-15). A bitrate change or a keyframe a viewer needs briefly runs a second ffmpeg
-(about 0.2 s). Each display is a framebuffer of the maximum size (about 9 MB at 1920×1200).
+- **Resources** (12-vCPU VM): the encoder takes about one core per watched browser at 1280×800 and
+  60 fps, about 1.5 cores at 1920×1080, nothing when nobody watches; 30 fps saves a third to a half.
+  Each display is a framebuffer of the maximum size (about 9 MB at 1920×1200).
+- **Isolation.** The display listens only on `/tmp/.X11-unix/X<n>` (`-nolisten tcp -nolisten
+  local`), which contained runs do not see, with a cookie in `<data>/displays/<sandbox>/Xauthority`
+  (0600). `PrivateTmp=yes` in the unit works too.
+- **Input needs the managed policy** (`yulius host setup` writes it): without it the browser shows
+  but takes no clicks and keys, and the panel says what to run. If the panel says a file dialog may
+  still be open, choose **Restart browser** (it keeps the profile). `yulius doctor` reports Xvfb,
+  ffmpeg, libx264, x11grab and the browser policy.
+- **Network.** Each browser goes out through a loopback proxy of its own, served by the egress
+  proxy: the internet as the sandbox reaches it, and of local addresses only its sandbox's
+  dev-server ports. "the sandbox browser does not load …" names a local address outside that
+  range: serve it on a sandbox port and open `localhost:<port>`. Do not set `ProxyMode` or
+  `ProxySettings` in a managed Chrome policy on the host: a policy wins.
+- **Profile locks.** Before every start Yulius removes the profile's (`<data>/sandboxes/<id>/browser`)
+  `SingletonLock`, `SingletonCookie` and `SingletonSocket` when no running browser holds them. On
+  "the browser profile is in use by process N on this host", check `ps -p N -o pid,user,args`; stop
+  a Chrome left over from a crashed server (`kill N`) and open the panel again.
 
-The reverse proxy needs nothing for the video: Caddy's `reverse_proxy` copies the WebSocket as it
-reads it (`encode` and `flush_interval` do not apply to it), and flow control keeps the proxy's
-socket buffers short.
-
-Isolation: the display listens on neither TCP nor an abstract socket (`-nolisten tcp -nolisten
-local`), only on `/tmp/.X11-unix/X<n>`, which contained agents and users' shells do not see (their
-`/tmp` is private), and it requires a per-display cookie stored in
-`<data>/displays/<sandbox>/Xauthority` (0600), outside every directory containment binds.
-Xvfb, Chrome and ffmpeg are children of the service and share its `/tmp`, so `PrivateTmp=yes` in
-the unit works too.
-
-Real input also reaches Chrome's own windows (the file chooser of a page's upload button, Save
-as, printing to a file, the developer tools), and that Chrome runs on the host. So a browser on
-a virtual display takes viewers' clicks and keys only while it answers that the host's managed
-policy is in force (`yulius host setup` writes it; ADR-0318): the policy switches those windows
-off for every tab. Until then the browser shows, scrolls and serves the agents' tools, and the
-panel says what to run. After an update that changes the policy, the update's host check
-rewrites the files; on a host that never ran the setup with this version, run
-`sudo yulius host setup` once.
-
-Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab, and the browser
-policy.
-
-Chrome is also on the host's network, not its sandbox's. Each browser therefore runs behind a
-proxy of its own on the loopback (an ephemeral port, open while the browser runs), served by
-Yulius's egress proxy: it reaches the internet and the host's network as the sandbox's own
-processes do, and of local addresses only its sandbox's dev-server ports and the welcome page
-(ADR-0321). Nothing is configured for it. A page that should load and answers "the sandbox
-browser does not load …" names a local address outside the sandbox's port range, or a name
-that only points at one: serve it on one of the sandbox's ports and open it as
-`localhost:<port>`. Do not set a proxy in a managed Chrome policy on the host (`ProxyMode`,
-`ProxySettings`): a policy wins over what Yulius starts Chrome with.
-
-Each sandbox's profile (`<data>/sandboxes/<id>/browser`) holds Chrome's lock: `SingletonLock`,
-a link to `<host>-<pid>`, with `SingletonCookie` and `SingletonSocket`. Chrome refuses a profile
-whose lock names another host. On a virtual display it shows a dialog and never answers, so
-the start timed out after 30 s with its display. Before every start Yulius removes these three
-entries when no running browser can hold them: the lock names another host, names this host
-with a pid that is not running, or is not a Chrome lock, or the links remain without a lock. A
-lock of this host whose pid runs is kept and Chrome decides. If that start fails, the panel
-says "the browser profile is in use by process N on this host": look at it with `ps -p N -o
-pid,user,args`. A Chrome left over from a crashed server holds the profile until you stop it
-(`kill N`); then open the panel again. If a stale entry cannot be
-removed, the start fails before a display starts and names the entry
-([ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)).
+[details](archive/operations-until-2026-11-26.md#sandbox-browser-virtual-displays)
 
 ### Sandbox isolation
 
-Each sandbox has one **namespace holder** (SPEC-002 ADR-22). Agents' task sessions, users'
-shells and CI jobs join it (a user's shell runs `--shell` / `YULIUS_SHELL`, default the service's
-`$SHELL`, then `/bin/bash`, then `/bin/sh`). A sandbox gets:
+Each sandbox has one **namespace holder**. Agents' task sessions, users' shells and CI jobs join it
+(a user's shell runs `--shell` / `YULIUS_SHELL`, default the service's `$SHELL`, then `/bin/bash`,
+then `/bin/sh`). A sandbox gets its own user namespace (root inside is the service user, ids
+1–65535 from its subordinate range); a private network (egress through `slirp4netns`; host loopback
+and other sandboxes unreachable; the internal listener and the dev-server ports relayed); a
+writable **system layer** over a shared copy of the host system (the *base*), so `sudo apt-get
+install …` persists for that sandbox only; CPU, memory and task limits through the delegated cgroup
+and a soft disk quota (CI jobs weigh `ci/` 400 against `agents/` 100 inside, and the sandbox 500
+against 100 on the host while its CI runs); a seccomp filter (no nested user namespaces,
+`io_uring`, `bpf`, keyrings, module or mount calls); and its own Docker engine
+([Docker in sandboxes](#docker-in-sandboxes)).
 
-- its own user namespace: root inside is the service user, ids 1–65535 come from its subordinate
-  range;
-- a private network: egress through `slirp4netns`; the host's loopback services and other
-  sandboxes are unreachable; the internal listener and the sandbox's dev-server ports are relayed;
-- a writable **system layer** over a shared, Yulius-owned copy of the host system (the *base*), so
-  `sudo apt-get install …` works and persists for that sandbox only;
-- limits (CPU, memory, tasks) through the unit's delegated cgroup, and a soft disk quota. Inside
-  a sandbox, CI jobs get four times the agents' CPU weight (`ci/` 400 against `agents/` 100), so
-  CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
-  On the host, a sandbox's own group weighs 500 while any of its CI jobs runs (else 100), so its CI
-  also out-weighs other sandboxes' agents ([ADR-0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md));
-- a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls;
-- its own **Docker engine** ([ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)),
-  started on the first use of `/var/run/docker.sock` (`DOCKER_HOST`) by an agent, the
-  Superagent, a Shell or a CI job, also in sessions started before, and stopped once idle. See
-  "Docker in sandboxes" below.
+**Install once** (as root): `sudo yulius host setup` (§2); the first base takes a few minutes and
+about 6 GB under `<data>/system`. If it added the drop-in, restart once: `systemctl restart yulius`.
+Install `gh` (§1) before the setup, so the base copies it.
 
-**Install once** (as root): `sudo yulius host setup` (§2). It installs the packages, gives the
-service user a subordinate range, lets bwrap create user namespaces, gives the unit its
-delegation, and builds the first base (a
-few minutes, about 6 GB under `<data>/system`). Then, if it added the drop-in, restart once:
-`systemctl restart yulius`. Install `gh` from GitHub's repository (§1) before the setup, so
-the base copies it.
-
-**AppArmor and user namespaces** (SPEC-456,
-[ADR-0296](decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)).
-Ubuntu since 24.04 sets `kernel.apparmor_restrict_unprivileged_userns = 1`: a program gets a
-working user namespace only when an AppArmor profile allows it `userns`. A sandbox is such a
-namespace, made by `/usr/bin/bwrap` as the service user, so without a rule no sandbox starts:
+**AppArmor and user namespaces**
+([ADR-0296](decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)).
+Ubuntu since 24.04 sets `kernel.apparmor_restrict_unprivileged_userns = 1`, so without a rule no
+sandbox starts:
 
 | Host | Without the rule | What `host setup` does |
 | --- | --- | --- |
 | Ubuntu 24.04 | `bwrap: setting up uid map: Permission denied` | writes and loads `/etc/apparmor.d/yulius-bwrap` |
-| Ubuntu 26.04 | the package's `bwrap-userns-restrict` allows the namespace but denies every capability to what bwrap starts: `mount: … permission denied` | disables that profile (`/etc/apparmor.d/disable/bwrap-userns-restrict`, a link; the package's file is untouched and the link survives its upgrades), then writes and loads `/etc/apparmor.d/yulius-bwrap` |
+| Ubuntu 26.04 | the package's `bwrap-userns-restrict` denies every capability to what bwrap starts: `mount: … permission denied` | disables that profile (`/etc/apparmor.d/disable/bwrap-userns-restrict`, a link; the package's file is untouched), then writes and loads `/etc/apparmor.d/yulius-bwrap` |
 | Debian 12, 13; no AppArmor | works | nothing |
 
-The profile is `profile yulius-bwrap /usr/bin/bwrap flags=(unconfined) { userns, }`, as Ubuntu
-ships for other programs that need user namespaces; AppArmor loads it at every boot. Add your
-own rules in `/etc/apparmor.d/local/yulius-bwrap`, not in the file (setup rewrites it). It lets
-any local user create a user namespace through bwrap, as on Debian; the restriction stays for
-every other program. On Ubuntu 26.04 other users of bwrap (Flatpak) lose the shipped confinement
-of what bwrap starts.
+- The profile is `profile yulius-bwrap /usr/bin/bwrap flags=(unconfined) { userns, }`. Add your own
+  rules in `/etc/apparmor.d/local/yulius-bwrap`, not in the file (setup rewrites it).
+- `yulius host check` and `yulius doctor --contained` ("sandbox namespaces") report; the fix is
+  `sudo yulius host setup`, which reloads `/etc/apparmor.d` (`apparmor_parser -r`, at most 300 s).
+- A person's own profile for `/usr/bin/bwrap` is adopted when bwrap works with it, else named. To
+  switch to Yulius's: `sudo ln -s /etc/apparmor.d/bwrap /etc/apparmor.d/disable/ && sudo
+  apparmor_parser -R /etc/apparmor.d/bwrap`, then run the setup again.
+- **After a release upgrade from 24.04 to 26.04**, run `sudo yulius host setup` once: sandboxes fail
+  until the shipped profile is disabled.
 
-Nothing is decided from files alone: `host setup`, `yulius host check` (so the update helper's
-re-check and Settings → Instance) and `yulius doctor --contained` ("sandbox namespaces") start
-bwrap and mount inside. `host check` and the doctor only report, with
-`sudo yulius host setup` as the fix. A profile for `/usr/bin/bwrap` that a person wrote (a
-hand-written `/etc/apparmor.d/bwrap`, for example) is never changed: when bwrap works with it,
-it is adopted ("not written by Yulius, left as it is"); when it does not, the item fails and
-prints the two commands that disable it (for a file AppArmor's parser refuses: the parser's
-words, and the file is to be corrected first, since the parser cannot unload it either). To move from such a rule to Yulius's, disable it
-(`sudo ln -s /etc/apparmor.d/bwrap /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/bwrap`)
-and run the setup again. Yulius knows such a profile by its text only in the plain spellings
-(`profile bwrap /usr/bin/bwrap …`). One in any other spelling (an alternation, a pattern, an
-`alias`, a variable) it finds by what it does: with its own profile, setup loads every other
-profile of `/etc/apparmor.d` as a boot does (`apparmor_parser -r /etc/apparmor.d`, at most
-300 s; edits of those files that were waiting for a boot or a `systemctl reload apparmor`
-become live with it) and proves bwrap then. AppArmor applies neither of two profiles that name
-one program (the kernel's log may say "conflicting profile attachments"), so where bwrap does
-not start and no kernel limit explains it, setup takes Yulius's profile out of AppArmor,
-whichever run wrote it, and proves once more. If bwrap starts, the person's profile is adopted
-and `/etc/apparmor.d/yulius-bwrap` is removed; the line says so, and later runs and checks are
-ok. If not, Yulius's profile is loaded again and its file is as before the run (none where
-there was none), the profiles that load loaded stay loaded as after a boot, and the line says
-how to disable the second profile. The same proof decides where a person's profile in a plain
-spelling was added to a host that Yulius had set up before (the old host's hand-written rule
-copied to a new one, say). While only one of the two is loaded, bwrap keeps starting, and
-setup and check name both files and say what follows; once both are loaded (a boot, or the
-person loading theirs) bwrap stops starting, the check fails, and the next setup adopts the
-person's profile and removes Yulius's own. A profile of Yulius's that a person disabled with
-a link in `/etc/apparmor.d/disable/` and did not unload is unloaded by that setup, and its
-file is left where it is. A dry run and a check name the steps up to the proof
-("would load …"); what the proofs then decide only the run says. During that last proof Yulius's profile is out of AppArmor: a sandbox that starts
-in that moment fails as bwrap does without a rule. A person's profile that only AppArmor holds
-(loaded by hand from a file outside `/etc/apparmor.d`) is adopted like any other and is gone
-after a boot: the check fails then, and the next setup writes Yulius's profile again. Beside
-a kernel limit Yulius's profile stays, to work once the limit is lifted: run the setup again
-then. A profile for many programs (`/usr/bin/bw*`,
-`/usr/bin/*`) is no such second profile: AppArmor prefers the one that names the path.
-**After a release upgrade from 24.04 to 26.04**, run
-`sudo yulius host setup` once: the upgrade installs the shipped profile next to Yulius's, and
-sandboxes fail until it is disabled. A host whose AppArmor cannot load the profile is reported
-as unsupported.
-
-**A build by hand** (`sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius`, for
-example after installing a package on the host) is safe while sandboxes run: it keeps the new
-current base, every base named by `--keep` and every base a live holder has mounted (read from
-`<data>/runtime/sandboxes/*/host.json`, [ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)).
-Running sandboxes stay on their base until their holder restarts (after the idle time, or a
-minute without runs once superseded); a later build removes the base once no holder uses it. Run
-it as the service user (or root), which can see the holders. Builds take turns under a lock
-(`<data>/system/.build.lock`): a hand-run build, the setup's and the server's wait for each
-other instead of overlapping.
+**A build by hand** (`sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius`, e.g.
+after installing a host package) is safe while sandboxes run: it keeps every base named by `--keep`
+or mounted by a live holder (`<data>/runtime/sandboxes/*/host.json`). Run it as the service user
+(or root). Builds take turns under `<data>/system/.build.lock`.
 
 **Settings** (environment of the unit):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `YULIUS_ISOLATION` | `auto` | `auto`: the holder when its prerequisites hold, else the previous containment (and a failing holder never blocks work); `namespaces`: refuse runs without it; `legacy`: the previous containment. |
+| `YULIUS_ISOLATION` | `auto` | `auto`: the holder when its prerequisites hold, else the previous containment; `namespaces`: refuse runs without it; `legacy`: the previous containment. |
 | `YULIUS_SANDBOX_EGRESS` | `direct` | `none`: no egress, only the relayed endpoints (the internal listener, which also serves the secrets proxy, and `YULIUS_SANDBOX_FORWARD`). |
-| `YULIUS_SANDBOX_MEMORY_GB` | the RAM but an eighth (at least 4 GiB kept for the host); a [resource limit](#resource-limits) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions, not to half the host. |
-| `YULIUS_SANDBOX_CPUS` | none | `cpu.max` per sandbox. Without it the CPU is shared by weight: a quota of all CPUs but two throttled the sandbox in half of its busy periods while the two CPUs it left idled (SPEC-082). The sandbox's capacity for budgets is this limit, else the host's CPUs. |
-| `YULIUS_SANDBOX_PIDS` | a quarter of the host's `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192, at most three quarters of `yulius.service`'s own `pids.max` | `pids.max` per sandbox: processes and threads of all its tasks, CI jobs and containers together. With the CPU split, CI jobs (`ci/`) and the Docker engine with its containers (`engine/`) each get 3/8 of it, so agent sessions keep at least a quarter (ADR-0198). All sandboxes together stop at three quarters of the service's limit (ADR-0201): a higher explicit value is not capped, but that common limit binds it. |
-| `YULIUS_SANDBOX_DISK_GB` | a quarter of the data disk, at least 100, at most half the disk; a [resource limit](#resource-limits) | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts, and each one's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, SPEC-351), are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
-| `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
-| `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
-| `YULIUS_CLAUDE_UPDATES` | `latest` | Claude Code releases isolated sandboxes follow: `latest` or `stable` (npm's dist-tags), or `off` (the host's install only). A channel chosen in Settings, Instance wins over it. See [Claude Code updates](#claude-code-updates). |
-| `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when its system has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine, and `docker` answers why). |
+| `YULIUS_SANDBOX_MEMORY_GB` | a [resource limit](#resource-limits) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions. |
+| `YULIUS_SANDBOX_CPUS` | none | `cpu.max` per sandbox. Without it the CPU is shared by weight. The sandbox's capacity for budgets is this limit, else the host's CPUs. |
+| `YULIUS_SANDBOX_PIDS` | a quarter of the smaller of `kernel.threads-max` and `kernel.pid_max`, at least 8192, at most three quarters of `yulius.service`'s `pids.max` | `pids.max` per sandbox, for all its tasks, CI jobs and containers; CI jobs (`ci/`) and the Docker engine (`engine/`) each get 3/8 of it. All sandboxes together stop at three quarters of the service's limit. |
+| `YULIUS_SANDBOX_DISK_GB` | a [resource limit](#resource-limits) | Soft quota of the sandbox directory plus its packages, measured every 10 minutes. From 90 % Yulius prunes rebuildable caches ([Leftovers](#leftovers-what-is-kept-what-is-cleaned-and-when)); above it new sessions are refused. `0` turns it off. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. |
+| `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (e.g. a loopback MCP server), comma-separated. |
+| `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs stops after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client or running container. |
+| `YULIUS_CLAUDE_UPDATES` | `latest` | Claude Code releases isolated sandboxes follow: `latest`, `stable` or `off` (the host's install only). A channel chosen in Settings → Instance wins. |
+| `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when its system has `dockerd` and the cgroup delegation is on; `off`: none. |
 
-**Where things live.**
-- `<data>/system/base-<n>/`: the base (`current.json` names it). The server rebuilds it when the host's packages, `/usr/local` or `/opt` change; it waits until they have been unchanged for 10 minutes and checks every 30 minutes. A sandbox moves to the new base the next time its holder starts; the packages it installed stay.
-- `<data>/sysroots/<sandbox>/`: a sandbox's installed packages (the overlay's upper layer, `upper/`) and its Docker engine's images, containers and volumes (`docker/`).
-- `<data>/runtime/sandboxes/<sandbox>/`: the holder's records and relay sockets, the sandbox's Docker directory (`docker/docker.sock`, served by its Docker front: `docker.json`, `docker-front.json`, `docker-front.log`), the engine's own socket (`engine/`), sysfs (`sys/`) and log (`engine.log`).
+- **Where things live.** `<data>/system/base-<n>/`: the base (`current.json` names it; rebuilt 10
+  minutes after host packages, `/usr/local` or `/opt` last changed; `yulius sandbox-base status`).
+  `<data>/sysroots/<sandbox>/`: installed packages (`upper/`) and Docker data (`docker/`).
+  `<data>/runtime/sandboxes/<sandbox>/`: holder records, relay sockets, `docker/docker.sock`,
+  `docker.json`, `docker-front.json`, `docker-front.log`, `engine/`, `sys/`, `engine.log`.
+- **Ports.** Each sandbox gets the lowest free block of 20 ports in 20000–32759 (keep that outside
+  the host's ephemeral range); its dev servers are reachable on host loopback only there
+  (`YULIUS_PORT_BASE`…).
+- **Packages.** One whose scripts add a system user fails in a user's shell: install it from an
+  agent's session. A broken third-party apt source on the host breaks `apt-get update` there too.
+- **Without the prerequisites** (`yulius doctor` lists them), contained runs keep the previous
+  containment: read-only host system, the host's network, no limits.
 
-`yulius sandbox-base status` tells whether the base matches the host.
-
-**Ports.** Yulius allocates the lowest available block of 20 ports from 20000 through 32759.
-A removed sandbox keeps its block until its work, holder and loopback listeners have ended.
-The next sandbox can then reuse it. Keep this span outside the host’s ephemeral port range.
-A sandbox's dev servers are reachable on the host's loopback only on its port range
-(PRJ-010, `YULIUS_PORT_BASE`…), and only while something listens on them inside. Other ports
-stay private to the sandbox. Two sandboxes can both use 3000 inside.
-
-**Packages.**
-- `sudo apt-get install …` works in users' shells and agents' sessions; `sudo NAME=value command` is supported.
-- A package whose scripts add a system user or group (a database server, for example) fails in a user's shell, whose `/etc/passwd` is the user's generated identity file. Install it from an agent's session (ask the agent), where it works.
-- The base copies the host's apt sources: a broken third-party source on the host (on the reference VM, Caddy's Cloudsmith repository answers 402) makes `apt-get update` exit 100 in sandboxes too, while installs from the other sources still work.
-
-**Without the prerequisites** (`yulius doctor` lists what is missing), contained runs keep the
-previous containment: read-only host system, the host's network, no limits.
+[details](archive/operations-until-2026-11-26.md#sandbox-isolation)
 
 #### Harness memory is read-only
 
-Every contained session (task runs of each harness, a person's Superagent, the Global Superagent)
-sees its harness's memory and user-level instruction files read-only
-([ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)): its edit
-tools, shell and scripts cannot add, change or delete them, and what is there still loads. The
-sandbox's Docker engine (so every container's `-v`), its CI jobs and its script watches see the
-home's `.claude` and the Codex homes as empty read-only folders; a sandbox's engine started
-before the update is replaced by a masked one once it is not running (it stops when idle). The
-limits are in the decision record. On the host they are ordinary files, which a person with access to the host edits in
-place:
+Every contained session sees its harness's memory and user-level instruction files read-only
+([ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)); a
+sandbox's Docker engine, CI jobs and script watches see them as empty read-only folders. On the
+host they are ordinary files, which a person edits in place:
 
 | Session | Claude Code memory and instructions | Codex | Antigravity |
 | --- | --- | --- | --- |
@@ -886,41 +603,28 @@ place:
 | A person's Superagent | `<data>/users/<user>/home/.claude/…` (the same three) | | |
 | Global Superagent | `<data>/users/<user>/superagent/.claude/…` | | |
 
-A write refused there is explained to the agent in one sentence (Yulius keeps the harness's
-memory and user-level instructions read-only; lasting knowledge goes into the repository through
-a pull request): Claude Code's edit tools are denied with it and a failed shell command gets it,
-through `yulius hook claude MemoryGuard`, Codex's tool results through `yulius hook codex
-MemoryGuard`, and an Antigravity session hears it at its start.
+`<key>` is `<data>/sandboxes/<id>/repo` with every character outside `a-z`, `A-Z`, `0-9` written
+as `-` (e.g. `-var-lib-yulius-sandboxes-<id>-repo`). A protected path that is a link or of the
+wrong kind is moved aside to `<name>.yulius-moved-<ms>` before a session starts.
 
-`<key>` is the sandbox repository's path (`<data>/sandboxes/<id>/repo`, the key of every task and
-Superagent session of the sandbox) with every character outside `a-z`, `A-Z`, `0-9` written as
-`-` (for example `-var-lib-yulius-sandboxes-<id>-repo`). A protected path that is a symbolic link
-or of the wrong kind is moved aside to `<name>.yulius-moved-<ms>` before a session starts, and a
-missing one shows as an empty read-only folder or file. An uncontained server (development) has
-no namespace: only Claude Code's deny rules hold there.
+[details](archive/operations-until-2026-11-26.md#harness-memory-is-read-only)
 
 ### Subscription rebalance
 
-Every 2 minutes Yulius moves idle tasks off a subscription past its harness's rebalance threshold
-(`YULIUS_REBALANCE_PERCENT_CLAUDE_CODE`, `_CODEX`, `_ANTIGRAVITY`; 95 by default, 50 to 98) to the
-subscription with the most room, and new tasks keep off such a subscription while another has room
-([SPEC-629](../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md)). A task mid-turn,
-paused, with background work or a draft waits for a later pass; a task a person put on a
-subscription with "Run on…" or "Continue on…" stays there until the pool must move it at a limit.
-An idle goal session of Claude Code or Antigravity is not restarted (its goal would be typed
-again): with parking on (`YULIUS_PARK_AFTER_MINUTES` above 0) it is parked once quiet for a
-minute and resumes on a subscription with room when written to; with parking off it stays.
-Each move is a subscription switch with the reason `rebalance: …` in the task's info and a notice
-for the task's owner (`rebalance:<task id>`; in Telegram under "Subscription problems"); the journal
-logs each pass that moved or parked a task (`rebalance pass`, at info) and, at debug, each task it
-kept with why (`rebalance: the idle task stays for now`). Set a harness's variable to 98 to turn it off: no
-pass moves or parks its tasks, and the pool moves them only at 98 % and at a limit, as before.
+Every 2 minutes Yulius moves idle tasks off a subscription past its harness's threshold
+(`YULIUS_REBALANCE_PERCENT_CLAUDE_CODE`, `_CODEX`, `_ANTIGRAVITY`; default 95, 50 to 98) to the one
+with the most room; new tasks keep off it while another has room. Tasks a person put on a
+subscription ("Run on…", "Continue on…") stay. Moves are recorded as `rebalance: …` and logged as
+`rebalance pass`. 98 turns it off for that harness.
+
+[details](archive/operations-until-2026-11-26.md#subscription-rebalance)
 
 ### Resource limits
 
-Six limits decide how much work the server takes at once (SPEC-459, ADR-0294). Without a pin each
-is sized from the host at every start (integers, rounded down; `cpus` logical CPUs, memory in
-GiB, the data directory's filesystem in GB), so a bigger host takes more by itself:
+Six limits decide how much work the server takes at once
+([ADR-0294](decisions/0294-resource-limits-are-sized-from-the-host-and-pins-remember-their-host.md)).
+Without a pin each is sized from the host at every start (`cpus` logical CPUs, memory in GiB, the
+data directory's filesystem in GB):
 
 | Limit | Variable | Host-sized | 12 CPUs, 47 GiB, 387 GB | 64 CPUs, 755 GiB, 3.5 TB | A change applies |
 | --- | --- | --- | --- | --- | --- |
@@ -931,627 +635,263 @@ GiB, the data directory's filesystem in GB), so a bigger host takes more by itse
 | Sandbox disk quota (GB) | `YULIUS_SANDBOX_DISK_GB` | a quarter of the data disk, at least 100, at most half the disk | 100 | 875 | at once |
 | CD run disk (GB) | `YULIUS_CD_RUN_DISK_GB` | a twentieth of the data disk, at least 20, at most half the disk | 20 | 175 | from the next run |
 
-A fact the host does not report leaves that limit at 8, 4, 2, 2 GiB (the memory), 100 GB or
-20 GB.
+A fact the host does not report leaves that limit at 8, 4, 2, 2 GiB, 100 GB or 20 GB.
 
-**Where a value comes from.** Settings → Instance → Resource limits shows each value with its
-source and the formula. In this order: a number saved there (`settings`); "host-sized" saved
-there, which overrules the unit (`default`); the unit's `YULIUS_*` variable (`unit`); else
-host-sized (`default`). A superadmin saves a number, goes back to host-sized or removes the
-setting there, without editing the unit; each change is audited (`limits.set`,
-`limits.removed`). `0` for the sandbox disk quota means none.
-If the server could not read the saved limits at start (it warns: "the saved resource limits
-could not be read", with the reason), it runs on the unit's and the host's values, writes nothing
-over them, leaves an import's mark and refuses changes (409) until a restart reads them. When a
-restart warns again the record itself is damaged: stop the service, clear it with
-`sudo -u yulius sqlite3 /var/lib/yulius/yulius.db "UPDATE instance SET limits = NULL"` (the
-`sqlite3` package) and start. The settings
-saved in Settings → Instance are then gone and the unit's numbers are recorded for this host, so
-after a move check the card's values by hand.
+- **Where a value comes from** (Settings → Instance → Resource limits shows each with its source):
+  a number saved there (`settings`); "host-sized" saved there, overruling the unit (`default`); the
+  unit's `YULIUS_*` variable (`unit`); else host-sized (`default`). Changes are audited
+  (`limits.set`, `limits.removed`). `0` for the sandbox disk quota means none.
+- **Unreadable saved limits** ("the saved resource limits could not be read"): the server runs on
+  the unit's and host's values and refuses changes (409). If a restart warns again, stop the
+  service, run `sudo -u yulius sqlite3 /var/lib/yulius/yulius.db "UPDATE instance SET limits =
+  NULL"` (the `sqlite3` package) and start; then check the card's values by hand.
+- **A host of another size.** A pin recorded on a host whose facts differ by a quarter or more is
+  warned about at start ("… is pinned to …, sized for another host …"); the card offers "Use
+  host-sized values" and "Keep these numbers". After `yulius instance import` the first start takes
+  host-sized values by itself (audited `limits.adapted`).
 
-**A host of another size.** Every pinned number is recorded with the host it was configured on
-(a unit value at the first start that sees it, a setting when it is saved). When a fact its
-formula uses differs from this host's by a quarter or more (the larger of the two readings is at
-least a quarter above the smaller, so 48 GiB against 38 GiB counts and 47 against 45 does not)
-and the number is not what this host would get, the limit no longer fits: the server warns at
-start ("… is pinned to …, sized for another host …; this host would get …", with the number, the
-host it was configured on and the host-sized value) and the card lists it,
-with "Use host-sized values" (host-sized for all of them, overruling the unit) and "Keep these
-numbers" (they are recorded for this host). After `yulius instance import` the first start takes
-the host-sized values by itself (audited as `limits.adapted` by `migration`).
+[details](archive/operations-until-2026-11-26.md#resource-limits)
 
 ### Claude Code updates
 
-Claude Code's own updater is off in every session (it cannot write the system install from a
-contained run). Yulius updates it instead ([ADR-0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md),
-SPEC-421; [ADR-0293](decisions/0293-claude-code-follows-latest-and-must-know-the-default-model.md),
-SPEC-461), with no root step and no sign-in again:
+Claude Code's own updater is off in every session; Yulius updates it instead, with no root step and
+no sign-in again
+([ADR-0293](decisions/0293-claude-code-follows-latest-and-must-know-the-default-model.md)):
 
-- **Channel.** About every hour (the first check 2 minutes after a start, and at once when the
-  channel changes or a superadmin presses "Check now") the server reads npm's dist-tags of
-  `@anthropic-ai/claude-code` from `registry.npmjs.org` and follows `latest` by default. A
-  superadmin chooses Latest, Stable or Off in **Settings, Instance, Claude Code**; the choice is
-  stored in the database, wins over `YULIUS_CLAUDE_UPDATES` and needs no restart ("Use the
-  server's" goes back to the unit's value).
-- **Checked before it is used.** A newer version than the one runs get is downloaded as its
-  platform package (`@anthropic-ai/claude-code-linux-x64`, `-linux-arm64`, or their `-musl`
-  builds), checked against the registry's sha512, and its binary must be an ELF for this platform
-  that embeds that version and names Yulius's default model (`claude-opus-5-5` today). It is
-  read, never run on the host. A release that does not know the default model is refused and
-  reported; one that lacks another model the composer offers is installed and the gap reported.
-  On `stable`, `latest`'s release is taken when neither the version in use nor stable's release
-  knows the default model.
-- It lands in `<data>/claude-code/versions/<version>/bin/claude.exe`; `<data>/claude-code/current`
-  points at it. The version before it is kept, older ones are removed once no process runs them
-  (about 300 MB each). Only a host install laid out as `bin/claude.exe` is updated over.
-  Whether a process runs a version is read from `/proc/<pid>/exe`: keep `/proc` readable to the
-  service user (no `hidepid=` mount option, no `ProtectProc=` in `yulius.service`), or a version a
-  running session uses could be removed under it.
-- **New runs.** Every run that joins an isolated sandbox (tasks, Superagent, shells, CI jobs, dev
-  CD runs) binds the newer of that version and the host's npm install at the host package's path,
-  when it starts (with Off: the host's install). Subscriptions stay signed in.
-- **Running tasks.** A task's session keeps the version it started with until a turn of it ends:
-  then Yulius restarts it on the version new runs get, in the same Claude session and on the
-  same subscription, and says so in one line in its terminal. It waits while the session has
-  background shells, agents or monitors (they would be lost; a `yulius wait` counts), while a
-  person typed into it in the last minute, and while a draft may sit in its prompt box: a person
-  typed into it since its last prompt was sent, however long ago (Yulius sees keystrokes and
-  sent prompts, not the box, so anything typed and not sent counts, and so does a prompt Yulius
-  holds for its person's choice, which Claude Code keeps in the box). A scheduled wake-up or loop
-  can submit plain text while the draft sits there. It leaves the draft, an achieved goal, and
-  any unanswered request for a person in place. A message Yulius types
-  into the session (one sent through a Superagent, a pull request's news) counts in the same way
-  until Claude Code submits it, which it does at once. A prompt entered while the agent works,
-  a person's or such a message, waits in Claude Code's queue until the turn ends (or is taken
-  into the running turn at its next tool result), and a resumed session does not get that queue
-  back: while something waits there the session is not restarted, at a turn's end the gate
-  blocks as at a clean one, and it moves at a later turn's end. Yulius knows the queue from the
-  records Claude Code writes about it into the session's transcript; Claude Code's own
-  notifications of finished background work wait there too and count. For two seconds after a
-  prompt went on the session stays as well, because that record is written a moment later
-  (about a tenth of a second). A session that keeps its version for longer than expected (the
-  Claude Code card lists it) holds an entry Claude Code never takes out, which it does with
-  some notifications of work a sub-agent started, or one Yulius counted wrongly: it moves at
-  its next start, so stop and continue moves it at once. The server's log says at each turn's
-  end what keeps a session that is due ("the session is not restarted on the newer Claude
-  Code at this turn's end", with `why`). Two things can still lose a prompt: one entered in
-  the moment between a turn's end deciding to restart and the task reading "Continuing"
-  (a message sent through Yulius is refused from then on), and a host so loaded that Claude
-  Code takes longer than those two seconds to write where a prompt went. It tries once per
-  version, one restart of a task at a time. A goal session
-  moves at a turn it works on after, while its goal is set and not yet achieved; an idle one,
-  and a goal task that is Done, keep their version until their next start. A prompt-mode session
-  in which a person set a goal of their own (`/goal …` in its terminal) keeps its version while
-  that goal is open: Yulius types nothing into such a session and learns of a goal only from
-  what the new process writes, so after a restart it would not know the goal any more (Claude
-  Code restores an open goal by itself when a session is resumed, at least since 2.1.292; Yulius
-  does not rely on it). The session moves at a later turn's end, once the goal is met, failed or
-  cleared, or at its next start: stop the task and continue it to move it at once. An idle
-  session that is restarted reads "Continuing" for a moment and then as it did: its person is
-  not notified a second time. The card lists the tasks still on an older version, and each
-  task's info shows the version each session ran.
-  Yulius does not know a schedule a session set for itself (Claude Code's `/loop`): such a
-  session is restarted like any other, and the schedule ends with its process.
-- **A version a session cannot continue on gets no other running session.** That is: the
-  restart could not be started, the restarted session ended by itself before it started, or it
-  did not start within two minutes (a dialog a release opens on; that session is left as it is,
-  for its person). The card names the task and what happened; from then on the card's list and
-  each task's info promise that version only at the task's next start. Sessions that start or
-  continue still get that version, so choose Off (the host's install) when it does not work at
-  all. A
-  newer version, or a restart of the server, lifts it. A restart that cannot be made right now
-  (the subscription is at its limit, the sandbox cannot be joined) says nothing, is no entry in
-  the task's switches, and is tried again at a turn's end ten minutes later or more.
-- **When the version in use does not know the default model**, the card shows a red banner with
-  the fix and `yulius doctor --contained` prints "Claude Code in sandboxes" as `FAIL`. The fix is
-  the next check (or "Check now"), which installs a release that knows it; or, at once, a newer
-  install on the host: `sudo npm install -g @anthropic-ai/claude-code@latest` (runs get the newer
-  of the host's and Yulius's). If npm's newest release does not know it either (it was refused,
-  or it is what runs get), no release knows the model yet: choose a model Claude Code knows for
-  tasks until one does. The card and the doctor say that only from the server's own read of the
-  registry in the last two hours: not with Off, and not after a check that failed.
-- **When the binary in use cannot be read for its models** (a file the service user may not
-  read, a read error), the card shows a "models not read" badge and says that whether it knows
-  the default model is not known; `yulius doctor --contained` warns the same and names the
-  install. Nothing is claimed either way until it can be read again (at the next view of the
-  page).
-- The host's install is never changed; updating it by hand past Yulius's version makes runs use it.
-  Without an npm install on the host, sandboxes have no Claude Code and nothing is updated.
-- The server writes what it last knew (channel, npm's `latest` and `stable`, what the last check
-  did, the version in use and the offered models it lacks) to `<data>/claude-code/status.json`:
-  `yulius doctor --contained` reads the channel in effect from it and warns about a refused
-  release. A failed check is logged ("Claude Code was not updated"), shown on the card and tried
-  again an hour later; the server's egress needs `registry.npmjs.org` on port 443.
+- **Channel.** About every hour (and on "Check now") the server reads npm's dist-tags of
+  `@anthropic-ai/claude-code` from `registry.npmjs.org` (egress on port 443) and follows `latest` by
+  default. A superadmin chooses Latest, Stable or Off in **Settings → Instance → Claude Code**, which
+  wins over `YULIUS_CLAUDE_UPDATES` and needs no restart.
+- **Checked before use.** A newer version is downloaded as its platform package
+  (`@anthropic-ai/claude-code-linux-x64`, `-linux-arm64`, or their `-musl` builds), checked against
+  the registry's sha512, and must name Yulius's default model (`claude-opus-5-5` today), else it is
+  refused and reported. It lands in `<data>/claude-code/versions/<version>/bin/claude.exe`, with
+  `<data>/claude-code/current` pointing at it; the previous version is kept, older ones go once no
+  process runs them (about 300 MB each). Keep `/proc` readable to the service user (no `hidepid=`,
+  no `ProtectProc=` in `yulius.service`), or a version in use could be removed.
+- **Runs** in isolated sandboxes use the newer of that version and the host's npm install (Off: the
+  host's); running tasks move at a safe turn end, or at once by stop and continue.
+- **Default model unknown** (red banner; `yulius doctor --contained`: "Claude Code in sandboxes"
+  `FAIL`): "Check now", or `sudo npm install -g @anthropic-ai/claude-code@latest` on the host; else
+  pick a model Claude Code knows. The host's install is never changed by Yulius. State:
+  `<data>/claude-code/status.json`; failures log "Claude Code was not updated".
+
+[details](archive/operations-until-2026-11-26.md#claude-code-updates)
 
 ### Language servers and Claude Code plugins
 
-Yulius switches the language servers of Claude Code plugins (rust-analyzer, pyright, gopls and
-the like) off in every session it starts, and Claude Code does not ask in a session whether to
-install one
-([ADR-0327](decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md),
-SPEC-485). Before this, one Enter on Claude Code's "LSP plugin recommendation" dialog installed
-such a plugin into the sandbox's home for every session; each session then started its own
-server at the first edited file (gigabytes each, and checks in the worktree's build directory),
-or showed `Language server "plugin:…" couldn't start. The Errors tab in /plugin may have the
-reason.` in the terminal.
+Yulius switches the language servers of Claude Code plugins (rust-analyzer, pyright, gopls, …) off
+in every session it starts, whatever the home's or repository's settings say; nothing to set up or
+clean. A run's view: `enabledPlugins` in `<data>/runs/<attempt>/claude-settings.json`, the log line
+"switching off the plugins that bring a language server for this run", and `claude --settings <that
+file> plugin list`.
 
-- Nothing to set up and nothing to clean: a plugin installed in a sandbox's home
-  (`<data>/sandboxes/<id>/home/.claude/plugins`) may stay. Every launch switches the plugins
-  that bring a language server off in the run's own settings, whatever the home's
-  `settings.json`, the repository's `.claude/settings.json` or a `/plugin` in a terminal says.
-  Other plugins (skills, commands) are left as they are; a plugin that brings a language server
-  and other things is switched off whole (Claude Code has no finer switch).
-- Sessions get it at their next launch; a session running across the update keeps what it
-  started with until it is started again.
-- To see what a session got: `enabledPlugins` in the run's `claude-settings.json`
-  (`<data>/runs/<attempt>/`), and the server's log line of the launch, "switching off the
-  plugins that bring a language server for this run" with their ids. `claude plugin list` run in a sandbox shows the home's own state,
-  which a run's settings outrank; `claude --settings <that file> plugin list` shows the run's.
-- The notice in a session that was started after the update means a plugin brings a language
-  server where Yulius does not look. The launch's warning in the server's log, "could not read
-  everything about this session's plugins", names what it left unread (a link, a file that is
-  not JSON, a bound, a marketplace whose folder it could not open). Not read by decision: a
-  marketplace or an installed copy outside the sandbox's folders (for a contained Superagent
-  also one in the person's own home, which its Claude Code names by the path it sees there),
-  and a plugin installed or switched on while the session ran (off from the next launch).
-  Anything else: report it. The opt-in check `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test main
-  live_claude::a_run -- --ignored` asks the installed Claude Code in eight layouts (no account
-  needed).
+[details](archive/operations-until-2026-11-26.md#language-servers-and-claude-code-plugins)
 
 ### Messages Yulius types into a session
 
-Yulius types into a running task's session: a person's message sent through their Superagent
-or their own agent (`task_message`), what happens to the task's pull request, "Yulius is back;
-continue" after an outage, and `/mcp reconnect yulius` when the session's Yulius tools went
-silent. It types none of them while a person's draft may sit in the session's prompt box
-(SPEC-480, [decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md)):
+Yulius types nothing into a session (a `task_message`, pull request news, "Yulius is back; continue",
+`/mcp reconnect yulius`) while a person's draft may sit in its prompt box
+([decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md)): a
+`task_message` is refused at once, Yulius's own messages retry, and after 10 minutes the task reads
+**Needs your action**. To release it, send or clear what was typed in the task's terminal, or send
+any prompt (`continue`); the owner can also send past it with `task_message` and `with_draft: true`.
+The mark survives restarts as `person-typed` in the run's folder (`<data>/runs/…`).
 
-- **When a message waits.** Someone typed into the task's terminal since its prompt box was
-  last empty (the session's start, or the last prompt sent from the box), however long ago.
-  A keystroke holds every message for one minute. After that, Yulius can release the hold
-  when Claude Code shows its empty conversation input, including its dim suggestion.
-  Codex can also release it when the focused composer shows its dim “Ask Codex to do anything” placeholder and the footer offers agents or shortcuts. A recalled image keeps the hold. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md)
-  A stashed Claude draft, a named Claude input, a dialog or an unfamiliar layout keeps the hold.
-  Text that Claude restores after a submit also holds a message. [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
-- **Who is told.** A message sent with `task_message` is refused with that reason at once, and
-  the Superagent or the person's agent says so. A message of Yulius's own waits and is tried
-  again (a pull request's news every 20 seconds; the wake after an outage until 10 minutes
-  after the start, then it is dropped). Once the person's last key is 10 minutes old, the task
-  reads **Needs your action** ("Yulius has a message for this session and does not type it…")
-  and its terminal says the same in one line; a wake that is dropped says so at its last try,
-  whatever the key's age. A flagged task is not idle, so a finished one does not count as done
-  for the tasks chained after it until the hold ends.
-- **What ends it.** Send what you typed in the task's terminal, or clear it. After a
-  minute a watch can deliver to the recognized empty box. On other screens, send any prompt
-  (`continue` will do) to release the hold. The task's owner can also tell their
-  Superagent (or their own agent) to send a message past it: `task_message` with
-  `with_draft: true` types the message behind that text and both go to the agent as one
-  prompt, once the last key is more than a minute old (SPEC-487). That ends the hold too,
-  also for a draft from before a restart. Nobody else's message goes past it, and not while a
-  prompt Yulius held for a decision is back in the box.
-- A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
-  (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
-  box or the box is confirmed empty. A restarted server reads the mark when it reattaches
-  the run. After a quiet minute, a snapshot the host confirms was rendered at the current size can release the hold. An older host needs a live repaint.
-  A window resize also requires a repaint because it can crop a draft or stash hint.
+[details](archive/operations-until-2026-11-26.md#messages-yulius-types-into-a-session)
 
 ### Docker in sandboxes
 
-Each isolated sandbox has its own Docker engine (SPEC-187,
-[ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md);
-SPEC-196, [ADR-0158](decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
-`docker`, `docker compose`, buildx and testcontainers work unchanged in agents' sessions, the
-Superagent, Shells and CI jobs (not in a production CD run). The host's Docker is never reachable
-from a sandbox, and no daemon needs to run on the host.
+Each isolated sandbox has its own Docker engine: `docker`, `docker compose`, buildx and
+testcontainers work in agents' sessions, the Superagent, Shells and CI jobs (not in production CD).
+The host's Docker is never reachable from a sandbox, and no daemon needs to run on the host. Runs see the socket at `/var/run/docker.sock` and
+`DOCKER_HOST=unix:///run/yulius/docker/docker.sock`, served by a Docker front beside each holder.
+On first use the front starts `dockerd` as root of the sandbox's user namespace, in the sandbox's
+network and cgroup, under a seccomp profile every container inherits (`--privileged` included).
+Containers count against the sandbox's limits and reach the egress proxy at
+`host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`); a port
+published in the sandbox's range is relayed like a dev server's.
 
-- **Every session, whatever its age.** A Docker front beside each live holder serves the socket;
-  runs see it at `/var/run/docker.sock` and `DOCKER_HOST=unix:///run/yulius/docker/docker.sock`.
-  After an update the server adopts the holders and gives each a front. Within one upkeep tick
-  (30 s) it moves the Docker directory into sessions that started without it, so nothing needs a
-  restart or a new session.
-- **Settings → Instance** (superadmin) has a **Sandbox Docker** card. It shows whether sandboxes
-  get Docker, why not and the fix (the doctor's words); the base being rebuilt and when it will
-  be ready; the sandboxes on their own Docker; and the last update's re-check. **Run smoke check**
-  runs the smoke test below from the server, as its child in its delegated cgroup. One runs at a
-  time, bounded to 40 minutes, and each check appears as it ends.
-- **Verify on the host** (as root, after a deploy):
+**Verify** (as root, after a deploy), or with **Run smoke check** on the **Sandbox Docker** card in
+Settings → Instance:
 
-  ```sh
-  sudo yulius doctor --docker-smoke
-  ```
+```sh
+sudo yulius doctor --docker-smoke
+```
 
-  Run as root, it always runs as the data directory's owner in a delegated transient unit
-  (`systemd-run`), never in the root shell's own cgroup (SPEC-202, #617), and refuses a data
-  directory root owns. It uses the current base, and removes its throwaway sandbox
-  (`docker-smoke-<pid>`) at the end. A server that starts or restarts while it runs leaves that
-  sandbox alone (ADR-0308), so it passes right after `host setup` started the service and beside a
-  running server. It prints one plain line per check and exits 0 only when
-  sandboxes get Docker: a run older than the engine gets the socket, its refusal names the reason,
-  then `docker run --rm hello-world`, a `docker build` and a two-service `docker compose up` in that
-  run, a recreated socket, and `DOCKER_HOST` in a new run; last, a CI job in its own group whose
-  container and network carry its label (an agent's beside it none), and whose end removes only
-  the job's (SPEC-504). It needs Docker Hub (`hello-world`, `busybox`).
+It runs as the data directory's owner (`systemd-run`) in a throwaway sandbox (`docker-smoke-<pid>`),
+is safe beside a running server, and exits 0 only when sandboxes get Docker (needs Docker Hub).
 
-- **What it is.** On the first connection to the sandbox's socket, the sandbox's Docker front
-  starts `dockerd` as root of the sandbox's user namespace (not the host's): in the sandbox's
-  network, with a run's view of the files plus its storage, a cgroup namespace rooted at
-  `sandboxes/<sandbox>/engine/inside` (its limits on `engine`, out of its view, ADR-0339), and
-  a seccomp profile of its own that every container inherits, `--privileged` included.
-  Containers count against the sandbox's memory, task and CPU limits. Their traffic leaves
-  through the sandbox's egress, and they reach the egress proxy at
-  `host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`). A
-  port published in the sandbox's port range is relayed like a dev server's.
-- **Prerequisites.** `sudo yulius host setup` (§2) brings all of them and proves them with the
-  smoke test. Every update re-checks them (§8), and a reboot keeps them (the modules file, the
-  disabled units, the drop-ins and the base are on disk).
-  - `dockerd` in the sandbox's system
-    ([ADR-0160](decisions/0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md)).
-    Docker on the host (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`)
-    gives it to every new base, which copies `dockerd`, `containerd`, `runc`, `docker-proxy` and
-    the CLI plugins. The host's own daemon is not needed, and the setup stops it. While the host
-    has `dockerd` and the current base has none, the server checks the host at every tick, so
-    the rebuild starts 10 minutes after the host last changed (Settings → Instance says when it
-    will be ready); `sudo yulius host setup` builds it at once.
-    - Without Docker on the host, an agent installs it in its own sandbox
-      (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`), and the front starts
-      an engine at the next tick (30 s). Ubuntu's `docker.io` alone has no buildx or compose
-      (SPEC-201); the same command adds a missing plugin to a sandbox whose engine is Ubuntu's.
-    - On a base copied from a `docker-ce` host, apt refuses that command (`containerd.io`
-      conflicts with `containerd`) and removes nothing. A missing plugin there is
-      `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin`.
-    - A sandbox keeps its base's `dockerd` until its holder next starts on a newer base (after
-      the idle time). One installed in the sandbox stays.
-  - **A sandbox on its own `docker.io`.** Docker an agent installed in a sandbox is kept: Yulius
-    removes nothing a sandbox installed. Ubuntu's `docker.io` puts `dockerd` in `/usr/sbin`, which
-    comes before the base's `/usr/bin/dockerd`, so that sandbox runs its own, older engine. The
-    product sandbox ran 29.1.3 while the base had 29.9.1. `yulius doctor` ("sandbox own Docker")
-    and Settings → Instance list such sandboxes. To use Docker's packages, as the base does, run
-    in that sandbox `sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-    docker-buildx-plugin docker-compose-plugin`: apt replaces `docker.io`, and the engine switches
-    when it next starts, after it was idle. Never `sudo apt-get remove docker.io`: the removal's
-    whiteouts hide the base's files at the same paths, and that sandbox loses Docker.
-  - The cgroup delegation (§3). When `yulius.service` stops, systemd removes every empty group
-    in the unit, including the `engine` leaf of a sandbox whose engine stopped as idle. Holders
-    and fronts keep running (`KillMode=process`). Before each engine start, the front makes the
-    leaf (and `inside` below it) again under the sandbox's group, and so does the server's
-    upkeep tick (30 s) for an engine front it keeps (SPEC-201, #614). Before that fix,
-    `docker` answered "cannot join …/sandboxes/<sandbox>/engine: No such file or directory"
-    after every update, until a new run prepared the sandbox.
-  - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
-    nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`,
-    listed in `/etc/modules-load.d/yulius-docker.conf` so that they load at every boot.
-  - The `yulius` executable owned by root and writable by no group or other, as §2 installs it.
-    The engine's read-only binds are not locked, so an executable the service user owns or may
-    write could be remounted and rewritten. With one, sandboxes get no engine.
+**Prerequisites** (`sudo yulius host setup` brings and proves them; every update re-checks them;
+`sudo -u yulius yulius doctor --contained` reports them as "sandbox Docker"):
 
-  `yulius doctor` checks all of them ("sandbox Docker", the same words as Settings → Instance).
-  Without `--contained` its "sandbox Docker" line names that flag (`yulius.service` sets
-  `YULIUS_CONTAINED=true`); run it as the service user: `sudo -u yulius yulius doctor
-  --contained`.
+- `dockerd` in the base: Docker on the host (`docker-ce` with `docker-buildx-plugin` and
+  `docker-compose-plugin`) gives every new base `dockerd`, `containerd`, `runc`, `docker-proxy` and
+  the CLI plugins; the base is rebuilt 10 minutes after the host last changed, or at once by `sudo
+  yulius host setup`. Without Docker on the host an agent can install it in its sandbox (`sudo
+  apt-get install -y docker.io docker-buildx docker-compose-v2`); on a base from a `docker-ce` host
+  a missing plugin is `sudo apt-get install -y docker-buildx-plugin docker-compose-plugin`.
+- A sandbox with its own `docker.io` runs that engine (`yulius doctor`: "sandbox own Docker"); to
+  switch, run in it `sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+  docker-buildx-plugin docker-compose-plugin`, never `sudo apt-get remove docker.io`.
+- The cgroup delegation (§3).
+- These kernel modules, listed in `/etc/modules-load.d/yulius-docker.conf`: `overlay bridge veth
+  nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`.
+- The `yulius` executable owned by root and writable by no group or other (§2).
 
-- **Disk.** Images, containers and volumes live in `<data>/sysroots/<sandbox>/docker` and count
-  toward the sandbox's soft quota as "containers". This is a lower bound: directories that a
-  container's own users keep private (mode 0700, a database's data, for example) are not entered.
-  From 90 % of the quota, while the engine runs, Yulius prunes its build cache and the images no
-  container uses, before the caches of idle tasks. A stopped engine is never started for that,
-  so it keeps its images until the next use. Containers and volumes are never pruned.
-- **Lifetime.** The engine stops after `YULIUS_SANDBOX_IDLE_MINUTES` without a client and without
-  a running container. While it runs, the holder stays. It survives Yulius restarts and updates
-  with the holder. Containers stop when the holder stops; those with a restart policy come back
-  when the engine starts again.
-- **Limits.** Image files owned by ids above 65535 cannot be stored. Setuid binaries and file
-  capabilities do not raise privileges inside containers (`no_new_privs`).
-  - Per-container task limits (`--pids-limit`, compose `pids_limit`) work: `cpu` and `pids`
-    reach the engine's root and runc passes them on in threaded mode (ADR-0339). Memory and CPU
-    flags (`docker run -m`, `--cpus`, compose `mem_limit`, `cpus`) are not supported; leave them
-    out: memory cannot be threaded and is discarded, and runc refuses `--cpus` in threaded mode
-    ("cannot enter cgroupv2 … with domain controllers"). The sandbox's own limits, and the
-    engine's 3/8 of its task limit (SPEC-268), still bound every container.
-  - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
-    engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
-- **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the
-  reason. Without an engine it names the missing prerequisite and the fix (`YULIUS_SANDBOX_DOCKER=off`,
-  no `dockerd` in the sandbox, no cgroup delegation, a writable executable), the same words as `yulius doctor`.
-  For an engine that did not start, it gives the last lines of
-  `<data>/runtime/sandboxes/<sandbox>/engine.log`. The front's own log is `docker-front.log`
-  beside it.
-- **What CI jobs leave** (SPEC-504, ADR-0359). Each CI job runs in its own cgroup
-  (`…/sandboxes/<sandbox>/ci/ci-job-<job id>`), and the front labels the containers and networks
-  it creates `yulius.ci.job=<job id>` (`docker inspect -f '{{index .Config.Labels
-  "yulius.ci.job"}}' <container>`), with `yulius.ci.create` holding a value of that create's
-  own (a container made from an image committed from a job's container carries its image's
-  value, and is kept). When the job ends, whatever the outcome, Yulius removes them
-  from the running engine (containers forced, their volumes kept); every 30 s, and first after a
-  start, the upkeep removes those of jobs whose group has no process. The journal says `removed
-  what CI jobs left in the sandbox's Docker engine` with the counts and `job-end` or `sweep`; the
-  Pipeline tab's Docker card counts them per week (`GET /api/analytics/docker`: `ci_containers`,
-  `ci_networks`, `ci_swept`). A sweep that keeps finding leftovers means jobs end while the engine
-  is stopped or the server restarts often. Agents' containers, images and volumes are never
-  touched; nothing is labelled without cgroup delegation, or by a front an older build started
-  (it is replaced at its first quiet moment). A project's own test harness should still clean up
-  after each test: Yulius's removal is the backstop for a job that is killed.
-- **A full front** (SPEC-494, ADR-0344). The front holds at most 256 connections. At the limit it
-  closes the longest-idle one (idle 300 s or more) for a new call; with every connection active the
-  call gets "the sandbox's Docker front holds all of its connections …". It ends a connection whose
-  client hung up, and closes one 30 s after the engine ended its side. `docker-front.log` and the
-  journal (`the sandbox's Docker front: …`, at most once a minute per kind) say each of these with
-  the totals; `docker-front-state.json` beside it holds the connections held now, the limit, the
-  totals and since when it is full. While it is full, or refused since the last tick, the panel
-  shows "Docker full: <sandbox>" (one notification per trouble) and each running task of the sandbox
-  is told once, in its session, not to ask a person; they hear again once it has room. Yulius
-  restarts a front that stays full for 2 minutes (or whose running engine does not answer `GET
-  /_ping` through it on three ticks) by itself, once no CI job of the sandbox runs and at most 10
-  minutes later: the journal says `restarted the sandbox's Docker front` with why (or `… which
-  started at a later tick`); running containers stop, volumes and images stay. The sandbox's
-  Superagent restarts it at once with `docker_restart` when its person asks. A front kept across an
-  update (it runs the replaced executable) is replaced at its first quiet moment, fronts from before
-  ADR-0344 included: read just before, it holds no connection at its socket (accepted or waiting)
-  and runs no engine (no child process); the journal says `replaced the sandbox's Docker front with
-  this build's`. A Docker call that comes between that read and the new front's `ready` fails at
-  once (its socket missing or refused, or cut once it had connected, accepted or still waiting) and
-  can be run again. A busy one is journaled once a day ("runs an earlier build; it is replaced once
-  it is quiet"). A front from before ADR-0344 writes no state, so it is never seen full: one that
-  stays busy (connections it leaked keep it so) is restarted by hand, with `docker_restart` through
-  the Superagent or `kill -TERM` of the pid in `docker-front.json` (the upkeep starts a new one
-  within a tick; its engine and running containers stop, volumes stay).
-- **Networks that restrict inter-container traffic** (SPEC-494, ADR-0344). The host does not
-  load `br_netfilter`; a sandbox's engine runs with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`, so
-  `docker network create -o com.docker.network.bridge.enable_icc=false` (and Compose networks
-  asking for it) succeeds, and its containers can still reach each other inside the sandbox. An
-  engine started by an earlier front gets the variable once that front is replaced (above).
+- **Disk.** `<data>/sysroots/<sandbox>/docker` counts toward the quota; from 90 % a running
+  engine's build cache and unused images are pruned, never containers or volumes.
+- **Lifetime.** The engine stops after `YULIUS_SANDBOX_IDLE_MINUTES` idle and survives Yulius
+  restarts and updates.
+- **Limits.** No image files owned by ids above 65535. `--pids-limit` works; leave out memory and CPU
+  flags (`docker run -m`, `--cpus`, compose `mem_limit`, `cpus`). Bind mounts resolve in the
+  engine's view (sandbox directory, system layer, engine `/tmp`).
+- **Failures.** "the sandbox's Docker engine is not available: …" names the reason and fix, or quotes
+  `<data>/runtime/sandboxes/<sandbox>/engine.log` (the front logs to `docker-front.log`).
+- **CI leftovers.** Containers and networks labelled `yulius.ci.job=<job id>` go when the job ends
+  (volumes kept; journal: `removed what CI jobs left in the sandbox's Docker engine`).
+- **A full front.** The front holds at most 256 connections, closing the longest-idle one (300 s or
+  more) for a new call; the panel shows "Docker full: <sandbox>". Yulius restarts a front full for 2
+  minutes, or whose engine does not answer `GET /_ping`, once no CI job runs (running containers
+  stop, volumes and images stay). By hand: the Superagent's `docker_restart`, or `kill -TERM` of the
+  pid in `docker-front.json`.
+- Engines run with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`, so networks with `enable_icc=false` work.
+
+[details](archive/operations-until-2026-11-26.md#docker-in-sandboxes)
 
 ### Task intake (Jev)
 
-Optional (SPEC-002 ADR-16). With a TypeSafe Jev key, Yulius offers to split new tasks that mix
-separate workstreams (the proposal comes from one headless `claude -p` run on a connected
-account), to run broad work started another way as a supertask (SPEC-188; Jev's `breadth`
-question, fixed 85 % threshold, no setting), it holds prompts typed into a running task that add, drop or replace its scope until
-someone decides in the task view, and it chooses a new task's mode and workflow when the composer
-leaves them on Auto (the default). Without a key the split, breadth (supertask proposal) and scope checks are off, and Auto
-always takes its defaults: Goal, with the workflow named "Feature" (none when there is no such
-workflow, and none for a prompt-mode task). The Auto thresholds are fixed (75 % for the mode,
-60 % for the workflow) and have no setting.
+Optional. With a TypeSafe Jev key, Yulius offers to split new tasks that mix separate workstreams,
+proposes broad work as a supertask, holds prompts typed into a running task that change its scope,
+and chooses a new task's mode and workflow when the composer leaves them on Auto. Without a key
+these are off and Auto takes Goal with the workflow named "Feature" (none if there is no such
+workflow, and none for a prompt-mode task).
 
-**The key is managed in Yulius** (SPEC-001 ADM-001, ADM-002): setup asks for it as an optional
-last step, and the superadmin sets, replaces, tests (one small request) and removes it under
-Settings → Instance. It is sealed with `master.key` like every other stored secret, takes effect
-at once (no restart), and is never logged or returned by the API. A key file is still honoured
-while no key is saved there; the page shows it as "from config" and **Save it here** moves it into
-settings, after which the variable can be removed from the unit. A key saved in settings always
-wins over the file.
+The superadmin sets, replaces, tests and removes the key in setup's optional last step or under
+Settings → Instance; it is sealed with `master.key`, takes effect at once and is never logged. A key
+file is honoured while no key is saved (shown as "from config"; **Save it here** moves it into
+settings, after which the variable can go from the unit).
 
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |
-| `--jev-api-key-file` / `YULIUS_JEV_API_KEY_FILE` | unset | File holding a Jev API key, owned by the service user, mode `0600` (a group- or world-readable file is refused and the page says why). Used while no key is saved in settings; read at start. The key is never logged. |
+| `--jev-api-key-file` / `YULIUS_JEV_API_KEY_FILE` | unset | File holding a Jev API key, owned by the service user, mode `0600` (a group- or world-readable file is refused). Used while no key is saved in settings; read at start. |
 | `--jev-split-threshold` / `YULIUS_JEV_SPLIT_THRESHOLD` | 0.9 | Probability of "several workstreams" Jev must give before a split is offered (0.5–1). |
 | `--jev-scope-threshold` / `YULIUS_JEV_SCOPE_THRESHOLD` | 0.8 | Probability Jev must give before a typed prompt is held (0.5–1). |
 
 - The start log says `task intake is on (Jev jev-1.13.0, key saved in settings)` (or `… key from
   YULIUS_JEV_API_KEY_FILE`) or `task intake is off: no Jev key`.
-- Requests go to `https://api.typesafe.ai/v1/systemone` (outbound HTTPS). Each request carries one
-  question: for a split or breadth check (both asked at once) or an Auto choice, the new task's prompt (the workflow question also
-  carries the sandbox's workflow names, descriptions, when to use them and step titles); for a
-  typed prompt, the task's title, prompt and step titles plus the typed text.
-- Every Auto decision is in the audit log (`task.auto_choice`, for example `mode goal (jev 91%),
-  workflow Feature (default)`) and in the service log (`auto choice`); a Jev failure is logged as
-  `auto choice without Jev's answer; the default applies`.
-- Split proposals run the `claude` on the service's `PATH` (the same CLI as sessions), outside
-  containment, with no tools, in a temporary directory under `<data>/runtime/intake/`. They use
-  the account's usage like a short task.
-- Claude Code needs no extra settings. Yulius already registers its `UserPromptSubmit` hook in
-  every run's `--settings` file (`yulius hook claude UserPromptSubmit`; the scope check answers
-  within 3 s and lets the prompt through on any failure). It checks what a person types into a
-  task's terminal (the last keystroke within a minute), also into a task paused for capacity.
-- Each check of a typed prompt logs one line without the prompt: `scope check of a typed prompt
-  task=… verdict=context|new_scope|drops_scope|redirect percent=…`; a held prompt is also audited
-  as `prompt.held`. `journalctl -u yulius | grep 'scope check'` shows whether intake runs.
+- Requests go to `https://api.typesafe.ai/v1/systemone` (outbound HTTPS). Split proposals run the
+  `claude` on the service's `PATH`, uncontained, without tools, in `<data>/runtime/intake/`.
+- `journalctl -u yulius | grep 'scope check'` shows whether intake runs (audit: `task.auto_choice`,
+  `prompt.held`).
+
+[details](archive/operations-until-2026-11-26.md#task-intake-jev)
 
 ### Telegram notifications
 
 An instance administrator sets one Telegram bot (from @BotFather) in Settings → Administration →
-Telegram bot; people then link their own chats in Settings → Notifications (SPEC-498). The server
-only makes outbound HTTPS requests to Telegram (long polling `getUpdates`, `sendMessage`), so no
-port is opened and an instance on a private network works. After an error it retries with backoff
-(1 s doubling to 60 s); the card says `retrying` and why (`refused`: the token was revoked, set a
-new one; `conflict`: another program polls with the same token). Removing the bot stops it at once
-and unlinks every chat. The log names the bot, never its token.
+Telegram bot; people link their chats in Settings → Notifications. Only outbound HTTPS (long polling),
+no open port. The card says `retrying` and why: `refused` (token revoked: set a new one) or
+`conflict` (another program polls with the same token).
 
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |
-| `--telegram-api-url` / `YULIUS_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram's Bot API for the personal notification channel (SPEC-498). HTTPS, or HTTP on a loopback host only (a fake Bot API in tests). The bot token itself is set in Settings → Administration, never here; the server only makes outbound requests (long polling), so no port is opened. |
+| `--telegram-api-url` / `YULIUS_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram's Bot API. HTTPS, or HTTP on a loopback host only (a fake Bot API in tests). The bot token is set in Settings → Administration, never here. |
+
+[details](archive/operations-until-2026-11-26.md#telegram-notifications)
 
 ### Security scans (Vidoc)
 
-Optional ([SPEC-195](../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md),
-ADR-0157). With a Vidoc key, every project's agents and granted CI jobs can run
-`yulius security-scan`. Vidoc's `vidoc-1` model reviews the files a branch changed (or, with
-`--all`, the whole repository). The scan fails on open critical or high findings, and on open
-medium findings in the lines the branch changed. Findings in code the branch did not touch become
-GitHub issues, which Yulius files once, reopens while they are reported and closes once their code
-is gone (ADR-0172). When the sandbox can use a Vidoc key (its own `VIDOC_API_KEY` agent secret or
-the instance's), Yulius CI adds a built-in `security` job to every project whose CI does not scan
-already, unless it is a playground or Vidoc is switched off for the project or the instance (below).
-**The scanned code is sent to Vidoc** (`https://model.vidocsecurity.com`). Without a key
-the scan says "not run", and nothing else changes. Keys come from <https://model.vidocsecurity.com/#key>.
+Optional. With a Vidoc key, agents and granted CI jobs run `yulius security-scan`: Vidoc's `vidoc-1`
+model reviews the files a branch changed (`--all`: the whole repository). It fails on open critical
+or high findings, and on medium ones in changed lines; findings in untouched code become GitHub
+issues. Yulius CI adds a built-in `security` job (`yulius security-scan --ci`) to every project
+whose CI does not scan already, unless it is a playground or Vidoc is off for it. **The scanned
+code is sent to Vidoc** (`https://model.vidocsecurity.com`); keys come from
+<https://model.vidocsecurity.com/#key>. Without a key the scan says "not run".
 
-The key is managed like the Jev key:
-
-- **Setup** offers it as an optional step after the Jev step.
-- **Settings → Instance** lets the superadmin set, replace, test and remove it. The test is one
-  `GET /v1/models` request, which must list `vidoc-1`.
-- **At rest** it is sealed with `master.key`, takes effect at once, is audited as `vidoc.key_set` and
-  `vidoc.key_removed`, and is never logged or returned.
-- **A key file** (`YULIUS_VIDOC_API_KEY_FILE`, owner-only, mode `0600`) is honoured while no key is
-  saved, and **Save it here** moves it into settings.
-
-Agents and CI jobs never get the key. They get `VIDOC_API_KEY=yulius-secret-VIDOC_API_KEY`, and the
-egress proxy replaces it toward `model.vidocsecurity.com` only. CI jobs get it only when their
-`yulius.toml` entry names it (`secrets = "VIDOC_API_KEY"`). An agent secret named `VIDOC_API_KEY`
-that reaches the run wins over the instance key
-([architecture](architecture.md#agent-secret-scopes)). Each use is in the secrets audit
-(`instance:vidoc`). The built-in `security` job (`yulius security-scan --ci`) is described above;
-onboarding adds no job, only the AGENTS.md rule. The scan needs
-`python3` 3.11 or later in the sandboxes. Agents and CI jobs start with an environment of their own,
-so `YULIUS_PYTHON`, which names another interpreter, is set in the job's command or in the session,
-not on the service.
+The key is managed like the Jev key (setup's step after Jev, or Settings → Instance; the test is
+`GET /v1/models`, which must list `vidoc-1`; audited `vidoc.key_set`, `vidoc.key_removed`).
 
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |
 | `--vidoc-api-key-file` / `YULIUS_VIDOC_API_KEY_FILE` | unset | File holding the instance's Vidoc API key, owned by the service user, mode `0600`. Used while no key is saved in settings; read at start. |
 
-**Turning Vidoc off for one project.** While the key fails (refused, HTTP 401 or 403, or out of quota,
-HTTP 402 or a 429 that says so), the sandbox's admins (GitHub `admin` on its repository) switch its scans off on the
-sandbox's CI/CD page: the CI tab's **Security scan (Vidoc)** card, "Scan this project with Vidoc".
-No instance administrator is needed; a superadmin can do the same on the Instance page's Vidoc
-card, which shows the same switch (and switch Vidoc off for every project there). Off, the project
-sends nothing to Vidoc, its scans report "disabled", Yulius adds no built-in `security` job (a
-`security` job the repository configures itself ends Skipped), a session started before the switch
-went off has its requests refused by the egress proxy (its scan ends "not run"), and its
-agents ask nobody about the key or its quota; on again, the next run and CI job scan. Each change is
-audited as `delivery.vidoc.update` (who, when, on or off), and the card says who changed it last.
-Members with write or maintain access see the card but cannot change it. A repository whose
-integration branch commits `enabled = false` in `.config/vidoc.toml` stays off whatever the switch
-says; the card says so and offers no way on (a reviewed pull request turns it on). A scan whose key
-fails names the card's address (`YULIUS_VIDOC_SWITCH`, which Yulius sets from `--public-url`), and
-so does CI's job log (SPEC-359, ADR-0245).
+- Runs get `VIDOC_API_KEY=yulius-secret-VIDOC_API_KEY`, replaced by the egress proxy toward
+  `model.vidocsecurity.com` only (CI jobs when `yulius.toml` says `secrets = "VIDOC_API_KEY"`); an
+  agent secret of that name wins ([architecture](architecture.md#agent-secret-scopes)).
+- The scan needs `python3` 3.11 or later in the sandboxes (`YULIUS_PYTHON` names another, set in
+  the job's command or the session, not on the service).
+- **Off for one project** (e.g. while the key fails with 401, 403, 402 or a quota 429): the
+  sandbox's admins switch "Scan this project with Vidoc" off on the CI tab's **Security scan
+  (Vidoc)** card; a superadmin can on the Instance page's Vidoc card. Audited
+  `delivery.vidoc.update`. A repository committing `enabled = false` in `.config/vidoc.toml` stays
+  off. A failing scan names the card's address (`YULIUS_VIDOC_SWITCH`, set from `--public-url`).
+- **Off for every project**: "Scan every project with Vidoc" on Settings → Instance's Vidoc card
+  (`PUT /api/admin/vidoc/enabled`; audited `vidoc.disabled` / `vidoc.enabled`; the key stays).
+- The start log says `Vidoc is on (instance key saved in settings)` (or `… from
+  YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`, plus `Vidoc scans are switched
+  off for the instance` while switched off.
 
-**Turning Vidoc off for every project.** A superadmin switches "Scan every project with Vidoc"
-off on Settings → Instance's Vidoc card (`PUT /api/admin/vidoc/enabled`). It takes effect at once,
-survives restarts, is audited as `vidoc.disabled` / `vidoc.enabled`, and keeps the key (also one
-from `YULIUS_VIDOC_API_KEY_FILE`). Every project then scans nothing, as above, and keeps its own
-choice for when the switch goes back on (SPEC-356, ADR-0242).
-
-The start log says `Vidoc is on (instance key saved in settings)` (or `… from
-YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`; while a superadmin has switched
-Vidoc off, it also says `Vidoc scans are switched off for the instance`.
+[details](archive/operations-until-2026-11-26.md#security-scans-vidoc)
 
 ## 5. First run
 
 1. Start the service. On the first start it writes a one-time setup token to
    `/var/lib/yulius/setup.token` (0600) and logs where it is.
-2. Open the public URL, enter the token, choose the superadmin password (twice; at least 8
-   characters, 12 or more recommended) and confirm both warnings: **the password can be recovered
-   only with the recovery code** (SPEC-001 ACC-002, ACC-011). Store the recovery code shown next.
-   Steps 3 and 4 of 5 ask for the Jev API key and the Vidoc API key (both optional; skip them to
-   add them later in Settings → Instance); the last one adds the first Claude subscription
-   (skippable, see step 5).
-3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for the owner account or
-   organization, then install it on the repositories Yulius may use. The App's callback URLs point
-   at `YULIUS_PUBLIC_URL`; when that URL changes later, see
-   [the App after the public URL changes](#the-app-after-the-public-url-changes). The manifest
-   requests the permissions below.
-4. User menu → Administration → Users: admit GitHub logins; they sign in with GitHub. Repository access in
-   Yulius mirrors their GitHub permissions (read / write / admin). The superadmin owns the
-   instance and sees every sandbox with admin access without GitHub (SPEC-001 ACC-012); pull
-   requests it opens are authored by the GitHub App, and merging or releasing, which act as a
-   person on GitHub, are done on GitHub or after signing in with GitHub as an admitted user.
-5. User menu → Administration → Subscriptions: add Claude subscriptions; each login runs Claude's own sign-in in a
-   terminal in the browser. They form one pool with nothing to configure: Yulius places them on the capacity that expires soonest, moves them at
-   98% at a turn boundary, pauses them (without telling the agent) only while no subscription has
-   capacity left and resumes them by itself. The capacity panel there and on the Dashboard says
-   when to add subscriptions (SPEC-002 ADR-17). A message sent while a task is about to move
-   is not lost (SPEC-479, ADR-0310): a prompt entered while the agent works, a person's or one
-   Yulius types for a person (a message through a Superagent, a pull request's news), waits in
-   Claude Code's queue until the turn ends, and a resumed session does not get that queue
-   back. So a move at a turn's end waits while such a prompt waits: the session answers it on
-   the subscription it is on, and the next turn's end moves it. Where the gate blocks a turn's
-   end it blocks there, on the same subscription. On a subscription at its limit Claude
-   refuses that turn and the session continues it on the next subscription, like any turn a
-   limit cuts. A task that waits for capacity at its turn's end with a prompt waiting stays as
-   it is; when another subscription gets room it goes on in place first and moves a turn
-   later. Yulius knows the queue from the records Claude Code writes into the transcript, as
-   for a restart on a newer Claude Code ("Claude Code updates" above); an entry a turn's end
-   left in the queue when it handed nothing on (Claude Code leaves some of its own
-   notifications there for good) keeps no move, so such a session stays only until a turn's
-   end hands nothing on, usually one. In a turn whose Stops a hook blocks (the gate's, a
-   goal's) no turn ends: such a notification keeps the session for one Stop, and the next Stop
-   after a tool result moves it. A prompt that waits behind a notification of finished
-   background work, a slash command or a `!` line is not such an entry: Claude Code hands
-   those on alone and the prompt one turn's end later, and the session stays until then. The
-   server's log says when a
-   move waits ("the session is not moved to another subscription at this turn's end"). A
-   message sent while the task reads "Continuing" is refused ("try again once it runs"), so
-   its sender knows. What can still be lost: a prompt entered in the moment between a turn's
-   end deciding to move and the task reading "Continuing", a prompt whose record Claude Code
-   takes longer than two seconds to write, a prompt that waits at the moment an entry a turn's
-   end had left in the queue leaves it after all, alone (a notification delivered to a
-   sub-agent: Yulius then takes the prompt for the entry that was left), and what waits in
-   the queue when a person moves or stops the task themselves or when a usage limit cuts the
-   turn (Yulius carries nothing over). Claude's sign-in here (`claude setup-token`) may
-   not read Claude's usage endpoint (it lacks the `user:profile` scope), so a subscription's usage
-   shows once a task runs on it: the running sessions report it through Claude Code's status line.
-   A subscription Claude refuses (a cancelled or downgraded plan) is marked "Sign in again" with
-   Claude's words and its tasks move on; Remove works while tasks use it and moves them; a person
-   runs a task on the subscription they choose from the task's subscription button (SPEC-447).
-   A subscription out of a model's usage credits (Fable runs on a weekly
-   allowance of them beside the 5-hour and weekly windows) is at that model's limit: its card
-   reads "Limit reached" with "Fable this week" at 100 % until the reset Claude named, its tasks
-   of that model move on or wait for the reset by themselves, and tasks of other models still
-   run on it. When Fable is used up on every subscription, tasks set to a Fable model go on with
-   Opus 5.5 instead of waiting (SPEC-482, ADR-0312): the Capacity card
-   and the Status line say "Fable 5.2 is used up on every subscription: tasks set to it run on
-   Opus 5.5 until it can run again", a task's details name the model its session runs on, and each
-   session runs Fable again at its next start once a subscription can. Such a task waits, or asks
-   a person, only when neither model can run. A default task runs Opus 5.5 (ADR-0340) and waits
-   when no subscription can run it. A usage reading does not end that limit. After buying
-   credits, press **Refresh**
-   on the subscription's card (or **Refresh all**): Yulius asks Claude with that model, and
-   when the model answers the limit ends at once and the tasks that wait for it go on
-   (SPEC-473, ADR-0307); otherwise it holds until its reset or until the subscription is signed
-   in again. Each card says how old its usage reading is (one older than 10 minutes is marked
-   "may be out of date") and which window is used up with its reset, worked out when the card
-   is shown. When Claude names no reset (an older Claude Code, or credits switched off), the
-   card says "Claude did not say when it resets"; Refresh then gets the reset from Claude's
-   refusal, the background round's next reading of the subscription ends the limit (a
-   session's own reading does not), and a task with nowhere else to go is tried once more. Refused again, it waits for
-   another subscription's reset when one is known. Refresh can also release that wait if
-   the model runs on the subscription that refused it. With no known reset, it is under Needs you (audit `task.limit_without_end`) until a person runs it
-   elsewhere or sends it a message, until its agent works again because the limit is over, or
-   until Yulius takes it on after all (a restart of Yulius retries it once; audit
-   `task.needs_you.resolved` says which; SPEC-464).
-   Do this before importing: until a Claude account is usable, Yulius refuses every agent start a
-   person asks for, Start onboarding included (SPEC-246, ADR-0190).
+2. Open the public URL, enter the token, choose the superadmin password (at least 8 characters, 12
+   or more recommended) and confirm both warnings: **the password can be recovered only with the
+   recovery code**. Store the recovery code. The next steps ask for the Jev and Vidoc API keys
+   (optional; later in Settings → Instance) and the first Claude subscription (skippable).
+3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for
+   the owner account or organization, then install it on the repositories Yulius may use. Its
+   callback URLs point at `YULIUS_PUBLIC_URL` (when that changes, see
+   [the App after the public URL changes](#the-app-after-the-public-url-changes)).
+4. User menu → Administration → Users: admit GitHub logins; they sign in with GitHub, and their
+   repository access mirrors GitHub (read / write / admin). The superadmin sees every sandbox with
+   admin access without GitHub; merging or releasing as a person needs GitHub sign-in.
+5. User menu → Administration → Subscriptions: add Claude subscriptions (Claude's own sign-in in a
+   browser terminal); they form one pool, and the capacity panel says when to add more. After buying
+   credits for a "Limit reached" one, press **Refresh**. **Do this before importing**: without a
+   usable Claude account every agent start is refused, Start onboarding included.
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
    `studio` delivery presets.
 
+[details](archive/operations-until-2026-11-26.md#5-first-run)
+
 ### Immediate CI for pull requests opened on GitHub
 
-New Yulius GitHub Apps subscribe to pull request openings during registration. For an existing App, set `YULIUS_GITHUB_WEBHOOK_SECRET_FILE` on the Yulius service to an owner-only file containing a random signing secret (for example, the output of `openssl rand -hex 32`). Restart the service. In the GitHub App registration, activate the webhook, enter the instance’s public URL followed by `/api/github/webhook`, and set the same secret. Select **Pull request** under **Permissions & events**. The configured file takes precedence over a secret issued at registration.
+New Yulius GitHub Apps subscribe to pull request openings at registration. For an existing App, set
+`YULIUS_GITHUB_WEBHOOK_SECRET_FILE` on the service to an owner-only file with a random signing secret
+(e.g. `openssl rand -hex 32`; it takes precedence over a secret issued at registration) and restart.
+In the App registration activate the webhook with the public URL followed by `/api/github/webhook`
+and the same secret, and select **Pull request** under **Permissions & events**
+([GitHub's webhook settings](https://docs.github.com/en/webhooks/using-webhooks/editing-webhooks)).
+Check: a new same-repository PR shows `pull_request.opened` with HTTP 202 in the App's recent
+deliveries and a queued run on the CI page. The periodic CI sync recovers missed deliveries.
 
-Open a same-repository PR into the integration branch. In the App’s recent deliveries, check that the `pull_request.opened` delivery received HTTP 202. In the sandbox’s CI page, compare its queue timestamp and head with the PR opening. A worker starts when a lane is available. The periodic CI sync recovers missed deliveries and admits waiting PRs when one of the sandbox’s 30 PR places becomes available. [GitHub App webhook settings](https://docs.github.com/en/webhooks/using-webhooks/editing-webhooks)
+[details](archive/operations-until-2026-11-26.md#immediate-ci-for-pull-requests-opened-on-github)
 
 ### GitHub App permissions
 
-Yulius uses one GitHub App (SPEC-002 ADR-08). The App's tokens can do only what its permissions
-allow: the server's installation tokens, and people's sign-in (user-to-server) tokens, which are
-also capped by the person's own repository access. What Yulius does on GitHub for a task uses its
-owner's sign-in token, so GitHub shows that person (GIT-003): Yulius's push and pull request for
-the task, its merges, promotions, issues and labels. Without a usable one (no linked account, as
-for the superadmin, or a sign-in that can no longer be refreshed) the App acts, and the task's
-terminal says so once. Yulius CI's statuses, branch cleanup and background reads stay with the App.
+Yulius uses one GitHub App. Its installation tokens and people's sign-in (user-to-server) tokens can
+do only what its permissions allow (the latter also capped by the person's own access). What Yulius
+does on GitHub for a task (push, pull request, merges, promotions, issues) uses its owner's sign-in
+token; without a usable one the App acts. CI statuses, branch cleanup and background reads use the
+App. The agent's own Git and `gh` never hold a person's token
+([ADR-0114](decisions/0114-agents-hold-a-token-github-refuses-on-production.md)): they get an
+installation token restricted to the sandbox's repository and to Contents, Pull requests and Issues
+(write), Checks, Commit statuses and Metadata (read), so they cannot touch rulesets, settings, deploy
+keys or workflows.
 
-The agent's own Git and `gh` never hold a person's token (ADR-0114): they get an installation token
-of the App restricted to the sandbox's repository and to Contents and Pull requests and Issues
-(write), Checks, Commit statuses and Metadata (read). Commits stay authored by the task's owner;
-an agent's own pushes and comments show the App. Without Administration that token cannot touch
-rulesets, settings or deploy keys; without Workflows it cannot add a GitHub Actions workflow.
-
-**Protecting the production branch.** Only a person may move it (ADR-0110). Add a branch ruleset
-on each repository (Settings → Rules → Rulesets → New branch ruleset): target the production
-branch (`main`), enforcement Active, rules **Restrict updates**, **Restrict deletions** and **Block
-force pushes**, and in the bypass list only the **Repository admin** role, never the Yulius App.
-GitHub then refuses the agents' token every push, merge, fast-forward or deletion of that branch,
-`--no-verify` and `gh` included, while an admin's promotion goes through. Projects Yulius creates
-get it; for an imported repository onboarding (`yulius onboard`, the preparation task) says when it
-is missing, and the preparation agent adds it with the `production_protect` tool: Yulius creates
-`yulius-people-only-<branch>` with those three rules as the task's owner, only when GitHub says that
-person is a repository admin (ADR-0129). Otherwise (not an admin, no GitHub sign-in, a free plan's
-private repository) the agent asks a person for it with `needs_you`. A promotion needs a repository admin
-once the ruleset exists. A private repository without GitHub Pro, Team or Enterprise cannot have
-rulesets: a sandbox admin then accepts the risk on the sandbox's Git page, card **Production
-protection**, by switching off **Require a GitHub ruleset on `<branch>`**
-(`<public_url>/s/<slug>/git?show=production-protection`, ADR-0267); onboarding then stops warning and
-asking for it, and every request for the ruleset names that address.
+**Protecting the production branch.** Only a person may move it. Add a branch ruleset on each
+repository (Settings → Rules → Rulesets → New branch ruleset): target the production branch
+(`main`), enforcement Active, rules **Restrict updates**, **Restrict deletions** and **Block force
+pushes**, bypass only for the **Repository admin** role, never the Yulius App. New projects get it;
+onboarding adds `yulius-people-only-<branch>` with `production_protect` when the task's owner is a
+repository admin, else asks with `needs_you`. Without rulesets (a private repository on GitHub Free),
+a sandbox admin accepts the risk by switching off **Require a GitHub ruleset on `<branch>`** on the
+Git page (`<public_url>/s/<slug>/git?show=production-protection`).
 
 The manifest flow requests these repository permissions:
 
@@ -1559,440 +899,220 @@ The manifest flow requests these repository permissions:
 | --- | --- | --- |
 | Contents | Read and write | Clone and fetch repositories; push task branches (as the task's creator); merge pull requests; fast-forward promotions; compare branches. |
 | Pull requests | Read and write | Open, list and read pull requests. |
-| Issues | Read and write | Agents log what lies outside their change (pre-existing bugs, flaky tests they did not cause, nits left after review; [ADR-0141](decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)) as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
+| Issues | Read and write | Agents log what lies outside their change as issues with Definition-of-Ready labels (`issue_create`); missing labels are created. An App created before 2026-10-10 needs it added (below). |
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
-| Commit statuses | Read and write | Publish the result of Yulius's own CI as the status `yulius/ci` on each tested commit (write, since 2026-10-11), and read statuses of projects without Yulius CI. |
-| Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Granted on 2026-10-12. |
+| Commit statuses | Read and write | Publish Yulius CI's result as the status `yulius/ci` on each tested commit, and read statuses of projects without Yulius CI. |
+| Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). |
 | Administration | Read and write | Create repositories (New sandbox, in an organization or a personal account) and add branch rulesets to them. Repository creation (Read and write) also lets GitHub create them, without the rest of Administration. |
 | Metadata | Read | Mandatory for every App: repository facts and the signed-in person's permission level, which Yulius mirrors. |
 | Members (organization) | Read | Requested by the manifest; no current Yulius call uses it. |
 
-Two more are worth knowing:
+**Actions: read** is optional. Since **Workflows** lets a task *add* a workflow that runs with the
+repository's secrets, turn GitHub Actions off on repositories off Actions (Settings → Actions →
+General → Disable actions). A missing permission shows as 403 "Resource not accessible by
+integration", named on the Git page; unreadable checks never count as passed. **Creating a project
+fails** with either "GitHub refused to create …: the Yulius
+GitHub App lacks the repository permission Administration: Read and write …" (add it as below;
+nothing was created) or "… was created on GitHub, but the Yulius GitHub App cannot reach it: its
+installation covers only selected repositories" (add the repository under the installation's
+Repository access, then Import repository). An empty repository can be imported as it is.
 
-- **Actions: read** is optional. It is a fallback only: when check runs can't be read, Yulius reads
-  the head's GitHub Actions workflow runs in their place. With Checks granted it is never needed.
-- **Workflows** lets the App's tokens change files under `.github/workflows/`. Without it, GitHub
-  refuses such pushes, and onboarding cannot delete a repository's GitHub Actions. With it, a
-  task could also *add* a workflow, which would run with the repository's secrets. So once a
-  repository is off Actions, also turn GitHub Actions off for it (Settings → Actions → General →
-  Disable actions; free on every plan): no workflow runs any more, whoever pushes one.
+**Adding a permission to an existing App:** set it (e.g. Repository permissions → Commit statuses →
+Read-only) on `https://github.com/organizations/<org>/settings/apps/<app-slug>/permissions` (personal
+account: `https://github.com/settings/apps/<app-slug>/permissions`) and save; the installation's
+owner accepts it under Settings → GitHub Apps → the App → Configure; then `systemctl restart yulius`
+to drop installation tokens cached for up to an hour.
 
-**When a permission is missing.** A read GitHub refuses with 403 "Resource not accessible by
-integration" means the App lacks the permission. For checks, Yulius keeps working with the
-sources it can read. It names the missing permission on the Git page, as one line for instance
-administrators, with a link to the App's permission page. Checks it cannot read never count as
-passed, so merges and releases that require checks wait.
-
-**Creating a project fails.** Yulius says which of these it is
-([SPEC-241](../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md)):
-
-- "GitHub refused to create …: the Yulius GitHub App lacks the repository permission
-  Administration: Read and write …": add it as below. Nothing was created.
-- "… was created on GitHub, but the Yulius GitHub App cannot reach it: its installation covers
-  only selected repositories": open the installation page the message links (Settings → GitHub
-  Apps, or Applications for a personal account, → the App → Configure), add the repository under
-  Repository access (or choose All repositories), then add it in Yulius with Import repository.
-
-**An empty repository** (created on GitHub without a README) can be imported as it is. When its
-onboarding starts, Yulius pushes one commit adding `README.md` to the default branch GitHub reports,
-then onboards it as any other repository.
-
-**Adding a permission to an existing App** (for example Commit statuses on an App created before
-2026-10-10):
-
-1. Open the App's permission page. For an organization:
-   `https://github.com/organizations/<org>/settings/apps/<app-slug>/permissions`. For a personal
-   account: `https://github.com/settings/apps/<app-slug>/permissions`. The Git page links there.
-2. Set the permission (for example Repository permissions → Commit statuses → Read-only) and
-   save.
-3. Accept the change on the installation. GitHub asks the installation's owner to review the new
-   permissions under the organization's (or account's) Settings → GitHub Apps → the App →
-   Configure. Until someone accepts, the old permissions apply.
-4. New tokens carry the new permission. Installation tokens are cached for up to an hour; restart
-   Yulius (`systemctl restart yulius`) to use the new permission at once.
+[details](archive/operations-until-2026-11-26.md#github-app-permissions)
 
 ### The App after the public URL changes
 
 GitHub signs people in only from a callback URL the App holds: `<public URL>/api/auth/github/callback`.
-After the instance's public URL changes (a move to another host, a new domain) GitHub refuses every
-sign-in from the new address ("redirect_uri is not associated with this application") until a
-person adds that URL in the App's settings. GitHub has no API for an App's callback URLs or
-homepage, and Yulius never uses a person's GitHub session, so this one step is yours
-([SPEC-466](../.ai/specs/SPEC-466-run-migration-yulius-checks-its-github-a.md),
-[ADR-0302](decisions/0302-the-instance-asks-github-about-its-own-callback-and-clients-follow-only-a-moves-redirect.md)).
-Yulius notices and says exactly what to do:
-
-- **Settings → Instance → Address** (superadmin). The instance asks GitHub whether it accepts its
-  callback: at every start, when you press **Check again**, and by itself while the page shows an
-  answer that is not "registered". When the callback is missing the card has one link, **Open the
-  App's settings on GitHub**
-  (`https://github.com/organizations/<owner>/settings/apps/<slug>`, or
-  `https://github.com/settings/apps/<slug>` for a person's App), and the two values with copy
-  buttons: the **callback URL** to add (an App takes several, so the old one may stay until the old
-  host is retired) and the **homepage URL** to replace. Save on GitHub; the card says "GitHub
-  accepts this address for sign-in" at once when you come back to the page or press Check again,
-  and by itself within about 40 seconds while you watch it (a page left open for long asks GitHub
-  less often, every four minutes at the least), or as soon as someone signs in with GitHub. When
-  GitHub gave no answer (it is down, the server has no route to it, it refuses the App's client id
-  and secret) the card says why; sign-in is not affected by that.
-- **The sign-in page** says that GitHub does not know this address and opens the superadmin
-  password, which keeps working. "Sign in with GitHub" stays and leads to GitHub as always (until
-  the callback is saved GitHub shows its own error there); the first sign-in that completes tells
-  the instance that the callback is there, and the sentence goes.
-- **`yulius instance migrate`** checks the new URL's callback in its plan, before anything is
-  moved, with the same link and values ([Move the instance](#move-the-instance-to-another-host)).
-
-The check sends GitHub's token endpoint the App's own client id and secret, a made-up code and
-the callback URL; GitHub answers whether the URL is registered. A URL it accepts is followed by
-a control question about one that cannot be registered: only when GitHub refuses that one does
-"accepted" mean anything, otherwise the card says that GitHub does not say. No sign-in happens
-and nothing is changed at GitHub.
+After the public URL changes, GitHub refuses sign-ins from the new address ("redirect_uri is not
+associated with this application") until a person adds it in the App's settings; GitHub has no API
+for this
+([ADR-0302](decisions/0302-the-instance-asks-github-about-its-own-callback-and-clients-follow-only-a-moves-redirect.md)).
+**Settings → Instance → Address** checks it (at start and on **Check again**) and, when missing,
+links **Open the App's settings on GitHub** (`https://github.com/organizations/<owner>/settings/apps/<slug>`,
+or `https://github.com/settings/apps/<slug>` for a person's App) with the **callback URL** to add (the
+old one may stay until the old host is retired) and the **homepage URL** to replace. The superadmin
+password keeps working meanwhile, and `yulius instance migrate` checks the same in its plan. The
+check sends GitHub the App's client id and secret with a made-up code; nothing changes at GitHub.
 
 ### CI on this machine
 
-If a PR rerun failed because the integration branch’s CI configuration was invalid, repairing the configuration schedules another run at the same head. An earlier pass on that head predates the refusal.
+Yulius is the projects' only CI; no GitHub Actions or paid GitHub feature is involved.
 
-Yulius is the projects' only CI (SPEC-002 ADR-21). No GitHub Actions or paid GitHub feature is
-involved.
+- **Configuration.** `[[ci.jobs]]`, or `[commands] gate`, in `yulius.toml` on the integration branch
+  ([API](api.md)), or `gate` on the sandbox profile (`PATCH /api/sandboxes/{sid}`). A change is
+  judged by those jobs plus its own changed ones (`<job> (this change)`); an invalid `yulius.toml`
+  fails its run with the parser's message, and while the integration branch's own file is invalid
+  its last valid gate runs (`config_blocked_minutes` in `GET /api/analytics/merge-queue`).
+- **What runs.** Every open same-repository pull request into the integration branch and every new
+  integration or production commit, once. Jobs run in parallel as the `yulius` user, contained when
+  `YULIUS_CONTAINED=true`, without any token; a failed job cancels the others (the `security` job
+  neither cancels nor is cancelled). Results are on the CI/CD page and on GitHub as `yulius/ci`.
+  `YULIUS_CI=off` stops all of it; merges then fall back to GitHub's checks.
+- **Toolchains**: jobs see `/usr`, `/opt` and `YULIUS_CONTAINED_READONLY` paths read-only; install
+  what projects need system-wide (rustup's toolchains under `/opt`, Node, Python).
+- **Directories** in `<data>/sandboxes/<id>/ci/`: `jobs/<job>[.<n>][@<lane>]` (a persistent checkout
+  per job, matrix place and lane; keep Cargo's `target/` there), `home` (the jobs' shared `HOME`, no
+  build outputs) and `cache/<job>[.<n>][@<lane>]` (`YULIUS_CI_CACHE`). Budget a Rust `target/` per
+  job and lane; removing `ci/` with no run active resets the caches.
+- **The CI budget.** All sandboxes' jobs share the host's CPUs and memory less an eighth. A job
+  starts when the running jobs' declared CPUs (`cpus`, else an equal share of the run) with its own
+  stay within three times the budget and its start fits beside what CI is measured to use
+  (`memory_gb` counts at the start). Jobs get `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the
+  repository's `[resources.env]`; `YULIUS_CI_MAX_JOBS` still bounds their number. Merge trains go
+  first, then pull requests, then branches; `ci_status` says what a job waits for
+  ([ADR-0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md)). A
+  project cuts its share with `cpus` per `[[ci.jobs]]` entry (6 jobs on 12 CPUs get 2 each by
+  default; `cpus = 1` halves it).
+- **Timeouts.** `YULIUS_CI_JOB_TIMEOUT_MIN`, or a job's `timeout_minutes` (1-360), counted from its
+  start; waiting for a slot or an `exclusive` turn (one run of it per sandbox) never counts.
+- **Weights.** A sandbox whose CI runs weighs 500 on the host, else 100 (`cat
+  /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/cpu.weight`).
+- **Docker networks** are /24s from 172.17.0.0/16–172.31.0.0/16 and 192.168.0.0/16 (253 containers
+  each; a project sets its own `subnet` for more); a job waits while fewer than 32 are left.
+- **Flaky tests.** A test failing in the same job on two pull requests within 48 hours, but not on
+  the integration branch, is quarantined with a `flaky test` issue. Jobs get the names in
+  `YULIUS_CI_QUARANTINE` and a nextest filter in `YULIUS_CI_QUARANTINE_NEXTEST`, e.g.
+  `cargo nextest run ${YULIUS_CI_QUARANTINE_NEXTEST:+-E "not ($YULIUS_CI_QUARANTINE_NEXTEST)"}`.
+  Closing the issue ends the quarantine within an hour.
+- **Lanes and shards.** `YULIUS_CI_LANES` (a [resource limit](#resource-limits)) runs of one sandbox
+  take a checkout at once; each extra lane has its own checkouts and caches. A job with
+  `matrix = "1/2 2/2"` runs one shard per value, each in its own checkout, with the value in
+  `YULIUS_CI_MATRIX`, e.g. `cargo nextest run --partition "hash:$YULIUS_CI_MATRIX"` (or
+  `pytest-split`'s `--group`).
 
-**What runs.** For each sandbox:
+**Moving a repository off GitHub Actions** (the onboarding step; agents use `ci_setup`):
 
-- The CI comes from `[[ci.jobs]]`, or `[commands] gate`, in `yulius.toml` on the integration
-  branch (docs/api.md "CI"). Every pull request, merge candidate and playground merge is judged by
-  those jobs, also one that changes them, with its own changed or added jobs beside them
-  (`<job> (this change)`); its own `yulius.toml` is checked as CI will read it
-  after the merge, and an invalid one fails the run at once with the parser's message (a job
-  `yulius.toml`; SPEC-504, ADR-0360). While the integration branch's own file is invalid, the
-  gate of its last valid one runs until a fix merges: the CI page names the problem and that
-  commit, each run says so, and a pull request that does not repair the file fails naming it
-  (and runs again by itself once the file is valid).
-  Only a file never valid leaves no gate; then a change that brings valid jobs is tested with
-  them. `GET /api/analytics/merge-queue` counts the minutes CI ran nothing because of its
-  configuration (`config_blocked_minutes`).
-- An administrator can set `gate` on the sandbox profile instead (`PATCH /api/sandboxes/{sid}`).
-- Every open pull request into the integration branch from the same repository (never a fork's)
-  and every new integration or production commit is tested once. A failed job cancels the run's
-  other jobs; the `security` job neither cancels them nor is cancelled.
-- The jobs run in parallel as the `yulius` user, inside the sandbox's containment when
-  `YULIUS_CONTAINED=true`, without any token.
-- Results appear on each sandbox's CI/CD page (CI tab) and on GitHub as the status `yulius/ci`.
-- `YULIUS_CI=off` stops all of it. Merges then fall back to GitHub's checks.
+1. Translate each workflow job's checks into `[[ci.jobs]]`: matrices for splits; drop `${{ }}`
+   expressions, Actions secrets and services; install what `uses:` steps installed.
+2. `git rm -r .github/workflows` in the same commit and open the pull request; Yulius tests it with
+   the CI it adds.
+3. Merge once it passes (the App needs **Workflows: Read and write**; Yulius pushes with the task
+   owner's token).
+4. Turn GitHub Actions off for the repository; rulesets that require Actions checks switch to
+   `yulius/ci`, or go.
 
-**The machine.** Jobs use the tools installed on the VM (`/usr`, `/opt` and
-`YULIUS_CONTAINED_READONLY` paths are visible read-only inside containment).
+**Hygiene.** Every 6 hours Yulius removes safe stale branches and worktrees and lists the rest on the
+CI/CD page (Repository hygiene card; agents use `repo_cleanup`; audited `hygiene.cleanup`).
 
-- Install the toolchains the projects need system-wide, for example rustup's toolchains under
-  `/opt`, Node and Python.
-- Each sandbox keeps `<data>/sandboxes/<id>/ci/`:
-  - `jobs/<job>[.<n>][@<lane>]` (`.<n>` for a matrix job's place, `@<lane>` past the first lane):
-    one persistent checkout per job and lane; ignored build outputs such as `target/` and `node_modules/` are its cache;
-  - `home`: `HOME` for jobs, with `~/.cargo`, `~/.npm` and `~/.cache`;
-  - `cache/<job>[.<n>][@<lane>]` (named like the checkout): `YULIUS_CI_CACHE`, the
-    job checkout's own persistent cache, never shared with a job running at the same time
-    (SPEC-351: a Cargo target directory kept in one shared cache was relinked under the other
-    lane's run).
-
-  `home` is shared by the sandbox's lanes, so a job's installs there must tolerate a concurrent
-  run; build outputs belong in the checkout or `YULIUS_CI_CACHE`, never in `home`. A Cargo target
-  directory is best in the checkout: the hourly sweep removes its unused build units, while a
-  job's `YULIUS_CI_CACHE` is pruned whole, like the caches in its checkout (at once past a quarter
-  of the quota, otherwise under pressure). Caches of jobs no run used for 14 days, or of lanes past
-  the configured ones, go like their checkouts (stale CI leftovers).
-- Budget the disk: a Rust workspace's `target/` per job and lane.
-- Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
-- CI jobs share the host's CI budget (SPEC-082, SPEC-497 HBA-002, ADR-0353): a job starts when
-  the running jobs' declared CPUs (`cpus`, else an equal share among the run's jobs) with its
-  own stay within three times the budget, and its start fits
-  beside what CI is measured to use. `memory_gb` is the job's budget and counts at its start;
-  after that the measured memory decides. Each
-  is told its budget in `YULIUS_CPUS` and `YULIUS_MEMORY_MB` and the repository's
-  `[resources.env]`. `YULIUS_CI_MAX_JOBS` still bounds the number of jobs. Each job gets
-  `YULIUS_CI_JOB_TIMEOUT_MIN`, or its own `timeout_minutes` (1-360) in `[[ci.jobs]]`, counted from
-  its start: waiting for a slot, or for its turn as an `exclusive` job (one run of it per sandbox
-  at a time), never counts (SPEC-435). A project cuts what its jobs take on a busy host with `cpus` on each
-  `[[ci.jobs]]` entry: a run of 6 jobs on 12 CPUs gets 2 each by default, and `cpus = 1` halves it
-  (SPEC-362).
-- While any of a sandbox's CI jobs runs, its group weighs 500 on the host (100 otherwise), so its
-  CI gets more of a loaded host than the agents' local builds in every sandbox
-  ([ADR-0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). Check it with
-  `cat /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/cpu.weight`. Every start
-  and graceful stop of the server writes 100 to every sandbox.
-- Agent sessions, terminals and the Cockpit plan for `YULIUS_AGENT_CPUS` CPUs (default a third
-  of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
-  the sandbox.
-- CI jobs of every sandbox come out of one budget: the host's CPUs and memory less an eighth for
-  the server and the agents. A job starts when:
-  - the running jobs' budgets with its own stay within three times the budget's CPUs;
-  - what CI was measured to use, what jobs started in the last minute may still bring, and its own
-    start (its budget, at most a quarter of the budget) fit.
-
-  Merge trains' jobs go first, then pull requests', then branches'. A job that cannot start lets
-  later ones pass for 10 minutes at most. A waiting job's reason in `ci_status` (and the run's API)
-  says what it waits for: the worst case, CPUs, memory, a slot or Docker networks
-  ([ADR-0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md),
-  [ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)). A job's
-  default share (no `cpus`) is an equal share of that budget among its run's jobs: what it may use
-  at once, not what it holds.
-- Each sandbox's Docker engine makes /24 networks from Docker's own ranges (172.17.0.0/16 to
-  172.31.0.0/16 and 192.168.0.0/16): 4,096 networks from its next start, instead of 31. Once the
-  sandbox started again the first network a project makes is 172.17.1.0/24 (`docker0` is
-  172.17.0.1), not 172.18.0.0/16 (172.18.0.0/24 while a sandbox that kept running keeps its old
-  `docker0`), and a network takes at most 253 containers: a project that needs another range or more sets its
-  own `subnet`. A CI job waits while its engine can make fewer than 32 more; networks no container
-  used for 10 minutes are pruned first.
-- A test that fails in the same job on two different pull requests within 48 hours, while the
-  integration branch did not fail it, is quarantined with an issue labelled `flaky test`. Every
-  later job of the project gets the quarantined names in `YULIUS_CI_QUARANTINE` (one per line) and
-  a nextest filter of their test paths in `YULIUS_CI_QUARANTINE_NEXTEST` (no binary: nextest
-  refuses one the head lacks). A project's gate leaves them out, for example
-  `cargo nextest run ${YULIUS_CI_QUARANTINE_NEXTEST:+-E "not ($YULIUS_CI_QUARANTINE_NEXTEST)"}`;
-  Yulius never passes a failed job for it. Two pull requests whose heads share a commit outside
-  the integration branch (a chained one) count as one. Closing the issue ends the quarantine within
-  an hour and forgets the test's failures
-  ([ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
-  A pull request's failure whose output names a file that pull request changed is taken as the
-  change's own and does not count; the job's output says so
-  ([ADR-0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
-- `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
-  keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
-  budget its disk too. A run takes the free lane whose checkouts last built what it builds on: a
-  merge candidate's run a lane of its members' own runs, a pull request's run the lane of its
-  previous head's. Each job's output names it (`[yulius] lane 1, last taken by pr/12, which
-  this run builds on`; ADR-0358).
-- **Shards**: a job split with `matrix = "1/2 2/2"` runs one job per value side by side, each in
-  its own checkout, with the value in `YULIUS_CI_MATRIX`; the run passes only when every shard
-  passed. The test runner reads the shard, for example
-  `cargo nextest run --partition "hash:$YULIUS_CI_MATRIX"` (or `pytest-split`'s `--group`). Keep
-  the other checks in a job of their own, so the longest job is shorter
-  ([ADR-0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
-
-**Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
-
-1. Translate each workflow job's checks into `[[ci.jobs]]`.
-   - Use matrices for splits.
-   - Drop `${{ }}` expressions, Actions secrets and services.
-   - Install what `uses:` steps installed on the machine or in the job's command.
-2. `git rm -r .github/workflows` in the same commit, then open the pull request. Yulius tests it with
-   the CI it adds, because the integration branch has none yet.
-3. Merge once it passes. The App needs **Workflows: Read and write** to push step 2. Yulius pushes
-   it with the task owner's token at the end of the agent's turn: the agent's own token never has
-   Workflows (ADR-0114).
-4. Turn GitHub Actions off for the repository (see "GitHub App permissions").
-5. Rulesets that require Actions checks must switch to `yulius/ci`, or go. Yulius's own merge gate
-   enforces the delivery profile either way.
-
-**Hygiene.** After a merge through Yulius the head branch is deleted. Every 6 hours (first 10 minutes
-after start) Yulius removes each sandbox's safe stale branches and worktrees itself (except `merged` remote
-branches with no merged pull request, such as a release branch, which stay for a person) and lists
-the rest on its CI/CD page (CI tab, Repository hygiene card), with what the last cleanup removed and kept (SPEC-269, ADR-0199). People clean
-up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.cleanup`.
+[details](archive/operations-until-2026-11-26.md#ci-on-this-machine)
 
 ### Script watches on this machine
 
-Script watches ([SPEC-630](../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
-[decision 0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md))
-run on the same machine as the server, through the process host, in each sandbox's containment
-and CI's resource group. Nothing needs setting up.
+Script watches run through the process host in each sandbox's containment and CI's resource group;
+nothing needs setting up. Definitions and state are in the database (`watches`, `watch_pending`), so
+backups and moves carry them. Files: `<data>/watches/<sandbox>/` (`home`, `state/<watch>`,
+`runs/<run>`) and `<data>/runs/watch-<run>`. Each run gets 120 s of CPU time (+2 s before the kill),
+a 1 GiB data segment, 1 MiB per written file, no core file (`ulimit -c 0`) and its watch's timeout
+(default 5 minutes, at most 1 hour); a project's watch files may use 1 GiB, at most 4 runs go at
+once and a project has at most 20 watches. A run cut by a restart is recorded as a lost failure. A
+watch gets only the agent secrets it names (audit actor `ci:watch:<name>`). Changes are audited
+`watch.create`, `watch.update`, `watch.run`, `watch.pause`, `watch.resume`, `watch.remove`.
 
-- **Where they live.** Definitions and state are in the database (`watches`, `watch_pending`), so
-  they come along with a backup or a move. Each project's watch files are under
-  `<data>/watches/<sandbox>/`: `home` (the scripts' `HOME`), `state/<watch>` (kept between runs)
-  and `runs/<run>` (one run's output, removed when it ends). A run's process host directory is
-  `<data>/runs/watch-<run>`.
-- **Bounds.** Each run gets 120 s of CPU time (then 2 s more before it is killed), a 1 GiB data
-  segment, 1 MiB per file it writes, and its watch's timeout (5 minutes by default, 1 hour at
-  most). A project's watch files may use 1 GiB in all; while they are over it, its watches' runs are stopped within about 5 s, until a script or a person frees room. Runs write no core file (`ulimit -c 0`); where the host's core pattern is a pipe (apport), the kernel still hands a crashed run's dump to that handler.
-  When a project is removed, its watches stop and their files are listed among its leftovers. At most 4 runs go at once on the
-  instance, and a project has at most 20 watches.
-- **Restarts and updates.** A run cut off by a restart is recorded as a lost failure when the
-  server starts, its process host is ended, and the watch runs again. Posts that could not be
-  stored are retried every 15 s.
-- **Secrets.** A watch gets only the agent secrets it names, as placeholders that the egress proxy
-  replaces. The proxy's audit actor for its runs is `ci:watch:<name>`.
-- **Managing.** The project's Watches page (under More) lists them, with Run now, Pause/Resume,
-  Edit and Remove; changes are audited as `watch.create`, `watch.update`, `watch.run`,
-  `watch.pause`, `watch.resume` and `watch.remove`. A failing watch shows "Failing" there, and
-  its owner gets one notice `watch:<name>:failing`.
+[details](archive/operations-until-2026-11-26.md#script-watches-on-this-machine)
 
 ### CD on this machine
 
-CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]`, `[cd.prod]`
-and any other `[cd.<name>]` with its `stage` in their `yulius.toml` ([API](api.md#cd-deployment)). A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`), a disk bound
-for its files (`--cd-run-disk-gb`, `YULIUS_CD_RUN_DISK_GB`, a [resource limit](#resource-limits), 20 GB on a data disk up to 400 GB: the run's directory and
-its cache, measured every 5 s; past it the run is stopped as an `error` and its cache emptied, a
-delivery environment run alike; ADR-0216) and the
-containment: dev runs inside the sandbox (its tools, its network); production joins the sandbox's
-production holder (its own network, no host loopback, and its own Docker engine; ADR-0208) on the
-host's read-only `/usr`, `/etc` and `/opt`, so its scripts install the tools they need into
-`$YULIUS_CD_CACHE`. Files: `<data>/cd/<id>/source.git` (the verified
-mirror), `<data>/cd/<id>/environments.git` (the mirror delivery environment runs take their commits
-from, ADR-0175), `<data>/cd/<id>/cache/<name>` (`$YULIUS_CD_CACHE`; `cache/<stage>.<name>` for an
-environment other than `dev` and `prod`, so a name moved to the other stage gets a fresh cache),
-and `<data>/runs/cd-<run>/work` or `<data>/runs/env-<run>/work` (the commit's tree, `HOME` and log, removed
-after each run; a production run's are in `<data>/cd/<id>/runs/cd-<run>/work` or
-`…/env-<run>/work`, which its Docker engine binds); none is visible to agents. Runs are kept
-14 days, 50 per environment, and each environment's last passed run always.
+CD (deployment) needs no server configuration: projects define `[cd.dev]`, `[cd.prod]` and any other
+`[cd.<name>]` with its `stage` in `yulius.toml` ([API](api.md#cd-deployment)). A run uses the CI job
+timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`) and a disk bound (`--cd-run-disk-gb`,
+`YULIUS_CD_RUN_DISK_GB`, a [resource limit](#resource-limits); past it the run stops as `error` and
+its cache is emptied). Dev runs inside the sandbox; production joins the sandbox's production holder
+(its own network, no host loopback, its own Docker engine) on the host's read-only `/usr`, `/etc`
+and `/opt`, so its scripts install their tools into `$YULIUS_CD_CACHE`.
 
-- **Secrets.** A dev run gets the real value of each secret its table names once a person allowed
-  it outside the proxy on the Secrets page (the same allowance as copying it into `.env`); a
-  production run gets a secret agents set up ("Let agents set it up", the default, ADR-0171) or
-  one that someone who manages it chose "Allow for production deploys" for, and never a personal
-  secret (ADR-0186). That choice is not offered for a secret agents use (bound hosts or `.env` copies): a production
-  secret is exclusive, so production needs a separate secret with its own name (ADR-0109). Output is
-  redacted, but scripts hold the values while they run, so allow only what a deploy needs.
-- **Agent states** ([ADR-0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).
-  A table's `states = ["NAME"]` makes the run hold those agent states (a second run naming one waits,
-  its output says for which run), restore the vault's newest version of each into
-  `<run files>/work/states/<NAME>` (`$YULIUS_STATE_<NAME>`, never a task's copy, never
-  inside `HOME`) and save each changed folder back as a new version after the deploy and the
-  verify, failed ones included. A failed save makes the run an `error`. Each restore and save is
-  audited `vault.state.restore`/`vault.state.save` as `cd:<environment>`. While a run holds a state,
-  a task's `secret_state_save` and a person's send are refused; a restart during a run loses what
-  it wrote to its states. The wait for the hold has its own bound (the job timeout), so a run that
-  waited can last up to twice that. Production restores the newest version whoever wrote it (a
-  dev run or a task included): a deploy tool treats its state as data and never runs code from it.
-- **Variables.** Dev runs get all the project's variables in their environment (Yulius's own and
-  the secrets win); production runs get only those their table names (`variables = ["NAME"]`),
-  since a person with write access sets them and an administrator deploys production. A named
-  variable the project lacks refuses the deploy.
-- **Docker.** Dev runs use the sandbox's engine, as tasks do (`docker buildx`, `docker load`).
-  Production runs use their production holder's engine (SPEC-279, ADR-0208): `dockerd` of the
-  sandbox base (the host's Docker, which `yulius host setup` installs, with buildx), started on
-  the first `docker` command, named `<slug>-prod`, its images and build cache in
-  `<data>/sysroots/<id>.prod/docker` and kept between deploys, out of every agent's reach. The
-  run's own files can be mounted (`docker run -v "$PWD":…`); nothing of the sandbox can. The
-  `docker` CLI and its buildx plugin are the host's. Its storage counts toward the sandbox's
-  disk quota (but never refuses a production deploy by itself) and is pruned after a production
-  run that leaves the sandbox under disk pressure (90 % of its quota); the holder stops when idle and goes with the sandbox. Without
-  a `dockerd` in the base, `docker` answers why (run `sudo yulius host setup`), and
-  `yulius doctor --docker-smoke` proves it on the host.
-- **SSH and other hosts.** Runs use their holder's network (dev the sandbox's, production its
-  production holder's): every Internet host over TCP, port 22 included, but not the host's
-  loopback. Yulius keeps no host list; a project names its hosts and
-  pins their keys in its own state or repository (`StrictHostKeyChecking=yes` with its own
-  `UserKnownHostsFile`), since each run's `HOME` is fresh.
-- **Egress off.** With `YULIUS_SANDBOX_EGRESS=none` sandboxes have no network, and production
-  deploys (whose production holder has no `slirp4netns` then either) have none.
+Files (none visible to agents): `<data>/cd/<id>/source.git` (the verified mirror),
+`<data>/cd/<id>/environments.git`, `<data>/cd/<id>/cache/<name>` (`$YULIUS_CD_CACHE`;
+`cache/<stage>.<name>` for environments other than `dev` and `prod`), and per run
+`<data>/runs/cd-<run>/work` or `<data>/runs/env-<run>/work` (production:
+`<data>/cd/<id>/runs/cd-<run>/work` or `…/env-<run>/work`), removed after the run. Runs are kept 14
+days, 50 per environment, and each environment's last passed run always.
+
+- **Secrets.** Dev runs get a secret their table names once a person allowed it outside the proxy;
+  production runs get a secret agents set up ("Let agents set it up", the default) or one marked
+  "Allow for production deploys", never a personal one. Production needs a separate secret from one
+  agents use. Output is redacted, but scripts hold the values: allow only what a deploy needs.
+- **Agent states.** `states = ["NAME"]` holds those states for the run, restores the newest version
+  into `<run files>/work/states/<NAME>` (`$YULIUS_STATE_<NAME>`) and saves changed ones back after
+  deploy and verify (audited `vault.state.restore`/`vault.state.save` as `cd:<environment>`).
+- **Variables.** Dev runs get all project variables; production only those named
+  (`variables = ["NAME"]`); a missing named variable refuses the deploy.
+- **Docker.** Dev runs use the sandbox's engine; production its holder's (`<slug>-prod`, data in
+  `<data>/sysroots/<id>.prod/docker`, out of every agent's reach; only the run's own files can be
+  mounted). Without `dockerd` in the base, run `sudo yulius host setup`.
+- **SSH.** Runs reach Internet hosts (port 22 too), not host loopback; pin keys in the project
+  (`StrictHostKeyChecking=yes`, own `UserKnownHostsFile`). `YULIUS_SANDBOX_EGRESS=none`: no network.
 - **Production.** Only an administrator deploys it, on the CD page, typing the project's slug. With
-  `promote = true` the deploy first promotes under that person's GitHub identity; a promotion pull
-  request whose checks still run refuses the deploy until they pass.
-- **Restarts.** A run that was running when the server stopped is recorded as `error` ("outcome
-  unknown") at the next start, its process host stopped and its files removed, and is never started
-  again by itself: check the environment and deploy again.
+  `promote = true` it first promotes under that person's GitHub identity.
+- **Restarts.** A run running when the server stopped is recorded `error` ("outcome unknown") and
+  never restarted by itself: check the environment and deploy again.
+
+[details](archive/operations-until-2026-11-26.md#cd-on-this-machine)
 
 ### Yulius's own staging VM
 
 Yulius's own repository deploys `dev` to a staging VM: `[cd.dev]` in its `yulius.toml`, scripts in
-`scripts/cd/` ([ADR-0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
-SPEC-591). It is a Yulius instance like any other, but no person relies on it. Each deploy runs
-the exact build of a dev revision on the store an older release wrote, which is where a migration
-first meets real data. Production instances still install `main` through their update helper
-(§8). Today's VM is the former production host, `deciding-whale`; its production data was
-erased.
+`scripts/cd/`. No person relies on it; production instances still install `main` through their update helper
+(§8). Today's VM is the former production host, `deciding-whale`; its production data was erased.
 
-**What a deploy does** (`scripts/cd/deploy.sh dev`, run by Yulius CD in the sandbox):
+**A deploy** (`scripts/cd/deploy.sh dev`, run by Yulius CD) builds the commit in the sandbox's
+Docker (`scripts/cd/build.sh`, `deploy/build/Dockerfile`: Ubuntu 24.04, pinned toolchain,
+`YULIUS_BUILD_COMMIT`; kept in the CD cache), connects as `root@$STAGING_VM_HOST` with
+`STAGING_VM_SSH_KEY` and the host key in `scripts/cd/known_hosts`, uploads to
+`/var/lib/yulius-releases/<commit>/yulius` (SHA-256 checked), migrates a copy of the live store
+(`yulius store-migrate`; lost rows other than a migration's own `DELETE FROM`,
+`scripts/cd/migration_deletes.py`, fail it with nothing changed), stops **only** `yulius.service`,
+keeps the old binary and store in `/var/lib/yulius-releases/<old commit>/`, installs, starts and
+waits for the commit at `/internal/version`, else puts the old pair back. The last 10 releases are
+kept; one CD step runs at a time (`/var/lib/yulius-releases/.lock`).
 
-1. It builds the commit in the sandbox's Docker (`scripts/cd/build.sh`, `deploy/build/Dockerfile`:
-   Ubuntu 24.04, the pinned toolchain, `YULIUS_BUILD_COMMIT`). Each build is kept in the CD cache,
-   and a rollback never builds.
-2. It connects as `root@$STAGING_VM_HOST` with `STAGING_VM_SSH_KEY` in an ssh-agent and the host
-   key pinned in `scripts/cd/known_hosts`.
-3. It uploads the binary to `/var/lib/yulius-releases/<commit>/yulius`, checked by SHA-256.
-4. Before anything stops, the new binary migrates a copy of the live store (`yulius store-migrate`).
-   No table may vanish or lose rows, but those a migration this deploy applies deletes from by
-   design (its own `DELETE FROM`, not a trigger's; `scripts/cd/migration_deletes.py`). Otherwise the deploy fails with nothing changed.
-5. It stops **only** `yulius.service`. Sessions live in `yulius-sandboxes.service`.
-6. It keeps the replaced binary and the store it left (`yulius.db` with its WAL) in
-   `/var/lib/yulius-releases/<old commit>/`.
-7. It installs the new binary, starts the service and waits until `/internal/version` reports the
-   commit; otherwise it puts the old binary and store back. The last 10 releases are kept.
+**Verify** (`scripts/cd/verify.sh dev`): the release at `/internal/version`, `/healthz` 200 at the
+unit's `YULIUS_PUBLIC_URL`, the contained `yulius doctor`, the store's SQLite check and schema
+(`<commit>/migration.json`), and after a deploy `yulius doctor --docker-smoke`.
 
-It does not pause tasks as the update helper's restart does: a staging instance's tasks see their
-server restart. A lost connection does not stop a switch half way, and any other failure after
-the stop starts the server again with a binary and store that belong together; when the
-previous store cannot be put back, the server stays stopped and the run says to restore it by hand
-(never a start on another store or an empty one). One CD step runs at a time (`/var/lib/yulius-releases/.lock`).
+**Rollback** (`scripts/cd/rollback.sh dev`; the CD page, `cd_rollback`, and the drill after every
+deploy) puts back a kept release, and across a schema change the store it left (what staging wrote
+since stays in `/var/lib/yulius-releases/<newer>/store`). By hand, as root: `systemctl stop
+yulius`, copy the binary and the store back from `/var/lib/yulius-releases/<commit>/`, `chown
+yulius:yulius` the store files, `systemctl start yulius`. A run that could not put the previous
+store back leaves the server stopped and writes `/var/lib/yulius-releases/HELD`; every deploy,
+rollback and verify refuses while it exists. Restore by hand, remove the file and deploy again.
 
-**What verify proves** (`scripts/cd/verify.sh dev`):
-
-- the recorded release is installed and reported at `/internal/version`;
-- the unit's `YULIUS_PUBLIC_URL` answers `/healthz` 200 over HTTPS (a Caddy that never loaded its
-  configuration fails here);
-- `yulius doctor` passes as the service user with the unit's environment (contained);
-- the live store passes SQLite's check; after a deploy its schema is the number of the tree's
-  migrations and the release's migration check is kept (`<commit>/migration.json`); after a
-  rollback its schema is the one the release left;
-- after a deploy, `yulius doctor --docker-smoke` passes where the doctor offers sandboxes Docker.
-
-**Rollback** (`scripts/cd/rollback.sh dev`; a person on the CD page, an agent with
-`cd_rollback`, and Yulius's drill after every deploy):
-
-- It puts back a kept release.
-- Across a schema change it restores the store that release left. What staging wrote since is
-  kept in `/var/lib/yulius-releases/<newer>/store`, not served. Without a schema change it keeps
-  the live store.
-- By hand, as root: `systemctl stop yulius`, copy the binary and the store back from
-  `/var/lib/yulius-releases/<commit>/`, `chown yulius:yulius` the store files, then
-  `systemctl start yulius`.
-- **Held staging.** A run that could not put the previous store back leaves the server stopped and
-  writes `/var/lib/yulius-releases/HELD`, naming the release. It also prints a rollback barrier,
-  so Yulius starts no rollback of staging by itself. Every deploy, rollback and verify refuses
-  while the file exists. Restore the store by hand as above, then remove the file and ask for a
-  deploy again.
-
-**Who deploys.** Staging is Yulius's merge-first target
+**Who deploys**
 ([ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
-A pull request merges on `quality` and `security`. `test` and `e2e` run once on each merged
-revision of `dev`.
+A pull request merges on its pull-request jobs (`quality`, `lint`, `macos`, `docs`, `deps`,
+`security` and the affected `file-contracts`); `test` and `e2e` run once on each merged revision
+of `dev`. A merged task's agent asks with `cd_deploy`, and a person with Deploy on the CD page; each
+deploys once the revision's full suite passed. Staging also follows `dev` by itself once 5 merges
+behind, or after 60 minutes while `dev` is ahead; set both `serve_*` keys to `0` to stop that.
+**Production is promoted only from what staging verified**, by a person. `yulius-update.path` stays
+disabled there ("Update now" would install `main`); a deploy refuses while `yulius-update.service`
+runs.
 
-- **Staging changes only through its queue** (ADR-0411). The agent of a task whose work merged
-  asks with `cd_deploy`. Yulius deploys that revision, or a newer verified one that contains it,
-  once its full suite passed. The rollback drill follows by itself.
-- **A person asks for the head** with Deploy on the CD page, or through their Superagent once
-  they confirm on its panel (SPEC-650). It deploys once that head's full suite passed. A red head
-  waits for the next green revision, and the page says what it waits for. A person can still
-  roll staging back there.
-- **Staging follows `dev` by itself** (SPEC-650) with the defaults: once it is 5 merges behind, or
-  60 minutes without a staging change while `dev` is ahead. It deploys as the project's creator.
-  A person's rollback, cancel or a failed deploy stands for that revision: the schedule asks only
-  for a newer head. Where the delivery profile promotes automatically, a verified scheduled
-  deploy is promoted as any verified staging revision is. Set both `serve_*` keys to `0` to keep
-  staging where people put it.
-- A red `dev` leaves staging on the verified release. A new failure records `gate_failed`.
-  An inherited failure records its original revision and task. One working task owns the repair.
-  If none is working, project CI and Status list each test with its introducing revision and task.
-  A writer can rerun the latest affected revision or start a repair task from either view.
-  Staging serves the inherited requests when it verifies the fix.
-- **Production is promoted only from what staging verified**, by a person (ADR-0425).
+**Preparing a staging VM (or swapping it for a smaller one):**
 
-**The update helper stays off there.** `yulius-update.path` is disabled: "Update now" would
-install `main` over a dev release. A deploy refuses while `yulius-update.service` runs. Root's
-Rust toolchain and `/var/lib/yulius-update/src`, left from production, are not used.
+1. Install Yulius as in §2 on Ubuntu 24.04 or later, x86_64: `/usr/local/bin/yulius` and `sudo
+   yulius host setup --public-url https://<name>`; put Caddy in front (§4) so
+   `https://<name>/healthz` answers 200.
+2. Leave the setup token unused, or use a GitHub App of its own, never production's.
+3. Add the public half of `STAGING_VM_SSH_KEY` to `/root/.ssh/authorized_keys`, or make a new key
+   with `secret_create_from_file` and allow it for `.env` files.
+4. Set the project variable `STAGING_VM_HOST` (`[user@]host[:port]`, root unless named; another user
+   needs passwordless sudo).
+5. Pin the host key in a pull request: the line `yulius-staging ssh-ed25519 <key>` from
+   `/etc/ssh/ssh_host_ed25519_key.pub` in `scripts/cd/known_hosts`, after checking its fingerprint
+   on the VM (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`).
+6. Deploy dev on the CD page once that pull request merged. The binary found on the VM was never
+   recorded as a release: return to it by hand.
 
-**Preparing a staging VM (or swapping it for a smaller one).** Nothing depends on the VM's size
-or address beyond the variable and the pinned key.
+**Who can reach it.** Every task of this project can get `STAGING_VM_SSH_KEY` and be root there:
+keep nothing of value on it, and never give it production's GitHub App or credentials.
 
-1. Install Yulius as in §2 on Ubuntu 24.04 or later, x86_64: the binary in
-   `/usr/local/bin/yulius` and `sudo yulius host setup --public-url https://<name>`.
-2. Put Caddy in front (§4) with a certificate, so `https://<name>/healthz` answers 200.
-3. Leave the one-time setup token unused, or set the instance up with a GitHub App of its own,
-   never production's.
-4. Add the public half of `STAGING_VM_SSH_KEY` to `/root/.ssh/authorized_keys`, or make a new key
-   with `secret_create_from_file` and allow it for `.env` files (dev CD runs get it then).
-5. Set the project variable `STAGING_VM_HOST` (`[user@]host[:port]`, root unless named; another
-   user needs passwordless sudo).
-6. Pin the new host key in a pull request: the line `yulius-staging ssh-ed25519 <key>` from
-   `/etc/ssh/ssh_host_ed25519_key.pub` in `scripts/cd/known_hosts`. Check its fingerprint on the
-   VM (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) before committing it.
-7. Ask for staging with Deploy dev on the CD page once the key's pull request merged (it deploys
-   the integration head once its full suite passed). The first
-   deploy keeps the binary it finds (and its store) on the VM, but Yulius's CD never recorded it as a release: the CD page and `cd_rollback` cannot
-   return to it, and the first deploy has no drill (it needs two). Return to it by hand (above).
-
-**Who can reach it.** `STAGING_VM_SSH_KEY` may be copied to `.env` files, so dev CD runs get it,
-and so can every task of this project: an agent can be root on the staging VM. Keep nothing of
-value there. Never give its instance production's GitHub App or credentials; a GitHub App of its
-own is a credential such an agent could read.
+[details](archive/operations-until-2026-11-26.md#yuliuss-own-staging-vm)
 
 ## 6. Onboarding a repository and your Claude sessions (`yulius onboard`)
 
@@ -2004,50 +1124,35 @@ cd ~/code/product && yulius onboard                       # --server once signed
 yulius onboard --status                                   # the sandbox's onboarding state
 ```
 
-`yulius import` is the same command. The repository must be on GitHub under the instance owner;
-adding it as a sandbox needs admin or maintain on GitHub, adding sessions to an existing sandbox
-needs write. The command shows four steps (repository, Yulius, Claude Code sessions, upload),
-asks which of your sessions of this repository to send (all, recent, or picked; `--sessions
-all|recent|pick|none`, `--since 14d`), redacts secrets on your computer and lists what it
-redacted (`--show-redactions` for every key name), and sends only sessions the server does not hold
-yet or that changed. `--dry-run` uploads nothing; `--sessions-only` leaves out unpublished
-branches and uncommitted changes; `--yes` asks nothing; colours follow `NO_COLOR` (and
-`--no-color`). Uploads resume after interruptions: run the same command again.
+`yulius import` is the same command. The repository must be on GitHub under the instance owner (a new
+sandbox needs admin or maintain, more sessions need write). Options: `--sessions
+all|recent|pick|none`, `--since 14d`, `--show-redactions`, `--dry-run`, `--sessions-only`, `--yes`,
+`--no-color` (or `NO_COLOR`). Secrets are redacted locally; run it again to resume an upload.
+Sessions are stored read-only under `<data>/sandboxes/<sid>/sessions/` (at most 128 MiB per
+transcript, 10 000 sessions and 8 GiB per sandbox; deletions audited `session.deleted`). A new
+sandbox's onboarding task waits for **Start onboarding** on the sandbox page, or `yulius project
+onboard` with an `operate` token ([remote-control.md](remote-control.md)), not a `yulius login`
+token.
 
-Each teammate runs it for their own sessions; sessions are attributed to whoever uploaded them.
-They are stored read-only under `<data>/sandboxes/<sid>/sessions/` (at most 128 MiB per
-transcript, 10 000 sessions and 8 GiB per sandbox), listed on the sandbox's Sessions page, and
-searched by agents (`sessions_search`, `session_read`). The uploader or an admin deletes one on
-its page; deletions are audited (`session.deleted`). The command only uploads: a new sandbox's
-onboarding task (adapting the repository to the Yulius standards) waits until someone clicks
-**Start onboarding** on the sandbox page, or the person's own agent runs `yulius project onboard`
-with an `operate` token ([remote-control.md](remote-control.md)); a `yulius login` token cannot
-start it (SPEC-051, ADR-0038, ADR-0188). New tasks wait until onboarding is ready (or an admin skips it); `yulius onboard
---status` and the sandbox page say what is pending.
+A checkout not on GitHub goes to a playground: `yulius onboard --playground [path] [--name <name>]`
+(branches, tags, uncommitted work as one commit, sessions; later runs land under `import/<login>/`).
 
-A checkout that is not on GitHub (no remote, or another host) goes to a playground instead
-(SPEC-171): `yulius onboard --playground [path] [--name <name>]` sends every local branch and tag,
-the uncommitted work and the chosen sessions to a playground of yours named after the checkout
-directory (or `--name`). The first run makes it, with the uncommitted work as one commit on the
-checked-out branch (a detached `HEAD` is refused); later runs land in it under `import/<login>/`.
-Nothing is pushed anywhere and GitHub is never called; it counts toward your 10 playgrounds.
-
-Removing any sandbox asks what happens to its files on this server, with no default (SPEC-276,
-ADR-0205). **Delete its files permanently** (`POST /api/sandboxes/{sid}/purge`; the superadmin can
-also purge an already removed one, from Settings → Instance → Leftovers → Kept files of removed
-sandboxes) deletes everything of it: `<data>/sandboxes/<id>/` (clone, home with the sessions,
-worktrees with any uncommitted work, CI, browser), `<data>/sysroots/<id>`,
+**Removing a sandbox** asks what happens to its files, with no default. **Delete its files
+permanently** (`POST /api/sandboxes/{sid}/purge`, or for an already removed one Settings → Instance →
+Leftovers → Kept files of removed sandboxes) deletes `<data>/sandboxes/<id>/` (clone, home with the
+sessions, worktrees with uncommitted work, CI, browser), `<data>/sysroots/<id>`,
 `<data>/runtime/sandboxes/<id>`, `<data>/cd/<id>`, `<data>/displays/<id>`, its runs, transcripts,
-the removal's export and a playground's `<data>/playgrounds/<id>.git`, as soon as no agent run,
-shell, browser, CI run, deploy or other process of it is left and its holder stopped: tried at
-once, every 15 seconds for 10 minutes, then with every disk round. The GitHub repository, task
-records and the audit (`sandbox.purge_requested`, `leftovers.delete`, `sandbox.purged`) stay.
-**Keep its files** keeps what PRJ-009 keeps (below), listed with its size until someone deletes it.
+the removal's export and a playground's `<data>/playgrounds/<id>.git` once none of its processes is
+left; the GitHub repository, task records and audit (`sandbox.purge_requested`, `leftovers.delete`,
+`sandbox.purged`) stay. **Keep its files** keeps them, listed with their size
+([Leftovers](#leftovers-what-is-kept-what-is-cleaned-and-when)).
+
+[details](archive/operations-until-2026-11-26.md#6-onboarding-a-repository-and-your-claude-sessions-yulius-onboard)
 
 ### Importing secrets (`yulius secrets import`)
 
 Keys held on a computer go into the vault from the CLI, signed in with `yulius login`, or with
-`yulius remote login` and a token from Settings → Connect your local agent (SPEC-205, ADR-0163):
+`yulius remote login` and a token from Settings → Connect your local agent:
 
 ```sh
 yulius secrets import --to agent .env      # agent secrets of this checkout's sandbox
@@ -2058,65 +1163,37 @@ gpg -d keys.env.gpg | yulius secrets import --to team -   # a dotenv text on std
 yulius secrets import --to agent                           # type each name and its hidden value
 ```
 
-The file is dotenv: `NAME=value` lines (optionally `export`), values bare, in single quotes
-(literal) or double quotes (`\n`, `\t`, `\"`, `\\` read), quoted values may span lines, `${…}` is
-kept as written, and the `#` comment lines directly above a key become its description (agent)
-or notes (team), except commented-out assignments (`# NAME=old-key`), which are never kept. A
-malformed file is refused before anything is asked, by line number. The command lists the
-server, the target and every name as `new` (marked `with description (agents read it)` or
-`with notes` when a comment goes along), `exists` (skipped: nothing is overwritten) or skipped
-with the reason (agent names are `[A-Z][A-Z0-9_]*`, values at least 8 characters on one line; a
-PEM or OpenSSH key is kept as a key file, but its first line alone is refused). It then sends
-nothing until `yes` is typed at the terminal, except with `--yes` and the `operate` token that
-`yulius remote login` stored (refused with any other token; ADR-0194). `--from-file NAME=PATH`
-imports a whole file, such as a key, as one secret, and `--env-files` creates agent secrets
-already allowed into `.env` files ([remote-control.md](remote-control.md#secrets)). Team and agent
-secrets go to the sandbox (`--sandbox`, else the checkout's GitHub repository); `--instance` makes
-team secrets team-wide, and agent secrets global (instance administrators), switched on for that
-sandbox ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)). Agent secrets start bound to no host and, as on the Secrets page, agents set them
-up: they bind the hosts they need and production deploys get them, which the list says before
-`yes`; `--confirm-hosts` makes a person allow each host and production deploys instead (SPEC-216).
+- **Format.** Dotenv: `NAME=value` lines (optionally `export`), values bare, single-quoted
+  (literal) or double-quoted (`\n`, `\t`, `\"`, `\\` read; may span lines), `${…}` kept as written;
+  `#` lines directly above a key become its description or notes. A malformed file is refused by
+  line number before anything is asked.
+- **Review.** Every name is listed as `new`, `exists` (skipped; nothing is overwritten) or skipped
+  with the reason (agent names are `[A-Z][A-Z0-9_]*`, values at least 8 characters on one line; a
+  PEM or OpenSSH key is kept as a key file). Values that are ordinary text (`production`, a region,
+  a host name, a URL without credentials, …) are skipped. Nothing is sent until `yes` is typed,
+  except with `--yes` and the `operate` token of `yulius remote login`.
+- **Options.** `--from-file NAME=PATH` imports a whole file as one secret; `--env-files` creates
+  agent secrets allowed into `.env` files ([remote-control.md](remote-control.md#secrets));
+  `--sandbox` names the target (else the checkout's GitHub repository); `--instance` makes team
+  secrets team-wide and agent secrets global; `--confirm-hosts` makes a person allow each host and
+  production deploys instead of the agents.
+- `yulius secrets delete NAME` (operate token; `-p owner/name`) deletes one imported by mistake. Put
+  multi-line keys in a file: the hidden prompt reads one line.
+- Values never appear in output, on disk or in logs. Exit 0 when every secret was imported, already
+  there or declined, 1 otherwise; a second run skips the imported ones.
 
-Agent secrets are masked as `[secret:NAME]` wherever their value appears, so the import skips a
-value that is ordinary text, naming why: a configuration word (`production`, `staging`, `main`,
-`true`, …), a cloud region, time zone, locale or path, a host name or address, an e-mail
-address, or a URL without credentials (no user information, no key-named parameter, no
-token-like host label or path segment); if one is a credential after all, a person adds it on
-the Secrets page, never in the hand-over. Run in a checkout of the
-project, it also looks for each new value in the tracked files (up to 1 MiB each, 256 MiB in all;
-the value never leaves memory) and asks about one found there (a no is counted as declined, not as a failure; `--yes` skips
-and lists it); elsewhere
-it says the repository was not searched (SPEC-274, ADR-0204). A secret imported by mistake is
-deleted by name with `yulius secrets delete NAME` (the operate token of `yulius remote login`;
-`-p owner/name`, else the checkout's project).
-
-Put keys that span lines in a file. The hidden prompt reads one line: a pasted key arrives cut
-to its first line, which is refused, and the terminal usually discards the rest; if part of it
-still shows at the next `Name:` prompt, press Ctrl-C (nothing has been sent).
-
-Values never appear: no option takes one, the output holds names only, nothing is written to disk,
-and the server logs no request bodies; the vault audit records who added which name. The command
-reminds you that the source file still holds the values. Exit 0 when every secret was imported,
-already there or declined at the question about the repository, 1 otherwise (skipped as invalid, refused, cancelled, or not sent after an expired
-sign-in, a 403 or an unreachable server; creates are never retried, and a second run skips the
-imported ones as existing).
+[details](archive/operations-until-2026-11-26.md#importing-secrets-yulius-secrets-import)
 
 ### Dropped files
 
-Files users drag onto the editor are written into the repository or a task worktree; files
-dropped or pasted onto a terminal are stored as attachments in
-`<data>/sandboxes/<sid>/attachments/{tasks,shells}/<id>/`, outside every worktree (never in
-`git status` or a pull request; the sandbox's processes can read and change them like its other
-files). They count towards the
-data directory's disk: at most 1 GiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task or terminal,
-8 uploads at once; an upload that would bring the data disk to its critical level (95 % used) is
-refused before it starts (ADR-0219). A deleted task's attachments stay while another task's request or an automation's prompt names
-them, and otherwise wait 7 days in `attachments/trash/<secs>-<number>-<id>/` (SPEC-396;
-`attachments_trash` restores them into a task), a terminal's go when it ends
-unless a task's request or an automation's prompt names its folder (others are removed at the next
-start), and composer drafts wait in `attachments/drafts/<user>/` and go after a week unless named
-(SPEC-413, ADR-0259); archiving a task keeps them. Uploads are audited
-(`audit_log`: `file.uploaded`, `attachment.uploaded`).
+Files dragged onto the editor go into the repository or a task worktree; files dropped or pasted
+onto a terminal are attachments in `<data>/sandboxes/<sid>/attachments/{tasks,shells}/<id>/`,
+outside every worktree: at most 1 GiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task or terminal, 8
+uploads at once, refused when the data disk would reach 95 %. A deleted task's attachments wait 7 days in
+`attachments/trash/<secs>-<number>-<id>/` (`attachments_trash` restores them); composer drafts in
+`attachments/drafts/<user>/` go after a week. Audited `file.uploaded`, `attachment.uploaded`.
+
+[details](archive/operations-until-2026-11-26.md#dropped-files)
 
 ## 7. Backup and restore
 
@@ -2127,17 +1204,18 @@ sudo -u yulius yulius backup --data-dir /var/lib/yulius /var/backups/yulius-$(da
 `backup` writes a consistent SQLite copy (`VACUUM INTO`). Also back up `/var/lib/yulius/master.key`
 (it encrypts every stored secret; without it the database's credentials are unreadable) and, if
 wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncommitted work cannot).
-Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
-The database copy holds the secrets vault and the egress CA key as ciphertext only; keep
-`master.key` apart from database backups (whoever has both can read every secret). For a copy of
-everything, files included, see "Copy or move the whole instance" below; to move to another host,
-use the next section.
+Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start. The
+database copy holds the secrets vault and the egress CA key as ciphertext only; keep `master.key`
+apart from database backups (whoever has both can read every secret). For a copy of everything,
+files included, see [Copy or move the whole instance](#copy-or-move-the-whole-instance); to move to
+another host, use the next section.
 
 ### Move the instance to another host
 
-`yulius instance migrate` (SPEC-460, ADR-0297; the warm copy: SPEC-465, ADR-0303) moves the whole
-instance with one command. Run it as root on the old host over SSH (not from a Yulius terminal: it
-freezes the service), or let a superadmin ask root for it from the page
+`yulius instance migrate`
+([ADR-0297](decisions/0297-one-root-command-moves-an-instance-and-drives-the-new-host-over-a-one-time-key.md))
+moves the whole instance with one command. Run it as root on the old host over SSH (not from a
+Yulius terminal: it freezes the service), or let a superadmin ask root for it from the page
 ([Move from Settings → Instance](#move-from-settings--instance)):
 
 ```sh
@@ -2151,275 +1229,68 @@ sudo yulius instance migrate --status                 # the recorded move and it
 sudo yulius instance migrate --abort                  # back to the old host
 ```
 
-It prints one checklist, a line per step as `host setup` does (`ok`, `changed`, `manual`, `FAIL`),
-and ends with exit 0 when nothing failed, 1 when a step failed and 2 when it was refused before
-anything changed. Run the same command again to continue a move that stopped: every step finds out
-what is already done. The new host needs only SSH for root and the same architecture; it must not
-hold a Yulius instance. One run at a time (a lock in the state directory); a unit that is already
-frozen (an earlier run that was killed, an export in progress) is refused until it is thawed, and
-so is a unit that does not run: start it first, so the move can freeze everything it runs (an
-instance that cannot start is copied with `yulius instance export`, below).
-`--public-url` is `https://host` without a port.
+It prints one checklist (`ok`, `changed`, `manual`, `FAIL`); exit 0: nothing failed, 1: a step
+failed, 2: refused before anything changed. **Run the same command again to continue a move that
+stopped.** The new host needs SSH for root and the same architecture, and no Yulius instance; the old
+unit must run unfrozen (else use `yulius instance export`, below). `--public-url` is `https://host`.
 
-**Plan** (nothing is changed but the flow's own files in `/var/lib/yulius-migrate` on both hosts,
-and nothing is frozen). Everything a person has to do is asked for here:
+1. **Plan** (nothing frozen; only `/var/lib/yulius-migrate` changes). It signs in once to add a
+   one-time key to root's `authorized_keys` on the new host (with `--no-sign-in`, or when that fails,
+   it prints the line to add and stops), checks the new host (release, architecture, systemd, CPUs,
+   memory, ports, disk; blank disks for `--data-disk`), estimates copy and freeze, and decides the
+   URL (`--public-url`, else the old one, else the same `sslip.io` form). Change DNS when the
+   checklist says; for a new URL add `<new URL>/api/auth/github/callback` and the homepage to the
+   GitHub App first ([the App after the public URL changes](#the-app-after-the-public-url-changes)).
+   Not carried: another proxy than Caddy, another firewall than ufw, packages missing on the release.
+2. **Prepare** (old instance runs). The new host gets the data disk (ext4 or RAID1, by UUID,
+   `nofail`, `RequiresMountsFor=`), apt sources and manual packages, `/usr/local`, unowned `/opt`,
+   root's Rust toolchain, the binary, units, drop-ins, environment and key files, the Caddyfile (URL
+   and host name replaced) and ufw's rules. With an `https://` URL its port 443 must answer (else
+   `systemctl status caddy`, `journalctl -u caddy -n 50`), so TLS ending at a CDN cannot be moved so.
+3. **Copy** (the old instance runs). The data directory goes into a staged copy in passes (`zstd`
+   when both hosts have it); later passes send only what changed, by receipts in
+   `/var/lib/yulius-migrate/copy`. The line `downtime` gives the estimated freeze. Without
+   `--max-downtime` it copies again while the changes would take over a minute (at most five
+   times); with it, it freezes only within the bound, else ends with exit 1 and nothing frozen: run
+   again later or with a higher bound. **Do not update Yulius on the old host during the copy.**
+4. **Cutover.** The old unit and `yulius-sandboxes.service` are frozen, a last pass runs, both hosts
+   count the whole copy, and only when equal is the new instance started (it must report the old
+   host's build). Until then any failure or signal thaws the old instance. If the new one does not
+   come up, it is stopped and disabled before the old one thaws; remove the copy (`rm -rf` the data
+   directory on the new host) before the next run. Once the new instance reports the build, the old
+   unit stays frozen and is disabled; later failures are lines to act on, never a rollback.
+5. **After.** Live tasks are queued again; the old Caddy site redirects (307, header
+   `X-Yulius-Moved-To`) to the new URL; `/var/lib/yulius-migrate/arrived.json` and `<data>/moved.json`
+   on the new host keep the checklist and note (remove to drop); keys go and ufw is enabled (check
+   its rules admit you on the SSH port). Left for people: DNS, the GitHub App, laptops (`yulius
+   remote` follows the redirect, [remote control](remote-control.md#2-connect-your-agent); Claude
+   Code needs `claude mcp remove yulius` and `claude mcp add`), and the old frozen copy with
+   `master.key` and every secret.
 
-- The SSH sign-in to the new host, once: the flow makes a one-time key and adds it to root's
-  `authorized_keys` there through your own sign-in (`ssh` asks for the password or second factor,
-  and offers root's keys as any `ssh` of root does). When that sign-in does not work it prints the
-  line to add and stops; add it and run the command again. From then on it uses only that key.
-  With `--no-sign-in` no sign-in is tried at all and root's ssh configuration is not read: the
-  line to add is printed, and every connection offers the one-time key alone. The move helper
-  always runs the command so (a move asked from Settings → Instance is nobody's sign-in).
-- The new host: release, architecture, systemd, CPUs and memory; refused when it runs or holds an
-  instance or another program holds the ports of the proxy and of Yulius.
-- Disk space where the data directory goes. The plan recognizes a staged copy it will resume.
-  If space is short and an unfinished copy will be discarded, the line identifies its directory
-  on the new host and gives a removal command for a dedicated, expendable copy. Blank disks
-  on the new host are listed when space is short. Name one with `--data-disk`, or two for a
-  mirror. Only disks without a partition table, filesystem, holder or mount are taken.
-- The link's rate, how long the copy will take at it, and a first estimate of the freeze. The
-  instance runs during the copy; it is frozen only for the last changes, the proof and the start.
-  For the estimate the plan reads a sample of the data directory twice (two seconds at most the
-  first time) and takes how many entries a second the second reading looks at: the freeze counts
-  every entry four times at about that rate. The passes measure it again, and the line
-  `downtime` after the copy is the one that counts (**Copy**, below). With a staged copy of an
-  earlier run on the new host the plan says so: only what changed since is sent.
-- The new public URL: `--public-url`, else the old URL, else for an address-made URL
-  (`1-2-3-4.sslip.io`) the same form for the new address. A name that does not lead to the new
-  host yet is named: change its DNS record when the checklist says the new instance runs.
-- When the URL changes, the GitHub App. The command asks the running instance, which asks GitHub
-  whether it accepts the new URL's callback: `ok` when it does; else `manual` with the link to the
-  App's settings and the two values: add the callback URL `<new URL>/api/auth/github/callback`
-  and set the homepage, before the cutover (an App accepts several callback URLs, so the old one
-  keeps working). GitHub has no API for this and Yulius never uses a person's GitHub session. Until
-  it is done GitHub sign-in fails at the new URL; password sign-in works. When the instance cannot
-  be asked (an older server is running, GitHub does not answer) the line says why and where the
-  settings are in general ([the App after the public URL changes](#the-app-after-the-public-url-changes)).
-- What is not carried: another reverse proxy than Caddy, another firewall than ufw, packages
-  without a candidate on the new release.
+**Abort.** `sudo yulius instance migrate --abort` on the old host stops the new instance (after the
+finish, first run there `systemctl disable --now yulius.service; systemctl stop
+yulius-sandboxes.service`; `--yes` confirms it), restores the old proxy, thaws and enables the old
+unit. The copy on the new host stays until you remove it; laptops run `yulius remote login <old URL>`.
 
-Then it asks "Move this instance to …?" unless `--yes`. Without a terminal and without `--yes` it
-ends after the plan.
-
-**Prepare** (the old instance still runs). On the new host: the data disk (`--data-disk`: ext4 on
-the disk, or on an mdadm RAID1 of two, mounted at the data directory by UUID from `fstab` with
-`nofail`, the array in `mdadm.conf` and the initramfs, the unit drop-in `RequiresMountsFor=`, the
-mount point given to the service user); the old host's third-party apt sources with their keys
-and the release's codename replaced (a source without that suite keeps the old one; one that still
-fails is removed and named); the old host's `apt-mark showmanual` packages in one transaction (a
-library whose name carries another version there, `libicu74` → `libicu78`, is renamed; kernel,
-boot and network packages are left to the machine); coreutils of the old host's flavour (GNU or
-uutils); `/usr/local`, the entries of `/opt` no package owns and root's Rust toolchain, copied as
-they are; `host setup`'s host items; the build at the unit's path; the unit file, its drop-ins,
-its environment and key files outside the data directory, the update helper's units and its
-record of the installed commit, the move helper's units when the old host has them
-([the move helper](#the-move-helper-moves-from-settings--instance)). In the unit file, its drop-ins and the Caddyfile the old public
-URL and host name are replaced; environment and key files travel as they are, and the plan names
-one that mentions the old host, for you to edit; Caddy's directory
-and drop-ins for the new host name, validated and started, so its certificate is there before the
-cutover. Caddy is restarted with the carried Caddyfile and drop-ins on every pass, even when the
-files were already there (the package starts Caddy with its default site before they are copied,
-and only a restart reads the drop-ins' environment). With an `https://` public URL the new host's
-own port 443 is then asked for the public host (`curl --resolve <host>:443:127.0.0.1`, past any
-proxy setting): any HTTP answer passes, a failed TLS handshake is said (no certificate yet while
-the name still leads to the old host), and a closed port stops the move, pointing to
-`systemctl status caddy` and `journalctl -u caddy -n 50`. A Caddy with no site on port 443 (TLS
-ending in front of it, at a CDN or another proxy) therefore cannot be moved with an `https://` URL.
-The check proves port 443 is open, not which configuration answers: the restart is what loads the
-carried one ([SPEC-592](../.ai/specs/SPEC-592-instance-move-caddy-keeps-serving-its-pr.md));
-ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
-are named; the new instance re-sizes those that no longer fit (SPEC-459).
-
-**Copy** (the old instance still runs). The data directory is copied into a staged copy on the
-new host in passes, compressed with `zstd` when both hosts have it. The first pass sends
-everything; every later pass sends only what the new host does not hold as it is now. The
-instance stays usable; the copy reads the whole data directory once, so its disk is busier than
-usual.
-
-- What changed is never judged by size and time. For every entry the new host has taken in and
-  synced, the old host keeps a receipt in `/var/lib/yulius-migrate/copy`: a digest of the entry's
-  name, kind, size, owner, mode, time and attributes, of its inode number and of its inode's
-  change time, which no program can set. An entry is left out only while its receipt matches. An
-  entry that changed within two seconds of a pass, or while it was read, earns no receipt and is
-  sent again; so is every file on another filesystem mounted inside the data directory. A file
-  that changed is sent whole.
-- A pass removes nothing on the new host: what no longer exists goes during the freeze.
-- After every pass that sent only changes, the line `downtime` gives the estimated freeze: the
-  entries are counted four times (twice on each host), what changes meanwhile is sent, the new
-  host syncs, and the start is allowed half a minute. Without `--max-downtime` the move copies
-  again while the changes alone would take more than a minute to send, at most five times, and
-  then freezes. With `--max-downtime <minutes>` it freezes only when the estimate is at most
-  that; after five passes above it the move ends with exit 1, nothing was frozen, and the staged
-  copy stays: run the command again at a quieter time or with a higher bound; it sends only
-  what changed since.
-- A pass that was cut (a broken link, Ctrl-C, a killed command) costs only what the new host had
-  not yet taken in: run the same command again. A link that goes silent ends the pass after
-  about two minutes (`Timeout, server … not responding`). Ctrl-C during the copy ends the
-  command at once; nothing is frozen yet. The new host's data directory holds the staged copy's marker
-  (`.yulius-import-incomplete`); when the copy there was removed, or is not the one the old host
-  knows, the copy starts from the beginning. When the receiving side died in the middle of a
-  pass (the new host was restarted), everything is sent into the staged copy again.
-- The receipts hold only in the boot they were written in and while the old host's clock is not
-  set back. After a restart of the old host (after a crash a file may be newer than its change
-  time says), or when its clock was set back by a second and a half or more, the move says so
-  and sends everything into the staged copy again; when that happens just before the freeze,
-  nothing is copied frozen, the old instance is thawed and the same command copies again while
-  it runs. The clock's own pace (NTP) does not count, only a step.
-- The copy reads as root while the sandboxes run. It never follows a link, and it stays in the
-  directories it opened: a directory that is renamed or replaced by a link while a pass walks
-  it is left out of that pass and sent by the next.
-- The line `downtime` names what every pass sends again, when that takes a second or more:
-  entries that change all the time, files on another filesystem, and a file that took the
-  place of a directory (the new host removes a directory only during the freeze). They are
-  sent during the freeze too, in full.
-- Do not update Yulius on the old host during the copy. An instance that reports another build
-  before the freeze than in the plan is not frozen; run the command again with the build it runs
-  (the staged copy is kept).
-
-**Cutover.** The old unit is frozen, and with it its sessions unit `yulius-sandboxes.service`
-where the host has one ([Where sessions live](#where-sessions-live)); every thaw below is of
-both. One last pass sends what changed since the passes before, with the list of every path the
-old host holds; the new host installs it and removes what is no longer there. Then both hosts
-count the whole copy: entries and bytes for each top-level folder
-and a fingerprint over every entry's name, kind, size, owner, mode, time and restorable
-attributes. Only when they are equal is the copy marked and the new instance started
-(`host setup`'s remaining items, `systemctl enable` and `start`, then it must report the old
-host's build). Until that start any failure, Ctrl-C or SIGTERM thaws the old instance, which runs
-on as before; the staged copy stays, and the next run sends what changed since (a copy whose
-count differs is dropped, and the next run copies everything again); an instance that systemd
-does not report frozen as a whole right after the freeze is thawed too, before anything is
-copied frozen, and the line says what systemd said (the server's unit does not run, a unit of
-it runs unfrozen, or no answer). Once the start is ordered nothing thaws the old instance by
-itself, not a signal
-and not a lost terminal. If the new instance does not come up, it is stopped and disabled, and
-only then is the old one thawed; the copy there was started and must be removed (`rm -rf` the
-data directory on the new host) before the next run. If the new host stops answering at that
-point, the old instance stays frozen: run the command again when it answers (`--abort` only once
-the new instance is known to be stopped: it thaws the old one). Once the new
-instance reports the build it has taken over: the old unit stays frozen and is disabled, and
-whatever fails after that (the helper, the Docker smoke) is a line to act on, never a rollback.
-That includes the old unit itself: when it cannot be frozen or disabled, the move stands, the
-run goes on to its finish and ends with exit 1, and the move is not finished until the old
-instance is held ([The old instance held](#the-old-instance-held), below).
-
-**After.** The flow waits for `https://<new host>/healthz`, reads what the new instance did with
-the tasks that were live (its first start puts them back in the queue, whoever owns them; tasks a
-person had paused or was stopping stay stopped), and replaces what the old host's Caddy site
-proxied to Yulius by a temporary redirect (307) to the same path at the new URL, with the header
-`X-Yulius-Moved-To`; the site keeps its name and TLS settings, and other sites in the file stay.
-It enables the move helper's path unit on the new host when it was enabled on the old one (a
-helper that is installed and switched off stays off there), leaves the finished checklist for the
-new instance's page (`/var/lib/yulius-migrate/arrived.json` there; remove the file to drop it),
-then removes its key from the new host, enables ufw there with the old host's rules (first
-admitting the old host itself on the SSH port the move used; make sure the carried rules let
-you in on the new host's SSH port), deletes the key on the old host and lists what is left for
-people: the DNS record if still open; the GitHub App, which the new instance is asked about once
-more (`ok` when GitHub accepts the callback by now, else the link and the values again); laptops
-(`yulius remote` follows the old URL's redirect by itself and keeps its sign-in under the new URL,
-[remote control](remote-control.md#2-connect-your-agent); Claude Code's own connection needs
-`claude mcp remove yulius` and `claude mcp add` with the new URL); and that the old host
-still holds a frozen copy with `master.key` and every secret. On the new instance, Settings →
-Instance → Address then shows where it came from, when, what its first start did with the tasks,
-and whether GitHub accepts the new address (the note about the move is read from
-`<data>/moved.json`; remove the file to drop it). A later run that finds the key already deleted
-on the old host (the finish was done and only its record was lost) records the finish and says
-so, whether or not the new host answers; it asks the new host nothing more, so the GitHub App is
-named with directions to its settings and the homepage and callback values to register.
-
-**Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
-instance (through the key while the move is not finished; afterwards the key is gone: stop it
-there first with `systemctl disable --now yulius.service; systemctl stop
-yulius-sandboxes.service`, since its sessions live in their own unit; the abort refuses while the new URL
-still answers and otherwise asks you to confirm that it is stopped, `--yes` answers for you), puts
-the old proxy configuration back, thaws and enables the old unit and removes the key and the
-state, the receipts of a staged copy included. The copy on the new host, staged or started, with
-`master.key` and every secret, stays there until you remove it.
-It never leaves both running. Work done on the new host after the move is not copied back.
-Laptops whose `yulius remote` had already followed the move point at the stopped instance: their
-commands say where the sign-in came from, and `yulius remote login <old URL>` signs in there
-again, with a token ([remote control](remote-control.md#2-connect-your-agent)).
-
-The run that ordered the start ignores Ctrl-C, SIGTERM and a lost terminal from then on, on
-purpose (it must not thaw the old instance beside a new one). If it hangs, end it with `kill -9`,
-then run the same command again or `--abort`: a start still in flight on the new host finds the
-abort's stop and starts nothing. A run that goes on from a recorded start watches no signal:
-Ctrl-C ends it at once and thaws nothing (also when it had just frozen a unit of the old
-instance again), and the same command goes on again.
-
-The same command after a run that ended there plans and copies nothing; the new instance's state
-decides. A new host that cannot be reached is waited for: the run fails saying so, touches
-nothing and asks for no key again (only a key that is missing on the old host or refused by the
-new one is added anew). With the old instance still frozen as a whole (the server's unit and its
-sessions unit) the run orders the start again and goes on as above. With a unit of it no longer
-frozen it starts nothing and only asks the new instance. When that reports the build, the move
-stands: whatever unit of the old instance runs (thawed or started by hand) is frozen again, to
-stay, the server's unit is disabled, and the checklist names the units that ran beside the new
-instance (what their agents did meanwhile is on the old host only). If a unit cannot be frozen,
-that is a `FAIL` line with the reason, the two commands to run and, for a freeze that keeps
-failing, the commands that stop for good the units that could not be frozen (`systemctl stop`
-and `systemctl kill --kill-who=all --signal=SIGKILL` of them; a unit that is frozen is never
-named there, see [The old instance held](#the-old-instance-held)); nothing is thawed then
-either, and a freeze
-that did not complete within a minute is left on its way. A server's unit that has stopped
-(`inactive` or `failed`) is not frozen by systemd: its sessions unit is frozen where it still
-runs, and the server's unit is named for you to make sure nothing of it is left (the frozen
-sessions unit is held as it is and is not named). A server's
-unit that systemd reports on its way up or down is not taken for stopped (a sessions unit that
-is being stopped counts as ended once no process of it is left, see below). A unit that was frozen is named also when the other could not
-be. When the new instance answers
-and does not run, `--abort` is the way back; when the new host does not answer the question,
-nothing is touched and the same command asks again once it does.
-
-A unit that does not run is asked what it left before the run says so. The server's unit has
-`KillMode=process` (§3), so a `systemctl stop` of it ends the server alone: what the server
-started in the unit's own cgroup stays there and runs on, unfrozen, beside the new instance (on
-a host without a sessions unit that is every agent, terminal and sandbox engine; with one,
-whatever the server started outside it), and systemd freezes nothing of a unit that is not
-active. (systemd 259 refuses to stop a frozen unit; systemd 255, Ubuntu 24.04, thaws it and
-stops it, so there one `systemctl stop` of the frozen old unit is enough to get here.) While
-processes of such a unit run (the server's unit when it is `inactive` or `failed`; a sessions
-unit that has stopped or is being stopped; the group's `cgroup.events` says `populated 1` and
-not `frozen 1`), the run ends with a `FAIL` line that names the units and the command that ends
-those processes, and exit 1:
+A run that ordered the start ignores Ctrl-C and SIGTERM; if it hangs, `kill -9` it and rerun or
+`--abort`. Processes a stopped old unit left (`KillMode=process`, §3) end a run with a `FAIL` line
+and the command (`--kill-who` is the older spelling, which systemd 252 and later still take
+beside `--kill-whom`):
 
 ```sh
 sudo systemctl kill --kill-who=all --signal=SIGKILL yulius.service
 ```
 
-(`--kill-who` is the option's name before systemd 252, which calls it `--kill-whom` and still
-takes the older spelling: the lines of a move name the one that runs on every release.)
-
-The run kills nothing itself and records nothing: run the command the line names (what the old
-instance holds stays on its disk), then the same `yulius instance migrate` command again. It
-asks again each time and goes on to the finish once nothing is left. (That is a run that goes
-on from a recorded start. When the look after a start or a later run finds the same, the move
-is already recorded and its finish is done or goes on; the line and the command are the same,
-and the move is not finished until nothing is left: below.) A stopped unit without a
-cgroup (the old host was restarted, or the stop left nothing), with an empty one, or whose
-processes the kernel holds frozen gets the "make sure" line and the run goes on, as before.
-When systemd does not answer the question, the run fails saying so and asks again next time.
-Such a unit must be disabled too: when `systemctl is-enabled` does not say so, the run adds a
-`FAIL` line with `systemctl disable yulius.service` and ends with exit 1 (below).
+Run it, then the same `yulius instance migrate` command again.
 
 #### The old instance held
 
-Once the new instance has taken over, the move is finished only while the old one is held, and
-no record says that it is: every run of the same command asks systemd again, also long after
-the finish (SPEC-481, ADR-0311). Held means all of this:
-
-- no unit of it runs unfrozen: the server's unit and its sessions unit are frozen, or the
-  server's unit has stopped (`inactive` or `failed`) and its sessions unit does not run
-  unfrozen;
-- no unit of it that does not run left processes that run (the question above);
-- `systemctl is-enabled yulius.service` says `disabled` (or `static`, for a unit of your own
-  without an `[Install]` section, which nothing enables), so a restart of the old host does not
-  start it beside the new instance.
-
-Held: the run says `ok` for the old instance and `finished`, with exit 0. Not held, or systemd
-does not answer: a `FAIL` line under **Cutover** says what was found and what to run, the run
-ends with exit 1 and says nothing of "finished", and `--status` shows that line until a run
-finds the instance held:
+The move is finished only while the old instance is held, and every run of the same command checks
+again ([ADR-0311](decisions/0311-a-move-is-finished-only-while-its-old-instance-is-held-and-every-run-looks.md)):
+no unit of it runs unfrozen (both frozen, or the server's unit `inactive`/`failed` and the sessions
+unit not running unfrozen), no stopped unit left running processes, and `systemctl is-enabled
+yulius.service` says `disabled` (or `static`). Held: `ok` and `finished`, exit 0. Otherwise a `FAIL`
+line under **Cutover** says what to run, exit 1, and `--status` shows it until a run finds it held:
 
 ```sh
 sudo systemctl freeze yulius.service yulius-sandboxes.service   # the units the line names
@@ -2427,94 +1298,37 @@ sudo systemctl disable yulius.service
 sudo yulius instance migrate root@new-host                      # looks again
 ```
 
-For a unit that runs unfrozen the line also names the way out of a freeze that keeps failing:
-`systemctl stop` and the kill above of the units that are not frozen, then the disable. A
-frozen unit is never named there, and do not stop or kill one yourself: systemd 259 refuses to
-stop a frozen unit, and after a kill of its processes the unit stays frozen on its way to a
-restart, where no thaw, no start and no `--abort` reaches it until the host restarts. For a
-stopped unit that left processes the line names the kill; for a stopped unit that is still
-enabled, the disable alone. When systemd does not say what the units do, the line names no command: nothing
-is known to be wrong, so run the same command again when it answers.
+**Never stop or kill a frozen unit yourself**: systemd 259 refuses to stop one, and after a kill it
+stays frozen on its way to a restart that nothing but a host restart reaches. Packages installed
+inside sandboxes keep their files; on another release the checklist names those sandboxes.
 
-A run that finds the move recorded as moved only looks: it freezes, thaws, stops and disables
-nothing of the old instance (it cannot ask the new one once its key is gone, and you may have
-gone back by hand). For the same reason its line says that the new instance has taken over,
-not that it runs, and names the other way: `sudo yulius instance migrate --abort`, once the
-new instance is stopped. The steps after the cutover and the finish (the tasks, the old
-URL's redirect, the key, the firewall on the new host) do not wait for the old instance: a run
-that finds the move not yet finished does them whether or not it is held, and ends with exit 1
-when it is not. So after a run that ended with `FAIL … must be frozen and disabled now`, the
-same command says the same and ends with exit 1 until the old instance is held; and a move that
-was finished long ago fails the same way when its old unit was thawed, started or enabled
-since.
-
-The sandbox browsers' profiles come over with the old host's Chrome locks. The first start on
-the new host removes them (§ "Sandbox browser"), so nobody needs to delete `Singleton*` files by
-hand. Before this fix (2026-11-21 move), Chrome refused every profile. Its display restarted
-every 30 s until the files were removed.
-
-Not part of a move: packages installed inside sandboxes keep their files; on another release the
-checklist names those sandboxes. The sandbox base is built for the new host while preparing, so
-a host that cannot run sandboxes is found before anything freezes.
+[details](archive/operations-until-2026-11-26.md#move-the-instance-to-another-host)
 
 ### Move from Settings → Instance
 
-A superadmin moves the instance from **Settings → Instance → Move to another host** (SPEC-470,
-ADR-0305). Root runs the same command for it: the page asks through a request file, as updates do,
-and shows the command's own checklist. It needs [the move helper](#the-move-helper-moves-from-settings--instance)
-on the old host; without it the card says so and names the command above.
+A superadmin moves the instance from **Settings → Instance → Move to another host**; root runs the
+same command for it through [the move helper](#the-move-helper-moves-from-settings--instance), and
+the page shows its checklist (without the helper the card names the command above).
 
-1. **Show the plan.** The form takes the new host (`root@new-host`, a name or an address that leads
-   there by itself: root's ssh configuration is not read), its SSH port, a new public URL (empty:
-   as the command decides), one or two blank disks, and an optional longest freeze in whole minutes (at least one). The plan changes nothing but the move's own
-   files and freezes nothing. A move asked from the page never signs in as root does (root's own
-   keys, its agent, its ssh configuration, a password), so the first plan ends with **the key line
-   to add**: copy it into root's `~/.ssh/authorized_keys` on the new host and show the plan again.
-   That is on purpose: whoever can ask root's helper would otherwise reach every host that trusts
-   root here, and so only a host where a person added the move's key is moved to. The lines a
-   person has to act on (`manual`: a DNS record, the GitHub App, what is not carried) and the
-   failed ones are repeated above the checklist; a plan with a failed line offers no move.
-2. **Run migration…** names the host that root will give the instance's data to (every repository,
-   secret and key) and the freeze the plan estimated, and is confirmed by typing the host's name.
-   It is the plan that was shown: the same host, port, URL, disks and freeze limit, shown at most an hour ago
-   (else show it again). The card then shows the phases and the checklist as it grows: the new
-   host is prepared and the data copied while the instance keeps working (the phases Prepare and
-   Copy). With a freeze limit, the copy measures the estimate again before it freezes. If five
-   delta passes still exceed the bound, the instance keeps running and the staged copy stays
-   on the new host. Continue later or show a new plan with a higher limit.
-3. **While the instance is frozen** for the last changes, the proof of the copy and the start on
-   the new host, nothing answers, the page included: the card says so with the plan's estimate (the
-   copy measures it again a moment before the freeze; that line is in the checklist once something
-   answers), keeps the last checklist and keeps trying. With the same public URL the new instance
-   answers the page once the name leads to it, and the card shows **the finished checklist**. With
-   another URL the old address redirects: the card links to the same page at the new address, where
-   you sign in again (a sign-in belongs to one address) and find the finished checklist. If the
-   move did not complete, the old instance answers again and the card says where it stopped, with
-   **Continue the move…** (the same values, the same confirmation) and **Abort…**.
-4. **Abort…** says what it does first: a run in flight is stopped (before the new instance's start
-   is ordered that leaves everything running here; after it the command finishes by itself), then
-   `--abort` runs as above, without `--yes`: when it needs a person's word that the new instance is
-   stopped, the checklist names the command to run on this host. Data that was already copied stays
-   on the new host with `master.key` and every secret: the abort's checklist says to remove it
-   there. After a finished move the old instance is frozen and cannot be asked: go back with `sudo
+1. **Show the plan** with the new host (`root@new-host`; root's ssh configuration is not read), its
+   SSH port, a new public URL (empty: as the command decides), one or two blank disks and an
+   optional longest freeze in minutes. The first plan ends with **the key line to add**: copy it
+   into root's `~/.ssh/authorized_keys` on the new host and show the plan again.
+2. **Run migration…**, confirmed by typing the host's name, runs the plan shown at most an hour ago.
+3. **While frozen** nothing answers, the page included. Afterwards the new instance answers (with a
+   new URL the old one redirects; sign in again there). If the move did not complete, the old
+   instance offers **Continue the move…** and **Abort…**; after a finished move go back with `sudo
    yulius instance migrate --abort` on the old host.
 
-Only the superadmin sees the card (403 for everyone else); every plan, move and abort is in the
-audit log (`migration.planned`, `migration.started`, `migration.aborted`: who, the host, the
-values). While a move's request waits or its run is in flight, **Update now** and **Restart…**
-are refused (a run whose helper has been silent for a minute is in flight until systemd says
-the helper's service ended; only then does the card say the helper stopped without a word),
-and nothing is asked of a move while an update or restart runs. A move started with
-the command on the host shows on the page as a recorded checklist; whether it still runs is known
-only for runs the page started. On the new instance the card shows the move that brought it
-there until the next move does, or until `/var/lib/yulius-migrate/arrived.json` is removed.
+Only the superadmin sees the card; plans, moves and aborts are audited (`migration.planned`,
+`migration.started`, `migration.aborted`). While a move is requested or running, **Update now** and
+**Restart…** are refused.
 
 ### Copy or move the whole instance
 
-`yulius instance export` and `yulius instance import` (SPEC-329, ADR-0222) copy everything: the
-database, `master.key`, every sandbox (clones, worktrees with uncommitted work, homes with the
-Claude sessions), installed packages and Docker images and volumes (`sysroots/`), transcripts and
-runs. Both run as root.
+`yulius instance export` and `yulius instance import` copy everything: the database, `master.key`,
+every sandbox (clones, worktrees with uncommitted work, homes with the Claude sessions), installed
+packages and Docker images and volumes (`sysroots/`), transcripts and runs. Both run as root.
 
 ```sh
 # straight from the old VM to a new one; nothing is written on the old VM's disk
@@ -2528,89 +1342,62 @@ ssh root@new-vm yulius instance import < yulius-2026-10-26.tar
 sudo yulius host setup --public-url https://yulius.example.com
 ```
 
-**Export.** It freezes `yulius.service` and `yulius-sandboxes.service` (`systemctl freeze`; a
-stopped server's sessions unit alone): the server, every agent, terminal,
-browser, CI job, deploy and sandbox Docker engine pause, so nothing changes while it reads. The web
-UI does not answer during the export. It then prints the exact size ("Exporting 123.4 GiB
-(1,234,567 entries)"), streams an uncompressed tar of that exact length to standard output
-(refused when standard output is a terminal), shows progress on stderr and thaws the service
-(also when it fails, the reader goes away or it gets Ctrl-C, SIGTERM or SIGHUP, even while it
-waits on a stalled connection). If it is killed
-with SIGKILL, thaw by hand with the command it printed: `sudo systemctl thaw
-yulius-sandboxes.service yulius.service`. `--move` keeps the old instance
-frozen and disables its unit after a successful export, so it never runs beside the new one (both
-would run the same agents against the same repositories); undo with `sudo systemctl thaw
-yulius.service yulius-sandboxes.service && sudo systemctl enable yulius.service`. Left out, because the new host makes its
-own: `system/` (the sandbox base), `runtime/`, `update/`, `claude-code/` (Claude Code for this host's platform, downloaded again), `yulius.db-shm`, sockets and FIFOs, and a
-`.yulius-limits-adapt` the instance still holds from an import of its own (every import writes
-that mark anew, below). It is
-refused (exit 2, nothing frozen) while the update helper runs (checked again once frozen and
-before the copy's checksum), from a Yulius terminal (it would freeze itself), and while the
-service is stopped but its agents still run (start it first).
-`--service` and `--update-service` name other units. The copy is uncompressed so its size is known
-first; pipe it through `zstd` yourself if the link is slow.
+**Export** freezes `yulius.service` and `yulius-sandboxes.service` (the web UI does not answer
+meanwhile), prints the exact size, streams an uncompressed tar to standard output (not to a
+terminal; pipe it through `zstd` yourself on a slow link) and thaws them, also on failure or a
+signal. After a SIGKILL thaw by hand: `sudo systemctl thaw yulius-sandboxes.service yulius.service`.
+`--move` keeps the old instance frozen and disables its unit, so it never runs beside the new one;
+undo with `sudo systemctl thaw yulius.service yulius-sandboxes.service && sudo systemctl enable
+yulius.service`. Left out (the new host makes its own): `system/`, `runtime/`, `update/`,
+`claude-code/`, `yulius.db-shm`, sockets, FIFOs and `.yulius-limits-adapt`. Refused (exit 2, nothing
+frozen) while the update helper runs, from a Yulius terminal, or while the service is stopped but its
+agents run. `--service` and `--update-service` name other units.
 
-**Import.** On the new VM with the same or a newer `yulius` installed (§2, before `host setup`):
-it reads the manifest first and refuses (exit 2, nothing written) a copy of a newer database
-schema, a copy exported from another path than `--data-dir` (default `/var/lib/yulius`, as
-`YULIUS_DATA`; Git worktrees and the database hold absolute paths, and the copy never chooses
-where it goes), a data directory that exists and holds anything but `lost+found` and dotfiles,
-belongs to another user or to root (a new disk: it prints the `useradd` and `chown` to run), and
-too little free space or inodes. A subordinate id range smaller than the exported one is refused
-after the service user is made, before anything of the copy is written. It makes the service user and its subordinate ids (as
-`host setup` does), extracts as the stream arrives, remaps the old service's ids and subordinate
-range to the new ones, and checks the copy's SHA-256 and length. A file of another owner (root
-included) becomes the service user's, without setuid. File capabilities and ACLs are not restored
-(it says how many). A cut or damaged stream fails (exit 1) and leaves the data directory marked
-incomplete: remove it (`sudo rm -rf /var/lib/yulius`) and import again. Then run `host setup`
-with the public URL the import prints (it writes the unit, builds the sandbox base for this host,
-checks Docker and starts Yulius; on a host where bwrap cannot create user namespaces yet, the
-import says that this step fixes it), copy other `Environment=` lines you changed in the old unit
-(keys; leave the resource limits behind), and point the reverse proxy and DNS at the new VM. The
-import leaves a mark (`<data>/.yulius-limits-adapt`): the first start on the new host replaces
-every [resource limit](#resource-limits) pinned for the old one by its host-sized value, also
-one copied into the unit later. Tasks that were running come back as after a
-reboot.
+**Import** (the same or a newer `yulius` installed, §2, before `host setup`) refuses (exit 2, nothing
+written) a newer database schema, a copy from another path than `--data-dir` (default
+`/var/lib/yulius`, as `YULIUS_DATA`), a non-empty data directory (`lost+found` and dotfiles aside) or
+one of another user or root (it prints the `useradd` and `chown` to run), too little space or inodes,
+and a smaller subordinate id range. It makes the service user and ids, extracts, remaps ids and
+checks SHA-256 and length; file capabilities and ACLs are not restored. A cut stream fails (exit 1):
+`sudo rm -rf /var/lib/yulius` and import again. Then run `host setup` with the public URL the import
+prints, copy other `Environment=` lines you changed (keys; leave the resource limits behind), and
+point the proxy and DNS at the new VM. The mark `<data>/.yulius-limits-adapt` makes the first start
+replace every [resource limit](#resource-limits) pinned for the old host. Running tasks come back as
+after a reboot.
 
 ### Leftovers: what is kept, what is cleaned and when
 
-Yulius deletes what nothing needs any more by itself (SPEC-215, ADR-0170): at every start (two
-minutes in, so after every update) and every hour. Each deletion checks its rule again right
-before it removes anything: a running agent, shell, browser, CI run or deploy, a live holder, or a
-task that started working again keeps its files. Every deletion is audited as `leftovers.delete`
-(path, size, reason), and every failure as `leftovers.failed`.
+Yulius deletes what nothing needs any more by itself: at every start (two minutes in) and every hour.
+Each deletion checks its rule again right before it removes anything (a running agent, shell,
+browser, CI run or deploy, a live holder, or a task that started working again keeps its files).
+Every deletion is audited as `leftovers.delete`, every failure as `leftovers.failed`.
 
 | What | When it goes | By itself? |
 | --- | --- | --- |
 | A removed sandbox's `worktrees/`, `ci/`, `browser/`, `<data>/import-worktrees/<id>`, `<data>/cd/<id>`, `<data>/displays/<id>` and its agent runs' `<data>/runs/<attempt>` | 10 minutes after the removal, once nothing of it runs | yes |
-| A removed sandbox's `<data>/sysroots/<id>` (installed packages, Docker images and volumes) and `<data>/runtime/sandboxes/<id>` | once its holder has stopped (a minute after the removal, SPEC-206); removed as root of a mapped namespace | yes |
-| Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-<ms>.json` | removed with **Delete its files permanently**: as soon as nothing of it runs; removed with **Keep**: kept (PRJ-009), listed under Kept files of removed sandboxes; the database records always stay | on request |
+| A removed sandbox's `<data>/sysroots/<id>` (installed packages, Docker images and volumes) and `<data>/runtime/sandboxes/<id>` | once its holder has stopped (a minute after the removal); removed as root of a mapped namespace | yes |
+| Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-<ms>.json` | **Delete its files permanently**: as soon as nothing of it runs; **Keep**: kept, listed under Kept files of removed sandboxes; the database records always stay | on request |
 | A task's rebuildable caches (`target`, `node_modules`, `[disk] caches`, …) | closed, stopped or failed: after 10 minutes; **archived**: at once; **done**: after 30 quiet minutes; waiting: after 4 hours; any idle task at 90 % of the quota or with the data disk critical | yes (the worktree and uncommitted work stay) |
-| Units of a Cargo `target` (worktrees and CI checkouts) | unused for 48 hours (6 h with the disk low, 1 h critical), then the least recently used incremental ones above 5 % of the disk (at least 8 GB; half when low, a quarter when critical); never while Cargo compiles there (its locks); compiled artifacts only in a CI checkout with no CI run and in the worktree of a task that neither works nor runs background work while no Shell of the sandbox is open (otherwise only incremental state goes) | yes, hourly, and every 5-minute round while the disk is low (audited `disk.sweep`) |
+| Units of a Cargo `target` (worktrees and CI checkouts) | unused for 48 hours (6 h with the disk low, 1 h critical), then the least recently used incremental ones above 5 % of the disk (at least 8 GB; half when low, a quarter when critical); never while Cargo compiles there; compiled artifacts only where no task, CI run or Shell uses them | yes, hourly, and every 5-minute round while the disk is low (audited `disk.sweep`) |
 | A closed or cancelled task's clean worktree | after 10 minutes (its branch keeps the work) | yes |
-| Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only; a worktree an agent keeps in its own `/tmp` keeps its record) | yes |
-| A CI checkout of a job or lane no run used for 14 days, and its cache (`ci/cache/<job>[.<n>][@<lane>]`); an entry of `ci/cache` named like no job (what the cache every job shared held before SPEC-351) | while no CI run of that sandbox runs | yes |
-| A draft attachment older than 7 days that no task's request or automation's prompt names (SPEC-413) | always | yes |
-| `<data>/runs/<name>` that no attempt record, live run, active CI job, running deploy or running delivery environment run owns, untouched for a day (an ended task's last run, with its final terminal screen, stays) | always | yes |
+| Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only) | yes |
+| A CI checkout of a job or lane no run used for 14 days, and its cache (`ci/cache/<job>[.<n>][@<lane>]`); an entry of `ci/cache` named like no job | while no CI run of that sandbox runs | yes |
+| A draft attachment older than 7 days that no task's request or automation's prompt names | always | yes |
+| `<data>/runs/<name>` that no attempt record, live run, active CI job, running deploy or running delivery environment run owns, untouched for a day (an ended task's last run stays) | always | yes |
 | Transcripts of a deleted task; a Docker smoke test's sandbox whose process is gone | always | yes |
 | An unused sandbox base (not current, no live holder mounts it) | always | yes |
-| A worktree no task owns; a snapshot import's checkout an interrupted import left in `<data>/import-worktrees/<id>/` (after an hour, ADR-0213); a directory under `sandboxes/`, `sysroots/`, `runtime/sandboxes/`, `cd/`, `displays/` or `import-worktrees/` that no sandbox record owns | listed | **only a person** |
+| A worktree no task owns; a snapshot import's checkout an interrupted import left in `<data>/import-worktrees/<id>/` (after an hour); a directory under `sandboxes/`, `sysroots/`, `runtime/sandboxes/`, `cd/`, `displays/` or `import-worktrees/` that no sandbox record owns | listed | **only a person** |
 | The host's `/var/lib/docker` and `/var/lib/containerd` (docker-ce; Yulius's host daemons are off) | listed, never deleted: remove them on the host if nothing else uses them | report only |
 | Update backups under `/var/lib/yulius-update/backups/` | the helper keeps the last 3 | yes (not listed) |
 
-**When the disk runs low.** The upkeep reads the data disk every minute. From 85 % used every page
-shows a "Disk 88% full" pill, each 5-minute round sweeps the build directories harder and the safe
-leftovers round runs (at most every 10 minutes); from 95 % ("Disk almost full") idle tasks' and
-CI checkouts' caches go too until the disk is back at 85 %. Each rise is audited `disk.pressure`.
-If it stays low, delete kept files of removed sandboxes in the Leftovers card.
+**When the disk runs low** (read every minute): from 85 % used a "Disk 88% full" pill shows, build
+directories are swept harder and the safe leftovers go; from 95 % ("Disk almost full") idle tasks'
+and CI checkouts' caches go too, until 85 % (audited `disk.pressure`). If it stays low, delete kept
+files of removed sandboxes.
 
-**Settings → Instance → Leftovers** (superadmin) lists every item with its path, kind, size, owner,
-why it is a leftover and whether Yulius deletes it by itself, with the disk's usage and the
-reclaimable total, when the automatic cleanup last ran and what it freed, and the kept files of
-removed sandboxes with their size and **Delete files**. **Refresh** rescans, and **Delete** (the
-selected items) and **Delete all safe** ask for confirmation with the size, then run in the
-background. `yulius leftovers list` also prints the last automatic cleanup. The same from SSH, as root or the
-service user while the server runs:
+**Settings → Instance → Leftovers** (superadmin) lists every item with its size, reason and whether
+Yulius deletes it, the last automatic cleanup, and kept files of removed sandboxes (**Delete
+files**); **Delete** and **Delete all safe** ask first. From SSH, while the server runs:
 
 ```sh
 sudo -u yulius yulius leftovers list                 # rescans; id, size, safe/needs you, kind, path
@@ -2618,139 +1405,58 @@ sudo -u yulius yulius leftovers delete --all-safe    # shows them and the total,
 sudo -u yulius yulius leftovers delete 3f9c0a1b2c3d4e5f 0a1b2c3d4e5f6a7b --yes
 ```
 
-Nothing reached through a link is listed or deleted: a sandbox can put links in its own directory,
-and Yulius never follows one. So if you moved part of the data directory (`sandboxes/`, `runs/`,
-`sysroots/`, …) to another disk with a link, its leftovers are not listed, and the server logs a
-warning at each scan. Bind-mount such a directory instead.
-
-The command talks to the loopback listener (`--url`, default `http://127.0.0.1:8081`) with the key
-the server writes to `<data>/leftovers-cli.key` (0600, new at every start; `--data-dir` if the data
-directory is elsewhere). Exit 0: done, 1: a deletion failed, 2: not run (no key, server
-unreachable, no confirmation).
+It talks to the loopback listener (`--url`, default `http://127.0.0.1:8081`) with the key in
+`<data>/leftovers-cli.key` (0600, new at every start; `--data-dir` if elsewhere). Exit 0: done, 1: a
+deletion failed, 2: not run. Nothing reached through a link is listed or deleted: bind-mount a part
+of the data directory moved to another disk instead of linking it.
 
 ### Secrets vault (agent secrets, ADR-20)
 
 Nothing to configure. On first start the server creates the egress CA (its key sealed in the
 database) and serves the agents' egress proxy on the internal listener (`YULIUS_INTERNAL_BIND`):
-agent runs get `HTTPS_PROXY` pointing there, so whatever makes that address reachable from a
-sandbox (it is loopback today; network isolation must keep it reachable) carries the agents'
-HTTP(S). Claude Code's own API traffic (`*.anthropic.com`, `claude.ai`) and loopback bypass it.
-Runs trust the CA through `<run>/egress-ca.pem`, built from the host's CA roots
-(`/etc/ssl/certs/ca-certificates.crt` on Ubuntu, from the `ca-certificates` package); if the
-server logs that the roots were not found, install `ca-certificates`. Every Bash command of an
-agent runs through `<run>/scrub-exec` (which runs `yulius --scrub-exec`) and every tool result
-through the `PostToolUse` hook.
-When a command is not run, or a tool result is withheld, for want of the run's agent-secret
-fingerprints, the message says why (SPEC-353): **Yulius no longer accepts this session** means its
-run ended (its `scrub.json` is then not read), so continue the task (or open the Superagent again)
-to start a fresh run; **Yulius could not be reached** while the server is up, with no usable
-`scrub.json`, usually means the sandbox's connections to it are used up (next section).
+agent runs get `HTTPS_PROXY` pointing there. Claude Code's own API traffic (`*.anthropic.com`,
+`claude.ai`) and loopback bypass it. Runs trust the CA through `<run>/egress-ca.pem`, built from the
+host's CA roots (`/etc/ssl/certs/ca-certificates.crt` on Ubuntu, from the `ca-certificates`
+package); if the server logs that the roots were not found, install `ca-certificates`. Every Bash
+command of an agent runs through `<run>/scrub-exec` (`yulius --scrub-exec`), every tool result
+through the `PostToolUse` hook. "Yulius no longer accepts this session": the run ended, continue the
+task. "Yulius could not be reached" while the server is up: see the next section.
 
-
-Brokered commands (SPEC-626) are managed on each project's Secrets page, Commands tab, and through
-`GET/POST /api/sandboxes/{sid}/commands` (docs/api.md). A run's files live under
+Brokered commands are managed on each project's Secrets page, Commands tab, and through
+`GET/POST /api/sandboxes/{sid}/commands` ([API](api.md)). A run's files live under
 `<data>/cd/<sid>/runs/cmd-<run>` only while it runs; the 200 newest ended runs of a project are kept
-in the database with their redacted output. A run that waits for approval survives a restart and
-expires at its deadline; one that ran when the server stopped is recorded `lost` at the next start.
-Audit actions: `command.define`, `command.update`, `command.remove`, `command.refused`,
-`command.ask`, `command.approve`, `command.reject`, `command.expired`, `command.run`.
+in the database with their redacted output. Audit actions: `command.define`, `command.update`,
+`command.remove`, `command.refused`, `command.ask`, `command.approve`, `command.reject`,
+`command.expired`, `command.run`.
+
+**Rotation.** Replace a value on the Secrets page after rotating it at its provider (the page marks
+values older than 180 days). If `master.key` and a database copy may have leaked together, rotate
+every team and agent secret at its source.
+
+[details](archive/operations-until-2026-11-26.md#secrets-vault-agent-secrets-adr-20)
 
 ### Leftover agent processes
 
-A process an agent's command leaves behind once its parent exits (a detached test job, a
-`(server &)`, a headless browser) is adopted by its session's sandbox init (`bwrap`). No shell of
-the agent owns it, so Claude Code neither shows nor stops it. On 2026-10-30, about 60 test jobs of
-one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles them by itself
-([ADR-0240](decisions/0240-a-run-s-strays-are-reaped-after-a-bound-and-a-sandbox-gets-half-the-proxy.md)):
+A process an agent's command leaves behind (a detached test job, a `(server &)`, a headless
+browser) is adopted by its session's sandbox init (`bwrap`); Claude Code neither shows nor stops it.
+Yulius handles them:
 
-- When a run ends, is stopped, or its task is deleted or archived, its whole PID namespace ends
-  with it: leftovers included.
-- While an idle task's session lives, each probe of its process tree (every few seconds and
-  at each turn's end) lists them. The first sighting logs `leftover processes in the run`
-  (task, processes, the first pid of each) as a warning; 2 hours later Yulius kills that
-  process tree and logs `reaped leftover processes` (with the same pids). A working task's
-  processes and the agent's own shells (under `claude`) are never touched.
-- The Superagent's session is probed the same way every minute while its conversation is idle
-  (SPEC-355): `leftover processes in the Superagent's session` (shell, sandbox, pids) when first
-  seen, `reaped the Superagent's leftover processes` 2 hours later. A prompt written meanwhile
-  keeps them. A terminal of the Shell panel is a person's own and is not probed.
-- One sandbox gets at most half of the egress proxy's 256 connections, so its leftovers cannot
-  take every other sandbox's downloads. Within a sandbox, one run's processes cannot lock the
-  others out (SPEC-357,
-  [ADR-0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)). At a full share
-  with every connection active, the oldest connection of the run holding the most gives way to
-  a run holding at least 2 fewer, and at the full proxy the busiest sandbox's does. A plain
-  request waiting for its answer is never taken, but it waits at most 5 minutes with no progress
-  for its upstream's response head, then gets `504` (`Yulius proxy: <host> sent no response for
-  300 s`) and frees its place
-  ([ADR-0250](decisions/0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md)). This is logged as `egress proxy: a sandbox's share
-  is full of active connections; the busiest run's oldest connection was closed for another run`
-  (sandbox, run, how many it held) or `egress proxy: every connection is taken and active; the
-  busiest sandbox's oldest connection was closed for another sandbox`, each at most once a minute
-  per sandbox. At a full share, a `503`
-  goes only to a run when no other run of the sandbox has 2 more to give up (requests waiting for
-  their answer are never taken), and it says how many
-  the asking run holds (`this run holds 120 of them, the most of the sandbox's runs`). A run reads
-  it in its own commands' output, so the task whose processes hold the places sees it. The
-  journal names the run by its run (attempt) id, a CI job by its job id and a Superagent by its
-  shell id. At the proxy's own limit, a sandbox gets `too many connections; try again` when no
-  other sandbox has 2 more to give up. A request the proxy refuses anyway (a bad target, a local
-  destination, a protocol upgrade, a policy refusal) takes no place, so it closes nothing. On
-  2026-10-31, quartio-v2's tasks got `503` for every host for 90 minutes, while their Claude
-  traffic, which bypasses the proxy (`NO_PROXY`), kept working.
-- A full relay gives way instead of refusing (SPEC-355,
-  [ADR-0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
-  A sandbox reaches Yulius on one port (8081: internal API, MCP, egress proxy) through two relays,
-  the holder's forward inside the sandbox and the server's `out.sock`, 256 connections each. At
-  its limit a relay, and the proxy at a sandbox's share or at its own limit, closes its
-  longest-idle connection (no byte for at least 5 minutes, longer than any call to Yulius waits)
-  for the new one. Only when every connection was active within those 5 minutes is the new one
-  refused (by the proxy, only once no busier run or sandbox can give one up, as above). A client
-  that a relay refused sees
-  `ECONNRESET`, as the Superagent's `/mcp` reconnect did on 2026-10-31. These events are logged as
-  warnings, at most once a minute, in the journal: `egress proxy: at a limit, the longest-idle
-  connection was closed for a new one`, the two busiest-run lines above, `egress proxy: a sandbox
-  holds its share of the connections` (with the sandbox, the run and how many it holds), `egress
-  proxy: every connection is taken` (with the asking sandbox and the total); these two refusal
-  lines also carry `holders`, the busiest three with their counts (runs of the sandbox at a share,
-  `holders=a1 (120), a2 (8)`; sandboxes at the proxy's limit; SPEC-366), and `sandbox relay:
-  …` for the server's side of a sandbox's relay. The relay inside the sandbox writes its `sandbox
-  relay: at the limit, the longest-idle connection was closed …` and `sandbox relay: a connection
-  was dropped at the limit` lines to the sandbox's `holder.log` (and the Docker front's to
-  `docker-front.log`), both in `<data>/runtime/sandboxes/<sandbox-id>/`.
-- A refusal that remains shows on the panel (SPEC-361,
-  [ADR-0246](decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)).
-  A sandbox at its proxy share, a sandbox whose `out.sock` dropped a connection, and the proxy at
-  its own limit each begin a *connection trouble*: the journal says `connection trouble began`
-  (limit, sandbox, held of max, the busiest runs or sandboxes by run id), and the people who can
-  view the sandbox (everyone, for the proxy's own) get a warning pill in the tab row and one
-  notification, naming the task whose run holds the most ("Proxy share full: quartio-v2", title
-  "task #12's run holds 120 of them"). Refusals within it only update its counts. It ends, with
-  `connection trouble ended`, once its limit falls to seven eighths (112 of a share of 128, 224 of
-  256). `GET /api/connections` lists the open ones. To free the share, end the processes of the
-  named task's run (its panel lists its background processes; the `nsenter … ss` recipe below shows
-  their connections), or stop the task. The holder's forward inside the sandbox is not reported
-  there: read its `holder.log`.
-- Every minute Yulius tests each live Superagent's link from inside its sandbox, through the
-  holder's forward. Two failed tests in a row log `the Superagent's sandbox cannot reach Yulius`, and its
-  panel says so and offers **Restart Superagent**, which starts it again in place, resuming its
-  conversation. Claude Code keeps a failed MCP server disconnected, so the panel also offers the
-  restart once the link works again (`the Superagent's sandbox reaches Yulius again`).
-
-- A Yulius restart or update needs nothing from the tasks (SPEC-358,
-  [ADR-0244](decisions/0244-task-runs-reach-yulius-through-a-stdio-bridge-and-are-woken-after-an-outage.md)).
-  - Their Yulius tools go through `yulius mcp`, a stdio bridge that holds a call while Yulius is
-    down: its stderr in Claude Code's MCP log says `Yulius cannot be reached …; holding calls
-    until it is back`, then `Yulius is back`.
-  - `yulius wait` waits on until its deadline.
-  - Yulius records the time it was last alive in `<data>/alive-at`, and in each run's
-    `stop-answered` when it last answered the run's Stop. From 90 s after a start's runs are
-    reattached until about 10 minutes after that, it logs `woken after Yulius's outage` for each
-    idle task it told "Yulius is back; continue". `<data>/outage-pending` holds the outage being
-    dealt with, so a second restart within that window still covers the first.
-  - Sessions started before this release still have the HTTP config: if one says "MCP server
-    yulius is not connected" after a restart, `/mcp` in its terminal (or continuing the task)
-    brings it back.
+- A run's whole PID namespace ends with the run (stop, delete, archive). In an idle task's or
+  Superagent's session leftovers are logged (`leftover processes in the run`) and killed 2 hours
+  later (`reaped leftover processes`); working tasks and the agent's own shells are never touched.
+- **Connection limits.** The egress proxy holds 256 connections (half per sandbox at most); the two
+  relays to Yulius's port 8081 (the holder's forward and the server's `out.sock`) 256 each. At a
+  limit the longest-idle (5 minutes) or busiest run's oldest connection gives way; only when all are
+  active is a new one refused (`503`, `too many connections; try again`, `ECONNRESET`). A request
+  without a response head for 300 s gets `504`. Logs: `egress proxy:` and `sandbox relay:` in the
+  journal, `holder.log` and `docker-front.log` in `<data>/runtime/sandboxes/<sandbox-id>/`. A
+  *connection trouble* (`connection trouble began`) notifies, naming the task whose run holds most;
+  `GET /api/connections` lists them.
+- A Superagent that cannot reach Yulius twice in a row (`the Superagent's sandbox cannot reach
+  Yulius`) offers **Restart Superagent**, which resumes its conversation.
+- **Restarts** need nothing from tasks: `yulius mcp` holds tool calls while Yulius is down, idle tasks
+  get "Yulius is back; continue" (`<data>/alive-at`, `<data>/outage-pending`). "MCP server yulius is
+  not connected" after a restart: `/mcp` in the terminal, or continue the task.
 
 To find and clear them by hand, without a restart (as root on the host):
 
@@ -2778,147 +1484,65 @@ nsenter -t "$H" -n ss -tnp state established '( dport = :8081 )' \
 
 Stopping the task (or closing the Superagent) also ends its session's leftovers at once.
 
+[details](archive/operations-until-2026-11-26.md#leftover-agent-processes)
+
 #### A saturated sandbox relay
 
-Signs: a Superagent panel that says it cannot reach Yulius; `the Superagent's sandbox cannot reach
-Yulius` or `sandbox relay: a connection was dropped at the limit` in the journal or the sandbox's
-`holder.log`; agents' calls to `127.0.0.1:8081` reset. Count the sandbox's connections to Yulius
-with the `nsenter … ss` recipe above: about 256 in one sandbox means its relay is full, and the
-pids show whose they are.
-
-To free it without restarting Yulius:
-
-1. End the leftover processes that hold the connections (the `kill` recipe above). Their
-   connections close with them, and the relay has room again at once.
-2. If the Superagent's Yulius tools stay disconnected, press **Restart Superagent** in its panel
-   (or close and open it). It resumes the same conversation.
-
-A Yulius restart does not free the relay. The holder (and its relay inside the sandbox) keeps
-running, and it keeps each connection whose server end closed until its client closes it, which
-a leftover process never does. The holder runs the relay it started with. If it started before the Yulius update that shipped
-SPEC-355 (compare `ps -o lstart= -p "$H"` with the update's time), it still refuses when full, and
-its Superagents' panels show no link state. In that case, end every process in the sandbox (stop
-its tasks, close its Superagents and terminals, kill the leftovers) and the holder stops once it
-has been idle for `YULIUS_SANDBOX_IDLE_MINUTES`. The next run starts a holder with the new relay.
-
-Rotation: replace a value on the Secrets page after rotating it at its provider (the page marks
-values older than 180 days). If `master.key` and a database copy may have leaked together,
-rotate every team and agent secret at its source.
+Signs: a Superagent panel that cannot reach Yulius; `the Superagent's sandbox cannot reach Yulius` or
+`sandbox relay: a connection was dropped at the limit` in the journal or `holder.log`; agents' calls
+to `127.0.0.1:8081` reset. About 256 connections in the `nsenter … ss` count above means the relay is
+full. End the leftover processes that hold them (the `kill` recipe above), then press **Restart
+Superagent** if its tools stay disconnected. A Yulius restart does not free the relay: the holder
+keeps running. A holder older than the relay that gives way (`ps -o lstart= -p "$H"` against the
+update's time) still refuses when full: end every process in the sandbox and the holder stops after
+`YULIUS_SANDBOX_IDLE_MINUTES`; the next run starts a new one.
 
 ## 8. Upgrades
 
 ### Updates from main (the update helper)
 
-**Restart without updating** (SPEC-432): **Settings → Instance → Restart…** (refused while a
-deploy runs: a restart has no build to wait through) pauses every task as step 2 below does, asks the helper to `restart` (stop and start `yulius.service`, then wait until
-`/internal/version` reports the same commit; nothing is backed up, installed or rolled back), and
-resumes the tasks one by one. It needs the update helper; prefer it to `systemctl restart`, which
-does not pause tasks. Restart… and Update now are refused, before a task pauses, on a host where
-the server could not start again while a session runs
-([Where sessions live](#where-sessions-live)); the answer names `sudo yulius host setup`. A task session whose Yulius MCP was dropped by Claude Code is reconnected by
-Yulius after 3 silent minutes (it types `/mcp reconnect yulius` into the idle session), but only
-when the drop is certain: its bridge had pinged and stopped, or a session this server spawned never
-connected. A
-sandbox keeps the `yulius` binary of the base it started on until it restarts, so after an update
-its bridges may be an older build that does not ping; those are left alone (ADR-0280).
+Yulius updates itself from `main` of **Quartio-Studio/yulius**. It knows the commit it was built
+from (`yulius version`, `GET /internal/version` on the internal listener) and checks `main` every
+hour and when a superadmin opens **Settings → Instance** (after a failed check, 5 minutes later; an
+hour after a rate limit). Superadmins get a banner, "Update available: …". Nothing updates by itself:
+a superadmin chooses **Update now** and confirms. Then:
 
-Yulius updates itself from `main` of **Quartio-Studio/yulius** (SPEC-001 OPS-006..OPS-009,
-SPEC-002 ADR-18). It knows the commit it was built from (`yulius version`, and
-`GET /internal/version` on the internal listener) and checks `main` every hour and whenever a
-superadmin opens **Settings → Instance** (SPEC-149). A failed check says whether GitHub did not
-answer in time, answered with an error (HTTP n, as during a GitHub outage) or could not be
-reached at all; the next check then comes 5 minutes later (an hour after a rate limit), and an
-open page shows its result without a reload (SPEC-443). Superadmins get a
-notification and a banner, "Update available: …", and **Settings → Instance** lists the new
-commits. Nothing updates by itself: a superadmin chooses **Update now** and confirms. Then:
+1. **Build** (tasks keep working): the root helper fetches `main`, checks the commit is on it and not
+   older than the last one installed, and runs `cargo build --release --locked -p yulius` with
+   `YULIUS_BUILD_COMMIT`. Running deploys are waited for and new ones refused until the install
+   ends; one past the longest a deploy can last (70 minutes by default) cancels the update.
+2. **Pause tasks**: agents are frozen with the cgroup v2 freezer (into
+   `…/sandboxes/<sandbox>/agents/run-<attempt>`; needs §3's delegation); a CI gate with one job left
+   gets 30 s. A task still in a turn after 30 minutes cancels the update; the superadmin can
+   **Continue without waiting** or **Cancel** (a cancel during a rustup install may need `rustup
+   toolchain uninstall <version>` as root). `cat
+   /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/*/agents/run-*/cgroup.events` shows
+   `frozen 1` (`sandboxes/*/run-*` without the `cpu` controller). A starting server thaws leftovers
+   except tasks a person paused (`SELECT number, paused_by FROM tasks WHERE paused_by IS NOT NULL`).
+   By hand: `for f in /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/*/{,agents/}run-*/cgroup.freeze; do echo 0 > "$f"; done`.
+3. **Restart**: the helper checks that the unit would start again
+   ([Where sessions live](#where-sessions-live)), stops `yulius.service`, copies the binary and
+   `yulius.db` (with its WAL) to `/var/lib/yulius-update/backups/<run>/`, installs, starts and waits
+   up to 2 minutes for the new commit at `/internal/version`, else restores the previous binary
+   **and database** ("rolled back"). Then `yulius host check --json` (report in
+   `/var/lib/yulius-update/host-check.json`); a failed item shows on the Sandbox Docker card.
+4. **Resume**: tasks thaw one by one; tasks a person paused stay paused.
 
-1. **Build** (tasks keep working): the root helper fetches `main`, checks that the commit is on it
-   and not older than the commit it installed last, and runs `cargo build --release --locked -p
-   yulius` with `YULIUS_BUILD_COMMIT` set. Several minutes; the page shows the progress.
-   Once built, a deploy (a CD run or a delivery environment run) still running is waited for
-   before anything pauses: the page says "Built. Waiting for N deploy(s) to finish before pausing
-   tasks" and links each one. From then until the install ended, new deploys are refused ("nothing
-   ran: Yulius is being updated; …"), also an agent's `cd_deploy`. A deploy still running past the
-   longest a deploy can last (twice the CI job timeout or the job timeout plus 35 minutes of
-   preparation, whichever is longer, plus 5 minutes: 70 minutes by default) cancels the update
-   (SPEC-342). A crash or a manual restart still ends a running deploy as `error`.
-2. **Pause tasks**: during the first 30 seconds of this phase a version install also gives a CI gate
-   with passed work and only its last job left time to finish. **Continue without waiting** skips the
-   CI wait. An interrupted gate goes back through normal startup recovery. During the pause every task's agent is frozen at once with the cgroup v2 freezer (its process
-   tree moves into `…/sandboxes/<sandbox>/agents/run-<attempt>` and that group is frozen; the
-   ptyhost, shells and browsers keep running) and new starts queue. The agents are told nothing.
-   This needs the delegated cgroups of §3 (`Delegate=yes`, `DelegateSubgroup=server`, and the
-   sessions unit where the host has it); a run that
-   cannot be frozen pauses at its next turn boundary instead (its Stop or `UserPromptSubmit` hook
-   is held, as for a capacity pause), and while such a run is still in a turn nothing is frozen:
-   the others freeze once it is held (or at once on **Continue without waiting**). A task still in a turn after 30 minutes cancels the update
-   (nothing changes); the superadmin can also **Continue without waiting** or **Cancel**. A cancel
-   while building stops the build: within about a second once it compiles (the helper sees its
-   request gone and kills cargo with every compiler it started), or before compiling starts when
-   it is still fetching; nothing is staged (ADR-0283). A cancel that lands while rustup installs a
-   new toolchain for the build can leave it half written: `rustup toolchain uninstall <version>`
-   (as root) repairs it, and the next build installs it again. To check
-   a freeze on a host: `cat /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/*/agents/run-*/cgroup.events`
-   (`sandboxes/*/run-*` without the `cpu` controller) shows `frozen 1` while the update restarts.
-   A server that starts thaws every run group left frozen, but those of tasks a person paused
-   (SPEC-191: it freezes them again; `SELECT number, paused_by FROM tasks WHERE paused_by IS NOT
-   NULL` lists them); to thaw them by hand (a binary without
-   this, SPEC-160): `for f in /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/*/{,agents/}run-*/cgroup.freeze; do echo 0 > "$f"; done`. A response streaming from the model provider at the
-   restart is cut (the egress proxy restarts with the server) and Claude Code retries it.
-3. **Restart**: the helper first checks that the unit would start again
-   ([Where sessions live](#where-sessions-live)) and fails the request with nothing stopped
-   otherwise. It then stops `yulius.service` (agent sessions and
-   terminals keep running in `yulius-sandboxes.service`), copies the binary and `yulius.db` (with its WAL) to
-   `/var/lib/yulius-update/backups/<run>/`, installs the new binary, starts the service and waits
-   up to 2 minutes until `/internal/version` reports the new commit. If it does not, it stops the
-   service, restores the previous binary **and database**, and starts them again ("rolled back").
-   Once the new version is healthy, the helper runs **its** `yulius host check --json` (at most 2
-   minutes; SPEC-203). That re-checks what sandboxes need for Docker, with only safe, idempotent
-   fixes: the needrestart rule, the host's own Docker units, the modules file and loading, the
-   binary's owner. It also starts bwrap in a user namespace ("bwrap namespaces") and reports,
-   never fixes, a host where that fails (after a release upgrade, for example). A failed item, or a "sandbox Docker" that does not hold, is a regression. The
-   update's outcome says it in one line ("Sandboxes may have lost Docker with this update" when
-   the report's "sandbox Docker" does not hold; "Sandboxes still get Docker; the host check after
-   it left N items to fix" when only other items failed), and the Sandbox Docker card lists the
-   items of the latest root check (naming `sudo yulius host setup` when Docker held), never only
-   in a log (SPEC-227).
-   A helper unit installed before SPEC-203 keeps `/etc` read-only, so its re-check fails the
-   needrestart rule, the modules file and "update helper" until `sudo yulius host setup` runs once.
-   A regression does not roll the update back. The report is kept in
-   `/var/lib/yulius-update/host-check.json`.
-4. **Resume**: the server that started releases and thaws the tasks one by one; they go on as if
-   nothing happened, except the tasks a person paused, which stay paused until they resume them.
-   A server that starts with no update open thaws any run group left frozen but those.
+**Restart…** (Settings → Instance) pauses and resumes tasks the same way around a plain `restart`
+(nothing backed up or installed). It needs the helper, is refused while a deploy runs, and is better
+than `systemctl restart`, which pauses nothing. Restart… and Update now are refused on a host where
+the server could not start again while a session runs; the answer names `sudo yulius host setup`.
 
-**What an update reaches in a running session** (SPEC-507, ADR-0364). Before it resumes any task,
-the server that starts brings every sandbox's skills to its catalog: in each sandbox that has a
-home (`<sandbox>/home`, made by its first run), the skills that differ from the instance's copy
-are installed again into `home/.claude/skills` with the run start's install (staged, swapped in by
-rename, nothing written through a link; a skill the agent added under its own name stays), and
-managed copies of skills that left the set are removed. Running tasks do not hold it back: a
-session reads the new skill at its next use. Each sandbox it changed gets an audit entry
-`skills.refreshed` (actor `system`, target the sandbox's slug, detail like `server start at
-ffa950b0c; installed om-fix, om-code-review`); a start that changed nothing writes none. A
-sandbox whose refresh fails (a link on the way to its skills folder, say) is logged as `skill
-refresh failed`; the skills it installed before the failure stay, the others wait for its next run,
-and the start goes on. A plain restart does the same, and switching a skill on or off for a sandbox (its Skills page) installs or removes it
-there at once. To see what the last update refreshed: `sudo -u yulius sqlite3 /var/lib/yulius/yulius.db "SELECT
-at, target, detail FROM audit_log WHERE action = 'skills.refreshed' ORDER BY at DESC LIMIT 20"`.
+**In running sessions**, hooks and MCP tools answer from the new build at once, and changed skills
+are reinstalled into each sandbox's `home/.claude/skills` (audited `skills.refreshed`); briefings and
+run settings change at a session's next launch. To list refreshes: `sudo -u yulius sqlite3
+/var/lib/yulius/yulius.db "SELECT at, target, detail FROM audit_log WHERE action =
+'skills.refreshed' ORDER BY at DESC LIMIT 20"`.
 
-What else changes at once: everything a session asks the server (hooks, MCP tools, the message a
-review round gets when it starts) is answered by the new build. What does not, until the session
-is launched again (a new run, a Continue after it ended, a move to another subscription): its
-briefing, its run settings and the reviewer agents' definition (`--agents`), whose prompt holds
-only the reviewer's contract and sends it to `om-code-review` for the rules, so it carries nothing
-an update changes. Working sessions are never relaunched for an update.
-
-The service user cannot replace `/usr/local/bin/yulius`, and it restarts only through the helper.
-A root-owned **path unit** starts the helper when the server writes
-`/var/lib/yulius/update/request.json`; the request can only say "build" or "install" one commit,
-or "restart" the installed one (SPEC-432: the service can have root stop and start it, nothing
-more). Everything else (repository, paths, service) is in the root-owned unit. The helper refuses a request that is not a regular file owned by the
-service user, larger than 16 KiB, malformed, older than 15 minutes or already handled. It reports in
-`/var/lib/yulius-update/status.json`, which the server reads.
+**How the helper is reached.** A root-owned **path unit** starts it when the server writes
+`/var/lib/yulius/update/request.json` ("build" or "install" one commit, or "restart"; nothing else).
+It refuses a request not a regular file of the service user, over 16 KiB, malformed, older than 15
+minutes or handled, and reports in `/var/lib/yulius-update/status.json`.
 
 **Install the helper** (once, as root; the unit files are in the repository under
 `deploy/systemd/`):
@@ -2972,41 +1596,31 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.cargo /root/.rustup
-# The re-check after an install (`yulius host check`, SPEC-203) keeps the kernel modules list,
-# the needrestart rule and Chrome's managed policy for the sandbox browsers (ADR-0318; the
-# directories are made by `yulius host setup`).
+# The re-check after an install (`yulius host check`) keeps the kernel modules list, the
+# needrestart rule and Chrome's managed policy for the sandbox browsers (the directories are made
+# by `yulius host setup`).
 ReadWritePaths=/etc/modules-load.d -/etc/needrestart/conf.d
 ReadWritePaths=-/etc/opt/chrome/policies/managed -/etc/chromium/policies/managed -/etc/chromium-browser/policies/managed
 UMask=0022
 ```
 
-On an existing installation, add `StartLimitIntervalSec=0` under `[Unit]` in
-`/etc/systemd/system/yulius-update.service` and run `systemctl daemon-reload` as root.
-Several quick refusals can otherwise hit the service start limit and stop the path from
-watching new requests. The path unit's own trigger limit still bounds a busy loop.
+- Without `StartLimitIntervalSec=0` quick refusals can stop the path unit: add it under `[Unit]`,
+  `systemctl daemon-reload`, and if `yulius-update.path` failed with `unit-start-limit-hit`:
 
-If `yulius-update.path` has failed with `unit-start-limit-hit`, run these commands as root
-after the reload, then submit the update request again.
+  ```sh
+  systemctl reset-failed yulius-update.service yulius-update.path
+  systemctl start yulius-update.path
+  systemctl status yulius-update.path        # active (waiting)
+  ```
 
-```sh
-systemctl reset-failed yulius-update.service yulius-update.path
-systemctl start yulius-update.path
-systemctl status yulius-update.path        # active (waiting)
-```
+- `yulius host setup` adds a missing second `ReadWritePaths` line as a drop-in
+  (`yulius-update.service.d/10-yulius-host-check.conf`). No sudo or polkit rule is needed. The build
+  needs rustup for root (`rust-toolchain.toml` picks the version), `git`, a C linker, GitHub and
+  crates.io.
 
-A helper unit installed before SPEC-203 lacks the second `ReadWritePaths` line. `yulius host
-setup` adds it with a drop-in (`yulius-update.service.d/10-yulius-host-check.conf`), so the unit's
-local edits stay.
-
-No sudo rule or polkit rule is needed: the path unit is the only way in, and it starts a fixed
-command. The build needs Rust through rustup for root (the checkout's `rust-toolchain.toml` picks
-the version), `git`, a C linker, and network access to GitHub and crates.io.
-
-**Reading the repository.** The repository is private. Yulius reads it, and hands the helper a
-short-lived token for its fetch, with the GitHub App's installation token when the App is
-installed on Quartio-Studio with access to `yulius` (Contents: read). Otherwise put a token that
-may read the repository (a fine-grained personal access token with Contents: read on that one
-repository) in a file:
+**Reading the repository** (private): Yulius hands the helper the GitHub App's installation token
+when the App is installed on Quartio-Studio with access to `yulius` (Contents: read); otherwise a
+fine-grained personal access token with Contents: read on that repository, in a file:
 
 ```sh
 install -o yulius -g yulius -m 0600 /dev/null /var/lib/yulius/update.token
@@ -3022,40 +1636,39 @@ Settings → Instance says which credential read `main` and why a check failed.
 | `--update-state-dir` / `YULIUS_UPDATE_STATE` | `/var/lib/yulius-update` | The helper's state directory; "Update now" is offered when it exists. |
 | `--update-check-minutes` / `YULIUS_UPDATE_CHECK_MINUTES` | 60 | Minutes between checks of `main` (0: only on opening Instance and "Check now"). |
 
-**Logs and recovery.** `journalctl -u yulius-update` shows each step. A failed rollback (the
-helper says "restore by hand") leaves the previous binary and database in
-`/var/lib/yulius-update/backups/<run>/`: stop `yulius`, copy `yulius` to `/usr/local/bin/yulius`
-and `yulius.db` (and `yulius.db-wal`, if present) to `/var/lib/yulius/` owned by `yulius`, mode
-0600, remove `yulius.db-shm`, start `yulius`. The helper keeps the last 3 backups. A manual build
-should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEAD) cargo build
---release --locked -p yulius` (a checkout does it by itself; a tarball has no Git).
+**Logs and recovery.** `journalctl -u yulius-update` shows each step. A failed rollback (the helper
+says "restore by hand") leaves the previous binary and database in
+`/var/lib/yulius-update/backups/<run>/`: stop `yulius`, copy `yulius` to `/usr/local/bin/yulius` and
+`yulius.db` (and `yulius.db-wal`, if present) to `/var/lib/yulius/` owned by `yulius`, mode 0600,
+remove `yulius.db-shm`, start `yulius`. The helper keeps the last 3 backups. A manual build should
+set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEAD) cargo build --release
+--locked -p yulius` (a checkout does it by itself; a tarball has no Git).
+
+**By hand (without the helper)**: replace the binary and `systemctl restart yulius`. Live sessions
+and terminals keep running and are reattached (dead runs are marked stopped, never respawned);
+queued tasks start when capacity allows.
+
+[details](archive/operations-until-2026-11-26.md#updates-from-main-the-update-helper)
 
 ### The move helper (moves from Settings → Instance)
 
-**Settings → Instance → Move to another host** ([Move from Settings → Instance](#move-from-settings--instance),
-SPEC-470, ADR-0305) asks root for `yulius instance migrate` the way updates ask for an install:
-the server writes `/var/lib/yulius/migrate/request.json`, a root-owned **path unit** starts
-`yulius migrate-helper`, and the helper runs the command. The request can only say `plan`,
-`move` or `abort` and name the new host, its SSH port, a public URL and data disks; there is no
-field for anything else, and nothing secret is in it. Everything else (the data directory, the
-units, the state directory) comes from the root-owned unit.
+[Move from Settings → Instance](#move-from-settings--instance) asks root for `yulius instance
+migrate` the way updates ask for an install
+([ADR-0305](decisions/0305-a-root-helper-runs-the-move-asked-from-the-page-and-the-checklist-travels-with-it.md)):
+the server writes `/var/lib/yulius/migrate/request.json`, a root-owned **path unit** starts `yulius
+migrate-helper`, and the helper runs the command. A request can only say `plan`, `move` or `abort`
+and name the new host, its SSH port, a public URL and data disks; nothing secret is in it.
 
-**What enabling it allows.** With the path unit enabled, the service user can have root move the
-instance to a host where a person has added the move's one-time key to root's `authorized_keys`,
-and to no other: the helper runs the command with `--no-sign-in`, so nothing root has (its keys,
-its agent, the keys and proxies its ssh configuration names, a ticket) is offered to the new host
-or read on the way. The service user already reads all of the instance's data; what a takeover of
-the server process gains through the helper is the host's files a move carries (the unit's
-environment and key files, the proxy's configuration, `/usr/local`, root's Rust toolchain) and the
-stop of this instance, on a host whose root let the move in. So `yulius host setup` does not
-install the helper: root does, on purpose. Two ways to limit it further: enable the path unit when
-you want to move from the page and disable it afterwards (`systemctl disable --now
-yulius-migrate.path`), or pin the hosts a request may name with `YULIUS_MIGRATE_TARGETS` in the
-service unit. A move carries the units and enables the path unit on the new host only when it was
-enabled on the old one.
+**What enabling it allows.** The service user can then have root move the instance to a host where
+a person added the move's one-time key to root's `authorized_keys`, and to no other (the helper
+always passes `--no-sign-in`). A takeover of the server process would gain the host files a move
+carries (the unit's environment and key files, the proxy's configuration, `/usr/local`, root's Rust
+toolchain) and the stop of this instance. So `yulius host setup` does not install it: root does, on
+purpose. To limit it further, enable the path unit only for a move (`systemctl disable --now
+yulius-migrate.path` afterwards), or pin the hosts with `YULIUS_MIGRATE_TARGETS`.
 
-**Install the helper** (once, as root; the unit files are in the repository under
-`deploy/systemd/`; a second instance names them after its own unit, `<unit>-migrate`):
+**Install the helper** (once, as root; a second instance names the files after its own unit,
+`<unit>-migrate`):
 
 ```sh
 install -m 0644 deploy/systemd/yulius-migrate.path deploy/systemd/yulius-migrate.service /etc/systemd/system/
@@ -3103,41 +1716,15 @@ KillMode=mixed
 UMask=0022
 ```
 
-The unit has no start timeout (a copy takes as long as the data needs) and no file system
-sandboxing: the command reads the whole host, writes the proxy's configuration and freezes units,
-as it does from a root shell. A stop of the unit, or a shutdown, reaches the helper alone
-(`KillMode=mixed`), which tells the command with SIGTERM: before the new instance's start is
-ordered it thaws the old instance and ends; after that it finishes the cutover, for which it has
-ten minutes. What is left of the unit's processes then is killed. `StartLimitIntervalSec=0` keeps the helper
-listening when requests come quickly: with systemd's default (5 starts in 10 s) a sixth request
-fails the path unit as well, and a failed path unit takes no request until root runs `systemctl
-reset-failed yulius-migrate.service yulius-migrate.path` and starts it again.
-
-**What the helper checks.** The request must be a regular file (not a link) owned by the data
-directory's owner, who is not root, at most 16 KiB, with exactly the fields above, at most 15
-minutes old, and an id it has not acted on: it keeps every id it handled in `handled` until that
-request would be refused as stale, and when it cannot read or write that file it runs nothing and
-the unit fails. Every value is checked again with the rules the server used: the host as `ssh`
-takes it (`root@host` or `host`, nothing that reads as an option), a port from 1 to 65535, a public
-URL that is `https://host` and nothing more, at most two different disks under `/dev/`; an abort
-names none of them. It refuses while the update helper's unit runs, and a host outside
-`YULIUS_MIGRATE_TARGETS` when that is set. A refused request changes nothing; the page shows the
-reason, which never repeats the request's content. An accepted one runs `yulius instance migrate
---no-sign-in --request-id=<the request's id>` with each value as one argument (no shell): the plan
-without `--yes`, the move with it, the abort as `--abort` and never with `--yes`. While the command
-runs, an abort request ends it with SIGTERM and is then handled. The helper does not touch the
-command's checklist: a run the command refuses (a move to another host is recorded, another run
-holds its lock) changes nothing, and the page shows the recorded move's checklist as that move's:
-the command writes the request's id into its checklist, so the page knows which run a checklist is
-of.
-
-**Files.** In `/var/lib/yulius-migrate` (root's, mode 0711): `helper.json` (0644: the request it
-took, `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or `refused`
-with the reason), `handled` (0600: the ids it acted on), the command's `status.json` (0644: the
-phase and the checklist, with the key line while a person has to add it, the new URL once decided,
-and the id of the request the run answers), `state.json` and the one-time key (0600), and on a host
-a move arrived at `arrived.json` (0644: that move's finished checklist). None holds a secret value.
-The server reads them and stores nothing about a move: its database travels with the copy.
+- A stop or shutdown sends the command SIGTERM (`KillMode=mixed`): before the new instance's start
+  it thaws the old one; after, it finishes the cutover within ten minutes. A failed path unit needs
+  `systemctl reset-failed yulius-migrate.service yulius-migrate.path` and a start.
+- The helper takes only a regular file of the data directory's owner (not root), at most 16 KiB and
+  15 minutes old, with a new id and valid values; not while the update helper runs or for a host
+  outside `YULIUS_MIGRATE_TARGETS`. It runs `yulius instance migrate --no-sign-in
+  --request-id=<the request's id>` without a shell (`--yes` only for a move).
+- Files in `/var/lib/yulius-migrate` (0711): `helper.json`, `handled`, `status.json`, `state.json`,
+  the one-time key and, after an arrival, `arrived.json`. None holds a secret.
 
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |
@@ -3145,362 +1732,52 @@ The server reads them and stores nothing about a move: its database travels with
 | `YULIUS_MIGRATE_TARGETS` (helper's unit) | unset | The only hosts a request may name, separated by commas; unset or empty: any host. |
 | `YULIUS_MIGRATE_SERVICE`, `YULIUS_MIGRATE_UPDATE_SERVICE` (helper's unit) | `yulius.service`, `yulius-update.service` | The server's unit and the update helper's, as the command takes them. |
 
-**Logs.** `journalctl -u yulius-migrate` shows each request (its action, host and id, or why it
-was refused) and the command's own output. "The move helper did not take the request" on the page
-means the path unit is not enabled or could not start the service: `systemctl status
-yulius-migrate.path yulius-migrate.service`. The path unit starts the helper on a change of the
-request file; a request written in the moment the helper ends another run starts nothing, so the
-server writes an untaken request again from 5 s on while the page waits for it. A helper that
-stopped without a word (it was killed, the host restarted) is said on the page once its report is
-a minute old and systemd says its service ended; the move is continued or aborted from there, or
-with the command.
+**Logs.** `journalctl -u yulius-migrate`. "The move helper did not take the request" on the page:
+`systemctl status yulius-migrate.path yulius-migrate.service`.
+
+[details](archive/operations-until-2026-11-26.md#the-move-helper-moves-from-settings--instance)
 
 ### Notes for specific upgrades
 
-- Upgrading to read-only harness memory (SPEC-652, ADR-0479, 2026-11-25). Nothing to do by hand.
-  Sessions started after the update see their harness's memory and user instructions read-only.
-  The update helper's host check (root) then clears the immutable flag that the stopgap of
-  2026-11-25 set on `sandboxes/*/home/.claude/projects/*/memory` and
-  `users/*/home/.claude/projects/*/memory` (its line "memory stopgap"), so a removed sandbox's
-  purge and a person's hand edits work again. The first line of each `MEMORY.md` and the
-  `permissions.deny` rules in the homes' `settings.json` are left as they are: they do no harm,
-  and the owner may remove them.
-
-- Upgrading to fixed redaction fingerprints (SPEC-483, ADR-0313, 2026-11-13). Nothing to do
-  before the update. Sessions that are running across it keep the wrapper they started with (a
-  contained session binds the binary), which reads only the old fingerprint format: Yulius keeps
-  their `scrub.json` in that format, without the rolling hash that gave values away, and they
-  redact from it until they end. **Once those sessions have ended** (Tasks: none started before
-  the update is still running; a Superagent is started again), **rotate the agent secrets that
-  code you do not trust could have reached** (a prompt-injected agent, a dependency's install
-  script): before the update any process with a run's token could compute their values, and a
-  session from before it still holds a file that says more than a new one (ADR-0313). Make
-  agent secrets 20 random letters and digits or 32 hexadecimal digits, or longer.
-- Upgrading to flags that say why (SPEC-472, ADR-0306, 2026-11-12): migration 0053 adds
-  `tasks.attention`. Nothing to do. A task that was flagged "Needs your action" before the update
-  has no reason kept: its bar reads "The agent needs your attention. Look at its terminal below."
-  until that flag ends (a typed message, or the turn's end), and a flag that Claude Code's own
-  question raised before the update is not yet lifted by the agent's work. Flags raised from then
-  on say why, and keep saying it across later updates.
-- Upgrading to sessions in their own unit (SPEC-458, ADR-0298, 2026-11-11). **On a host with
-  systemd 258 or later (Ubuntu 26.04: `systemctl --version`), do the first step before Update
-  now.** On systemd 257 and earlier (Ubuntu 24.04) the update needs nothing first; run `sudo
-  yulius host setup` after it, at any time.
-
-  Why: the update is installed by the helper of the version before it. It stops `yulius.service`
-  while the sessions are still in that unit's group, and systemd 258 and later cannot start such
-  a unit again (the outage of 2026-11-11). With the three units of
-  [Where sessions live](#where-sessions-live) in place, the start that follows the install first
-  runs `yulius-adopt.service` with the new binary, which moves the sessions out.
-
-  1. As root, before the update. This restarts nothing and ends nothing:
-
-     ```sh
-     # From a checkout of the new version; or write the three files from the texts of §3.
-     install -m 0644 deploy/systemd/yulius-sandboxes.service deploy/systemd/yulius-adopt.service /etc/systemd/system/
-     install -D -m 0644 deploy/systemd/yulius.service.d/20-yulius-sessions.conf /etc/systemd/system/yulius.service.d/20-yulius-sessions.conf
-     systemctl daemon-reload
-     systemctl start yulius-sandboxes.service
-     systemctl show yulius.service --property=Wants    # names yulius-adopt.service
-     ```
-
-     The files are for `yulius.service`, the user `yulius` and `/usr/local/bin/yulius`, which
-     must be a regular file only root may write, in directories that are root's (the adopt
-     unit runs it as root). With other values, let a binary of the new version write them:
-     `sudo <that binary> host setup`. Without the `daemon-reload` systemd does not know the
-     files, and Restart… stays refused; `sudo yulius host setup` of the new version does it.
-
-     **Between this step and the update the host is not safe yet**: the installed binary is
-     still the old one, which has no adopt step, so `yulius-adopt.service` fails with it and a
-     restart, a crash or Restart… still leaves the server down while sessions run, as before.
-     Do the update next; the way back below applies until then.
-  2. **Update now**, as always. `journalctl -u yulius-adopt` then says "moved N processes in M
-     groups from /sys/fs/cgroup/system.slice/yulius.service to
-     /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service", and `yulius doctor` says "restart
-     with sessions: sessions live in yulius-sandboxes.service".
-  3. `sudo yulius host setup` once, afterwards: it brings the files to what the installed
-     version writes and names the sessions unit in the needrestart rule.
-
-  What changes with it:
-
-  - Every sandbox Docker engine is killed once, at that first start, with its containers. They
-    get no shutdown (as at a power loss: stop a container that must close its files first); the
-    engine starts again on demand. Sessions, terminals and browsers go on.
-  - cgroup paths in this guide are those of the sessions unit. On a host without the units they
-    start with `/sys/fs/cgroup/system.slice/yulius.service/` instead.
-  - Limits that bound all sandboxes together are the sessions unit's now. `TasksMax=`,
-    `MemoryMax=` or `CPUQuota=` set on `yulius.service` for the sessions' sake belong on
-    `yulius-sandboxes.service`: `sudo systemctl set-property yulius-sandboxes.service
-    TasksMax=…` applies at once (never restart that unit for it), and the server reads the task
-    limit at its next start. Both units get systemd's default `TasksMax`, so nothing changes
-    without such a setting. A move (`yulius instance migrate`) carries drop-ins you wrote under
-    `/etc/systemd/system/yulius-sandboxes.service.d/`, not what `set-property` wrote: set those
-    again on the new host.
-  - **Rolling back to an older binary** leaves the units in place. Sessions already moved stay
-    in `yulius-sandboxes.service`; the older binary starts new ones in `yulius.service`'s group
-    again, and `yulius-adopt.service` fails with it ("unrecognized subcommand"), which the server
-    survives. On systemd 258 and later do not restart that binary while sessions run: update
-    again.
-
-  **The way back** when the update, or a `systemctl restart yulius`, was done without the units
-  on systemd 258 or later: the server does not start (`Failed to spawn executor: Device or
-  resource busy`, in a loop), the helper reports "Could not start yulius.service … The rollback
-  failed too … Restore by hand from /var/lib/yulius-update/backups/…", and the sessions are
-  still running. Nothing needs restoring: the helper put the previous binary and database back
-  before that last start. As root, do step 1, then run the adopt step of a binary of the new
-  version by hand (the helper keeps the build it staged) and start the server:
-
-  ```sh
-  /var/lib/yulius-update/staged/yulius host adopt-sessions --service yulius.service
-  systemctl reset-failed yulius.service; systemctl start yulius.service
-  ```
-
-  The version that was installed before runs again with its sessions. Then Update now once more.
-- Upgrading to host setup's bwrap rule (SPEC-456, ADR-0296, 2026-11-11): nothing to do on an
-  Ubuntu 24.04 or Debian host whose sandboxes work. A hand-written `/etc/apparmor.d/bwrap` keeps
-  working and is reported as adopted; `sudo yulius host setup` changes nothing there. On Ubuntu
-  26.04 run `sudo yulius host setup` once even when sandboxes work with a hand-written `bwrap`
-  profile: the package's `bwrap-userns-restrict` declares the same profile name and whichever
-  loads last wins, so until setup has disabled the shipped one `yulius host check` and Settings →
-  Instance report the item as failed. A host whose sandboxes fail with `setting up uid map:
-  Permission denied` or a denied mount now says so in `yulius host check`, Settings → Instance
-  and `yulius doctor --contained`: run `sudo yulius host setup`. No migration.
-- Upgrading to host-sized resource limits (SPEC-459, ADR-0294, 2026-11-11): migration 0051 adds
-  the limits record. A limit the unit does not set is now sized from the host instead of the
-  fixed 8 sessions, 4 CI jobs, 2 lanes, 100 GB and 20 GB (the same numbers on a 12-CPU host with
-  a data disk up to 400 GB; more on a bigger one). A value the unit sets keeps working and is
-  recorded for the host of the first start; remove it from the unit to follow the host. See
-  [Resource limits](#resource-limits).
-- Upgrading to 1 GiB uploads (SPEC-325, ADR-0219, 2026-10-26): the default upload limit is now
-  1 GiB. Raise the reverse proxy's request body limit to 1100 MB (§4: Caddy `max_size 1100MB`,
-  nginx `client_max_body_size 1100m`) and reload it, or files over the old proxy limit still fail
-  with 413 ("larger than the server accepts"). To keep the old limit, set
-  `YULIUS_UPLOAD_MAX_MB=25`. No migration.
-- Upgrading to named CD environments (SPEC-257, ADR-0195, 2026-10-21): migration 0041 gives each
-  CD run its `stage`; runs of `dev` and `prod` keep theirs. `[cd.dev]` and `[cd.prod]` work as
-  before; nothing to configure.
-- Upgrading to remote control (SPEC-247, ADR-0188, 2026-10-20): migration 0040 makes every
-  existing API token a `cli` token: the REST API as before, never the remote MCP. A person's
-  laptop agent needs a new `operate` or `read` token from Settings → Connect your local agent
-  ([remote-control.md](remote-control.md)).
-- Upgrading to agent secret scopes (SPEC-245, ADR-0186, 2026-10-20): migration 0039 turns each
-  team-wide agent secret into a global one, switched on for every live sandbox, so no run loses
-  one. A project added later gets a global secret only when an administrator switches it on
-  (Secrets → Global). Project and team secrets are unchanged.
-- Upgrading to MCP server origins (SPEC-218, 2026-10-18): migration 0037 marks the servers the
-  audit log records as imported from a repository's `.mcp.json`; their Test never runs on the
-  host. A person who changes such a server's command takes it over.
-- Upgrading to agents setting secrets up (SPEC-216, ADR-0171, 2026-10-17): migration 0035 keeps
-  every existing agent secret on a person's confirmation (`auto_allow` off; new ones default to
-  on), and the first start copies each team-wide team secret into every sandbox (audited
-  `vault.team.assign`; [architecture](architecture.md#agent-secret-hosts)).
-- Upgrading to leftovers cleanup (SPEC-215, task #202, ADR-0170): no migration. The first start
-  of the new version deletes the existing safe leftovers two minutes in, the removed product
-  sandbox's included (its worktrees, CI checkouts and system layer, more than 100 GB). Nothing is
-  needed on the host. On the reference VM, after promotion to `main` and **Update now**:
-
-  ```sh
-  curl -s http://127.0.0.1:8081/internal/version         # the new commit
-  df -h /var/lib/yulius                                  # before: 81 % (312 of 386 GiB)
-  sudo -u yulius yulius leftovers list                   # what is left after the first round
-  ```
-
-  Then:
-  1. Settings → Instance → Leftovers: note the reclaimable total, then **Refresh** a few minutes
-     after the start. The product sandbox's `worktrees`, `ci` and `sysroots/6b76ccc7-…` are no
-     longer listed, and its "Everything else of a removed sandbox" item stays until you delete it.
-  2. `df -h /var/lib/yulius` is well below 81 %, and `ls /var/lib/yulius/sysroots` no longer shows
-     `6b76ccc7-869e-4e5e-871e-c944824fe373`.
-  3. The audit has `leftovers.delete` entries by `yulius`, and no `leftovers.failed` entries.
-  4. Done tasks (#191–#194) keep their worktrees but not their `target/` (half an hour after they
-     last moved).
-  5. `/var/lib/docker` and `/var/lib/containerd` are listed as report only. Remove them as root
-     only if nothing else on the host uses Docker.
-
-- Upgrading to the host setup (SPEC-203, task #188, ADR-0162): no migration. The helper that
-  installs this version is the previous one, so this update is not re-checked; the next ones are.
-  On the reference VM, after promotion to `main` and **Update now**, as root:
-
-  ```sh
-  curl -s http://127.0.0.1:8081/internal/version     # the new commit
-  yulius host setup --dry-run                        # what it would change
-  yulius host setup
-  ```
-
-  Expected: `ok` for Docker Engine (docker-ce 29.9.1 from `docker.list`), the kernel modules
-  file, the service user, its subordinate ids (set by hand) and the binary. Expected
-  `changed`: the needrestart rule (new), the update helper's drop-in (new), and the host Docker
-  units if `docker.socket` is still active (`Disabling 'docker.service', but its triggering units
-  are still active` on 2026-10-16). Also `changed`: the sandbox base, if the host changed since
-  `base-9`. Then "sandbox Docker" `ok`, the contained doctor, and the smoke test's lines ending
-  `sandboxes get Docker on this host`. A second `yulius host setup` prints `nothing to change`.
-  Then:
-  1. Settings → Instance → Sandbox Docker: "sandboxes get Docker". The product sandbox is listed
-     on its own `docker.io` with the way back (it ran 29.1.3).
-  2. **Run smoke check** on that card: each check appears, and it ends "Smoke check passed".
-  3. Reboot once (a kernel upgrade is pending), then `lsmod | grep -E '^(overlay|veth|xt_MASQUERADE)'`
-     lists them; `systemctl is-enabled docker.socket docker.service containerd.service` says
-     `disabled`; `yulius host setup` prints `nothing to change`; and in a sandbox,
-     `docker run --rm hello-world` works.
-
-- Upgrading to CD (deployment) (SPEC-134, task #113): migration 0027 adds `cd_runs` and
-  `tasks.needs_you`. Nothing deploys until a project defines `[cd.dev]` or `[cd.prod]`. The agent
-  tool `delivery_promote` is gone: production, with its promotion, is a person's on the CD page.
-
-- Upgrading to CI jobs with CPU priority (SPEC-053, #283, 2026-10-13): no migration and no
-  configuration. The next time a sandbox is prepared, its cgroup gets `system/`, `agents/` and
-  `ci/`. Processes still in the sandbox's group (a holder and runs from before the update) move
-  to `agents/`, and the `cpu` controller then passes down to the leaves. Check it with
-  `cat /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/ci/cpu.weight` (400).
-  A holder that was already running keeps its `slirp4netns` in `agents/` until the holder stops
-  when idle. **Rolling back to an older binary:** a server that stops gracefully undoes the split
-  (`-pids`, then `-cpu`), so the older binary can join the sandbox groups again. After a crash or a
-  forced stop, undo it by hand before starting the older binary. Otherwise its holders and runs
-  fail with "Device or resource busy":
-  `for f in /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/*/cgroup.subtree_control; do echo -pids > "$f"; echo -cpu > "$f"; done`.
-- Upgrading to host-sized task limits (SPEC-268, 2026-10-22): no migration. At its next start the
-  server gives each sandbox a quarter of the host's task table, at most three quarters of
-  the `pids.max` of the unit the sandboxes live in (`yulius-sandboxes.service` since ADR-0298,
-  `yulius.service` before; systemd's `DefaultTasksMax` is 15 % of the table unless the
-  unit sets `TasksMax=`; raise it there for bigger sandboxes), and `ci/` and `engine/` 3/8 of a
-  sandbox's;
-  the log line "per-sandbox limits on" shows the figure. An explicit `YULIUS_SANDBOX_PIDS` stays.
-- Upgrading to a common task limit for all sandboxes (SPEC-272, task #260, 2026-10-22): no
-  migration. At every start the server writes `<unit>/sandboxes/pids.max`: three quarters of
-  that unit's own `pids.max` (43 320 under the VM's default 57 763, so the server kept
-  14 443 while it shared the unit; since ADR-0298 the unit is `yulius-sandboxes.service`), or
-  `max` when the unit has `TasksMax=infinity`. Check it with
-  `cat /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/pids.max`. An explicit
-  `YULIUS_SANDBOX_PIDS` above it is not capped, but the common limit binds each sandbox too: the
-  server logs a warning naming both. **Rolling back to an older binary:** it leaves
-  `sandboxes/pids.max` as it is. That only keeps the server its share, but the older binary does
-  not count a hit there on a 6.13+ kernel (a session that dies at it reads "The agent stopped
-  unexpectedly") and does not follow a later change of `TasksMax=`. On such a kernel, or before
-  changing `TasksMax=` under the older binary, clear it:
-  `echo max > /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/pids.max`.
-- Upgrading to tasks acting as their creator on GitHub (GIT-003, #188, 2026-10-11): no migration
-  and no configuration. The agents' Git switches to the creator's token at its next credential
-  request; a run gets `gh` logged in as the creator when it is started or continued (`gh` itself
-  is a host prerequisite, §1). Task worktrees commit as
-  `{id}+{login}@users.noreply.github.com` from their next run. Someone whose GitHub sign-in can no
-  longer be refreshed signs in with GitHub again; until then their tasks act as the App, and the
-  task's terminal says why.
-- Upgrading session search for #1453 clears old passages and full-text matches. Lists and searches rebuild
-  the index from the original transcripts. Results can be incomplete during the rebuild.
-- Upgrading to sessions as documents (#137, 2026-10-10): migration 0011 adds `session_docs`,
-  `session_chunks` and the FTS5 index `session_fts` (SQLite's bundled FTS5). Existing data is kept:
-  tasks imported earlier as archived tasks stay tasks (their sessions appear on the Sessions page as
-  task sessions). Task sessions are indexed lazily, 32 MiB of transcript per list or search, so the
-  first searches after the upgrade on a busy sandbox index while they answer. No configuration.
-- Upgrading to sandbox isolation (ADR-22, 2026-10-10): install the packages, add the subordinate
-  range and the two unit lines, and build the base as in [Sandbox isolation](#sandbox-isolation),
-  then restart. Sessions and shells started before the upgrade keep running as they are (their
-  launch records have no holder) and are adopted as usual. New sessions in the same sandbox join
-  its holder. A dev server an old session still runs keeps its host port until it ends; the
-  relay skips that port meanwhile. Processes left in the unit's cgroup from before delegation are
-  moved to `legacy/`. Files written in either mode belong to the service user, so repositories,
-  worktrees and homes need no migration. Each sandbox's system layer starts empty. No database
-  migration.
-- Upgrading to the instance Vidoc key (SPEC-195, 2026-10-16): migration 0034 adds the instance's
-  sealed Vidoc key. Without a key nothing changes. A project's agent secret `VIDOC_API_KEY` keeps
-  working, and wins over the instance key.
-- Upgrading to updates from main and the Jev key in settings (ADR-18, 2026-10-10): migration 0008
-  adds `update_runs` and the instance's sealed Jev key. Install the update helper (above). A
-  configured `YULIUS_JEV_API_KEY_FILE` keeps working ("from config"); Settings → Instance → **Save
-  it here** moves the key into settings, then the variable can go.
-- Upgrading to the secrets vault (ADR-20, 2026-10-10): migration 0009 adds the vault tables. New
-  agent runs route HTTP(S) through the egress proxy and redact agent secrets; runs started earlier
-  keep their environment until they are continued. Make sure `ca-certificates` is installed.
-- Upgrading to default workflows (AUT-006, #136, 2026-10-10): the default workflows now ship with
-  the binary (`catalog/workflows/`) and are read-only. Releases from 2026-10-11 until SPEC-483 slice
-  25 (2026-11) retired the "Feature" and "Quick task" rows earlier releases seeded, at their first
-  start. On an instance that skipped all of them, a "Feature" row stays hidden behind the default
-  "Feature" (an edited one's edits are no longer shown: copy them from the database first if they
-  matter), and a "Quick task" row is listed as an instance workflow, which Settings → Workflows
-  deletes. No migration and no configuration.
-- Upgrading to dropped files (EDT-006, UI-048, 2026-10-10): raise the reverse proxy's request body
-  limit to 32 MB (§4) or uploads between 16 and 25 MiB fail at the proxy with 413. No migration.
-- Upgrading to usage from the sessions and session-end tracking (F 2026-10-10 items 1(a)/(c)): no
-  migration and no configuration. Every run started or continued after the upgrade gets Claude
-  Code's `statusLine` and a `SessionEnd` hook in its settings; sessions already running keep their
-  settings until they are continued, so their subscription's usage appears once a new run starts
-  on it. The old "the provider refused this account's token for usage (HTTP 403)" note disappears
-  within the first background usage round (2 minutes after the start). A task can now also end
-  as `stopped_killed` (its process was killed outside Yulius).
-- Upgrading to the subscription pool (ADR-17, 2026-10-10): migration 0005 drops the accounts'
-  priority and enabled switch, so **a disabled account joins the pool**: remove accounts you do not
-  want used before restarting. Tasks that were waiting for capacity are handed to the new resume
-  loop. Sessions started before the upgrade keep their old hook settings (15 s timeout): the CLI
-  ends a held hook after 15 s and the agent goes on until the CLI reports a limit, where it pauses;
-  sessions started or continued after the upgrade get the long timeout. No configuration is needed.
-
-- Upgrading to check fallbacks (#111, 2026-10-10): new Apps request Commit statuses: read. An App
-  created earlier lacks it, so its pull requests' checks come from check runs only, and the Git page
-  says so to instance administrators. Add the permission as described in
-  [GitHub App permissions](#github-app-permissions). No data migration.
-- Upgrading to the streamed browser (ADR-15, 2026-10-10): install `xvfb`, `ffmpeg` and the fonts
-  (§1) before restarting; `yulius doctor` must show them. No data migration: logins in the
-  sandbox Chrome profiles stay; displays and cookies live in `<data>/displays/`. Running
-  browsers restart headful on next use. The preview DNS and TLS are now optional (§4).
-- Upgrading to the live browser panel (ADR-14, 2026-10-09): over HTTPS the session cookie is
-  now `__Host-yulius_session`, so everyone signs in once more after the upgrade. Add the preview
-  DNS and TLS configuration (§4) for live pages.
-
-By hand (without the helper): replace the binary and `systemctl restart yulius`. Live sessions keep running in their detached
-hosts; the new server reconciles them on start (reattaches live runs, marks dead ones stopped,
-never respawns). Users' terminals keep running too and are adopted again before the server
-serves; a terminal whose host is gone (a machine reboot) or whose sandbox was removed is cleaned
-up. Queued tasks start when capacity allows.
+Notes for upgrades that every host has already taken (and "The way back" for a host that restarted
+on systemd 258 or later without the sessions units) are in the
+[archived guide](archive/operations-until-2026-11-26.md#notes-for-specific-upgrades).
 
 ## 9. Security notes
 
-- The data directory is owner-only (0700); secrets are sealed with `master.key` (XChaCha20-Poly1305);
-  vault secrets under envelope encryption (per-secret data keys wrapped by a key derived from
-  `master.key`), with re-authenticated, audited reveals (ADR-20).
-- Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and
-  every channel an agent reads is redacted. Remaining threats (a bound host echoing a credential
-  in another form, misuse on its hosts, weak values): SPEC-002 ADR-20. Misuse on its hosts is
-  narrowed by method and path rules: for a token agents only read with, set `GET` rules on the
-  Secrets page (Edit), and the proxy refuses any other request that would use it (403, audited
-  `vault.agent.refused`; [ADR-0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)).
-  Hosts agents ask for such a secret then wait for you; do not allow it into `.env` files, which
-  give code the value itself. Rules cannot tell request bodies apart (a GraphQL mutation is a
-  `POST /graphql` like a query).
-- Brokered commands (SPEC-626, ADR-0459) give a CLI an agent secret as a key file outside the
-  agents' sandbox. What to know when you define one:
+- The data directory is owner-only (0700); secrets are sealed with `master.key`
+  (XChaCha20-Poly1305); vault secrets under envelope encryption (per-secret data keys wrapped by a
+  key derived from `master.key`), with re-authenticated, audited reveals.
+- Agent secrets are never given to agents: the egress proxy adds them for their bound hosts and every
+  channel an agent reads is redacted. Remaining threats: a bound host echoing a credential in another
+  form, misuse on its hosts, weak values. For a token agents only read with, set `GET` rules on the
+  Secrets page (Edit): the proxy refuses other uses (403, audited `vault.agent.refused`;
+  [ADR-0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)); do not allow it
+  into `.env` files. Rules cannot tell request bodies apart (a GraphQL mutation is a `POST /graphql`).
+- Brokered commands give a CLI an agent secret as a key file outside the agents' sandbox
+  ([ADR-0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md)).
+  When you define one:
   - It runs in the project's production holder on the host's read-only `/usr`, `/etc` and `/opt`
-    (no Docker; without sandbox isolation, in the containment production CD runs get there): install
-    the binary on the host, not in a sandbox. It shares that holder's network with production CD
-    runs.
-  - The command decides what the key can do. Keep `subcommands` to what agents need, put every flag
-    that names a key, a config file or a server in `refuse`, and use `approve: always` (or `send`
-    with the CLI's own flag for changing things) for anything that deploys or signs.
-  - Output is redacted of every agent secret the project can see, as stored, encoded and line by
-    line. A CLI that prints the key transformed (`openssl rsa -text`, a hex dump) is not caught:
-    do not define such subcommands.
-  - Arguments may hold any printable character, so a look-alike letter can make an argument read
-    like another. An argument with a character outside plain ASCII shows single-quoted in the
-    line: that is the cue to read it closely on the Secrets page, where it is exact, before
-    approving a run that changes something. A line Telegram cannot show exactly (over 380
-    characters, or with a backtick) is approved on the page only.
-  - An approval by a Telegram reply needs only the person's linked chat, no two-factor code per
-    run: unlink a chat you no longer hold (`/stop`). For a command whose runs need a closer look
-    than a phone gives, answer on the Secrets page and treat a Telegram notice as the prompt to
-    go and look.
-  - Env values are not secret (people who view the project read them); the key goes into env only
-    as `{secret}`. At most 4 runs of a project's commands run at once; each run's files, its key
-    with them, are removed when it ends and at the next start after a crash.
-- Agents receive per-run task tokens (MCP, hooks) and, through the credential helper and `gh`,
-  their task creator's GitHub token (8 h, capped by that person's access within the App's
-  installation; an agent could read it and act as them there until it expires), or without one a
-  token restricted to their sandbox repository; provider credentials reach the agent process
-  only through its environment (SPEC-002 §8, R-08).
-- Known open risks are listed in SPEC-002 §12 (R-07, Chromium's unauthenticated DevTools port, is
-  closed by ADR-0191: the sandbox browser speaks DevTools over a pipe and listens on no port; R-09,
-  environment commands outside containment, is closed by ADR-0175).
+    (no Docker; the network of production CD runs): install the binary on the host.
+  - Keep `subcommands` to what agents need, put every flag that names a key, a config file or a
+    server in `refuse`, and use `approve: always` (or `send`) for anything that deploys or signs.
+  - Output is redacted of the project's agent secrets, but not of a key printed transformed
+    (`openssl rsa -text`, a hex dump): do not define such subcommands.
+  - A non-ASCII argument shows single-quoted: check it on the Secrets page before approving. Lines
+    Telegram cannot show exactly (over 380 characters, or a backtick) are approved on the page only;
+    a Telegram approval needs only the linked chat, so unlink chats you no longer hold (`/stop`).
+  - Env values are not secret; the key goes into env only as `{secret}`. At most 4 runs of a
+    project's commands run at once; each run's files, its key with them, are removed when it ends
+    and at the next start after a crash.
+- Agents receive per-run task tokens (MCP, hooks). Their own Git and `gh` get an App installation
+  token restricted to their sandbox repository (see [GitHub App permissions](#github-app-permissions));
+  provider credentials reach the agent process only through its environment.
+- The sandbox browser speaks DevTools over a pipe and listens on no port.
 - Isolated sandboxes cannot reach the host's loopback services (Yulius's public listener, Caddy's
-  admin API, databases bound to 127.0.0.1). Services bound to the host's public
-  addresses remain reachable like any internet host.
+  admin API, databases bound to 127.0.0.1). Services bound to the host's public addresses remain
+  reachable like any internet host.
 - Password sign-in is limited per client only with the proxy's shared secret configured
   (`YULIUS_PROXY_SECRET_FILE`, §4 "Per-client sign-in limits"); without it every client behind the
   proxy shares one limit.
+
+[details](archive/operations-until-2026-11-26.md#9-security-notes)

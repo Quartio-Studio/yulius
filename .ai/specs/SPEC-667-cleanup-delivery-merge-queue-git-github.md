@@ -46,9 +46,9 @@ PR 0.
 - [x] Queue: queue_readiness and armed_snapshot
 - [x] Queue: bring_armed_up_to_date for both drivers
 - [x] Queue: independent review answered
-- [ ] Merge: preview_merge vs adds_to agreement test
-- [ ] Merge: merge_or_arm and base_relation
-- [ ] Merge: independent review answered
+- [x] Merge: preview_merge vs adds_to agreement test
+- [x] Merge: conflict checks compared; F3 and F4 reported
+- [x] Merge: independent review answered
 - [ ] Queue leftovers: typed dissolve reason, is_merged, branch filter, typed queue
 - [ ] Leftovers/finish: TaskCache kind and background probe
 - [ ] F6/F9/F10: independent review answered
@@ -138,3 +138,22 @@ PR 2, the queue's readiness rule and armed slot (audit L2 F2 + F5, CLN-002):
   `MovedOn` doc, no unused derives on `ArmedSnapshot`, the new test, and the stalled-PR test now
   pins its "turn as working" sentence. `crates/yulius/tests/antigravity_armed_merge.rs` is
   claimed beside task #657's `crates/yulius/tests/**`, for these two additions only.
+
+PR 3, the conflict checks compared (audit L2 F4's precondition; F3 and F4 not done):
+- `delivery::preview_merge_and_adds_to_agree_on_conflicts` (real Git, the repository's merge
+  drivers): `merge_base` + `adds_to` and `preview_merge` agree in every shape with one merge base
+  (apart, conflicting, union-driver, up to date, behind, the same change); an unrelated head has
+  no merge base for either.
+- `delivery::adds_to_and_preview_merge_differ_with_several_merge_bases`: with two merge bases
+  (each side merged the other) they disagree. `preview_merge` answers as `git merge` does;
+  `adds_to` from `merge_base`'s one base gives the opposite (found by the independent review).
+- So switching `local_conflict` to `preview_merge` changes its answer for criss-cross pull
+  requests (reachable where merge commits land both ways): a behaviour change, which the cleanup
+  charter leaves to the owner. The switch was made, reviewed and reverted; only the two tests
+  remain.
+- Not done, outside the task's paths: F3 (`merge_or_arm`) has to fold `merges.rs`'s
+  `merge_for_person` into `agent_delivery.rs`'s `delivery_merge_answer`; `merges.rs` is not
+  claimed by this task. F4's `BaseRelation` cache would change `TaskRuntime.pr_conflict`'s type in
+  `supervisor.rs` (task #650's), and `adds_to` stays for parking's other question.
+- Independent review (Fable 5.2): round 1 requested changes (the criss-cross difference); round 2
+  approved `be5a14518`; its optional nit (the test runs a real `git merge`) is in `3d1b2120e`.
