@@ -2289,9 +2289,9 @@ fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_on
         rt.block_on(async {
             let clock = Arc::new(crate::support::TestClock(now.into()));
             let (app, remote) = super::app_with_pulls_and_clock(&data, 8, 1, clock, |_| {}).await?;
-            remote.set_remote(Arc::new(crate::delivery::BareRemote {
-                origin: data.join("origin.git"),
-            }));
+            remote.set_remote(Arc::new(crate::support::BareRemote(
+                data.join("origin.git"),
+            )));
             open_pull_at(&app, &remote, &id, 1481, &head).await?;
             remote.set_checks(&head, ChecksState::Success);
             app.reconcile().await?;
@@ -2508,9 +2508,9 @@ fn cold_candidate_case(case: ColdCandidate) -> TestResult {
         rt.block_on(async {
             let (again, remote) = app_with_pulls(&data, 8, 1).await?;
             open_pull_at(&again, &remote, &id, 1481, &head).await?;
-            remote.set_remote(Arc::new(crate::delivery::BareRemote {
-                origin: data.join("origin.git"),
-            }));
+            remote.set_remote(Arc::new(crate::support::BareRemote(
+                data.join("origin.git"),
+            )));
             remote.set_checks(&head, ChecksState::Success);
             again.reconcile().await?;
             assert_eq!(
@@ -2799,9 +2799,7 @@ async fn restore_owner(
     })
     .await?;
     let origin = data.join("origin.git");
-    remote.set_remote(Arc::new(crate::delivery::BareRemote {
-        origin: origin.clone(),
-    }));
+    remote.set_remote(Arc::new(crate::support::BareRemote(origin.clone())));
     open_pull_at(&cold, &remote, id, 1481, head).await?;
     cold.reconcile().await?;
     assert_eq!(

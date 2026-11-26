@@ -176,9 +176,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             cold
         };
         let origin = data.join("origin.git");
-        remote.set_remote(Arc::new(crate::delivery::BareRemote {
-            origin: origin.clone(),
-        }));
+        remote.set_remote(Arc::new(crate::support::BareRemote(origin.clone())));
         open_pull_at(&cold, &remote, id, 1481, &head).await?;
         std::fs::write(
             data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),

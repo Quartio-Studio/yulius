@@ -125,51 +125,23 @@ async fn a_mark_that_is_not_text_still_brings_the_tasks_back_and_goes() -> TestR
     Ok(())
 }
 
-/// A process host that finds every run ended, cleanly, while Yulius was down.
-struct EndedHost;
-
-#[async_trait::async_trait]
-impl yulius_app::ports::session::SessionHost for EndedHost {
-    async fn spawn(
-        &self,
-        _: &std::path::Path,
-        _: &str,
-        _: &str,
-        _: &yulius_app::ports::session::LaunchPlan,
-        _: &[u8; 32],
-        _: (u16, u16),
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        Err(yulius_app::error::AppError::Upstream(
-            "no spawn here".into(),
-        ))
-    }
-    async fn attach(
-        &self,
-        _: &std::path::Path,
-        _: &[u8; 32],
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        Err(yulius_app::error::AppError::Upstream(
-            "no attach here".into(),
-        ))
-    }
-    fn inspect(&self, _: &std::path::Path) -> yulius_app::ports::session::RunInspection {
-        yulius_app::ports::session::RunInspection::Exited(yulius_app::ports::session::RunExit {
-            code: Some(0),
-            signal: None,
-            spawn_failed: false,
-            usage: None,
-        })
-    }
-    fn terminate(&self, _: &std::path::Path) -> yulius_app::error::AppResult<()> {
-        Ok(())
-    }
-}
-
 /// A task the old server left switching, and one it left running, each with a run that is found
 /// ended.
 async fn ended_while_down() -> Result<Harness, Box<dyn std::error::Error>> {
     let h = harness_with(HarnessOptions {
-        session_host: Some(std::sync::Arc::new(EndedHost)),
+        session_host: Some(std::sync::Arc::new(crate::support::ScriptedHost {
+            inspect: Some(Box::new(|_| {
+                yulius_app::ports::session::RunInspection::Exited(
+                    yulius_app::ports::session::RunExit {
+                        code: Some(0),
+                        signal: None,
+                        spawn_failed: false,
+                        usage: None,
+                    },
+                )
+            })),
+            ..crate::support::ScriptedHost::default()
+        })),
         configure: Some(Box::new(|config| config.max_live_sessions = 0)),
         ..HarnessOptions::default()
     })?;
