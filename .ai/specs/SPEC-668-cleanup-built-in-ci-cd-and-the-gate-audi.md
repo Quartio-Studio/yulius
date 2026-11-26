@@ -28,11 +28,11 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 
 - [x] PR1: CI job commands are scripts/dev <job>; scripts/dev bootstraps in CI and xtask prints the stage
 - [x] PR1: quality runs doctor, quick and checker tests without cargo check; fallbacks deleted; docs updated
-- [ ] PR1: review approved and merged into dev
+- [x] PR1: review approved and merged into dev
 - [ ] PR2: dev run measured before; one test job replaces the two archive shards
 - [ ] PR2: ci_test_shard.py, test-shard, archive and partition code and their tests deleted; docs updated
 - [ ] PR2: review approved, merged into dev, dev run measured after
-- [ ] PR3: drill users checked in quartio-v2 and other instance projects
+- [x] PR3: drill users checked in quartio-v2 and other instance projects
 - [ ] PR3: prove.rs and the proving hooks and tests deleted
 - [ ] PR3: review approved and merged into dev
 - [ ] PR4: config.rs shared list/names/one-line helpers, EnvironmentsConflict and render narrowing
