@@ -668,7 +668,6 @@ fn unknown(table: &str, entry: &Entry, known: &'static str) -> FormatError {
     )
 }
 
-/// Validates a repository-relative path and strips one trailing `/`.
 /// An entry's value is not one `allowed` describes: names the entry's key and line, the value
 /// clipped.
 fn invalid(entry: &Entry, value: &str, allowed: &'static str) -> FormatError {
@@ -713,6 +712,7 @@ fn glob_list(entry: &Entry) -> Result<Vec<Pattern>, FormatError> {
         .collect()
 }
 
+/// Validates a repository-relative path and strips one trailing `/`.
 pub(crate) fn check_repo_path(path: &str) -> Result<String, &'static str> {
     let trimmed = path.strip_suffix('/').unwrap_or(path);
     if trimmed.is_empty() {
@@ -1288,16 +1288,16 @@ fn branch_policy_of(document: &Document) -> Result<BranchPolicy, FormatError> {
         });
     };
     let text = string_value(entry)?;
-    let invalid = |allowed| invalid(entry, text, allowed);
+    let refuse = |allowed| invalid(entry, text, allowed);
     if !enforced {
-        return Err(invalid("no types with preset \"none\""));
+        return Err(refuse("no types with preset \"none\""));
     }
     let list: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
     // Yulius names task branches `feat/<n>-<words>`: without `feat` it could never merge them.
     if !list.iter().any(|t| t == "feat") {
-        return Err(invalid(POLICY_TYPES));
+        return Err(refuse(POLICY_TYPES));
     }
-    BranchPolicy::with_types(list).ok_or_else(|| invalid(POLICY_TYPES))
+    BranchPolicy::with_types(list).ok_or_else(|| refuse(POLICY_TYPES))
 }
 
 /// The branch policy `yulius.toml` configures (`[branch_policy]`, SPEC-069): the standard preset
@@ -2229,7 +2229,7 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
                     test: Some("cargo test".to_owned()),
                     lint: None,
                     build: Some("cargo build --release".to_owned()),
-                    gate: Some("cargo test && cargo build --release".to_owned()),
+                    gate: Some("deploy \"dev\" \\ now && cargo test".to_owned()),
                 },
                 ..ProjectConfig::default()
             },
@@ -2679,7 +2679,7 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
         }
         assert!(parse_yulius_toml_caches("[disk]\nother = \"x\"\n").is_err());
         // The rest of the contract still parses with the table present, and the whole
-        // contract refuses what the caches' own reader refuses (audit L3 F8).
+        // contract refuses what the caches' own reader refuses.
         assert!(parse_yulius_toml("[disk]\ncaches = \"target\"\n").is_ok());
         for bad in ["[disk]\ncaches = \"/etc\"\n", "[disk]\nother = \"x\"\n"] {
             assert_eq!(

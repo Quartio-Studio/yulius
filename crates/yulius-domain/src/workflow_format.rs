@@ -104,7 +104,7 @@ pub fn valid_workflow_id(id: &str) -> bool {
 }
 
 /// Removes one pair of matching surrounding quotes.
-pub(crate) fn unquote(value: &str) -> &str {
+fn unquote(value: &str) -> &str {
     for quote in ['"', '\''] {
         if let Some(inner) = value
             .strip_prefix(quote)

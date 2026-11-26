@@ -2,7 +2,8 @@
 //! reports it on a sandbox's Security scan card (SPEC-359 VSB-003). It reads the file as TOML,
 //! as the scanner's `parse_config` does (`tomllib`), and checks its shape in the scanner's order
 //! (the keys, `enabled`, `exclude`, each `[[ignore]]` entry), so a file the scanner refuses reads
-//! as unreadable, never as on or off.
+//! as unreadable, never as on or off. Known gaps where it reads more than the scanner: a
+//! byte-order mark, and the TOML 1.1 string escapes `\e` and `\xHH`.
 
 use toml::de::{DeTable, DeValue};
 
@@ -50,7 +51,10 @@ pub fn repository_vidoc(text: Option<&str>) -> RepositoryVidoc {
 
 /// Whether the scan is on (`enabled`, true when absent), or why the scanner would refuse `text`.
 fn read(text: &str) -> Result<bool, String> {
-    let line = |offset: usize| text[..offset.min(text.len())].matches('\n').count() + 1;
+    let line = |offset: usize| {
+        let before = &text.as_bytes()[..offset.min(text.len())];
+        before.iter().filter(|&&b| b == b'\n').count() + 1
+    };
     let root = DeTable::parse(text).map_err(|error| {
         let at = error.span().map_or(1, |span| line(span.start));
         let message = error
@@ -96,11 +100,25 @@ fn read(text: &str) -> Result<bool, String> {
         let DeValue::Array(entries) = ignore.get_ref() else {
             return Err(format!(": {IGNORE_PROBLEM}"));
         };
-        if !entries.iter().all(|entry| ignore_entry(entry.get_ref())) {
+        let kept = |entry: &toml::Spanned<DeValue<'_>>| {
+            ignore_entry(entry.get_ref()) && text.get(entry.span()).is_some_and(toml_1_0)
+        };
+        if !entries.iter().all(kept) {
             return Err(format!(": {IGNORE_PROBLEM}"));
         }
     }
     Ok(enabled)
+}
+
+/// An entry's source as TOML 1.0 has it, which the scanner's `tomllib` reads: an inline table
+/// on one line and without a comma before its `}` (TOML 1.1 allows both; the `toml` crate reads
+/// 1.1). A newline inside one of its strings is refused too, the safer side.
+fn toml_1_0(source: &str) -> bool {
+    let Some(inline) = source.trim().strip_prefix('{') else {
+        return true;
+    };
+    let inner = inline.strip_suffix('}').unwrap_or(inline);
+    !inline.contains(['\n', '\r']) && !inner.trim_end().ends_with(',')
 }
 
 /// An `[[ignore]]` entry the scanner keeps: path, title and reason, maybe function and line, the
@@ -118,6 +136,7 @@ fn ignore_entry(entry: &DeValue<'_>) -> bool {
                 ("line", DeValue::Integer(number)) => {
                     u64::from_str_radix(number.as_str(), number.radix()).is_ok_and(|n| n >= 1)
                 }
+                ("line", _) => false,
                 (key, DeValue::String(text)) => {
                     ENTRY_KEYS.contains(&key) && !text.trim().is_empty()
                 }
@@ -214,6 +233,10 @@ mod tests {
         );
         assert!(unreadable(&format!("{ignore}line = 0\n")), "a line from 1");
         assert!(
+            unreadable(&format!("{ignore}line = \"3\"\n")),
+            "a line is a number"
+        );
+        assert!(
             unreadable(&format!("{ignore}reason = \"again\"\n")),
             "a key twice"
         );
@@ -259,9 +282,10 @@ mod tests {
         );
     }
 
-    /// Audit L3 F8: the file is read as TOML, as the scanner reads it, so forms the earlier line
-    /// reader called unreadable read as the scanner reads them, and unknown keys are named as the
-    /// scanner names them.
+    /// The file is read as TOML, as the scanner reads it, so forms the earlier line reader called
+    /// unreadable read as the scanner reads them, and unknown keys are named as the scanner names
+    /// them; an inline table only TOML 1.1 allows (the scanner's `tomllib` reads 1.0) stays
+    /// unreadable.
     #[test]
     fn forms_the_scanner_reads_are_read_the_same() {
         assert_eq!(
@@ -275,6 +299,20 @@ mod tests {
             RepositoryVidoc::Unreadable(
                 ".config/vidoc.toml has unexpected keys ['other', 'typo']".to_owned()
             )
+        );
+
+        for toml_1_1 in [
+            "ignore = [{path = \"a\", title = \"t\", reason = \"r\",}]\n",
+            "ignore = [{path = \"a\",\n  title = \"t\", reason = \"r\"}]\n",
+        ] {
+            assert!(unreadable(toml_1_1), "{toml_1_1}");
+        }
+        assert_eq!(
+            repository_vidoc(Some(
+                "ignore = [{path = \"a\", title = \"t\", reason = \"r\"}]\n"
+            )),
+            RepositoryVidoc::On,
+            "a TOML 1.0 inline table"
         );
     }
 
