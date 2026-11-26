@@ -30,8 +30,9 @@ use crate::error::{AppError, AppResult};
 use crate::mcp::{
     PROJECT_TOOLS, STRUCTURED_META, TaskToolResult, cockpit_tool_descriptors, initialize_result,
 };
+use crate::mcp_args::{str_arg, tool};
 use crate::model::SandboxRecord;
-use crate::person_tools::{record, str_arg, tool};
+use crate::person_tools::record;
 use crate::vault::{Holder, Revealed, SecretUser};
 
 /// Largest remote MCP request: a `project_change` of 50 files of 256 KiB, JSON-escaped.

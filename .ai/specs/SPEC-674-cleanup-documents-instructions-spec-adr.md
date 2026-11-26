@@ -54,11 +54,11 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 - [x] ADR threshold in the briefing (rule 5), budget kept
 - [x] ADR check for new ADRs in check_repository.py
 - [x] ADR threshold in AGENTS.md, engineering docs and catalog skills
-- [ ] PR1 review approved
-- [ ] AGENTS.md: duplicated rules removed
-- [ ] docs/engineering: duplicated rules removed
-- [ ] .apm skills reduced to routing, apm install
-- [ ] Catalog skills: one source per rule, skills.rs text tests adjusted
+- [x] PR1 review approved
+- [x] AGENTS.md: duplicated rules removed
+- [x] docs/engineering: duplicated rules removed
+- [x] .apm skills reduced to routing, apm install
+- [x] Catalog skills: one source per rule, skills.rs text tests adjusted
 - [ ] PR2 review approved
 - [ ] Generated title-only ADR index
 - [ ] Slot machinery deleted
@@ -103,6 +103,14 @@ and the link checker). The rest of the gate is Yulius CI's.
   `origin/$YULIUS_INTEGRATION_BRANCH` (CI checkouts share the sandbox clone's refs); with no
   such ref, and for a merge candidate (`YULIUS_CI_REF` `train/...`, several members already
   checked one by one), it checks nothing and says so.
+- One source per rule (L10 Q1): where Q1 names code or the briefing as the source, the prose
+  copies go and no text replaces them (rows 1-4); product-wide delivery rules stay once in the
+  catalog skill that owns the step (`delivery-pipeline` for the local-check rule and the nit
+  bound, `om-code-review` for the review rules, `test-driven-development` for mutation checks,
+  `om-check-and-commit` for the quick checks, `git-hygiene` for branches, history and stashes);
+  `.apm` skills only route. The skills.rs text tests assert the single source and the absence
+  of every copy, so a copy cannot come back unnoticed. The briefing keeps its short forms (it is
+  the run-time source and has its own budget tests).
 - Briefing rule 5 stays within the budget in both decision layouts: the directory arm drops its
   section list (the project docs check still names missing sections; "Alternatives" is implied
   by "two rejected alternatives"), the file arm drops its parts list, and "with at least one

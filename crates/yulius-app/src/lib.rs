@@ -69,6 +69,7 @@ pub mod live_files;
 pub(crate) mod live_text;
 pub mod manage;
 pub mod mcp;
+mod mcp_args;
 pub mod mcp_config;
 pub mod mcp_text;
 pub mod mcp_watch;
