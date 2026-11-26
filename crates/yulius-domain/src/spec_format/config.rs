@@ -235,10 +235,6 @@ pub enum ConfigProblem {
     /// A required environment key is missing.
     #[error("[[delivery.environments]] entry is missing '{0}'")]
     MissingKey(&'static str),
-    /// `environments = []` together with environment entries (the TOML parser refuses that as a
-    /// duplicate key first; kept as a guard of the profile's rule).
-    #[error("'environments = []' conflicts with [[delivery.environments]] entries")]
-    EnvironmentsConflict,
     /// The resulting profile is invalid.
     #[error("invalid delivery profile: {0}")]
     Profile(ProfileError),
@@ -662,16 +658,7 @@ fn enum_value<T>(
     allowed: &'static str,
 ) -> Result<T, FormatError> {
     let text = string_value(entry)?;
-    parse(text).ok_or_else(|| {
-        err(
-            entry.line,
-            ConfigProblem::InvalidValue {
-                key: entry.key.clone(),
-                value: clip(text),
-                allowed,
-            },
-        )
-    })
+    parse(text).ok_or_else(|| invalid(entry, text, allowed))
 }
 
 fn unknown(table: &str, entry: &Entry, known: &'static str) -> FormatError {
@@ -686,6 +673,50 @@ fn unknown(table: &str, entry: &Entry, known: &'static str) -> FormatError {
 }
 
 /// Validates a repository-relative path and strips one trailing `/`.
+/// An entry's value is not one `allowed` describes: names the entry's key and line, the value
+/// clipped.
+fn invalid(entry: &Entry, value: &str, allowed: &'static str) -> FormatError {
+    err(
+        entry.line,
+        ConfigProblem::InvalidValue {
+            key: entry.key.clone(),
+            value: clip(value),
+            allowed,
+        },
+    )
+}
+
+/// The items of an array, or the words of a string; `None` for any other value.
+fn list_of(entry: &Entry) -> Option<Vec<String>> {
+    match &entry.value {
+        Value::Array(items) => Some(items.clone()),
+        Value::Str(text) => Some(text.split_whitespace().map(str::to_owned).collect()),
+        _ => None,
+    }
+}
+
+/// One line of at most [`MAX_ABOUT_CHARS`] characters, trimmed; `None` when it is empty.
+fn one_line_text(entry: &Entry) -> Result<Option<String>, FormatError> {
+    let text = string_value(entry)?.trim();
+    if text.chars().count() > MAX_ABOUT_CHARS || text.contains(['\n', '\r']) {
+        return Err(invalid(entry, text, CD_ABOUT));
+    }
+    Ok((!text.is_empty()).then(|| text.to_owned()))
+}
+
+/// 1 to [`MAX_REVIEW_GLOBS`] repository path globs, as scope claims take them.
+fn glob_list(entry: &Entry) -> Result<Vec<Pattern>, FormatError> {
+    const GLOBS: &str = "1 to 50 repository path globs, as scope claims take them";
+    let items = list_of(entry).unwrap_or_default();
+    if items.is_empty() || items.len() > MAX_REVIEW_GLOBS {
+        return Err(invalid(entry, &items.join(" "), GLOBS));
+    }
+    items
+        .iter()
+        .map(|item| Pattern::parse(item.trim()).map_err(|_| invalid(entry, item, GLOBS)))
+        .collect()
+}
+
 pub(crate) fn check_repo_path(path: &str) -> Result<String, &'static str> {
     let trimmed = path.strip_suffix('/').unwrap_or(path);
     if trimmed.is_empty() {
@@ -829,11 +860,7 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
     }
     let paths = match paths_entry {
         Some(entry) => {
-            let items: Vec<String> = match &entry.value {
-                Value::Array(items) => items.clone(),
-                Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
-                _ => Vec::new(),
-            };
+            let items = list_of(entry).unwrap_or_default();
             crate::ci::parse_paths(name.as_deref().unwrap_or("?"), &items)
                 .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?
         }
@@ -913,7 +940,6 @@ fn delivery(document: &Document) -> Result<DeliveryProfile, FormatError> {
         None => Preset::Standard,
     };
     let mut profile = DeliveryProfile::for_preset(preset);
-    let mut cleared = None;
     for entry in entries {
         match entry.key.as_str() {
             "preset" => {}
@@ -945,15 +971,11 @@ fn delivery(document: &Document) -> Result<DeliveryProfile, FormatError> {
                     ));
                 }
                 profile.environments.clear();
-                cleared = Some(entry.line);
             }
             _ => return Err(unknown("delivery", entry, DELIVERY_KEYS)),
         }
     }
     if !document.environments.is_empty() {
-        if let Some(line) = cleared {
-            return Err(err(line, ConfigProblem::EnvironmentsConflict));
-        }
         profile.environments = document
             .environments
             .iter()
@@ -1001,6 +1023,7 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
     review_of(&document)?;
     merge_queue_of(&document)?;
     local_of(&document)?;
+    caches_of(&document)?;
     resources_env(&document)?;
     cd_of(&document)?;
     Ok(ProjectConfig {
@@ -1031,16 +1054,13 @@ fn cd_stage(env: &str, table: &Table) -> Result<CdStage, FormatError> {
     match (stage, fixed) {
         (Some(stage), None) => Ok(stage),
         (Some(stage), Some(fixed)) if stage == fixed => Ok(stage),
-        _ => Err(err(
-            entry.line,
-            ConfigProblem::InvalidValue {
-                key: entry.key.clone(),
-                value: clip(text),
-                allowed: match fixed {
-                    Some(CdStage::Dev) => "\"dev\" (the stage of [cd.dev])",
-                    Some(CdStage::Prod) => "\"prod\" (the stage of [cd.prod])",
-                    None => "\"dev\" or \"prod\"",
-                },
+        _ => Err(invalid(
+            entry,
+            text,
+            match fixed {
+                Some(CdStage::Dev) => "\"dev\" (the stage of [cd.dev])",
+                Some(CdStage::Prod) => "\"prod\" (the stage of [cd.prod])",
+                None => "\"dev\" or \"prod\"",
             },
         )),
     }
@@ -1052,16 +1072,6 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
     let known = match stage {
         CdStage::Dev => CD_DEV_KEYS,
         CdStage::Prod => CD_PROD_KEYS,
-    };
-    let invalid = |entry: &Entry, value: &str, allowed| {
-        err(
-            entry.line,
-            ConfigProblem::InvalidValue {
-                key: entry.key.clone(),
-                value: clip(value),
-                allowed,
-            },
-        )
     };
     let mut target = CdTarget::new(env, stage);
     let mut serve_set = false;
@@ -1088,17 +1098,14 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
                     }
                 }
             }
-            "states" => target.states = names_of(entry, MAX_CD_STATES, CD_STATES)?,
+            "states" => {
+                target.states = names_of(entry, MAX_CD_STATES, CD_STATES, valid_secret_name)?;
+            }
             "variables" => {
-                target.variables = names_of(entry, MAX_CD_VARIABLES, CD_VARIABLES)?;
+                target.variables =
+                    names_of(entry, MAX_CD_VARIABLES, CD_VARIABLES, valid_secret_name)?;
             }
-            "about" => {
-                let text = string_value(entry)?.trim();
-                if text.chars().count() > MAX_ABOUT_CHARS || text.contains(['\n', '\r']) {
-                    return Err(invalid(entry, text, CD_ABOUT));
-                }
-                target.about = (!text.is_empty()).then(|| text.to_owned());
-            }
+            "about" => target.about = one_line_text(entry)?,
             "promote" if stage == CdStage::Prod => target.promote = bool_value(entry)?,
             "merge_first" if stage == CdStage::Dev => target.merge_first = bool_value(entry)?,
             // SPEC-650 PST-006: `0` turns either trigger off.
@@ -1131,25 +1138,7 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
                 }
                 target.migrations = Some(text.to_owned());
             }
-            "parts" => {
-                let parts: Vec<String> = match &entry.value {
-                    Value::Array(items) => items.iter().map(|s| s.trim().to_owned()).collect(),
-                    Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
-                    _ => return Err(invalid(entry, "", CD_PARTS)),
-                };
-                if parts.len() > MAX_PARTS {
-                    return Err(invalid(entry, &parts.join(" "), CD_PARTS));
-                }
-                target.parts = Vec::new();
-                for part in parts {
-                    if !valid_part(&part) {
-                        return Err(invalid(entry, &part, CD_PARTS));
-                    }
-                    if !target.parts.contains(&part) {
-                        target.parts.push(part);
-                    }
-                }
-            }
+            "parts" => target.parts = names_of(entry, MAX_PARTS, CD_PARTS, valid_part)?,
             "drill" if stage == CdStage::Prod => {
                 let text = string_value(entry)?.trim();
                 if !valid_env_name(text) || fixed_stage(text) == Some(CdStage::Prod) {
@@ -1179,31 +1168,26 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
     Ok(target)
 }
 
-/// The names an entry lists, as an array or a space-separated string: at most `max`, each an
-/// agent secret's (or variable's) name, duplicates dropped.
-fn names_of(entry: &Entry, max: usize, allowed: &'static str) -> Result<Vec<String>, FormatError> {
-    let invalid = |value: &str| {
-        err(
-            entry.line,
-            ConfigProblem::InvalidValue {
-                key: entry.key.clone(),
-                value: clip(value),
-                allowed,
-            },
-        )
-    };
-    let names: Vec<String> = match &entry.value {
-        Value::Array(items) => items.iter().map(|s| s.trim().to_owned()).collect(),
-        Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
-        _ => return Err(invalid("")),
-    };
+/// The names an entry lists, as an array or a space-separated string: at most `max`, each one
+/// `valid` accepts, duplicates dropped.
+fn names_of(
+    entry: &Entry,
+    max: usize,
+    allowed: &'static str,
+    valid: fn(&str) -> bool,
+) -> Result<Vec<String>, FormatError> {
+    let names: Vec<String> = list_of(entry)
+        .ok_or_else(|| invalid(entry, "", allowed))?
+        .iter()
+        .map(|s| s.trim().to_owned())
+        .collect();
     if names.len() > max {
-        return Err(invalid(&names.join(" ")));
+        return Err(invalid(entry, &names.join(" "), allowed));
     }
     let mut out: Vec<String> = Vec::new();
     for name in names {
-        if !valid_secret_name(&name) {
-            return Err(invalid(&name));
+        if !valid(&name) {
+            return Err(invalid(entry, &name, allowed));
         }
         if !out.contains(&name) {
             out.push(name);
@@ -1308,16 +1292,7 @@ fn branch_policy_of(document: &Document) -> Result<BranchPolicy, FormatError> {
         });
     };
     let text = string_value(entry)?;
-    let invalid = |allowed| {
-        err(
-            entry.line,
-            ConfigProblem::InvalidValue {
-                key: entry.key.clone(),
-                value: clip(text),
-                allowed,
-            },
-        )
-    };
+    let invalid = |allowed| invalid(entry, text, allowed);
     if !enforced {
         return Err(invalid("no types with preset \"none\""));
     }
@@ -1353,7 +1328,10 @@ pub fn parse_yulius_toml_branch_policy(text: &str) -> Result<BranchPolicy, Forma
 /// # Errors
 /// The first [`FormatError`] of the file.
 pub fn parse_yulius_toml_caches(text: &str) -> Result<Vec<String>, FormatError> {
-    let document = parse_document(text)?;
+    parse_document(text).and_then(|document| caches_of(&document))
+}
+
+fn caches_of(document: &Document) -> Result<Vec<String>, FormatError> {
     let mut caches = Vec::new();
     for entry in document
         .disk
@@ -1365,17 +1343,7 @@ pub fn parse_yulius_toml_caches(text: &str) -> Result<Vec<String>, FormatError> 
             return Err(unknown("disk", entry, DISK_KEYS));
         }
         for path in string_value(entry)?.split_whitespace() {
-            let path = check_repo_path(path).map_err(|reason| {
-                err(
-                    entry.line,
-                    ConfigProblem::InvalidValue {
-                        key: entry.key.clone(),
-                        value: clip(path),
-                        allowed: reason,
-                    },
-                )
-            })?;
-            caches.push(path);
+            caches.push(check_repo_path(path).map_err(|reason| invalid(entry, path, reason))?);
         }
     }
     Ok(caches)
@@ -1395,27 +1363,7 @@ fn review_of(document: &Document) -> Result<ProductRule, FormatError> {
             "not_product" => &mut rule.not_product,
             _ => return Err(unknown("review", entry, REVIEW_KEYS)),
         };
-        let items: Vec<String> = match &entry.value {
-            Value::Array(items) => items.clone(),
-            Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
-            _ => Vec::new(),
-        };
-        let invalid = |value: &str| {
-            err(
-                entry.line,
-                ConfigProblem::InvalidValue {
-                    key: entry.key.clone(),
-                    value: clip(value),
-                    allowed: "1 to 50 repository path globs, as scope claims take them",
-                },
-            )
-        };
-        if items.is_empty() || items.len() > MAX_REVIEW_GLOBS {
-            return Err(invalid(&items.join(" ")));
-        }
-        for item in &items {
-            slot.push(Pattern::parse(item.trim()).map_err(|_| invalid(item))?);
-        }
+        slot.extend(glob_list(entry)?);
     }
     Ok(rule)
 }
@@ -1484,20 +1432,7 @@ fn local_of(document: &Document) -> Result<Option<LocalDeploy>, FormatError> {
         match entry.key.as_str() {
             "deploy" => deploy = Some(command(entry)?),
             "verify" => verify = Some(command(entry)?),
-            "about" => {
-                let text = string_value(entry)?.trim();
-                if text.chars().count() > MAX_ABOUT_CHARS || text.contains(['\n', '\r']) {
-                    return Err(err(
-                        entry.line,
-                        ConfigProblem::InvalidValue {
-                            key: entry.key.clone(),
-                            value: clip(text),
-                            allowed: CD_ABOUT,
-                        },
-                    ));
-                }
-                about = (!text.is_empty()).then(|| text.to_owned());
-            }
+            "about" => about = one_line_text(entry)?,
             _ => return Err(unknown("local", entry, LOCAL_KEYS)),
         }
     }
@@ -1521,27 +1456,7 @@ fn merge_queue_of(document: &Document) -> Result<Vec<Pattern>, FormatError> {
         if entry.key != "apart" {
             return Err(unknown("merge_queue", entry, MERGE_QUEUE_KEYS));
         }
-        let items: Vec<String> = match &entry.value {
-            Value::Array(items) => items.clone(),
-            Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
-            _ => Vec::new(),
-        };
-        let invalid = |value: &str| {
-            err(
-                entry.line,
-                ConfigProblem::InvalidValue {
-                    key: entry.key.clone(),
-                    value: clip(value),
-                    allowed: "1 to 50 repository path globs, as scope claims take them",
-                },
-            )
-        };
-        if items.is_empty() || items.len() > MAX_REVIEW_GLOBS {
-            return Err(invalid(&items.join(" ")));
-        }
-        for item in &items {
-            apart.push(Pattern::parse(item.trim()).map_err(|_| invalid(item))?);
-        }
+        apart.extend(glob_list(entry)?);
     }
     Ok(apart)
 }
@@ -1599,9 +1514,9 @@ fn quote(text: &str) -> String {
     quoted
 }
 
-/// Renders a project contract as `yulius.toml` that [`parse_yulius_toml`] reads back to an
-/// equal value. Delivery settings are written as the preset plus the keys that differ from
-/// it.
+/// Renders a new project's contract as `yulius.toml`: its documentation paths, commands and
+/// delivery preset, which [`parse_yulius_toml`] reads back. CI jobs and delivery settings that
+/// differ from the preset are not written: a new project's scaffold has none.
 #[must_use]
 pub fn render_yulius_toml(config: &ProjectConfig) -> String {
     let docs = &config.docs;
@@ -1632,100 +1547,10 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
             out.push_str(&format!("{key} = {}\n", quote(command)));
         }
     }
-    for job in &config.ci {
-        out.push_str(&format!(
-            "\n[[ci.jobs]]\nname = {}\ncommand = {}\n",
-            quote(&job.name),
-            quote(&job.command)
-        ));
-        if !job.matrix.is_empty() {
-            out.push_str(&format!("matrix = {}\n", quote(&job.matrix.join(" "))));
-        }
-        if let Some(cpus) = job.need.cpus {
-            out.push_str(&format!("cpus = {cpus}\n"));
-        }
-        if let Some(memory_mb) = job.need.memory_mb {
-            out.push_str(&format!("memory_gb = {}\n", memory_mb / 1024));
-        }
-        if !job.secrets.is_empty() {
-            out.push_str(&format!("secrets = {}\n", quote(&job.secrets.join(" "))));
-        }
-        if let Some(minutes) = job.timeout_minutes {
-            out.push_str(&format!("timeout_minutes = {minutes}\n"));
-        }
-        if job.exclusive {
-            out.push_str("exclusive = true\n");
-        }
-        if !job.paths.is_empty() {
-            let items: Vec<String> = job.paths.iter().map(|p| quote(p)).collect();
-            out.push_str(&format!("paths = [{}]\n", items.join(", ")));
-        }
-        if job.after_merge {
-            out.push_str("after_merge = true\n");
-        }
-    }
-    let profile = &config.delivery;
-    let base = DeliveryProfile::for_preset(profile.preset);
     out.push_str(&format!(
         "\n[delivery]\npreset = {}\n",
-        quote(profile.preset.as_str())
+        quote(config.delivery.preset.as_str())
     ));
-    let overrides = [
-        (
-            "integration_branch",
-            profile.integration_branch != base.integration_branch,
-            quote(&profile.integration_branch),
-        ),
-        (
-            "production_branch",
-            profile.production_branch != base.production_branch,
-            quote(&profile.production_branch),
-        ),
-        (
-            "merge",
-            profile.merge != base.merge,
-            quote(profile.merge.as_str()),
-        ),
-        (
-            "promote",
-            profile.promote != base.promote,
-            quote(profile.promote.as_str()),
-        ),
-        (
-            "auto_promote",
-            profile.auto_promote != base.auto_promote,
-            profile.auto_promote.to_string(),
-        ),
-        (
-            "require_checks",
-            profile.require_checks != base.require_checks,
-            profile.require_checks.to_string(),
-        ),
-    ];
-    for (key, differs, value) in overrides {
-        if differs {
-            out.push_str(&format!("{key} = {value}\n"));
-        }
-    }
-    if profile.environments != base.environments {
-        if profile.environments.is_empty() {
-            out.push_str("environments = []\n");
-        }
-        for environment in &profile.environments {
-            out.push_str(&format!(
-                "\n[[delivery.environments]]\nname = {}\nafter = {}\n",
-                quote(&environment.name),
-                quote(environment.after.as_str())
-            ));
-            if let Some(command) = &environment.command {
-                out.push_str(&format!("command = {}\n", quote(command)));
-            }
-            out.push_str(&format!(
-                "verify = {}\n",
-                quote(environment.verify.as_str())
-            ));
-        }
-    }
     out
 }
 
@@ -2397,11 +2222,6 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
 
     #[test]
     fn render_round_trips() -> TestResult {
-        let mut custom = DeliveryProfile::product();
-        custom.integration_branch = "develop".to_owned();
-        custom.require_checks = false;
-        custom.environments[0].command = Some("deploy \"dev\" \\ now".to_owned());
-        custom.environments[0].verify = Verify::Command;
         let configs = [
             ProjectConfig::default(),
             ProjectConfig {
@@ -2415,45 +2235,6 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
                     build: Some("cargo build --release".to_owned()),
                     gate: Some("cargo test && cargo build --release".to_owned()),
                 },
-                ci: Vec::new(),
-                delivery: custom.relabeled(),
-            },
-            ProjectConfig {
-                ci: vec![
-                    JobDef {
-                        name: "lint".to_owned(),
-                        command: "cargo clippy -- -D warnings".to_owned(),
-                        matrix: Vec::new(),
-                        need: Need::default(),
-                        secrets: Vec::new(),
-                        timeout_minutes: None,
-                        exclusive: false,
-                        paths: Vec::new(),
-                        after_merge: false,
-                    },
-                    JobDef {
-                        name: "test".to_owned(),
-                        command: "cargo test --partition \"hash:$YULIUS_CI_MATRIX\"".to_owned(),
-                        matrix: vec!["1/2".to_owned(), "2/2".to_owned()],
-                        need: Need {
-                            cpus: Some(6),
-                            memory_mb: Some(12 * 1024),
-                        },
-                        secrets: vec!["VIDOC_API_KEY".to_owned()],
-                        timeout_minutes: Some(120),
-                        exclusive: true,
-                        paths: Vec::new(),
-                        after_merge: false,
-                    },
-                ],
-                ..ProjectConfig::default()
-            },
-            ProjectConfig {
-                delivery: DeliveryProfile {
-                    environments: Vec::new(),
-                    ..DeliveryProfile::standard()
-                }
-                .relabeled(),
                 ..ProjectConfig::default()
             },
             ProjectConfig {
@@ -2570,9 +2351,6 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
                 .collect::<Vec<_>>(),
             [("e2e (a)", true), ("e2e (b)", true), ("quick", false)]
         );
-        let rendered = render_yulius_toml(&config);
-        assert!(rendered.contains("after_merge = true\n"), "{rendered}");
-        assert_eq!(parse_yulius_toml(&rendered)?.ci, config.ci);
         assert_eq!(
             problem("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\nafter_merge = \"yes\"\n"),
             Some((4, ConfigProblem::ExpectedBool("after_merge".to_owned())))
@@ -2713,12 +2491,6 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
                 .all(|j| j.paths == ["crates/pomerado/**", "connectors/**/*.rs"]),
             "{jobs:?}"
         );
-        let rendered = render_yulius_toml(&config);
-        assert!(
-            rendered.contains("paths = [\"crates/pomerado/**\", \"connectors/**/*.rs\"]"),
-            "{rendered}"
-        );
-        assert_eq!(parse_yulius_toml(&rendered)?, config);
         let job = |extra: &str| format!("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\n{extra}\n");
         for extra in [
             "paths = []",
@@ -2767,11 +2539,6 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
             "matrix jobs inherit"
         );
         assert!(jobs[2].secrets.is_empty());
-        assert!(
-            render_yulius_toml(&config).contains("secrets = \"VIDOC_API_KEY OTHER\"\n"),
-            "{}",
-            render_yulius_toml(&config)
-        );
         let many: Vec<String> = (0..=crate::ci::MAX_JOB_SECRETS)
             .map(|i| format!("S{i}"))
             .collect();
@@ -2915,8 +2682,16 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
             assert!(parse_yulius_toml_caches(&text).is_err(), "{bad}");
         }
         assert!(parse_yulius_toml_caches("[disk]\nother = \"x\"\n").is_err());
-        // The rest of the contract still parses with the table present.
+        // The rest of the contract still parses with the table present, and the whole
+        // contract refuses what the caches' own reader refuses (audit L3 F8).
         assert!(parse_yulius_toml("[disk]\ncaches = \"target\"\n").is_ok());
+        for bad in ["[disk]\ncaches = \"/etc\"\n", "[disk]\nother = \"x\"\n"] {
+            assert_eq!(
+                parse_yulius_toml(bad).err(),
+                parse_yulius_toml_caches(bad).err(),
+                "{bad}"
+            );
+        }
         Ok(())
     }
 
