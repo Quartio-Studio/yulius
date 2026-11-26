@@ -155,3 +155,5 @@ PR 3, the conflict checks compared (audit L2 F4's precondition; F3 and F4 not do
   `merge_for_person` into `agent_delivery.rs`'s `delivery_merge_answer`; `merges.rs` is not
   claimed by this task. F4's `BaseRelation` cache would change `TaskRuntime.pr_conflict`'s type in
   `supervisor.rs` (task #650's), and `adds_to` stays for parking's other question.
+- Independent review (Fable 5.2): round 1 requested changes (the criss-cross difference); round 2
+  approved `be5a14518`; its optional nit (the test runs a real `git merge`) is in `3d1b2120e`.
