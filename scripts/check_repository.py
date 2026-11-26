@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Validate the repository's narrow, documented engineering contracts."""
-from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -11,7 +10,6 @@ import sys
 import tomllib
 from urllib.parse import quote, unquote, urlsplit
 
-from decision_slots import slot_errors
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_BODY_LINES = 200
@@ -163,27 +161,51 @@ def link_errors(path, root):
     return errors
 
 
-def decision_errors(directory):
-    """Each decision record has its own number, also in its title and index line, so "ADR-NNNN"
-    names one record.
+DECISION_INDEX_HEAD = """# Decision records
 
-    Parallel tasks pick the next free number on their own; the second to merge fails here after
-    merging dev and renumbers (#317)."""
+Architecture decision records, `NNNN-<slug>.md`. A new one records a choice of how Yulius is built
+or run that someone may want to reverse ([spec workflow](../engineering/specifications.md)) and takes
+its number from Yulius's `record_number` tool (`dir` `docs/decisions`).
+
+This index is generated from the records' titles and Status sections: run
+`python3 scripts/check_repository.py --decision-index` after adding a record or changing a title or
+Status, and after a merge conflict here. The repository check fails while it is stale.
+
+"""
+SUPERSEDED = re.compile(r"superseded(?:\s+in\s+part)?(?:\s+on\s+[\d-]+)?\s+by\s+\[(?:ADR-)?(\d{4})\]", re.I)
+
+
+def decision_index(directory):
+    """The index of the decision records: number, title and whether a later record supersedes it."""
+    lines = []
+    for path in sorted(directory.glob("[0-9][0-9][0-9][0-9]-*.md")):
+        text = path.read_text()
+        title = text.split("\n", 1)[0].partition(". ")[2].strip()
+        status = re.search(r"^## Status[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+        status = status[1].strip() if status else ""
+        mark = ""
+        if superseded := SUPERSEDED.search(status):
+            whole = status.lower().startswith("superseded by")
+            mark = f" ({'' if whole else 'partly '}superseded by {superseded[1]})"
+        elif status.lower().startswith("superseded"):
+            mark = " (superseded)"
+        lines.append(f"- [{path.name[:4]}]({path.name}): {title}{mark}\n")
+    return DECISION_INDEX_HEAD + "".join(lines)
+
+
+def decision_errors(directory):
+    """Each decision record has its own number, also in its title, so "ADR-NNNN" names one record,
+    and the index matches the records.
+
+    Parallel tasks take numbers from `record_number`; a number taken by hand that collides fails
+    here after merging dev, and the record merged later renumbers (#317)."""
     errors = []
     taken = {}
     readme = directory / "README.md"
     if not readme.is_file():
-        return [f"{directory}: missing README.md index of the decision records"]
-    index = readme.read_text()
-    errors.extend(f"{readme}: {error}" for error in slot_errors(index))
-    numbers = re.findall(r"^- \[(\d{4})\]\(", index, re.MULTILINE)
-    links = set(re.findall(r"^- \[(\d{4})\]\(([^)]+)\)", index, re.MULTILINE))
-    for number, count in Counter(numbers).items():
-        if count > 1:
-            errors.append(f"{readme}: decision number {number} is indexed more than once")
-    for previous, current in zip(numbers, numbers[1:]):
-        if previous > current:
-            errors.append(f"{readme}: decisions must appear in number order (found {previous} before {current})")
+        errors.append(f"{readme}: missing; run python3 scripts/check_repository.py --decision-index")
+    elif readme.read_text() != decision_index(directory):
+        errors.append(f"{readme}: is stale; run python3 scripts/check_repository.py --decision-index")
     for path in sorted(directory.glob("*.md")):
         if path.name == "README.md":
             continue
@@ -198,8 +220,6 @@ def decision_errors(directory):
             taken[number] = path
         if not path.read_text().startswith(f"# {number}. "):
             errors.append(f"{path}: title must start with \"# {number}. \"")
-        if (number, path.name) not in links:
-            errors.append(f"{path}: list it in {directory.name}/README.md as \"- [{number}]({path.name}): <title>\"")
     return errors
 
 
@@ -868,11 +888,13 @@ if __name__ == "__main__":
             doctor()
         elif sys.argv[1:] == ["--sync-brand"]:
             sync_brand()
+        elif sys.argv[1:] == ["--decision-index"]:
+            (ROOT / "docs/decisions/README.md").write_text(decision_index(ROOT / "docs/decisions"))
         elif sys.argv[1:] == ["--ui"]:
             check_ui()
         elif not sys.argv[1:]:
             check()
         else:
-            raise ValueError("Usage: check_repository.py [--doctor | --sync-brand | --ui]")
+            raise ValueError("Usage: check_repository.py [--doctor | --sync-brand | --decision-index | --ui]")
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         sys.exit(f"Repository check failed: {error}")

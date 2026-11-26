@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted for Yulius's own repository.
+Superseded on 2026-11-26 (audit L10 F8): the index is generated from the records by
+`python3 scripts/check_repository.py --decision-index`, and the slots, `scripts/decision_slots.py`
+and the index's union line in `.gitattributes` are gone.
 
 ## Context
 

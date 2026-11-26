@@ -4,7 +4,7 @@ import tempfile
 import re
 import subprocess
 import unittest
-from check_repository import branch_decision_changes, new_decision_errors, delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
+from check_repository import branch_decision_changes, new_decision_errors, delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, decision_index, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
 
 
 def package(name, layer, dependencies=()):
@@ -156,48 +156,60 @@ class RepositoryContracts(unittest.TestCase):
     def test_two_decision_records_cannot_share_a_number(self):
         with tempfile.TemporaryDirectory() as tmp:
             decisions = Path(tmp)
-            index = "# Decision records\n\n- [0006](0006-first.md): First\n- [0007](0007-second.md): Second\n"
-            (decisions / "README.md").write_text(index)
             (decisions / "0006-first.md").write_text("# 0006. First\n")
             (decisions / "0007-second.md").write_text("# 0007. Second\n")
+            (decisions / "README.md").write_text(decision_index(decisions))
             self.assertEqual(decision_errors(decisions), [])
-            (decisions / "README.md").write_text(index + "- [0007](0007-parallel.md): Parallel\n- [0008](0008-parallel.md): Parallel\n")
             (decisions / "0007-parallel.md").write_text("# 0007. Parallel\n")
-            errors = decision_errors(decisions)
-            self.assertEqual(len(errors), 2)
-            self.assertTrue(any("more than once" in error for error in errors))
-            self.assertTrue(any("0007-parallel.md" in error and "0007-second.md" in error
-                                for error in errors))
-            # A renumbered record whose title kept the old number is caught too.
-            (decisions / "0007-parallel.md").rename(decisions / "0008-parallel.md")
-            errors = decision_errors(decisions)
-            self.assertEqual(len(errors), 2)
-            self.assertTrue(any("0008-parallel.md" in error for error in errors))
-            (decisions / "README.md").write_text(index + "- [0008](0008-parallel.md): Parallel\n")
-            (decisions / "0008-parallel.md").write_text("# 0008. Parallel\n")
-            (decisions / "notes.md").write_text("# Notes\n")
-            self.assertEqual(len(decision_errors(decisions)), 1)
-        self.assertEqual(decision_errors(ROOT / "docs/decisions"), [])
-
-    def test_decision_index_reports_a_reversed_pair(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            decisions = Path(tmp)
-            for number in ("0006", "0007"):
-                (decisions / f"{number}-choice.md").write_text(f"# {number}. Choice\n")
-            (decisions / "README.md").write_text("- [0007](0007-choice.md)\n- [0006](0006-choice.md)\n")
-            self.assertTrue(any("0007 before 0006" in error for error in decision_errors(decisions)))
-
-    def test_every_decision_record_is_indexed(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            decisions = Path(tmp)
-            (decisions / "0006-first.md").write_text("# 0006. First\n")
-            (decisions / "0007-second.md").write_text("# 0007. Second\n")
-            self.assertEqual(decision_errors(decisions), [f"{decisions}: missing README.md index of the decision records"])
-            (decisions / "README.md").write_text("# Decision records\n\n- [0006](0006-first.md): First\n")
+            (decisions / "README.md").write_text(decision_index(decisions))
             errors = decision_errors(decisions)
             self.assertEqual(len(errors), 1)
-            self.assertIn("0007-second.md", errors[0])
-            (decisions / "README.md").write_text("- [0006](0006-first.md): First\n- [0007](0007-second.md): Second\n")
+            self.assertTrue("0007-parallel.md" in errors[0] and "0007-second.md" in errors[0], errors)
+            # A renumbered record whose title kept the old number is caught too.
+            (decisions / "0007-parallel.md").rename(decisions / "0008-parallel.md")
+            (decisions / "README.md").write_text(decision_index(decisions))
+            errors = decision_errors(decisions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("0008-parallel.md", errors[0])
+            (decisions / "0008-parallel.md").write_text("# 0008. Parallel\n")
+            (decisions / "notes.md").write_text("# Notes\n")
+            (decisions / "README.md").write_text(decision_index(decisions))
+            errors = decision_errors(decisions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("NNNN-<slug>.md", errors[0])
+        self.assertEqual(decision_errors(ROOT / "docs/decisions"), [])
+
+    def test_the_decision_index_is_generated_from_titles_and_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp)
+            (decisions / "0007-later.md").write_text(
+                "# 0007. Later choice\n\n## Status\n\nAccepted; superseded in part on 2026-11-19 by\n[ADR-0009](0009-x.md).\n\n## Context\n")
+            (decisions / "0006-first.md").write_text(
+                "# 0006. First choice\n\n## Status\n\nSuperseded by [0007](0007-later.md) on 2026-11-20.\n")
+            (decisions / "0008-plain.md").write_text("# 0008. Plain\n\n## Status\n\nAccepted. Specified in SPEC-1.\n")
+            (decisions / "0005-gone.md").write_text("# 0005. Gone\n\n## Status\n\nSuperseded on 2026-11-26: the index is generated.\n")
+            index = decision_index(decisions)
+            entries = [line for line in index.splitlines() if line.startswith("- [")]
+            self.assertEqual(entries, [
+                "- [0005](0005-gone.md): Gone (superseded)",
+                "- [0006](0006-first.md): First choice (superseded by 0007)",
+                "- [0007](0007-later.md): Later choice (partly superseded by 0009)",
+                "- [0008](0008-plain.md): Plain",
+            ])
+            self.assertIn("--decision-index", index)
+
+    def test_a_missing_or_stale_index_names_the_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp)
+            (decisions / "0006-first.md").write_text("# 0006. First\n")
+            self.assertEqual(decision_errors(decisions), [f"{decisions}/README.md: missing; run python3 scripts/check_repository.py --decision-index"])
+            (decisions / "README.md").write_text(decision_index(decisions))
+            (decisions / "0007-second.md").write_text("# 0007. Second\n")
+            errors = decision_errors(decisions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("is stale", errors[0])
+            self.assertIn("--decision-index", errors[0])
+            (decisions / "README.md").write_text(decision_index(decisions))
             self.assertEqual(decision_errors(decisions), [])
 
     def test_a_new_decision_names_two_rejected_alternatives(self):
