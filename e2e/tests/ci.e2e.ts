@@ -473,6 +473,24 @@ test('a project gate notice identifies the introducing merge and retries the aff
   await expect(screen.getByText('quartio queued again.')).toBeVisible();
 });
 
+test('a red after-merge gate shows the stopped merge queue, what holds it and what waits', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&merge_stop=1'));
+  const banner = screen.getByRole('status', 'Merges stopped');
+  await expect(banner.getByText(/Merges are stopped: the after-merge gate of the integration branch is red/)).toBeVisible();
+  await expect(banner.getByText(/delivery::gate · first seen at 7713224a587f \(task #12\)/)).toBeVisible();
+  await expect(banner.getByText(/tests \(2\/4\) · first seen at ef02b192abba \(no task named yet\)/)).toBeVisible();
+  await expect(banner.getByText(/2 armed merges wait: #231 \(task #14\), #236 \(task #16\)/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await banner.getByRole('link', 'Review and run again').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_gate$/);
+});
+
+test('no stopped-queue banner while merges go on', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  await expect(screen.getByRole('region', 'CI overview')).toBeVisible();
+  await expect(screen.getByRole('status', 'Merges stopped')).toHaveCount(0);
+});
+
 test('readers can inspect the untracked failure in project CI and Status', async ({ app, browser, screen }) => {
   await app.open(mock('/s/sandbox-3/ci', '&gate_notice=reader'));
   const failure = /store::retry · first seen at 77aa01bc3d4e.*untracked merge/;

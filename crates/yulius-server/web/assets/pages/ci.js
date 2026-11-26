@@ -5,7 +5,7 @@
 // `?run=<id>`, the link of the `yulius/ci` commit status (SPEC-238: a view, not a dialog); Run
 // again lives there, not on every card (SPEC-258).
 
-import { gateNotices } from '../gatenotices.js';
+import { gateNotices, mergeStopBanner } from '../gatenotices.js';
 import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, keepFocus, placeholder, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
 import { relLong, dateTime, duration, plural, shortSha } from '../format.js';
@@ -127,7 +127,10 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     }
     schedule(overview);
     // Refresh repair links independently so they cannot displace a focused run control.
-    const notices = gateNotices(sandbox, overview.gate_notices, overview.can_run);
+    const notices = [
+      ...mergeStopBanner(sandbox, overview.merge_stop, overview.can_run),
+      ...gateNotices(sandbox, overview.gate_notices, overview.can_run),
+    ];
     keepFocus(noticesHost, () => {
       setChildren(noticesHost, notices);
       noticesHost.hidden = !notices.length;

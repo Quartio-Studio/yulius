@@ -265,7 +265,13 @@ impl GateFailures {
             return;
         }
         if let Some(Gate::Failed(failures)) = verdict.gate() {
-            for test in failures {
+            // Named as the notices name them: a job by its name, a run by its state.
+            for key in failures {
+                let test = key
+                    .strip_prefix("job ")
+                    .or_else(|| key.strip_prefix("run "))
+                    .unwrap_or(&key)
+                    .to_owned();
                 self.held.push(GateNotice {
                     key: crate::notice_producers::gate_key(&test).to_string(),
                     revision: verdict.sha.clone(),

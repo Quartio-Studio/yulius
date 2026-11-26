@@ -919,7 +919,7 @@ get `{cpus}`; a declared table, even an empty one, replaces them (SPEC-268).
 
 | Method and path | Access | Result |
 | --- | --- | --- |
-| `GET /api/sandboxes/{sid}/ci` | read | `CiOverview` |
+| `GET /api/sandboxes/{sid}/ci` | read | `CiOverview`; while a red after-merge gate stops the merge queue (SPEC-676), `merge_stop` is `{"failures":[{"test","revision","merge_task"}],"run_id","waiting":[{"task","pull_request"}]}`, else `null` |
 | `POST /api/sandboxes/{sid}/ci/sync` | write | looks for new heads now; `CiOverview` |
 | `GET /api/sandboxes/{sid}/ci/runs/{rid}` | read | `CiRun` with each retained job's `output`. After job logs expire, an archived full integration gate still returns its run metadata and can be rerun at its original SHA. |
 | `POST /api/sandboxes/{sid}/ci/runs/{rid}/cancel` | write | `CiRun`; `conflict` when it ended |

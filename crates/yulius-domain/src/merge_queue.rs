@@ -189,8 +189,8 @@ pub fn held_apart(
 /// (SPEC-676 RGS-002), as the gate history names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFailure {
-    /// The failing test; a job's name (`job <name>` before it is attributed) when its tests are
-    /// not known, or the run's state (`failed`, `error`) for a run-level failure.
+    /// The failing test; a job's name when its tests are not known, or the run's state
+    /// (`failed`, `error`) for a run-level failure.
     pub test: String,
     /// The revision that first showed it.
     pub revision: String,
@@ -260,7 +260,7 @@ impl MergeStop {
             .map(|failure| {
                 let origin = failure
                     .merge_task
-                    .map_or_else(|| "an untracked merge".to_owned(), |n| format!("task #{n}"));
+                    .map_or_else(|| "no task named yet".to_owned(), |n| format!("task #{n}"));
                 let revision: String = failure.revision.chars().take(12).collect();
                 format!("`{}` (first at {revision}, {origin})", failure.test)
             })
@@ -688,7 +688,7 @@ mod tests {
         for said in [
             "Pull request #415 waits: the after-merge gate of `dev` is red",
             "`store::writes` (first at 0123456789ab, task #412)",
-            "`job e2e` (first at 0123456789ab, an untracked merge)",
+            "`job e2e` (first at 0123456789ab, no task named yet)",
             "run ci_9",
             "it merges by itself then",
             "`repairs_gate: true`",

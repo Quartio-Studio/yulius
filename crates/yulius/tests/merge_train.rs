@@ -5862,6 +5862,35 @@ async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
         !app.decidable_in(&sandbox).await,
         "a held merge decides nothing"
     );
+    // The CI/CD page shows the stop (RGS-010): the failure, its run, the merges it holds.
+    let overview = || async {
+        let r = call(
+            &f.h.router,
+            Method::GET,
+            "/api/sandboxes/s1/ci",
+            None,
+            &f.alice,
+        )
+        .await?;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        BoxResult::Ok(r.body["merge_stop"].clone())
+    };
+    let stop = overview().await?;
+    assert_eq!(stop["failures"][0]["test"], "tests::broken", "{stop}");
+    assert_eq!(stop["failures"][0]["revision"], red.as_str(), "{stop}");
+    assert_eq!(stop["run_id"], format!("ci-{}", &red[..12]), "{stop}");
+    let number = app
+        .deps
+        .store
+        .task(&TaskId::parse("t1")?)
+        .await?
+        .ok_or("t1")?
+        .number;
+    assert_eq!(
+        stop["waiting"],
+        json!([{"task": number, "pull_request": 1}]),
+        "{stop}"
+    );
     later(&f);
     app.merge_armed(&f.sandbox).await;
     assert!(f.merges().is_empty(), "still red");
@@ -5876,6 +5905,7 @@ async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
     .await?;
     later(&f);
     assert!(app.decidable_in(&sandbox).await, "green again");
+    assert_eq!(overview().await?, Value::Null, "nothing stopped");
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.merges(), ["merge_pull #1 squash"]);
     Ok(())
