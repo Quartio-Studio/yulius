@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `task_message`.
+//! The fake agent's screen modes and a Superagent's terminal.
 
 use crate::support::agents::FakeAgentOptions;
 use crate::support::eventually;

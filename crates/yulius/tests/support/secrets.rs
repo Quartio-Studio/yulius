@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `secrets`.
+//! A person enrolled for secrets and their unlocked browser session.
 
 use crate::support;
 use axum::http::{Method, StatusCode};

@@ -4,12 +4,12 @@
 
 use crate::support::agents::FakeAgentOptions;
 use crate::support::eventually;
-use crate::support::live::Live;
 use crate::support::live::pool::pool;
 use crate::support::live::pool::{
     HOUR, ScriptedUsage, build_with, new_task, refresh, runtime, screen, seed, stop, task, temp,
     usage,
 };
+use crate::support::live::{Live, UNSERVED};
 use crate::support::subscription_moves::{live_run, notices, ready, run_accounts};
 use crate::support::{FakeGitHub, TestResult};
 
@@ -149,11 +149,10 @@ fn pinned_parked_task_resumes(pin_used: f64) -> TestResult {
         let app = pool(
             Live {
                 usage: probe.clone(),
-                github: Arc::new(FakeGitHub::default()),
                 ..Live::new(Some(&fake), agent())
             },
             &data,
-            "http://127.0.0.1:9",
+            UNSERVED,
             |config| config.park_after_ms = 1,
         )?;
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
@@ -593,11 +592,10 @@ fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
             let app = pool(
                 Live {
                     usage: probe.clone(),
-                    github: Arc::new(FakeGitHub::default()),
                     ..Live::new(Some(&fake), agent())
                 },
                 &data,
-                "http://127.0.0.1:9",
+                UNSERVED,
                 |config| config.park_after_ms = u64::from(parking),
             )?;
             let id = done_goal_on_a_full_first(&app, &probe, &data).await?;
@@ -663,7 +661,7 @@ fn a_goal_session_parking_keeps_costs_no_github_reads() -> TestResult {
                 ..Live::new(Some(&fake), agent())
             },
             &data,
-            "http://127.0.0.1:9",
+            UNSERVED,
             |config| config.park_after_ms = 30 * 60_000,
         )?;
         let id = done_goal_on_a_full_first(&app, &probe, &data).await?;
@@ -711,11 +709,10 @@ fn at_98_the_rebalance_is_off() -> TestResult {
         let app = pool(
             Live {
                 usage: probe.clone(),
-                github: Arc::new(FakeGitHub::default()),
                 ..Live::new(Some(&fake), agent())
             },
             &data,
-            "http://127.0.0.1:9",
+            UNSERVED,
             |config| config.rebalance.claude_code = 98.0,
         )?;
         let (id, user) = idle_on_a_full_first(&app, &probe, &data).await?;

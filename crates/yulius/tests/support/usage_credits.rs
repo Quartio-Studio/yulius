@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `usage_credits`.
+//! Exhausted models, a person's context and a session's transcript lines.
 
 use crate::support::TestResult;
 use crate::support::eventually;

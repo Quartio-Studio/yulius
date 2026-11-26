@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `staging`.
+//! The integration branch's CI gates as staging reads them.
 
 use crate::support::cd::{BoxResult, Fixture};
 use yulius_app::ci::{CiJobRecord, CiRunRecord};

@@ -97,21 +97,18 @@ impl Live {
     }
 
     /// [`Live::app`] served on `listener` as `yulius serve`'s internal listener, so the agents'
-    /// hooks reach it; `layer` wraps its router.
+    /// hooks reach it.
     pub fn serve(
         self,
         data: &Path,
         listener: tokio::net::TcpListener,
         tune: impl FnOnce(&mut AppConfig),
-        layer: impl FnOnce(Router) -> Router,
     ) -> Result<Arc<App>, BoxError> {
         let app = self.app(data, &url_of(&listener)?, tune)?;
-        serve_internal(&app, listener, layer);
+        serve_internal(&app, listener, |router| router);
         Ok(app)
     }
-}
 
-impl Live {
     /// [`Live::serve`] on a fresh listener at `port` (0 = any free port); returns the port.
     pub async fn start(
         self,
@@ -121,7 +118,7 @@ impl Live {
     ) -> Result<(Arc<App>, u16), BoxError> {
         let listener = listen(port)?;
         let port = listener.local_addr()?.port();
-        Ok((self.serve(data, listener, tune, |router| router)?, port))
+        Ok((self.serve(data, listener, tune)?, port))
     }
 }
 

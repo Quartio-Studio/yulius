@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `supervision`.
+//! Apps over the real ptyhost with a seeded sandbox repository and its records.
 
 use crate::support;
 use crate::support::git;

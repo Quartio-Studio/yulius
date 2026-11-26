@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `parking`.
+//! Apps whose pull requests a test scripts, and reads of parked tasks.
 
 use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;

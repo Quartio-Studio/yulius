@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `secrets_env`.
+//! Synthetic keys and what a run sources into its environment.
 
 use std::path::Path;
 use std::process::Command;

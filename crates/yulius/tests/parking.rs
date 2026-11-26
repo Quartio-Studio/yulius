@@ -1553,7 +1553,6 @@ fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
         };
         let (app, _) = Live {
             usage: Arc::new(ScriptedUsage::default()),
-            clock: Arc::new(yulius::wiring::clock::SystemClock),
             host: Some(host.clone()),
             ..Live::new(Some(&fake), agent)
         }
@@ -1674,7 +1673,6 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
         };
         let (app, _) = Live {
             usage: Arc::new(ScriptedUsage::default()),
-            clock: Arc::new(yulius::wiring::clock::SystemClock),
             host: Some(host.clone()),
             ..Live::new(Some(&fake), agent)
         }
@@ -1937,7 +1935,6 @@ fn a_session_deaf_to_the_park_is_parked_by_the_escalation() -> TestResult {
         };
         let (app, _) = Live {
             usage: Arc::new(ScriptedUsage::default()),
-            clock: Arc::new(yulius::wiring::clock::SystemClock),
             host: Some(host.clone()),
             ..Live::new(Some(&fake), agent)
         }
@@ -3637,7 +3634,18 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
     rt.block_on(async {
         let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::for_publication());
         let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-        let (app, _) = crate::support::live::Live { usage: Arc::new(ScriptedUsage::default()), clock: Arc::new(yulius::wiring::clock::SystemClock), browser: Some(browser.clone()), ..crate::support::live::Live::new(Some(&fake), FakeAgentOptions { answers_first_message: true, ..hooked() }) }.start(&data, 0, |config| { config.max_live_sessions = 8; }).await?;
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            ..hooked()
+        };
+        let live = crate::support::live::Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            browser: Some(browser.clone()),
+            ..crate::support::live::Live::new(Some(&fake), agent)
+        };
+        let (app, _) = live
+            .start(&data, 0, |config| config.max_live_sessions = 8)
+            .await?;
         let (id, caller) = answered(&app, &data).await?;
         crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let task = TaskStore::task(app.deps.store.as_ref(), &id)

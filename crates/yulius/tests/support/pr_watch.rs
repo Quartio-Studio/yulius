@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `pr_watch`.
+//! CI runs of a pull request and a verification step a task leaves.
 
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
 use yulius_domain::ci::{CiRef, GateSource, RunState};

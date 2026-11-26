@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `pool_supervision`.
+//! A pool of subscriptions whose usage a test scripts, and its tasks.
 
 use crate::support;
 use crate::support::live::{Live, UNSERVED};

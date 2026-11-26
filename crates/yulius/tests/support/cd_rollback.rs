@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `cd_rollback`.
+//! A person's Superagent, by role.
 
 use crate::support::cd::BoxResult;
 use serde_json::json;

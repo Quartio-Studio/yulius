@@ -1,4 +1,4 @@
-//! Shared fixtures moved from `first_message`.
+//! Servers on a listener, a clock a test shifts, and the hooked fake agent.
 
 use crate::support;
 use crate::support::eventually;

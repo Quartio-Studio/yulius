@@ -35,8 +35,8 @@ before the next starts.
 - [x] PR2: hand-wired Deps and sibling-file imports moved into support
 - [x] PR2: review findings answered
 - [x] PR3: migrated-template store, test time measured before and after
-- [ ] PR3: review findings answered
-- [ ] PR4a: tables for the five near-duplicate families and store_at
+- [x] PR3: review findings answered
+- [x] PR4a: tables for the five near-duplicate families and store_at
 - [ ] PR4a: review findings answered
 - [ ] PR4b: comments that only cite spec IDs deleted
 - [ ] PR4b: review findings answered
