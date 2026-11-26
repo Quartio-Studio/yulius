@@ -42,7 +42,7 @@ PR 0.
 - [x] Spec discovery: sort before the cut, prefer the slug file
 - [x] Spec discovery: independent review answered
 - [x] Split delivery.rs: verbatim move into 8 files
-- [ ] Split delivery.rs: independent review answered
+- [x] Split delivery.rs: independent review answered
 - [ ] Queue: queue_readiness and armed_snapshot
 - [ ] Queue: bring_armed_up_to_date for both drivers
 - [ ] Queue: independent review answered
