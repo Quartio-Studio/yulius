@@ -95,7 +95,7 @@ pub struct CdDeployAction {
     /// Why it does not, in words the page shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
-    /// Why it does not, as a code: `administrator`, `write`, `nothing`, `running` or `waiting`.
+    /// Why it does not, as a code: `administrator`, `write`, `nothing` or `running`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -109,8 +109,6 @@ impl CdDeployAction {
     pub const NOTHING: &'static str = "nothing";
     /// `reason`: a deploy of it is running.
     pub const RUNNING: &'static str = "running";
-    /// `reason`: production waits for the rollback drill it asked for.
-    pub const WAITING: &'static str = "waiting";
 }
 
 /// A merge-first staging target's queue (SPEC-575, ADR-0411).
@@ -189,10 +187,6 @@ pub struct CdRollback {
     /// no production that deploys drills on it; SPEC-418); `None`: it needs one, or has one.
     #[serde(default)]
     pub not_needed: Option<String>,
-    /// Production stage: the deploy waiting for the drill environment's deploy and drill that
-    /// prove its rollback (SPEC-438), as a sentence; `None`: none waits.
-    #[serde(default)]
-    pub waiting: Option<String>,
 }
 
 /// One part's kept releases.

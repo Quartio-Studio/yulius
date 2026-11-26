@@ -6,6 +6,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-26
 
+- A person's production deploy whose rollback is not proven for its commit is refused and no longer deploys dev first to prove it; the refusal says to deploy that commit on dev (audit L3 F2; [ADR-0282](decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md) superseded).
 - Agents write an ADR only for a reversible build or run choice, and note only user-visible changes in a project's changes log.
 
 ## 2026-11-25
