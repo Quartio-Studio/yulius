@@ -1471,6 +1471,7 @@ fn measure_sandbox(dir: &Path, sysroot: &Path, production: &Path) -> Usage {
 
 #[cfg(test)]
 mod tests {
+    use super::docker::*;
     use super::*;
 
     /// SPEC-203 HST-016: a base without the host's `dockerd` is checked at every tick, not every

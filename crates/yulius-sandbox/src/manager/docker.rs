@@ -38,7 +38,11 @@ impl Manager {
     /// How `request`'s front serves its socket beside the holder of `record` (ADR-0158). Asked
     /// at every tick, it only reads paths: the sandbox's groups are prepared when an engine front
     /// starts ([`Manager::start_front`]).
-    fn front_mode(&self, request: &SandboxRequest, record: &HolderRecord) -> DockerServe {
+    pub(super) fn front_mode(
+        &self,
+        request: &SandboxRequest,
+        record: &HolderRecord,
+    ) -> DockerServe {
         if let Some(reason) = self.docker_unavailable() {
             return DockerServe::Refuse { reason };
         }
@@ -59,14 +63,14 @@ impl Manager {
     }
 
     /// The paths of `sandbox`'s groups, without preparing them; `None` without delegation.
-    fn group_paths(&self, sandbox: &str) -> Option<SandboxGroups> {
+    pub(super) fn group_paths(&self, sandbox: &str) -> Option<SandboxGroups> {
         Some(self.config.delegation.as_ref()?.sandbox_paths(sandbox))
     }
 
     /// Forwarded ports the front also serves on the engine's bridge: those of a holder whose
     /// forwards listen on loopback only (started before engines; SPEC-187 specs carry `engine`,
     /// newer ones `containers`).
-    fn bridge_forwards(&self, sandbox: &str) -> Vec<u16> {
+    pub(super) fn bridge_forwards(&self, sandbox: &str) -> Vec<u16> {
         // A production holder forwards nothing (SPEC-279 PDE-001).
         if production_sandbox(sandbox).is_some() {
             return Vec::new();
@@ -89,7 +93,7 @@ impl Manager {
     /// change only with a new holder, so a running engine is never cut for them; but a front
     /// whose engine group is gone (the sandbox's groups moved to another unit, SPEC-458 LAY-005)
     /// is replaced, since it could start no engine again.
-    async fn keep_front(&self, sandbox: &str, state: &mut SandboxState) {
+    pub(super) async fn keep_front(&self, sandbox: &str, state: &mut SandboxState) {
         let request = state
             .request
             .clone()
@@ -185,7 +189,7 @@ impl Manager {
     /// once a minute (SPEC-494 DFJ-005), and reports a full or refusing front as the sandbox's
     /// Docker trouble (DFJ-006). A state file of an earlier front is ignored.
     /// Returns the state read, for the repair.
-    fn watch_front(
+    pub(super) fn watch_front(
         &self,
         sandbox: &str,
         state: &mut SandboxState,
@@ -232,7 +236,7 @@ impl Manager {
     /// pinged through the front only beside a client ([`crate::front_repair::should_ping`]). A
     /// production holder's front (SPEC-279) is journaled only: its one user is a production CD
     /// run, which a restart would cut.
-    async fn repair_front(
+    pub(super) async fn repair_front(
         &self,
         sandbox: &str,
         state: &mut SandboxState,
@@ -273,7 +277,7 @@ impl Manager {
     /// Replaces `sandbox`'s front when it runs another build than this server (it was kept
     /// across an update) and is quiet: no connection held, no engine running (SPEC-494
     /// DFJ-010). A busy one is kept, said once a day.
-    async fn replace_outdated_front(&self, sandbox: &str, state: &mut SandboxState) {
+    pub(super) async fn replace_outdated_front(&self, sandbox: &str, state: &mut SandboxState) {
         let Some(live) = state.live.as_mut() else {
             return;
         };
@@ -309,7 +313,7 @@ impl Manager {
     ///
     /// # Errors
     /// No live holder, or no front could be started again (the next tick tries again).
-    async fn restart_front(
+    pub(super) async fn restart_front(
         &self,
         sandbox: &str,
         state: &mut SandboxState,
@@ -387,7 +391,13 @@ impl Manager {
     }
 
     /// Keeps an event for the instance's measures, dropping the oldest past the bound.
-    fn docker_event(&self, sandbox: &str, kind: &'static str, count: u64, detail: String) {
+    pub(super) fn docker_event(
+        &self,
+        sandbox: &str,
+        kind: &'static str,
+        count: u64,
+        detail: String,
+    ) {
         let mut events = lock(&self.docker_events);
         if events.len() >= DOCKER_EVENTS_MAX {
             events.pop_front();
@@ -412,7 +422,7 @@ impl Manager {
     }
 
     /// Starts `sandbox`'s front beside the holder of `record` and waits until it serves.
-    async fn start_front(
+    pub(super) async fn start_front(
         &self,
         sandbox: &str,
         record: &HolderRecord,
@@ -514,7 +524,7 @@ impl Manager {
     /// Moves the Docker directory into `sandbox`'s runs that started without it (SPEC-196
     /// DKL-004): their mount namespaces are planned here, and only those needing a bind go to
     /// `yulius sandbox-host bind-docker`, at most [`BIND_TRIES`] times each.
-    async fn bind_docker_dirs(&self, sandbox: &str, state: &mut SandboxState) {
+    pub(super) async fn bind_docker_dirs(&self, sandbox: &str, state: &mut SandboxState) {
         let Some(live) = state.live.as_mut() else {
             return;
         };
@@ -593,7 +603,7 @@ impl Manager {
     }
 
     /// How the holder of `request` starts its Docker engine, in `cgroup` (SPEC-187).
-    fn engine_spec(&self, request: &SandboxRequest, cgroup: &Path) -> EngineSpec {
+    pub(super) fn engine_spec(&self, request: &SandboxRequest, cgroup: &Path) -> EngineSpec {
         let state = StatePaths::new(self.state_dir(&request.id));
         let text = |path: &Path| path.to_string_lossy().into_owned();
         let view = crate::engine::EngineView {
@@ -663,7 +673,7 @@ impl Manager {
     }
 
     /// The control socket of `sandbox`'s engine while its holder serves a running one.
-    async fn engine_socket(&self, sandbox: &str) -> Option<PathBuf> {
+    pub(super) async fn engine_socket(&self, sandbox: &str) -> Option<PathBuf> {
         let entry = self.entry(sandbox);
         let state = entry.lock().await;
         if !state.live.as_ref()?.serves_engine() {
@@ -744,7 +754,12 @@ impl Manager {
 
     /// [`crate::engine::remove_ci_leftovers`] on `sandbox`'s running engine, recorded for the
     /// instance's measures as found `when` (`job-end` or `sweep`).
-    async fn remove_ci_leftovers(&self, sandbox: &str, jobs: &crate::engine::Jobs<'_>, when: &str) {
+    pub(super) async fn remove_ci_leftovers(
+        &self,
+        sandbox: &str,
+        jobs: &crate::engine::Jobs<'_>,
+        when: &str,
+    ) {
         let Some(socket) = self.engine_socket(sandbox).await else {
             return;
         };
@@ -800,7 +815,12 @@ impl Manager {
 
     /// Prunes the running engine of the holder `name`, credited up to the consumer `label` of
     /// `measured_in`'s last measurement.
-    async fn prune_one(&self, name: &str, measured_in: &str, label: &str) -> Option<u64> {
+    pub(super) async fn prune_one(
+        &self,
+        name: &str,
+        measured_in: &str,
+        label: &str,
+    ) -> Option<u64> {
         let socket = {
             let entry = self.entry(name);
             let state = entry.lock().await;
@@ -839,7 +859,7 @@ impl Manager {
 
 /// What [`Manager::keep_front`] does with a sandbox's front.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum FrontAction {
+pub(super) enum FrontAction {
     /// It serves as it should.
     Keep,
     /// None runs: start one.
@@ -855,7 +875,7 @@ enum FrontAction {
 /// `moved` ([`engine_group_moved`]): the group an engine front starts its engine in is gone,
 /// because the sandbox's groups moved to another unit (SPEC-458 LAY-005). The move ended the
 /// engine, so replacing its front cuts nothing, and the next engine starts in the group of now.
-fn front_action(
+pub(super) fn front_action(
     current: Option<(&DockerFrontRecord, bool)>,
     wanted: DockerServe,
     moved: bool,
@@ -886,7 +906,7 @@ fn front_action(
 
 /// The group the front of `paths` starts its engine in, from the spec it was started with;
 /// `None` for a front that serves no engine of its own, or without a readable spec.
-fn served_engine_group(paths: &StatePaths) -> Option<String> {
+pub(super) fn served_engine_group(paths: &StatePaths) -> Option<String> {
     match read_json::<DockerFrontSpec>(&paths.docker_spec())
         .ok()?
         .serve
@@ -900,7 +920,7 @@ fn served_engine_group(paths: &StatePaths) -> Option<String> {
 /// sandbox's engine group is another one now (`wanted`): the sandbox's groups moved to another
 /// unit (ADR-0298). A group that is still there (`exists`) may hold a running engine and is
 /// never given up.
-fn engine_group_moved(
+pub(super) fn engine_group_moved(
     served: Option<&str>,
     wanted: &DockerServe,
     exists: impl Fn(&Path) -> bool,
@@ -917,7 +937,7 @@ fn engine_group_moved(
 /// namespace, with its [`Plan`](crate::docker_bind::Plan)), updating `known`: namespaces that
 /// ended are forgotten (their inode numbers are reused), those needing nothing are done, and one
 /// is given up after [`BIND_TRIES`] attempts.
-fn bind_plan(
+pub(super) fn bind_plan(
     known: &mut HashMap<u64, u8>,
     found: &[(u32, u64, crate::docker_bind::Plan)],
 ) -> Vec<(u32, u64)> {
@@ -938,7 +958,7 @@ fn bind_plan(
 
 /// Records the helper's `output` for the runs it was given: bound or skipped ones are done,
 /// others (failed, or missing from the output) took one more attempt.
-fn bind_record(known: &mut HashMap<u64, u8>, tried: &[(u32, u64)], output: &str) {
+pub(super) fn bind_record(known: &mut HashMap<u64, u8>, tried: &[(u32, u64)], output: &str) {
     let outcomes: HashMap<u32, bool> = output
         .lines()
         .filter_map(crate::docker_bind::Outcome::parse)

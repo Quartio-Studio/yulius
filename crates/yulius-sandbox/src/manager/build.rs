@@ -3,7 +3,7 @@
 use super::*;
 
 impl Manager {
-    fn maybe_build(self: &Arc<Self>, in_use: Vec<String>) {
+    pub(super) fn maybe_build(self: &Arc<Self>, in_use: Vec<String>) {
         if !self.config.auto_build || self.building.load(Ordering::SeqCst) {
             return;
         }
