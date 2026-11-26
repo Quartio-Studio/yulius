@@ -68,11 +68,11 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 - [x] PR4a (changes.md) review approved
 - [x] architecture.md per-feature sections moved verbatim to docs/archive
 - [x] architecture.md trimmed to its budget
-- [ ] PR4b (architecture.md) review approved
-- [ ] operations.md: old upgrade notes and legacy unit sections archived
-- [ ] product.md trimmed to current behaviour
-- [ ] Q5 false sentences fixed
-- [ ] changes.md: entries merged in from branches cut before the new log
+- [x] PR4b (architecture.md) review approved
+- [x] operations.md: old upgrade notes and legacy unit sections archived
+- [x] product.md trimmed to current behaviour
+- [x] Q5 false sentences fixed
+- [x] changes.md: entries merged in from branches cut before the new log
 - [ ] PR4c (operations.md, product.md) review approved
 - [ ] Spec file named from its heading (inside this task's paths)
 - [ ] PR5 review approved
@@ -130,6 +130,13 @@ and the link checker). The rest of the gate is Yulius CI's.
   user-visible change of the last four weeks. Briefing rule 6 asks for a line only for a
   user-visible change; the changes-folder sentence keeps its wording, which an integration test
   in another task's paths pins, and adds "Skip it for an internal change."
+- architecture.md, operations.md and product.md (L10 F3): each moves verbatim to
+  `docs/archive/<name>-until-2026-11-26.md` (links rewritten for the folder in the next commit),
+  and a condensed document of current state replaces it within the Q9 budget (757, 1,749 and 397
+  lines), linking the archive's sections for detail. The headings other documents and the code
+  name are kept; operations.md keeps the three unit files a test reads byte for byte. Its
+  upgrade notes and the behaviour comments inside the sample unit (audit L6 F9) stay only in the
+  archive.
 - Briefing rule 5 stays within the budget in both decision layouts: the directory arm drops its
   section list (the project docs check still names missing sections; "Alternatives" is implied
   by "two rejected alternatives"), the file arm drops its parts list, and "with at least one

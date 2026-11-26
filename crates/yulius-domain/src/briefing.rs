@@ -18,8 +18,8 @@
 //! collapsed to one line so repository or user text cannot forge briefing headings. Output is
 //! deterministic.
 //!
-//! Only when the budget is smaller than the mandatory parts (far below the default 12 KiB)
-//! is the whole briefing hard-cut to the budget, ending with `(truncated)`.
+//! Only when the budget is smaller than the mandatory parts is the whole briefing hard-cut to the
+//! budget, ending with `(truncated)`.
 
 use crate::cron::CivilDate;
 use crate::delivery::{DeliveryProfile, Environment, PromoteMethod, Stage, Verify};
@@ -30,9 +30,8 @@ use crate::steps::{self, StepState, StepStatus};
 use crate::task::TaskStatus;
 use crate::time::Timestamp;
 
-/// Default budget (SPEC-002 §7.5: briefing ≤ 9,500 bytes). Claude Code keeps hook context over
-/// 10,000 characters in a file and shows the session only a 2 KB preview, which cut the Git and
-/// delivery rules from agents' view (F 2026-10-12).
+/// Default budget, 9,500 bytes. Claude Code keeps hook context over 10,000 characters in a file and
+/// shows the session only a 2 KB preview, which cut the Git and delivery rules from agents' view.
 pub const DEFAULT_BUDGET_BYTES: usize = 9_500;
 /// Marker appended wherever text was cut.
 pub const TRUNCATION_MARKER: &str = "(truncated)";
