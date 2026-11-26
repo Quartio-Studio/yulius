@@ -3982,7 +3982,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
         // The outcome typed above starts a turn in the live session, and that turn's prompt hook
         // can mark the task Working after the Done below (#1712). The task is finished once that
         // turn has ended, so it is marked Done again until the read sees the subscription free.
-        wait_for(
+        eventually(
             "a finished task releases its subscription once its outcome has been delivered",
             Duration::from_secs(30),
             || async {
