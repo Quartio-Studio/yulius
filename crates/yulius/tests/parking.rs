@@ -3500,6 +3500,116 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
     Ok(())
 }
 
+/// SPEC-676 RGS-009: the worker whose merge brought the failure in owns its repair, ahead of a
+/// worker with a lower number, and while the merge queue is stopped every worker hears that
+/// merges wait for that repair.
+#[test]
+fn the_breaker_owns_the_repair_and_every_worker_hears_that_merges_wait() -> TestResult {
+    use yulius_app::delivery::{
+        DeliveryRecord,
+        evidence::{Landing, LandingSource},
+    };
+    use yulius_domain::{ci::RunState, delivery::DeliveryStage};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 0).await?;
+        let (_finished, caller) = answered(&app, &data).await?;
+        let project = app
+            .deps
+            .store
+            .sandbox(&caller.sandbox)
+            .await?
+            .ok_or("project")?;
+        let mut ids = Vec::new();
+        for prompt in ["Other worker", "Breaking worker"] {
+            let id = new_task(&app, &project.id, &caller.user, prompt, TaskMode::Prompt).await?;
+            eventually("worker ready", Duration::from_secs(30), || async {
+                status_of(&app, &id).await.1 == Some(Activity::Waiting)
+            })
+            .await?;
+            crate::support::pr_watch::leave_verification_step(&app, &id).await?;
+            ids.push(id);
+        }
+        // A merge-first project: its gate's red after-merge run stops the merge queue.
+        let repo = data
+            .join("sandboxes")
+            .join(project.id.as_str())
+            .join("repo");
+        std::fs::write(
+            repo.join("yulius.toml"),
+            "[cd.dev]\nmerge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\n\
+             migrations = \"none\"\n[cd.prod]\n",
+        )?;
+        crate::support::git(&repo, &["add", "yulius.toml"])?;
+        crate::support::git(
+            &repo,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "merge-first",
+            ],
+        )?;
+        let sha = crate::support::git(&repo, &["rev-parse", "HEAD"])?;
+        crate::support::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
+        // The breaker merged a slice and still has a step ahead: it stays a worker.
+        let landing = Landing {
+            branch: "dev".into(),
+            head: sha.clone(),
+            sha: sha.clone(),
+            source: LandingSource::MergeCommand,
+        };
+        let merged = DeliveryRecord {
+            task_id: ids[1].clone(),
+            pr_number: Some(9),
+            stage: DeliveryStage::MergedIntegration,
+            updated_at: app.now(),
+        };
+        assert!(
+            app.deps
+                .store
+                .transition_with_landing(&DeliveryStage::None, &merged, None, Some(&landing))
+                .await?
+        );
+        crate::support::staging::recorded_gate(
+            &app,
+            &project.id,
+            &sha,
+            RunState::Failed,
+            Some("---- delivery::gate stdout ----\nassertion failed\n"),
+        )
+        .await?;
+        let breaker = app.deps.store.task(&ids[1]).await?.ok_or("breaker")?.number;
+        assert_eq!(app.tell_gate_repairs(&project).await?, 2);
+        eventually(
+            "workers saw their assignments",
+            Duration::from_secs(30),
+            || async {
+                screen(&app, &ids[1]).contains("You own this repair")
+                    && screen(&app, &ids[0]).contains(&format!("Task #{breaker} owns this repair"))
+            },
+        )
+        .await?;
+        assert!(
+            screen(&app, &ids[1]).contains("`repairs_gate: true`"),
+            "{}",
+            screen(&app, &ids[1])
+        );
+        assert!(
+            screen(&app, &ids[0]).contains("Your merges wait until the gate is green"),
+            "{}",
+            screen(&app, &ids[0])
+        );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-612: actual terminal recipients of a red integration branch, including reassignment.
 #[test]
 fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other() -> TestResult {

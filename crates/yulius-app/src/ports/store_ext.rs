@@ -555,11 +555,14 @@ pub trait CiStore: Send + Sync {
     /// Running project workers whose persisted work and hold state allow an assignment.
     async fn gate_workers(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
     /// Select or retain the project's repair owner and return workers yet to hear the assignment.
+    /// A new owner is one of `breakers` (task numbers whose merges brought a failure in) when
+    /// one is available (SPEC-676 RGS-009), else the lowest number.
     async fn reconcile_gate_repair(
         &self,
         sandbox: &SandboxId,
         detail: &str,
         available: &[TaskId],
+        breakers: &[u32],
     ) -> AppResult<Vec<crate::ci::RepairRecipient>>;
     /// Confirm the recipient and assignment immediately before typing, or acknowledge delivery.
     async fn gate_repair_due(

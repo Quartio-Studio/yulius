@@ -512,12 +512,16 @@ impl App {
         if let Err(err) = self.sync_gate_notices(sandbox, unowned, hold_new).await {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "gate notices could not be reconciled");
         }
+        // The task whose merge brought a failure in repairs it first (SPEC-676 RGS-009).
+        let breakers: Vec<u32> = failures.iter().filter_map(|n| n.merge_task).collect();
         let recipients = store
-            .reconcile_gate_repair(&sandbox.id, &detail, &available)
+            .reconcile_gate_repair(&sandbox.id, &detail, &available, &breakers)
             .await?;
         if recipients.is_empty() || self.update_holds_starts() {
             return Ok(0);
         }
+        // While the red gate stops the merge queue, every worker hears that merges wait.
+        let stopped = self.merge_stop(sandbox).await.is_some();
         let mut told = 0;
         for recipient in recipients {
             let Some(task) = store.task(&recipient.task).await? else {
@@ -526,7 +530,7 @@ impl App {
             let Some(attempt) = store.live_attempt(&recipient.task).await? else {
                 continue;
             };
-            let assignment = if recipient.assigned {
+            let mut assignment = if recipient.assigned {
                 "You own this repair. Repair the integration branch before delivering your remaining work.".to_owned()
             } else {
                 format!(
@@ -534,6 +538,13 @@ impl App {
                     recipient.owner
                 )
             };
+            if stopped {
+                assignment.push_str(if recipient.assigned {
+                    " The merge queue merges only the repair until the gate is green: deliver it with `delivery_merge` and `repairs_gate: true`."
+                } else {
+                    " Your merges wait until the gate is green; an armed one merges by itself then."
+                });
+            }
             let message = self
                 .redact_for_sandbox(
                     &sandbox.id,
