@@ -1,8 +1,12 @@
 //! User administration (SPEC-001 ACC-004, ACC-009): the superadmin admits and changes users;
 //! instance administrators also read the list, with each person's two-factor (SPEC-061).
 
+use std::sync::Arc;
+
+use serde_json::json;
 use yulius_contracts::api::admin::{AdminUser, AdmitUser, UpdateUser};
 use yulius_domain::ids::UserId;
+use yulius_domain::task::TaskStatus;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -92,12 +96,13 @@ impl App {
         Ok(view(&user, "missing"))
     }
 
-    /// Disables/enables a user or changes the admin flag. Disabling revokes sessions and tokens.
+    /// Disables/enables a user or changes the admin flag. Disabling revokes sessions and tokens
+    /// and stops every task the person owns that is not resting (ADR-0481).
     ///
     /// # Errors
     /// `NotFound`, `Forbidden`.
     pub async fn update_user(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
         req: &UpdateUser,
@@ -118,6 +123,7 @@ impl App {
         if req.disabled == Some(true) {
             store.revoke_user_credentials(&id, now).await?;
             store.clear_access(&id).await?;
+            self.stop_tasks_of_disabled(&user).await?;
         }
         store
             .audit(
@@ -131,7 +137,62 @@ impl App {
         let updated = store.user(&id).await?.ok_or(AppError::NotFound)?;
         Ok(view(&updated, self.two_factor_of(&id).await?))
     }
+
+    /// Stops every task `user` owns that is not resting, live or about to start by itself
+    /// (SPEC-675 L4Q3-002, ADR-0481): nothing started on a disabled person's authority runs on.
+    /// Each stop is audited and said in the task's terminal; one that fails is logged and the
+    /// rest go on (its run is refused a git credential all the same).
+    ///
+    /// # Errors
+    /// Store failures listing the tasks.
+    async fn stop_tasks_of_disabled(self: &Arc<Self>, user: &UserRecord) -> AppResult<()> {
+        let store = &self.deps.store;
+        let tasks = store.tasks_with_status(&NOT_RESTING).await?;
+        let login = user.github_login.as_deref().unwrap_or(user.id.as_str());
+        for task in tasks.iter().filter(|t| t.owner == user.id) {
+            if let Err(err) = self.stop_task_now(&task.id).await {
+                tracing::warn!(task = %task.id, error = %err, "a disabled owner's task did not stop");
+                continue;
+            }
+            let detail = json!({
+                "task": format!("#{} {}", task.number, task.title),
+                "owner": login,
+                "reason": "owner disabled",
+            });
+            if let Err(err) = store
+                .audit(
+                    self.now(),
+                    "superadmin",
+                    "task.stopped",
+                    Some(task.id.as_str()),
+                    Some(&detail.to_string()),
+                )
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "a stop on disable was not audited");
+            }
+            if let Some(runtime) = self.existing_runtime(&task.id) {
+                runtime
+                    .hub
+                    .notice(format!("Stopped: its owner @{login} was disabled."));
+            }
+        }
+        Ok(())
+    }
 }
+
+/// Task statuses that hold a run or start one by themselves; [`TaskStatus::Stopping`] is on its
+/// way to rest already.
+const NOT_RESTING: [TaskStatus; 8] = [
+    TaskStatus::Queued,
+    TaskStatus::Starting,
+    TaskStatus::Running,
+    TaskStatus::Switching,
+    TaskStatus::WaitingCapacity,
+    TaskStatus::Chained,
+    TaskStatus::Prepared,
+    TaskStatus::Parked,
+];
 
 #[cfg(test)]
 mod tests {
