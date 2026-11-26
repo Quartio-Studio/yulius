@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::supervision::{runtime, seed_records, seed_repo, wait_for};
+use crate::supervision::{runtime, seed_records, seed_repo};
 use crate::support;
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::{TestResult, eventually};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius_app::context::{App, AppConfig, Deps};
@@ -141,7 +141,7 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
             supertask: false,
         })
         .await?;
-        wait_for("the recorded plan", Duration::from_secs(30), || async {
+        eventually("the recorded plan", Duration::from_secs(30), || async {
             host.plans.lock().is_ok_and(|plans| !plans.is_empty())
         })
         .await?;
@@ -449,7 +449,7 @@ async fn a_guarded_session_cannot_write_its_memory_but_reads_it() -> TestResult 
         (80, 24),
     )
     .await?;
-    let finished = wait_for("the attempts", Duration::from_secs(60), || async {
+    let finished = eventually("the attempts", Duration::from_secs(60), || async {
         std::fs::read_to_string(&results).is_ok_and(|text| text.ends_with("done\n"))
     })
     .await;

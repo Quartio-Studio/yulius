@@ -1412,11 +1412,12 @@ mod real {
 
     use crate::first_message::{hooked, new_task, start_with};
     use crate::pool_supervision::{
-        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage, wait_for,
+        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage,
     };
     use crate::subscription_moves::{live_run, ready, run_accounts};
     use crate::support::TestResult;
     use crate::support::agents::FakeAgentOptions;
+    use crate::support::eventually;
     use yulius_app::model::TaskMode;
     use yulius_domain::usage::UsageWindow;
     use yulius_ptyhost::test_support::locate_fake_agent;
@@ -1471,14 +1472,14 @@ mod real {
                 run_accounts(&app, &id).await,
                 [Some("a-first".to_owned()), Some("b-second".to_owned())]
             );
-            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+            let asked = eventually("the prompt", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("run Fable 5.2 for the review round you asked for")
             })
             .await;
             assert!(asked.is_ok(), "{}", screen(&app, &id));
             // The switch records its outcome once the new run started, which may be after the
             // run printed its prompt.
-            wait_for("the completed switch", Duration::from_secs(30), || async {
+            eventually("the completed switch", Duration::from_secs(30), || async {
                 app.deps.store.switches(&id).await.is_ok_and(|switches| {
                     switches.iter().any(|switch| switch.outcome == "completed")
                 })
@@ -1571,12 +1572,12 @@ mod real {
                 run_accounts(&app, &id).await,
                 [Some("a-first".to_owned()), Some("b-second".to_owned())]
             );
-            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+            let asked = eventually("the prompt", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("with room for Fable 5.2 for the review round you asked")
             })
             .await;
             assert!(asked.is_ok(), "{}", screen(&app, &id));
-            wait_for("the completed switch", Duration::from_secs(30), || async {
+            eventually("the completed switch", Duration::from_secs(30), || async {
                 app.deps.store.switches(&id).await.is_ok_and(|switches| {
                     switches.iter().any(|switch| switch.outcome == "completed")
                 })
@@ -1626,7 +1627,7 @@ mod real {
                 ready(&app, &id).await?;
                 // A first turn, read live: the transcript is followed from here on.
                 app.send_input(&id, b"hello\r").await?;
-                wait_for("the session waiting", Duration::from_secs(30), || async {
+                eventually("the session waiting", Duration::from_secs(30), || async {
                     app.deps.store.task(&id).await.is_ok_and(|task| {
                         task.is_some_and(|task| {
                             task.activity == Some(yulius_domain::task::Activity::Waiting)
@@ -1635,14 +1636,14 @@ mod real {
                 })
                 .await?;
                 app.send_input(&id, cut_off).await?;
-                let cut = wait_for("the cut-off", Duration::from_secs(30), || async {
+                let cut = eventually("the cut-off", Duration::from_secs(30), || async {
                     screen(&app, &id).contains("CUT OFF")
                 })
                 .await;
                 assert!(cut.is_ok(), "{}", screen(&app, &id));
                 if superseded {
                     // The cut-off is read: the first subscription is out of Fable.
-                    wait_for("Fable recorded", Duration::from_secs(30), || async {
+                    eventually("Fable recorded", Duration::from_secs(30), || async {
                         app.deps
                             .store
                             .account(
@@ -1663,7 +1664,7 @@ mod real {
                     .await?;
                     app.send_input(&id, b"/agent yulius-reviewer\r").await?;
                     live_run(&app, &id, 2).await?;
-                    let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+                    let asked = eventually("the prompt", Duration::from_secs(30), || async {
                         screen(&app, &id).contains("for the review round you asked for")
                     })
                     .await;
@@ -1674,7 +1675,7 @@ mod real {
                     assert_eq!(switches[0].reason, "review_fable", "{switches:?}");
                 } else {
                     app.send_input(&id, b"carry on\r").await?;
-                    let moved = wait_for("no move", Duration::from_secs(10), || async {
+                    let moved = eventually("no move", Duration::from_secs(10), || async {
                         app.deps
                             .store
                             .attempts(&id)
@@ -1748,7 +1749,7 @@ mod real {
             // A first turn, after which the session waits for its person (idle), as a session
             // does while its background reviewer reads.
             app.send_input(&id, b"hello\r").await?;
-            wait_for("the session waiting", Duration::from_secs(30), || async {
+            eventually("the session waiting", Duration::from_secs(30), || async {
                 app.deps.store.task(&id).await.is_ok_and(|task| {
                     task.is_some_and(|task| {
                         task.activity == Some(yulius_domain::task::Activity::Waiting)
@@ -1758,7 +1759,7 @@ mod real {
             .await?;
             // Sent as the agent works, not typed by a person (whose typing holds Yulius back).
             app.send_input(&id, command).await?;
-            let cut = wait_for("the cut-off reviewer", Duration::from_secs(30), || async {
+            let cut = eventually("the cut-off reviewer", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("CUT OFF")
             })
             .await;
@@ -1766,7 +1767,7 @@ mod real {
             // While the session waits, nothing moves: only a turn's end does (review round 2 of
             // fix 7). Longer than a watcher poll and the background check.
             if command == b"/reviewer-limit yulius-reviewer\r" && second_runs_fable {
-                let early = wait_for(
+                let early = eventually(
                     "a move outside a turn's end",
                     Duration::from_secs(6),
                     || second_run_started(&app, &id),
@@ -1782,7 +1783,7 @@ mod real {
             }
             if !second_runs_fable {
                 // Nowhere to move: the session stays and is told the round runs on Opus.
-                let told = wait_for("the Opus note", Duration::from_secs(30), || async {
+                let told = eventually("the Opus note", Duration::from_secs(30), || async {
                     let seen = screen(&app, &id);
                     seen.contains("no Claude subscription can run Fable 5.2 now")
                         && seen.contains("this round then runs on Opus 5.5")
@@ -1799,14 +1800,14 @@ mod real {
                 run_accounts(&app, &id).await,
                 [Some("a-first".to_owned()), Some("b-second".to_owned())]
             );
-            let told = wait_for("the resume prompt", Duration::from_secs(30), || async {
+            let told = eventually("the resume prompt", Duration::from_secs(30), || async {
                 let seen = screen(&app, &id);
                 seen.contains("Resume that reviewer now: SendMessage to `arev")
                     && seen.contains("Do not start a new reviewer for this round")
             })
             .await;
             assert!(told.is_ok(), "{}", screen(&app, &id));
-            wait_for("the completed switch", Duration::from_secs(30), || async {
+            eventually("the completed switch", Duration::from_secs(30), || async {
                 app.deps.store.switches(&id).await.is_ok_and(|switches| {
                     switches.iter().any(|switch| switch.outcome == "completed")
                 })

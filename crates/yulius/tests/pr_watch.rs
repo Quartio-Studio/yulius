@@ -3,8 +3,8 @@
 //! conflict with the integration branch and of its merge, each once and with its next step. Real
 //! repositories, the production Git adapter and a fake agent that echoes what it is typed.
 
+use crate::support::{eventually, git};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
@@ -16,7 +16,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::resources::Need;
 use yulius_domain::task::Activity;
 
-use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop, temp, wait_for};
+use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -44,21 +44,6 @@ pub(crate) async fn leave_verification_step(
         )
         .await?;
     Ok(())
-}
-
-pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
 /// A run of pull request 7 at `head` that ended in `state`, with one job.
@@ -131,7 +116,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
         git(&repo, &["fetch", "-q", "origin"])?;
         let id = new_task(&app, &sandbox, &user, "Watched").await?;
-        wait_for("the first answer", Duration::from_secs(30), || {
+        eventually("the first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: Watched: answer with an echo") }
         })
@@ -410,7 +395,7 @@ fn a_conflict_is_told_without_a_run_at_the_head() -> TestResult {
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
         git(&repo, &["fetch", "-q", "origin"])?;
         let id = new_task(&app, &sandbox, &user, "Watched").await?;
-        wait_for("the first answer", Duration::from_secs(30), || {
+        eventually("the first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: Watched: answer with an echo") }
         })
@@ -559,7 +544,7 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
         git(&repo, &["fetch", "-q", "origin"])?;
         let id = new_task(&app, &sandbox, &user, "Watched repair").await?;
-        wait_for("the first answer", Duration::from_secs(30), || {
+        eventually("the first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: Watched repair: answer with an echo") }
         })
@@ -790,7 +775,7 @@ async fn echoed(
     id: &TaskId,
     line: &str,
 ) -> TestResult {
-    wait_for("the echo", Duration::from_secs(30), || {
+    eventually("the echo", Duration::from_secs(30), || {
         let shown = screen(app, id);
         async move { shown.contains(line) }
     })

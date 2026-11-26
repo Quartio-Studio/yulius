@@ -3,6 +3,7 @@
 //! reaching the agent; a person still allows every use.
 
 use crate::support;
+use crate::support::git;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -81,21 +82,6 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
         worktree,
         home,
     })
-}
-
-fn git(dir: &std::path::Path, args: &[&str]) -> TestResult {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
 }
 
 fn sid() -> Result<SandboxId, Box<dyn std::error::Error>> {

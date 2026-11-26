@@ -4,6 +4,7 @@
 //! sessions (AC-IMP-1, AC-IMP-2, AC-IMP-4..6, AC-SES-1).
 
 use crate::support;
+use crate::support::git_stdout;
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
@@ -12,7 +13,7 @@ use std::process::Command;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::repos::{OWNER, World, call_raw, git};
+use support::repos::{OWNER, World, call_raw};
 use support::{Creds, Resp, TestResult, call};
 use yulius_app::ports::store::{SandboxStore, TaskStore};
 use yulius_contracts::import::{
@@ -61,20 +62,22 @@ fn file_ref(w: &World, name: &str, bytes: &[u8]) -> FileRef {
 fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
     let laptop = w.scratch.path().join("laptop");
     std::fs::create_dir_all(&laptop)?;
-    git(
+    git_stdout(
         &laptop,
         &["clone", "--quiet", &remote.to_string_lossy(), "shop"],
     )?;
     let checkout = laptop.join("shop");
-    git(&checkout, &["checkout", "--quiet", "-b", "feature-x"])?;
+    git_stdout(&checkout, &["checkout", "--quiet", "-b", "feature-x"])?;
     std::fs::write(checkout.join("src/app.txt"), "v2\n")?;
-    git(&checkout, &["commit", "--quiet", "-am", "local work"])?;
-    let head = git(&checkout, &["rev-parse", "HEAD"])?.trim().to_owned();
+    git_stdout(&checkout, &["commit", "--quiet", "-am", "local work"])?;
+    let head = git_stdout(&checkout, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
 
     let out = w.scratch.path().join("upload");
     std::fs::create_dir_all(&out)?;
     let bundle_path = out.join("repo.bundle");
-    git(
+    git_stdout(
         &checkout,
         &[
             "bundle",
@@ -1290,26 +1293,26 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         .join("sandboxes")
         .join(sandbox.id.as_str())
         .join("repo");
-    let local = git(
+    let local = git_stdout(
         &repo,
         &["log", "-1", "--format=%s", "import/alice/feature-x"],
     )?;
     assert_eq!(local.trim(), "local work");
     let snapshot = "import/alice/snapshot-2026-10-07";
     assert_eq!(
-        git(&repo, &["show", &format!("{snapshot}:src/app.txt")])?,
+        git_stdout(&repo, &["show", &format!("{snapshot}:src/app.txt")])?,
         "v3-uncommitted\n"
     );
     assert_eq!(
-        git(&repo, &["show", &format!("{snapshot}:notes/new.md")])?,
+        git_stdout(&repo, &["show", &format!("{snapshot}:notes/new.md")])?,
         "# Notes\n"
     );
-    let tree = git(&repo, &["ls-tree", "-r", "--name-only", snapshot])?;
+    let tree = git_stdout(&repo, &["ls-tree", "-r", "--name-only", snapshot])?;
     assert!(
         !tree.lines().any(|l| l == "old.txt"),
         "deleted path removed: {tree}"
     );
-    let parent = git(&repo, &["rev-parse", &format!("{snapshot}~1")])?;
+    let parent = git_stdout(&repo, &["rev-parse", &format!("{snapshot}~1")])?;
     assert_eq!(
         parent.trim(),
         offer.manifest.repo.head_sha,
@@ -1442,7 +1445,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     assert_eq!(rerun_result.body["sessions_unchanged"], 2);
     assert_eq!(rerun_result.body["sessions_skipped_existing"], 2);
     assert!(
-        git(
+        git_stdout(
             &repo,
             &["rev-parse", "--verify", "--quiet", &format!("{snapshot}-2")]
         )
@@ -1656,7 +1659,7 @@ async fn a_link_planted_at_the_snapshot_worktree_is_never_followed() -> TestResu
     );
     let repo = sandbox_dir.join("repo");
     assert_eq!(
-        git(
+        git_stdout(
             &repo,
             &["show", "import/alice/snapshot-2026-10-07:src/app.txt"]
         )?,
@@ -1771,7 +1774,7 @@ async fn a_snapshot_import_failing_after_git_leaves_no_worktree() -> TestResult 
         Vec::<std::ffi::OsString>::new(),
         "the failed import's checkout is removed"
     );
-    let list = git(
+    let list = git_stdout(
         &sandbox_dir.join("repo"),
         &["worktree", "list", "--porcelain"],
     )?;
@@ -1838,7 +1841,7 @@ async fn assert_imported_resume(
         "v3-uncommitted\n",
         "the worktree starts from the imported snapshot"
     );
-    let branch = git(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = git_stdout(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     assert_eq!(Some(branch.trim().to_owned()), task.branch);
     let native =
         app.deps

@@ -4,6 +4,8 @@
 //! starts again, adopted after a server restart, reaped when unwatched for a day (SPEC-021).
 
 use crate::support;
+use crate::support::{eventually, git};
+use std::future::ready;
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -40,7 +42,7 @@ use yulius_domain::time::Timestamp;
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub(crate) const ORIGIN: &str = "https://yulius.test";
-const WAIT: Duration = Duration::from_secs(20);
+pub(crate) const WAIT: Duration = Duration::from_secs(20);
 const TOKEN: &str = "synthetic-oauth-token";
 
 /// Prints its arguments (the MCP config, allowed tools and settings, too long for a line, go to
@@ -280,17 +282,6 @@ pub(crate) fn printed(screen: &str, key: &str) -> Result<String, Box<dyn std::er
         .to_owned())
 }
 
-pub(crate) async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while tokio::time::Instant::now() < deadline {
-        if check() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 /// A conversation file of Claude Code, last written `secs` after the epoch.
 pub(crate) fn conversation(project: &Path, id: &str, secs: u64) -> TestResult {
     std::fs::create_dir_all(project)?;
@@ -510,8 +501,8 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
             json!({"type": "input", "data": "exit\r"}).to_string(),
         ))
         .await?;
-    wait_for("the Cockpit to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the Cockpit to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
 
@@ -527,11 +518,13 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
 
     // Unwatched for a day it ends like a terminal, and comes back with its conversation.
     drop(socket);
-    wait_for("viewers to leave", || {
-        f.h.app
-            .sandbox_shells(&sid())
-            .iter()
-            .all(|shell| shell.viewer_count() == 0)
+    eventually("viewers to leave", WAIT, || {
+        ready(
+            f.h.app
+                .sandbox_shells(&sid())
+                .iter()
+                .all(|shell| shell.viewer_count() == 0),
+        )
     })
     .await?;
     f.h.clock
@@ -583,8 +576,8 @@ async fn removing_the_sandbox_ends_its_superagent_and_terminals() -> TestResult 
     .await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
 
-    wait_for("the removed sandbox's shells to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the removed sandbox's shells to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
     // The watcher's terminal is told and closed: nothing of the sandbox goes on behind it.
@@ -638,8 +631,8 @@ async fn a_superagent_starting_while_the_sandbox_is_removed_ends() -> TestResult
     f.gate.release();
     let _ = open.await?;
 
-    wait_for("the late Superagent to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty() && run_dirs(&f) == 0
+    eventually("the late Superagent to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty() && run_dirs(&f) == 0)
     })
     .await?;
     Ok(())
@@ -732,8 +725,8 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
             json!({"type": "input", "data": "exit\r"}).to_string(),
         ))
         .await?;
-    wait_for("the Cockpit to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the Cockpit to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
 
@@ -741,8 +734,8 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
     // be deleted, must not stay stuck on it.
     std::fs::write(config.join("fail-resume"), "")?;
     cockpit_id(&f, &f.alice).await?;
-    wait_for("the failed resume to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the failed resume to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
     let fresh = cockpit_id(&f, &f.alice).await?;
@@ -1069,8 +1062,8 @@ async fn a_cockpit_start_whose_request_is_dropped_still_ends_as_the_one_cockpit(
         }
     }
     f.gate.release();
-    wait_for("the dropped start to register its Cockpit", || {
-        f.h.app.sandbox_shells(&sid()).len() == 1
+    eventually("the dropped start to register its Cockpit", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).len() == 1)
     })
     .await?;
     let started =
@@ -1110,16 +1103,16 @@ async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() ->
             json!({"type": "input", "data": "exit\r"}).to_string(),
         ))
         .await?;
-    wait_for("the Cockpit to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the Cockpit to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
 
     // The resumed process is killed by a signal right after it started.
     std::fs::write(config.join("kill-resume"), "")?;
     cockpit_id(&f, &f.alice).await?;
-    wait_for("the killed resume to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the killed resume to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
     std::fs::remove_file(config.join("kill-resume"))?;
@@ -2612,7 +2605,7 @@ async fn a_superagent_screen_shows_no_output_while_a_secret_cannot_be_opened() -
         )))
         .await?;
     read_until(&mut socket, &mut screen, "the screen is withheld").await?;
-    wait_for("the command ran", || marker.exists()).await?;
+    eventually("the command ran", WAIT, || ready(marker.exists())).await?;
 
     // The secret that does not open is deleted: the next output is shown.
     let deleted = call(
@@ -2936,14 +2929,16 @@ pub(crate) async fn read_message(
 /// The live Cockpit other than `old`, once there is one.
 async fn other_cockpit(f: &Fixture, old: &str) -> Result<String, Box<dyn std::error::Error>> {
     let mut found = None;
-    wait_for("the Cockpit on another subscription", || {
-        found =
-            f.h.app
-                .sandbox_shells(&sid())
-                .into_iter()
-                .find(|s| s.id() != old)
-                .map(|s| s.id().to_owned());
-        found.is_some()
+    eventually("the Cockpit on another subscription", WAIT, || {
+        ready({
+            found =
+                f.h.app
+                    .sandbox_shells(&sid())
+                    .into_iter()
+                    .find(|s| s.id() != old)
+                    .map(|s| s.id().to_owned());
+            found.is_some()
+        })
     })
     .await?;
     found.ok_or_else(|| "no other Cockpit".into())
@@ -3463,8 +3458,8 @@ async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestR
     std::fs::write(&transcript, limited_conversation(1_791_400_000))?;
     let exit = read_message(&mut socket, "exit").await?;
     assert_eq!(exit["status"], "switched", "{exit}");
-    wait_for("the old Cockpit to be gone", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the old Cockpit to be gone", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
 
@@ -3537,8 +3532,8 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
             json!({"type": "input", "data": "exit\r"}).to_string(),
         ))
         .await?;
-    wait_for("the Cockpit to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the Cockpit to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
     let fourth = cockpit_id(&f, &f.alice).await?;
@@ -3978,22 +3973,6 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         "{refused}"
     );
     f.h.app.end_all_shells().await;
-    Ok(())
-}
-
-/// Runs `git` in `dir` with a synthetic identity.
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
     Ok(())
 }
 
@@ -4623,8 +4602,8 @@ async fn a_superagent_mid_turn_restarts_only_once_its_turn_ends() -> TestResult 
     let g = fixture_with(true, Some(f.data.clone())).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
     assert_eq!(g.h.app.cockpit_refresh_state(&id), "due");
-    wait_for("the Superagent to wait for its turn", || {
-        g.h.app.cockpit_refresh_state(&id) == "waiting"
+    eventually("the Superagent to wait for its turn", WAIT, || {
+        ready(g.h.app.cockpit_refresh_state(&id) == "waiting")
     })
     .await?;
     let live: Vec<String> =
@@ -4665,8 +4644,8 @@ async fn an_updates_restart_waits_for_text_left_in_the_prompt_box() -> TestResul
     let g = fixture_with(true, Some(f.data.clone())).await?;
     let served = serve(g.h.router.clone()).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
-    wait_for("the Superagent to wait for its turn", || {
-        g.h.app.cockpit_refresh_state(&id) == "waiting"
+    eventually("the Superagent to wait for its turn", WAIT, || {
+        ready(g.h.app.cockpit_refresh_state(&id) == "waiting")
     })
     .await?;
     let mut socket = attach(served.addr, &id, &g.alice).await?;
@@ -4675,13 +4654,16 @@ async fn an_updates_restart_waits_for_text_left_in_the_prompt_box() -> TestResul
             json!({"type": "input", "data": "deploy it when the"}).to_string(),
         ))
         .await?;
-    wait_for("the draft to be seen", || g.h.app.cockpit_has_draft(&id)).await?;
+    eventually("the draft to be seen", WAIT, || {
+        ready(g.h.app.cockpit_has_draft(&id))
+    })
+    .await?;
 
     // The turn ends: the Superagent is idle, but the person's text holds it.
     text.push_str(&answer_record("a1", "u1", -5));
     std::fs::write(&transcript, &text)?;
-    wait_for("the restart to be held by the draft", || {
-        g.h.app.cockpit_refresh_state(&id) == "held"
+    eventually("the restart to be held by the draft", WAIT, || {
+        ready(g.h.app.cockpit_refresh_state(&id) == "held")
     })
     .await?;
     let live = |app: &yulius_app::context::App| -> Vec<String> {
@@ -4730,7 +4712,10 @@ async fn a_draft_typed_before_the_servers_restart_holds_the_superagents() -> Tes
             json!({"type": "input", "data": "deploy it when the"}).to_string(),
         ))
         .await?;
-    wait_for("the draft to be seen", || f.h.app.cockpit_has_draft(&id)).await?;
+    eventually("the draft to be seen", WAIT, || {
+        ready(f.h.app.cockpit_has_draft(&id))
+    })
+    .await?;
     drop(socket);
     predate_launch_digest(&f, &id)?;
     f.h.app.stop_workspace_services().await;
@@ -4742,8 +4727,8 @@ async fn a_draft_typed_before_the_servers_restart_holds_the_superagents() -> Tes
         g.h.app.cockpit_has_draft(&id),
         "the draft came back with its record"
     );
-    wait_for("the restart to be held by the draft", || {
-        g.h.app.cockpit_refresh_state(&id) == "held"
+    eventually("the restart to be held by the draft", WAIT, || {
+        ready(g.h.app.cockpit_refresh_state(&id) == "held")
     })
     .await?;
     let mut socket = attach(served.addr, &id, &g.alice).await?;
@@ -5700,7 +5685,10 @@ async fn an_idle_superagents_strays_are_reaped_after_the_bound() -> TestResult {
     f.h.clock
         .0
         .fetch_add(f.h.app.config.stray_reap_after_ms, Ordering::SeqCst);
-    wait_for("the strays to be reaped", || !f.gate.reaped().is_empty()).await?;
+    eventually("the strays to be reaped", WAIT, || {
+        ready(!f.gate.reaped().is_empty())
+    })
+    .await?;
     assert_eq!(f.gate.reaped(), vec![leaked_job(500, 77)]);
     f.h.app.end_all_shells().await;
     Ok(())
@@ -5720,7 +5708,10 @@ async fn an_idle_superagents_strays_are_seen_when_their_probe_was_asked() -> Tes
         clock.0.fetch_add(bound, Ordering::SeqCst);
     }));
     open_with_stray_sighting(&f, &transcript).await?;
-    wait_for("the strays to be reaped", || !f.gate.reaped().is_empty()).await?;
+    eventually("the strays to be reaped", WAIT, || {
+        ready(!f.gate.reaped().is_empty())
+    })
+    .await?;
     assert_eq!(
         f.gate.reaped_after(),
         vec![(2, leaked_job(500, 77))],
@@ -5748,7 +5739,10 @@ async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> Te
     f.h.clock
         .0
         .fetch_add(f.h.app.config.stray_reap_after_ms, Ordering::SeqCst);
-    wait_for("the probe that finds them due", || f.gate.probes() > 1).await?;
+    eventually("the probe that finds them due", WAIT, || {
+        ready(f.gate.probes() > 1)
+    })
+    .await?;
     // The turn ends; the next idle probe reaps them, once: none was reaped during the turn.
     {
         use std::io::Write as _;
@@ -5756,8 +5750,8 @@ async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> Te
         file.write_all(answer_record("a1", "u1", 5).as_bytes())?;
     }
     f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
-    wait_for("the strays to be reaped after the turn", || {
-        !f.gate.reaped().is_empty()
+    eventually("the strays to be reaped after the turn", WAIT, || {
+        ready(!f.gate.reaped().is_empty())
     })
     .await?;
     assert_eq!(
@@ -5857,7 +5851,7 @@ async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestRe
     link.set(Some(false));
     let before = link.tests();
     f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
-    wait_for("the next link test", || link.tests() > before).await?;
+    eventually("the next link test", WAIT, || ready(link.tests() > before)).await?;
     assert_eq!(link_state(&f, &f.alice).await?["state"], "ok");
     f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
     let lost = link_reads(&f, "lost").await?;
