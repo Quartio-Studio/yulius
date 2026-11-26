@@ -318,11 +318,11 @@ impl SqliteStore {
     pub(crate) async fn call<R, F>(&self, f: F) -> AppResult<R>
     where
         R: Send + 'static,
-        F: FnOnce(&mut Connection) -> AppResult<R> + Send + 'static,
+        F: FnOnce(&mut Connection) -> DbResult<R> + Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         let job: Job = Box::new(move |conn| {
-            let _ = tx.send(f(conn));
+            let _ = tx.send(f(conn).map_err(|DbError(err)| err));
         });
         let sender = self.jobs.clone();
         // `send` blocks only when the bounded queue is full; do that off the executor.
@@ -342,7 +342,7 @@ impl SqliteStore {
     #[cfg(feature = "test-support")]
     pub async fn execute_for_tests(&self, sql: &str) -> AppResult<()> {
         let sql = sql.to_owned();
-        self.call(move |c| c.execute_batch(&sql).map_err(db)).await
+        self.call(move |c| Ok(c.execute_batch(&sql)?)).await
     }
 
     /// [`Self::call`] for a write that can change who may type into a terminal: the access epoch
@@ -350,7 +350,7 @@ impl SqliteStore {
     pub(crate) async fn call_access<R, F>(&self, f: F) -> AppResult<R>
     where
         R: Send + 'static,
-        F: FnOnce(&mut Connection) -> AppResult<R> + Send + 'static,
+        F: FnOnce(&mut Connection) -> DbResult<R> + Send + 'static,
     {
         let epoch = Arc::clone(&self.access_epoch);
         self.call(move |conn| {
@@ -378,7 +378,7 @@ impl SqliteStore {
     pub async fn backup_to(&self, dest: &Path) -> AppResult<()> {
         let dest = dest.to_string_lossy().into_owned();
         self.call(move |conn| {
-            conn.execute("VACUUM INTO ?1", [dest]).map_err(db)?;
+            conn.execute("VACUUM INTO ?1", [dest])?;
             Ok(())
         })
         .await
@@ -477,14 +477,35 @@ fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
     Ok(())
 }
 
-/// Maps a SQLite error to an application error (constraint violations become conflicts).
-pub(crate) fn db(err: rusqlite::Error) -> AppError {
-    if let rusqlite::Error::SqliteFailure(code, _) = &err
-        && code.code == rusqlite::ErrorCode::ConstraintViolation
-    {
-        return AppError::Conflict("conflicting record".into());
+/// An application error raised on the database thread: `?` turns a SQLite error into one
+/// (constraint violations become conflicts) and back into an [`AppError`] at the caller.
+#[derive(Debug)]
+pub(crate) struct DbError(pub(crate) AppError);
+
+/// The result of work on the database thread.
+pub(crate) type DbResult<T> = Result<T, DbError>;
+
+impl From<rusqlite::Error> for DbError {
+    fn from(err: rusqlite::Error) -> Self {
+        if let rusqlite::Error::SqliteFailure(code, _) = &err
+            && code.code == rusqlite::ErrorCode::ConstraintViolation
+        {
+            return Self(AppError::Conflict("conflicting record".into()));
+        }
+        Self(AppError::internal(err))
     }
-    AppError::internal(err)
+}
+
+impl From<AppError> for DbError {
+    fn from(err: AppError) -> Self {
+        Self(err)
+    }
+}
+
+impl From<DbError> for AppError {
+    fn from(DbError(err): DbError) -> Self {
+        err
+    }
 }
 
 /// Builds a conversion error for a column holding unexpected text.
@@ -987,10 +1008,10 @@ mod tests {
                 .is_empty()
         );
         let counts: (i64, i64) = store.call(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT (SELECT COUNT(*) FROM session_chunks), (SELECT COUNT(*) FROM session_fts WHERE session_fts MATCH 'kept')",
                 [], |row| Ok((row.get(0)?, row.get(1)?)),
-            ).map_err(db)
+            )?)
         }).await?;
         assert_eq!(counts, (0, 0));
         Ok(())
@@ -1011,14 +1032,10 @@ mod tests {
         ] {
             let plan: Vec<String> = store
                 .call(move |c| {
-                    let mut statement = c
-                        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-                        .map_err(db)?;
+                    let mut statement = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
                     let details = statement
-                        .query_map([0_i64], |r| r.get::<_, String>(3))
-                        .map_err(db)?
-                        .collect::<Result<Vec<String>, _>>()
-                        .map_err(db)?;
+                        .query_map([0_i64], |r| r.get::<_, String>(3))?
+                        .collect::<Result<Vec<String>, _>>()?;
                     Ok(details)
                 })
                 .await?;
@@ -1056,13 +1073,10 @@ mod tests {
         let columns: Vec<String> = store
             .call(|c| {
                 let mut statement = c
-                    .prepare("SELECT name FROM pragma_table_info('tasks') UNION ALL SELECT name FROM pragma_table_info('instance')")
-                    .map_err(db)?;
+                    .prepare("SELECT name FROM pragma_table_info('tasks') UNION ALL SELECT name FROM pragma_table_info('instance')")?;
                 let names = statement
-                    .query_map([], |r| r.get(0))
-                    .map_err(db)?
-                    .collect::<Result<Vec<String>, _>>()
-                    .map_err(db)?;
+                    .query_map([], |r| r.get(0))?
+                    .collect::<Result<Vec<String>, _>>()?;
                 Ok(names)
             })
             .await?;
@@ -2148,20 +2162,14 @@ mod tests {
         {
             let store = SqliteStore::open(&path)?;
             let version: i64 = store
-                .call(|c| {
-                    c.query_row("PRAGMA user_version", [], |r| r.get(0))
-                        .map_err(db)
-                })
+                .call(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
                 .await?;
             assert_eq!(version, i64::try_from(MIGRATIONS.len())?);
         }
         // Reopen applies nothing new and keeps the version.
         let store = SqliteStore::open(&path)?;
         let version: i64 = store
-            .call(|c| {
-                c.query_row("PRAGMA user_version", [], |r| r.get(0))
-                    .map_err(db)
-            })
+            .call(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .await?;
         assert_eq!(version, i64::try_from(MIGRATIONS.len())?);
         let backup = dir.path().join("backup.db");
