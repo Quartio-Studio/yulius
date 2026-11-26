@@ -146,13 +146,15 @@ impl GitAdapter {
     }
 
     fn git_with_token(&self, token: &Secret) -> Git {
-        let basic = base64::engine::general_purpose::STANDARD
-            .encode(format!("x-access-token:{}", token.expose()));
-        self.git_with_config(&[(
-            "http.https://github.com/.extraheader",
-            format!("AUTHORIZATION: basic {basic}"),
-        )])
+        self.git_with_config(&[("http.https://github.com/.extraheader", token_header(token))])
     }
+}
+
+/// GitHub's basic-auth header for a token: `x-access-token:<token>` in padded standard base64.
+fn token_header(token: &Secret) -> String {
+    let basic = base64::engine::general_purpose::STANDARD
+        .encode(format!("x-access-token:{}", token.expose()));
+    format!("AUTHORIZATION: basic {basic}")
 }
 
 fn map_err(err: GitError) -> AppError {
@@ -1101,3 +1103,22 @@ fn changed_file(file: FileDiff) -> ChangedFile {
 // The adapter and the rule measure lines alike (SPEC-493 fix 6).
 const _: () =
     assert!(yulius_git::MAX_COUNTED_LINE_BYTES == yulius_domain::follow_up::MAX_COUNTED_LINE_BYTES);
+
+#[cfg(test)]
+mod tests {
+    use yulius_app::model::Secret;
+
+    use super::token_header;
+
+    #[test]
+    fn the_token_header_is_padded_standard_base64() {
+        assert_eq!(
+            token_header(&Secret("?>~~".into())),
+            "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Pz5+fg=="
+        );
+        assert_eq!(
+            token_header(&Secret("ab?>~~".into())),
+            "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46YWI/Pn5+"
+        );
+    }
+}
