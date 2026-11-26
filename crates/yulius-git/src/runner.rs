@@ -742,46 +742,24 @@ fn spawn_readers(
 }
 
 /// Reads until EOF; on exceeding `limit` flags overflow and stops (closing the pipe).
-fn read_bounded(
-    mut pipe: impl Read,
-    limit: usize,
-    overflow: &AtomicBool,
-) -> std::io::Result<Vec<u8>> {
+fn read_bounded(pipe: impl Read, limit: usize, overflow: &AtomicBool) -> std::io::Result<Vec<u8>> {
     let mut buffer = Vec::new();
-    let mut chunk = [0_u8; 16 * 1024];
-    loop {
-        let read = match pipe.read(&mut chunk) {
-            Ok(read) => read,
-            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        if read == 0 {
-            return Ok(buffer);
-        }
-        if buffer.len().saturating_add(read) > limit {
-            overflow.store(true, Ordering::SeqCst);
-            return Ok(buffer);
-        }
-        buffer.extend_from_slice(&chunk[..read]);
+    let most = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    pipe.take(most).read_to_end(&mut buffer)?;
+    if buffer.len() > limit {
+        overflow.store(true, Ordering::SeqCst);
     }
+    Ok(buffer)
 }
 
 /// Keeps the first `cap` bytes and drains the rest so the child never blocks on stderr.
 fn read_capped(mut pipe: impl Read, cap: usize) -> std::io::Result<Vec<u8>> {
     let mut buffer = Vec::new();
-    let mut chunk = [0_u8; 8 * 1024];
-    loop {
-        let read = match pipe.read(&mut chunk) {
-            Ok(read) => read,
-            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        if read == 0 {
-            return Ok(buffer);
-        }
-        let room = cap.saturating_sub(buffer.len());
-        buffer.extend_from_slice(&chunk[..read.min(room)]);
-    }
+    (&mut pipe)
+        .take(u64::try_from(cap).unwrap_or(u64::MAX))
+        .read_to_end(&mut buffer)?;
+    std::io::copy(&mut pipe, &mut std::io::sink())?;
+    Ok(buffer)
 }
 
 /// [`size_on_disk`] of every path, added.
@@ -851,11 +829,7 @@ pub(crate) fn failure(label: &'static str, output: &Output) -> GitError {
     let raw = String::from_utf8_lossy(&output.stderr);
     let mut text = redact(raw.trim());
     if text.len() > STDERR_IN_ERROR {
-        let mut end = STDERR_IN_ERROR;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
+        text.truncate(text.floor_char_boundary(STDERR_IN_ERROR));
         text.push('…');
     }
     GitError::Failed {
