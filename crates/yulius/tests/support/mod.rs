@@ -216,7 +216,7 @@ impl GitHubPort for FakeGitHub {
             .cloned()
             .ok_or(AppError::Upstream("bad code".into()))?;
         Ok(GhUserToken {
-            access: Secret(format!("token-{}", user.login)),
+            access: Secret::new(format!("token-{}", user.login)),
             refresh: None,
             expires_at: None,
             refresh_expires_at: None,
@@ -300,10 +300,10 @@ impl GitHubPort for FakeGitHub {
         .then_some(1))
     }
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
-        Ok(Secret("inst".into()))
+        Ok(Secret::new("inst".into()))
     }
     async fn agent_token(&self, _: &GitHubAppConfig, _: u64, _: &str) -> AppResult<Secret> {
-        Ok(Secret("agent-inst".into()))
+        Ok(Secret::new("agent-inst".into()))
     }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
         Ok(self

@@ -723,7 +723,7 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     git_stdout(&lib, &["update-ref", &format!("refs/heads/{long}"), &main])?;
     let adapter =
         crate::support::confined_git().with_github_base(&w.scratch.path().join("remotes"));
-    let token = yulius_app::model::Secret("token-alice".into());
+    let token = yulius_app::model::Secret::new("token-alice".into());
     let out = w.scratch.path().join("out");
     std::fs::create_dir_all(&out)?;
     let (work, bundle) = (out.join("repo.git"), out.join("repo.bundle"));

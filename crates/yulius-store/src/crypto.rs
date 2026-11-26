@@ -390,11 +390,11 @@ mod tests {
     #[test]
     fn password_hash_verifies() -> Result<(), Box<dyn std::error::Error>> {
         let crypto = MasterKeyCrypto::from_key(&[1u8; 32])?;
-        let phc = crypto.hash_password(&Secret("correct horse".into()))?;
+        let phc = crypto.hash_password(&Secret::new("correct horse".into()))?;
         assert!(phc.starts_with("$argon2id$"));
-        assert!(crypto.verify_password(&Secret("correct horse".into()), &phc));
-        assert!(!crypto.verify_password(&Secret("wrong".into()), &phc));
-        assert!(!crypto.verify_password(&Secret("x".into()), "not a hash"));
+        assert!(crypto.verify_password(&Secret::new("correct horse".into()), &phc));
+        assert!(!crypto.verify_password(&Secret::new("wrong".into()), &phc));
+        assert!(!crypto.verify_password(&Secret::new("x".into()), "not a hash"));
         Ok(())
     }
 

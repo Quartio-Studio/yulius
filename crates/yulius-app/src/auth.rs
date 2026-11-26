@@ -111,8 +111,8 @@ impl AuthContext {
         self.scope() == Some(TokenScope::Read)
     }
 
-    /// Whether the caller's token, if any, allows `action`; a cookie session's always does. The
-    /// person's own access is checked apart.
+    /// Whether the caller's token, if any, allows `action`: a cookie session has no token and is
+    /// never narrowed. The person's own access is checked apart.
     #[must_use]
     pub fn token_allows(&self, action: Action) -> bool {
         self.scope().is_none_or(|scope| scope.allows(action))
@@ -249,7 +249,7 @@ impl App {
             return Ok(None);
         }
         store.set_setup_token_hash(&hash).await?;
-        Ok(Some(Secret(token)))
+        Ok(Some(Secret::new(token)))
     }
 
     /// Whether setup is still required.
@@ -383,7 +383,7 @@ impl App {
         self.deps.store.insert_web_session(&record).await?;
         let me = self.me(user, Some(csrf)).await?;
         Ok(NewSession {
-            cookie: Secret(cookie),
+            cookie: Secret::new(cookie),
             max_age_s: expires_at.millis_since(now).max(0) / 1000,
             me,
             recovery_code: None,
@@ -913,7 +913,7 @@ impl App {
             last_used_at: None,
             revoked_at: None,
         };
-        (Secret(token), record)
+        (Secret::new(token), record)
     }
 
     /// Requires the superadmin.
@@ -1015,7 +1015,8 @@ mod tests {
     #[test]
     fn a_new_password_needs_eight_code_points_after_matching() {
         let check = |p: &str, c: &str| {
-            validate_new_password(&Secret(p.into()), &Secret(c.into())).map_err(|e| e.to_string())
+            validate_new_password(&Secret::new(p.into()), &Secret::new(c.into()))
+                .map_err(|e| e.to_string())
         };
         assert!(check("zaq1@WSX", "zaq1@WSX").is_ok());
         assert!(check("zaq1@WS", "zaq1@WS").is_err_and(|e| e.contains("at least 8 characters")));

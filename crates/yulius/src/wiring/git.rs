@@ -1113,11 +1113,11 @@ mod tests {
     #[test]
     fn the_token_header_is_padded_standard_base64() {
         assert_eq!(
-            token_header(&Secret("?>~~".into())),
+            token_header(&Secret::new("?>~~".into())),
             "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Pz5+fg=="
         );
         assert_eq!(
-            token_header(&Secret("ab?>~~".into())),
+            token_header(&Secret::new("ab?>~~".into())),
             "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46YWI/Pn5+"
         );
     }

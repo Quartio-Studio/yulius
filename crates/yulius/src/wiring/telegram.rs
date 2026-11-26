@@ -548,9 +548,12 @@ mod tests {
     #[test]
     fn only_a_token_shape_connects() {
         let bots = TelegramBots::new(TELEGRAM_API.into(), 1);
-        assert!(bots.connect(&Secret(TOKEN.into())).is_ok());
+        assert!(bots.connect(&Secret::new(TOKEN.into())).is_ok());
         for bad in ["", "abc", ":abc", "12:", "12:a b", "x1:abc"] {
-            let err = bots.connect(&Secret(bad.into())).err().unwrap_or_default();
+            let err = bots
+                .connect(&Secret::new(bad.into()))
+                .err()
+                .unwrap_or_default();
             assert!(err.contains("not a Telegram bot token"), "{bad}: {err}");
         }
     }
@@ -558,7 +561,7 @@ mod tests {
     #[tokio::test]
     async fn the_bot_checks_sends_and_receives() -> TestResult {
         let (base, fake) = fake().await?;
-        let bot = TelegramBots::new(base, 1).connect(&Secret(TOKEN.into()))?;
+        let bot = TelegramBots::new(base, 1).connect(&Secret::new(TOKEN.into()))?;
         let me = bot.check().await.map_err(|e| e.as_str())?;
         assert_eq!(me.id, 1000);
         assert_eq!(me.username, "yulius_test_bot");
@@ -611,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn a_batch_over_the_bound_is_read_one_at_a_time_or_skipped() -> TestResult {
         let (base, fake) = fake().await?;
-        let bot = TelegramBots::new(base, 1).connect(&Secret(TOKEN.into()))?;
+        let bot = TelegramBots::new(base, 1).connect(&Secret::new(TOKEN.into()))?;
         let received = bot.receive(Some("100")).await.map_err(|e| e.as_str())?;
         assert_eq!(received.cursor.as_deref(), Some("101"));
         assert_eq!(received.messages.len(), 1);
@@ -630,10 +633,11 @@ mod tests {
     #[tokio::test]
     async fn a_refused_token_and_an_unreachable_api_are_typed_without_the_token() -> TestResult {
         let (base, _) = fake().await?;
-        let other = TelegramBots::new(base, 1).connect(&Secret("2000:another-token".into()))?;
+        let other =
+            TelegramBots::new(base, 1).connect(&Secret::new("2000:another-token".into()))?;
         assert_eq!(other.check().await, Err(ChannelError::Refused));
-        let gone =
-            TelegramBots::new("http://127.0.0.1:9".into(), 1).connect(&Secret(TOKEN.into()))?;
+        let gone = TelegramBots::new("http://127.0.0.1:9".into(), 1)
+            .connect(&Secret::new(TOKEN.into()))?;
         let err = gone.check().await.err().ok_or("an error")?;
         assert_eq!(err, ChannelError::Unavailable);
         assert!(!format!("{err:?} {}", err.as_str()).contains("synthetic"));
@@ -713,7 +717,7 @@ mod tests {
     #[tokio::test]
     async fn a_file_is_fetched_within_its_bound() -> TestResult {
         let (base, _fake) = fake().await?;
-        let bot = TelegramBots::new(base, 1).connect(&Secret(TOKEN.into()))?;
+        let bot = TelegramBots::new(base, 1).connect(&Secret::new(TOKEN.into()))?;
         let bytes = bot.fetch_file("p7", 1_000).await.map_err(|e| e.as_str())?;
         assert_eq!(bytes, vec![7_u8; 64]);
         assert_eq!(

@@ -174,7 +174,7 @@ fn gh(secret: &Secret) -> GhSecret {
 }
 
 fn app_secret(secret: &GhSecret) -> Secret {
-    Secret(secret.expose().to_owned())
+    Secret::new(secret.expose().to_owned())
 }
 
 fn repo(r: Repo) -> GhRepo {

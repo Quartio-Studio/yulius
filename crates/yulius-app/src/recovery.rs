@@ -55,9 +55,9 @@ impl App {
     /// Issues and stores a new recovery code (clears failures and the lock).
     pub(crate) async fn issue_recovery_code(&self) -> AppResult<Secret> {
         let code = self.new_recovery_code()?;
-        let hash = self.deps.crypto.hash_password(&Secret(code.clone()))?;
+        let hash = self.deps.crypto.hash_password(&Secret::new(code.clone()))?;
         self.deps.store.set_recovery_code(&hash).await?;
-        Ok(Secret(code))
+        Ok(Secret::new(code))
     }
 
     /// Whether recovery is possible.
@@ -119,7 +119,7 @@ impl App {
             || !self
                 .deps
                 .crypto
-                .verify_password(&Secret(given.to_owned()), &hash)
+                .verify_password(&Secret::new(given.to_owned()), &hash)
         {
             let (failures, locked) = self
                 .deps

@@ -311,7 +311,7 @@ async fn only_the_superadmin_manages_the_key() -> TestResult {
 /// key wins; removing it falls back to the file; one click moves the file's key into settings.
 #[tokio::test]
 async fn the_key_file_is_honoured_as_config_and_can_move_into_settings() -> TestResult {
-    let i = instance(Ok(Some(Secret(CONFIG.into())))).await?;
+    let i = instance(Ok(Some(Secret::new(CONFIG.into())))).await?;
     let view = api(&i, Method::GET, "/api/admin/jev", None, &i.admin).await?;
     assert_eq!(view.body["configured"], true);
     assert_eq!(view.body["source"], "config");

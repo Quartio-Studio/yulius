@@ -1649,7 +1649,7 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     let current_head_pr =
         f.h.github
             .create_pull(
-                &yulius_app::model::Secret("fixture-bob".into()),
+                &yulius_app::model::Secret::new("fixture-bob".into()),
                 "acme",
                 "app",
                 &NewPull {

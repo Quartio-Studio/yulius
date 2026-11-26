@@ -54,7 +54,7 @@ fn claude_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         yulius_exe: PathBuf::from("/opt/yulius/bin/yulius"),
         yulius_url: "http://127.0.0.1:7801/".into(),
         mcp_servers: servers(),
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         claude_memory_dir: None,
         disabled_plugins: Vec::new(),
     }
@@ -575,7 +575,7 @@ fn a_task_session_is_launched_with_the_reviewer_agents() -> TestResult {
         resume: None,
         continue_interrupted: false,
         model: None,
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         yulius: None,
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),
@@ -655,7 +655,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         resume: None,
         continue_interrupted: false,
         model: None,
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         yulius: None,
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),
@@ -779,7 +779,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
     );
     assert_eq!(
         plan_cockpit(&CockpitRequest {
-            credential: Credential::ClaudeOauthToken(Secret::new("a\nb".into())),
+            credential: Credential::ClaudeOauthToken(Secret::new("a\nb")),
             ..request
         }),
         Err(LaunchError::Invalid("credential"))
@@ -795,7 +795,7 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
         resume: Some(SESSION.into()),
         continue_interrupted: false,
         model: None,
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         yulius: None,
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),
@@ -848,10 +848,10 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
         resume: Some(SESSION.into()),
         continue_interrupted: false,
         model: None,
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081/".into(),
-            token: Secret::new("ck_SYNTHETIC".into()),
+            token: Secret::new("ck_SYNTHETIC"),
         }),
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),
@@ -906,7 +906,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
             plan_cockpit(&CockpitRequest {
                 yulius: Some(CockpitYulius {
                     url: url.into(),
-                    token: Secret::new(token.into()),
+                    token: Secret::new(token),
                 }),
                 ..request.clone()
             })
@@ -928,7 +928,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
         resume: None,
         continue_interrupted: false,
         model: None,
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         yulius: None,
         project_mcp_servers: vec![
             "supabase".into(),
@@ -975,10 +975,10 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
         resume: None,
         continue_interrupted: false,
         model: None,
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081".into(),
-            token: Secret::new("ck_SYNTHETIC".into()),
+            token: Secret::new("ck_SYNTHETIC"),
         }),
         project_mcp_servers: vec!["apify".into()],
         mcp_servers: servers(),
@@ -1115,10 +1115,10 @@ fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
         resume: None,
         continue_interrupted: false,
         model: None,
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081".into(),
-            token: Secret::new("gs_synthetic".into()),
+            token: Secret::new("gs_synthetic"),
         }),
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),
@@ -1240,7 +1240,7 @@ fn a_superagent_switches_off_the_plugins_it_is_given() -> TestResult {
         resume: None,
         continue_interrupted: false,
         model: None,
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         yulius: None,
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),
@@ -1266,7 +1266,7 @@ fn a_superagent_switches_off_the_plugins_it_is_given() -> TestResult {
     let global = CockpitRequest {
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081".into(),
-            token: Secret::new("gs_synthetic".into()),
+            token: Secret::new("gs_synthetic"),
         }),
         bypass_permissions: true,
         only_yulius: Some(vec!["projects_list".into()]),
@@ -1316,7 +1316,7 @@ fn codex_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         yulius_exe: PathBuf::from("/opt/yulius/bin/yulius"),
         yulius_url: "http://127.0.0.1:7801/".into(),
         mcp_servers: servers(),
-        credential: Credential::CodexAuthJson(Secret::new(CODEX_AUTH.as_bytes().to_vec())),
+        credential: Credential::CodexAuthJson(Secret::bytes(CODEX_AUTH.as_bytes().to_vec())),
         claude_memory_dir: None,
         disabled_plugins: Vec::new(),
     }
@@ -1596,7 +1596,8 @@ fn codex_ultrafast_follows_the_assigned_subscription() -> TestResult {
             ("empty header", empty_header.clone(), false),
             ("empty signature", empty_signature.clone(), false),
         ] {
-            request.credential = Credential::CodexAuthJson(Secret::new(serde_json::to_vec(&auth)?));
+            request.credential =
+                Credential::CodexAuthJson(Secret::bytes(serde_json::to_vec(&auth)?));
             let plan = plan_launch(&request)?;
             let config = std::str::from_utf8(&file(&plan, "config.toml")?.contents)?;
             let tiers: Vec<_> = config
@@ -1713,13 +1714,13 @@ fn codex_plans_refuse_a_missing_home_or_another_credential() {
     request.codex_home = None;
     assert_eq!(plan_launch(&request), Err(LaunchError::MissingCodexHome));
     let mut request = codex_request(mode.clone(), true);
-    request.credential = Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into()));
+    request.credential = Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN));
     assert_eq!(
         plan_launch(&request),
         Err(LaunchError::CredentialMismatch(Harness::Codex))
     );
     let mut request = claude_request(mode, true);
-    request.credential = Credential::CodexAuthJson(Secret::new(CODEX_AUTH.as_bytes().to_vec()));
+    request.credential = Credential::CodexAuthJson(Secret::bytes(CODEX_AUTH.as_bytes().to_vec()));
     assert_eq!(
         plan_launch(&request),
         Err(LaunchError::CredentialMismatch(Harness::ClaudeCode))
@@ -1731,7 +1732,7 @@ fn codex_plans_refuse_a_missing_home_or_another_credential() {
         },
         true,
     );
-    request.credential = Credential::CodexAuthJson(Secret::new(Vec::new()));
+    request.credential = Credential::CodexAuthJson(Secret::bytes(Vec::new()));
     assert_eq!(
         plan_launch(&request),
         Err(LaunchError::Invalid("credential"))
@@ -1759,7 +1760,7 @@ fn agy_request(mode: LaunchMode, contained: bool, credential: Vec<u8>) -> Launch
         yulius_exe: PathBuf::from("/opt/yulius/bin/yulius"),
         yulius_url: "http://127.0.0.1:7801/".into(),
         mcp_servers: servers(),
-        credential: Credential::Antigravity(Secret::new(credential)),
+        credential: Credential::Antigravity(Secret::bytes(credential)),
         claude_memory_dir: None,
         disabled_plugins: Vec::new(),
     }
@@ -1995,7 +1996,7 @@ fn antigravity_plans_refuse_what_they_cannot_run() -> TestResult {
         Err(LaunchError::MissingAntigravityHome)
     );
     let mut request = agy_request(mode.clone(), true, agy_api_key()?);
-    request.credential = Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into()));
+    request.credential = Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN));
     assert_eq!(
         plan_launch(&request),
         Err(LaunchError::CredentialMismatch(Harness::Antigravity))
@@ -2179,7 +2180,7 @@ fn a_claude_run_keeps_to_its_read_only_memory_folder() -> TestResult {
         resume: None,
         continue_interrupted: false,
         model: None,
-        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN)),
         yulius: None,
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),

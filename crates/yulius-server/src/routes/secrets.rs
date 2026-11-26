@@ -207,7 +207,7 @@ async fn reauth(
     Json(body): Json<ReauthPassword>,
 ) -> ApiResult<Json<ReauthStatus>> {
     Ok(Json(
-        app.reauth_with_password(&ctx, &Secret(body.password))
+        app.reauth_with_password(&ctx, &Secret::new(body.password))
             .await?,
     ))
 }

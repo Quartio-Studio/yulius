@@ -288,7 +288,7 @@ impl App {
             continue_interrupted: continue_interrupted && resume.is_some(),
             model: runtime.model.get().cloned(),
             credential,
-            yulius: Some((self.config.internal_url.clone(), Secret(bearer))),
+            yulius: Some((self.config.internal_url.clone(), Secret::new(bearer))),
             project_mcp_servers: Vec::new(),
             mcp: Vec::new(),
             contained: self.config.contained,

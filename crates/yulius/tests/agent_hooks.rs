@@ -5247,7 +5247,7 @@ async fn released_parked_check_reads_leave_the_next_two_reads_unblocked() -> Tes
     let github = support::FakeGitHub::default();
     let hold = github.hold_checks();
     github.release_checks(&hold);
-    let token = Secret("fixture".into());
+    let token = Secret::new("fixture".into());
     for sha in ["first", "second"] {
         tokio::time::timeout(
             std::time::Duration::from_secs(1),

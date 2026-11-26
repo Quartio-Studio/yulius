@@ -42,7 +42,7 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
         pull: true,
     };
     fake.set_permission("acme", "app", "boss", admin);
-    let admin = Secret(fake.issue_user_token("boss").expose().to_owned());
+    let admin = Secret::new(fake.issue_user_token("boss").expose().to_owned());
     let credentials = fake.app_credentials();
     let app = GitHubAppConfig {
         app_id: credentials.app_id,

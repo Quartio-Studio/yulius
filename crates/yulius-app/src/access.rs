@@ -138,12 +138,13 @@ impl App {
         if !expired {
             let bytes = self.deps.crypto.open(&record.access)?;
             return String::from_utf8(bytes)
-                .map(Secret)
+                .map(Secret::new)
                 .map_err(AppError::internal);
         }
         let refresh = record.refresh.as_ref().ok_or(AppError::Unauthenticated)?;
-        let refresh =
-            Secret(String::from_utf8(self.deps.crypto.open(refresh)?).map_err(AppError::internal)?);
+        let refresh = Secret::new(
+            String::from_utf8(self.deps.crypto.open(refresh)?).map_err(AppError::internal)?,
+        );
         let app = self.github_app().await?;
         let fresh = self
             .deps

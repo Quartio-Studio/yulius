@@ -1318,7 +1318,7 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
         push_pull(branch).await?;
         let other = yulius_app::ports::github::GitHubPort::create_pull(
             w.h.github.as_ref(),
-            &yulius_app::model::Secret("t".into()),
+            &yulius_app::model::Secret::new("t".into()),
             "Quartio-Studio",
             "shop",
             &yulius_app::ports::github::NewPull {
