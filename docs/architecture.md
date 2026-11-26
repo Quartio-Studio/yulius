@@ -352,8 +352,7 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
   view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`
-  supervises `dockerd`. The front splices each connection to the engine's own socket (for a
-  holder of SPEC-187, to that holder's own engine).
+  supervises `dockerd`. The front splices each connection to the engine's own socket.
 - **The engine's process.** `dockerd` is root of the sandbox's user namespace, in the sandbox's
   network, with a run's file view plus its storage (`sysroots/<sandbox>/docker`), a fresh sysfs
   and a cgroup namespace of its own. Its seccomp profile (the run profile plus the mount APIs,
@@ -369,8 +368,8 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
 - **Idle stop.** The engine stops after the idle time with no client and no container. Its
   `engine/` leaf is then empty, so where the sandboxes still live in `yulius.service` systemd
   prunes it when that unit stops (`KillMode=process` keeps the holder and front running). The
-  front makes it again before each start, and the upkeep tick does the same for a kept engine or
-  relay front (SPEC-201, #614). A front whose engine group is gone because the sandbox's groups
+  front makes it again before each start, and the upkeep tick does the same for a kept engine
+  front (SPEC-201, #614). A front whose engine group is gone because the sandbox's groups
   moved to the sessions unit is replaced, since the path it was started with leads nowhere
   (SPEC-458 LAY-005).
 - **Disk.** Its storage counts toward the quota, and so do the production holder's layer and
