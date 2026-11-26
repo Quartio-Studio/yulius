@@ -5827,6 +5827,39 @@ async fn deliver(f: &Fixture, n: u32, worktree: &Path, extra: Value) -> BoxResul
     Ok(support::tool_text(&result))
 }
 
+/// The merge queue's stop as the CI/CD page reads it (`null` while merges go on).
+async fn stop_view(f: &Fixture) -> BoxResult<Value> {
+    let r = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/ci",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    Ok(r.body["merge_stop"].clone())
+}
+
+/// The task numbers the stop's `waiting` lists.
+async fn waiting_tasks(f: &Fixture, numbers: &[&str]) -> BoxResult<(Value, Value)> {
+    let mut expected = Vec::new();
+    for id in numbers {
+        let number =
+            f.h.store
+                .task(&TaskId::parse(id)?)
+                .await?
+                .ok_or("task")?
+                .number;
+        expected.push(json!(number));
+    }
+    let listed = stop_view(f).await?["waiting"]
+        .as_array()
+        .map(|w| w.iter().map(|e| e["task"].clone()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    Ok((Value::Array(listed), Value::Array(expected)))
+}
+
 /// After the queue's state is read again (it is kept for 15 s).
 fn later(f: &Fixture) {
     f.h.clock.0.fetch_add(16_000, Ordering::SeqCst);
@@ -5835,7 +5868,7 @@ fn later(f: &Fixture) {
 /// SPEC-676 RGS-002, RGS-003, RGS-007: on a merge-first project, a red after-merge gate at the
 /// integration head holds a green, up-to-date armed pull request: it stays armed, told which
 /// failure holds it; a passing rerun of that revision lets it merge on the next pass by itself.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
@@ -5862,6 +5895,51 @@ async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
         !app.decidable_in(&sandbox).await,
         "a held merge decides nothing"
     );
+    // The CI/CD page shows the stop (RGS-010): the failure, its run, the merges it holds.
+    let overview = || async {
+        let r = call(
+            &f.h.router,
+            Method::GET,
+            "/api/sandboxes/s1/ci",
+            None,
+            &f.alice,
+        )
+        .await?;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        BoxResult::Ok(r.body["merge_stop"].clone())
+    };
+    let stop = overview().await?;
+    assert_eq!(stop["failures"][0]["test"], "tests::broken", "{stop}");
+    assert_eq!(stop["failures"][0]["revision"], red.as_str(), "{stop}");
+    assert_eq!(stop["run_id"], format!("ci-{}", &red[..12]), "{stop}");
+    let number = app
+        .deps
+        .store
+        .task(&TaskId::parse("t1")?)
+        .await?
+        .ok_or("t1")?
+        .number;
+    assert_eq!(
+        stop["waiting"],
+        json!([{"task": number, "pull_request": 1}]),
+        "{stop}"
+    );
+    // While a pass decides it, the held merge still waits (review of the page slice).
+    later(&f);
+    let (at, go) = support::hold_point(yulius_app::race::Point::FreeArmTaken, "t1");
+    let pass = {
+        let app = Arc::clone(&app);
+        let sandbox = f.sandbox.clone();
+        tokio::spawn(async move { app.merge_armed(&sandbox).await })
+    };
+    support::point_reached(at).await?;
+    assert_eq!(
+        overview().await?["waiting"],
+        json!([{"task": number, "pull_request": 1}]),
+        "under decision"
+    );
+    go.send(())?;
+    pass.await?;
     later(&f);
     app.merge_armed(&f.sandbox).await;
     assert!(f.merges().is_empty(), "still red");
@@ -5876,6 +5954,7 @@ async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
     .await?;
     later(&f);
     assert!(app.decidable_in(&sandbox).await, "green again");
+    assert_eq!(overview().await?, Value::Null, "nothing stopped");
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.merges(), ["merge_pull #1 squash"]);
     Ok(())
@@ -5921,6 +6000,9 @@ async fn only_the_repair_merges_while_the_gate_is_red() -> TestResult {
     // #3's merge made the red revision: its pull request is the repair Yulius attributes.
     let breaker = deliver(&f, 3, &worktrees[2], json!({})).await?;
     assert_eq!(breaker["armed"], true, "behind after #2: {breaker}");
+    // The page lists #1 as waiting, not the breaker's merge (RGS-010).
+    let (listed, expected) = waiting_tasks(&f, &["t1"]).await?;
+    assert_eq!(listed, expected);
     f.decide_until(&app, || async {
         app.ci_sync_sandbox(&sandbox).await?;
         f.settle(&app).await?;
@@ -6103,6 +6185,10 @@ async fn a_repair_marked_on_an_armed_head_survives_a_restart_and_merges_on_a_can
         assert_eq!(entry(&after, task), Some((was, json!(true))), "{after:?}");
     }
     assert_eq!(entry(&after, "t3").map(|(_, r)| r), Some(Value::Null));
+    // The page lists only #3 as waiting: the marked repairs go through (RGS-010).
+    later(&f);
+    let (listed, expected) = waiting_tasks(&f, &["t3"]).await?;
+    assert_eq!(listed, expected);
     let app = restart(&app).await;
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     f.decide_until(&app, || async {

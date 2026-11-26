@@ -2435,6 +2435,7 @@ impl App {
             });
         Ok(CiOverview {
             gate_notices: self.project_gate_notices(&sandbox).await?,
+            merge_stop: self.merge_stop_view(&sandbox).await?,
             gate: view.gate.as_ref().map(gate_view),
             gate_problem: view.problem,
             gate_fallback: view.fallback,

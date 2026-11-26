@@ -87,7 +87,7 @@ impl App {
                 return None;
             }
         };
-        // The newest red run is the one to read and run again.
+        // A red run to read and run again: the last one listed.
         let run = red.last()?.run_id.clone();
         let quarantined = self.quarantined_names(sandbox).await;
         let names: Vec<&str> = quarantined.iter().map(String::as_str).collect();
@@ -100,6 +100,60 @@ impl App {
             })
             .collect();
         MergeStop::of(failures, &names, &run)
+    }
+
+    /// The stop as the CI/CD page shows it (SPEC-676 RGS-010): the failures, the run, and the
+    /// armed merges it holds.
+    pub(crate) async fn merge_stop_view(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> crate::error::AppResult<Option<yulius_contracts::api::ci::MergeStop>> {
+        use yulius_contracts::api::ci::{MergeStopFailure, MergeStopWaiting};
+        let Some(stop) = self.merge_stop(sandbox).await else {
+            return Ok(None);
+        };
+        let mut waiting = Vec::new();
+        for task in self.deps.store.tasks(&sandbox.id, false).await? {
+            // A task without a runtime has no armed merge (a restored one has its runtime).
+            if self.existing_runtime(&task.id).is_none() {
+                continue;
+            }
+            let Some(armed) = self.armed_or_deciding(&task.id) else {
+                continue;
+            };
+            if stop.lets_through(task.number, armed.repair) {
+                continue;
+            }
+            let pull_request = self
+                .deps
+                .store
+                .delivery(&task.id)
+                .await?
+                .and_then(|record| record.pr_number);
+            waiting.push((
+                (armed.armed_at, task.number),
+                MergeStopWaiting {
+                    task: task.number,
+                    pull_request,
+                },
+            ));
+        }
+        // In the order they were armed, as the merge queue lists them.
+        waiting.sort_by_key(|(order, _)| *order);
+        let waiting = waiting.into_iter().map(|(_, w)| w).collect();
+        Ok(Some(yulius_contracts::api::ci::MergeStop {
+            failures: stop
+                .failures
+                .into_iter()
+                .map(|f| MergeStopFailure {
+                    test: f.test,
+                    revision: f.revision,
+                    merge_task: f.merge_task,
+                })
+                .collect(),
+            run_id: stop.run,
+            waiting,
+        }))
     }
 
     /// The project's quarantined flaky tests by name (ADR-0356); none when unreadable.

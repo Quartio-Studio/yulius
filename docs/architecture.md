@@ -408,7 +408,8 @@ quarantined test. The state is read at most every 15 s per project. While it is 
 - the repair assignment prefers the task whose merge brought the failure in.
 
 A repair is marked with `delivery_merge`'s `repairs_gate`, or its task's merge brought an open
-failure in. The next pass after a green verdict merges as before.
+failure in. The next pass after a green verdict merges as before. The CI tab of the CI/CD page
+shows the stop (`CiOverview.merge_stop`): its failures, its run and the merges it holds.
 
 The GitHub adapter
 keeps GitHub's availability apart from task state: during an outage, task displays use the recorded

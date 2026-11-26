@@ -137,6 +137,9 @@ pub(crate) struct ArmedSlot {
     note: Option<QueueNote>,
     /// The sentence the decision in progress wrote, kept by [`Self::finish`] for its generation.
     pending_note: Option<QueueNote>,
+    /// The merge the decision in progress took, as it was taken: read while it is decided (the
+    /// stopped queue's waiting list, SPEC-676).
+    under_decision: Option<ArmedMerge>,
 }
 
 /// A decision in progress: the merge taken out of the slot, and the generation it was armed in.
@@ -169,6 +172,7 @@ impl ArmedSlot {
     /// Nothing is armed any more (merged at once by `delivery_merge`); a decision in progress is
     /// superseded.
     fn clear(&mut self) {
+        self.under_decision = None;
         self.generation += 1;
         self.retirement_pending = None;
         self.merge = None;
@@ -181,6 +185,7 @@ impl ArmedSlot {
             return None;
         }
         let merge = self.merge.take()?;
+        self.under_decision = Some(merge.clone());
         self.deciding += 1;
         self.decisions_started += 1;
         Some(Deciding {
@@ -193,6 +198,9 @@ impl ArmedSlot {
     /// merge was armed (or cleared) meanwhile. Returns whether the armed merge changed (to save).
     fn finish(&mut self, deciding: &Deciding, verdict: Verdict) -> bool {
         self.deciding = self.deciding.saturating_sub(1);
+        if self.deciding == 0 {
+            self.under_decision = None;
+        }
         let note = self.pending_note.take();
         if self.generation != deciding.generation {
             return false;
@@ -932,6 +940,13 @@ impl App {
         let runtime = self.runtime(task);
         let slot = lock_slot(&runtime);
         (slot.merge.clone(), slot.deciding > 0)
+    }
+
+    /// `task`'s armed merge, also while a pass decides it (SPEC-676).
+    pub(crate) fn armed_or_deciding(&self, task: &TaskId) -> Option<ArmedMerge> {
+        let runtime = self.runtime(task);
+        let slot = lock_slot(&runtime);
+        slot.merge.clone().or_else(|| slot.under_decision.clone())
     }
 
     /// How `task`'s last armed merge ended, with who armed it (SPEC-487 MRG-001).

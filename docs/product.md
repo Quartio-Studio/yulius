@@ -137,7 +137,8 @@ The team brings its own Claude, Codex (OpenAI) and Antigravity (Google) subscrip
   merge-first staging, a red after-merge gate stops the queue until the integration branch is
   green again. Armed merges wait in their places, and only the repair merges: one marked with
   `repairs_gate`, or one from the task whose merge broke the gate. A quarantined flaky test stops
-  nothing, and `[merge_queue] stop_on_red_gate = false` turns the stop off (SPEC-676).
+  nothing, and `[merge_queue] stop_on_red_gate = false` turns the stop off (SPEC-676). The CI tab
+  shows the stop: which failures hold it, which merges wait, and the run to read or rerun.
   [Delivery and the merge queue](architecture.md#delivery-and-the-merge-queue)
 - **Pull request notices.** Yulius types what happens to a task's open pull request into its
   session with the next step: a red run (failing jobs and tests), a conflict, a dropped or refused

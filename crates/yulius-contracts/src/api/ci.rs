@@ -130,12 +130,51 @@ pub struct GateNotice {
     pub test: String,
 }
 
+/// A failure of the integration branch's after-merge gate that stops the merge queue
+/// (SPEC-676).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeStopFailure {
+    /// Failed test, or job when its test names are unavailable.
+    pub test: String,
+    /// Revision that first showed it.
+    pub revision: String,
+    /// Number of the task whose merge first showed it, once Yulius names one.
+    #[serde(default)]
+    pub merge_task: Option<u32>,
+}
+
+/// An armed merge the stopped queue holds (SPEC-676).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeStopWaiting {
+    /// The task's number.
+    pub task: u32,
+    /// Its pull request.
+    #[serde(default)]
+    pub pull_request: Option<u64>,
+}
+
+/// The merge queue stopped by a red after-merge gate (SPEC-676 RGS-010): only the repair merges
+/// until the integration branch's gate is green again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeStop {
+    /// The failures that stop it.
+    pub failures: Vec<MergeStopFailure>,
+    /// The red run to read and run again.
+    pub run_id: String,
+    /// The armed merges it holds, in the order they were armed.
+    #[serde(default)]
+    pub waiting: Vec<MergeStopWaiting>,
+}
+
 /// `GET /api/sandboxes/{sid}/ci`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CiOverview {
     /// Open integration failures for the project’s people.
     #[serde(default)]
     pub gate_notices: Vec<GateNotice>,
+    /// The merge queue stopped by a red after-merge gate, while it is (SPEC-676).
+    #[serde(default)]
+    pub merge_stop: Option<MergeStop>,
     /// The gate in force, if any.
     pub gate: Option<CiGate>,
     /// Why the integration branch's own configuration is not in force (for example an invalid

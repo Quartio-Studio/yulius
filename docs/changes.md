@@ -6,6 +6,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-26
 
+- The CI tab of the CI/CD page shows when a red after-merge gate stops merges: which failures hold them, which merges wait, and the run to read or rerun.
 - Beside merge-first staging, a red after-merge gate stops the merge queue until the integration branch is green again. Armed merges wait in their places, told which failure holds them. Only the repair merges, marked with `delivery_merge`'s `repairs_gate`, or the task whose merge broke the gate. Quarantined flaky tests stop nothing, and `[merge_queue] stop_on_red_gate = false` turns it off.
 - Disabling a person stops their tasks, and a task's agent gets no GitHub credential once its owner is disabled or lost write access; a task's owner down to read access can no longer answer its handoffs.
 - The README says who Yulius is for, what leaves the server (Vidoc and Jev off without a key; Vidoc on for every project once a key is saved) and what is not supported.
