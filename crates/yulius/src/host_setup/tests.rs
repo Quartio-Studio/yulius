@@ -8,7 +8,7 @@ use yulius_sandbox::docker_status::{ENGINE_MODULES, MODULES_FILE, modules_file_c
 
 use super::{
     Cmd, DOCKER_CE, DOCKER_SOURCE, HELPER_DROP_IN, Host, Mode, NEEDRESTART_RULE_FILE, Options, Out,
-    Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, lacks_namespaces, passed, summary,
+    Run, STOPGAP, UNIT_DROP_IN, UNIT_FILE, free_sub_range, lacks_namespaces, passed, summary,
 };
 
 mod session_units;
@@ -75,6 +75,12 @@ struct Fake {
     /// Commands that fail, by the first words of their line: the exit code (`None`: it cannot
     /// be started) and what they say.
     failing: Vec<(&'static str, Option<i32>, &'static str)>,
+    /// Paths with the immutable flag (SPEC-652 MEM-009).
+    immutable: BTreeSet<PathBuf>,
+    /// The path whose immutable flag cannot be cleared (no `CAP_LINUX_IMMUTABLE`).
+    immutable_stuck: Option<PathBuf>,
+    /// The stopgap walk stops at its bound.
+    stopgap_cut: bool,
 }
 
 /// A loaded AppArmor profile, as far as bwrap's start depends on it.
@@ -140,6 +146,9 @@ impl Fake {
             profiles: BTreeMap::new(),
             parser_fails: false,
             failing: Vec::new(),
+            immutable: BTreeSet::new(),
+            immutable_stuck: None,
+            stopgap_cut: false,
         };
         fake.files
             .insert(PathBuf::from(EXE), (String::new(), 0, 0o100_755));
@@ -320,6 +329,38 @@ impl Fake {
 }
 
 impl Host for Fake {
+    fn memory_stopgap(&mut self, _data_dir: &Path, clear: bool) -> super::StopgapScan {
+        let mut scan = super::StopgapScan {
+            cut: self.stopgap_cut,
+            ..super::StopgapScan::default()
+        };
+        let flagged: Vec<PathBuf> = self
+            .immutable
+            .iter()
+            .filter(|p| p.to_string_lossy().contains("/home/.claude/projects/"))
+            .cloned()
+            .collect();
+        scan.flagged = flagged.len();
+        scan.folders = flagged
+            .iter()
+            .filter(|p| p.file_name().is_some_and(|n| n == "memory"))
+            .count();
+        if clear {
+            for path in flagged {
+                if self.immutable_stuck.as_ref() == Some(&path) {
+                    scan.failed += 1;
+                    scan.first_failure.get_or_insert_with(|| {
+                        format!("{}: Operation not permitted", path.display())
+                    });
+                } else {
+                    self.immutable.remove(&path);
+                    scan.cleared += 1;
+                }
+            }
+        }
+        scan
+    }
+
     fn read(&self, path: &Path) -> Option<String> {
         if path == Path::new("/proc/modules") {
             return Some(
@@ -1895,4 +1936,62 @@ fn the_needrestart_rule_matches_the_name_literally() {
     );
     let rule = super::needrestart_rule("a+b(c)$x|y*.service");
     assert!(rule.contains(r"qr(^a\+b\(c\)\$x\|y\*\.service$)"), "{rule}");
+}
+
+/// SPEC-652 MEM-009: the stopgap's immutable flag on the memory folders of sandboxes' and people's
+/// homes is cleared (folder and files), in a setup and in the update's re-check, said as one
+/// change; a dry run says it would; a host without one, or done, is left alone; a flag that
+/// cannot be cleared fails the line after the others are cleared; a walk cut at its bound is
+/// never "ok". Through the whole check, as the update helper runs it.
+#[test]
+fn the_stopgaps_immutable_memory_folders_are_cleared() {
+    let memories = [
+        "/var/lib/yulius/sandboxes/s1/home/.claude/projects/-k/memory",
+        "/var/lib/yulius/users/u1/home/.claude/projects/-r/memory",
+    ];
+    let seeded = || {
+        let mut fake = Fake::set_up();
+        for dir in memories {
+            fake.immutable.insert(PathBuf::from(dir));
+            fake.immutable
+                .insert(PathBuf::from(format!("{dir}/MEMORY.md")));
+        }
+        fake
+    };
+    let mut fake = seeded();
+    let lines = run(&mut fake, Mode::DryRun);
+    assert_eq!(outcome(&lines, STOPGAP), HostOutcome::Changed);
+    assert!(
+        line(&lines, STOPGAP).detail.starts_with("would "),
+        "{lines:?}"
+    );
+    assert_eq!(fake.immutable.len(), 4, "a dry run changes nothing");
+    for mode in [Mode::Check, Mode::Setup] {
+        let mut fake = seeded();
+        let lines = run(&mut fake, mode);
+        assert_eq!(outcome(&lines, STOPGAP), HostOutcome::Changed, "{lines:?}");
+        assert!(
+            line(&lines, STOPGAP)
+                .detail
+                .contains("4 paths in 2 memory folders"),
+            "{lines:?}"
+        );
+        assert!(fake.immutable.is_empty());
+        let again = run(&mut fake, mode);
+        assert_eq!(outcome(&again, STOPGAP), HostOutcome::Ok, "{again:?}");
+    }
+    let mut stuck = seeded();
+    stuck.immutable_stuck = Some(PathBuf::from(format!("{}/MEMORY.md", memories[0])));
+    let lines = run(&mut stuck, Mode::Check);
+    assert_eq!(outcome(&lines, STOPGAP), HostOutcome::Failed, "{lines:?}");
+    let detail = &line(&lines, STOPGAP).detail;
+    assert!(
+        detail.contains("Operation not permitted") && detail.contains("1 of 4"),
+        "{detail}"
+    );
+    assert_eq!(stuck.immutable.len(), 1, "the others are cleared");
+    let mut cut = seeded();
+    cut.stopgap_cut = true;
+    let lines = run(&mut cut, Mode::Check);
+    assert_eq!(outcome(&lines, STOPGAP), HostOutcome::Failed, "{lines:?}");
 }

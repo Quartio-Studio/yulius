@@ -1,111 +1,31 @@
-//! Codex as a second harness with real processes (SPEC-503): supervisor → detached
+//! Codex as a second harness with real processes: supervisor → detached
 //! `yulius ptyhost` → fake agent writing a Codex CLI 0.169 shaped rollout. A Codex task runs on a
 //! Codex account in its own Codex home, its rollout is found and watched, its usage reaches its
 //! account, it moves to another Codex account at a usage limit by a native resume, a restart
 //! reattaches it, and the credentials Codex refreshed are kept. No test calls OpenAI.
 
+use crate::support::codex::{
+    add_codex_account, codex_auth, connect_codex, new_codex_task, new_codex_task_in,
+};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::supervision::{
-    build_full, runtime, screen_contains, seed_records, seed_repo, task, wait_for,
-};
 use crate::support;
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::supervision::{
+    build_full, runtime, screen_contains, seed_records, seed_repo, task,
+};
+use crate::support::{TestResult, eventually};
 use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{AccountRecord, AccountStatus, LaunchKind, TaskMode, TaskOrigin};
-use yulius_domain::harness::{Harness, Provider};
+use yulius_app::model::{AccountStatus, LaunchKind, TaskMode, TaskOrigin};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
-
-/// A synthetic Codex `auth.json` refreshed at `last_refresh`.
-fn codex_auth(last_refresh: &str) -> String {
-    format!(
-        r#"{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{{"id_token":"h.e30.s","access_token":"SYNTHETIC-access-{last_refresh}","refresh_token":"SYNTHETIC-refresh","account_id":"acc-synthetic"}},"last_refresh":"{last_refresh}"}}"#
-    )
-}
-
-/// Connects a synthetic Codex sign-in for tests that create Codex tasks through other interfaces.
-pub(super) async fn connect_codex(app: &App) -> TestResult {
-    add_codex_account(app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
-    Ok(())
-}
-
-pub(super) async fn add_codex_account(
-    app: &App,
-    id: &str,
-    auth: &str,
-) -> Result<AccountId, Box<dyn std::error::Error>> {
-    let account = AccountId::parse(id)?;
-    app.deps
-        .store
-        .insert_account(&AccountRecord {
-            id: account.clone(),
-            provider: Provider::OpenAi,
-            label: format!("Codex {id}"),
-            credential: Some(app.deps.crypto.seal(auth.as_bytes())?),
-            status: AccountStatus::Ok,
-            usage_json: None,
-            last_error: None,
-            created_at: Timestamp(1),
-            updated_at: Timestamp(1),
-            email: None,
-            email_checked_at: None,
-            email_typed: false,
-        })
-        .await?;
-    Ok(account)
-}
-
-pub(super) async fn new_codex_task(
-    app: &Arc<App>,
-    sandbox: &SandboxId,
-    user: &UserId,
-    title: &str,
-) -> Result<TaskId, Box<dyn std::error::Error>> {
-    new_codex_task_in(
-        app,
-        sandbox,
-        user,
-        title,
-        yulius_app::model::TaskMode::Prompt,
-    )
-    .await
-}
-
-async fn new_codex_task_in(
-    app: &Arc<App>,
-    sandbox: &SandboxId,
-    user: &UserId,
-    title: &str,
-    mode: yulius_app::model::TaskMode,
-) -> Result<TaskId, Box<dyn std::error::Error>> {
-    let record = app
-        .create_task_internal(NewTask {
-            sandbox: sandbox.clone(),
-            created_by: user.clone(),
-            prompt: format!("{title}: answer with an echo"),
-            harness: Harness::Codex,
-            title: Some(title.into()),
-            workflow_id: None,
-            steps: Vec::new(),
-            model: None,
-            effort: None,
-            origin: TaskOrigin::Ui,
-            automation_run: None,
-            start: true,
-            mode,
-            supertask: false,
-        })
-        .await?;
-    Ok(record.id)
-}
 
 async fn stored_credential(
     app: &App,
@@ -172,7 +92,7 @@ async fn restart_fixture_in(
     seed_repo(data, &sandbox)?;
     connect_codex(&app).await?;
     let id = new_codex_task_in(&app, &sandbox, &user, "Original request", mode).await?;
-    wait_for(
+    eventually(
         "the original Codex conversation",
         Duration::from_secs(30),
         || async {
@@ -235,7 +155,7 @@ fn a_codex_restart_checks_the_harness_and_history_of_legacy_records() -> TestRes
     })
 }
 
-/// SPEC-629 RBL-003: an idle Codex goal task on a subscription past the rebalance threshold
+/// An idle Codex goal task on a subscription past the rebalance threshold
 /// moves at the next pass to one with room, in the same conversation with nothing typed, and
 /// keeps its Done.
 #[test]
@@ -329,7 +249,7 @@ fn moving_a_finished_codex_goal_task_preserves_its_idle_activity() -> TestResult
             assert_eq!(listed.working_since, None);
         }
         app.close_task_for_person(&ctx, id.as_str()).await?;
-        wait_for(
+        eventually(
             "the moved task to close",
             Duration::from_secs(30),
             || async {
@@ -383,7 +303,7 @@ fn codex_turn_overtakes_idle_move(point: yulius_app::race::Point) -> TestResult 
         support::point_reached(reached).await?;
         app.send_input(&id, b"/work 60000 New turn during switch\r")
             .await?;
-        wait_for("the new Codex turn", Duration::from_secs(30), || async {
+        eventually("the new Codex turn", Duration::from_secs(30), || async {
             screen_contains(&app, &id, "WORKING").await
                 && task(&app, &id)
                     .await
@@ -442,7 +362,7 @@ fn continuing_a_stopped_codex_task_submits_one_turn_when_its_slot_opens() -> Tes
         let ctx = admin_ctx(&app, &user).await?;
         app.send_input(&id, b"/work 60000 Unfinished turn\r")
             .await?;
-        wait_for("the turn being stopped", Duration::from_secs(30), || {
+        eventually("the turn being stopped", Duration::from_secs(30), || {
             screen_contains(&app, &id, "WORKING")
         })
         .await?;
@@ -453,7 +373,7 @@ fn continuing_a_stopped_codex_task_submits_one_turn_when_its_slot_opens() -> Tes
             [id.as_str()],
         )?;
         let blocker = new_codex_task(&app, &sandbox, &user, "Occupy the slot").await?;
-        wait_for("the occupied slot", Duration::from_secs(30), || {
+        eventually("the occupied slot", Duration::from_secs(30), || {
             screen_contains(&app, &blocker, "ECHO: Occupy the slot")
         })
         .await?;
@@ -469,7 +389,7 @@ fn continuing_a_stopped_codex_task_submits_one_turn_when_its_slot_opens() -> Tes
             .ok_or("queued restart")?;
         let prompt = kept.prompt.ok_or("Continue queued an empty Codex resume")?;
         support::stop_tasks(&app, &[&blocker]).await?;
-        wait_for("the resumed Codex answer", Duration::from_secs(30), || {
+        eventually("the resumed Codex answer", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: Continue")
         })
         .await?;
@@ -521,7 +441,7 @@ fn reopening_a_closed_codex_conversation_reports_waiting_until_input() -> TestRe
             .ok_or("reopened run")?;
         assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
         app.send_input(&id, b"/work 60000 Next turn\r").await?;
-        wait_for("the new turn", Duration::from_secs(30), || async {
+        eventually("the new turn", Duration::from_secs(30), || async {
             screen_contains(&app, &id, "WORKING").await
                 && task(&app, &id)
                     .await
@@ -529,7 +449,7 @@ fn reopening_a_closed_codex_conversation_reports_waiting_until_input() -> TestRe
         })
         .await?;
         app.send_input(&id, &[3]).await?;
-        wait_for("the interrupted turn", Duration::from_secs(30), || async {
+        eventually("the interrupted turn", Duration::from_secs(30), || async {
             screen_contains(&app, &id, "INTERRUPTED").await
                 && task(&app, &id)
                     .await
@@ -552,7 +472,7 @@ fn continuing_a_codex_task_stopped_before_launch_delivers_its_original_request()
         let ctx = admin_ctx(&app, &user).await?;
         app.continue_task(&ctx, id.as_str(), &Default::default())
             .await?;
-        wait_for("the full original request", Duration::from_secs(30), || {
+        eventually("the full original request", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: Never launched: answer with an echo")
         })
         .await?;
@@ -691,7 +611,7 @@ fn restart_before_rollout(restart: CapacityRestart, request: QueuedRequest) -> T
         std::fs::remove_file(&sessions)?;
         std::fs::rename(moved_sessions, &sessions)?;
         let blocker = new_codex_task(&app, &sandbox, &user, "Occupy the slot").await?;
-        wait_for("the occupied slot", Duration::from_secs(30), || {
+        eventually("the occupied slot", Duration::from_secs(30), || {
             screen_contains(&app, &blocker, "ECHO: Occupy the slot")
         })
         .await?;
@@ -761,7 +681,7 @@ fn restart_before_rollout(restart: CapacityRestart, request: QueuedRequest) -> T
             )
             .await?;
         support::stop_tasks(&app, &[&blocker]).await?;
-        wait_for(
+        eventually(
             "the admitted restart waiting for capacity",
             Duration::from_secs(30),
             || async {
@@ -909,7 +829,7 @@ fn restart_before_rollout(restart: CapacityRestart, request: QueuedRequest) -> T
         if kind == LaunchKind::Resume {
             assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
         }
-        wait_for("the saved launch prompt", Duration::from_secs(30), || {
+        eventually("the saved launch prompt", Duration::from_secs(30), || {
             screen_contains(&app, &id, expected)
         })
         .await?;
@@ -934,7 +854,7 @@ fn retrying_a_failed_codex_restart_resumes_the_same_conversation() -> TestResult
         assert!(matches!(task(&app, &id).await?.status, TaskStatus::Failed(_)));
         db.execute_batch("DROP TRIGGER reject_launch")?;
         app.continue_task(&ctx, id.as_str(), &Default::default()).await?;
-        wait_for("the retried continuation", Duration::from_secs(30), || {
+        eventually("the retried continuation", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: Continue")
         }).await?;
         let run = app.deps.store.live_attempt(&id).await?.ok_or("retried run")?;
@@ -975,7 +895,7 @@ fn moving_idle_working_and_held_codex_turns_selects_their_own_prompts() -> TestR
         let reopened = move_to(&alternate).await?;
         assert!(reopened.contains("prompt: None"), "{reopened}");
         app.send_input(&id, b"/work 60000 Active turn\r").await?;
-        wait_for("the active Codex turn", Duration::from_secs(30), || async {
+        eventually("the active Codex turn", Duration::from_secs(30), || async {
             screen_contains(&app, &id, "WORKING").await
                 && task(&app, &id)
                     .await
@@ -1067,7 +987,7 @@ fn a_manual_move_of_a_live_held_goal_keeps_its_turn_and_spends_one_attempt() -> 
             Some(session.as_str())
         );
         let launch = Path::new(&replacement.run_dir).join("fake-launch.txt");
-        wait_for("the moved held goal", Duration::from_secs(30), || async {
+        eventually("the moved held goal", Duration::from_secs(30), || async {
             std::fs::read_to_string(&launch).is_ok_and(|text| {
                 text.contains("Continue the authorized goal.") && text.contains("needs a spec")
             })
@@ -1117,7 +1037,7 @@ fn process_free_capacity_retries_the_original_opening_and_resumes_a_later_prompt
             } else {
                 held
             };
-            wait_for("the resumed prompt", Duration::from_secs(30), || {
+            eventually("the resumed prompt", Duration::from_secs(30), || {
                 screen_contains(&app, &id, expected)
             })
             .await?;
@@ -1166,7 +1086,7 @@ fn move_waiting_restart(queue: bool) -> TestResult {
             add_codex_account(&app, "replacement", &codex_auth("2026-11-01T10:00:00Z")).await?;
         let blocker = if queue {
             let blocker = new_codex_task(&app, &sandbox, &user, "Occupy the slot").await?;
-            wait_for("the occupied slot", Duration::from_secs(30), || {
+            eventually("the occupied slot", Duration::from_secs(30), || {
                 screen_contains(&app, &blocker, "ECHO: Occupy the slot")
             })
             .await?;
@@ -1203,7 +1123,7 @@ fn move_waiting_restart(queue: bool) -> TestResult {
             assert_eq!(queued.account_id.as_ref(), Some(&replacement));
             assert!(queued.prompt.is_some());
             support::stop_tasks(&app, &[blocker]).await?;
-            wait_for("the queued move", Duration::from_secs(30), || {
+            eventually("the queued move", Duration::from_secs(30), || {
                 screen_contains(&app, &id, "ECHO: Continue")
             })
             .await?;
@@ -1226,7 +1146,7 @@ fn move_waiting_restart(queue: bool) -> TestResult {
             launch.contains("prompt: Some("),
             "move dropped the capacity continuation"
         );
-        wait_for("the moved continuation", Duration::from_secs(30), || {
+        eventually("the moved continuation", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: Continue")
         })
         .await?;
@@ -1322,7 +1242,7 @@ fn stop_during_capacity_restart(continue_again: bool) -> TestResult {
         if continue_again {
             assert_eq!(current.status, TaskStatus::WaitingCapacity);
             let _ = app.resume_round().await;
-            wait_for(
+            eventually(
                 "the newly requested continuation",
                 Duration::from_secs(30),
                 || screen_contains(&app, &id, "ECHO: Continue"),
@@ -1422,7 +1342,7 @@ fn a_failed_fresh_codex_spawn_can_retry_its_original_request() -> TestResult {
         let failing = App::new(
             app.config.clone(),
             yulius_app::context::Deps {
-                session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+                session_host: Arc::new(crate::support::pending::UnavailableSessionHost),
                 ..app.deps.clone()
             },
         );
@@ -1444,7 +1364,7 @@ fn a_failed_fresh_codex_spawn_can_retry_its_original_request() -> TestResult {
         assert_eq!(failed.exit_reason.as_deref(), Some("spawn_failed"));
         app.continue_task(&ctx, id.as_str(), &Default::default())
             .await?;
-        wait_for(
+        eventually(
             "the retried original request",
             Duration::from_secs(30),
             || screen_contains(&app, &id, "ECHO: Original request: answer with an echo"),
@@ -1550,7 +1470,7 @@ fn a_stopped_codex_task_with_only_stale_lineage_cannot_resume_the_wrong_session(
         }
         // A different task already owns the attempt's recorded ID. Repair may not claim it.
         let other = new_codex_task(&app, &sandbox, &user, "Another conversation").await?;
-        wait_for("the other rollout", Duration::from_secs(30), || async {
+        eventually("the other rollout", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .provider_sessions(&other)
@@ -1593,7 +1513,7 @@ fn a_stopped_codex_task_with_only_stale_lineage_cannot_resume_the_wrong_session(
     })
 }
 
-/// SPEC-503 CDX-002, CDX-003, CDX-004, CDX-006, AC-503-1/3/5: a Codex task runs Codex on a Codex
+/// A Codex task runs Codex on a Codex
 /// account (never the Claude one) in `<sandbox>/codex/<account>`, whose `auth.json`, `config.toml`
 /// and `hooks.json` are private and whose `sessions` is the sandbox's; its session is learnt from
 /// the rollout; its turns, usage and rate limits are read; a restart reattaches the same process
@@ -1616,7 +1536,7 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
             add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex echo").await?;
-        wait_for("the fake agent banner", Duration::from_secs(30), || {
+        eventually("the fake agent banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1664,13 +1584,13 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
         );
 
         app.send_input(&id, b"hello codex\r").await?;
-        wait_for("the echo", Duration::from_secs(10), || {
+        eventually("the echo", Duration::from_secs(10), || {
             screen_contains(&app, &id, "ECHO: hello codex")
         })
         .await?;
         // The rollout is in the sandbox's shared sessions, found by the id Codex gave it.
         let session = attempt.id.as_str().to_owned();
-        wait_for(
+        eventually(
             "the session learnt from the rollout",
             Duration::from_secs(30),
             || async {
@@ -1687,7 +1607,7 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
         )
         .await?;
         // The lineage records it in the same watch round, right after the attempt.
-        wait_for(
+        eventually(
             "the session in the lineage",
             Duration::from_secs(10),
             || async {
@@ -1708,11 +1628,11 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
                 .is_file()
         );
         // Its usage and the account's rate limits come from the rollout.
-        wait_for("the run's tokens", Duration::from_secs(30), || async {
+        eventually("the run's tokens", Duration::from_secs(30), || async {
             saved_output(&data, attempt.id.as_str()).is_some_and(|n| n > 0)
         })
         .await?;
-        wait_for("the account's window", Duration::from_secs(30), || async {
+        eventually("the account's window", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .account(&account)
@@ -1750,7 +1670,7 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
             "the sweep removed the live run's sign-in"
         );
         app.send_input(&task_id, b"again\r").await?;
-        wait_for("the echo after restart", Duration::from_secs(10), || {
+        eventually("the echo after restart", Duration::from_secs(10), || {
             screen_contains(&app, &task_id, "ECHO: again")
         })
         .await?;
@@ -1763,13 +1683,13 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
             .set_account_state(&account, AccountStatus::Limited, None, None, app.now())
             .await?;
         app.send_input(&task_id, b"/exit\r").await?;
-        wait_for("the run's end", Duration::from_secs(30), || async {
+        eventually("the run's end", Duration::from_secs(30), || async {
             task(&app, &task_id)
                 .await
                 .is_ok_and(|t| !t.status.is_live())
         })
         .await?;
-        wait_for(
+        eventually(
             "the written-back credentials",
             Duration::from_secs(10),
             || async {
@@ -1786,7 +1706,7 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
             "the account keeps its state"
         );
         // No run of the account is left in the sandbox: its credential does not stay there.
-        wait_for(
+        eventually(
             "no auth.json left in the sandbox",
             Duration::from_secs(30),
             || async { !home.join("auth.json").exists() },
@@ -1799,7 +1719,7 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
     Ok(())
 }
 
-/// SPEC-503 CDX-006: the Codex home's `auth.json` is the agent's to write, so only a genuine
+/// The Codex home's `auth.json` is the agent's to write, so only a genuine
 /// refresh goes back into the vault. A newer one another run of the account left in the sandbox
 /// is taken at the next launch instead of being overwritten with the vault's older copy; one the
 /// agent forged (another ChatGPT account) is never taken.
@@ -1844,7 +1764,7 @@ fn only_a_genuine_codex_refresh_reaches_the_vault() -> TestResult {
                 .await?;
         }
         let id = new_codex_task(&app, &sandbox, &user, "Codex refresh").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1866,7 +1786,7 @@ fn only_a_genuine_codex_refresh_reaches_the_vault() -> TestResult {
             },
         );
         app.send_input(&id, b"/exit\r").await?;
-        wait_for("the run's end", Duration::from_secs(30), || async {
+        eventually("the run's end", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
@@ -1895,7 +1815,7 @@ async fn admin_ctx(
     })
 }
 
-/// SPEC-503 CLI-002, AC-503-6: a Codex task starts the Codex CLI Yulius provides by its absolute
+/// A Codex task starts the Codex CLI Yulius provides by its absolute
 /// path, never `codex` from a `PATH` that may not have it.
 #[test]
 fn a_codex_task_starts_the_provided_codex_cli() -> TestResult {
@@ -1917,7 +1837,7 @@ fn a_codex_task_starts_the_provided_codex_cli() -> TestResult {
         add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex provided").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1933,7 +1853,7 @@ fn a_codex_task_starts_the_provided_codex_cli() -> TestResult {
             "{launch}"
         );
         app.send_input(&id, b"/exit\r").await?;
-        wait_for("the run's end", Duration::from_secs(30), || async {
+        eventually("the run's end", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
@@ -1983,15 +1903,19 @@ fn a_contained_codex_run_sees_the_provided_codex_cli() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = crate::supervision::build_tuned(&data, Some(&fake), agent, move |c| {
-            c.contained = true;
-            c.contained_readonly = vec![fake_dir];
-        })?;
+        let app = crate::support::live::Live::new(Some(&fake), agent).app(
+            &data,
+            crate::support::live::UNSERVED,
+            move |c| {
+                c.contained = true;
+                c.contained_readonly = vec![fake_dir];
+            },
+        )?;
         let (sandbox, user) = seed_records(&app).await?;
         add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex contained").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -2001,7 +1925,7 @@ fn a_contained_codex_run_sees_the_provided_codex_cli() -> TestResult {
         ] {
             app.send_input(&id, format!("/read {}\r", path.display()).as_bytes())
                 .await?;
-            wait_for(expected, Duration::from_secs(10), || {
+            eventually(expected, Duration::from_secs(10), || {
                 screen_contains(&app, &id, expected)
             })
             .await?;
@@ -2013,7 +1937,7 @@ fn a_contained_codex_run_sees_the_provided_codex_cli() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CLI-002: a Codex CLI that cannot be provided fails the start (its reason goes to the
+/// A Codex CLI that cannot be provided fails the start (its reason goes to the
 /// terminal's "Could not start" notice) before anything is spawned, instead of a run that dies
 /// with `codex: not found`.
 #[test]
@@ -2036,7 +1960,7 @@ fn a_codex_start_without_a_codex_cli_says_why() -> TestResult {
         // Watched before the start may go on, so what it says is heard.
         let mut watch = app.runtime(&id).hub.watch();
         gate.add_permits(8);
-        wait_for("the failed start", Duration::from_secs(30), || async {
+        eventually("the failed start", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| matches!(t.status, TaskStatus::Failed(_)))
@@ -2061,7 +1985,7 @@ fn a_codex_start_without_a_codex_cli_says_why() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-009, AC-503-2: a Codex task at its usage limit moves to another Codex account by
+/// A Codex task at its usage limit moves to another Codex account by
 /// a native resume of the same session, never to the Claude account, and the limited account is
 /// marked; Codex does not go on by itself, so the resume asks it to.
 #[test]
@@ -2091,7 +2015,7 @@ fn codex_rotation_uses_task_effort(effort_override: Option<&str>) -> TestResult 
         let two = add_codex_account(&app, "a-codex-2", &auth).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex rotation").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -2101,7 +2025,7 @@ fn codex_rotation_uses_task_effort(effort_override: Option<&str>) -> TestResult 
                 .await?;
         }
         app.send_input(&id, b"hello\r").await?;
-        wait_for(
+        eventually(
             "the switch to another account",
             Duration::from_secs(90),
             || async {
@@ -2138,7 +2062,7 @@ fn codex_rotation_uses_task_effort(effort_override: Option<&str>) -> TestResult 
             launch.contains("Resume {") && launch.contains("continue_interrupted: true"),
             "{launch}"
         );
-        wait_for("the resumed run", Duration::from_secs(30), || async {
+        eventually("the resumed run", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Running)
@@ -2169,7 +2093,7 @@ fn codex_rotation_uses_task_effort(effort_override: Option<&str>) -> TestResult 
     Ok(())
 }
 
-/// SPEC-503 CDX-009: with no Codex account left with capacity, a Codex task waits instead of
+/// With no Codex account left with capacity, a Codex task waits instead of
 /// running on the Claude account.
 #[test]
 fn a_codex_task_waits_while_no_codex_account_has_capacity() -> TestResult {
@@ -2203,7 +2127,7 @@ fn a_codex_task_waits_while_no_codex_account_has_capacity() -> TestResult {
             .await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex waits").await?;
-        wait_for("the pause", Duration::from_secs(30), || async {
+        eventually("the pause", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
@@ -2230,7 +2154,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFram
     said
 }
 
-/// SPEC-503 CDX-013, AC-503-7, with SPEC-447 (MOV-001, MOV-003, MOV-006): a Codex task moves only
+/// SPEC-503 CDX-013, AC-503-7, with SPEC-447: a Codex task moves only
 /// between Codex subscriptions. A person's move to the Claude subscription is refused naming why;
 /// removing its Codex subscription moves it to the other Codex one in the same session, never to
 /// the Claude one that has room; removing that one too leaves it waiting, asking for a Codex
@@ -2253,7 +2177,7 @@ fn a_codex_task_moves_only_between_codex_subscriptions() -> TestResult {
         add_codex_account(&app, "a-codex-2", &auth).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex moves").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -2290,7 +2214,7 @@ fn a_codex_task_moves_only_between_codex_subscriptions() -> TestResult {
         let mut watch = app.runtime(&id).hub.watch();
         app.delete_account(&ctx, on.as_str()).await?;
         let mut said = Vec::new();
-        wait_for(
+        eventually(
             "the move to the other Codex subscription",
             Duration::from_secs(60),
             || {
@@ -2318,7 +2242,7 @@ fn a_codex_task_moves_only_between_codex_subscriptions() -> TestResult {
             attempts[1].provider_session_id,
             attempts[0].provider_session_id
         );
-        wait_for("the removal's notice", Duration::from_secs(10), || {
+        eventually("the removal's notice", Duration::from_secs(10), || {
             said.extend(notices(&mut watch));
             let done = said
                 .iter()
@@ -2333,7 +2257,7 @@ fn a_codex_task_moves_only_between_codex_subscriptions() -> TestResult {
 
         app.delete_account(&ctx, other).await?;
         // The task waits, and then asks for a subscription (recorded after the wait begins).
-        wait_for(
+        eventually(
             "the wait and its request",
             Duration::from_secs(60),
             || async {
@@ -2366,7 +2290,7 @@ fn a_codex_task_moves_only_between_codex_subscriptions() -> TestResult {
             "{}",
             request.action
         );
-        wait_for("the stranded notice", Duration::from_secs(10), || {
+        eventually("the stranded notice", Duration::from_secs(10), || {
             said.extend(notices(&mut watch));
             let done = said
                 .iter()
@@ -2385,7 +2309,7 @@ fn a_codex_task_moves_only_between_codex_subscriptions() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-013 and CDX-006: Continue on a Claude subscription is refused up front for a
+/// Continue on a Claude subscription is refused up front for a
 /// Codex task, which keeps resting instead of failing; and a Codex start whose subscription is
 /// removed just after it was chosen (SPEC-447's race point) starts on the other Codex one without
 /// leaving the removed one's credentials in the sandbox.
@@ -2403,7 +2327,7 @@ fn a_codex_start_that_loses_its_subscription_leaves_no_credentials() -> TestResu
         add_codex_account(&app, "a-codex-2", &auth).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex race").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -2422,7 +2346,7 @@ fn a_codex_start_that_loses_its_subscription_leaves_no_credentials() -> TestResu
             .join(sandbox.as_str())
             .join("codex")
             .join(on.as_str());
-        wait_for(
+        eventually(
             "the run's credentials removed",
             Duration::from_secs(10),
             || async { !home.join("auth.json").exists() },
@@ -2487,7 +2411,7 @@ fn a_codex_start_that_loses_its_subscription_leaves_no_credentials() -> TestResu
         app.delete_account(&ctx, on.as_str()).await?;
         go_tx.send(())?;
         continuing.await??;
-        wait_for(
+        eventually(
             "the run on the other Codex subscription",
             Duration::from_secs(60),
             || async {
@@ -2501,7 +2425,7 @@ fn a_codex_start_that_loses_its_subscription_leaves_no_credentials() -> TestResu
             },
         )
         .await?;
-        wait_for(
+        eventually(
             "the removed subscription's credentials gone",
             Duration::from_secs(10),
             || async { !home.join("auth.json").exists() },
@@ -2514,7 +2438,7 @@ fn a_codex_start_that_loses_its_subscription_leaves_no_credentials() -> TestResu
     Ok(())
 }
 
-/// SPEC-503 CDX-006: when the account is gone by the run's end (removed or
+/// When the account is gone by the run's end (removed or
 /// signed out meanwhile), its credentials do not stay in the sandbox for later tasks to read.
 #[test]
 fn a_gone_accounts_codex_credentials_leave_the_sandbox() -> TestResult {
@@ -2528,7 +2452,7 @@ fn a_gone_accounts_codex_credentials_leave_the_sandbox() -> TestResult {
             add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex gone").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -2541,11 +2465,11 @@ fn a_gone_accounts_codex_credentials_leave_the_sandbox() -> TestResult {
         std::fs::write(home.join("auth.json"), codex_auth(&ago(1_000)))?;
         app.deps.store.delete_account(&account).await?;
         app.send_input(&id, b"/exit\r").await?;
-        wait_for("the run's end", Duration::from_secs(30), || async {
+        eventually("the run's end", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
-        wait_for(
+        eventually(
             "the credentials removed",
             Duration::from_secs(10),
             || async { !home.join("auth.json").exists() },
@@ -2557,7 +2481,7 @@ fn a_gone_accounts_codex_credentials_leave_the_sandbox() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C1 review): a Codex run Yulius records as lost (here its processes died
+/// A Codex run Yulius records as lost (here its processes died
 /// with the server, and the next server finds them gone) still gets its write-back: the refreshed
 /// `auth.json` reaches the vault and the file leaves the sandbox, as after a run that ended.
 #[test]
@@ -2572,7 +2496,7 @@ fn a_lost_codex_run_keeps_its_refresh_and_leaves_no_credentials() -> TestResult 
             add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex lost").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -2622,13 +2546,13 @@ fn a_lost_codex_run_keeps_its_refresh_and_leaves_no_credentials() -> TestResult 
     second.block_on(async {
         let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
         app.reconcile().await?;
-        wait_for("the task rests", Duration::from_secs(30), || async {
+        eventually("the task rests", Duration::from_secs(30), || async {
             task(&app, &task_id)
                 .await
                 .is_ok_and(|t| !t.status.is_live())
         })
         .await?;
-        wait_for(
+        eventually(
             "the refresh in the vault and no auth.json left",
             Duration::from_secs(30),
             || async {
@@ -2645,7 +2569,7 @@ fn a_lost_codex_run_keeps_its_refresh_and_leaves_no_credentials() -> TestResult 
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C1 review): the file stays while another run of the subscription lives
+/// The file stays while another run of the subscription lives
 /// in the sandbox, and goes once the last one ended: two Codex tasks of one sandbox on one
 /// subscription, the usual case.
 #[test]
@@ -2667,7 +2591,7 @@ fn the_file_stays_while_another_run_of_the_subscription_lives() -> TestResult {
         let first = new_codex_task(&app, &sandbox, &user, "Codex one").await?;
         let second = new_codex_task(&app, &sandbox, &user, "Codex two").await?;
         for id in [&first, &second] {
-            wait_for("the banner", Duration::from_secs(30), || {
+            eventually("the banner", Duration::from_secs(30), || {
                 screen_contains(&app, id, "FAKE-AGENT READY")
             })
             .await?;
@@ -2694,7 +2618,7 @@ fn the_file_stays_while_another_run_of_the_subscription_lives() -> TestResult {
         );
         assert!(task(&app, &second).await?.status.is_live());
         app.send_input(&second, b"/exit\r").await?;
-        wait_for(
+        eventually(
             "no auth.json once the last run ended",
             Duration::from_secs(30),
             || async { !home.join("auth.json").exists() },
@@ -2706,7 +2630,7 @@ fn the_file_stays_while_another_run_of_the_subscription_lives() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 (slice C1 review): a Codex task in goal mode, the default for a task from the API and
+/// A Codex task in goal mode, the default for a task from the API and
 /// every automation's, gets its whole request as its first message: no `/goal`, which Codex takes
 /// only typed, and no goal for Yulius to watch.
 #[test]
@@ -2736,7 +2660,7 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
         // Watched before the start may go on, so what its launch says is heard.
         let mut watch = app.runtime(&id).hub.watch();
         gate.add_permits(8);
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -2775,7 +2699,7 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
             assert!(!run_dir.join(marker).exists(), "{marker}");
         }
         // Without a model or effort of its own it runs GPT-6.2 Astra at high effort, recorded for
-        // the run and named for the task, never a Claude model (SPEC-511 CXD-002, CDX-013).
+        // the run and named for the task, never a Claude model.
         assert_eq!(attempt.model.as_deref(), Some("gpt-6.2-astra"));
         let ctx = admin_ctx(&app, &user).await?;
         let detail = app.task_detail(&ctx, id.as_str()).await?;
@@ -2784,7 +2708,7 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
         assert_eq!(detail.effort.as_deref(), Some("high"));
         assert!(detail.effort_default);
         // The pool weighs the task by the model its run was launched with, so a subscription
-        // it is at the limit of is left out (SPEC-511 review): one family for both.
+        // it is at the limit of is left out: one family for both.
         let record = task(&app, &id).await?;
         let input = app.rotation_input(&record, Some(account.clone())).await?;
         assert_eq!(input.running, Some(input.family));
@@ -2812,12 +2736,12 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
             )
             .await?;
         app.send_input(&id, b"first-after-full\r").await?;
-        wait_for("its echo", Duration::from_secs(30), || {
+        eventually("its echo", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: first-after-full")
         })
         .await?;
         app.send_input(&id, b"second-after-full\r").await?;
-        wait_for("the next line read", Duration::from_secs(30), || {
+        eventually("the next line read", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: second-after-full")
         })
         .await?;
@@ -2828,7 +2752,7 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
             "paused at its Stop like a goal"
         );
         app.send_input(&id, b"/exit\r").await?;
-        wait_for("the run's end", Duration::from_secs(30), || async {
+        eventually("the run's end", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
@@ -2838,7 +2762,7 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 (slice C1 review): a Codex task takes no Claude model later either: setting one is
+/// A Codex task takes no Claude model later either: setting one is
 /// refused as at creation, since the run would fail at start; going back to the default works.
 #[test]
 fn a_codex_task_refuses_a_claude_model_set_later() -> TestResult {
@@ -2886,7 +2810,7 @@ fn a_codex_task_refuses_a_claude_model_set_later() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C1 review): a sign-in made between the read of a run's refresh and its
+/// A sign-in made between the read of a run's refresh and its
 /// write wins: the refresh, of the sign-in before, is not stored over it.
 #[test]
 fn a_sign_in_made_meanwhile_wins_over_a_runs_refresh() -> TestResult {
@@ -2905,7 +2829,7 @@ fn a_sign_in_made_meanwhile_wins_over_a_runs_refresh() -> TestResult {
             .join("codex")
             .join(account.as_str());
         let id = new_codex_task(&app, &sandbox, &user, "Codex race").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -2954,7 +2878,7 @@ fn a_sign_in_made_meanwhile_wins_over_a_runs_refresh() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C2 review): another run of the subscription (in another sandbox)
+/// Another run of the subscription (in another sandbox)
 /// stored its refresh between this run's read and its write. This run's refresh, the newer of the
 /// same sign-in, is still kept: losing the swap to an older refresh is no reason to drop it.
 #[test]
@@ -2974,7 +2898,7 @@ fn a_newer_refresh_is_kept_after_an_older_one_was_stored_first() -> TestResult {
             .join("codex")
             .join(account.as_str());
         let id = new_codex_task(&app, &sandbox, &user, "Codex newer").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -3031,7 +2955,7 @@ fn a_newer_refresh_is_kept_after_an_older_one_was_stored_first() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C2 review round 2): the swap was lost and what the account holds now
+/// The swap was lost and what the account holds now
 /// cannot be told (a credential that does not open, as after a failed read): the run's file may
 /// be the only copy of rotated tokens, so it stays, as when the swap itself fails.
 #[test]
@@ -3051,7 +2975,7 @@ fn a_refresh_stays_when_what_the_account_holds_cannot_be_read() -> TestResult {
             .join("codex")
             .join(account.as_str());
         let id = new_codex_task(&app, &sandbox, &user, "Codex unread").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -3112,7 +3036,7 @@ fn a_refresh_stays_when_what_the_account_holds_cannot_be_read() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-006 (slice C1 review round 3): a server that stopped between a run's end and the
+/// A server that stopped between a run's end and the
 /// removal of its `auth.json` left the file in the sandbox; the next start's reconciliation keeps
 /// a genuine refresh in it and removes it, since no run of the subscription is left there.
 #[test]
@@ -3156,7 +3080,7 @@ async fn run_codex_task(
     refreshed: Option<&str>,
 ) -> TestResult {
     let id = new_codex_task(app, sandbox, user, title).await?;
-    wait_for("the banner", Duration::from_secs(30), || {
+    eventually("the banner", Duration::from_secs(30), || {
         screen_contains(app, &id, "FAKE-AGENT READY")
     })
     .await?;
@@ -3165,14 +3089,14 @@ async fn run_codex_task(
         std::fs::write(home.join("auth.json"), refreshed)?;
     }
     app.send_input(&id, b"/exit\r").await?;
-    wait_for("the run's end", Duration::from_secs(30), || async {
+    eventually("the run's end", Duration::from_secs(30), || async {
         task(app, &id).await.is_ok_and(|t| !t.status.is_live())
     })
     .await?;
     Ok(())
 }
 
-/// SPEC-503 CDX-011, CDX-006: a sign-in imported as an `auth.json` (from `codex login` on a
+/// A sign-in imported as an `auth.json` (from `codex login` on a
 /// laptop) is what a Codex task's home gets; the tokens Codex refreshes during the run go back
 /// into the account; and a later import replaces them for the next run.
 #[test]
@@ -3217,7 +3141,7 @@ fn an_imported_codex_sign_in_reaches_the_run_and_its_refresh_is_kept() -> TestRe
             Some(&refreshed),
         )
         .await?;
-        wait_for(
+        eventually(
             "the written-back credentials",
             Duration::from_secs(10),
             || async {
@@ -3309,7 +3233,7 @@ fn new_and_resumed_codex_sessions_choose_the_subscription_with_more_quota() -> T
                 .await?;
         }
         let fresh = new_codex_task(&app, &sandbox, &user, "New task").await?;
-        wait_for("the new Codex run", Duration::from_secs(30), || async {
+        eventually("the new Codex run", Duration::from_secs(30), || async {
             task(&app, &fresh)
                 .await
                 .is_ok_and(|task| task.status == TaskStatus::Running)
@@ -3345,7 +3269,7 @@ fn new_and_resumed_codex_sessions_choose_the_subscription_with_more_quota() -> T
     })
 }
 
-/// SPEC-503 CDX-010: the capacity view (the Dashboard's Subscriptions card) names each
+/// The capacity view (the Dashboard's Subscriptions card) names each
 /// subscription's provider, and with nothing available it resumes when the first subscription
 /// of any provider does, a Codex one included.
 #[test]
@@ -3385,9 +3309,9 @@ fn the_capacity_view_names_providers_and_resumes_with_codex_too() -> TestResult 
 /// task continues the rollout that produced its answer.
 #[test]
 fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() -> TestResult {
-    use crate::first_message::{hooked, start_with};
-    use crate::pool_supervision::{ScriptedUsage, seed};
-    use crate::task_message::superagent;
+    use crate::support::live::first_message::{hooked, start_with};
+    use crate::support::live::pool::{ScriptedUsage, seed};
+    use crate::support::task_message::superagent;
     use yulius_domain::task::Activity;
     let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
     let (_dir, data) = temp()?;
@@ -3411,16 +3335,12 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
         let (sandbox, user) = seed(&app, &data, &["claude-only"]).await?;
         add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         let id = new_codex_task(&app, &sandbox, &user, "First turn").await?;
-        wait_for(
-            "the answered Codex turn",
-            Duration::from_secs(30),
-            || async {
+        eventually("the answered Codex turn", Duration::from_secs(30), || async {
                 screen_contains(&app, &id, "ECHO: First turn").await
                     && task(&app, &id)
                         .await
                         .is_ok_and(|task| task.activity == Some(Activity::Waiting))
-            },
-        )
+            })
         .await?;
         let run = app.deps.store.live_attempt(&id).await?.ok_or("live run")?;
         let rollout_id = run.provider_session_id.ok_or("rollout id")?;
@@ -3436,7 +3356,7 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
             [rollout_id.as_str(), run.id.as_str()],
         )?;
         let mut viewer = app.runtime(&id).hub.watch();
-        wait_for("parking", Duration::from_secs(30), || async {
+        eventually("parking", Duration::from_secs(30), || async {
             app.park_idle_sessions_now().await;
             task(&app, &id)
                 .await
@@ -3591,11 +3511,7 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
         assert!(parked_state.parked_screen);
         drop(terminal);
         assert_eq!(answer["delivered"], "resumed");
-        wait_for(
-            "the answer in the resumed rollout",
-            Duration::from_secs(30),
-            || screen_contains(&app, &id, "Second turn: answer with an echo"),
-        )
+        eventually("the answer in the resumed rollout", Duration::from_secs(30), || screen_contains(&app, &id, "Second turn: answer with an echo"))
         .await?;
         assert!(!app.terminal_state(&id).await?.parked_screen);
         let second = app
@@ -3620,7 +3536,7 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
             .ok_or("rollout")?;
         let history = std::fs::read_to_string(rollout)?;
         assert!(history.contains("First turn") && history.contains(prompt));
-        crate::pool_supervision::stop(&app, &id).await?;
+        crate::support::live::pool::stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -3631,9 +3547,9 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
 /// continuation for a later round. Starting fresh here would discard its context.
 #[test]
 fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error() -> TestResult {
-    use crate::first_message::{hooked, start_with};
-    use crate::pool_supervision::{ScriptedUsage, seed};
-    use crate::task_message::superagent;
+    use crate::support::live::first_message::{hooked, start_with};
+    use crate::support::live::pool::{ScriptedUsage, seed};
+    use crate::support::task_message::superagent;
     use yulius_domain::task::Activity;
     let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
     let (_dir, data) = temp()?;
@@ -3658,7 +3574,7 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
         let account =
             add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         let id = new_codex_task(&app, &sandbox, &user, "Before capacity").await?;
-        wait_for("Codex's first answer", Duration::from_secs(30), || async {
+        eventually("Codex's first answer", Duration::from_secs(30), || async {
             screen_contains(&app, &id, "ECHO: Before capacity").await
                 && task(&app, &id)
                     .await
@@ -3672,7 +3588,7 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
             .await?
             .ok_or("first attempt")?;
         let session = first.provider_session_id.ok_or("first rollout")?;
-        wait_for(
+        eventually(
             "parked before the capacity wait",
             Duration::from_secs(30),
             || async {
@@ -3683,7 +3599,7 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
             },
         )
         .await?;
-        wait_for("the captured screen", Duration::from_secs(10), || {
+        eventually("the captured screen", Duration::from_secs(10), || {
             screen_contains(&app, &id, "Yulius parked")
         })
         .await?;
@@ -3721,7 +3637,7 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
         assert_eq!(attempts.len(), 2);
         assert_eq!(attempts[1].exit_reason.as_deref(), Some("account_removed"));
         let caller = superagent(&sandbox, &user, "admin");
-        crate::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await?;
+        crate::support::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await?;
         let pause = app
             .deps
             .store
@@ -3769,11 +3685,12 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
         };
         tokio::task::spawn_blocking(move || recorded_rx.recv_timeout(Duration::from_secs(30)))
             .await??;
-        let visible = crate::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await;
+        let visible =
+            crate::support::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await;
         go.send(())?;
         resumed.await?;
         visible?;
-        wait_for(
+        eventually(
             "the held next prompt in the original rollout",
             Duration::from_secs(30),
             || screen_contains(&app, &id, prompt),
@@ -3790,7 +3707,7 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
             second.provider_session_id.as_deref(),
             Some(session.as_str())
         );
-        crate::pool_supervision::stop(&app, &id).await?;
+        crate::support::live::pool::stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

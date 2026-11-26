@@ -11,24 +11,25 @@ use yulius_app::ports::store_ext::{NeedsYouStore, WaitMessageRecord};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{SqliteStore, bad_column, opt_ts, text_parsed};
 
 #[async_trait]
 impl NeedsYouStore for SqliteStore {
     async fn task_needs_you(&self, task: &TaskId) -> AppResult<Option<NeedsYouRecord>> {
         let task = task.as_str().to_owned();
-        let text: Option<String> = self
-            .call(move |c| {
-                c.query_row("SELECT needs_you FROM tasks WHERE id = ?1", [task], |row| {
-                    row.get::<_, Option<String>>(0)
+        self.call(move |c| {
+            let text: Option<String> = c
+                .query_row("SELECT needs_you FROM tasks WHERE id = ?1", [task], |row| {
+                    row.get(0)
                 })
-                .optional()
-                .map(Option::flatten)
-                .map_err(db)
+                .optional()?
+                .flatten();
+            text.map(|text| {
+                serde_json::from_str(&text).map_err(|_| bad_column("needs_you", &text).into())
             })
-            .await?;
-        text.map(|text| serde_json::from_str(&text).map_err(|_| db(bad_column("needs_you", &text))))
             .transpose()
+        })
+        .await
     }
 
     async fn set_task_needs_you(
@@ -48,8 +49,7 @@ impl NeedsYouStore for SqliteStore {
                     // `updated_at` dates the change: the request's span ends then (SPEC-137).
                     "UPDATE tasks SET needs_you = ?2, updated_at = ?3 WHERE id = ?1 AND needs_you IS NOT ?2",
                     params![task, text, at.0],
-                )
-                .map_err(db)?;
+                )?;
             Ok(changed == 1)
         })
         .await
@@ -65,14 +65,13 @@ impl NeedsYouStore for SqliteStore {
         let text = serde_json::to_string(request).map_err(AppError::internal)?;
         let at = request.at;
         self.call(move |c| {
-            c.execute(
+            Ok(c.execute(
                 "UPDATE tasks SET needs_you = ?3, updated_at = ?4 WHERE id = ?1 \
                  AND status = 'running' AND needs_you IS NULL AND EXISTS \
                  (SELECT 1 FROM attempts WHERE task_id = ?1 AND id = ?2 AND state = 'live')",
                 params![task, attempt, text, at],
             )
-            .map(|changed| changed == 1)
-            .map_err(db)
+            .map(|changed| changed == 1)?)
         })
         .await
     }
@@ -85,16 +84,14 @@ impl NeedsYouStore for SqliteStore {
     ) -> AppResult<bool> {
         let (task, action) = (task.as_str().to_owned(), action.to_owned());
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    // One statement: a request made after a read of this one is never ended.
-                    // CASE orders the checks: a row that is not JSON is left alone, not an error.
-                    "UPDATE tasks SET needs_you = NULL, updated_at = ?3 \
+            let changed = c.execute(
+                // One statement: a request made after a read of this one is never ended.
+                // CASE orders the checks: a row that is not JSON is left alone, not an error.
+                "UPDATE tasks SET needs_you = NULL, updated_at = ?3 \
                      WHERE id = ?1 AND CASE WHEN json_valid(needs_you) \
                        THEN json_extract(needs_you, '$.action') END = ?2",
-                    params![task, action, at.0],
-                )
-                .map_err(db)?;
+                params![task, action, at.0],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -108,15 +105,13 @@ impl NeedsYouStore for SqliteStore {
     ) -> AppResult<bool> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    // One statement: a request asked after the answered one is never ended.
-                    "UPDATE tasks SET needs_you = NULL, updated_at = ?3 \
+            let changed = c.execute(
+                // One statement: a request asked after the answered one is never ended.
+                "UPDATE tasks SET needs_you = NULL, updated_at = ?3 \
                      WHERE id = ?1 AND CASE WHEN json_valid(needs_you) \
                        THEN json_extract(needs_you, '$.at') END = ?2",
-                    params![task, asked_at, at.0],
-                )
-                .map_err(db)?;
+                params![task, asked_at, at.0],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -134,18 +129,16 @@ impl NeedsYouStore for SqliteStore {
         let who = serde_json::to_string(&read.named.who).map_err(AppError::internal)?;
         let (asked_at, action) = (read.at, read.action.clone());
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    // One statement: a request made, ended or changed after the read is left
-                    // as it is. An absent `who` is the empty list it was written from.
-                    "UPDATE tasks SET needs_you = ?2, updated_at = ?3 \
+            let changed = c.execute(
+                // One statement: a request made, ended or changed after the read is left
+                // as it is. An absent `who` is the empty list it was written from.
+                "UPDATE tasks SET needs_you = ?2, updated_at = ?3 \
                      WHERE id = ?1 AND CASE WHEN json_valid(needs_you) THEN \
                        json_extract(needs_you, '$.at') = ?4 \
                        AND json_extract(needs_you, '$.action') = ?5 \
                        AND IFNULL(json_extract(needs_you, '$.who'), '[]') = ?6 END",
-                    params![task, next, at.0, asked_at, action, who],
-                )
-                .map_err(db)?;
+                params![task, next, at.0, asked_at, action, who],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -154,17 +147,13 @@ impl NeedsYouStore for SqliteStore {
     async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare("SELECT id FROM tasks WHERE sandbox_id = ?1 AND needs_you IS NOT NULL")
-                .map_err(db)?;
+            let mut stmt =
+                c.prepare("SELECT id FROM tasks WHERE sandbox_id = ?1 AND needs_you IS NOT NULL")?;
             let ids = stmt
                 .query_map([sandbox], |row| {
-                    let id: String = row.get(0)?;
-                    TaskId::parse(&id).map_err(|_| bad_column("task id", &id))
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                    text_parsed(row, 0, "task id", TaskId::parse)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(ids)
         })
         .await
@@ -173,13 +162,12 @@ impl NeedsYouStore for SqliteStore {
     async fn record_wait_message(&self, entry: &WaitMessageRecord) -> AppResult<bool> {
         let entry = entry.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "UPDATE task_wait_messages SET resolved_at = ?2 \
                  WHERE task_id = ?1 AND episode != ?3 AND resolved_at IS NULL",
                 params![entry.task_id.as_str(), entry.created_at.0, entry.episode],
-            )
-            .map_err(db)?;
+            )?;
             let inserted = tx
                 .execute(
                     "INSERT OR IGNORE INTO task_wait_messages \
@@ -197,9 +185,8 @@ impl NeedsYouStore for SqliteStore {
                         entry.created_at.0,
                         entry.resolved_at.map(|t| t.0),
                     ],
-                )
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+                )?;
+            tx.commit()?;
             Ok(inserted == 1)
         })
         .await
@@ -208,13 +195,11 @@ impl NeedsYouStore for SqliteStore {
     async fn resolve_wait_messages(&self, task: &TaskId, at: Timestamp) -> AppResult<bool> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE task_wait_messages SET resolved_at = ?2 \
+            let changed = c.execute(
+                "UPDATE task_wait_messages SET resolved_at = ?2 \
                      WHERE task_id = ?1 AND resolved_at IS NULL",
-                    params![task, at.0],
-                )
-                .map_err(db)?;
+                params![task, at.0],
+            )?;
             Ok(changed > 0)
         })
         .await
@@ -227,14 +212,12 @@ impl NeedsYouStore for SqliteStore {
     ) -> AppResult<Vec<WaitMessageRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT task_id, episode, source, happened, problem, action, link, decision, \
+            let mut stmt = c.prepare(
+                "SELECT task_id, episode, source, happened, problem, action, link, decision, \
                      created_at, resolved_at \
                      FROM task_wait_messages WHERE task_id = ?1 \
                      ORDER BY created_at DESC, id DESC LIMIT ?2",
-                )
-                .map_err(db)?;
+            )?;
             let rows = stmt
                 .query_map(params![task, i64::from(limit)], |row| {
                     let task_id: String = row.get(0)?;
@@ -250,12 +233,10 @@ impl NeedsYouStore for SqliteStore {
                         link: row.get(6)?,
                         decision: decision != 0,
                         created_at: Timestamp(row.get(8)?),
-                        resolved_at: row.get::<_, Option<i64>>(9)?.map(Timestamp),
+                        resolved_at: opt_ts(row, 9)?,
                     })
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -268,7 +249,7 @@ impl NeedsYouStore for SqliteStore {
         let task = task.as_str().to_owned();
         let row: Option<(String, Option<i64>, i64)> = self
             .call(move |c| {
-                c.query_row(
+                Ok(c.query_row(
                     "SELECT attention, \
                        CASE WHEN json_valid(attention) THEN json_extract(attention, '$.at') END, \
                        COALESCE(state_at, updated_at) \
@@ -276,8 +257,7 @@ impl NeedsYouStore for SqliteStore {
                     [task],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
-                .optional()
-                .map_err(db)
+                .optional()?)
             })
             .await?;
         Ok(row.and_then(|(text, at, fallback)| {
@@ -291,12 +271,10 @@ impl NeedsYouStore for SqliteStore {
     async fn clear_stored_task_attention(&self, task: &TaskId) -> AppResult<bool> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE tasks SET attention = NULL WHERE id = ?1 AND attention IS NOT NULL",
-                    [task],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "UPDATE tasks SET attention = NULL WHERE id = ?1 AND attention IS NOT NULL",
+                [task],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -315,14 +293,13 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
                        VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
                        VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'queued', 'ui', 'u1', 100, 100, 'u1');",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let task = TaskId::parse("t1")?;
@@ -398,14 +375,13 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
                        VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
                        VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'queued', 'ui', 'u1', 100, 100, 'u1');",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let task = TaskId::parse("t1")?;
@@ -459,14 +435,13 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
                        VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
                        VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'queued', 'ui', 'u1', 100, 100, 'u1');",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let task = TaskId::parse("t1")?;
@@ -496,17 +471,13 @@ mod tests {
         // Its wait is measured like one a person answered (SPEC-137): the span ends then.
         let waits: Vec<(i64, Option<i64>, Option<String>)> = store
             .call(|c| {
-                let mut stmt = c
-                    .prepare(
-                        "SELECT started_at, ended_at, outcome FROM spans \
+                let mut stmt = c.prepare(
+                    "SELECT started_at, ended_at, outcome FROM spans \
                          WHERE subject_id = 't1' AND name = 'needs_you' ORDER BY id",
-                    )
-                    .map_err(db)?;
+                )?;
                 let rows = stmt
-                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                    .map_err(db)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(db)?;
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
             .await?;
@@ -518,11 +489,10 @@ mod tests {
         // A row that is not JSON is left alone, without an error.
         store
             .call(|c| {
-                c.execute(
+                Ok(c.execute(
                     "UPDATE tasks SET needs_you = 'not json' WHERE id = 't1'",
                     [],
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         assert!(!ended("Send a message", 700).await?);
@@ -537,14 +507,13 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
                        VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
                        VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'ui', 'u1', 100, 100, 'u1');",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let task = TaskId::parse("t1")?;

@@ -110,8 +110,6 @@ pub(crate) fn shadowed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::Envelope;
-    use crate::ports::vault::{EnvFiles, VaultSection};
     use yulius_domain::ids::SandboxId;
     use yulius_domain::time::Timestamp;
 
@@ -122,34 +120,9 @@ mod tests {
         owner: Option<&str>,
     ) -> VaultSecretRecord {
         VaultSecretRecord {
-            id: id.into(),
-            section: VaultSection::Agent,
             sandbox_id: sandbox.and_then(|s| SandboxId::parse(s).ok()),
             owner_id: owner.and_then(|u| UserId::parse(u).ok()),
-            name: name.into(),
-            description: String::new(),
-            hosts: Vec::new(),
-            rules: Vec::new(),
-            injection: "none".into(),
-            header_name: None,
-            fields: vec!["value".into()],
-            envelope: Envelope {
-                kek_id: 1,
-                wrapped_key: Vec::new(),
-                ciphertext: Vec::new(),
-            },
-            created_by: "u".into(),
-            created_at: Timestamp(1),
-            updated_by: "u".into(),
-            updated_at: Timestamp(1),
-            value_updated_at: Timestamp(1),
-            last_used_at: None,
-            requested_hosts: Vec::new(),
-            requested_by: None,
-            env_files: EnvFiles::No,
-            env_requested_by: None,
-            cd_prod: false,
-            auto_allow: false,
+            ..crate::vault::test_record(id, name)
         }
     }
 

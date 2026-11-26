@@ -1,12 +1,12 @@
-//! The Superagents drive the shared sandbox browser (SPEC-437): the sandbox Superagent its own
+//! The Superagents drive the shared sandbox browser: the sandbox Superagent its own
 //! sandbox's, the Global Superagent the browser of a project it names, over the Cockpit tests'
 //! real ptyhost and fake `claude`, and the real Chromium manager with a fake Chromium launcher and
 //! an in-process fake DevTools server.
 
-use crate::cockpit::{
+use crate::support;
+use crate::support::cockpit::{
     Fixture, ORIGIN, attach, cockpit_id, fixture_with_browser, mcp, printed, read_until,
 };
-use crate::support;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -132,7 +132,7 @@ async fn docs_login(f: &Fixture, value: &str) -> TestResult {
     Ok(())
 }
 
-/// AC-SAB-1, AC-SAB-2 (SAB-001, SAB-003..005): the sandbox Superagent is served the nine browser
+/// The sandbox Superagent is served the nine browser
 /// tools on its sandbox's browser, the reading ones run without asking; it signs in with an agent
 /// secret it never sees, only on the secret's hosts, audited as its own; viewers see its cursor
 /// as its person's Superagent; its hand-over flags no task.
@@ -308,7 +308,7 @@ async fn audited(f: &Fixture, action: &str) -> Result<Vec<Value>, Box<dyn std::e
         .collect())
 }
 
-/// AC-SAB-3 (SAB-002..004): the Global Superagent is served the nine browser tools with a required
+/// The Global Superagent is served the nine browser tools with a required
 /// `project` and drives that project's browser for a person who works there; a person who only
 /// reads it, and a project they cannot see, are refused.
 #[tokio::test]
@@ -373,7 +373,7 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
                 .await
                 .map_err(|e| e.to_string())?;
         assert!(browser.tabs().iter().any(|t| t.id.as_str() == tab));
-        // The focused field is a password field: the screenshot below shows dots (SPEC-450).
+        // The focused field is a password field: the screenshot below shows dots.
         b.fake.set_password_field("", true);
         let filled = mcp_tool(
             &f.h,
@@ -395,7 +395,7 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
         )
         .await?;
         assert_eq!(shot["content"][0]["type"], "image", "{shot}");
-        // In a plain-text field the value would be in the pixels: no screenshot (SPEC-450 SSC-006).
+        // In a plain-text field the value would be in the pixels: no screenshot.
         let filled = mcp_tool(
             &f.h,
             &token,
@@ -429,7 +429,7 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
         .await?;
         assert_eq!(tabs["isError"], false, "{tabs}");
 
-        // A call that changes something is audited, a reading one is not (ADR-0281).
+        // A call that changes something is audited, a reading one is not.
         let audits: Vec<String> =
             f.h.store
                 .automation_audit("s1", 100)

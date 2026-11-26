@@ -6,10 +6,11 @@
 //! with its task or shell.
 
 use crate::support;
+use crate::support::{eventually, git_stdout};
+use std::future::ready;
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -603,17 +604,6 @@ async fn task_attachments_get_safe_names_outside_git_and_go_with_the_task() -> T
     Ok(())
 }
 
-async fn wait_for(what: &str, timeout: Duration, mut check: impl FnMut() -> bool) -> TestResult {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if check() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 #[tokio::test]
 async fn composer_drafts_are_kept_per_user_outside_git_and_need_write_access() -> TestResult {
     let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
@@ -731,7 +721,7 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
         0
     );
 
-    // SPEC-413 ANR-001 (#1027): another shell's file that a task's request names (the Superagent
+    // Another shell's file that a task's request names (the Superagent
     // put a pasted screenshot into `task_create`) stays when that shell ends.
     let other = call(
         &h.router,
@@ -777,16 +767,16 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
         )
         .await?;
         assert_eq!(closed.status, StatusCode::NO_CONTENT);
-        wait_for("the shell to be forgotten", Duration::from_secs(20), || {
-            h.app.sandbox_shells(&sandbox).len() == left
+        eventually("the shell to be forgotten", Duration::from_secs(20), || {
+            ready(h.app.sandbox_shells(&sandbox).len() == left)
         })
         .await?;
     }
     // Closing a shell nobody names removes its attachments.
-    wait_for(
+    eventually(
         "the shell's attachments to go",
         Duration::from_secs(20),
-        || !folder.exists(),
+        || ready(!folder.exists()),
     )
     .await?;
     // The start-up prune below checks it again, deterministically.
@@ -802,21 +792,6 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
     assert_eq!(std::fs::read(&shot)?, b"png", "still named at start-up");
     drop(reaper);
     Ok(())
-}
-
-fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// A task running the fake agent (contained or not); returns the harness, alice's credentials
@@ -872,24 +847,24 @@ async fn agent_task(
     let data = h.app.config.data_dir.clone();
     let origin = data.join("origin.git");
     std::fs::create_dir_all(&origin)?;
-    git(&origin, &["init", "--bare", "-q", "-b", "main"])?;
+    git_stdout(&origin, &["init", "--bare", "-q", "-b", "main"])?;
     let seed = data.join("seed");
     std::fs::create_dir_all(&seed)?;
-    git(&seed, &["init", "-q", "-b", "main"])?;
+    git_stdout(&seed, &["init", "-q", "-b", "main"])?;
     std::fs::write(seed.join("README.md"), "# fixture\n")?;
-    git(&seed, &["add", "README.md"])?;
-    git(&seed, &["commit", "-q", "-m", "init"])?;
-    git(
+    git_stdout(&seed, &["add", "README.md"])?;
+    git_stdout(&seed, &["commit", "-q", "-m", "init"])?;
+    git_stdout(
         &seed,
         &["remote", "add", "origin", &origin.to_string_lossy()],
     )?;
-    git(&seed, &["push", "-q", "origin", "main"])?;
+    git_stdout(&seed, &["push", "-q", "origin", "main"])?;
     let repo = data
         .join("sandboxes")
         .join(sandbox.id.as_str())
         .join("repo");
     std::fs::create_dir_all(repo.parent().ok_or("parent")?)?;
-    git(
+    git_stdout(
         &data,
         &[
             "clone",
@@ -909,12 +884,14 @@ async fn agent_task(
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
     let id = TaskId::parse(created.body["id"].as_str().ok_or("task id")?)?;
     let app = h.app.clone();
-    let ready = id.clone();
-    wait_for("the agent", Duration::from_secs(30), move || {
-        app.runtime(&ready)
-            .hub
-            .screen_text()
-            .contains("FAKE-AGENT READY")
+    let task = id.clone();
+    eventually("the agent", Duration::from_secs(30), move || {
+        ready(
+            app.runtime(&task)
+                .hub
+                .screen_text()
+                .contains("FAKE-AGENT READY"),
+        )
     })
     .await?;
     Ok((h, alice, id))
@@ -943,8 +920,8 @@ async fn agent_reads_an_attachment(contained: bool) -> TestResult {
     let app = h.app.clone();
     let probe = id.clone();
     let needle = expected.clone();
-    let seen = wait_for(&expected, Duration::from_secs(15), move || {
-        app.runtime(&probe).hub.screen_text().contains(&needle)
+    let seen = eventually(&expected, Duration::from_secs(15), move || {
+        ready(app.runtime(&probe).hub.screen_text().contains(&needle))
     })
     .await;
     if seen.is_err() {
@@ -954,14 +931,14 @@ async fn agent_reads_an_attachment(contained: bool) -> TestResult {
     let task = h.store.task(&id).await?.ok_or("task")?;
     let worktree = PathBuf::from(task.worktree_path.ok_or("worktree")?);
     assert_eq!(
-        git(
+        git_stdout(
             &worktree,
             &["status", "--porcelain", "--untracked-files=all"]
         )?,
         "",
         "the attachment must not show in git status"
     );
-    // Leaving the session closes the task (HRN-002); then it can be deleted.
+    // Leaving the session closes the task; then it can be deleted.
     h.app.send_input(&id, b"/exit\r").await?;
     let store = h.store.clone();
     let stopped = id.clone();
@@ -1003,7 +980,7 @@ async fn the_agent_reads_a_dropped_file_by_path_and_git_stays_clean() -> TestRes
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_contained_agent_reads_a_dropped_file_by_its_path() -> TestResult {
-    let probe = Command::new("bwrap")
+    let probe = std::process::Command::new("bwrap")
         .args([
             "--die-with-parent",
             "--unshare-pid",
@@ -1048,7 +1025,7 @@ fn swap(folder: &Path, outside: &Path, back: bool) -> std::io::Result<()> {
 /// A contained shell is root in its sandbox: a `RENAME_EXCHANGE` loop shows the server a link at
 /// each use of `folder` and the real folder at each check of it. Modeled exactly with the pause
 /// points: a link while the temporary file is created and when it takes its name, the folder
-/// while the server checks again (#657).
+/// while the server checks again.
 fn exchange_loop(below: &Path, folder: &Path, outside: &Path) {
     use yulius_app::race::{Point, on};
     for (point, back) in [
@@ -1139,7 +1116,7 @@ async fn an_editor_upload_never_replaces_a_file_through_a_swapped_folder() -> Te
     Ok(())
 }
 
-/// Hooks `point` to swap the sandbox `s1`'s `attachments` folder for a link to `outside` (#660).
+/// Hooks `point` to swap the sandbox `s1`'s `attachments` folder for a link to `outside`.
 fn attachments_swapped_at(data: &Path, outside: &Path, point: yulius_app::race::Point) {
     let sandbox = data.join("sandboxes/s1");
     let (folder, target) = (sandbox.join("attachments"), outside.to_path_buf());
@@ -1220,7 +1197,7 @@ async fn old_drafts_are_never_pruned_through_a_swapped_folder() -> TestResult {
     Ok(())
 }
 
-/// SPEC-402 VUG-004 (#809): a draft dated before 1970 is older than a week, so the owner's next
+/// A draft dated before 1970 is older than a week, so the owner's next
 /// upload prunes it as it prunes any old draft; a fresh one and a folder stay.
 #[tokio::test]
 async fn a_draft_dated_before_1970_is_old() -> TestResult {
@@ -1254,7 +1231,7 @@ async fn a_draft_dated_before_1970_is_old() -> TestResult {
     Ok(())
 }
 
-/// SPEC-413 ANR-002 (#1023): a draft older than a week that a waiting task's request names
+/// A draft older than a week that a waiting task's request names
 /// survives its owner's next upload and stays readable at its path; an unnamed one goes.
 #[tokio::test]
 async fn an_old_draft_a_request_names_is_never_pruned() -> TestResult {
@@ -1334,7 +1311,7 @@ async fn an_old_draft_a_request_names_is_never_pruned() -> TestResult {
     Ok(())
 }
 
-/// SPEC-413 ANR-002: the drafts folder's bound (500) counts the drafts younger than a week, which
+/// The drafts folder's bound (500) counts the drafts younger than a week, which
 /// wait for a task; older ones a request keeps never block the next drop.
 #[tokio::test]
 async fn kept_old_drafts_never_fill_the_drafts_folder() -> TestResult {
@@ -1371,14 +1348,14 @@ async fn kept_old_drafts_never_fill_the_drafts_folder() -> TestResult {
     Ok(())
 }
 
-/// SPEC-413 ANR-001, ANR-002: while the sandbox's tasks and automations cannot be read (the
+/// While the sandbox's tasks and automations cannot be read (the
 /// `automations` table renamed away), an old draft and a gone shell's folder stay.
 #[tokio::test]
 async fn unreadable_requests_keep_old_drafts_and_shell_folders() -> TestResult {
     let dir = tempfile::tempdir()?;
     let db_path = dir.path().join("yulius.db");
     let h = harness_with(HarnessOptions {
-        store: Some(yulius_store::SqliteStore::open(&db_path)?),
+        store: Some(crate::support::store::migrated(&db_path)?),
         dir: Some(dir),
         configure: Some(Box::new(|c| c.upload_max_bytes = LIMIT)),
         ..HarnessOptions::default()
@@ -1433,7 +1410,7 @@ async fn upload_declaring(
     .await
 }
 
-/// SPEC-325 UPL-002: with files up to 1 GiB, a few uploads could fill the disk that also holds
+/// With files up to 1 GiB, a few uploads could fill the disk that also holds
 /// the database; one that would take it to the critical level (95 % used) is refused before
 /// anything is created, like a file over the limit (422, not retried as a 429 would be).
 #[tokio::test]

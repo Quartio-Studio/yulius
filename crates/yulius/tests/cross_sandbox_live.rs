@@ -1,4 +1,4 @@
-//! SPEC-442 end to end (AC-XST-1, AC-XST-2): from the Superagent of one sandbox, a task asked for
+//! SPEC-442 end to end: from the Superagent of one sandbox, a task asked for
 //! prepared in another is started, then messaged, each once its person approves the request on
 //! the panel, with real processes: supervisor → detached `yulius ptyhost` → fake agent.
 
@@ -15,10 +15,10 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::TaskStatus;
 use yulius_ptyhost::test_support::locate_fake_agent;
 
-use crate::first_message::{data_dir, hooked, runtime, screen, start, stop, wait_for};
-use crate::pool_supervision::{ScriptedUsage, seed};
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::first_message::{data_dir, hooked, runtime, screen, start, stop};
+use crate::support::live::pool::{ScriptedUsage, seed};
+use crate::support::{TestResult, eventually};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -37,7 +37,7 @@ async fn approved(
         tokio::spawn(async move { app.tool_sandbox_task_request(&caller, action, &args).await })
     };
     let source = caller.sandbox.as_str();
-    wait_for(
+    eventually(
         "the request on the panel",
         Duration::from_secs(10),
         || async {
@@ -110,7 +110,7 @@ fn a_prepared_task_of_another_sandbox_is_started_and_messaged_from_a_superagent(
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
         assert_eq!(task.sandbox_id, pool);
         assert_eq!(task.status, TaskStatus::Prepared);
-        // On Claude Code by default (SPEC-620).
+        // On Claude Code by default.
         assert_eq!(task.harness, Harness::ClaudeCode);
 
         // It should have been queued: started from home, no delete and no new task.
@@ -123,7 +123,7 @@ fn a_prepared_task_of_another_sandbox_is_started_and_messaged_from_a_superagent(
         )
         .await?;
         assert_eq!(started["outcome"], "approved", "{started}");
-        wait_for("the task to run", Duration::from_secs(30), || async {
+        eventually("the task to run", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Budget: answer with an echo")
         })
         .await?;
@@ -140,7 +140,7 @@ fn a_prepared_task_of_another_sandbox_is_started_and_messaged_from_a_superagent(
         .await?;
         assert_eq!(sent["outcome"], "approved", "{sent}");
         assert_eq!(sent["delivered"], "sent", "{sent}");
-        wait_for("the message", Duration::from_secs(30), || async {
+        eventually("the message", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Message from admin (through their Superagent):")
         })
         .await?;

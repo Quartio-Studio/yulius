@@ -3,7 +3,7 @@
 //! `SubagentStart` and `SubagentStop` link and end it, and a merge closes a pull request's
 //! rounds.
 
-use crate::subscription_pool::{add_account, hook, running_task, seed};
+use crate::support::subscription_pool::{add_account, hook, running_task, seed};
 use crate::support::{TestResult, harness};
 
 use serde_json::{Value, json};
@@ -100,7 +100,7 @@ async fn a_first_reviewer_start_is_active_only_when_it_links_its_launch() -> Tes
     Ok(())
 }
 
-/// SPEC-493 REV-002, REV-004 (AC-5, AC-6): rounds 1 and 2 of a pull request run the Fable
+/// Rounds 1 and 2 of a pull request run the Fable
 /// reviewer as asked; the third is given the Opus reviewer as the tool's new input, with the
 /// rest of the input kept. A reviewer started again for a round that ended with no report (cut
 /// off) keeps its number and reviewer. Each round is recorded with its reviewer, model, head,
@@ -255,7 +255,7 @@ async fn the_third_round_of_a_pull_request_runs_the_opus_reviewer() -> TestResul
     Ok(())
 }
 
-/// SPEC-493 REV-003: a resumed reviewer (the same subagent again) changes nothing, and a stop
+/// A resumed reviewer (the same subagent again) changes nothing, and a stop
 /// of a subagent Yulius does not know, or of another agent type, ends no round.
 #[tokio::test]
 async fn a_resumed_reviewer_and_other_subagents_change_no_round() -> TestResult {
@@ -300,8 +300,8 @@ async fn a_resumed_reviewer_and_other_subagents_change_no_round() -> TestResult 
 /// delivery can neither reopen the completed round nor close the one now running.
 #[tokio::test]
 async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
-    use crate::support::{confined_git, harness_with_git, repos::git};
+    use crate::support::subscription_pool::hook_sent_at;
+    use crate::support::{confined_git, git_stdout, harness_with_git};
     use std::sync::{Arc, atomic::Ordering};
     use yulius_app::ports::store::TaskFieldUpdate;
     let h = harness_with_git(Arc::new(confined_git()))?;
@@ -310,9 +310,9 @@ async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestR
     let task = running_task(&h, TaskMode::Prompt, &account).await?;
     let repo = h._dir.path().join("sandboxes/s1/worktrees/review");
     std::fs::create_dir_all(&repo)?;
-    git(&repo, &["init"])?;
-    git(&repo, &["commit", "--allow-empty", "-m", "first head"])?;
-    let first_head = git(&repo, &["rev-parse", "HEAD"])?;
+    git_stdout(&repo, &["init"])?;
+    git_stdout(&repo, &["commit", "--allow-empty", "-m", "first head"])?;
+    let first_head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
     let start_at = h.clock.0.load(Ordering::SeqCst);
     h.store
         .update_task(
@@ -351,8 +351,8 @@ async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestR
         std::slice::from_ref(&first)
     );
 
-    git(&repo, &["commit", "--allow-empty", "-m", "review fixes"])?;
-    let fixed_head = git(&repo, &["rev-parse", "HEAD"])?;
+    git_stdout(&repo, &["commit", "--allow-empty", "-m", "review fixes"])?;
+    let fixed_head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
     hook(&h.internal, "SubagentStart", start.clone()).await?;
     hook(&h.internal, "SubagentStart", start).await?;
     hook_sent_at(
@@ -477,7 +477,7 @@ async fn continued_review_counts_each_report_in_merged_analytics() -> TestResult
 /// of a continued reviewer. Its own resume and report must clear them.
 #[tokio::test]
 async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     use std::sync::atomic::Ordering;
     let h = harness()?;
     seed(&h).await?;
@@ -521,7 +521,7 @@ async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResul
 /// Replaying the current round's own start before its cutoff was observed is still a replay.
 #[tokio::test]
 async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     use std::sync::atomic::Ordering;
     let h = harness()?;
     seed(&h).await?;
@@ -653,7 +653,7 @@ async fn a_reviewer_resuming_during_the_limit_write_cancels_the_move() -> TestRe
 /// The detached start handler can still be reading Git when the reviewer reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult {
-    use crate::support::{confined_git, harness_with_git, repos::git};
+    use crate::support::{confined_git, git_stdout, harness_with_git};
     use std::sync::{Arc, atomic::Ordering, mpsc};
     use std::time::Duration;
     use yulius_app::ports::store::TaskFieldUpdate;
@@ -664,9 +664,9 @@ async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult 
     a_round(&h, "rev", Some("Verdict: request changes")).await?;
     let repo = h._dir.path().join("sandboxes/s1/worktrees/slow-review");
     std::fs::create_dir_all(&repo)?;
-    git(&repo, &["init"])?;
-    git(&repo, &["commit", "--allow-empty", "-m", "fixes"])?;
-    let head = git(&repo, &["rev-parse", "HEAD"])?;
+    git_stdout(&repo, &["init"])?;
+    git_stdout(&repo, &["commit", "--allow-empty", "-m", "fixes"])?;
+    let head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
     h.store
         .update_task(
             &task,
@@ -795,7 +795,7 @@ fn ran_opus_without_fable(answer: &Value) {
     );
 }
 
-/// SPEC-493 REV-007 (AC-8, review round 1 of fix 1d): a move would end work the session has
+/// A move would end work the session has
 /// running, or a prompt waiting in Claude Code's queue: the Agent call is refused, each with its
 /// own reason, and nothing moves or is recorded.
 #[tokio::test]
@@ -828,7 +828,7 @@ async fn a_round_out_of_fable_is_refused_while_a_move_would_lose_work() -> TestR
     Ok(())
 }
 
-/// SPEC-493 REV-007 (review round 1 of fix 1d): a move whose new session could not start (here
+/// A move whose new session could not start (here
 /// no clone) is never announced: the round runs the Opus reviewer at once, and nothing moves.
 #[tokio::test]
 async fn a_round_out_of_fable_whose_move_cannot_start_runs_the_opus_reviewer() -> TestResult {
@@ -841,7 +841,7 @@ async fn a_round_out_of_fable_whose_move_cannot_start_runs_the_opus_reviewer() -
     Ok(())
 }
 
-/// SPEC-493 REV-007 (review round 1 of fix 1d): a switch refused moments ago is not tried again
+/// A switch refused moments ago is not tried again
 /// at every review start: the round runs the Opus reviewer, even while background work runs.
 #[tokio::test]
 async fn a_round_after_a_refused_move_runs_the_opus_reviewer() -> TestResult {
@@ -897,7 +897,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for SlowIsolation {
     fn release(&self, _: &yulius_domain::ids::SandboxId) {}
 }
 
-/// SPEC-493 REV-007 (review round 2 of fix 1d): a decision whose looks take longer than the
+/// A decision whose looks take longer than the
 /// hook client waits (here the new session's start check) answers within its bound with the
 /// Opus reviewer. The check is not cut off: it runs to its end, and its late answer moves
 /// nothing.
@@ -929,7 +929,7 @@ async fn a_slow_move_decision_runs_the_opus_reviewer_within_its_bound() -> TestR
     Ok(())
 }
 
-/// SPEC-493 REV-007 (review round 2 of fix 1d): a move decided for a run that is no longer the
+/// A move decided for a run that is no longer the
 /// task's live one (a later start moved the session meanwhile) moves nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_move_decided_for_an_ended_run_moves_nothing() -> TestResult {
@@ -969,7 +969,7 @@ async fn a_move_decided_for_an_ended_run_moves_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-007 (AC-8): round 3 runs Opus anyway, so a subscription out of Fable moves
+/// Round 3 runs Opus anyway, so a subscription out of Fable moves
 /// nothing and is not the reason of the round.
 #[tokio::test]
 async fn a_third_round_out_of_fable_does_not_move() -> TestResult {
@@ -1008,7 +1008,7 @@ async fn a_third_round_out_of_fable_does_not_move() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-007 (review round 1 of fix 1d): the Opus reviewer asked for by name in round 1,
+/// The Opus reviewer asked for by name in round 1,
 /// on a subscription out of Fable, is told why it runs on Opus like one Yulius switched.
 #[tokio::test]
 async fn the_opus_reviewer_asked_for_by_name_is_told_why() -> TestResult {
@@ -1024,7 +1024,7 @@ async fn the_opus_reviewer_asked_for_by_name_is_told_why() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-002 (review round 1 of fix 1b): a round is counted once, however many of its
+/// A round is counted once, however many of its
 /// reviewers report. Round 1 is cut off (its reviewer started again reports), then the cut-off
 /// one is resumed and reports too: the next review is round 2, still on the Fable reviewer.
 #[tokio::test]
@@ -1053,7 +1053,7 @@ async fn a_round_with_two_reports_is_counted_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-003 (AC-5): with the store failing, the reviewer starts as asked: an answer
+/// With the store failing, the reviewer starts as asked: an answer
 /// that changes and denies nothing.
 #[tokio::test]
 async fn a_round_yulius_cannot_record_starts_as_asked() -> TestResult {
@@ -1074,7 +1074,7 @@ async fn a_round_yulius_cannot_record_starts_as_asked() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-007 (review round 1 of fix 1b): when the run's subscription is no longer known
+/// When the run's subscription is no longer known
 /// (removed meanwhile), the reviewer starts as asked: the stronger one.
 #[tokio::test]
 async fn a_round_on_an_unknown_subscription_starts_as_asked() -> TestResult {
@@ -1089,7 +1089,7 @@ async fn a_round_on_an_unknown_subscription_starts_as_asked() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 RLM-003 (AC-19): a round on a subscription with 3 points of room left for its
+/// A round on a subscription with 3 points of room left for its
 /// reviewer's model, where no other subscription has more, starts as asked, where it is.
 #[tokio::test]
 async fn a_tight_round_with_nowhere_roomier_starts_where_it_is() -> TestResult {
@@ -1114,7 +1114,7 @@ async fn a_tight_round_with_nowhere_roomier_starts_where_it_is() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 RLM-003: a move for room gives way to the session's work: with background work
+/// A move for room gives way to the session's work: with background work
 /// running, the round starts where it is rather than being refused.
 #[tokio::test]
 async fn a_tight_round_with_work_running_starts_where_it_is() -> TestResult {
@@ -1139,7 +1139,7 @@ async fn a_tight_round_with_work_running_starts_where_it_is() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-004: what the reviewer's transcript says is noted on its round: the model that
+/// What the reviewer's transcript says is noted on its round: the model that
 /// answered (the latest), and that a usage limit cut it off, which its later report keeps.
 #[tokio::test]
 async fn a_rounds_answering_model_and_cut_off_are_noted() -> TestResult {
@@ -1187,7 +1187,7 @@ async fn a_rounds_answering_model_and_cut_off_are_noted() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-006 (AC-7): the reviews read gives the numbers of the pull requests merged in
+/// The reviews read gives the numbers of the pull requests merged in
 /// the range, for the sandboxes the caller sees; another range sees none of them, and a person
 /// not signed in is refused.
 #[tokio::test]
@@ -1226,7 +1226,7 @@ async fn the_reviews_read_counts_the_rounds_of_merged_pull_requests() -> TestRes
     assert_eq!(r.body["first_rounds_requesting_changes"], 1);
     assert_eq!(r.body["first_rounds_without_report"], 0);
     assert_eq!(r.body["median_rounds"], 2.0);
-    // SPEC-506 FST-007: round 2 followed a request for changes and approved.
+    // Round 2 followed a request for changes and approved.
     assert_eq!(r.body["re_reviews_after_changes"], 1, "{}", r.body);
     assert_eq!(r.body["re_reviews_asking_again"], 0, "{}", r.body);
     assert_eq!(r.body["rounds_after_approval"], 0, "{}", r.body);
@@ -1252,7 +1252,7 @@ async fn the_reviews_read_counts_the_rounds_of_merged_pull_requests() -> TestRes
     Ok(())
 }
 
-/// SPEC-493 REV-005: the merge record names the rounds of the pull request that merged (by its
+/// The merge record names the rounds of the pull request that merged (by its
 /// merge, not its number), the models of the runs that worked on it (a run that ended before
 /// the previous merge did not; one still going did), and says when no recorded round approved
 /// the merged head; without a known head any approving round counts.
@@ -1336,7 +1336,7 @@ async fn the_merge_record_names_this_pull_requests_rounds_and_authors() -> TestR
     Ok(())
 }
 
-/// SPEC-493 REV-005: an approval counts for the merged head it approved; one of another head
+/// An approval counts for the merged head it approved; one of another head
 /// (here with no worktree to tell whether only clean merges follow it) does not.
 #[tokio::test]
 async fn an_approval_counts_for_the_head_it_approved() -> TestResult {
@@ -1402,7 +1402,7 @@ async fn an_approval_counts_for_the_head_it_approved() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-007 (AC-8) end to end: a real session on a subscription out of Fable 5.2 asks
+/// SPEC-493 REV-007 end to end: a real session on a subscription out of Fable 5.2 asks
 /// for the reviewer through the real hook client; the Agent call is refused, the turn is
 /// interrupted and the session goes on on the subscription that runs both models, its first
 /// prompt asking for the review again.
@@ -1410,13 +1410,14 @@ mod real {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use crate::first_message::{hooked, new_task, start_with};
-    use crate::pool_supervision::{
-        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage, wait_for,
-    };
-    use crate::subscription_moves::{live_run, ready, run_accounts};
     use crate::support::TestResult;
     use crate::support::agents::FakeAgentOptions;
+    use crate::support::eventually;
+    use crate::support::live::first_message::{hooked, new_task, start_with};
+    use crate::support::live::pool::{
+        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage,
+    };
+    use crate::support::subscription_moves::{live_run, ready, run_accounts};
     use yulius_app::model::TaskMode;
     use yulius_domain::usage::UsageWindow;
     use yulius_ptyhost::test_support::locate_fake_agent;
@@ -1471,14 +1472,14 @@ mod real {
                 run_accounts(&app, &id).await,
                 [Some("a-first".to_owned()), Some("b-second".to_owned())]
             );
-            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+            let asked = eventually("the prompt", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("run Fable 5.2 for the review round you asked for")
             })
             .await;
             assert!(asked.is_ok(), "{}", screen(&app, &id));
             // The switch records its outcome once the new run started, which may be after the
             // run printed its prompt.
-            wait_for("the completed switch", Duration::from_secs(30), || async {
+            eventually("the completed switch", Duration::from_secs(30), || async {
                 app.deps.store.switches(&id).await.is_ok_and(|switches| {
                     switches.iter().any(|switch| switch.outcome == "completed")
                 })
@@ -1494,7 +1495,7 @@ mod real {
         Ok(())
     }
 
-    /// SPEC-493 RLM-001, RLM-002 (AC-18) end to end: a real session on Opus runs its Fable
+    /// SPEC-493 RLM-001, RLM-002 end to end: a real session on Opus runs its Fable
     /// reviewer, which a refusal of Fable's credits cuts off in its own transcript. The limit is
     /// recorded on the subscription for Fable, the session moves to the one that runs both
     /// models, and its new process is told to resume that reviewer by its id with
@@ -1505,34 +1506,34 @@ mod real {
     }
 
     /// RLM-002 with no subscription that can run Fable: nothing moves, and the session is told
-    /// to start the review again, which then runs on Opus 5.5 (REV-007).
+    /// to start the review again, which then runs on Opus 5.5.
     #[test]
     fn a_cut_off_reviewer_nobody_can_run_is_told_to_go_on_on_opus() -> TestResult {
         a_cut_off_reviewer(false, b"/reviewer-limit yulius-reviewer\r")
     }
 
-    /// Review round 1 of fix 7: a reviewer refused at its first request, before any answer of
+    /// A reviewer refused at its first request, before any answer of
     /// it is read, meets its round's model's limit, not the session's.
     #[test]
     fn a_reviewer_refused_before_any_answer_meets_its_own_models_limit() -> TestResult {
         a_cut_off_reviewer(true, b"/reviewer-limit-first yulius-reviewer\r")
     }
 
-    /// RLM-001, RLM-002: a reviewer's limit of the whole subscription is the session's too: it
+    /// A reviewer's limit of the whole subscription is the session's too: it
     /// moves as at any limit, and the new process is told to resume its reviewer.
     #[test]
     fn a_reviewer_limit_of_the_subscription_moves_as_any_limit() -> TestResult {
         a_cut_off_reviewer(true, b"/reviewer-limit-all yulius-reviewer\r")
     }
 
-    /// RLM-002: a cut-off read in a turn of the session's thread moves it at that turn's end
+    /// A cut-off read in a turn of the session's thread moves it at that turn's end
     /// (its Stop hook), not while it works.
     #[test]
     fn a_reviewer_cut_off_in_a_turn_moves_the_session_at_its_end() -> TestResult {
         a_cut_off_reviewer(true, b"/reviewer-limit-turn yulius-reviewer\r")
     }
 
-    /// SPEC-493 RLM-003 (AC-19) end to end: the session's subscription has room for Opus but 3
+    /// SPEC-493 RLM-003 end to end: the session's subscription has room for Opus but 3
     /// points left for Fable, another has room for both. The Fable reviewer's start is refused,
     /// the session moves, and its first prompt there asks for the review again.
     #[test]
@@ -1571,12 +1572,12 @@ mod real {
                 run_accounts(&app, &id).await,
                 [Some("a-first".to_owned()), Some("b-second".to_owned())]
             );
-            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+            let asked = eventually("the prompt", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("with room for Fable 5.2 for the review round you asked")
             })
             .await;
             assert!(asked.is_ok(), "{}", screen(&app, &id));
-            wait_for("the completed switch", Duration::from_secs(30), || async {
+            eventually("the completed switch", Duration::from_secs(30), || async {
                 app.deps.store.switches(&id).await.is_ok_and(|switches| {
                     switches.iter().any(|switch| switch.outcome == "completed")
                 })
@@ -1592,7 +1593,7 @@ mod real {
         Ok(())
     }
 
-    /// Review round 1 of fix 7: a cut-off reviewer superseded by a new one is forgotten (here
+    /// A cut-off reviewer superseded by a new one is forgotten (here
     /// the new start moves the session for Fable, REV-007, whose prompt asks for the review
     /// again and names no reviewer to resume); a subagent that is no round's, refused before any
     /// answer, is no one's limit: nothing moves.
@@ -1626,7 +1627,7 @@ mod real {
                 ready(&app, &id).await?;
                 // A first turn, read live: the transcript is followed from here on.
                 app.send_input(&id, b"hello\r").await?;
-                wait_for("the session waiting", Duration::from_secs(30), || async {
+                eventually("the session waiting", Duration::from_secs(30), || async {
                     app.deps.store.task(&id).await.is_ok_and(|task| {
                         task.is_some_and(|task| {
                             task.activity == Some(yulius_domain::task::Activity::Waiting)
@@ -1635,14 +1636,14 @@ mod real {
                 })
                 .await?;
                 app.send_input(&id, cut_off).await?;
-                let cut = wait_for("the cut-off", Duration::from_secs(30), || async {
+                let cut = eventually("the cut-off", Duration::from_secs(30), || async {
                     screen(&app, &id).contains("CUT OFF")
                 })
                 .await;
                 assert!(cut.is_ok(), "{}", screen(&app, &id));
                 if superseded {
                     // The cut-off is read: the first subscription is out of Fable.
-                    wait_for("Fable recorded", Duration::from_secs(30), || async {
+                    eventually("Fable recorded", Duration::from_secs(30), || async {
                         app.deps
                             .store
                             .account(
@@ -1663,7 +1664,7 @@ mod real {
                     .await?;
                     app.send_input(&id, b"/agent yulius-reviewer\r").await?;
                     live_run(&app, &id, 2).await?;
-                    let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+                    let asked = eventually("the prompt", Duration::from_secs(30), || async {
                         screen(&app, &id).contains("for the review round you asked for")
                     })
                     .await;
@@ -1674,7 +1675,7 @@ mod real {
                     assert_eq!(switches[0].reason, "review_fable", "{switches:?}");
                 } else {
                     app.send_input(&id, b"carry on\r").await?;
-                    let moved = wait_for("no move", Duration::from_secs(10), || async {
+                    let moved = eventually("no move", Duration::from_secs(10), || async {
                         app.deps
                             .store
                             .attempts(&id)
@@ -1748,7 +1749,7 @@ mod real {
             // A first turn, after which the session waits for its person (idle), as a session
             // does while its background reviewer reads.
             app.send_input(&id, b"hello\r").await?;
-            wait_for("the session waiting", Duration::from_secs(30), || async {
+            eventually("the session waiting", Duration::from_secs(30), || async {
                 app.deps.store.task(&id).await.is_ok_and(|task| {
                     task.is_some_and(|task| {
                         task.activity == Some(yulius_domain::task::Activity::Waiting)
@@ -1758,7 +1759,7 @@ mod real {
             .await?;
             // Sent as the agent works, not typed by a person (whose typing holds Yulius back).
             app.send_input(&id, command).await?;
-            let cut = wait_for("the cut-off reviewer", Duration::from_secs(30), || async {
+            let cut = eventually("the cut-off reviewer", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("CUT OFF")
             })
             .await;
@@ -1766,7 +1767,7 @@ mod real {
             // While the session waits, nothing moves: only a turn's end does (review round 2 of
             // fix 7). Longer than a watcher poll and the background check.
             if command == b"/reviewer-limit yulius-reviewer\r" && second_runs_fable {
-                let early = wait_for(
+                let early = eventually(
                     "a move outside a turn's end",
                     Duration::from_secs(6),
                     || second_run_started(&app, &id),
@@ -1782,7 +1783,7 @@ mod real {
             }
             if !second_runs_fable {
                 // Nowhere to move: the session stays and is told the round runs on Opus.
-                let told = wait_for("the Opus note", Duration::from_secs(30), || async {
+                let told = eventually("the Opus note", Duration::from_secs(30), || async {
                     let seen = screen(&app, &id);
                     seen.contains("no Claude subscription can run Fable 5.2 now")
                         && seen.contains("this round then runs on Opus 5.5")
@@ -1799,14 +1800,14 @@ mod real {
                 run_accounts(&app, &id).await,
                 [Some("a-first".to_owned()), Some("b-second".to_owned())]
             );
-            let told = wait_for("the resume prompt", Duration::from_secs(30), || async {
+            let told = eventually("the resume prompt", Duration::from_secs(30), || async {
                 let seen = screen(&app, &id);
                 seen.contains("Resume that reviewer now: SendMessage to `arev")
                     && seen.contains("Do not start a new reviewer for this round")
             })
             .await;
             assert!(told.is_ok(), "{}", screen(&app, &id));
-            wait_for("the completed switch", Duration::from_secs(30), || async {
+            eventually("the completed switch", Duration::from_secs(30), || async {
                 app.deps.store.switches(&id).await.is_ok_and(|switches| {
                     switches.iter().any(|switch| switch.outcome == "completed")
                 })
@@ -1860,13 +1861,13 @@ fn reviewer_stop(id: &str, agent: &str, report: &str) -> Value {
         "last_assistant_message": report})
 }
 
-/// SPEC-633 RRE-001 (#1726): the Agent tool's `PreToolUse` outlasted the hook client's 5 s, so
+/// The Agent tool's `PreToolUse` outlasted the hook client's 5 s, so
 /// Claude Code started the reviewer and sent `SubagentStart` before Yulius inserted the round,
 /// which no start then linked. The reviewer's report still ends that round with its verdict; a
 /// stop of another agent type, or one sent before the round started, ends nothing.
 #[tokio::test]
 async fn a_stop_ends_the_round_its_start_came_before() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     let h = harness()?;
     seed(&h).await?;
     let account = add_account(&h, "acc-1", None).await?;
@@ -1926,7 +1927,7 @@ async fn a_stop_ends_the_round_its_start_came_before() -> TestResult {
     Ok(())
 }
 
-/// SPEC-633 RRE-001: the fallback takes only a round no subagent holds. With round 2's reviewer
+/// The fallback takes only a round no subagent holds. With round 2's reviewer
 /// linked and running, an unknown reviewer's stop ends neither it nor anything else.
 #[tokio::test]
 async fn a_stop_of_an_unknown_reviewer_leaves_a_linked_round_alone() -> TestResult {
@@ -1949,14 +1950,14 @@ async fn a_stop_of_an_unknown_reviewer_leaves_a_linked_round_alone() -> TestResu
     Ok(())
 }
 
-/// SPEC-633 RRE-002 (#1726): Yulius never took the reviewer's `SubagentStop` (it restarted while
+/// Yulius never took the reviewer's `SubagentStop` (it restarted while
 /// the reviewer ran in the background, and the hook failed open). The completed notification in
 /// the session's transcript ends the round with the report's verdict. An unknown agent's report
 /// ends nothing; once the reviewer is resumed with `SendMessage`, a replay of its first report
 /// leaves the continuation open, and its second report ends it.
 #[tokio::test]
 async fn a_reviewers_notification_ends_the_round_its_lost_stop_left_open() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     let h = harness()?;
     seed(&h).await?;
     let account = add_account(&h, "acc-1", None).await?;
@@ -2016,7 +2017,7 @@ async fn a_reviewers_notification_ends_the_round_its_lost_stop_left_open() -> Te
     Ok(())
 }
 
-/// SPEC-633 RRE-003 (#1726): a round still open when its pull request merged carries the merge
+/// A round still open when its pull request merged carries the merge
 /// on the delivery's view, which `delivery_status` reads as unreported.
 #[tokio::test]
 async fn a_round_its_merge_left_open_carries_the_merge() -> TestResult {
@@ -2059,7 +2060,7 @@ async fn a_round_its_merge_left_open_carries_the_merge() -> TestResult {
     Ok(())
 }
 
-/// SPEC-633 RRE-001, review round 1: the `PreToolUse` answer was lost, so the reviewer ran as
+/// The `PreToolUse` answer was lost, so the reviewer ran as
 /// asked (`yulius-reviewer`) while Yulius recorded round 3 for the one it decided
 /// (`yulius-reviewer-opus`). The stop of the reviewer that ran still ends that round, which
 /// then names the reviewer and model that ran.
@@ -2112,7 +2113,7 @@ async fn a_stop_ends_an_unlinked_round_that_decided_another_reviewer() -> TestRe
     Ok(())
 }
 
-/// SPEC-633 RRE-001, review round 1: a round decided as `no_fable` (Opus, since the
+/// A round decided as `no_fable` (Opus, since the
 /// subscription cannot run Fable) whose answer was lost ran the Fable reviewer as asked. Once its
 /// stop ends it, it names that reviewer and no longer counts as a round without Fable.
 #[tokio::test]
@@ -2161,7 +2162,7 @@ async fn an_unlinked_no_fable_round_its_asked_reviewer_reported_is_no_fable_no_m
     Ok(())
 }
 
-/// SPEC-633 RRE-001, review round 2: when the reviewer that ran is the one the round decided (the
+/// When the reviewer that ran is the one the round decided (the
 /// Opus reviewer asked for by name on a subscription out of Fable), the stop fallback keeps the
 /// round's reason.
 #[tokio::test]

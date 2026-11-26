@@ -152,7 +152,7 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
         effort: None,
         contained: false,
         mcp: Vec::new(),
-        credential: Secret("unused-the-local-login-is-used".into()),
+        credential: Secret::new("unused-the-local-login-is-used".into()),
         codex_home: None,
         codex_program: None,
         antigravity_home: None,
@@ -498,7 +498,7 @@ impl LiveHome {
             effort: None,
             contained: false,
             mcp: Vec::new(),
-            credential: Secret("unused-no-provider-request-is-made".into()),
+            credential: Secret::new("unused-no-provider-request-is-made".into()),
             codex_home: None,
             codex_program: None,
             antigravity_home: None,
@@ -519,7 +519,7 @@ impl LiveHome {
     }
 }
 
-/// SPEC-485 LSP-004 (ADR-0327): in each of eight layouts in which the real CLI loads a plugin's
+/// In each of eight layouts in which the real CLI loads a plugin's
 /// language server, it loads none when started with the settings Yulius plans for a run of that
 /// home and worktree, and the plugin without a language server stays on. Each layout is first shown to be
 /// one the CLI loads three servers from (the control), so a layout a later Claude Code no longer

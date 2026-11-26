@@ -1,4 +1,4 @@
-//! A project's Vidoc switch (SPEC-338): turned off or on per sandbox through the sandbox API,
+//! A project's Vidoc switch: turned off or on per sandbox through the sandbox API,
 //! kept across profile updates, audited, and followed by the virtual key, the briefing and the
 //! onboarding prompt.
 
@@ -52,7 +52,7 @@ async fn instance_on(h: Harness) -> Result<Instance, Box<dyn std::error::Error>>
     let bob = admit_and_sign_in(&h, &admin, "bob", 12, true).await?;
     h.app.set_vidoc(VidocServices::new(
         Arc::new(AnyVidoc) as Arc<dyn VidocConnector>,
-        Ok(Some(Secret(KEY.into()))),
+        Ok(Some(Secret::new(KEY.into()))),
     ));
     h.app.load_vidoc_key().await;
     let owner = h.store.user_by_login("alice").await?.ok_or("alice")?.id;
@@ -136,7 +136,7 @@ fn refused_as_off(answer: &TowardVidoc) -> bool {
             && message.contains("nothing was sent"))
 }
 
-/// SPEC-356 (review round 2): the proxy's refusal and the scanner agree on its marker, so a
+/// The proxy's refusal and the scanner agree on its marker, so a
 /// running session's scan says Vidoc is off rather than that Vidoc refused the key.
 #[test]
 fn the_scanner_recognizes_the_proxys_refusal() -> Result<(), Box<dyn std::error::Error>> {
@@ -150,7 +150,7 @@ fn the_scanner_recognizes_the_proxys_refusal() -> Result<(), Box<dyn std::error:
         include_str!("../../../scripts/test_vidoc_scan.py").contains(VIDOC_OFF_REFUSAL.trim_end()),
         "the scanner's test uses the proxy's own text"
     );
-    // SPEC-381 (#981): the scanner keeps `MESSAGE_LIMIT` characters of an error body, and the
+    // The scanner keeps `MESSAGE_LIMIT` characters of an error body, and the
     // proxy's body is the refusal with its line end; a longer one would lose its reason's end.
     let limit: usize = yulius::security_scan::SCANNER
         .lines()
@@ -179,7 +179,7 @@ async fn audited(i: &Instance) -> Result<Vec<String>, Box<dyn std::error::Error>
         .collect())
 }
 
-/// VOF-001: on by default; an admin turns it off and on, a profile update keeps it, a writer
+/// On by default; an admin turns it off and on, a profile update keeps it, a writer
 /// cannot change it, and each change is audited.
 #[tokio::test]
 async fn an_admin_turns_a_projects_vidoc_scans_off_and_on() -> TestResult {
@@ -221,7 +221,7 @@ async fn an_admin_turns_a_projects_vidoc_scans_off_and_on() -> TestResult {
     Ok(())
 }
 
-/// VOF-001: a playground has no CI scan, so it has no switch to turn.
+/// A playground has no CI scan, so it has no switch to turn.
 #[tokio::test]
 async fn a_playground_refuses_the_switch() -> TestResult {
     let i = instance().await?;
@@ -249,7 +249,7 @@ async fn a_playground_refuses_the_switch() -> TestResult {
     Ok(())
 }
 
-/// VOF-002: a switched-off project's runs do not get the instance key as `VIDOC_API_KEY`; turned
+/// A switched-off project's runs do not get the instance key as `VIDOC_API_KEY`; turned
 /// on again, they do. SPEC-356 (review round 1): a run that started before the switch went off
 /// (its environment without `YULIUS_VIDOC=off`) has its scan's request refused by the proxy, so
 /// nothing reaches Vidoc.
@@ -272,7 +272,7 @@ async fn a_switched_off_project_does_not_get_the_instance_key() -> TestResult {
     Ok(())
 }
 
-/// VOF-003: the briefing and the onboarding prompt say "off" for a switched-off project, and "on"
+/// The briefing and the onboarding prompt say "off" for a switched-off project, and "on"
 /// with the instance key once it is switched on again.
 #[tokio::test]
 async fn agents_are_told_when_a_project_is_switched_off() -> TestResult {
@@ -290,7 +290,7 @@ async fn agents_are_told_when_a_project_is_switched_off() -> TestResult {
     Ok(())
 }
 
-/// VOF-004: the web UI learns whether the instance has a Vidoc key (the Add sandbox dialog offers
+/// The web UI learns whether the instance has a Vidoc key (the Add sandbox dialog offers
 /// the switch only then), never the key.
 #[tokio::test]
 async fn me_says_whether_the_instance_has_a_vidoc_key() -> TestResult {
@@ -302,7 +302,7 @@ async fn me_says_whether_the_instance_has_a_vidoc_key() -> TestResult {
     Ok(())
 }
 
-/// VOF-001 (review round 1): a request whose profile is refused changes nothing, the switch
+/// A request whose profile is refused changes nothing, the switch
 /// included.
 #[tokio::test]
 async fn a_refused_profile_leaves_the_switch_as_it_was() -> TestResult {
@@ -349,7 +349,7 @@ async fn instance_audited(i: &Instance) -> Result<Vec<String>, Box<dyn std::erro
         .collect())
 }
 
-/// SPEC-356 VIO-001: a superadmin, and only a superadmin, switches Vidoc off for the instance
+/// A superadmin, and only a superadmin, switches Vidoc off for the instance
 /// and on again; the key stays, and each change is audited.
 #[tokio::test]
 async fn a_superadmin_switches_vidoc_off_for_the_instance_and_on_again() -> TestResult {
@@ -390,7 +390,7 @@ async fn a_superadmin_switches_vidoc_off_for_the_instance_and_on_again() -> Test
     Ok(())
 }
 
-/// SPEC-356 VIO-001: the switch is stored, so a restarted server starts with Vidoc off.
+/// The switch is stored, so a restarted server starts with Vidoc off.
 #[tokio::test]
 async fn a_restarted_server_keeps_vidoc_off_for_the_instance() -> TestResult {
     use yulius_app::ports::store_ext::UpdateStore as _;
@@ -404,7 +404,7 @@ async fn a_restarted_server_keeps_vidoc_off_for_the_instance() -> TestResult {
         .await?;
     h.app.set_vidoc(VidocServices::new(
         Arc::new(AnyVidoc) as Arc<dyn VidocConnector>,
-        Ok(Some(Secret(KEY.into()))),
+        Ok(Some(Secret::new(KEY.into()))),
     ));
     h.app.load_vidoc_key().await;
     let view = call(&h.router, Method::GET, "/api/admin/vidoc", None, &admin).await?;
@@ -414,7 +414,7 @@ async fn a_restarted_server_keeps_vidoc_off_for_the_instance() -> TestResult {
     Ok(())
 }
 
-/// SPEC-356 VIO-002..VIO-005: while the instance is off, a switched-on project gets no instance
+/// While the instance is off, a switched-on project gets no instance
 /// key, its agents are told, `me` offers no Vidoc box, and the project keeps its own choice,
 /// which is followed again once the instance is on.
 #[tokio::test]
@@ -452,7 +452,7 @@ async fn every_project_follows_the_instance_switch() -> TestResult {
     Ok(())
 }
 
-/// `s1`'s Vidoc view (SPEC-359 VSB-001) as `who`.
+/// `s1`'s Vidoc view as `who`.
 async fn vidoc_view(i: &Instance, who: &Creds) -> Result<Value, Box<dyn std::error::Error>> {
     let r = call(
         &i.h.router,
@@ -508,7 +508,7 @@ fn integration_head(i: &Instance, config: Option<&str>) -> TestResult {
     Ok(())
 }
 
-/// SPEC-359 VSB-001, VSB-002: the sandbox's admin (not a superadmin) switches its Vidoc scans off
+/// The sandbox's admin (not a superadmin) switches its Vidoc scans off
 /// and on in the sandbox; a writer sees the state but cannot change it; the superadmin's change
 /// (the Instance card) and the sandbox's are one switch, and each is audited with who and when.
 #[tokio::test]
@@ -563,7 +563,7 @@ async fn a_sandbox_admin_switches_vidoc_in_the_sandbox_and_the_instance_card_agr
     Ok(())
 }
 
-/// SPEC-359 VSB-003: `enabled = false` committed on the integration branch wins over Yulius's
+/// `enabled = false` committed on the integration branch wins over Yulius's
 /// switch; a file the scanner would refuse is said; an instance switched off is said.
 #[tokio::test]
 async fn the_repositorys_committed_switch_wins_and_is_said() -> TestResult {
@@ -598,7 +598,7 @@ async fn the_repositorys_committed_switch_wins_and_is_said() -> TestResult {
     Ok(())
 }
 
-/// SPEC-359 VSB-001: a playground has no switch.
+/// A playground has no switch.
 #[tokio::test]
 async fn a_playground_has_no_vidoc_view() -> TestResult {
     let i = instance().await?;
@@ -626,7 +626,7 @@ async fn a_playground_has_no_vidoc_view() -> TestResult {
     Ok(())
 }
 
-/// SPEC-359 VSB-002 (review round 1): a sandbox added again under a removed one's slug does not
+/// A sandbox added again under a removed one's slug does not
 /// show the removed one's last change as its own.
 #[tokio::test]
 async fn a_change_before_the_sandbox_existed_is_not_its_last_change() -> TestResult {
@@ -654,7 +654,7 @@ async fn a_change_before_the_sandbox_existed_is_not_its_last_change() -> TestRes
     Ok(())
 }
 
-/// SPEC-359 VSB-001 (review round 1): someone without access to the sandbox does not see it.
+/// Someone without access to the sandbox does not see it.
 #[tokio::test]
 async fn a_stranger_does_not_see_a_sandboxs_vidoc_view() -> TestResult {
     let i = instance().await?;

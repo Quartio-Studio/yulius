@@ -181,7 +181,7 @@ impl SessionHost for FakeHost {
         size: (u16, u16),
     ) -> AppResult<SpawnedRun> {
         // The process host refuses a launch larger than the wire allows (`LaunchSpec::validate`),
-        // so a terminal size it would refuse fails here too (#1414).
+        // so a terminal size it would refuse fails here too.
         if size.0 > MAX_DIMENSION || size.1 > MAX_DIMENSION {
             return Err(yulius_app::error::AppError::internal(format!(
                 "terminal size {}x{} outside the process host's 1..={MAX_DIMENSION}",
@@ -533,7 +533,7 @@ async fn stored_credential(s: &Setup, account: &str) -> Result<String, Box<dyn s
     Ok(String::from_utf8(s.h.app.deps.crypto.open(&sealed)?)?)
 }
 
-/// SPEC-503 CDX-005: a Codex account signs in with `codex login --device-auth` in a temporary
+/// A Codex account signs in with `codex login --device-auth` in a temporary
 /// Codex home that keeps its credentials in a file; viewers see the device code, and the
 /// `auth.json` it wrote is sealed into the account.
 #[tokio::test]
@@ -591,7 +591,7 @@ async fn codex_device_login_seals_the_auth_file() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CLI-002: the device sign-in starts the Codex CLI Yulius provides, by its path.
+/// The device sign-in starts the Codex CLI Yulius provides, by its path.
 #[tokio::test]
 async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
     let host = Arc::new(FakeHost::default());
@@ -610,7 +610,7 @@ async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
         yulius::wiring::harness::HarnessAdapter::new("/bin/false".into(), "http://127.0.0.1:1")
             .with_codex_cli(Arc::new(cli));
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         harness: Some(Arc::new(adapter)),
         ..support::HarnessOptions::default()
@@ -636,7 +636,7 @@ async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CLI-001: a Codex account that needs no sign-in (an API key, an imported auth.json)
+/// A Codex account that needs no sign-in (an API key, an imported auth.json)
 /// starts the Codex CLI's install in the background, so its first task does not wait for it.
 #[tokio::test]
 async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResult {
@@ -654,7 +654,7 @@ async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResul
             .with_codex_cli(Arc::clone(&cli));
     let host = Arc::new(FakeHost::default());
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         harness: Some(Arc::new(adapter)),
         ..support::HarnessOptions::default()
@@ -680,7 +680,7 @@ async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResul
     Ok(())
 }
 
-/// SPEC-503 CDX-005: a Codex sign-in that stored no usable credentials fails the account.
+/// A Codex sign-in that stored no usable credentials fails the account.
 #[tokio::test]
 async fn a_codex_login_without_credentials_fails() -> TestResult {
     let s = setup().await?;
@@ -705,7 +705,7 @@ async fn a_codex_login_without_credentials_fails() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-005: an OpenAI API key makes a Codex account at once, without a sign-in; it is
+/// An OpenAI API key makes a Codex account at once, without a sign-in; it is
 /// sealed as the `auth.json` Codex writes for it and never returned. A key that is not one, a key
 /// for a Claude account and an unknown provider are refused.
 #[tokio::test]
@@ -788,7 +788,7 @@ async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 IMP-001: an import wins over a device sign-in running for the account even when that
+/// An import wins over a device sign-in running for the account even when that
 /// sign-in has already stored credentials in its temporary home: it is cancelled and its file is
 /// not taken.
 #[tokio::test]
@@ -843,7 +843,7 @@ async fn listed(s: &Setup) -> Result<Value, Box<dyn std::error::Error>> {
     .body)
 }
 
-/// SPEC-503 CDX-011: an `auth.json` of a `codex login` made elsewhere makes a Codex account at
+/// An `auth.json` of a `codex login` made elsewhere makes a Codex account at
 /// once, sealed as the device sign-in's file is; it is never returned, logged in the audit or
 /// accepted when it is not a full ChatGPT sign-in.
 #[tokio::test]
@@ -907,7 +907,7 @@ async fn a_codex_account_can_be_added_by_importing_its_auth_file() -> TestResult
     Ok(())
 }
 
-/// SPEC-503 CDX-011: an existing Codex account signs in again by importing a new `auth.json`:
+/// An existing Codex account signs in again by importing a new `auth.json`:
 /// the file replaces its credential at once, a sign-in running for it is cancelled, the audit
 /// names the import without its content, and a file that is not a ChatGPT sign-in or an account
 /// of Claude is refused without changing anything.
@@ -1100,7 +1100,7 @@ async fn failed_logins_record_errors_and_relogin_failures_keep_working_accounts(
     Ok(())
 }
 
-/// SPEC-483 SGN-001: Claude refused a subscription, so it needs a new sign-in. A sign-in that
+/// Claude refused a subscription, so it needs a new sign-in. A sign-in that
 /// fails leaves it needing one, with the reason it had: it does not become an `error`, which a
 /// usage reading would turn into `ok` and the pool would place tasks on again. The sign-in's own
 /// reason is told to its viewers, in its exit frame.
@@ -1203,7 +1203,7 @@ async fn logins_time_out_and_their_process_is_stopped() -> TestResult {
     Ok(())
 }
 
-/// SPEC-243 LGN-001: a CLI that prints the token and keeps running is stopped after the grace
+/// A CLI that prints the token and keeps running is stopped after the grace
 /// period, and the sign-in ends `ok` with the token sealed (not `running` until the timeout).
 #[tokio::test]
 async fn a_sign_in_ends_once_its_token_is_captured() -> TestResult {
@@ -1244,7 +1244,7 @@ async fn a_sign_in_ends_once_its_token_is_captured() -> TestResult {
     Ok(())
 }
 
-/// SPEC-243 LGN-002: a cancel that comes after the token was printed (in the grace before the
+/// A cancel that comes after the token was printed (in the grace before the
 /// CLI exits) keeps the token: the sign-in had succeeded.
 #[tokio::test]
 async fn a_cancel_after_the_token_keeps_it() -> TestResult {
@@ -1295,7 +1295,7 @@ async fn a_cancel_after_the_token_keeps_it() -> TestResult {
     Ok(())
 }
 
-/// SPEC-243 LGN-001: an incomplete token (fewer than 20 characters after the prefix) does not
+/// An incomplete token (fewer than 20 characters after the prefix) does not
 /// end the sign-in; it runs on until it really ends.
 #[tokio::test]
 async fn a_partial_token_does_not_end_the_sign_in() -> TestResult {
@@ -1318,7 +1318,7 @@ async fn a_partial_token_does_not_end_the_sign_in() -> TestResult {
     Ok(())
 }
 
-/// SPEC-243 LGN-002: closing a running sign-in cancels it on the server; the account keeps its
+/// Closing a running sign-in cancels it on the server; the account keeps its
 /// state, a second cancel of the ended sign-in changes nothing, and only administrators may.
 #[tokio::test]
 async fn a_running_sign_in_can_be_cancelled() -> TestResult {
@@ -1486,7 +1486,7 @@ async fn account_crud_permissions_usage_and_removal_in_use() -> TestResult {
         (Method::DELETE, path.clone(), None),
         (Method::POST, format!("{path}/relogin"), None),
         (Method::POST, format!("{path}/usage"), None),
-        // An import of a Codex sign-in is an administrator's too (SPEC-503 IMP-001).
+        // An import of a Codex sign-in is an administrator's too.
         (
             Method::POST,
             format!("{path}/import"),
@@ -1578,7 +1578,7 @@ async fn account_crud_permissions_usage_and_removal_in_use() -> TestResult {
         )
         .await?;
 
-    // A live task uses the account: removal still works, and its task moves (SPEC-447 MOV-003).
+    // A live task uses the account: removal still works, and its task moves.
     insert_live_attempt(&s.h, &id).await?;
     let list = call(&s.h.router, Method::GET, "/api/admin/accounts", None, &bob).await?;
     let account = &list.body[0];
@@ -1765,7 +1765,7 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
     tokio::time::timeout(Duration::from_secs(10), run).await??;
     let _ = ws.close(None).await;
 
-    // SPEC-243 LGN-007: an unknown or expired sign-in is said in band, with a close the browser
+    // An unknown or expired sign-in is said in band, with a close the browser
     // does not retry (4003), instead of a handshake 404 it would retry for minutes.
     let mut gone = url.replace(&login_id, "expired").into_client_request()?;
     let cookie = support::cookie_header(s.admin.cookie.as_deref().ok_or("cookie")?);
@@ -1884,7 +1884,7 @@ async fn login_terminal_answers(ws: &mut LoginSocket) -> TestResult {
     Ok(())
 }
 
-/// #759 (SPEC-295 LTR-001..005): an open login terminal is re-checked like the other sockets. A
+/// An open login terminal is re-checked like the other sockets. A
 /// revoked API token, a signed-out session and a removed instance administration each close their
 /// own terminal with 4003 within the re-check interval; the others stay open.
 #[tokio::test]
@@ -1892,7 +1892,7 @@ async fn a_login_terminal_closes_once_its_sign_in_or_administration_ends() -> Te
     use yulius_app::ports::store::UserStore as _;
     let host = Arc::new(FakeHost::default());
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
         ..support::HarnessOptions::default()
@@ -1975,7 +1975,7 @@ async fn a_login_terminal_closes_once_its_sign_in_or_administration_ends() -> Te
     Ok(())
 }
 
-/// SPEC-505 AGY-008: an Antigravity account signs in with Google through the Antigravity CLI's
+/// An Antigravity account signs in with Google through the Antigravity CLI's
 /// own sign-in in a temporary home with no keyring (its link shown to the person); the token
 /// file it writes is sealed into the account, and the temporary home is wiped.
 #[tokio::test]
@@ -2063,7 +2063,7 @@ async fn state_says(
     tokio::time::timeout(Duration::from_secs(10), wait).await?
 }
 
-/// SPEC-515 (issue #1421): the Antigravity CLI's setup goes on after it wrote its token file
+/// The Antigravity CLI's setup goes on after it wrote its token file
 /// (the data-use choice and more), so the sign-in is not stopped then. The terminal says
 /// `signed_in` and keeps taking input; the person ends it (Done is the cancel route), and the
 /// token file as it is then is sealed: here one the CLI rewrote during its setup.
@@ -2171,7 +2171,7 @@ async fn an_antigravity_sign_in_runs_on_after_its_token_file_until_done() -> Tes
     Ok(())
 }
 
-/// SPEC-515: an Antigravity sign-in whose CLI exits by itself after its setup is sealed.
+/// An Antigravity sign-in whose CLI exits by itself after its setup is sealed.
 #[tokio::test]
 async fn an_antigravity_sign_in_that_exits_after_its_setup_is_sealed() -> TestResult {
     let s = setup().await?;
@@ -2197,7 +2197,7 @@ async fn an_antigravity_sign_in_that_exits_after_its_setup_is_sealed() -> TestRe
     Ok(())
 }
 
-/// SPEC-515: an Antigravity sign-in left open after its token file (the window closed without
+/// An Antigravity sign-in left open after its token file (the window closed without
 /// Done reaching the server) is stopped at its timeout, and its token file is still sealed.
 #[tokio::test]
 async fn an_antigravity_sign_in_left_open_is_sealed_at_its_timeout() -> TestResult {
@@ -2230,7 +2230,7 @@ async fn an_antigravity_sign_in_left_open_is_sealed_at_its_timeout() -> TestResu
     Ok(())
 }
 
-/// SPEC-505 AGY-008: an Antigravity sign-in that ends without a token file fails the account,
+/// An Antigravity sign-in that ends without a token file fails the account,
 /// and so does one whose CLI folder became a link out of its home: the file there is never read.
 #[tokio::test]
 async fn an_antigravity_sign_in_without_its_own_token_file_fails() -> TestResult {
@@ -2298,7 +2298,7 @@ async fn setup_with_antigravity(
     adapter.host_antigravity = None;
     let host = Arc::new(FakeHost::default());
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         harness: Some(Arc::new(adapter)),
         ..support::HarnessOptions::default()
@@ -2307,7 +2307,7 @@ async fn setup_with_antigravity(
     Ok(Setup { h, host, admin })
 }
 
-/// SPEC-505 AGY-007: the Google sign-in starts the Antigravity CLI Yulius provides, by its path.
+/// The Google sign-in starts the Antigravity CLI Yulius provides, by its path.
 #[tokio::test]
 async fn an_antigravity_sign_in_runs_the_provided_cli() -> TestResult {
     let root = tempfile::tempdir()?;
@@ -2332,7 +2332,7 @@ async fn an_antigravity_sign_in_runs_the_provided_cli() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-007: a Google sign-in whose CLI cannot be installed (and no host `agy`) is
+/// A Google sign-in whose CLI cannot be installed (and no host `agy`) is
 /// refused before the account exists; an account with a Gemini API key starts the CLI's install
 /// in the background, so its first task does not wait for it.
 #[tokio::test]
@@ -2375,7 +2375,7 @@ async fn the_antigravity_cli_installs_for_a_new_google_account() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-007 (review round 2 of slice C2): a Google sign-in's CLI is installed before its
+/// A Google sign-in's CLI is installed before its
 /// account exists, so a request that goes away while the install runs leaves no account waiting
 /// for a sign-in that never starts.
 #[tokio::test]
@@ -2384,7 +2384,7 @@ async fn a_google_sign_in_given_up_during_the_install_leaves_no_account() -> Tes
     let gate = Arc::new(Semaphore::new(0));
     let host = Arc::new(FakeHost::default());
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         harness: Some(Arc::new(support::agents::FakeAgentHarness::new(
             "/bin/yulius".into(),
@@ -2421,7 +2421,7 @@ async fn a_google_sign_in_given_up_during_the_install_leaves_no_account() -> Tes
     Ok(())
 }
 
-/// SPEC-505 AGY-008: an Antigravity account takes a Gemini API key at once, sealed, never
+/// An Antigravity account takes a Gemini API key at once, sealed, never
 /// returned or audited; text that cannot be a key, a Codex `auth.json` or a Claude token is
 /// refused for it, and a Gemini key is refused for another provider.
 #[tokio::test]

@@ -7,7 +7,7 @@ use yulius_contracts::api::auth::{
     DevicePoll, DeviceStart, DeviceStatus, InstanceInfo, Me, MeGuest, MeUser,
 };
 use yulius_domain::ids::UserId;
-use yulius_domain::permission::TokenScope;
+use yulius_domain::permission::{Action, TokenScope};
 use yulius_domain::time::Timestamp;
 
 use crate::context::App;
@@ -109,6 +109,13 @@ impl AuthContext {
     #[must_use]
     pub fn read_only(&self) -> bool {
         self.scope() == Some(TokenScope::Read)
+    }
+
+    /// Whether the caller's token, if any, allows `action`: a cookie session has no token and is
+    /// never narrowed. The person's own access is checked apart.
+    #[must_use]
+    pub fn token_allows(&self, action: Action) -> bool {
+        self.scope().is_none_or(|scope| scope.allows(action))
     }
 
     /// The token's scope; `None` for a cookie session.
@@ -242,7 +249,7 @@ impl App {
             return Ok(None);
         }
         store.set_setup_token_hash(&hash).await?;
-        Ok(Some(Secret(token)))
+        Ok(Some(Secret::new(token)))
     }
 
     /// Whether setup is still required.
@@ -376,7 +383,7 @@ impl App {
         self.deps.store.insert_web_session(&record).await?;
         let me = self.me(user, Some(csrf)).await?;
         Ok(NewSession {
-            cookie: Secret(cookie),
+            cookie: Secret::new(cookie),
             max_age_s: expires_at.millis_since(now).max(0) / 1000,
             me,
             recovery_code: None,
@@ -513,7 +520,7 @@ impl App {
                 display_name: user.display_name.clone(),
                 avatar_url: user.avatar_url.clone(),
                 is_superadmin: user.is_superadmin,
-                is_instance_admin: user.is_instance_admin || user.is_superadmin,
+                is_instance_admin: user.is_admin(),
                 github_linked: user.github_id.is_some(),
                 control_ask_first: self.deps.store.control_ask_first(&user.id).await?,
                 guest,
@@ -906,7 +913,7 @@ impl App {
             last_used_at: None,
             revoked_at: None,
         };
-        (Secret(token), record)
+        (Secret::new(token), record)
     }
 
     /// Requires the superadmin.
@@ -926,7 +933,7 @@ impl App {
     /// # Errors
     /// `Forbidden` otherwise.
     pub fn require_instance_admin(&self, ctx: &AuthContext) -> AppResult<()> {
-        if ctx.user.is_superadmin || ctx.user.is_instance_admin {
+        if ctx.user.is_admin() {
             Ok(())
         } else {
             Err(AppError::Forbidden("instance administrators only".into()))
@@ -1008,7 +1015,8 @@ mod tests {
     #[test]
     fn a_new_password_needs_eight_code_points_after_matching() {
         let check = |p: &str, c: &str| {
-            validate_new_password(&Secret(p.into()), &Secret(c.into())).map_err(|e| e.to_string())
+            validate_new_password(&Secret::new(p.into()), &Secret::new(c.into()))
+                .map_err(|e| e.to_string())
         };
         assert!(check("zaq1@WSX", "zaq1@WSX").is_ok());
         assert!(check("zaq1@WS", "zaq1@WS").is_err_and(|e| e.contains("at least 8 characters")));

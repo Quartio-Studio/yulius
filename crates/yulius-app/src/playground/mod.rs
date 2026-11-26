@@ -57,7 +57,7 @@ pub const MAX_PLAYGROUNDS_PER_PERSON: usize = 10;
 
 /// Git transport needs no credential for a playground's own `origin`; nothing is sent anywhere.
 pub(crate) fn no_token() -> Secret {
-    Secret(String::new())
+    Secret::new(String::new())
 }
 
 /// A playground's name: its slug base (lowercase letters, digits and `-`), from what the person

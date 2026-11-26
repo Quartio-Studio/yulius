@@ -19,43 +19,55 @@ impl std::fmt::Debug for Sealed {
     }
 }
 
-/// Plaintext secret with redacted formatting.
+/// A credential passed between adapters and application services (redacted, wiped when
+/// dropped), and whether it is a bearer of the instance's GitHub App installation.
 #[derive(Clone, PartialEq, Eq)]
-pub struct PlaintextSecret(pub String, bool);
-
-/// Secret passed between adapters and application services.
-pub type Secret = PlaintextSecret;
-
-/// Construct an ordinary secret, retaining the original constructor API.
-#[allow(non_snake_case)]
-#[must_use]
-pub fn Secret(value: String) -> Secret {
-    PlaintextSecret(value, false)
+pub struct Secret {
+    value: yulius_contracts::secret::Secret,
+    github_installation: bool,
 }
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Secret(<redacted>)")
+        self.value.fmt(f)
+    }
+}
+
+impl zeroize::Zeroize for Secret {
+    fn zeroize(&mut self) {
+        self.value.zeroize();
     }
 }
 
 impl Secret {
+    /// Wraps a credential.
+    #[must_use]
+    pub fn new(value: String) -> Self {
+        Self {
+            value: yulius_contracts::secret::Secret::new(value),
+            github_installation: false,
+        }
+    }
+
     /// A bearer issued by the instance's GitHub App installation.
     #[must_use]
     pub fn github_installation(value: String) -> Self {
-        Self(value, true)
+        Self {
+            github_installation: true,
+            ..Self::new(value)
+        }
     }
 
     /// Whether the bearer uses the installation's request quota.
     #[must_use]
     pub fn is_github_installation(&self) -> bool {
-        self.1
+        self.github_installation
     }
 
     /// The secret text (use only at an I/O boundary).
     #[must_use]
     pub fn expose(&self) -> &str {
-        &self.0
+        self.value.expose()
     }
 }
 
@@ -111,6 +123,12 @@ pub struct UserRecord {
 }
 
 impl UserRecord {
+    /// Whether the person administers the instance: an instance administrator or the superadmin.
+    #[must_use]
+    pub fn is_admin(&self) -> bool {
+        self.is_superadmin || self.is_instance_admin
+    }
+
     /// How the person is named wherever others read it (an audit actor, a task's owner): their
     /// GitHub login, `superadmin`, or for a playground's guest, the only other account without a
     /// GitHub login, `<name> (guest)` (SPEC-410 GST-006).

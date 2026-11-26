@@ -88,7 +88,11 @@ impl Stubs {
             std::fs::write(
                 &path,
                 format!(
-                    "#!/bin/sh\necho \"{tool} $*\" >> \"$XT_RECORD\"\necho \"stub {tool} $*\"\n\
+                    "#!/bin/sh\necho \"{tool} $*\" >> \"$XT_RECORD\"\n\
+                     if [ \"{tool} $1\" = 'cargo metadata' ]; then \
+                     echo '{{\"workspace_members\": [\"l\"], \"packages\": [{{\"id\": \"l\", \"name\": \"lib\", \
+                     \"targets\": [{{\"kind\": [\"lib\"], \"doctest\": true}}]}}]}}'; exit 0; fi\n\
+                     echo \"stub {tool} $*\"\n\
                      if [ -n \"$XT_HANDSHAKE\" ]; then other=''; case \"{tool} $*\" in \
                      *'-m unittest'*) other='cargo check';; 'cargo check'*) \
                      other='python -m unittest';; esac; if [ -n \"$other\" ]; then n=0; \
@@ -130,7 +134,6 @@ impl Stubs {
             .env("XT_FAIL", fails.first().copied().unwrap_or_default())
             .env("XT_FAIL2", fails.get(1).copied().unwrap_or_default())
             .env("YULIUS_CI", "1")
-            .env_remove("YULIUS_CI_MATRIX")
             .env_remove("YULIUS_CI_QUARANTINE")
             .arg(task)
             .output()?;
@@ -210,7 +213,8 @@ fn the_gates_run_each_command_once_with_quick_first() -> std::io::Result<()> {
     let mut ci = checks;
     ci.extend([
         "cargo nextest run".to_owned(),
-        "python scripts/doctests.py".to_owned(),
+        "cargo metadata --locked".to_owned(),
+        "cargo test --locked".to_owned(),
     ]);
     assert_eq!(sorted(calls), sorted(ci));
     let (code, _, calls) = stubs.run("check", "")?;
@@ -306,97 +310,120 @@ fn the_checkers_tests_run_beside_the_build() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The pull request's `quality` job compiles nothing (`lint` does): the tool check, the checks of
+/// seconds and the checker's tests, each in its stage; a failure stops it there.
 #[cfg(unix)]
 #[test]
-fn both_shards_list_quarantine_and_run_using_the_archive() -> std::io::Result<()> {
-    let stubs = Stubs::new("archive")?;
-    let record = stubs.dir.join("archive-calls");
-    std::fs::write(
-        stubs.dir.join("cargo"),
-        r#"#!/usr/bin/env python3
-import os
-import sys
-from pathlib import Path
-args = sys.argv[1:]
-with open(os.environ["XT_RECORD"], "a") as record:
-    print("cargo", *args, file=record)
-directory = Path(args[args.index("--extract-to") + 1])
-mode = directory.stat().st_mode & 0o777
-assert mode == 0o700, f"expected private extraction directory, got {mode:o}"
-target = directory / "target"
-if args[1] == "list":
-    target.mkdir()
-else:
-    assert target.is_dir(), "run must use the populated listing directory"
-    assert "--extract-overwrite" in args, "nextest refuses a populated target without overwrite"
-"#,
-    )?;
-    for index in 1..=2 {
-        std::fs::write(&record, "")?;
-        let scratch = stubs.dir.join(format!("disk-{index}"));
-        std::fs::create_dir(&scratch)?;
-        let mut cmd = Command::new("sh");
-        cmd.args([
-            "-c",
-            "umask 022; exec \"$@\"",
-            "sh",
-            env!("CARGO_BIN_EXE_xtask"),
-        ]);
-        cmd.env_remove("YULIUS_BUILD_SCRATCH")
-            .env("YULIUS_CI_CACHE", &scratch);
-        if index == 1 {
-            cmd.env("YULIUS_BUILD_SCRATCH", &scratch)
-                .env("YULIUS_CI_CACHE", stubs.dir.join("unused-cache"));
-        }
-        let out = cmd
-            .args(["test", "--archive-file", "test build.tar.zst"])
-            .env("CARGO", stubs.dir.join("cargo"))
-            .env("PYTHON", stubs.dir.join("python"))
-            .env("XT_RECORD", &record)
-            .env("YULIUS_CI_MATRIX", format!("{index}/2"))
-            .env("YULIUS_CI_QUARANTINE", "flaky_test")
-            .output()?;
-        assert!(out.status.success(), "{out:?}");
-        let calls = std::fs::read_to_string(&record)?;
-        for command in ["list", "run"] {
-            assert!(calls.contains(&format!(
-                "cargo nextest {command} --archive-file test build.tar.zst --workspace-remap . --profile ci"
-            )), "{calls}");
-        }
-        assert!(
-            calls.contains(&format!(
-                "-E not (test(=flaky_test)) --partition hash:{index}/2"
-            )),
-            "{calls}"
-        );
-        for call in calls
-            .lines()
-            .filter(|call| call.starts_with("cargo nextest "))
-        {
-            assert!(
-                call.contains(&format!("--extract-to {}/", scratch.display())),
-                "archive extraction would fall back to the job's bounded /tmp: {call}"
-            );
-        }
+fn quality_runs_the_repository_checks_without_a_compile() -> std::io::Result<()> {
+    let stubs = Stubs::new("quality")?;
+    let (code, text, calls) = stubs.run("quality", "")?;
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(
+        calls,
+        [
+            "python scripts/check_repository.py --doctor",
+            "python scripts/check_repository.py",
+            "cargo fmt --all",
+            "python -m unittest",
+        ]
+    );
+    let stages: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("::yulius-stage"))
+        .collect();
+    assert_eq!(
+        stages,
+        [
+            "::yulius-stage doctor",
+            "::yulius-stage quick",
+            "::yulius-stage checker-tests",
+        ]
+    );
+    let (code, text, calls) = stubs.run("quality", "fmt --all -- --check")?;
+    assert_eq!(code, Some(1), "{text}");
+    assert!(
+        !calls.iter().any(|c| c == "python -m unittest"),
+        "{calls:?}"
+    );
+    Ok(())
+}
+
+/// A CI job runs one gate (`scripts/dev lint`): the gate names its stage first.
+#[cfg(unix)]
+#[test]
+fn a_single_gate_names_its_stage() -> std::io::Result<()> {
+    let stubs = Stubs::new("stage")?;
+    for gate in ["lint", "macos", "docs", "deps", "doctor", "test"] {
+        let (code, text, _) = stubs.run(gate, "")?;
+        assert_eq!(code, Some(0), "{gate}: {text}");
         assert_eq!(
-            std::fs::read_dir(&scratch)?.count(),
-            0,
-            "the extracted binaries should be reclaimed"
+            text.lines().next(),
+            Some(format!("::yulius-stage {gate}").as_str()),
+            "{text}"
         );
-        assert!(!calls.contains("--workspace --all-features"), "{calls}");
-        assert_eq!(
-            calls.contains("python scripts/doctests.py"),
-            index == 1,
-            "{calls}"
-        );
+        assert_eq!(text.matches("::yulius-stage").count(), 1, "{text}");
     }
+    let gates = [
+        "doctor", "quick", "check", "lint", "macos", "test", "deps", "docs",
+    ];
+    for (task, expected) in [("ci", gates.to_vec()), ("checks", gates.to_vec())] {
+        let mut expected: Vec<String> = expected
+            .into_iter()
+            .filter(|gate| task == "ci" || *gate != "test")
+            .chain(["checker-tests"])
+            .map(|gate| format!("::yulius-stage {gate}"))
+            .collect();
+        let (code, text, _) = stubs.run(task, "")?;
+        assert_eq!(code, Some(0), "{task}: {text}");
+        let stages: Vec<String> = text
+            .lines()
+            .filter(|line| line.starts_with("::yulius-stage"))
+            .map(str::to_owned)
+            .collect();
+        expected.dedup();
+        assert_eq!(stages, expected, "{task}");
+    }
+    Ok(())
+}
+
+/// SPEC-497 OFC-002: the CI test job lists this head's test binaries, runs the tests without the
+/// quarantined ones, then the doctests.
+#[cfg(unix)]
+#[test]
+fn the_tests_leave_the_quarantined_ones_out_and_run_the_doctests() -> std::io::Result<()> {
+    let stubs = Stubs::new("quarantine")?;
+    let record = stubs.dir.join("record");
+    std::fs::write(&record, "")?;
+    let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .arg("test")
+        .env("CARGO", stubs.dir.join("cargo"))
+        .env("PYTHON", stubs.dir.join("python"))
+        .env("XT_RECORD", &record)
+        .env("YULIUS_CI_QUARANTINE", "flaky_test")
+        .output()?;
+    assert!(out.status.success(), "{out:?}");
+    let calls: Vec<String> = std::fs::read_to_string(&record)?
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let flags = "--locked --workspace --all-features --profile ci";
+    assert_eq!(
+        calls,
+        [
+            format!(
+                "cargo nextest list {flags} --list-type binaries-only --message-format oneline"
+            ),
+            format!("cargo nextest run {flags} -E not (test(=flaky_test))"),
+            "cargo metadata --locked --no-deps --format-version 1".to_owned(),
+            "cargo test --locked --all-features --doc --package lib".to_owned(),
+        ]
+    );
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
-fn the_independent_docs_and_archive_jobs_enter_through_the_pinned_dev_runner() -> std::io::Result<()>
-{
+fn the_independent_docs_and_test_jobs_enter_through_the_pinned_dev_runner() -> std::io::Result<()> {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
     use std::path::Path;
 
@@ -433,21 +460,13 @@ esac
         r#"#!/bin/sh
 if [ "$1" = xtask ]; then shift; exec "$XTASK_BIN" "$@"; fi
 echo "$*" >> "$CALLS"
-if [ "$1 $2" = "nextest archive" ]; then
-    if [ "$YULIUS_CI_RUN" = fail ]; then exit 1; fi
-    for archive do :; done
-    echo archive > "$archive"
-fi
+if [ "$1 $2" = "nextest run" ] && [ "$YULIUS_CI_RUN" = fail ]; then exit 1; fi
+if [ "$1" = metadata ]; then echo '{"packages": [], "workspace_members": []}'; fi
 "#,
     )?;
     let calls = home.path().join("calls");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for (gate, index, run, expected) in [
-        ("docs", 2, "ok", 0),
-        ("test-shard", 2, "ok", 0),
-        ("test-shard", 2, "fail", 1),
-        ("test-shard", 1, "fail", 78),
-    ] {
+    for (gate, run, expected) in [("docs", "ok", 0), ("test", "ok", 0), ("test", "fail", 1)] {
         let out = Command::new(root.join("scripts/dev"))
             .arg(gate)
             .env("HOME", home.path())
@@ -455,12 +474,10 @@ fi
             .env("PIN", &pin)
             .env("CALLS", &calls)
             .env("XTASK_BIN", env!("CARGO_BIN_EXE_xtask"))
-            .env("YULIUS_CI_CACHE", home.path().join(format!("test.{index}")))
-            .env("YULIUS_CI_MATRIX", format!("{index}/2"))
             .env("YULIUS_CI_RUN", run)
-            .env("YULIUS_CI_SKIP_CODE", "78")
-            .env("YULIUS_CI_SHA", "sha")
             .env("CARGO_INCREMENTAL", "1")
+            // Under Yulius CI scripts/dev would bootstrap this fake home for real.
+            .env_remove("YULIUS_CI")
             .env_remove("CARGO")
             .env_remove("PYTHON")
             .env_remove("YULIUS_CI_QUARANTINE")
@@ -470,8 +487,7 @@ fi
     let calls = std::fs::read_to_string(calls)?;
     for command in [
         "doc --locked --workspace --all-features --no-deps",
-        "nextest archive --locked --workspace --all-features",
-        "nextest run --archive-file",
+        "nextest run --locked --workspace --all-features --profile ci",
     ] {
         assert!(calls.contains(command), "{calls}");
     }

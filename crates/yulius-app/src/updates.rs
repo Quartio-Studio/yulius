@@ -440,12 +440,7 @@ impl App {
             return;
         }
         for attempt in &attempts {
-            let known = self
-                .updates
-                .frozen
-                .lock()
-                .ok()
-                .and_then(|f| f.get(&attempt.task_id).map(|run| run.state));
+            let known = self.known_freeze(&attempt.task_id);
             let passes = match known {
                 Some(FreezeState::Frozen | FreezeState::Refused) => continue,
                 Some(FreezeState::Freezing(passes)) => passes,
@@ -456,11 +451,7 @@ impl App {
             if !self.still_draining(run_id).await {
                 return;
             }
-            let host = Arc::clone(&self.deps.session_host);
-            let dir = PathBuf::from(&attempt.run_dir);
-            let answer = tokio::task::spawn_blocking(move || host.freeze(&dir))
-                .await
-                .unwrap_or(RunFreeze::Unsupported);
+            let answer = self.host_freeze(&attempt.run_dir).await;
             let state = match answer {
                 RunFreeze::Frozen => FreezeState::Frozen,
                 RunFreeze::Freezing if passes + 1 < MAX_UNSETTLED_PASSES => {
@@ -494,6 +485,12 @@ impl App {
         }
     }
 
+    /// What this drain knows of `task`'s run.
+    fn known_freeze(&self, task: &TaskId) -> Option<FreezeState> {
+        let frozen = self.updates.frozen.lock().ok()?;
+        frozen.get(task).map(|run| run.state)
+    }
+
     /// Nothing stays frozen while a run that cannot be frozen works: the runs this drain froze,
     /// and those a server that restarted mid-drain froze (swept).
     async fn thaw_while_one_works(&self) {
@@ -519,12 +516,7 @@ impl App {
     /// Whether a live task whose run cannot be frozen is still in a turn.
     async fn unfreezable_in_turn(&self, attempts: &[crate::model::AttemptRecord]) -> bool {
         for attempt in attempts {
-            let known = self
-                .updates
-                .frozen
-                .lock()
-                .ok()
-                .and_then(|f| f.get(&attempt.task_id).map(|run| run.state));
+            let known = self.known_freeze(&attempt.task_id);
             let unfreezable = match known {
                 Some(FreezeState::Refused) => true,
                 Some(_) => false,
@@ -564,10 +556,7 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        let kept = self.person_frozen_runs().await.unwrap_or_default();
-        for run in runs {
-            self.thaw_run(&run, &kept).await;
-        }
+        self.thaw_runs(runs).await;
     }
 
     /// The lock that serializes freezing and thawing runs: the update's freeze passes and thaws,
@@ -583,6 +572,15 @@ impl App {
         tokio::task::spawn_blocking(move || host.freeze(&dir))
             .await
             .unwrap_or(RunFreeze::Unsupported)
+    }
+
+    /// Thaws `runs` for an update, but those a person paused; the caller holds
+    /// [`Self::freeze_lock`].
+    async fn thaw_runs(&self, runs: Vec<String>) {
+        let kept = self.person_frozen_runs().await.unwrap_or_default();
+        for run in runs {
+            self.thaw_run(&run, &kept).await;
+        }
     }
 
     /// Thaws one run for an update, never one a person paused (`kept`, from
@@ -620,10 +618,7 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        let kept = self.person_frozen_runs().await.unwrap_or_default();
-        for run in runs {
-            self.thaw_run(&run, &kept).await;
-        }
+        self.thaw_runs(runs).await;
         self.sweep_frozen_runs().await;
     }
 
@@ -1204,7 +1199,7 @@ impl App {
             id: request_id(run, action),
             action,
             commit: run.target_commit.clone(),
-            token: token.map(|t| t.0),
+            token: token.map(|t| t.expose().to_owned()),
             requested_at: self.now().0,
         })
     }

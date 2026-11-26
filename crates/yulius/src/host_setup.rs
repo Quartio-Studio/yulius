@@ -6,7 +6,8 @@
 //! reason it is not automatic) or `failed`. [`Mode::Setup`] fixes everything it safely can,
 //! installs packages and builds the base; [`Mode::Check`] (the update helper's re-check, HST-012)
 //! applies only the safe, idempotent fixes (the needrestart rule, the host's Docker units, the
-//! modules file and loading, the binary's owner) and reports the rest (the AppArmor rule of
+//! modules file and loading, the binary's owner, the stopgap's immutable memory folders of
+//! SPEC-652) and reports the rest (the AppArmor rule of
 //! "bwrap namespaces" among it, SPEC-456: the helper cannot write it); [`Mode::DryRun`] changes
 //! nothing and says what setup would change. The last line is the "sandbox Docker" verdict
 //! (`yulius_sandbox::docker_status`), the doctor's words.
@@ -152,6 +153,36 @@ pub trait Host {
     /// # Errors
     /// Why it did not start.
     fn run(&mut self, cmd: &Cmd) -> Result<Out, String>;
+    /// The immutable flags of the stopgap of 2026-11-25 on the harness memory folders below
+    /// `data_dir` (`{sandboxes,users}/*/home/.claude/projects/*/memory` and everything in them),
+    /// walked by descriptor without following a link; with `clear`, each flag is cleared on the
+    /// descriptor it was read from (SPEC-652 MEM-009). The default finds none.
+    fn memory_stopgap(&mut self, _data_dir: &Path, _clear: bool) -> StopgapScan {
+        StopgapScan::default()
+    }
+}
+
+/// The line of the stopgap's immutable memory folders (SPEC-652 MEM-009).
+pub const STOPGAP: &str = "memory stopgap";
+
+/// Most paths of memory folders the stopgap walk opens.
+pub const STOPGAP_MAX_PATHS: usize = 100_000;
+
+/// What the stopgap walk found and did ([`Host::memory_stopgap`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StopgapScan {
+    /// Paths with the immutable flag.
+    pub flagged: usize,
+    /// Memory folders holding at least one of them.
+    pub folders: usize,
+    /// Flags cleared.
+    pub cleared: usize,
+    /// Flags that could not be cleared.
+    pub failed: usize,
+    /// The first failure, `<path>: <why>`.
+    pub first_failure: Option<String>,
+    /// The walk stopped at [`STOPGAP_MAX_PATHS`]: folders beyond it were not looked at.
+    pub cut: bool,
 }
 
 /// Options of a run.
@@ -544,6 +575,7 @@ impl<'a> Run<'a> {
     }
 
     fn instance_part(&mut self) {
+        self.memory_stopgap();
         self.service_unit();
         // Before the sessions unit: its adopt unit runs this binary as root (SPEC-458 HST-003).
         self.binary();
@@ -559,6 +591,53 @@ impl<'a> Run<'a> {
             self.contained_doctor();
             self.smoke(docker_ok);
         }
+    }
+
+    /// SPEC-652 MEM-009: the immutable flag the stopgap of 2026-11-25 set on harness memory
+    /// folders (`chattr -R +i`) is cleared, since every session sees them read-only now and the
+    /// flag only stops a removed sandbox's purge and a person's hand edits. A root run (the setup,
+    /// the update helper's re-check) can. The walk follows no link an agent put in a home; a flag
+    /// that cannot be cleared, or a walk cut at its bound, fails the line.
+    fn memory_stopgap(&mut self) {
+        let data_dir = self.opts.data_dir.clone();
+        let scan = self.host.memory_stopgap(&data_dir, self.may(true));
+        let cut = scan.cut.then(|| {
+            format!(
+                "; the walk stopped after {STOPGAP_MAX_PATHS} paths, so memory folders beyond \
+                 them were not looked at"
+            )
+        });
+        if scan.flagged == 0 {
+            return match cut {
+                Some(cut) => self.failed(STOPGAP, format!("no immutable path found{cut}")),
+                None => self.ok(STOPGAP, "no harness memory folder is immutable"),
+            };
+        }
+        let what = format!(
+            "the immutable flag of {} paths in {} memory folders (the stopgap of 2026-11-25; \
+             every session sees memory read-only, ADR-0479)",
+            scan.flagged, scan.folders
+        );
+        if !self.may(true) {
+            return self.changed(STOPGAP, "", &format!("clear {what}"));
+        }
+        if scan.failed > 0 || cut.is_some() {
+            let first = scan
+                .first_failure
+                .map(|first| format!(", first {first}"))
+                .unwrap_or_default();
+            return self.failed(
+                STOPGAP,
+                format!(
+                    "cleared {} of {what}; {} of {} could not be cleared{first}{}",
+                    scan.cleared,
+                    scan.failed,
+                    scan.flagged,
+                    cut.unwrap_or_default()
+                ),
+            );
+        }
+        self.changed(STOPGAP, &format!("cleared {what}"), "");
     }
 
     /// Only the service user and its subordinate ids, for `yulius instance import` (SPEC-329

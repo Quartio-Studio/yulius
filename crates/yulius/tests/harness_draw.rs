@@ -3,7 +3,7 @@
 //! among `claude`, `codex` and `antigravity` whose subscriptions have non-exhausted capacity,
 //! giving every eligible harness equal weight regardless of how many subscriptions it has; a
 //! running task agent's unadorned `task_create` / `automation_create` keeps the calling task's
-//! harness while explicit `auto` draws and a Superagent defaults to Claude Code (SPEC-620);
+//! harness while explicit `auto` draws and a Superagent defaults to Claude Code;
 //! automations default to `auto` (drawn per run) and
 //! preserve their stored harness on partial updates.
 
@@ -122,7 +122,7 @@ async fn shown(h: &Harness, alice: &Creds, id: &str) -> Result<(String, String),
     ))
 }
 
-/// SPEC-607: the HTTP request keeps the owner's choice, including an explicit default value.
+/// The HTTP request keeps the owner's choice, including an explicit default value.
 #[tokio::test]
 async fn codex_task_creation_preserves_effort_provenance() -> TestResult {
     let (h, alice) = world().await?;
@@ -167,7 +167,7 @@ async fn codex_task_creation_preserves_effort_provenance() -> TestResult {
     Ok(())
 }
 
-/// RHM-001, RHM-003 (AC-1): with 5 Claude, 1 Codex and 1 Antigravity subscriptions available,
+/// With 5 Claude, 1 Codex and 1 Antigravity subscriptions available,
 /// tasks without an agent (or with `auto`) draw across all three harnesses as `random`; an
 /// explicit harness or model-implied harness stays `chosen`.
 #[tokio::test]
@@ -248,7 +248,7 @@ async fn a_task_without_an_agent_draws_across_all_harnesses_and_keeps_explicit_c
     Ok(())
 }
 
-/// SPEC-560: a supplied GPT model chooses Codex independently of the subscription draw.
+/// A supplied GPT model chooses Codex independently of the subscription draw.
 #[tokio::test]
 async fn the_api_chooses_codex_for_gpt_and_preserves_unqualified_aliases() -> TestResult {
     let (h, alice) = world().await?;
@@ -353,7 +353,7 @@ async fn an_explicit_harness_refuses_a_foreign_model_before_creation() -> TestRe
     Ok(())
 }
 
-/// RHM-002 (AC-2): harnesses with 0 subscriptions, only unsigned/relogin/error subscriptions, or
+/// Harnesses with 0 subscriptions, only unsigned/relogin/error subscriptions, or
 /// only finished subscriptions (`Limited` or `>= 98%` in a window binding the default model) are
 /// never drawn while another harness has capacity; once one subscription of a harness has room,
 /// that harness re-enters the draw.
@@ -474,7 +474,7 @@ async fn finished_and_missing_harnesses_are_excluded_while_another_has_capacity(
     Ok(())
 }
 
-/// RHM-002 (AC-2): when every connected harness's subscriptions are currently limited (waiting to
+/// When every connected harness's subscriptions are currently limited (waiting to
 /// reset), a random task still draws among those connected harnesses so it waits for capacity
 /// instead of failing for a missing Claude account; with 0 usable accounts anywhere, 409 is
 /// returned.
@@ -528,9 +528,9 @@ async fn agent_of(h: &Harness, title: &str) -> Result<(String, String), Error> {
     Ok(pair(&summary.harness, &summary.harness_choice))
 }
 
-/// RHM-004 (AC-3): a running task's `task_create` and `automation_create` without `harness` or
+/// A running task's `task_create` and `automation_create` without `harness` or
 /// `model` keep the calling task's harness (`chosen`); explicit `auto` draws (`random`) or stores
-/// `"auto"`. A Superagent defaults to Claude Code for tasks (SPEC-620 CDM-001) and to `auto` for
+/// `"auto"`. A Superagent defaults to Claude Code for tasks and to `auto` for
 /// automations.
 #[tokio::test]
 async fn agent_follow_ups_inherit_the_parent_and_superagent_tasks_default_to_claude() -> TestResult
@@ -664,7 +664,7 @@ fn superagent() -> Result<yulius_app::coordination::ProjectCaller, Error> {
     })
 }
 
-/// SPEC-620 CDM-001: the Superagent's default stays Claude Code while only Codex and Antigravity
+/// The Superagent's default stays Claude Code while only Codex and Antigravity
 /// can run: the start is refused naming Claude, and no task is made on another agent.
 #[tokio::test]
 async fn a_superagent_default_without_a_claude_account_is_refused_naming_claude() -> TestResult {
@@ -736,7 +736,7 @@ async fn run_agent(h: &Harness, alice: &Creds, id: &str) -> Result<(String, Stri
     Ok(agent)
 }
 
-/// RHM-005 (AC-4): automations created without `harness` (or with `"auto"`) and ready-made
+/// Automations created without `harness` (or with `"auto"`) and ready-made
 /// templates store `"auto"` and draw per run; `PUT` without `harness` preserves the stored agent
 /// (`"antigravity"` or `"auto"`).
 #[tokio::test]
@@ -833,7 +833,7 @@ async fn an_automation_defaults_to_auto_draws_each_run_and_keeps_its_agent_on_pa
     Ok(())
 }
 
-/// RHM-003 (AC-1): a drawn task says `random` in its summary and in the JSON and CSV analytics
+/// A drawn task says `random` in its summary and in the JSON and CSV analytics
 /// exports; an explicit task says `chosen`; deleting a drawn task deletes its draw record.
 #[tokio::test]
 async fn analytics_and_deletion_record_drawn_and_chosen_tasks() -> TestResult {

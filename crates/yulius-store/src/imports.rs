@@ -9,7 +9,7 @@ use yulius_app::ports::store_ext::{ImportJobRecord, ImportStore};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_i64, to_u64};
+use crate::{SqliteStore, bad_column, text_parsed, to_i64, to_u64};
 
 const COLS: &str =
     "id, sandbox_id, user_id, state, manifest, received, result, created_at, updated_at";
@@ -27,7 +27,6 @@ fn received_to_json(map: &BTreeMap<String, u64>) -> String {
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<ImportJobRecord> {
     let sandbox: Option<String> = row.get("sandbox_id")?;
-    let user: String = row.get("user_id")?;
     let received: String = row.get("received")?;
     Ok(ImportJobRecord {
         id: row.get("id")?,
@@ -35,7 +34,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<ImportJobRecord> {
             .as_deref()
             .map(|s| SandboxId::parse(s).map_err(|_| bad_column("sandbox id", s)))
             .transpose()?,
-        user_id: UserId::parse(&user).map_err(|_| bad_column("user id", &user))?,
+        user_id: text_parsed(row, "user_id", "user id", UserId::parse)?,
         state: row.get("state")?,
         manifest: row.get("manifest")?,
         received: received_from_json(&received)?,
@@ -65,8 +64,7 @@ impl ImportStore for SqliteStore {
                     job.created_at.0,
                     job.updated_at.0,
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -75,13 +73,12 @@ impl ImportStore for SqliteStore {
     async fn import_job(&self, id: &str) -> AppResult<Option<ImportJobRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM import_jobs WHERE id = ?1"),
                 [id],
                 from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -93,16 +90,12 @@ impl ImportStore for SqliteStore {
     ) -> AppResult<Vec<ImportJobRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM import_jobs WHERE sandbox_id = ?1 \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM import_jobs WHERE sandbox_id = ?1 \
                      ORDER BY created_at DESC, rowid DESC LIMIT ?2"
-                ))
-                .map_err(db)?;
-            let rows = stmt
-                .query_map(params![sandbox, i64::from(limit)], from_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map(params![sandbox, i64::from(limit)], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -110,16 +103,12 @@ impl ImportStore for SqliteStore {
     async fn user_import_jobs(&self, user: &UserId, limit: u32) -> AppResult<Vec<ImportJobRecord>> {
         let user = user.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM import_jobs WHERE user_id = ?1 \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM import_jobs WHERE user_id = ?1 \
                      ORDER BY created_at DESC, rowid DESC LIMIT ?2"
-                ))
-                .map_err(db)?;
-            let rows = stmt
-                .query_map(params![user, i64::from(limit)], from_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map(params![user, i64::from(limit)], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -134,19 +123,18 @@ impl ImportStore for SqliteStore {
     ) -> AppResult<bool> {
         let (id, name) = (id.to_owned(), name.to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let current: Option<String> = tx
                 .query_row(
                     "SELECT received FROM import_jobs WHERE id = ?1",
                     [&id],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             let Some(current) = current else {
                 return Ok(false);
             };
-            let mut map = received_from_json(&current).map_err(db)?;
+            let mut map = received_from_json(&current)?;
             if map.get(&name).copied().unwrap_or(0) != expected {
                 return Ok(false);
             }
@@ -154,9 +142,8 @@ impl ImportStore for SqliteStore {
             tx.execute(
                 "UPDATE import_jobs SET received = ?1, updated_at = ?2 WHERE id = ?3",
                 params![received_to_json(&map), at.0, id],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -176,15 +163,14 @@ impl ImportStore for SqliteStore {
         let to = to.to_owned();
         let result = result.map(str::to_owned);
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let current: Option<(String, i64)> = tx
                 .query_row(
                     "SELECT state, updated_at FROM import_jobs WHERE id = ?1",
                     [&id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             let Some((state, updated)) = current else {
                 return Ok(false);
             };
@@ -194,9 +180,8 @@ impl ImportStore for SqliteStore {
             tx.execute(
                 "UPDATE import_jobs SET state = ?1, result = COALESCE(?2, result), updated_at = ?3 WHERE id = ?4",
                 params![to, result, at.0, id],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             Ok(true)
         })
         .await

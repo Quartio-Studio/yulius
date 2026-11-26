@@ -9,6 +9,7 @@
 
 use std::time::Duration;
 
+use crate::wiring::http::BodyError;
 use async_trait::async_trait;
 use serde_json::Value;
 use yulius_app::model::Secret;
@@ -65,12 +66,9 @@ impl GitHubReleases {
     }
 
     fn client_builder(https_only: bool, timeout: Duration) -> reqwest::ClientBuilder {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
+        super::http::client_builder()
             .timeout(timeout)
             .https_only(https_only)
-            .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
     }
 
@@ -110,13 +108,12 @@ impl GitHubReleases {
             401 | 403 | 404 => return Err(SourceError::NoAccess),
             code => return Err(SourceError::Status(code)),
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|e| failure(&e))? {
-            if bytes.len() + chunk.len() > MAX_BODY {
-                return Err(SourceError::Invalid("body"));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = super::http::read_bounded(&mut response, MAX_BODY)
+            .await
+            .map_err(|e| match e {
+                BodyError::Read(e) => failure(&e),
+                BodyError::TooLarge(_) => SourceError::Invalid("body"),
+            })?;
         serde_json::from_slice(&bytes)
             .map(Some)
             .map_err(|_| SourceError::Invalid("json"))
@@ -333,7 +330,7 @@ mod tests {
         .await?;
         let source = GitHubReleases::with_api(url, false)?;
         let state = source
-            .compare(Some(&Secret("ghs_synthetic".into())), Some(A))
+            .compare(Some(&Secret::new("ghs_synthetic".into())), Some(A))
             .await
             .map_err(|e| e.to_string())?;
         assert_eq!(state.head, C);

@@ -1,7 +1,7 @@
 //! Workflows and automations end to end: CRUD and permissions, the default workflows from the
 //! catalog and the retirement of the old seeded ones, the scheduler with a controllable clock
 //! (due run, restart deduplication, catch-up, disabled and previous-active skips, failures) and
-//! the agent tools (AC-AUT-1..5).
+//! the agent tools.
 
 use crate::support;
 
@@ -231,7 +231,7 @@ async fn automation_owner_authorizes_tools_edits_and_starts() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-5: the default workflows come from the catalog (first, read-only, with when to use
+/// The default workflows come from the catalog (first, read-only, with when to use
 /// them), can be duplicated, and give a task their steps and instructions.
 #[tokio::test]
 async fn workflows_defaults_scope_permissions_and_task_steps() -> TestResult {
@@ -401,7 +401,7 @@ async fn workflows_defaults_scope_permissions_and_task_steps() -> TestResult {
     .await?;
     assert_eq!(invalid.status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // AC-AUT-3: a task created from a workflow gets its steps and instructions.
+    // A task created from a workflow gets its steps and instructions.
     let task = call(&w.h.router, Method::POST, "/api/sandboxes/s1/tasks", Some(json!({"prompt": "Add a checkout API", "harness": "claude", "workflow_id": "wf-feature"})), &w.alice).await?;
     assert_eq!(task.status, StatusCode::CREATED, "{}", task.body);
     assert_eq!(task.body["steps"]["total"], feature.steps.len());
@@ -657,7 +657,7 @@ async fn enable_template(w: &World, who: &Creds, id: &str) -> Result<support::Re
     .await
 }
 
-/// AC-AUT-7 (SPEC-042): two Enables pressed at the same moment (two people, two tabs) still
+/// Two Enables pressed at the same moment (two people, two tabs) still
 /// give one automation; a person without access to the project does not see the templates.
 #[tokio::test]
 async fn simultaneous_enables_never_duplicate_an_automation() -> TestResult {
@@ -694,7 +694,7 @@ async fn simultaneous_enables_never_duplicate_an_automation() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-7 (SPEC-042): the ready-made automations are listed in every project, enabled with one
+/// The ready-made automations are listed in every project, enabled with one
 /// call (created, then re-enabled without a duplicate), recognised by name, and need write access.
 #[tokio::test]
 async fn ready_made_automations_are_enabled_in_one_call() -> TestResult {
@@ -798,7 +798,7 @@ async fn ready_made_automations_are_enabled_in_one_call() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-1: a cron automation creates exactly one task at its scheduled time.
+/// A cron automation creates exactly one task at its scheduled time.
 #[tokio::test]
 async fn due_run_creates_exactly_one_task() -> TestResult {
     let w = world().await?;
@@ -883,7 +883,7 @@ async fn due_run_creates_exactly_one_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-240 AGM-001 (#719): a run's task starts in goal mode, scheduled or Run now, so a run that
+/// A run's task starts in goal mode, scheduled or Run now, so a run that
 /// changes no repository file is Done once its goal is achieved instead of waiting at "Your turn".
 #[tokio::test]
 async fn an_automation_runs_its_task_as_a_goal() -> TestResult {
@@ -911,7 +911,7 @@ async fn an_automation_runs_its_task_as_a_goal() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-4: crashes between the run row and the task, or between the task and the row
+/// Crashes between the run row and the task, or between the task and the row
 /// update, and two schedulers racing on one slot never produce a second task.
 #[tokio::test]
 async fn restarts_and_races_never_duplicate_a_run() -> TestResult {
@@ -1007,7 +1007,7 @@ async fn restarts_and_races_never_duplicate_a_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-002 §6.4: at most one catch-up run, only when missed by less than one interval.
+/// At most one catch-up run, only when missed by less than one interval.
 #[tokio::test]
 async fn startup_catches_up_at_most_one_recent_run() -> TestResult {
     let w = world().await?;
@@ -1319,7 +1319,7 @@ async fn tool(
     Ok((record, is_error))
 }
 
-/// AC-AUT-2: an agent creates an automation through the Yulius MCP tool; it appears in the UI
+/// An agent creates an automation through the Yulius MCP tool; it appears in the UI
 /// and the audit log records `created_via = agent` with the agent's task.
 #[tokio::test]
 async fn agents_manage_automations_through_mcp_tools() -> TestResult {
@@ -1369,7 +1369,7 @@ async fn agents_manage_automations_through_mcp_tools() -> TestResult {
     assert!(!err, "{created}");
     let automation = &created["automation"];
     assert_eq!(automation["created_via"], "agent");
-    // No agent named: the calling task's own, Claude Code here (SPEC-514 PIN-002).
+    // No agent named: the calling task's own, Claude Code here.
     assert_eq!(
         automation["harness"], "claude",
         "defaults to the agent's harness"
@@ -1443,7 +1443,7 @@ async fn agents_manage_automations_through_mcp_tools() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-9 (SPEC-066 AUT-012): an agent lists the ready-made automations and enables one by
+/// An agent lists the ready-made automations and enables one by
 /// its catalog id through the MCP endpoint, with the Automations page's semantics: created
 /// enabled once, then re-enabled unchanged, never duplicated; an unknown id is a clear error.
 #[tokio::test]

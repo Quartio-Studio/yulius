@@ -24,7 +24,7 @@ use yulius_app::ports::store_ext::AutomationStore;
 use yulius_domain::intake::{ChoiceAnswer, ChoiceQuestion};
 
 /// A fake Jev for the Auto questions. Mode: a request that reports a "problem" or something
-/// "broken" is a fix (SPEC-517 FIX-001), else one with a question mark is a prompt.
+/// "broken" is a fix, else one with a question mark is a prompt.
 /// Workflow (by the option's name): a question gets "Research / Question", "spec it anyway" gets "Feature",
 /// "crash" gets "Fix", "typo" gets none, anything else "Feature". "maybe" makes every answer unsure. Records every question it saw.
 #[derive(Default)]
@@ -207,7 +207,7 @@ fn step_titles(detail: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// AC-TSK-14: a feature request on Auto runs as a goal with the Feature workflow Jev chose from
+/// A feature request on Auto runs as a goal with the Feature workflow Jev chose from
 /// the store; the decision is in the summary, in the task's detail and in the audit log.
 #[tokio::test]
 async fn auto_chooses_goal_and_a_workflow_from_the_store() -> TestResult {
@@ -261,7 +261,7 @@ async fn auto_chooses_goal_and_a_workflow_from_the_store() -> TestResult {
     Ok(())
 }
 
-/// AC-TSK-14: a question about the product runs as a prompt with the no-spec workflow Jev chose
+/// A question about the product runs as a prompt with the no-spec workflow Jev chose
 /// ("features need specs; research and questions don't"); Jev's spec-first pick for a question
 /// is overridden to no workflow; Jev's confident "none" is followed.
 #[tokio::test]
@@ -319,7 +319,7 @@ async fn questions_run_as_prompts_without_a_spec_first_workflow() -> TestResult 
     Ok(())
 }
 
-/// SPEC-517 AC-1, AC-2 (quartio-v2 task #312): a defect reported as a question runs as a goal
+/// A defect reported as a question runs as a goal
 /// whose plan is the Fix workflow's steps, though Jev picked "Research / Question" for its
 /// question mark; a true question still runs as a prompt with the Research steps and no fixing
 /// step.
@@ -383,7 +383,7 @@ async fn a_defect_asked_as_a_question_gets_the_fixing_steps() -> TestResult {
     Ok(())
 }
 
-/// AC-TSK-14: no Jev key, Jev down or an unsure answer — the defaults apply predictably: Goal
+/// No Jev key, Jev down or an unsure answer — the defaults apply predictably: Goal
 /// and the workflow named "Feature" (the sandbox's own first), none for a prompt-mode task. The
 /// catalog always has Feature; "none without one" is a domain unit test.
 #[tokio::test]
@@ -445,7 +445,7 @@ async fn without_a_confident_jev_auto_is_goal_and_feature() -> TestResult {
     Ok(())
 }
 
-/// AC-TSK-14: picked values are never sent to Jev and leave no Auto record; mixing a picked mode
+/// Picked values are never sent to Jev and leave no Auto record; mixing a picked mode
 /// with an Auto workflow asks only about the workflow; a bad mode or workflow is refused before
 /// Jev is asked.
 #[tokio::test]

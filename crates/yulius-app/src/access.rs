@@ -138,12 +138,13 @@ impl App {
         if !expired {
             let bytes = self.deps.crypto.open(&record.access)?;
             return String::from_utf8(bytes)
-                .map(Secret)
+                .map(Secret::new)
                 .map_err(AppError::internal);
         }
         let refresh = record.refresh.as_ref().ok_or(AppError::Unauthenticated)?;
-        let refresh =
-            Secret(String::from_utf8(self.deps.crypto.open(refresh)?).map_err(AppError::internal)?);
+        let refresh = Secret::new(
+            String::from_utf8(self.deps.crypto.open(refresh)?).map_err(AppError::internal)?,
+        );
         let app = self.github_app().await?;
         let fresh = self
             .deps
@@ -240,7 +241,7 @@ impl App {
         action: Action,
     ) -> AppResult<(SandboxRecord, AccessLevel)> {
         let found = self.require(&ctx.user, sandbox_id, action).await?;
-        if ctx.scope().is_some_and(|scope| !scope.allows(action)) {
+        if !ctx.token_allows(action) {
             return Err(AppError::Forbidden(
                 "this API token is read-only; make an operate token on Settings to do this".into(),
             ));

@@ -8,7 +8,7 @@ use yulius_app::ports::store::InstanceStore;
 use yulius_domain::time::Timestamp;
 
 use crate::users::insert_user_tx;
-use crate::{SqliteStore, db, to_i64, to_u64};
+use crate::{SqliteStore, opt_ts, to_i64, to_u64};
 
 fn instance_from_row(row: &Row<'_>) -> rusqlite::Result<InstanceRecord> {
     Ok(InstanceRecord {
@@ -18,14 +18,10 @@ fn instance_from_row(row: &Row<'_>) -> rusqlite::Result<InstanceRecord> {
         github_app: row.get::<_, Option<Vec<u8>>>("github_app")?.map(Sealed),
         installation_id: row.get::<_, Option<i64>>("installation_id")?.map(to_u64),
         setup_token_hash: row.get("setup_token_hash")?,
-        setup_completed_at: row
-            .get::<_, Option<i64>>("setup_completed_at")?
-            .map(Timestamp),
+        setup_completed_at: opt_ts(row, "setup_completed_at")?,
         recovery_hash: row.get("recovery_hash")?,
         recovery_failures: crate::to_u32(row.get("recovery_failures")?),
-        recovery_locked_at: row
-            .get::<_, Option<i64>>("recovery_locked_at")?
-            .map(Timestamp),
+        recovery_locked_at: opt_ts(row, "recovery_locked_at")?,
     })
 }
 
@@ -36,12 +32,8 @@ const SELECT: &str = "SELECT owner_login, owner_kind, public_url, github_app, in
 #[async_trait]
 impl InstanceStore for SqliteStore {
     async fn instance(&self) -> AppResult<Option<InstanceRecord>> {
-        self.call(|c| {
-            c.query_row(SELECT, [], instance_from_row)
-                .optional()
-                .map_err(db)
-        })
-        .await
+        self.call(|c| Ok(c.query_row(SELECT, [], instance_from_row).optional()?))
+            .await
     }
 
     async fn init_instance(
@@ -55,9 +47,8 @@ impl InstanceStore for SqliteStore {
                 "INSERT INTO instance (singleton, public_url, setup_token_hash) VALUES (1, ?1, ?2) \
                  ON CONFLICT(singleton) DO NOTHING",
                 params![url, hash],
-            )
-            .map_err(db)?;
-            c.query_row(SELECT, [], instance_from_row).map_err(db)
+            )?;
+            Ok(c.query_row(SELECT, [], instance_from_row)?)
         })
         .await
     }
@@ -68,8 +59,7 @@ impl InstanceStore for SqliteStore {
             c.execute(
                 "UPDATE instance SET setup_token_hash = ?1 WHERE singleton = 1 AND setup_completed_at IS NULL",
                 [hash],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -78,26 +68,24 @@ impl InstanceStore for SqliteStore {
     async fn complete_setup(&self, superadmin: &UserRecord, at: Timestamp) -> AppResult<()> {
         let user = superadmin.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let done: Option<i64> = tx
                 .query_row("SELECT setup_completed_at FROM instance WHERE singleton = 1", [], |r| r.get(0))
-                .optional()
-                .map_err(db)?
+                .optional()?
                 .flatten();
             if done.is_some() {
-                return Err(AppError::Conflict("setup already completed".into()));
+                return Err(AppError::Conflict("setup already completed".into()).into());
             }
             insert_user_tx(&tx, &user)?;
             let changed = tx
                 .execute(
                     "UPDATE instance SET setup_completed_at = ?1, setup_token_hash = NULL WHERE singleton = 1",
                     [at.0],
-                )
-                .map_err(db)?;
+                )?;
             if changed != 1 {
-                return Err(AppError::Conflict("instance not initialized".into()));
+                return Err(AppError::Conflict("instance not initialized".into()).into());
             }
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -117,8 +105,7 @@ impl InstanceStore for SqliteStore {
             c.execute(
                 "UPDATE instance SET github_app = ?1, owner_login = ?2, owner_kind = ?3 WHERE singleton = 1",
                 params![blob, login, kind],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -129,8 +116,7 @@ impl InstanceStore for SqliteStore {
             c.execute(
                 "UPDATE instance SET installation_id = ?1 WHERE singleton = 1",
                 [installation_id.map(to_i64)],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -143,8 +129,7 @@ impl InstanceStore for SqliteStore {
                 "UPDATE instance SET recovery_hash = ?1, recovery_failures = 0, recovery_locked_at = NULL \
                  WHERE singleton = 1",
                 [hash],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -156,19 +141,16 @@ impl InstanceStore for SqliteStore {
         max_failures: u32,
     ) -> AppResult<(u32, bool)> {
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "UPDATE instance SET recovery_failures = recovery_failures + 1 WHERE singleton = 1",
                 [],
-            )
-            .map_err(db)?;
-            let failures: i64 = tx
-                .query_row(
-                    "SELECT recovery_failures FROM instance WHERE singleton = 1",
-                    [],
-                    |r| r.get(0),
-                )
-                .map_err(db)?;
+            )?;
+            let failures: i64 = tx.query_row(
+                "SELECT recovery_failures FROM instance WHERE singleton = 1",
+                [],
+                |r| r.get(0),
+            )?;
             let failures = crate::to_u32(failures);
             let locked = failures >= max_failures;
             if locked {
@@ -176,10 +158,9 @@ impl InstanceStore for SqliteStore {
                     "UPDATE instance SET recovery_hash = NULL, \
                      recovery_locked_at = COALESCE(recovery_locked_at, ?1) WHERE singleton = 1",
                     [at.0],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok((failures, locked))
         })
         .await
@@ -191,8 +172,7 @@ impl InstanceStore for SqliteStore {
             c.execute(
                 "UPDATE instance SET public_url = ?1 WHERE singleton = 1",
                 [url],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await

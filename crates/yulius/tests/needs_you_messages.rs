@@ -587,7 +587,7 @@ async fn secrets_in_needs_you_are_redacted_across_projections_and_history() -> T
     Ok(())
 }
 
-/// SPEC-578 (round 1 finding #8): when a newer Yulius CI run is `Queued` or `Running` while
+/// When a newer Yulius CI run is `Queued` or `Running` while
 /// `observed_pulls` still caches `checks = failure`, `TaskSummary.yulius_wait` is `true` so both
 /// server (`Working`) and web UI (`status.js` `goesOn`) agree that no human action is needed.
 #[tokio::test]
@@ -676,7 +676,7 @@ async fn progressing_ci_run_sets_yulius_wait_for_web_ui_parity() -> TestResult {
     Ok(())
 }
 
-/// SPEC-578 (round 1 finding #5): a failed Yulius CI run already superseded by a newer pushed
+/// A failed Yulius CI run already superseded by a newer pushed
 /// head on the branch does NOT keep `yulius_wait` (`pr_news_due`) stuck `true` forever.
 #[tokio::test]
 async fn superseded_failed_ci_run_does_not_keep_pr_news_due_stuck_working() -> TestResult {
@@ -806,7 +806,7 @@ async fn superseded_failed_ci_run_does_not_keep_pr_news_due_stuck_working() -> T
     Ok(())
 }
 
-/// SPEC-578 (round 1 finding #6): re-entering Needs You on the same failing CI run after an
+/// Re-entering Needs You on the same failing CI run after an
 /// intervening Working turn creates a new open wait-history entry instead of hitting a unique
 /// conflict and leaving the active wait marked resolved.
 #[tokio::test]
@@ -922,7 +922,7 @@ async fn reentering_same_failed_ci_run_creates_new_open_wait_history_entry() -> 
     Ok(())
 }
 
-/// SPEC-578 (round 1 finding #7): reading `task_detail` on a parked task whose PR is already
+/// Reading `task_detail` on a parked task whose PR is already
 /// green/merged on a cold `observed_pulls` cache must NOT insert and immediately resolve a phantom
 /// `parked:resume` wait-history row.
 #[tokio::test]
@@ -1170,7 +1170,7 @@ async fn parked_http_and_mcp_agree_on_cold_and_stale_observed_pulls() -> TestRes
     Ok(())
 }
 
-/// SPEC-578 (merge review finding #2): when a `needs_you` request is recorded on a parked task
+/// When a `needs_you` request is recorded on a parked task
 /// right after `parked_status` returned `Done`, `task_get` must merge the late request into its
 /// notice and `task_wait_messages` sync instead of returning `shows == "needs_you"` with no notice
 /// or resolving the wait history.

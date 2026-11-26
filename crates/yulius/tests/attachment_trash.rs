@@ -1,4 +1,4 @@
-//! A deleted task's attachments (SPEC-396, ADR-0253): a folder another task's request names stays
+//! A deleted task's attachments: a folder another task's request names stays
 //! where it is, any other waits 7 days in the sandbox's trash, from which `attachments_trash`
 //! restores its files into a task; `task_update` changes a waiting task's start in place.
 
@@ -136,7 +136,7 @@ async fn attachments_another_request_names_stay_until_the_last_naming_task_goes(
     Ok(())
 }
 
-/// SPEC-490 OWN-004: files restored into a task are an attachment to it, so they go only into
+/// Files restored into a task are an attachment to it, so they go only into
 /// a task of the person the caller acts for; another person's task gets nothing and the trash
 /// keeps the entry.
 #[tokio::test]
@@ -307,7 +307,7 @@ async fn task_update_changes_a_waiting_tasks_start_in_place() -> TestResult {
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("has started"), "{refused}");
 
-    // Audited with the calling agent (MGT-010); a person who only reads the project changes
+    // Audited with the calling agent; a person who only reads the project changes
     // nothing.
     let actor = format!("task:{}", number(&h, "t-agent").await?);
     let audit = h.store.automation_audit("t-later", 10).await?;
@@ -487,7 +487,7 @@ async fn a_trash_swapped_for_a_link_receives_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-397 NMV-002: deleting a task while `attachments` or its `tasks` is a link answers
+/// Deleting a task while `attachments` or its `tasks` is a link answers
 /// `not_moved` (what is behind a link is never looked into, so the folder may still be there) and
 /// changes nothing outside; an `attachments` that is a plain file answers nothing.
 #[tokio::test]
@@ -541,14 +541,14 @@ async fn a_deletion_through_a_linked_attachments_folder_says_not_moved() -> Test
     Ok(())
 }
 
-/// SPEC-397 NMV-002: a deletion whose sandbox's tasks cannot be read (the automations table
+/// A deletion whose sandbox's tasks cannot be read (the automations table
 /// renamed away) keeps every folder; the answer says `not_moved` when the deleted task had one.
 #[tokio::test]
 async fn a_deletion_with_unreadable_tasks_says_not_moved_when_the_folder_stayed() -> TestResult {
     let dir = tempfile::tempdir()?;
     let db_path = dir.path().join("yulius.db");
     let (h, attachments) = world_in(support::harness_with(support::HarnessOptions {
-        store: Some(yulius_store::SqliteStore::open(&db_path)?),
+        store: Some(crate::support::store::migrated(&db_path)?),
         dir: Some(dir),
         configure: Some(Box::new(|c| c.max_live_sessions = 0)),
         ..support::HarnessOptions::default()
@@ -637,7 +637,7 @@ async fn restored_names_need_no_quoting() -> TestResult {
     Ok(())
 }
 
-/// SPEC-413 ANR-003 (#1031): with more folders in `attachments/tasks/` than settling lists
+/// With more folders in `attachments/tasks/` than settling lists
 /// (`MAX_PRUNED_ENTRIES`, 10,000; planted by a sandbox process), deleting a task still moves its
 /// folder to the trash and says so, never `{}`. The planted names are no task ids, so they stay.
 /// Whether the cap hides `t1` depends on the file system's listing order (creation order on

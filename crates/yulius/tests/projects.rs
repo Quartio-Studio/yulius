@@ -1,11 +1,12 @@
 //! Projects end to end over HTTP with real Git on local remotes: listings, import, create from
-//! a template, onboarding gate and removal (AC-PRJ-1, AC-PRJ-3..5, AC-IMP-2, AC-IMP-4).
+//! a template, onboarding gate and removal.
 
 use crate::support;
+use crate::support::git_stdout;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::repos::{OWNER, World, git};
+use support::repos::{OWNER, World};
 use support::{TestResult, call};
 use yulius_app::error::AppError;
 use yulius_app::model::{
@@ -230,7 +231,7 @@ async fn the_superadmin_lists_and_imports_repositories_through_the_app() -> Test
 async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() -> TestResult {
     let w = World::new("org").await?;
     let (alice_user, alice) = w.user("alice", false).await?;
-    // Start onboarding needs a person: here the browser (SPEC-051 OBD-002, ADR-0188).
+    // Start onboarding needs a person: here the browser.
     let alice_browser = w.browser(&alice_user).await?;
     let (_, bob) = w.user("bob", false).await?;
     w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
@@ -247,7 +248,7 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     }
     w.grant("bob", "shop", "push");
 
-    // IMP-002: permission and ownership are enforced with guidance.
+    // Permission and ownership are enforced with guidance.
     let refused = import(&w, &bob, "Quartio-Studio/shop").await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     assert!(text(&refused.body["error"]["message"]).contains("admin or maintain"));
@@ -303,12 +304,12 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     // task (not the full preparation).
     assert_ne!(ready["onboarding"], "not_needed", "{ready}");
     // A token import (the CLI, a script) waits until a person starts onboarding (SPEC-051,
-    // ADR-0188), with no task until then (SPEC-097).
+    // ADR-0188), with no task until then.
     assert_eq!(ready["onboarding"], "pending", "{ready}");
     let ready_id = SandboxId::parse(text(&ready["id"]))?;
     let ready_record = w.h.store.sandbox(&ready_id).await?.ok_or("ready sandbox")?;
     assert_eq!(ready_record.onboarding_task_id, None);
-    // OBT-004: a repository already in the format is told it only gets its environment.
+    // A repository already in the format is told it only gets its environment.
     let plan = call(
         &w.h.router,
         Method::GET,
@@ -344,7 +345,7 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     );
     assert_eq!(ready["profile"]["preset"], "standard");
 
-    // AC-IMP-4: the preparation task exists and blocks other tasks.
+    // The preparation task exists and blocks other tasks.
     let tasks = call(
         &w.h.router,
         Method::GET,
@@ -369,7 +370,7 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
             .ok_or("task")?;
     assert!(prep.prompt.contains("yulius.toml: is missing"));
     assert!(prep.prompt.contains("git-crypt") && prep.prompt.contains("pull request"));
-    // SPEC-195 VIB-002: without an instance Vidoc key the bootstrap adds no scan and says so.
+    // Without an instance Vidoc key the bootstrap adds no scan and says so.
     assert!(
         prep.prompt.contains("no Vidoc key on this instance"),
         "{}",
@@ -460,7 +461,7 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
 async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResult {
     let w = World::new("org").await?;
     let (alice_user, _) = w.user("alice", false).await?;
-    // Added in the browser, so onboarding starts at once (SPEC-051).
+    // Added in the browser, so onboarding starts at once.
     let alice = w.browser(&alice_user).await?;
     w.remote(
         OWNER,
@@ -500,7 +501,7 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
             exit_reason: None,
         })
         .await?;
-    // Where Yulius puts a task worktree: in the sandbox directory (SPEC-394).
+    // Where Yulius puts a task worktree: in the sandbox directory.
     let worktree = w
         .data_dir()
         .join("sandboxes")
@@ -547,7 +548,7 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
         "preparing",
         "a closed task without the docs is not ready"
     );
-    // #744 (SPEC-394 VOD-001): the agent swaps its worktree for a link to a host folder that
+    // The agent swaps its worktree for a link to a host folder that
     // holds the docs: the check reads only inside the sandbox directory, so it stays not ready.
     let host = tempfile::tempdir()?;
     for (path, contents) in scaffold("product") {
@@ -639,7 +640,7 @@ async fn onboarding_of(w: &World, sid: &SandboxId, creds: &support::Creds) -> Re
     Ok(view.body["onboarding"].clone())
 }
 
-/// SPEC-106 OTR-003 (#425): deleting the onboarding task of a preparing sandbox left it
+/// Deleting the onboarding task of a preparing sandbox left it
 /// `preparing` with no task for good. It returns to `pending`, and Start onboarding creates and
 /// starts a new onboarding task.
 #[tokio::test]
@@ -675,7 +676,7 @@ async fn a_preparing_sandbox_whose_onboarding_task_is_gone_returns_to_pending() 
     Ok(())
 }
 
-/// SPEC-106 OTR-004 (#425): an archived onboarding task left the page's task list, which read
+/// An archived onboarding task left the page's task list, which read
 /// it as missing. While onboarding blocks the sandbox, archiving it is refused with the way out,
 /// and it stays listed.
 #[tokio::test]
@@ -719,7 +720,7 @@ async fn the_onboarding_task_is_not_archived_while_onboarding_blocks() -> TestRe
     Ok(())
 }
 
-/// SPEC-106 OTR-004, review: an onboarding task that has finished its work (the format check
+/// An onboarding task that has finished its work (the format check
 /// passes in its worktree) is archived as before, and the sandbox is ready.
 #[tokio::test]
 async fn a_finished_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
@@ -747,7 +748,7 @@ async fn a_finished_onboarding_task_is_archived_and_the_sandbox_is_ready() -> Te
             exit_reason: None,
         })
         .await?;
-    // Where Yulius puts a task worktree: in the sandbox directory (SPEC-394).
+    // Where Yulius puts a task worktree: in the sandbox directory.
     let worktree = w
         .data_dir()
         .join("sandboxes")
@@ -782,7 +783,7 @@ async fn a_finished_onboarding_task_is_archived_and_the_sandbox_is_ready() -> Te
     Ok(())
 }
 
-/// SPEC-106 OTR-005 (#425): sandboxes stuck before the fix (studio) heal at server start: one
+/// Sandboxes stuck before the fix (studio) heal at server start: one
 /// left `preparing` without its task returns to `pending`, an archived onboarding task is listed
 /// again, and settled sandboxes are left alone.
 #[tokio::test]
@@ -864,7 +865,7 @@ async fn an_import_with_vidoc_unchecked_onboards_switched_off() -> TestResult {
     Ok(())
 }
 
-/// SPEC-338 VOF-004 (review round 2): the switch is in the project's first record, not a second
+/// The switch is in the project's first record, not a second
 /// write after it: with every later profile write refused, an import and a create unchecked still
 /// add the project switched off, never a scanning one.
 #[tokio::test]
@@ -904,7 +905,7 @@ async fn a_project_added_unchecked_is_switched_off_from_its_first_record() -> Te
     Ok(())
 }
 
-/// SPEC-338 VOF-004: a repository created from a template with its Vidoc scans unchecked starts
+/// A repository created from a template with its Vidoc scans unchecked starts
 /// switched off.
 #[tokio::test]
 async fn a_repository_created_with_vidoc_unchecked_starts_switched_off() -> TestResult {
@@ -1029,10 +1030,10 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
         .join("remotes")
         .join(OWNER)
         .join("new-shop.git");
-    let main = git(&remote, &["rev-parse", "refs/heads/main"])?;
-    let dev = git(&remote, &["rev-parse", "refs/heads/dev"])?;
+    let main = git_stdout(&remote, &["rev-parse", "refs/heads/main"])?;
+    let dev = git_stdout(&remote, &["rev-parse", "refs/heads/dev"])?;
     assert_eq!(main, dev, "dev starts at the scaffold commit");
-    let tree = git(&remote, &["ls-tree", "-r", "--name-only", "main"])?;
+    let tree = git_stdout(&remote, &["ls-tree", "-r", "--name-only", "main"])?;
     for path in [
         "AGENTS.md",
         "CLAUDE.md",
@@ -1055,7 +1056,7 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
         "{calls:?}"
     );
 
-    // The sandbox clone validates against the enforced format (AC-PRJ-3).
+    // The sandbox clone validates against the enforced format.
     let sid = text(&sandbox["id"]).to_owned();
     let sandbox_dir = w.data_dir().join("sandboxes").join(&sid);
     let (report, _) = yulius_app::onboarding::validate_checkout(&sandbox_dir.join("repo"));
@@ -1077,7 +1078,7 @@ async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> Te
     Ok(())
 }
 
-/// #1749: the App creates an organization's repository, so GitHub makes nobody its admin; the
+/// The App creates an organization's repository, so GitHub makes nobody its admin; the
 /// person who created the project is made its admin, so they deploy its production. Here the
 /// organization gives its members write on every repository, as GitHub's base permission does.
 #[tokio::test]
@@ -1175,7 +1176,7 @@ async fn creator_admin_audit(w: &World, name: &str) -> Result<Vec<String>, Error
         .await?)
 }
 
-/// #1749: GitHub invites a creator who is not a member of the organization, refuses the grant,
+/// GitHub invites a creator who is not a member of the organization, refuses the grant,
 /// or fails: the project is still created, its creator has what GitHub gives them, the answer
 /// says which (`admin_grant`) and the audit says why, at the moment of the grant. A failure is
 /// asked again (3 attempts); a refusal is not. A refusal for an organization owner, admin of
@@ -1293,7 +1294,7 @@ async fn an_invited_refused_or_failed_creator_still_gets_the_project_and_the_rea
     Ok(())
 }
 
-/// #1749 review: GitHub frees a renamed account's login for anyone (#653), so the role goes to
+/// GitHub frees a renamed account's login for anyone, so the role goes to
 /// the login the creator's own token names now, and only while that is the account they signed
 /// in as; a token naming another account gets nobody the role.
 #[tokio::test]
@@ -1337,7 +1338,7 @@ async fn the_admin_role_goes_to_the_creators_current_login_only() -> TestResult 
     Ok(())
 }
 
-/// #1749 review round 2: the grant is audited when it happens, so an invitation GitHub sent stays
+/// The grant is audited when it happens, so an invitation GitHub sent stays
 /// on record when setting up the project fails afterwards (here the App's installation cannot
 /// reach the new repository) and no sandbox is made.
 #[tokio::test]
@@ -1388,7 +1389,7 @@ async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
     // In a personal account only its owner is a repository's admin: nothing is asked, and the
-    // page is told of no grant (ADR-0476).
+    // page is told of no grant.
     assert_eq!(created.body["access"], "none", "{:?}", created.body);
     assert!(
         created.body.get("admin_grant").is_none(),
@@ -1443,7 +1444,7 @@ async fn remove_stops_tasks_and_keeps_the_repository() -> TestResult {
     );
     let queued = w.h.store.task(&queued.id).await?.ok_or("task")?;
     assert!(matches!(queued.status, TaskStatus::Stopped(_)));
-    // PRJ-009: an export of the tasks is preserved (owner-only).
+    // An export of the tasks is preserved (owner-only).
     let exports: Vec<_> = std::fs::read_dir(w.data_dir().join("exports"))?
         .filter_map(Result::ok)
         .map(|e| e.path())
@@ -1466,8 +1467,8 @@ async fn remove_stops_tasks_and_keeps_the_repository() -> TestResult {
         let mode = std::fs::metadata(&exports[0])?.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
-    // PRJ-009: GitHub repository and files are kept.
-    assert!(git(&remote, &["rev-parse", "refs/heads/main"]).is_ok());
+    // GitHub repository and files are kept.
+    assert!(git_stdout(&remote, &["rev-parse", "refs/heads/main"]).is_ok());
     assert!(w.github.created().is_empty());
     assert!(
         w.data_dir()
@@ -1572,7 +1573,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for Retiring {
     }
 }
 
-/// SPEC-206 RMV-004 (#624): removing a sandbox retires its holder, which then stops with every
+/// Removing a sandbox retires its holder, which then stops with every
 /// process in it (its Docker engine, containers, an agent's leftovers) once its runs ended;
 /// another sandbox's holder is left alone.
 #[tokio::test]
@@ -1634,7 +1635,7 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
     let sid = SandboxId::parse(text(&product["id"]))?;
 
     // "Start in parallel" during preparation: the task waits after the preparation task, created
-    // then (a token import creates none, SPEC-097).
+    // then (a token import creates none).
     let waiting = call(
         &w.h.router,
         Method::POST,
@@ -1685,7 +1686,7 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
             exit_reason: None,
         })
         .await?;
-    // Where Yulius puts a task worktree: in the sandbox directory (SPEC-394).
+    // Where Yulius puts a task worktree: in the sandbox directory.
     let worktree = w
         .data_dir()
         .join("sandboxes")
@@ -1811,14 +1812,14 @@ impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
     }
 }
 
-/// SPEC-195 VIB-002: with an instance Vidoc key, infra bootstrap at onboarding adds the
+/// With an instance Vidoc key, infra bootstrap at onboarding adds the
 /// `security` CI job and the rule to scan before delivery.
 #[tokio::test]
 async fn onboarding_adds_the_security_scan_when_the_instance_has_a_vidoc_key() -> TestResult {
     let w = World::new("org").await?;
     w.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         std::sync::Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -1885,13 +1886,13 @@ async fn subscription(w: &World) -> TestResult {
 
 /// The remote's branches, `name sha` per line.
 fn remote_heads(remote: &std::path::Path) -> Result<String, Error> {
-    Ok(git(
+    git_stdout(
         remote,
         &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
-    )?)
+    )
 }
 
-// SPEC-241 EMP-001: an empty clone's HEAD names the host's local default (here `master`), not
+// An empty clone's HEAD names the host's local default (here `master`), not
 // GitHub's default branch (`main`).
 #[tokio::test]
 async fn an_empty_repository_records_githubs_default_branch() -> TestResult {
@@ -1911,7 +1912,7 @@ async fn an_empty_repository_records_githubs_default_branch() -> TestResult {
     Ok(())
 }
 
-// SPEC-241 EMP-002: "Couldn't start onboarding: git: revision not found: origin/master" on a new
+// "Couldn't start onboarding: git: revision not found: origin/master" on a new
 // GitHub repository with no commits.
 #[tokio::test]
 async fn onboarding_an_empty_repository_pushes_a_first_commit_and_starts() -> TestResult {
@@ -1928,14 +1929,20 @@ async fn onboarding_an_empty_repository_pushes_a_first_commit_and_starts() -> Te
 
     // GitHub's default branch holds one commit adding only README.md, pushed as the App.
     assert_eq!(remote_heads(&remote)?.trim(), "main");
-    assert_eq!(git(&remote, &["rev-list", "--count", "main"])?.trim(), "1");
     assert_eq!(
-        git(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
+        git_stdout(&remote, &["rev-list", "--count", "main"])?.trim(),
+        "1"
+    );
+    assert_eq!(
+        git_stdout(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
         "README.md"
     );
-    assert_eq!(git(&remote, &["show", "main:README.md"])?, "# fresh\n");
     assert_eq!(
-        git(&remote, &["log", "-1", "--format=%an", "main"])?.trim(),
+        git_stdout(&remote, &["show", "main:README.md"])?,
+        "# fresh\n"
+    );
+    assert_eq!(
+        git_stdout(&remote, &["log", "-1", "--format=%an", "main"])?.trim(),
         "ALICE",
         "authored by the person who started onboarding"
     );
@@ -1964,14 +1971,14 @@ async fn onboarding_an_empty_repository_pushes_a_first_commit_and_starts() -> Te
         .worktree_path
         .ok_or("the onboarding task has a worktree")?;
     assert_eq!(
-        git(std::path::Path::new(&worktree), &["rev-parse", "HEAD"])?,
-        git(&remote, &["rev-parse", "main"])?
+        git_stdout(std::path::Path::new(&worktree), &["rev-parse", "HEAD"])?,
+        git_stdout(&remote, &["rev-parse", "main"])?
     );
     assert!(std::path::Path::new(&worktree).join("README.md").exists());
     Ok(())
 }
 
-// SPEC-241 EMP-002/003: a sandbox added before (recorded with the empty clone's `master`) is set
+// A sandbox added before (recorded with the empty clone's `master`) is set
 // up on GitHub's branch when Start onboarding is pressed; a repository with commits is untouched.
 #[tokio::test]
 async fn start_onboarding_corrects_the_branch_and_leaves_repositories_with_commits() -> TestResult {
@@ -2002,12 +2009,13 @@ async fn start_onboarding_corrects_the_branch_and_leaves_repositories_with_commi
     assert_eq!(remote_heads(&remote)?.trim(), "main");
 
     let pushes = |calls: Vec<String>| calls.iter().filter(|c| c.starts_with("push")).count();
-    let (shop_before, pushed_before) = (git(&shop, &["for-each-ref"])?, pushes(w.git.calls()));
+    let (shop_before, pushed_before) =
+        (git_stdout(&shop, &["for-each-ref"])?, pushes(w.git.calls()));
     let shop_box = import(&w, &alice_browser, "Quartio-Studio/shop").await?;
     assert_eq!(shop_box.status, StatusCode::CREATED, "{:?}", shop_box.body);
     assert_eq!(shop_box.body["onboarding"], "preparing");
     assert_eq!(
-        git(&shop, &["for-each-ref"])?,
+        git_stdout(&shop, &["for-each-ref"])?,
         shop_before,
         "nothing pushed"
     );
@@ -2015,7 +2023,7 @@ async fn start_onboarding_corrects_the_branch_and_leaves_repositories_with_commi
     Ok(())
 }
 
-// SPEC-241 EMP-003: a first commit the remote refuses fails the start with the reason; the
+// A first commit the remote refuses fails the start with the reason; the
 // sandbox stays pending and starts once the remote accepts it.
 #[tokio::test]
 async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
@@ -2023,7 +2031,7 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     let (alice_user, _) = w.user("alice", false).await?;
     let alice_browser = w.browser(&alice_user).await?;
     let remote = w.empty_remote(OWNER, "fresh", "main")?;
-    git(&remote, &["config", "receive.maxInputSize", "1"])?;
+    git_stdout(&remote, &["config", "receive.maxInputSize", "1"])?;
     w.grant("alice", "fresh", "admin");
     let fresh = import(&w, &alice_browser, "Quartio-Studio/fresh").await?;
     assert_eq!(fresh.status, StatusCode::CREATED, "{:?}", fresh.body);
@@ -2046,8 +2054,8 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     );
     assert_eq!(remote_heads(&remote)?, "");
 
-    git(&remote, &["config", "--unset", "receive.maxInputSize"])?;
-    // The first commit is made in a folder of the server's own (SPEC-483 TKR-006): what the
+    git_stdout(&remote, &["config", "--unset", "receive.maxInputSize"])?;
+    // The first commit is made in a folder of the server's own: what the
     // sandbox holds where it once was made is nothing to it, and nothing is left of it.
     let sandbox_dir = w.data_dir().join("sandboxes").join(text(&fresh.body["id"]));
     std::fs::write(sandbox_dir.join("seed"), "the sandbox's own file")?;
@@ -2056,7 +2064,7 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     assert_eq!(started.body["onboarding"], "preparing");
     assert_eq!(remote_heads(&remote)?.trim(), "main");
     assert_eq!(
-        git(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
+        git_stdout(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
         "README.md"
     );
     assert!(sandbox_dir.join("seed").is_file());
@@ -2064,7 +2072,7 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     Ok(())
 }
 
-// SPEC-241 CRT-001: "some permissions" error when creating a repository from Yulius: GitHub's
+// "some permissions" error when creating a repository from Yulius: GitHub's
 // 403 names what the App lacks, and the message says it with the pages that grant it.
 #[tokio::test]
 async fn a_create_github_refuses_names_the_missing_app_permission() -> TestResult {
@@ -2171,7 +2179,7 @@ async fn a_repository_pushed_to_since_import_heals_the_recorded_branch() -> Test
 
     // Someone pushes a first commit to GitHub's `main` (and a feature branch) themselves.
     let seed = w.scratch.path().join("someone");
-    git(
+    git_stdout(
         w.scratch.path(),
         &[
             "clone",
@@ -2181,14 +2189,14 @@ async fn a_repository_pushed_to_since_import_heals_the_recorded_branch() -> Test
         ],
     )?;
     std::fs::write(seed.join("app.txt"), "theirs\n")?;
-    git(&seed, &["checkout", "--quiet", "-b", "main"])?;
-    git(&seed, &["add", "-A"])?;
-    git(&seed, &["commit", "--quiet", "-m", "theirs"])?;
-    git(
+    git_stdout(&seed, &["checkout", "--quiet", "-b", "main"])?;
+    git_stdout(&seed, &["add", "-A"])?;
+    git_stdout(&seed, &["commit", "--quiet", "-m", "theirs"])?;
+    git_stdout(
         &seed,
         &["push", "--quiet", "origin", "main", "main:feature"],
     )?;
-    let theirs = git(&remote, &["rev-parse", "main"])?;
+    let theirs = git_stdout(&remote, &["rev-parse", "main"])?;
 
     let started = call(
         &w.h.router,
@@ -2202,7 +2210,7 @@ async fn a_repository_pushed_to_since_import_heals_the_recorded_branch() -> Test
     assert_eq!(started.body["default_branch"], "main", "{}", started.body);
     assert_eq!(started.body["onboarding"], "preparing");
     assert_eq!(
-        git(&remote, &["rev-parse", "main"])?,
+        git_stdout(&remote, &["rev-parse", "main"])?,
         theirs,
         "nothing pushed"
     );
@@ -2279,7 +2287,7 @@ async fn a_browser_import_without_claude_waits_for_the_connection() -> TestResul
     Ok(())
 }
 
-// SPEC-490 OWN-004 and review round 1: Start onboarding starts the onboarding task, which is
+// Start onboarding starts the onboarding task, which is
 // control of it. A task Yulius created by itself that has never run is nobody's yet: whoever
 // starts onboarding takes it (audited as a hand-over), also when another person's new task made
 // it. One that has run is its owner's: anyone else is refused before anything is prepared, so no
@@ -2425,7 +2433,7 @@ async fn ended_session(w: &World, task: &yulius_app::model::TaskRecord) -> TestR
     Ok(())
 }
 
-// SPEC-246 CLA-006: an onboarding whose task failed to start for want of an account stays
+// An onboarding whose task failed to start for want of an account stays
 // `pending`; Start onboarding (the gate's Retry onboarding) is refused until an account is
 // connected, then starts the same task again.
 #[tokio::test]
@@ -2451,7 +2459,7 @@ async fn a_failed_onboarding_start_is_retried_once_claude_is_connected() -> Test
     let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
     let prep = record.onboarding_task_id.ok_or("onboarding task")?;
     let task = w.h.store.task(&prep).await?.ok_or("task")?;
-    // As a start that found its account signed out ends it (CLA-005).
+    // As a start that found its account signed out ends it.
     let failed = TaskStatus::Failed(yulius_domain::task::FailReason::NoAccount);
     assert!(
         w.h.store
@@ -2486,7 +2494,7 @@ async fn a_failed_onboarding_start_is_retried_once_claude_is_connected() -> Test
     Ok(())
 }
 
-// SPEC-246 CLA-004: a start by machinery (here a prepared task's time) with no Claude account is
+// A start by machinery (here a prepared task's time) with no Claude account is
 // not refused and does not fail: the task waits `waiting_capacity` and its viewers are told that
 // no Claude account is connected.
 #[tokio::test]
@@ -2569,7 +2577,7 @@ fn valid_checkout(root: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// #744 (SPEC-394 VOD-001): the server reads a checkout a contained agent can change. A file
+/// The server reads a checkout a contained agent can change. A file
 /// checked as a regular file and swapped for a link to a host file before it is read yields
 /// nothing of the host file.
 #[test]
@@ -2602,7 +2610,7 @@ fn a_checkout_file_swapped_for_a_link_after_its_check_is_not_read() -> TestResul
     Ok(())
 }
 
-/// #744 (SPEC-394 VOD-001): the checkout folder itself swapped for a link to a host checkout
+/// The checkout folder itself swapped for a link to a host checkout
 /// after its root was resolved: every handle's real path is then outside the resolved root, so
 /// nothing of the host checkout is read.
 #[test]
@@ -2633,7 +2641,7 @@ fn a_checkout_folder_swapped_for_a_link_after_its_resolution_is_not_read() -> Te
     Ok(())
 }
 
-/// #744 (SPEC-394 VOD-001): a checkout file swapped for a FIFO after its check is read as
+/// A checkout file swapped for a FIFO after its check is read as
 /// missing; the server does not wait on it. A thread, not `spawn_blocking`: a runtime would wait
 /// on a blocked read at its end.
 #[test]

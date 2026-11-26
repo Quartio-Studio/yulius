@@ -1,4 +1,4 @@
-//! Playgrounds (SPEC-099): a team tries Yulius on its own code without GitHub. A playground's Git
+//! Playgrounds: a team tries Yulius on its own code without GitHub. A playground's Git
 //! lives in a bare repository on the server, outside its sandbox; nothing reaches GitHub. Real Git, a real
 //! store, the fake GitHub (which records every state-changing call) and no GitHub App.
 
@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::repos::git;
+use support::git_stdout;
 use support::{Creds, Harness, HarnessOptions, TestResult, call, harness_with};
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -35,7 +35,7 @@ async fn from_template(h: &Harness, creds: &Creds, name: &str) -> BoxResult<supp
     .await
 }
 
-/// A playground's `origin`: a bare repository of the server, outside the sandbox (ADR-0081).
+/// A playground's `origin`: a bare repository of the server, outside the sandbox.
 fn origin_of(h: &Harness, body: &Value) -> PathBuf {
     h.app
         .config
@@ -54,7 +54,7 @@ fn sandbox_dir(h: &Harness, body: &Value) -> PathBuf {
 
 /// Branch names of a repository (`refs/heads/*`), sorted.
 fn branches(repo: &Path) -> BoxResult<Vec<String>> {
-    let out = git(
+    let out = git_stdout(
         repo,
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
     )?;
@@ -69,7 +69,7 @@ fn no_github_writes(h: &Harness) -> BoxResult<()> {
     Ok(())
 }
 
-/// PLY-001, PLY-002: without any GitHub App, a template becomes a playground whose Git is a bare
+/// Without any GitHub App, a template becomes a playground whose Git is a bare
 /// repository in its sandbox directory, with `main` and `dev`; tasks may start at once.
 #[tokio::test]
 async fn a_playground_starts_from_a_template_without_github() -> TestResult {
@@ -89,7 +89,7 @@ async fn a_playground_starts_from_a_template_without_github() -> TestResult {
     let dir = sandbox_dir(&h, body);
     let origin = origin_of(&h, body);
     assert_eq!(
-        git(&origin, &["rev-parse", "--is-bare-repository"])?.trim(),
+        git_stdout(&origin, &["rev-parse", "--is-bare-repository"])?.trim(),
         "true"
     );
     // Outside the sandbox, which its processes may write: its hooks and configuration are the
@@ -104,11 +104,11 @@ async fn a_playground_starts_from_a_template_without_github() -> TestResult {
     assert_eq!(branches(&origin)?, vec!["dev", "main"]);
     let repo = dir.join("repo");
     assert_eq!(
-        git(&repo, &["remote", "get-url", "origin"])?.trim(),
+        git_stdout(&repo, &["remote", "get-url", "origin"])?.trim(),
         origin.to_string_lossy(),
         "the clone's origin is the playground's own bare repository"
     );
-    git(&repo, &["rev-parse", "--verify", "origin/dev"])?;
+    git_stdout(&repo, &["rev-parse", "--verify", "origin/dev"])?;
     assert!(
         repo.join("AGENTS.md").exists(),
         "the template's scaffold is checked out"
@@ -138,7 +138,7 @@ async fn a_playground_starts_from_a_template_without_github() -> TestResult {
     Ok(())
 }
 
-/// PLY-005: a playground is its maker's and the superadmin's; nobody else sees it.
+/// A playground is its maker's and the superadmin's; nobody else sees it.
 #[tokio::test]
 async fn only_its_maker_and_the_superadmin_see_a_playground() -> TestResult {
     let (h, owner) = world().await?;
@@ -226,10 +226,10 @@ async fn upload(h: &Harness, creds: &Creds, name: &str, body: Vec<u8>) -> BoxRes
 }
 
 fn file_at(repo: &Path, rev: &str, path: &str) -> BoxResult<String> {
-    Ok(git(repo, &["show", &format!("{rev}:{path}")])?)
+    git_stdout(repo, &["show", &format!("{rev}:{path}")])
 }
 
-/// PLY-001, PLY-003: a folder with `.git` keeps its branches, tags and history; its uncommitted
+/// A folder with `.git` keeps its branches, tags and history; its uncommitted
 /// and untracked work lands as one commit on its own branch, which `dev` starts from; ignored
 /// files stay out.
 #[tokio::test]
@@ -238,18 +238,18 @@ async fn a_folder_with_history_keeps_it_and_its_uncommitted_work() -> TestResult
     let tmp = tempfile::tempdir()?;
     let project = tmp.path().join("proj");
     std::fs::create_dir_all(&project)?;
-    git(&project, &["init", "-q", "-b", "trunk"])?;
+    git_stdout(&project, &["init", "-q", "-b", "trunk"])?;
     std::fs::write(project.join("README.md"), "v1\n")?;
     std::fs::write(project.join(".gitignore"), "build/\n")?;
-    git(&project, &["add", "-A"])?;
-    git(&project, &["commit", "-q", "-m", "first"])?;
-    git(&project, &["tag", "v1"])?;
-    git(&project, &["checkout", "-q", "-b", "feature"])?;
+    git_stdout(&project, &["add", "-A"])?;
+    git_stdout(&project, &["commit", "-q", "-m", "first"])?;
+    git_stdout(&project, &["tag", "v1"])?;
+    git_stdout(&project, &["checkout", "-q", "-b", "feature"])?;
     std::fs::write(project.join("feature.txt"), "wip\n")?;
-    git(&project, &["add", "-A"])?;
-    git(&project, &["commit", "-q", "-m", "feature work"])?;
-    git(&project, &["checkout", "-q", "trunk"])?;
-    git(&project, &["gc", "-q"])?; // packed objects and packed-refs, as real repositories have
+    git_stdout(&project, &["add", "-A"])?;
+    git_stdout(&project, &["commit", "-q", "-m", "feature work"])?;
+    git_stdout(&project, &["checkout", "-q", "trunk"])?;
+    git_stdout(&project, &["gc", "-q"])?; // packed objects and packed-refs, as real repositories have
     std::fs::write(project.join("README.md"), "v2, not committed\n")?;
     std::fs::write(project.join("notes.txt"), "untracked\n")?;
     std::fs::create_dir_all(project.join("build"))?;
@@ -266,9 +266,9 @@ async fn a_folder_with_history_keeps_it_and_its_uncommitted_work() -> TestResult
 
     let origin = origin_of(&h, &made.body);
     assert_eq!(branches(&origin)?, vec!["dev", "feature", "trunk"]);
-    git(&origin, &["rev-parse", "--verify", "refs/tags/v1"])?;
+    git_stdout(&origin, &["rev-parse", "--verify", "refs/tags/v1"])?;
     assert_eq!(file_at(&origin, "feature", "feature.txt")?, "wip\n");
-    let log = git(&origin, &["log", "--format=%s", "trunk"])?;
+    let log = git_stdout(&origin, &["log", "--format=%s", "trunk"])?;
     assert_eq!(log.lines().count(), 2, "{log}");
     assert_eq!(log.lines().nth(1), Some("first"));
     assert_eq!(
@@ -281,11 +281,11 @@ async fn a_folder_with_history_keeps_it_and_its_uncommitted_work() -> TestResult
         "ignored files stay out"
     );
     assert_eq!(
-        git(&origin, &["rev-parse", "dev"])?,
-        git(&origin, &["rev-parse", "trunk"])?
+        git_stdout(&origin, &["rev-parse", "dev"])?,
+        git_stdout(&origin, &["rev-parse", "trunk"])?
     );
     let repo = sandbox_dir(&h, &made.body).join("repo");
-    git(&repo, &["rev-parse", "--verify", "origin/dev"])?;
+    git_stdout(&repo, &["rev-parse", "--verify", "origin/dev"])?;
     assert!(
         !sandbox_dir(&h, &made.body).join("upload").exists(),
         "the staging folders are gone"
@@ -294,7 +294,7 @@ async fn a_folder_with_history_keeps_it_and_its_uncommitted_work() -> TestResult
     Ok(())
 }
 
-/// PLY-003: a folder without `.git` becomes one commit on `main`, and `dev` starts there.
+/// A folder without `.git` becomes one commit on `main`, and `dev` starts there.
 #[tokio::test]
 async fn a_folder_without_git_becomes_one_commit() -> TestResult {
     let (h, owner) = world().await?;
@@ -309,13 +309,16 @@ async fn a_folder_without_git_becomes_one_commit() -> TestResult {
     assert_eq!(made.body["default_branch"], "main");
     let origin = origin_of(&h, &made.body);
     assert_eq!(branches(&origin)?, vec!["dev", "main"]);
-    assert_eq!(git(&origin, &["rev-list", "--count", "main"])?.trim(), "1");
+    assert_eq!(
+        git_stdout(&origin, &["rev-list", "--count", "main"])?.trim(),
+        "1"
+    );
     assert_eq!(file_at(&origin, "dev", "src/app.py")?, "print('hi')\n");
     no_github_writes(&h)?;
     Ok(())
 }
 
-/// PLY-003: of an uploaded `.git` only the history is taken: its configuration, hooks and
+/// Of an uploaded `.git` only the history is taken: its configuration, hooks and
 /// attributes never reach the server's Git.
 #[tokio::test]
 async fn a_git_config_or_hook_in_the_upload_is_never_taken() -> TestResult {
@@ -323,10 +326,10 @@ async fn a_git_config_or_hook_in_the_upload_is_never_taken() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let project = tmp.path().join("proj");
     std::fs::create_dir_all(&project)?;
-    git(&project, &["init", "-q", "-b", "main"])?;
+    git_stdout(&project, &["init", "-q", "-b", "main"])?;
     std::fs::write(project.join("README.md"), "hello\n")?;
-    git(&project, &["add", "-A"])?;
-    git(&project, &["commit", "-q", "-m", "first"])?;
+    git_stdout(&project, &["add", "-A"])?;
+    git_stdout(&project, &["commit", "-q", "-m", "first"])?;
     let marker = tmp.path().join("ran");
     let hook = format!("#!/bin/sh\ntouch '{}'\n", marker.display());
     for name in [
@@ -380,7 +383,7 @@ async fn a_git_config_or_hook_in_the_upload_is_never_taken() -> TestResult {
     Ok(())
 }
 
-/// PLY-004: an unreadable or oversized upload is refused with its reason and leaves no sandbox
+/// An unreadable or oversized upload is refused with its reason and leaves no sandbox
 /// and no directory behind.
 #[tokio::test]
 async fn an_archive_over_the_bounds_is_refused_and_leaves_nothing() -> TestResult {
@@ -472,8 +475,8 @@ async fn playground_task(
     use yulius_domain::ids::{StepId, TaskId};
     let repo = sandbox_dir(h, body).join("repo");
     let worktree = sandbox_dir(h, body).join("worktrees").join(id);
-    git(&repo, &["fetch", "-q", "origin"])?;
-    git(
+    git_stdout(&repo, &["fetch", "-q", "origin"])?;
+    git_stdout(
         &repo,
         &[
             "worktree",
@@ -490,8 +493,8 @@ async fn playground_task(
     for (path, text) in files {
         std::fs::write(worktree.join(path), text)?;
     }
-    git(&worktree, &["add", "-A"])?;
-    git(&worktree, &["commit", "-q", "-m", &format!("work on {id}")])?;
+    git_stdout(&worktree, &["add", "-A"])?;
+    git_stdout(&worktree, &["commit", "-q", "-m", &format!("work on {id}")])?;
     let owner = h.store.superadmin().await?.ok_or("superadmin")?;
     support::seed_task(
         h,
@@ -537,7 +540,7 @@ async fn merge(h: &Harness, creds: &Creds, task: &str) -> BoxResult<support::Res
     .await
 }
 
-/// PLY-007: in a playground, the task's merge action and the agent's `delivery_merge` squash
+/// In a playground, the task's merge action and the agent's `delivery_merge` squash
 /// the branch onto the playground's `dev` as one commit with a conventional title, and the task
 /// is merged; no GitHub call.
 #[tokio::test]
@@ -546,7 +549,9 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
     let (h, owner) = world().await?;
     let made = from_template(&h, &owner, "shop").await?;
     let origin = origin_of(&h, &made.body);
-    let before = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let before = git_stdout(&origin, &["rev-parse", "dev"])?
+        .trim()
+        .to_owned();
     playground_task(
         &h,
         &made.body,
@@ -564,18 +569,20 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
         merged.body
     );
     assert_eq!(merged.body["next_actions"], json!([]));
-    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let dev = git_stdout(&origin, &["rev-parse", "dev"])?
+        .trim()
+        .to_owned();
     assert_eq!(
-        git(&origin, &["rev-parse", "dev^"])?.trim(),
+        git_stdout(&origin, &["rev-parse", "dev^"])?.trim(),
         before,
         "one commit on dev"
     );
-    let message = git(&origin, &["log", "-1", "--format=%B", "dev"])?;
+    let message = git_stdout(&origin, &["log", "-1", "--format=%B", "dev"])?;
     assert!(message.starts_with("feat: task t1\n"), "{message}");
     assert!(message.contains("Task #"), "{message}");
     assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");
     assert_eq!(
-        git(&origin, &["rev-parse", "main"])?.trim(),
+        git_stdout(&origin, &["rev-parse", "main"])?.trim(),
         before,
         "main waits for a promotion"
     );
@@ -585,7 +592,9 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
     // The agent's own tool, under the task owner's authority.
     let worktree =
         playground_task(&h, &made.body, "t2", &[("second.txt", "two\n")], &["done"]).await?;
-    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     support::seed_live_attempt(&h, "t2", "tok-t2").await?;
     let internal = yulius_server::internal_router(h.app.clone()).layer(MockConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
@@ -604,16 +613,16 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
     )
     .await?;
     assert_eq!(called.body["result"]["isError"], false, "{}", called.body);
-    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
+    assert_eq!(git_stdout(&origin, &["rev-parse", "dev^"])?.trim(), dev);
     assert_eq!(file_at(&origin, "dev", "second.txt")?, "two\n");
     no_github_writes(&h)?;
     Ok(())
 }
 
-/// SPEC-493 REV-005 (review round 2 of fix 1c): a playground merge records whether a review
-/// round approved the head it merged: a commit of the task's own after the approval past the
-/// follow-up bound (SPEC-493 APR-001) is not covered; a clean merge of the integration branch after it is, judged against the integration
-/// branch as it was before this merge.
+/// A playground merge records whether a review round approved the head it merged: a commit of
+/// the task's own after the approval past the follow-up bound is not covered; a clean merge of
+/// the integration branch after it is, judged against the integration branch as it was before
+/// this merge.
 #[tokio::test]
 async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> TestResult {
     use yulius_app::model::ReviewRoundRecord;
@@ -669,10 +678,16 @@ async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> Te
     let first = playground_task(&h, &made.body, "t1", &[("one.txt", "1\n")], &["done"]).await?;
     // Started before t1 merges, so the integration branch moves under it.
     let second = playground_task(&h, &made.body, "t2", &[("two.txt", "2\n")], &["done"]).await?;
-    approve("t1", git(&first, &["rev-parse", "HEAD"])?.trim().to_owned()).await?;
+    approve(
+        "t1",
+        git_stdout(&first, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_owned(),
+    )
+    .await?;
     std::fs::write(first.join("more.txt"), "unreviewed\n".repeat(21))?;
-    git(&first, &["add", "-A"])?;
-    git(&first, &["commit", "-q", "-m", "after the review"])?;
+    git_stdout(&first, &["add", "-A"])?;
+    git_stdout(&first, &["commit", "-q", "-m", "after the review"])?;
     let merged = merge(&h, &owner, "t1").await?;
     assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
     let detail = record_of("t1").await?;
@@ -684,14 +699,16 @@ async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> Te
     // Approved at its head, then a clean merge of the integration branch (which t1 moved): covered.
     approve(
         "t2",
-        git(&second, &["rev-parse", "HEAD"])?.trim().to_owned(),
+        git_stdout(&second, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_owned(),
     )
     .await?;
-    git(&second, &["fetch", "-q", "origin"])?;
-    let approved = git(&second, &["rev-parse", "HEAD"])?;
-    git(&second, &["merge", "-q", "--no-edit", "origin/dev"])?;
+    git_stdout(&second, &["fetch", "-q", "origin"])?;
+    let approved = git_stdout(&second, &["rev-parse", "HEAD"])?;
+    git_stdout(&second, &["merge", "-q", "--no-edit", "origin/dev"])?;
     assert_ne!(
-        git(&second, &["rev-parse", "HEAD"])?,
+        git_stdout(&second, &["rev-parse", "HEAD"])?,
         approved,
         "a merge commit"
     );
@@ -788,13 +805,13 @@ async fn a_playground_delivery_requires_both_branch_and_worktree() -> TestResult
     Ok(())
 }
 
-/// PLY-007: an unfinished task is refused with what to do, and nothing lands.
+/// An unfinished task is refused with what to do, and nothing lands.
 #[tokio::test]
 async fn an_unfinished_task_is_not_merged() -> TestResult {
     let (h, owner) = world().await?;
     let made = from_template(&h, &owner, "shop").await?;
     let origin = origin_of(&h, &made.body);
-    let before = git(&origin, &["rev-parse", "dev"])?;
+    let before = git_stdout(&origin, &["rev-parse", "dev"])?;
 
     playground_task(
         &h,
@@ -829,7 +846,7 @@ async fn an_unfinished_task_is_not_merged() -> TestResult {
     assert_eq!(dirty.status, StatusCode::CONFLICT, "{:?}", dirty.body);
     assert!(text(&dirty).contains("uncommitted"), "{:?}", dirty.body);
 
-    // A playground squashes a task once, with its whole plan (SPEC-484 PLN-001): steps still
+    // A playground squashes a task once, with its whole plan: steps still
     // ahead hold it, whether or not a part is finished.
     for (id, file, steps, open, next) in [
         ("t3", "c.txt", &["pending", "blocked"][..], 2, "Step 0"),
@@ -855,7 +872,7 @@ async fn an_unfinished_task_is_not_merged() -> TestResult {
     }
 
     assert_eq!(
-        git(&origin, &["rev-parse", "dev"])?,
+        git_stdout(&origin, &["rev-parse", "dev"])?,
         before,
         "nothing landed"
     );
@@ -869,19 +886,19 @@ fn text(resp: &support::Resp) -> String {
         .to_owned()
 }
 
-/// #1258: every local prerequisite can be met while the branch has nothing to deliver.
+/// Every local prerequisite can be met while the branch has nothing to deliver.
 #[tokio::test]
 async fn a_playground_task_level_with_dev_offers_no_squash() -> TestResult {
     let (h, owner) = world().await?;
     let made = from_template(&h, &owner, "shop").await?;
     let worktree = playground_task(&h, &made.body, "t1", &[], &["done"]).await?;
     // Both branches have the valid spec and point at the same commit.
-    git(&worktree, &["push", "origin", "HEAD:dev"])?;
+    git_stdout(&worktree, &["push", "origin", "HEAD:dev"])?;
     assert_no_playground_squash(&h, &owner).await?;
     std::fs::write(worktree.join("temporary.txt"), "temporary change")?;
-    git(&worktree, &["add", "temporary.txt"])?;
-    git(&worktree, &["commit", "-qm", "temporary change"])?;
-    git(&worktree, &["revert", "--no-edit", "HEAD"])?;
+    git_stdout(&worktree, &["add", "temporary.txt"])?;
+    git_stdout(&worktree, &["commit", "-qm", "temporary change"])?;
+    git_stdout(&worktree, &["revert", "--no-edit", "HEAD"])?;
     assert_no_playground_squash(&h, &owner).await
 }
 
@@ -936,8 +953,8 @@ async fn changed_merge_attribute(checks: AttributeFixtureChecks, added: bool) ->
     };
     push_to_dev(&h, &body, &base_files)?;
     let repo = sandbox_dir(&h, &body).join("repo");
-    git(&repo, &["fetch", "-q", "origin"])?;
-    git(&repo, &["checkout", "-q", "--detach", "origin/dev"])?;
+    git_stdout(&repo, &["fetch", "-q", "origin"])?;
+    git_stdout(&repo, &["checkout", "-q", "--detach", "origin/dev"])?;
     let worktree =
         playground_task(&h, &body, "t1", &[("notes", "base\ntask\n")], &["done"]).await?;
     let mut task_files = vec![(".gitattributes", added.then_some(rule))];
@@ -947,10 +964,10 @@ async fn changed_merge_attribute(checks: AttributeFixtureChecks, added: bool) ->
     commit_in(&worktree, &task_files)?;
     let mut dev = push_to_dev(&h, &body, &[("notes", "integration\n")])?;
     if checks == AttributeFixtureChecks::RemovedOnDev {
-        git(&repo, &["fetch", "-q", "origin"])?;
-        git(&repo, &["checkout", "-q", "--detach", "origin/dev"])?;
+        git_stdout(&repo, &["fetch", "-q", "origin"])?;
+        git_stdout(&repo, &["checkout", "-q", "--detach", "origin/dev"])?;
         dev = commit_in(&repo, &[("yulius.toml", None)])?;
-        git(&repo, &["push", "-q", "origin", "HEAD:dev"])?;
+        git_stdout(&repo, &["push", "-q", "origin", "HEAD:dev"])?;
     }
     let view = call(
         &h.router,
@@ -996,7 +1013,7 @@ async fn changed_merge_attribute(checks: AttributeFixtureChecks, added: bool) ->
                 .is_some_and(|r| r.contains("notes"))
         );
         assert_eq!(
-            git(&origin_of(&h, &body), &["rev-parse", "dev"])?.trim(),
+            git_stdout(&origin_of(&h, &body), &["rev-parse", "dev"])?.trim(),
             dev
         );
     }
@@ -1035,7 +1052,7 @@ async fn a_merge_attribute_on_the_task_does_not_override_the_clone_after_dev_rem
     changed_merge_attribute(AttributeFixtureChecks::RemovedOnDev, true).await
 }
 
-/// PLY-007: a branch that conflicts with the playground's `dev` is refused naming the files and
+/// A branch that conflicts with the playground's `dev` is refused naming the files and
 /// the remedy.
 #[tokio::test]
 async fn a_conflicting_branch_is_refused_with_the_files() -> TestResult {
@@ -1047,7 +1064,7 @@ async fn a_conflicting_branch_is_refused_with_the_files() -> TestResult {
     assert_eq!(merge(&h, &owner, "t1").await?.status, StatusCode::OK);
     let sid = yulius_domain::ids::SandboxId::parse(made.body["id"].as_str().ok_or("id")?)?;
     let runs_before = h.store.ci_runs(&sid, 100).await?.len();
-    let base = git(&origin_of(&h, &made.body), &["rev-parse", "dev"])?;
+    let base = git_stdout(&origin_of(&h, &made.body), &["rev-parse", "dev"])?;
     let view = call(
         &h.router,
         Method::GET,
@@ -1070,7 +1087,7 @@ async fn a_conflicting_branch_is_refused_with_the_files() -> TestResult {
         "reading scheduled CI"
     );
     assert_eq!(
-        git(&origin_of(&h, &made.body), &["rev-parse", "dev"])?,
+        git_stdout(&origin_of(&h, &made.body), &["rev-parse", "dev"])?,
         base
     );
     let refused = merge(&h, &owner, "t2").await?;
@@ -1082,7 +1099,7 @@ async fn a_conflicting_branch_is_refused_with_the_files() -> TestResult {
     Ok(())
 }
 
-/// PLY-008: with a GitHub App configured, a ready playground task still opens no pull request at
+/// With a GitHub App configured, a ready playground task still opens no pull request at
 /// the end of its turn, and its delivery view and Git page carry the playground note instead of
 /// a GitHub error.
 #[tokio::test]
@@ -1128,7 +1145,7 @@ async fn a_playground_never_calls_github() -> TestResult {
     Ok(())
 }
 
-/// PLY-003: an uploaded `.git/objects/info/alternates` is never taken, so an upload cannot make
+/// An uploaded `.git/objects/info/alternates` is never taken, so an upload cannot make
 /// the server's Git read another repository on the server (here: a commit only it has).
 #[tokio::test]
 async fn an_uploaded_alternate_never_reads_another_repository() -> TestResult {
@@ -1136,18 +1153,20 @@ async fn an_uploaded_alternate_never_reads_another_repository() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let other = tmp.path().join("other");
     std::fs::create_dir_all(&other)?;
-    git(&other, &["init", "-q", "-b", "main"])?;
+    git_stdout(&other, &["init", "-q", "-b", "main"])?;
     std::fs::write(other.join("secret.txt"), "not yours\n")?;
-    git(&other, &["add", "-A"])?;
-    git(&other, &["commit", "-q", "-m", "secret"])?;
-    let secret = git(&other, &["rev-parse", "HEAD"])?.trim().to_owned();
+    git_stdout(&other, &["add", "-A"])?;
+    git_stdout(&other, &["commit", "-q", "-m", "secret"])?;
+    let secret = git_stdout(&other, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
 
     let project = tmp.path().join("proj");
     std::fs::create_dir_all(&project)?;
-    git(&project, &["init", "-q", "-b", "main"])?;
+    git_stdout(&project, &["init", "-q", "-b", "main"])?;
     std::fs::write(project.join("README.md"), "hello\n")?;
-    git(&project, &["add", "-A"])?;
-    git(&project, &["commit", "-q", "-m", "first"])?;
+    git_stdout(&project, &["add", "-A"])?;
+    git_stdout(&project, &["commit", "-q", "-m", "first"])?;
     std::fs::create_dir_all(project.join(".git/objects/info"))?;
     std::fs::write(
         project.join(".git/objects/info/alternates"),
@@ -1164,7 +1183,7 @@ async fn an_uploaded_alternate_never_reads_another_repository() -> TestResult {
     if made.status == StatusCode::CREATED {
         let origin = origin_of(&h, &made.body);
         assert!(
-            git(&origin, &["cat-file", "-e", &secret]).is_err(),
+            git_stdout(&origin, &["cat-file", "-e", &secret]).is_err(),
             "the other repository's commit reached the playground"
         );
     }
@@ -1172,7 +1191,7 @@ async fn an_uploaded_alternate_never_reads_another_repository() -> TestResult {
     let leaked = list.body.as_array().is_some_and(|items| {
         items.iter().any(|s| {
             let origin = origin_of(&h, s);
-            git(&origin, &["cat-file", "-e", &secret]).is_ok()
+            git_stdout(&origin, &["cat-file", "-e", &secret]).is_ok()
         })
     });
     assert!(!leaked, "no playground holds the other repository's commit");
@@ -1197,7 +1216,7 @@ async fn agent_tool(h: &Harness, token: &str, name: &str, arguments: Value) -> B
     Ok(called.body["result"].clone())
 }
 
-/// Review B1 (PLY-005, PLY-006): a playground has no deploy, so its maker — anyone signed in —
+/// A playground has no deploy, so its maker — anyone signed in —
 /// can never make the server run a command: not through the profile, not through an uploaded
 /// `yulius.toml`, not through an environment run.
 #[tokio::test]
@@ -1261,7 +1280,7 @@ async fn a_playground_runs_no_environment_command() -> TestResult {
     Ok(())
 }
 
-/// Review B2, M4 (PLY-002): a playground's agent gets no GitHub credential, and its GitHub tools
+/// Review B2, M4: a playground's agent gets no GitHub credential, and its GitHub tools
 /// (issues, promotion) answer with the playground note instead of calling GitHub.
 #[tokio::test]
 async fn a_playgrounds_agent_gets_no_github_token_or_tool() -> TestResult {
@@ -1319,7 +1338,7 @@ async fn a_playgrounds_agent_gets_no_github_token_or_tool() -> TestResult {
     Ok(())
 }
 
-/// Review M1 (PLY-003): a browser cannot read file modes or links, so a repository's executable
+/// A browser cannot read file modes or links, so a repository's executable
 /// files and links stay as committed when only that differs in the upload.
 #[tokio::test]
 async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestResult {
@@ -1327,15 +1346,15 @@ async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestRe
     let tmp = tempfile::tempdir()?;
     let project = tmp.path().join("proj");
     std::fs::create_dir_all(project.join("scripts"))?;
-    git(&project, &["init", "-q", "-b", "main"])?;
+    git_stdout(&project, &["init", "-q", "-b", "main"])?;
     std::fs::write(project.join("scripts/run.sh"), "#!/bin/sh\necho hi\n")?;
     std::process::Command::new("chmod")
         .arg("+x")
         .arg(project.join("scripts/run.sh"))
         .status()?;
     std::os::unix::fs::symlink("scripts/run.sh", project.join("run"))?;
-    git(&project, &["add", "-A"])?;
-    git(&project, &["commit", "-q", "-m", "first"])?;
+    git_stdout(&project, &["add", "-A"])?;
+    git_stdout(&project, &["commit", "-q", "-m", "first"])?;
     // As the browser packs it: links followed, every mode 0644.
     let stage = tmp.path().join("stage");
     stage_folder(&project, &stage)?;
@@ -1350,11 +1369,11 @@ async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestRe
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
     let origin = origin_of(&h, &made.body);
     assert_eq!(
-        git(&origin, &["rev-list", "--count", "main"])?.trim(),
+        git_stdout(&origin, &["rev-list", "--count", "main"])?.trim(),
         "1",
         "nothing but modes and links differed: no extra commit"
     );
-    let tree = git(&origin, &["ls-tree", "-r", "main"])?;
+    let tree = git_stdout(&origin, &["ls-tree", "-r", "main"])?;
     assert!(
         tree.contains("100755 blob") && tree.contains("scripts/run.sh"),
         "{tree}"
@@ -1367,21 +1386,21 @@ async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestRe
     Ok(())
 }
 
-/// Review M2 (PLY-003): a shallow repository keeps its branches and history.
+/// A shallow repository keeps its branches and history.
 #[tokio::test]
 async fn a_shallow_repository_keeps_its_branches() -> TestResult {
     let (h, owner) = world().await?;
     let tmp = tempfile::tempdir()?;
     let full = tmp.path().join("full");
     std::fs::create_dir_all(&full)?;
-    git(&full, &["init", "-q", "-b", "main"])?;
+    git_stdout(&full, &["init", "-q", "-b", "main"])?;
     for n in 1..=3 {
         std::fs::write(full.join("n.txt"), format!("{n}\n"))?;
-        git(&full, &["add", "-A"])?;
-        git(&full, &["commit", "-q", "-m", &format!("commit {n}")])?;
+        git_stdout(&full, &["add", "-A"])?;
+        git_stdout(&full, &["commit", "-q", "-m", &format!("commit {n}")])?;
     }
     let shallow = tmp.path().join("shallow");
-    git(
+    git_stdout(
         tmp.path(),
         &[
             "clone",
@@ -1397,7 +1416,7 @@ async fn a_shallow_repository_keeps_its_branches() -> TestResult {
     let made = upload(&h, &owner, "shallow", pack(&stage)?).await?;
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
     let origin = origin_of(&h, &made.body);
-    let log = git(&origin, &["log", "--format=%s", "main"])?;
+    let log = git_stdout(&origin, &["log", "--format=%s", "main"])?;
     assert_eq!(
         log.lines().collect::<Vec<_>>(),
         vec!["commit 3", "commit 2"],
@@ -1447,7 +1466,7 @@ async fn a_person_makes_at_most_ten_playgrounds() -> TestResult {
     Ok(())
 }
 
-/// Review M3 (PLY-004): a client that goes away while the playground is being set up (a closed
+/// A client that goes away while the playground is being set up (a closed
 /// tab) leaves no directory without its playground: the setup ends on its own.
 #[tokio::test]
 async fn a_closed_tab_during_setup_leaves_no_stray_directory() -> TestResult {
@@ -1455,12 +1474,12 @@ async fn a_closed_tab_during_setup_leaves_no_stray_directory() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let project = tmp.path().join("proj");
     std::fs::create_dir_all(&project)?;
-    git(&project, &["init", "-q", "-b", "main"])?;
+    git_stdout(&project, &["init", "-q", "-b", "main"])?;
     for n in 0..200 {
         std::fs::write(project.join(format!("f{n}.txt")), format!("{n}\n"))?;
     }
-    git(&project, &["add", "-A"])?;
-    git(&project, &["commit", "-q", "-m", "first"])?;
+    git_stdout(&project, &["add", "-A"])?;
+    git_stdout(&project, &["commit", "-q", "-m", "first"])?;
     let stage = tmp.path().join("stage");
     stage_folder(&project, &stage)?;
     let body = pack(&stage)?;
@@ -1511,7 +1530,7 @@ async fn a_closed_tab_during_setup_leaves_no_stray_directory() -> TestResult {
     Ok(())
 }
 
-/// Review round 2 (PLY-002): the clone's `origin` URL is the sandbox's to write, so the server
+/// The clone's `origin` URL is the sandbox's to write, so the server
 /// fetches and lands a playground's merges by the playground's own path, never by that URL: a
 /// clone pointed at another playground neither reads it nor changes its `dev`.
 #[tokio::test]
@@ -1519,11 +1538,11 @@ async fn a_rewritten_origin_url_is_never_followed() -> TestResult {
     let (h, owner) = world().await?;
     let victim = from_template(&h, &owner, "victim").await?;
     let victim_origin = origin_of(&h, &victim.body);
-    let victim_dev = git(&victim_origin, &["rev-parse", "dev"])?;
+    let victim_dev = git_stdout(&victim_origin, &["rev-parse", "dev"])?;
     let made = from_template(&h, &owner, "shop").await?;
     playground_task(&h, &made.body, "t1", &[("a.txt", "a\n")], &["done"]).await?;
     let repo = sandbox_dir(&h, &made.body).join("repo");
-    git(
+    git_stdout(
         &repo,
         &[
             "remote",
@@ -1536,7 +1555,7 @@ async fn a_rewritten_origin_url_is_never_followed() -> TestResult {
     let merged = merge(&h, &owner, "t1").await?;
     assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
     assert_eq!(
-        git(&victim_origin, &["rev-parse", "dev"])?,
+        git_stdout(&victim_origin, &["rev-parse", "dev"])?,
         victim_dev,
         "the victim's dev is untouched"
     );
@@ -1544,7 +1563,7 @@ async fn a_rewritten_origin_url_is_never_followed() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a removed playground keeps its repository on the server's disk, so it still
+/// A removed playground keeps its repository on the server's disk, so it still
 /// counts toward its maker's ten.
 #[tokio::test]
 async fn a_removed_playground_still_counts_toward_the_ten() -> TestResult {
@@ -1572,7 +1591,7 @@ async fn a_removed_playground_still_counts_toward_the_ten() -> TestResult {
     Ok(())
 }
 
-/// Review round 2 (PLY-005, PLY-008): a playground's profile has no environment and no
+/// A playground's profile has no environment and no
 /// automatic promotion, whose confirmation would promote through GitHub.
 #[tokio::test]
 async fn a_playground_profile_has_no_environment_or_automatic_promotion() -> TestResult {
@@ -1608,7 +1627,7 @@ async fn a_playground_profile_has_no_environment_or_automatic_promotion() -> Tes
     Ok(())
 }
 
-/// Review round 3 (PLY-002): `yulius onboard`'s import is for GitHub repositories; an import or a
+/// `yulius onboard`'s import is for GitHub repositories; an import or a
 /// plan naming a playground (its empty owner) is refused before anything asks GitHub.
 #[tokio::test]
 async fn the_cli_import_never_reaches_a_playground() -> TestResult {
@@ -1643,7 +1662,7 @@ async fn the_cli_import_never_reaches_a_playground() -> TestResult {
     Ok(())
 }
 
-/// Review round 3: a long path holding ` size=` is a name, not a PAX size override.
+/// A long path holding ` size=` is a name, not a PAX size override.
 #[tokio::test]
 async fn a_long_path_with_size_in_its_name_is_uploaded() -> TestResult {
     let (h, owner) = world().await?;
@@ -1663,7 +1682,7 @@ async fn a_long_path_with_size_in_its_name_is_uploaded() -> TestResult {
     Ok(())
 }
 
-// ------------------------------------------------------------------ Yulius CI (SPEC-163)
+// ------------------------------------------------------------------ Yulius CI
 
 /// The CI of [`ci_playground`]: one job that fails when the commit has a file named `broken`.
 const CI_JOBS: &str =
@@ -1695,9 +1714,9 @@ fn push_to_dev(h: &Harness, body: &Value, files: &[(&str, &str)]) -> BoxResult<S
     let origin = origin_of(h, body);
     let scratch = h.app.config.data_dir.join(format!(
         "push-{}",
-        git(&origin, &["rev-parse", "dev"])?.trim()
+        git_stdout(&origin, &["rev-parse", "dev"])?.trim()
     ));
-    git(
+    git_stdout(
         &h.app.config.data_dir,
         &[
             "clone",
@@ -1714,11 +1733,13 @@ fn push_to_dev(h: &Harness, body: &Value, files: &[(&str, &str)]) -> BoxResult<S
         current.push_str(text);
         std::fs::write(path, current)?;
     }
-    git(&scratch, &["add", "-A"])?;
-    git(&scratch, &["commit", "-q", "-m", "chore: on dev"])?;
-    git(&scratch, &["push", "-q", "origin", "HEAD:dev"])?;
+    git_stdout(&scratch, &["add", "-A"])?;
+    git_stdout(&scratch, &["commit", "-q", "-m", "chore: on dev"])?;
+    git_stdout(&scratch, &["push", "-q", "origin", "HEAD:dev"])?;
     std::fs::remove_dir_all(&scratch)?;
-    Ok(git(&origin, &["rev-parse", "dev"])?.trim().to_owned())
+    Ok(git_stdout(&origin, &["rev-parse", "dev"])?
+        .trim()
+        .to_owned())
 }
 
 /// A playground (template) whose `dev` has Yulius CI ([`CI_JOBS`] in its `yulius.toml`).
@@ -1777,13 +1798,13 @@ fn nothing_on_github(h: &Harness) -> BoxResult<()> {
     Ok(())
 }
 
-/// PCI-001, PCI-005 (#411): a playground's `dev` is tested once per commit with its
+/// A playground's `dev` is tested once per commit with its
 /// `[[ci.jobs]]`, without any GitHub call; its run publishes no commit status and says why.
 #[tokio::test]
 async fn a_playgrounds_dev_is_tested_without_github() -> TestResult {
     let (h, owner) = ci_world().await?;
     let body = ci_playground(&h, &owner).await?;
-    let dev = git(&origin_of(&h, &body), &["rev-parse", "dev"])?
+    let dev = git_stdout(&origin_of(&h, &body), &["rev-parse", "dev"])?
         .trim()
         .to_owned();
 
@@ -1868,7 +1889,9 @@ async fn dev_moves(h: &Harness, body: &Value, from: &str) -> BoxResult<String> {
     loop {
         let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
         h.app.merge_armed(&sid).await;
-        let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+        let dev = git_stdout(&origin, &["rev-parse", "dev"])?
+            .trim()
+            .to_owned();
         if dev != from {
             return Ok(dev);
         }
@@ -1879,7 +1902,7 @@ async fn dev_moves(h: &Harness, body: &Value, from: &str) -> BoxResult<String> {
     }
 }
 
-/// PCI-002, PCI-003, PCI-006 (#411): the agent's `delivery_merge` in a playground with CI tests
+/// The agent's `delivery_merge` in a playground with CI tests
 /// its head merged into `dev` as `dev` is now, arms the merge and leaves `dev` alone while the run
 /// goes; `yulius wait` follows that run; once it passed Yulius squashes the head, and the new
 /// `dev` head reuses the result instead of running again. GitHub hears nothing.
@@ -1893,7 +1916,9 @@ async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
     let dev = push_to_dev(&h, &body, &[("other.txt", "two\n")])?;
     h.app.ci_sync_all().await;
     ci_settle(&h, &owner, &body).await?;
-    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
 
     let armed = answer(
@@ -1907,7 +1932,7 @@ async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
     );
     assert!(armed.contains("armed: true"), "{armed}");
     assert_eq!(
-        git(&origin, &["rev-parse", "dev"])?.trim(),
+        git_stdout(&origin, &["rev-parse", "dev"])?.trim(),
         dev,
         "nothing lands before the checks pass"
     );
@@ -1921,7 +1946,7 @@ async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
     let candidate = run["sha"].as_str().ok_or("sha")?.to_owned();
     let repo = sandbox_dir(&h, &body).join("repo");
     for contained in [head.as_str(), dev.as_str()] {
-        git(
+        git_stdout(
             &repo,
             &["merge-base", "--is-ancestor", contained, &candidate],
         )?;
@@ -1935,11 +1960,11 @@ async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
 
     ci_settle(&h, &owner, &body).await?;
     let merged = dev_moves(&h, &body, &dev).await?;
-    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
+    assert_eq!(git_stdout(&origin, &["rev-parse", "dev^"])?.trim(), dev);
     assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");
     assert_eq!(
-        git(&origin, &["rev-parse", "dev^{tree}"])?.trim(),
-        git(&repo, &["rev-parse", &format!("{candidate}^{{tree}}")])?.trim(),
+        git_stdout(&origin, &["rev-parse", "dev^{tree}"])?.trim(),
+        git_stdout(&repo, &["rev-parse", &format!("{candidate}^{{tree}}")])?.trim(),
         "the squash lands the tree that was tested"
     );
     let state = wait_state(&h, "tok-t1", &head).await?;
@@ -1963,7 +1988,7 @@ async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
             .is_some_and(|r| r.contains("same tree")),
         "the merged dev reuses the task's run: {overview}"
     );
-    // `ci_status` lists the task's own run first, before newer runs of dev (PCI-006).
+    // `ci_status` lists the task's own run first, before newer runs of dev.
     let status = answer(&agent_tool(&h, "tok-t1", "ci_status", json!({})).await?);
     let first = status
         .lines()
@@ -2019,7 +2044,9 @@ async fn a_task_that_changes_the_jobs_is_judged_by_devs() -> TestResult {
     let worktree = playground_task(&h, &body, "t1", &[("yulius.toml", own)], &["done"]).await?;
     h.app.ci_sync_all().await;
     ci_settle(&h, &owner, &body).await?;
-    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
     let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
     assert!(armed.contains("armed: true"), "{armed}");
@@ -2033,7 +2060,7 @@ async fn a_task_that_changes_the_jobs_is_judged_by_devs() -> TestResult {
     Ok(())
 }
 
-/// SPEC-504 CFG-002 (review round 1): a playground task whose `yulius.toml` is invalid has the
+/// A playground task whose `yulius.toml` is invalid has the
 /// run of its merge fail at once, with a failed job `yulius.toml` naming the parser's message:
 /// it never lands.
 #[tokio::test]
@@ -2045,7 +2072,9 @@ async fn a_task_with_an_invalid_yulius_toml_fails_its_merges_run() -> TestResult
     let worktree = playground_task(&h, &body, "t1", &[("yulius.toml", invalid)], &["done"]).await?;
     h.app.ci_sync_all().await;
     ci_settle(&h, &owner, &body).await?;
-    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
     let _ = agent_merge(&h, "tok-t1", &head).await?;
     ci_settle(&h, &owner, &body).await?;
@@ -2054,7 +2083,7 @@ async fn a_task_with_an_invalid_yulius_toml_fails_its_merges_run() -> TestResult
     Ok(())
 }
 
-/// SPEC-483 D4 (review of slice 13), SPEC-504 CFG-003: a playground whose `dev` has a
+/// A playground whose `dev` has a
 /// `yulius.toml` nobody can read, and no earlier valid gate, is repaired by a task, and that
 /// task's merge is tested with the configuration it brings: a broken file never blocks its own
 /// repair.
@@ -2080,7 +2109,9 @@ async fn a_task_that_repairs_a_broken_configuration_is_tested_with_its_own() -> 
     let repaired = "\n[[ci.jobs]]\nname = \"check\"\ncommand = \"echo repaired-check\"\n";
     let worktree =
         playground_task(&h, &body, "t1", &[("yulius.toml", repaired)], &["done"]).await?;
-    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
     let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
     assert!(
@@ -2088,7 +2119,7 @@ async fn a_task_that_repairs_a_broken_configuration_is_tested_with_its_own() -> 
         "tested first, not landed untested: {armed}"
     );
     assert_eq!(
-        git(&origin_of(&h, &body), &["rev-parse", "dev"])?.trim(),
+        git_stdout(&origin_of(&h, &body), &["rev-parse", "dev"])?.trim(),
         dev,
         "nothing lands before the checks pass"
     );
@@ -2149,7 +2180,7 @@ async fn assert_delivery_ci(
     Ok(())
 }
 
-/// PCI-003 (#411): a head whose merge into `dev` fails its checks never lands: the armed merge is
+/// A head whose merge into `dev` fails its checks never lands: the armed merge is
 /// dropped with why when the run ends, and the next `delivery_merge` is refused (merge on green
 /// only).
 #[tokio::test]
@@ -2157,9 +2188,13 @@ async fn a_failing_head_is_refused_and_its_armed_merge_dropped() -> TestResult {
     let (h, owner) = ci_world().await?;
     let body = ci_playground(&h, &owner).await?;
     let origin = origin_of(&h, &body);
-    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let dev = git_stdout(&origin, &["rev-parse", "dev"])?
+        .trim()
+        .to_owned();
     let worktree = playground_task(&h, &body, "t1", &[("broken", "yes\n")], &["done"]).await?;
-    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
     let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
     assert!(armed.contains("armed: true"), "{armed}");
@@ -2186,7 +2221,7 @@ async fn a_failing_head_is_refused_and_its_armed_merge_dropped() -> TestResult {
         "{refused}"
     );
     assert_eq!(
-        git(&origin, &["rev-parse", "dev"])?.trim(),
+        git_stdout(&origin, &["rev-parse", "dev"])?.trim(),
         dev,
         "nothing landed"
     );
@@ -2232,7 +2267,9 @@ async fn a_playground_squashes_a_task_once_with_its_whole_plan() -> TestResult {
     let (h, owner) = ci_world().await?;
     let body = ci_playground(&h, &owner).await?;
     let origin = origin_of(&h, &body);
-    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let dev = git_stdout(&origin, &["rev-parse", "dev"])?
+        .trim()
+        .to_owned();
     let worktree = playground_task(
         &h,
         &body,
@@ -2241,7 +2278,9 @@ async fn a_playground_squashes_a_task_once_with_its_whole_plan() -> TestResult {
         &["done", "pending"],
     )
     .await?;
-    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
 
     let held = agent_merge(&h, "tok-t1", &head).await?;
@@ -2274,7 +2313,7 @@ async fn a_playground_squashes_a_task_once_with_its_whole_plan() -> TestResult {
     Ok(())
 }
 
-/// PCI-003 (#411): when `dev` moves while a merge is armed, the next decision tests the head
+/// When `dev` moves while a merge is armed, the next decision tests the head
 /// merged into the new `dev` (the older run is cancelled as superseded) and lands that.
 #[tokio::test]
 async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
@@ -2282,7 +2321,9 @@ async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
     let body = ci_playground(&h, &owner).await?;
     let origin = origin_of(&h, &body);
     let worktree = playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
-    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
     let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
     assert!(armed.contains("armed: true"), "{armed}");
@@ -2299,7 +2340,7 @@ async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
     let second = task_run(&overview)?;
     assert_ne!(second["id"], first["id"], "{overview}");
     let repo = sandbox_dir(&h, &body).join("repo");
-    git(
+    git_stdout(
         &repo,
         &[
             "merge-base",
@@ -2324,21 +2365,23 @@ async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
 
     ci_settle(&h, &owner, &body).await?;
     dev_moves(&h, &body, &moved).await?;
-    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), moved);
+    assert_eq!(git_stdout(&origin, &["rev-parse", "dev^"])?.trim(), moved);
     assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");
     assert_eq!(file_at(&origin, "dev", "other.txt")?, "two\n");
     nothing_on_github(&h)?;
     Ok(())
 }
 
-/// PCI-004 (#411): a person's merge in a playground with CI never arms: while Yulius CI tests the
+/// A person's merge in a playground with CI never arms: while Yulius CI tests the
 /// head merged into `dev` it is a 409 saying so, and once that run passed it squashes.
 #[tokio::test]
 async fn a_persons_merge_waits_for_green() -> TestResult {
     let (h, owner) = ci_world().await?;
     let body = ci_playground(&h, &owner).await?;
     let origin = origin_of(&h, &body);
-    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let dev = git_stdout(&origin, &["rev-parse", "dev"])?
+        .trim()
+        .to_owned();
     playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
 
     assert_delivery_ci(&h, &owner, &body, None).await?;
@@ -2349,7 +2392,7 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
         "{:?}",
         waiting.body
     );
-    assert_eq!(git(&origin, &["rev-parse", "dev"])?.trim(), dev);
+    assert_eq!(git_stdout(&origin, &["rev-parse", "dev"])?.trim(), dev);
     assert_delivery_ci(&h, &owner, &body, Some("queued")).await?;
     let again = merge(&h, &owner, "t1").await?;
     assert_eq!(again.status, StatusCode::CONFLICT, "{:?}", again.body);
@@ -2371,7 +2414,7 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
         "{:?}",
         merged.body
     );
-    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
+    assert_eq!(git_stdout(&origin, &["rev-parse", "dev^"])?.trim(), dev);
     nothing_on_github(&h)?;
     Ok(())
 }
@@ -2406,7 +2449,7 @@ async fn a_playground_delivery_explains_an_errored_check() -> TestResult {
     assert_delivery_ci(&h, &owner, &body, Some(reason)).await
 }
 
-/// Review round 1, major 1 (PCI-002): where both sides changed a `merge=union` file, the squash
+/// Review round 1, major 1: where both sides changed a `merge=union` file, the squash
 /// lands exactly the tree Yulius CI tested (Git orders a union by which side is "ours").
 #[tokio::test]
 async fn a_union_merged_file_lands_the_tested_tree() -> TestResult {
@@ -2426,7 +2469,9 @@ async fn a_union_merged_file_lands_the_tested_tree() -> TestResult {
     )
     .await?;
     let dev = push_to_dev(&h, &body, &[("notes.md", "dev entry\n")])?;
-    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
     let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
     assert!(armed.contains("armed: true"), "{armed}");
@@ -2443,8 +2488,8 @@ async fn a_union_merged_file_lands_the_tested_tree() -> TestResult {
         "{notes}"
     );
     assert_eq!(
-        git(&origin, &["rev-parse", "dev^{tree}"])?.trim(),
-        git(&repo, &["rev-parse", &format!("{candidate}^{{tree}}")])?.trim(),
+        git_stdout(&origin, &["rev-parse", "dev^{tree}"])?.trim(),
+        git_stdout(&repo, &["rev-parse", &format!("{candidate}^{{tree}}")])?.trim(),
         "the tested tree lands: {notes}"
     );
     nothing_on_github(&h)?;
@@ -2459,12 +2504,14 @@ fn commit_in(worktree: &Path, files: &[(&str, Option<&str>)]) -> BoxResult<Strin
             None => std::fs::remove_file(worktree.join(path))?,
         }
     }
-    git(worktree, &["add", "-A"])?;
-    git(worktree, &["commit", "-q", "-m", "more"])?;
-    Ok(git(worktree, &["rev-parse", "HEAD"])?.trim().to_owned())
+    git_stdout(worktree, &["add", "-A"])?;
+    git_stdout(worktree, &["commit", "-q", "-m", "more"])?;
+    Ok(git_stdout(worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned())
 }
 
-/// Review round 1, major 2 (PCI-002): a head reset to an older commit never takes the verdict of
+/// Review round 1, major 2: a head reset to an older commit never takes the verdict of
 /// the head it came from. A passed run of a later commit that removed `broken` does not let the
 /// older commit with `broken` land, and a failed run of a later commit does not refuse the older
 /// one that passes.
@@ -2473,21 +2520,25 @@ async fn a_reset_head_never_takes_a_later_heads_verdict() -> TestResult {
     let (h, owner) = ci_world().await?;
     let body = ci_playground(&h, &owner).await?;
     let origin = origin_of(&h, &body);
-    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let dev = git_stdout(&origin, &["rev-parse", "dev"])?
+        .trim()
+        .to_owned();
     let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
     let worktree = playground_task(&h, &body, "t1", &[("broken", "yes\n")], &["done"]).await?;
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
-    let red = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let red = git_stdout(&worktree, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
 
     // False green: B (which removes `broken`) passes; reset to A, A must be tested itself.
     let green = commit_in(&worktree, &[("broken", None), ("fine.txt", Some("ok\n"))])?;
     let armed = answer(&agent_merge(&h, "tok-t1", &green).await?);
     assert!(armed.contains("armed: true"), "{armed}");
     // The run passes and Yulius lands nothing yet: the agent resets first.
-    git(&worktree, &["reset", "-q", "--hard", &red])?;
+    git_stdout(&worktree, &["reset", "-q", "--hard", &red])?;
     ci_settle(&h, &owner, &body).await?;
     h.app.merge_armed(&sid).await;
-    assert_eq!(git(&origin, &["rev-parse", "dev"])?.trim(), dev);
+    assert_eq!(git_stdout(&origin, &["rev-parse", "dev"])?.trim(), dev);
     let again = answer(&agent_merge(&h, "tok-t1", &red).await?);
     assert!(
         again.contains("armed: true"),
@@ -2497,7 +2548,7 @@ async fn a_reset_head_never_takes_a_later_heads_verdict() -> TestResult {
     assert_eq!(task_run(&overview)?["state"], "failed", "{overview}");
     h.app.merge_armed(&sid).await;
     assert_eq!(
-        git(&origin, &["rev-parse", "dev"])?.trim(),
+        git_stdout(&origin, &["rev-parse", "dev"])?.trim(),
         dev,
         "nothing landed"
     );
@@ -2509,7 +2560,7 @@ async fn a_reset_head_never_takes_a_later_heads_verdict() -> TestResult {
     assert!(armed.contains("armed: true"), "{armed}");
     ci_settle(&h, &owner, &body).await?;
     h.app.merge_armed(&sid).await;
-    git(&worktree, &["reset", "-q", "--hard", &fixed])?;
+    git_stdout(&worktree, &["reset", "-q", "--hard", &fixed])?;
     assert_delivery_ci(&h, &owner, &body, None).await?;
     let retried = answer(&agent_merge(&h, "tok-t1", &fixed).await?);
     assert!(
@@ -2523,14 +2574,16 @@ async fn a_reset_head_never_takes_a_later_heads_verdict() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 (PCI-004): a person's merge follows the profile's `require_checks` as on
+/// A person's merge follows the profile's `require_checks` as on
 /// GitHub: without required checks it squashes at once.
 #[tokio::test]
 async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
     let (h, owner) = ci_world().await?;
     let body = ci_playground(&h, &owner).await?;
     let origin = origin_of(&h, &body);
-    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let dev = git_stdout(&origin, &["rev-parse", "dev"])?
+        .trim()
+        .to_owned();
     let sid = body["id"].as_str().ok_or("id")?;
     playground_task(&h, &body, "t1", &[("broken", "yes\n")], &["done"]).await?;
     let tested = merge(&h, &owner, "t1").await?;
@@ -2555,11 +2608,11 @@ async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
     assert_delivery_ci(&h, &owner, &body, None).await?;
     let merged = merge(&h, &owner, "t1").await?;
     assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
-    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
+    assert_eq!(git_stdout(&origin, &["rev-parse", "dev^"])?.trim(), dev);
     Ok(())
 }
 
-// ------------------------------------------------- `yulius onboard --playground` (SPEC-171)
+// ------------------------------------------------- `yulius onboard --playground`
 
 /// The router served on a loopback port as `yulius serve` serves it, for the real CLI client.
 async fn serve(h: &Harness) -> BoxResult<(yulius_import::Url, tokio::task::JoinHandle<()>)> {
@@ -2644,23 +2697,23 @@ fn laptop(dir: &Path) -> BoxResult<(PathBuf, PathBuf, PathBuf)> {
     let checkout = dir.join("laptop").join("shop");
     std::fs::create_dir_all(&remote)?;
     std::fs::create_dir_all(&checkout)?;
-    git(&remote, &["init", "--quiet", "--bare", "-b", "main"])?;
-    git(&checkout, &["init", "--quiet", "-b", "main"])?;
+    git_stdout(&remote, &["init", "--quiet", "--bare", "-b", "main"])?;
+    git_stdout(&checkout, &["init", "--quiet", "-b", "main"])?;
     std::fs::write(checkout.join("README.md"), "# shop\n")?;
     std::fs::write(checkout.join("gone.txt"), "deleted later\n")?;
-    git(&checkout, &["add", "-A"])?;
-    git(&checkout, &["commit", "--quiet", "-m", "initial"])?;
-    git(
+    git_stdout(&checkout, &["add", "-A"])?;
+    git_stdout(&checkout, &["commit", "--quiet", "-m", "initial"])?;
+    git_stdout(
         &checkout,
         &["remote", "add", "origin", &remote.to_string_lossy()],
     )?;
-    git(&checkout, &["push", "--quiet", "origin", "main"])?;
-    git(&checkout, &["checkout", "--quiet", "-b", "feature"])?;
+    git_stdout(&checkout, &["push", "--quiet", "origin", "main"])?;
+    git_stdout(&checkout, &["checkout", "--quiet", "-b", "feature"])?;
     std::fs::write(checkout.join("feature.txt"), "feature\n")?;
-    git(&checkout, &["add", "feature.txt"])?;
-    git(&checkout, &["commit", "--quiet", "-m", "feature work"])?;
-    git(&checkout, &["tag", "v1"])?;
-    git(&checkout, &["checkout", "--quiet", "main"])?;
+    git_stdout(&checkout, &["add", "feature.txt"])?;
+    git_stdout(&checkout, &["commit", "--quiet", "-m", "feature work"])?;
+    git_stdout(&checkout, &["tag", "v1"])?;
+    git_stdout(&checkout, &["checkout", "--quiet", "main"])?;
     std::fs::write(checkout.join("README.md"), "# shop, edited on the laptop\n")?;
     std::fs::write(checkout.join("new.txt"), "not committed\n")?;
     std::fs::remove_file(checkout.join("gone.txt"))?;
@@ -2706,10 +2759,7 @@ fn laptop(dir: &Path) -> BoxResult<(PathBuf, PathBuf, PathBuf)> {
 
 /// Every ref of a repository with its commit, sorted.
 fn refs(repo: &Path) -> BoxResult<String> {
-    Ok(git(
-        repo,
-        &["for-each-ref", "--format=%(refname) %(objectname)"],
-    )?)
+    git_stdout(repo, &["for-each-ref", "--format=%(refname) %(objectname)"])
 }
 
 /// The playgrounds a person made, as the store keeps them (not removed).
@@ -2726,7 +2776,7 @@ async fn playgrounds_named(
         .collect())
 }
 
-/// SPEC-171 PGL-001, PGL-003, PGL-004: the real `yulius onboard --playground` on a checkout whose
+/// The real `yulius onboard --playground` on a checkout whose
 /// only remote is not GitHub makes a playground with every branch and tag, the uncommitted work as
 /// one commit on the checked-out branch, `dev`, and the session on its Sessions page. Nothing is
 /// pushed to the checkout's remote, and GitHub is never written to while its permission lookups
@@ -2744,8 +2794,12 @@ async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let (checkout, remote, claude) = laptop(tmp.path())?;
     let remote_before = refs(&remote)?;
-    let laptop_main = git(&checkout, &["rev-parse", "main"])?.trim().to_owned();
-    let laptop_feature = git(&checkout, &["rev-parse", "feature"])?.trim().to_owned();
+    let laptop_main = git_stdout(&checkout, &["rev-parse", "main"])?
+        .trim()
+        .to_owned();
+    let laptop_feature = git_stdout(&checkout, &["rev-parse", "feature"])?
+        .trim()
+        .to_owned();
 
     let (outcome, output) = onboard_cli(&server, &token, &checkout, &claude, None).await?;
     let outcome = outcome.map_err(|err| format!("{err}\n{output}"))?;
@@ -2760,21 +2814,27 @@ async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
     let origin = origin_of(&h, &sandbox);
     assert_eq!(branches(&origin)?, ["dev", "feature", "main"]);
     assert_eq!(
-        git(&origin, &["rev-parse", "feature"])?.trim(),
+        git_stdout(&origin, &["rev-parse", "feature"])?.trim(),
         laptop_feature
     );
-    assert_eq!(git(&origin, &["rev-parse", "v1"])?.trim(), laptop_feature);
+    assert_eq!(
+        git_stdout(&origin, &["rev-parse", "v1"])?.trim(),
+        laptop_feature
+    );
     // The uncommitted work is one commit on `main`, on top of the laptop's `main`.
-    assert_eq!(git(&origin, &["rev-parse", "main~1"])?.trim(), laptop_main);
+    assert_eq!(
+        git_stdout(&origin, &["rev-parse", "main~1"])?.trim(),
+        laptop_main
+    );
     assert_eq!(
         file_at(&origin, "main", "README.md")?,
         "# shop, edited on the laptop\n"
     );
     assert_eq!(file_at(&origin, "main", "new.txt")?, "not committed\n");
-    assert!(git(&origin, &["cat-file", "-e", "main:gone.txt"]).is_err());
+    assert!(git_stdout(&origin, &["cat-file", "-e", "main:gone.txt"]).is_err());
     assert_eq!(
-        git(&origin, &["rev-parse", "dev"])?,
-        git(&origin, &["rev-parse", "main"])?
+        git_stdout(&origin, &["rev-parse", "dev"])?,
+        git_stdout(&origin, &["rev-parse", "main"])?
     );
     // Its sandbox has the clone, and its Sessions page the session.
     assert!(sandbox_dir(&h, &sandbox).join("repo").join(".git").exists());
@@ -2799,7 +2859,7 @@ async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
     let again = again.map_err(|err| format!("{err}\n{output}"))?;
     assert_eq!(again.sessions_sent, 0, "{output}");
     assert_eq!(playgrounds_named(&h, "shop").await?.len(), 1);
-    // Review round 1: branches it already has are not imported again under `import/`.
+    // Branches it already has are not imported again under `import/`.
     let clone = sandbox_dir(&h, &sandbox).join("repo");
     let local = branches(&clone)?;
     assert!(!local.iter().any(|b| b.starts_with("import/")), "{local:?}");
@@ -2807,7 +2867,7 @@ async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
     Ok(())
 }
 
-/// SPEC-171 PGL-002: without the playground flag an empty owner is still refused, and a new
+/// Without the playground flag an empty owner is still refused, and a new
 /// playground from the CLI needs the checkout's branches.
 #[tokio::test]
 async fn a_cli_playground_needs_the_flag_and_a_bundle() -> TestResult {
@@ -2851,7 +2911,7 @@ async fn a_cli_playground_needs_the_flag_and_a_bundle() -> TestResult {
     Ok(())
 }
 
-/// SPEC-171 PGL-002, PGL-004: into the person's existing playground of that name the CLI upload
+/// Into the person's existing playground of that name the CLI upload
 /// lands as an import does (branches under `import/<login>/`, the uncommitted work on a snapshot
 /// branch, in the sandbox clone): the playground's own branches are untouched, no other is made.
 #[tokio::test]
@@ -2866,7 +2926,9 @@ async fn onboard_cli_uploads_into_an_existing_playground() -> TestResult {
     let before = refs(&origin)?;
     let tmp = tempfile::tempdir()?;
     let (checkout, _remote, claude) = laptop(tmp.path())?;
-    let feature = git(&checkout, &["rev-parse", "feature"])?.trim().to_owned();
+    let feature = git_stdout(&checkout, &["rev-parse", "feature"])?
+        .trim()
+        .to_owned();
 
     let (outcome, output) = onboard_cli(&server, &token, &checkout, &claude, Some("Shop")).await?;
     let outcome = outcome.map_err(|err| format!("{err}\n{output}"))?;
@@ -2894,7 +2956,7 @@ async fn onboard_cli_uploads_into_an_existing_playground() -> TestResult {
         .find(|b| b.starts_with("import/user/snapshot-"))
         .ok_or("snapshot branch")?;
     assert_eq!(
-        git(&clone, &["rev-parse", "import/user/feature"])?.trim(),
+        git_stdout(&clone, &["rev-parse", "import/user/feature"])?.trim(),
         feature
     );
     assert_eq!(file_at(&clone, snapshot, "new.txt")?, "not committed\n");
@@ -2902,7 +2964,7 @@ async fn onboard_cli_uploads_into_an_existing_playground() -> TestResult {
     Ok(())
 }
 
-/// SPEC-171 PGL-002: a CLI upload makes a playground only within the person's limit of 10; their
+/// A CLI upload makes a playground only within the person's limit of 10; their
 /// existing playground of that name still receives it.
 #[tokio::test]
 async fn a_cli_playground_counts_toward_the_ten() -> TestResult {
@@ -2973,7 +3035,7 @@ async fn a_cli_playground_counts_toward_the_ten() -> TestResult {
     Ok(())
 }
 
-// ------------------------------------------------- purging a removed playground (SPEC-171)
+// ------------------------------------------------- purging a removed playground
 
 async fn purge(h: &Harness, creds: &Creds, sid: &str) -> BoxResult<support::Resp> {
     call(
@@ -2994,7 +3056,7 @@ async fn audit_actions(h: &Harness, sid: &str) -> BoxResult<Vec<String>> {
     Ok(entries.into_iter().map(|e| e.action).collect())
 }
 
-/// SPEC-171 PGL-006: the purge of a removed playground deletes nothing while a process of its
+/// The purge of a removed playground deletes nothing while a process of its
 /// sandbox runs (here: an agent run still ending after the removal stopped its task), and
 /// deletes `origin` and the sandbox directory on the first round after it ended.
 #[tokio::test]
@@ -3188,7 +3250,7 @@ async fn reusing_a_purged_playgrounds_ports_leaves_both_holder_trees_absent() ->
     Ok(())
 }
 
-/// SPEC-171 PGL-005, PGL-007: purging on removal deletes the code at once when nothing runs, and
+/// Purging on removal deletes the code at once when nothing runs, and
 /// its maker may make another playground at the limit of 10.
 #[tokio::test]
 async fn purging_a_playground_deletes_its_code_once_nothing_runs() -> TestResult {
@@ -3209,7 +3271,7 @@ async fn purging_a_playground_deletes_its_code_once_nothing_runs() -> TestResult
     assert!(!sandbox_dir(&h, &last).exists());
     let again = from_template(&h, &alice, "lab again").await?;
     assert_eq!(again.status, StatusCode::CREATED, "{:?}", again.body);
-    // The removal's export of its tasks goes with it (SPEC-276 RDA-011).
+    // The removal's export of its tasks goes with it.
     let exports = std::fs::read_dir(h.app.config.data_dir.join("exports"))?.count();
     assert_eq!(exports, 0);
     no_github_writes(&h)?;
@@ -3244,7 +3306,37 @@ async fn a_github_sandbox_s_files_are_purged_and_its_repository_stays() -> TestR
     Ok(())
 }
 
-/// SPEC-171 PGL-005: only an admin of the playground purges it; a removed playground is purged by
+/// A sandbox whose homes hold harness memory and instructions, prepared for a
+/// guarded session as a launch prepares it, is purged with all of it: the guard leaves nothing
+/// immutable on the host.
+#[tokio::test]
+async fn a_sandbox_with_memory_notes_is_purged() -> TestResult {
+    let (h, owner) = world().await?;
+    let creator = {
+        use yulius_app::ports::store::UserStore;
+        h.store.superadmin().await?.ok_or("superadmin")?.id
+    };
+    support::seed_sandbox(&h, "s1", "shop", creator.as_str()).await?;
+    let dir = h.app.config.data_dir.join("sandboxes/s1");
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(repo.join(".git"))?;
+    let config = dir.join("home/.claude");
+    let guard = yulius_app::memory_guard::claude_guard(&dir, &config, &config, &repo)?;
+    assert!(!guard.is_empty());
+    let key = yulius_app::memory_guard::claude_key(&repo);
+    let memory = config.join("projects").join(key).join("memory");
+    std::fs::write(memory.join("MEMORY.md"), "- a note\n")?;
+    std::fs::write(config.join("CLAUDE.md"), "a rule\n")?;
+    std::fs::create_dir_all(dir.join("codex/a1/memories"))?;
+    std::fs::write(dir.join("codex/a1/AGENTS.md"), "a rule\n")?;
+    let purged = purge(&h, &owner, "s1").await?;
+    assert_eq!(purged.status, StatusCode::OK, "{:?}", purged.body);
+    assert_eq!(purged.body["state"], "purged", "{:?}", purged.body);
+    assert!(!dir.exists(), "its files and notes are gone");
+    Ok(())
+}
+
+/// Only an admin of the playground purges it; a removed playground is purged by
 /// the superadmin only (it is invisible to everyone else).
 #[tokio::test]
 async fn only_an_admin_purges_and_the_superadmin_purges_a_removed_one() -> TestResult {
@@ -3274,13 +3366,13 @@ async fn only_an_admin_purges_and_the_superadmin_purges_a_removed_one() -> TestR
     Ok(())
 }
 
-// ------------------------------------------------- review round 1 (SPEC-171)
+// ------------------------------------------------- review round 1
 
 /// A CLI upload of `checkout` into a new playground `name` as the CLI makes it, through the HTTP
 /// API: the job is created and every file uploaded, not completed. Returns the job id.
 async fn cli_job(h: &Harness, creds: &Creds, checkout: &Path, name: &str) -> BoxResult<String> {
     let bundle_path = checkout.join("..").join(format!("{name}.bundle"));
-    git(
+    git_stdout(
         checkout,
         &[
             "bundle",
@@ -3292,7 +3384,9 @@ async fn cli_job(h: &Harness, creds: &Creds, checkout: &Path, name: &str) -> Box
         ],
     )?;
     let bundle = std::fs::read(&bundle_path)?;
-    let head = git(checkout, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let head = git_stdout(checkout, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
     let manifest = json!({"manifest": {
         "version": 1,
         "repo": {"remote_url": "", "owner": "", "name": name, "head_branch": "main", "head_sha": head},
@@ -3342,9 +3436,9 @@ async fn complete_job(h: &Harness, creds: &Creds, job: &str) -> BoxResult<suppor
     .await
 }
 
-/// Review round 1 (major): a new playground that cannot be made when its upload completes (here:
+/// A new playground that cannot be made when its upload completes (here:
 /// another playground took the person's tenth place meanwhile) keeps the uploaded files, so
-/// completing again once there is room makes it (PGL-003).
+/// completing again once there is room makes it.
 #[tokio::test]
 async fn a_cli_upload_refused_at_completion_keeps_its_files_and_completes_later() -> TestResult {
     use yulius_app::ports::store::UserStore;
@@ -3396,7 +3490,7 @@ async fn a_cli_upload_refused_at_completion_keeps_its_files_and_completes_later(
     Ok(())
 }
 
-/// Review round 1: a person has one new-playground upload open at a time; starting another
+/// A person has one new-playground upload open at a time; starting another
 /// supersedes the earlier one, whose files go, so abandoned uploads cannot pile up on the disk.
 #[tokio::test]
 async fn a_new_playground_upload_supersedes_an_unfinished_one() -> TestResult {
@@ -3445,7 +3539,7 @@ async fn a_new_playground_upload_supersedes_an_unfinished_one() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 (PGL-006): the purge waits for a CI run of the sandbox too (its checkouts are
+/// The purge waits for a CI run of the sandbox too (its checkouts are
 /// claimed while a run executes), and an already purged playground is not purged or audited again.
 #[tokio::test]
 async fn a_purge_waits_for_a_ci_run_and_is_done_once() -> TestResult {

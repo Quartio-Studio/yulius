@@ -13,8 +13,10 @@ and never promote: production is always a person's.
 1. Read CD with `cd_status`. When dev is not defined, or empty (nothing to deploy yet), or its
    last run already deployed the current integration head and passed, deploy nothing: end with a
    one-line summary saying which.
-2. When a secret dev needs is missing or waits for a person's allowance, ask with `needs_you`
-   (what to add or allow on the Secrets page, and the link), say so in the summary and stop.
+2. When a secret dev needs is missing, ask with `needs_you` (what to add on the Secrets page, and
+   the link). When one waits for a person's allowance (`not_allowed`), ask with
+   `secret_copy_to_env` naming it: it writes nothing until they allow it and shows them an
+   Allow button on the Secrets page. Either way, say so in the summary and stop.
 3. Deploy: call `cd_deploy` with `{"environment": "dev"}`, start `yulius wait` with
    run_in_background and end your turn; when it returns, read the run with `cd_status` and its
    `run_id`. The run already ran the verify script.

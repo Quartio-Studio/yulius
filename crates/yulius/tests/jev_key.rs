@@ -1,4 +1,4 @@
-//! The Jev key managed by the superadmin (SPEC-001 ADM-001, ADM-002): set (as setup's optional
+//! The Jev key managed by the superadmin: set (as setup's optional
 //! step does), replaced, removed and tested through the API, sealed at rest, used by task intake
 //! at once, `YULIUS_JEV_API_KEY_FILE` honoured while nothing is saved, and never returned.
 
@@ -155,7 +155,7 @@ async fn split_checked(i: &Instance) -> Result<Value, Box<dyn std::error::Error>
     Ok(r.body)
 }
 
-/// AC-ADM-2: the superadmin sets, replaces, tests and removes the key; intake uses the key in
+/// The superadmin sets, replaces, tests and removes the key; intake uses the key in
 /// use at once; the key is sealed at rest and never in a response.
 #[tokio::test]
 async fn the_superadmin_manages_the_key_and_intake_follows_at_once() -> TestResult {
@@ -283,7 +283,7 @@ async fn the_superadmin_manages_the_key_and_intake_follows_at_once() -> TestResu
     Ok(())
 }
 
-/// AC-ADM-2: only the superadmin may read or change the key.
+/// Only the superadmin may read or change the key.
 #[tokio::test]
 async fn only_the_superadmin_manages_the_key() -> TestResult {
     let i = instance(Ok(None)).await?;
@@ -307,11 +307,11 @@ async fn only_the_superadmin_manages_the_key() -> TestResult {
     Ok(())
 }
 
-/// AC-ADM-2: `YULIUS_JEV_API_KEY_FILE` is honoured while no key is saved ("from config"); a saved
+/// `YULIUS_JEV_API_KEY_FILE` is honoured while no key is saved ("from config"); a saved
 /// key wins; removing it falls back to the file; one click moves the file's key into settings.
 #[tokio::test]
 async fn the_key_file_is_honoured_as_config_and_can_move_into_settings() -> TestResult {
-    let i = instance(Ok(Some(Secret(CONFIG.into())))).await?;
+    let i = instance(Ok(Some(Secret::new(CONFIG.into())))).await?;
     let view = api(&i, Method::GET, "/api/admin/jev", None, &i.admin).await?;
     assert_eq!(view.body["configured"], true);
     assert_eq!(view.body["source"], "config");

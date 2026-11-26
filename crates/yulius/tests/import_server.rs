@@ -1,9 +1,10 @@
 //! Server side of `yulius import` over HTTP with real Git: guarded job creation, resumable
 //! idempotent chunks, bundle/snapshot/session application, sessions stored as attributed,
 //! deduplicated session documents, idempotent re-runs and the native continuation of imported
-//! sessions (AC-IMP-1, AC-IMP-2, AC-IMP-4..6, AC-SES-1).
+//! sessions.
 
 use crate::support;
+use crate::support::git_stdout;
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
@@ -12,7 +13,7 @@ use std::process::Command;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::repos::{OWNER, World, call_raw, git};
+use support::repos::{OWNER, World, call_raw};
 use support::{Creds, Resp, TestResult, call};
 use yulius_app::ports::store::{SandboxStore, TaskStore};
 use yulius_contracts::import::{
@@ -61,20 +62,22 @@ fn file_ref(w: &World, name: &str, bytes: &[u8]) -> FileRef {
 fn laptop_offer(w: &World, remote: &Path) -> Result<Offer, Error> {
     let laptop = w.scratch.path().join("laptop");
     std::fs::create_dir_all(&laptop)?;
-    git(
+    git_stdout(
         &laptop,
         &["clone", "--quiet", &remote.to_string_lossy(), "shop"],
     )?;
     let checkout = laptop.join("shop");
-    git(&checkout, &["checkout", "--quiet", "-b", "feature-x"])?;
+    git_stdout(&checkout, &["checkout", "--quiet", "-b", "feature-x"])?;
     std::fs::write(checkout.join("src/app.txt"), "v2\n")?;
-    git(&checkout, &["commit", "--quiet", "-am", "local work"])?;
-    let head = git(&checkout, &["rev-parse", "HEAD"])?.trim().to_owned();
+    git_stdout(&checkout, &["commit", "--quiet", "-am", "local work"])?;
+    let head = git_stdout(&checkout, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
 
     let out = w.scratch.path().join("upload");
     std::fs::create_dir_all(&out)?;
     let bundle_path = out.join("repo.bundle");
-    git(
+    git_stdout(
         &checkout,
         &[
             "bundle",
@@ -321,7 +324,7 @@ async fn foreign_and_non_github_repositories_are_refused() -> TestResult {
     .await?;
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // Adding the project needs admin or maintain (IMP-002).
+    // Adding the project needs admin or maintain.
     let refused = create_job(&w, &carol, offer.body()?).await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     let unauthenticated = create_job(&w, &Creds::default(), offer.body()?).await?;
@@ -351,7 +354,7 @@ fn files_named(dir: &Path, needle: &str) -> Result<Vec<PathBuf>, Error> {
     Ok(found)
 }
 
-/// SPEC-390 VTI-001 (#849, #836, #827, #750): a manifest file name becomes a path only after
+/// A manifest file name becomes a path only after
 /// `FileRef::validate`, so one leading out of the job directory (or into `.git`) is refused before
 /// anything exists, and a chunk can address only a name of the stored manifest.
 #[tokio::test]
@@ -428,7 +431,7 @@ async fn unsafe_manifest_names_never_reach_the_disk() -> TestResult {
     Ok(())
 }
 
-/// SPEC-400 VTV-001 (#845): two chunks of one file never write from the same stale length. A
+/// Two chunks of one file never write from the same stale length. A
 /// short chunk has read the job (nothing received) when a longer one is applied; the short one
 /// is then acknowledged as covered, never written over it, and the upload completes intact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -521,7 +524,7 @@ async fn racing_chunks_of_one_file_never_overwrite_each_other() -> TestResult {
     Ok(())
 }
 
-/// SPEC-400 VTV-001 (#845, review round 1): a chunk whose request goes away while it writes
+/// A chunk whose request goes away while it writes
 /// keeps its file until its write and stored length are done, so a longer chunk waits for it and
 /// then continues from what it stored, instead of writing beside it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -625,8 +628,8 @@ async fn a_chunk_whose_request_goes_away_keeps_its_file_until_it_is_stored() -> 
     Ok(())
 }
 
-/// OBD-002: the CLI uploads; only a person (the browser, or their operate token) starts
-/// onboarding; a `yulius login` token is refused and told both ways (SPEC-313).
+/// The CLI uploads; only a person (the browser, or their operate token) starts
+/// onboarding; a `yulius login` token is refused and told both ways.
 #[tokio::test]
 async fn onboarding_starts_only_from_the_browser() -> TestResult {
     let w = World::new("org").await?;
@@ -649,11 +652,11 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     assert_eq!(sandbox.onboarding_state, "pending");
     let approve = format!("/api/sandboxes/{}/onboarding/approve", sandbox.id);
     let tasks = format!("/api/sandboxes/{}/tasks", sandbox.id);
-    // SPEC-097 OBT-001: nothing started, so no task: not even a resting one that shows as Closed.
+    // Nothing started, so no task: not even a resting one that shows as Closed.
     assert_eq!(sandbox.onboarding_task_id, None);
     let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
     assert_eq!(listed.body, json!([]), "the upload creates no task");
-    // OBT-004: what onboarding will do is readable without a task, and reading it creates none.
+    // What onboarding will do is readable without a task, and reading it creates none.
     let plan_url = format!("/api/sandboxes/{}/onboarding/plan", sandbox.id);
     let plan = call(&w.h.router, Method::GET, &plan_url, None, &alice).await?;
     assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
@@ -662,7 +665,7 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     let steps = plan.body["steps"].as_array().ok_or("steps")?;
     assert_eq!(steps.len(), 9, "{steps:?}");
     assert!(text(&steps[1]).contains("toolchains"), "{steps:?}");
-    // SPEC-116 OBG-002: the gate is part of the plan.
+    // The gate is part of the plan.
     assert!(
         steps.iter().any(|step| text(step).contains("dead-code")),
         "{steps:?}"
@@ -672,7 +675,7 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
 
     let cli = call(&w.h.router, Method::POST, &approve, None, &alice).await?;
     assert_eq!(cli.status, StatusCode::FORBIDDEN, "{:?}", cli.body);
-    // SPEC-313 NBW-003 (#790): it names the sandbox page and the operate token's way.
+    // It names the sandbox page and the operate token's way.
     let refusal = text(&cli.body["error"]["message"]);
     assert!(
         refusal.contains("Start onboarding on the sandbox page")
@@ -689,7 +692,7 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
     assert_eq!(listed.body, json!([]));
 
-    // OBT-003: a new task still waits after the onboarding task, created then and resting.
+    // A new task still waits after the onboarding task, created then and resting.
     let waiting = call(
         &w.h.router,
         Method::POST,
@@ -707,12 +710,12 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     assert_eq!(task_plan.body["steps"], plan.body["steps"]);
     let unchanged = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
     assert_eq!(unchanged.onboarding_state, "pending");
-    // SPEC-153 OLC-005 (#399): it never ran, so it is not Closed: it waits for Start onboarding.
+    // It never ran, so it is not Closed: it waits for Start onboarding.
     let summary = onboarding_summary(&w, &alice, &sandbox.id).await?;
     assert_eq!(summary["status"], "closed", "{summary:?}");
     assert_eq!(summary["not_started"], true, "{summary:?}");
     assert_eq!(summary["awaits_start_onboarding"], true, "{summary:?}");
-    // SPEC-483 GRP-002 (finding W2): Home's cards and the tabs count both where the sidebar
+    // Home's cards and the tabs count both where the sidebar
     // lists them, in line under Working.
     let counted = call(
         &w.h.router,
@@ -743,7 +746,7 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     )
     .await?;
     assert_eq!(resumed.status, StatusCode::FORBIDDEN, "{:?}", resumed.body);
-    // SPEC-313 NBW-003 (#790): the refusal names the operate token's way too.
+    // The refusal names the operate token's way too.
     let refusal = text(&resumed.body["error"]["message"]);
     assert!(
         refusal.contains("Start onboarding on the sandbox page")
@@ -802,7 +805,7 @@ async fn onboarding_summary(w: &World, creds: &Creds, sandbox: &SandboxId) -> Re
         .clone())
 }
 
-/// SPEC-153 OLC-005 (#399): skipped before it ran, the onboarding task waits for nothing but has
+/// Skipped before it ran, the onboarding task waits for nothing but has
 /// still not started: it reads as such, not as waiting for Start onboarding.
 #[tokio::test]
 async fn a_skipped_onboarding_task_reads_not_started() -> TestResult {
@@ -843,7 +846,7 @@ async fn a_skipped_onboarding_task_reads_not_started() -> TestResult {
     Ok(())
 }
 
-/// SPEC-097 OBT-002: with no onboarding task yet, Start onboarding creates and starts it.
+/// With no onboarding task yet, Start onboarding creates and starts it.
 #[tokio::test]
 async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult {
     let w = World::new("org").await?;
@@ -880,7 +883,7 @@ async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult
     assert_eq!(listed[0]["title"], "Prepare this repository for Yulius");
     assert_eq!(listed[0]["archived"], false);
     assert_ne!(listed[0]["status"], "closed", "it started: {listed:?}");
-    // SPEC-141 R5: the preparation agent raises a production branch agents could write with a
+    // The preparation agent raises a production branch agents could write with a
     // person, who alone can protect it.
     let task =
         w.h.store
@@ -901,7 +904,7 @@ async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult
     Ok(())
 }
 
-/// SPEC-157: the onboarding agent protects an unprotected production branch itself, through
+/// The onboarding agent protects an unprotected production branch itself, through
 /// `production_protect`, as the person who started onboarding when they are a repository admin;
 /// a second call changes nothing. Another task, an owner who is not an admin and a disabled owner
 /// are refused and sent to `needs_you`, and GitHub's own refusal is passed on.
@@ -935,13 +938,13 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
             .into_iter()
             .next()
             .ok_or("onboarding task")?;
-    // AC4: the agent is asked to protect it itself, and a person only when that is refused.
+    // The agent is asked to protect it itself, and a person only when that is refused.
     assert!(
         task.prompt.contains("`production_protect`") && task.prompt.contains("needs_you"),
         "{}",
         task.prompt
     );
-    // SPEC-423 PPR-004: and is told where the person can waive it instead.
+    // And is told where the person can waive it instead.
     assert!(
         task.prompt
             .contains("https://yulius.test/s/shop/git?show=production-protection"),
@@ -954,7 +957,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
         task.prompt
     );
 
-    // R2: only the onboarding task may protect production; another task is refused.
+    // Only the onboarding task may protect production; another task is refused.
     support::seed_task(
         &w.h,
         "t-bob",
@@ -978,7 +981,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
     let other = support::mcp_tool(&w.h, "tok-bob", "production_protect", json!({})).await?;
     refused_with(&other, "onboarding task")?;
 
-    // AC3: an owner who is not a repository admin is refused; nothing is created.
+    // An owner who is not a repository admin is refused; nothing is created.
     w.grant("alice", "shop", "push");
     let not_admin = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
     refused_with(&not_admin, "not a repository admin")?;
@@ -1000,7 +1003,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let plan = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
     refused_with(&plan, "Upgrade to GitHub Pro")?;
-    // SPEC-423 PPR-004 (AC3): the refusal says where a sandbox admin waives the requirement.
+    // The refusal says where a sandbox admin waives the requirement.
     refused_with(
         &plan,
         "https://yulius.test/s/shop/git?show=production-protection",
@@ -1011,7 +1014,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
         .store(false, std::sync::atomic::Ordering::SeqCst);
     assert!(w.github.rulesets().is_empty(), "{:?}", w.github.rulesets());
 
-    // AC1: as the admin who started onboarding, one people-only ruleset, with her token.
+    // As the admin who started onboarding, one people-only ruleset, with her token.
     let done = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
     let record = support::tool_text(&done);
     assert_eq!(record["protected"], true, "{done}");
@@ -1030,7 +1033,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
     let status = w.h.app.onboarding_status(&stored).await?;
     assert!(status.warnings.is_empty(), "{status:?}");
 
-    // AC2: once protected, calling again adds nothing.
+    // Once protected, calling again adds nothing.
     let again = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
     let record = support::tool_text(&again);
     assert_eq!(record["protected"], true, "{again}");
@@ -1039,7 +1042,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
     Ok(())
 }
 
-/// SPEC-423 PPR-003 (AC2): with the requirement switched off by a sandbox admin, the onboarding
+/// With the requirement switched off by a sandbox admin, the onboarding
 /// prompt says nothing about protecting production, and `production_protect` changes nothing on
 /// GitHub and says it was waived.
 #[tokio::test]
@@ -1131,7 +1134,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     let sandbox = sandboxes[0].clone();
     assert_eq!(sandbox.onboarding_state, "pending");
 
-    // AC-IMP-1: an interrupted upload resumes at the received length.
+    // An interrupted upload resumes at the received length.
     let bundle = offer.contents.get("repo.bundle").ok_or("bundle")?;
     let half = bundle.len() / 2;
     let first = put_chunk(&w, &alice, &job, "repo.bundle", 0, &bundle[..half], None).await?;
@@ -1200,8 +1203,8 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     );
     assert_eq!(result.body["sessions_imported"], 2);
     assert_eq!(result.body["sessions_skipped_existing"], 0);
-    // OBD-001: the upload never starts onboarding; a person starts it on the sandbox page, or
-    // their agent with an operate token (ADR-0188).
+    // The upload never starts onboarding; a person starts it on the sandbox page, or
+    // their agent with an operate token.
     assert_eq!(
         result.body["onboarding"], "pending",
         "the upload alone never starts onboarding"
@@ -1221,7 +1224,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "{summary}"
     );
     let pending = result.body["onboarding_status"]["pending"].to_string();
-    // SPEC-313 NBW-002 (#790): both ways to start it.
+    // Both ways to start it.
     assert!(
         pending.contains("Start onboarding on the sandbox page: https://yulius.test/s/shop")
             && pending
@@ -1229,7 +1232,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "{:?}",
         result.body["onboarding_status"]
     );
-    // SPEC-141 R5: onboarding reports a production branch the agents could write, naming the
+    // Onboarding reports a production branch the agents could write, naming the
     // ruleset a repository admin must add; with that ruleset in place it says nothing.
     let warnings = result.body["onboarding_status"]["warnings"].to_string();
     assert!(
@@ -1256,7 +1259,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     ));
     let guarded = w.h.app.onboarding_status(&stored).await?;
     assert!(guarded.warnings.is_empty(), "{guarded:?}");
-    // #834 (SPEC-394 VOD-002): a check that failed inside Yulius says so, without the internal
+    // A check that failed inside Yulius says so, without the internal
     // detail, which goes to the log only.
     *w.github
         .fail_branch_guard
@@ -1290,26 +1293,26 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         .join("sandboxes")
         .join(sandbox.id.as_str())
         .join("repo");
-    let local = git(
+    let local = git_stdout(
         &repo,
         &["log", "-1", "--format=%s", "import/alice/feature-x"],
     )?;
     assert_eq!(local.trim(), "local work");
     let snapshot = "import/alice/snapshot-2026-10-07";
     assert_eq!(
-        git(&repo, &["show", &format!("{snapshot}:src/app.txt")])?,
+        git_stdout(&repo, &["show", &format!("{snapshot}:src/app.txt")])?,
         "v3-uncommitted\n"
     );
     assert_eq!(
-        git(&repo, &["show", &format!("{snapshot}:notes/new.md")])?,
+        git_stdout(&repo, &["show", &format!("{snapshot}:notes/new.md")])?,
         "# Notes\n"
     );
-    let tree = git(&repo, &["ls-tree", "-r", "--name-only", snapshot])?;
+    let tree = git_stdout(&repo, &["ls-tree", "-r", "--name-only", snapshot])?;
     assert!(
         !tree.lines().any(|l| l == "old.txt"),
         "deleted path removed: {tree}"
     );
-    let parent = git(&repo, &["rev-parse", &format!("{snapshot}~1")])?;
+    let parent = git_stdout(&repo, &["rev-parse", &format!("{snapshot}~1")])?;
     assert_eq!(
         parent.trim(),
         offer.manifest.repo.head_sha,
@@ -1333,7 +1336,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "the snapshot is never checked out in the sandbox (ADR-0213)"
     );
 
-    // Sessions → read-only session documents attributed to the uploader, no tasks (SES-001).
+    // Sessions → read-only session documents attributed to the uploader, no tasks.
     let archived = call(
         &w.h.router,
         Method::GET,
@@ -1418,7 +1421,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "continuing a session starts a task: gated while preparing"
     );
 
-    // AC-IMP-6: a re-run uploads nothing and stores nothing twice.
+    // A re-run uploads nothing and stores nothing twice.
     let rerun = create_job(&w, &alice, offer.body()?).await?;
     assert_eq!(rerun.status, StatusCode::OK);
     assert_ne!(
@@ -1442,7 +1445,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     assert_eq!(rerun_result.body["sessions_unchanged"], 2);
     assert_eq!(rerun_result.body["sessions_skipped_existing"], 2);
     assert!(
-        git(
+        git_stdout(
             &repo,
             &["rev-parse", "--verify", "--quiet", &format!("{snapshot}-2")]
         )
@@ -1546,7 +1549,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         .ok_or("main")?;
     assert_eq!(main["author"]["login"], "alice");
 
-    // AC-IMP-5: once the sandbox is ready, another member continues imported sessions natively.
+    // Once the sandbox is ready, another member continues imported sessions natively.
     let skip = call(
         &w.h.router,
         Method::POST,
@@ -1577,7 +1580,7 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     Ok(())
 }
 
-/// #824 (SPEC-296 AC-1): a link to an empty folder outside the sandbox planted at the sandbox's
+/// A link to an empty folder outside the sandbox planted at the sandbox's
 /// `worktrees/import-<job>` exactly between the reservation of the snapshot's worktree and Git's
 /// create steers nothing: the outside folder stays empty, the link is left as it is and the
 /// snapshot branch is still committed.
@@ -1656,7 +1659,7 @@ async fn a_link_planted_at_the_snapshot_worktree_is_never_followed() -> TestResu
     );
     let repo = sandbox_dir.join("repo");
     assert_eq!(
-        git(
+        git_stdout(
             &repo,
             &["show", "import/alice/snapshot-2026-10-07:src/app.txt"]
         )?,
@@ -1666,7 +1669,7 @@ async fn a_link_planted_at_the_snapshot_worktree_is_never_followed() -> TestResu
     Ok(())
 }
 
-/// #824 (SPEC-296 AC-4, review finding 1): an import that fails after its worktree was reserved
+/// An import that fails after its worktree was reserved
 /// (here Git refuses the folder, which is no longer empty) leaves nothing in the server's folder.
 #[tokio::test]
 async fn a_failed_snapshot_import_leaves_no_checkout_behind() -> TestResult {
@@ -1715,7 +1718,7 @@ async fn a_failed_snapshot_import_leaves_no_checkout_behind() -> TestResult {
     Ok(())
 }
 
-/// #824 (SPEC-296 AC-4, review round 2): an import whose extraction fails after Git created the
+/// An import whose extraction fails after Git created the
 /// worktree leaves no folder in the server's folder and no live Git worktree of it.
 #[tokio::test]
 async fn a_snapshot_import_failing_after_git_leaves_no_worktree() -> TestResult {
@@ -1771,7 +1774,7 @@ async fn a_snapshot_import_failing_after_git_leaves_no_worktree() -> TestResult 
         Vec::<std::ffi::OsString>::new(),
         "the failed import's checkout is removed"
     );
-    let list = git(
+    let list = git_stdout(
         &sandbox_dir.join("repo"),
         &["worktree", "list", "--porcelain"],
     )?;
@@ -1838,7 +1841,7 @@ async fn assert_imported_resume(
         "v3-uncommitted\n",
         "the worktree starts from the imported snapshot"
     );
-    let branch = git(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = git_stdout(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     assert_eq!(Some(branch.trim().to_owned()), task.branch);
     let native =
         app.deps
@@ -1861,7 +1864,7 @@ async fn assert_imported_resume(
     assert_eq!(std::fs::read_to_string(&native)?, continued);
 
     // The agent owns its home: a link planted at the temporary name the copy once used never
-    // makes the server truncate the file it points at (#657).
+    // makes the server truncate the file it points at.
     let planted = app.deps.harness.claude_transcript(
         &sandbox_dir.join("home"),
         &sandbox_dir.join("worktrees").join(main_task.as_str()),
@@ -1903,7 +1906,7 @@ async fn assert_imported_resume(
     Ok(())
 }
 
-/// SPEC-153 OLC-002: a new task refused for its prompt creates no onboarding task in a `pending`
+/// A new task refused for its prompt creates no onboarding task in a `pending`
 /// sandbox (the onboarding task is created only for a task that waits after it).
 #[tokio::test]
 async fn a_refused_new_task_creates_no_onboarding_task() -> TestResult {
@@ -1943,7 +1946,7 @@ async fn a_refused_new_task_creates_no_onboarding_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-097 OBT-003: tasks created at once in a `pending` sandbox wait after one onboarding task.
+/// Tasks created at once in a `pending` sandbox wait after one onboarding task.
 #[tokio::test]
 async fn simultaneous_new_tasks_create_one_onboarding_task() -> TestResult {
     let w = World::new("org").await?;

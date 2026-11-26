@@ -11,6 +11,7 @@
 //! ```
 
 use crate::support;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -156,21 +157,6 @@ async fn drag_files(
     Ok(())
 }
 
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Chrome (YULIUS_LIVE_CHROME)"]
 async fn files_dragged_from_disk_reach_the_repository_and_the_agent() -> TestResult {
@@ -180,7 +166,7 @@ async fn files_dragged_from_disk_reach_the_repository_and_the_agent() -> TestRes
     };
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    // The UI's origin must be the server's: cookie sessions refuse other origins (ADR-14).
+    // The UI's origin must be the server's: cookie sessions refuse other origins.
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = listener.local_addr()?;
     let dir = tempfile::Builder::new().prefix("ylf").tempdir_in("/tmp")?;

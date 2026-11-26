@@ -1,8 +1,13 @@
-//! Parked sessions (SPEC-512 part 1, #1412, ADR-0367), with real processes (supervisor →
+//! Parked sessions, with real processes (supervisor →
 //! detached `yulius ptyhost` → fake agent): a task whose turn ended and that waits for a person
 //! is parked after the grace period, frees its session for a queued task, keeps its place, and
 //! resumes in its own session when someone writes to it.
 
+use crate::support::live::Live;
+use crate::support::parking::{
+    app, app_with_pulls, app_with_pulls_and_clock, ask, asks, assert_cold_screen,
+    configured_app_with_pulls, parked, parked_within, status_of,
+};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,79 +24,19 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
-use crate::first_message::{
-    data_dir, hooked, new_task, runtime, screen, start_hosted, start_with, wait_for,
-};
-use crate::pool_supervision::{ScriptedUsage, seed};
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
-use crate::task_message::superagent;
+use crate::support::live::first_message::{
+    data_dir, hooked, new_task, runtime, screen, start_with,
+};
+use crate::support::live::pool::{ScriptedUsage, seed};
+use crate::support::task_message::superagent;
+use crate::support::{TestResult, eventually};
 
 mod armed_notice;
 mod candidate;
 mod replaced_output;
 
 type Error = Box<dyn std::error::Error>;
-
-/// A hooked app whose idle sessions park at once (`park_after_ms` 1) under a limit of `slots`.
-async fn app(data: &Path, slots: u32, park_after_ms: u64) -> Result<Arc<App>, Error> {
-    Ok(app_with_pulls(data, slots, park_after_ms).await?.0)
-}
-
-async fn app_with_pulls(
-    data: &Path,
-    slots: u32,
-    park_after_ms: u64,
-) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
-    configured_app_with_pulls(data, slots, park_after_ms, |_| {}).await
-}
-
-async fn configured_app_with_pulls(
-    data: &Path,
-    slots: u32,
-    park_after_ms: u64,
-    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
-) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
-    app_with_pulls_and_clock(
-        data,
-        slots,
-        park_after_ms,
-        Arc::new(yulius::wiring::clock::SystemClock),
-        configure,
-    )
-    .await
-}
-
-async fn app_with_pulls_and_clock(
-    data: &Path,
-    slots: u32,
-    park_after_ms: u64,
-    clock: Arc<dyn yulius_app::ports::Clock>,
-    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
-) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let agent = FakeAgentOptions {
-        answers_first_message: true,
-        // A resume's prompt reaches the agent, as `claude --resume <id> <prompt>` gives it.
-        resume_prompts: true,
-        ..hooked()
-    };
-    let (app, _, github) = crate::first_message::start_hosted_with_github(
-        data,
-        &fake,
-        agent,
-        (0, Arc::new(ScriptedUsage::default()), clock),
-        None,
-        None,
-        |config| {
-            config.max_live_sessions = slots;
-            config.park_after_ms = park_after_ms;
-            configure(config);
-        },
-    )
-    .await?;
-    Ok((app, github))
-}
 
 /// Give the real parking decision a readable open PR at the head the fixture controls.
 async fn open_pull_at(
@@ -163,107 +108,15 @@ async fn answered(app: &Arc<App>, data: &Path) -> Result<(TaskId, ProjectCaller)
         TaskMode::Prompt,
     )
     .await?;
-    wait_for("the first answer", Duration::from_secs(30), || async {
+    eventually("the first answer", Duration::from_secs(30), || async {
         screen(app, &id).contains("ECHO: Budget: answer with an echo")
     })
     .await?;
-    wait_for("the turn's end", Duration::from_secs(30), || async {
+    eventually("the turn's end", Duration::from_secs(30), || async {
         status_of(app, &id).await.1 == Some(Activity::Waiting)
     })
     .await?;
     Ok((id, superagent(&sandbox, &user, "admin")))
-}
-
-async fn status_of(app: &App, id: &TaskId) -> (Option<TaskStatus>, Option<Activity>) {
-    match TaskStore::task(app.deps.store.as_ref(), id).await {
-        Ok(Some(task)) => (Some(task.status), task.activity),
-        _ => (None, None),
-    }
-}
-
-/// How long [`parked`] waits for a park.
-const PARK_WAIT: Duration = Duration::from_secs(30);
-
-/// Parks `id`: a pass runs at each look until it parked, so a pass that came in the millisecond
-/// its state last changed (quiet 0 of a 1 ms grace) is followed by another.
-async fn parked(app: &Arc<App>, id: &TaskId) -> TestResult {
-    parked_within(app, id, PARK_WAIT).await
-}
-
-/// [`parked`] with its own bound (#1649). The bound covers the whole wait: a pass still running
-/// at the deadline is cancelled there. The failure says whether a pass was still running or
-/// the last one ended without parking, and the last park stage the task reached.
-async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) -> TestResult {
-    let key = Path::new(id.as_str());
-    let began = std::time::Instant::now();
-    let deadline = tokio::time::Instant::now() + bound;
-    let mut passes = 0_u32;
-    // When a pass first decided a park: later passes find the task still Running while its
-    // session ends, and overwrite the last stage with where they gave up.
-    let mut decided = None;
-    let mut outcome = "no pass ran";
-    while tokio::time::Instant::now() < deadline {
-        let look = async {
-            if status_of(app, id).await.0 == Some(TaskStatus::Running) {
-                passes += 1;
-                if app.park_idle_sessions_now().await > 0 && decided.is_none() {
-                    decided = Some(began.elapsed());
-                }
-            }
-            status_of(app, id).await.0 == Some(TaskStatus::Parked)
-        };
-        match tokio::time::timeout_at(deadline, look).await {
-            Ok(true) => return Ok(()),
-            Ok(false) if passes == 0 => outcome = "the task was not running, so no pass ran",
-            Ok(false) => outcome = "the last pass ended without parking",
-            Err(_) => {
-                outcome = "a pass was still running at the deadline";
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let last = yulius_app::race::last_reached(key).filter(|(_, at)| *at >= began);
-    let begun = decided.map_or_else(String::new, |at: Duration| {
-        format!("; a pass began a park {at:.1?} into the wait (its count covers every task)")
-    });
-    let stage = match last {
-        Some((point, at)) => format!(
-            "{} ({:.1?} into the wait)",
-            park_stage(point),
-            at.duration_since(began)
-        ),
-        None => "none: no pass reached this task's park (idle facts or another task)".into(),
-    };
-    let (status, activity) = tokio::time::timeout(Duration::from_secs(1), status_of(app, id))
-        .await
-        .unwrap_or_default();
-    Err(format!(
-        "timed out waiting for the task to park within {bound:?}: {outcome} after {passes} \
-         pass(es){begun}; last stage reached: {stage}; task {status:?}, {activity:?}"
-    )
-    .into())
-}
-
-/// What a park pass does after reaching `point` (#1649).
-fn park_stage(point: Point) -> String {
-    match point {
-        Point::ParkVerifying => {
-            "verifying the task's pull requests (GitHub reads, local Git checks)"
-        }
-        Point::ParkPrsVerified => "probing the session's processes",
-        Point::ParkProbed => "taking the launch lock and rechecking the idle facts",
-        Point::ParkPrepared => {
-            "rechecking delivery, plan, spec and pull requests under the launch lock"
-        }
-        Point::ParkDecided => "asking the session to end after the park was decided",
-        Point::ParkStateRecorded => "restoring the parked screen",
-        Point::LiveRowPrNews => {
-            "reading the idle facts (a pass that ended here found the task not parkable)"
-        }
-        other => return format!("{other:?}"),
-    }
-    .into()
 }
 
 #[test]
@@ -555,7 +408,7 @@ async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> Tes
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the occupied session", Duration::from_secs(30), || async {
+        eventually("the occupied session", Duration::from_secs(30), || async {
             screen(&app, &peer).contains("ECHO: Keep this session occupied")
         })
         .await?;
@@ -583,7 +436,7 @@ async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> Tes
         });
         assert!(result.is_ok(), "{result:?}");
     });
-    wait_for(
+    eventually(
         "the park with a capacity hold",
         Duration::from_secs(20),
         || async { app.park_idle_sessions_now().await == 1 },
@@ -749,7 +602,7 @@ async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> Tes
 /// Waits until the task's state is older than a 1 ms grace period, so a pass that parks
 /// nothing says so because of what it checks, not because the grace is not over yet.
 async fn past_the_grace(app: &App, id: &TaskId) -> TestResult {
-    wait_for("the grace period", Duration::from_secs(10), || async {
+    eventually("the grace period", Duration::from_secs(10), || async {
         app.deps
             .store
             .task_times(id)
@@ -761,29 +614,6 @@ async fn past_the_grace(app: &App, id: &TaskId) -> TestResult {
     .await
 }
 
-/// The task's agent asks its person to choose (`needs_you`).
-pub(crate) async fn ask(app: &App, id: &TaskId) -> TestResult {
-    let asked = NeedsYouRecord {
-        action: "Choose the colour".into(),
-        happened: None,
-        problem: Some("Two options".into()),
-        decision: true,
-        link: None,
-        at: 1,
-        cause: None,
-        named: Default::default(),
-    };
-    app.deps
-        .store
-        .set_task_needs_you(id, Some(&asked), app.now())
-        .await?;
-    Ok(())
-}
-
-async fn asks(app: &App, id: &TaskId) -> Result<bool, Error> {
-    Ok(app.deps.store.task_needs_you(id).await?.is_some())
-}
-
 fn audited(data: &Path, action: &str, id: &TaskId) -> Result<Vec<String>, Error> {
     let db = rusqlite::Connection::open(data.join("yulius.db"))?;
     let mut query =
@@ -792,7 +622,7 @@ fn audited(data: &Path, action: &str, id: &TaskId) -> Result<Vec<String>, Error>
     Ok(rows.filter_map(Result::ok).collect())
 }
 
-/// PRK-002, PRK-003, PRK-006: under a limit of one session, an answered task parks after the
+/// Under a limit of one session, an answered task parks after the
 /// grace period, keeps its activity and the list's group, ends its process and run, and its slot
 /// starts the queued task.
 #[test]
@@ -811,7 +641,7 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
         )
         .await?;
         // An answered agent is not Done locally: it holds the only slot, and the queued task
-        // says so (PRK-007).
+        // says so.
         app.drain_queue_now().await;
         assert_eq!(status_of(&app, &second).await.0, Some(TaskStatus::Queued));
         let queued = TaskStore::task(app.deps.store.as_ref(), &second)
@@ -822,7 +652,7 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
             Some("Waiting for a free session: 1 of 1 in use")
         );
         parked(&app, &first).await?;
-        wait_for(
+        eventually(
             "the queued task to start",
             Duration::from_secs(60),
             || async { screen(&app, &second).contains("ECHO: Second: answer with an echo") },
@@ -844,7 +674,7 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
         let summary = app.task_summary(&task).await?;
         assert_eq!(summary.status, "parked");
         // The Capacity card counts the queued task's session as working and the parked one
-        // apart (PRK-008).
+        // apart.
         let ctx = AuthContext {
             user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
             csrf_token: None,
@@ -950,14 +780,10 @@ fn replaced_parked_message(checkpoint: Point, while_restoring: bool) -> TestResu
             .tool_task_message(&caller, &json!({"number": 1, "text": "Intervening turn"}))
             .await?;
         assert_eq!(accepted["delivered"], "resumed");
-        wait_for(
-            "the intervening answer",
-            Duration::from_secs(20),
-            || async {
+        eventually("the intervening answer", Duration::from_secs(20), || async {
                 screen(&app, &id).contains("Intervening turn")
                     && status_of(&app, &id).await.1 == Some(Activity::Waiting)
-            },
-        )
+            })
         .await?;
         let restore = if while_restoring {
             let (recorded, restore) = pause_watch_or_queue(Point::ParkStateRecorded, &id);
@@ -1014,7 +840,7 @@ async fn park_through_terminal_exit(app: &Arc<App>, id: &TaskId) -> TestResult {
 async fn request_one_park(app: &Arc<App>) -> TestResult {
     // Issue one successful park request, then observe its completion. Looking for the final
     // status by running more parking passes could overlap this run's exit reader.
-    wait_for("the parking request", Duration::from_secs(30), || async {
+    eventually("the parking request", Duration::from_secs(30), || async {
         app.park_idle_sessions_now().await == 1
     })
     .await?;
@@ -1152,7 +978,7 @@ fn losing_exit_reader(before_finalization: bool) -> TestResult {
         });
         let accepted = if before_finalization {
             let accepted = (&mut message).await??;
-            wait_for(
+            eventually(
                 "the second run's answer",
                 Duration::from_secs(10),
                 || async { screen(&app, &id).contains("Text for the second run only") },
@@ -1232,7 +1058,7 @@ fn losing_exit_reader(before_finalization: bool) -> TestResult {
     result
 }
 
-/// PRK-005: `task_message` to a parked task resumes it in the same provider session with the
+/// `task_message` to a parked task resumes it in the same provider session with the
 /// message as its first prompt, and ends the request it had open.
 #[test]
 fn a_message_resumes_a_parked_task_in_its_own_session() -> TestResult {
@@ -1264,7 +1090,7 @@ fn a_message_resumes_a_parked_task_in_its_own_session() -> TestResult {
         restore_screen.notify_one();
         let answer = message.await??;
         assert_eq!(answer["delivered"], "resumed");
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Blue: answer with an echo")
         })
         .await?;
@@ -1279,7 +1105,7 @@ fn a_message_resumes_a_parked_task_in_its_own_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-005, PRK-001: the web's Resume resumes a parked task with nothing typed and keeps its
+/// The web's Resume resumes a parked task with nothing typed and keeps its
 /// request; archive closes a parked task and a stop stops one.
 #[test]
 fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResult {
@@ -1298,7 +1124,7 @@ fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResul
         parked(&app, &id).await?;
         app.continue_task(&ctx, id.as_str(), &serde_json::from_value(json!({}))?)
             .await?;
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             status_of(&app, &id).await.0 == Some(TaskStatus::Running)
                 && app
                     .deps
@@ -1312,7 +1138,7 @@ fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResul
         let runs = app.deps.store.attempts(&id).await?;
         assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
         // Parked again, then archived: closed.
-        wait_for("the turn's end", Duration::from_secs(30), || async {
+        eventually("the turn's end", Duration::from_secs(30), || async {
             status_of(&app, &id).await.1.is_some_and(Activity::is_idle)
         })
         .await?;
@@ -1328,7 +1154,7 @@ fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResul
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("its turn's end", Duration::from_secs(30), || async {
+        eventually("its turn's end", Duration::from_secs(30), || async {
             status_of(&app, &other).await.1 == Some(Activity::Waiting)
         })
         .await?;
@@ -1344,7 +1170,7 @@ fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResul
     Ok(())
 }
 
-/// PRK-002: nothing parks with parking off (grace 0), within the grace period, or while a
+/// Nothing parks with parking off (grace 0), within the grace period, or while a
 /// person typed into the terminal.
 #[test]
 fn a_task_parks_only_after_its_grace_period_and_never_with_parking_off() -> TestResult {
@@ -1384,7 +1210,7 @@ fn a_task_parks_only_after_its_grace_period_and_never_with_parking_off() -> Test
     Ok(())
 }
 
-/// PRK-003: a message that comes while a park is ending the session is refused with what to do,
+/// A message that comes while a park is ending the session is refused with what to do,
 /// never typed into the session that ends; sent again once the task parked, it resumes it.
 #[test]
 fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> TestResult {
@@ -1426,7 +1252,7 @@ fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> Test
             )
             .await?;
         assert_eq!(again["delivered"], "resumed");
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Late: answer with an echo")
         })
         .await?;
@@ -1436,7 +1262,7 @@ fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> Test
     Ok(())
 }
 
-/// PRK-003 (#1605): a second idle-park pass whose process probe saw the session alive, and that
+/// A second idle-park pass whose process probe saw the session alive, and that
 /// gets the launch lock only after the first park's run end took the park's intent (the task
 /// still reads Running), parks nothing. A message in that interval is refused as parking, never
 /// typed into the ending session; the next one, once the task is Parked, resumes it in the same
@@ -1493,7 +1319,7 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
                 if why.contains("is parking its idle session")),
             "{early:?}"
         );
-        wait_for("the task to park", Duration::from_secs(30), || async {
+        eventually("the task to park", Duration::from_secs(30), || async {
             status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
         })
         .await?;
@@ -1504,12 +1330,12 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
             )
             .await?;
         assert_eq!(resumed["delivered"], "resumed");
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Late: answer with an echo")
         })
         .await?;
         // Counted once the resumed turn ended, so a later second delivery would show.
-        wait_for(
+        eventually(
             "the resumed turn's end",
             Duration::from_secs(30),
             || async {
@@ -1533,7 +1359,7 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
     Ok(())
 }
 
-/// PRK-003 (review round 1, M1): a stop that lands while the parked run's end is being recorded
+/// A stop that lands while the parked run's end is being recorded
 /// (after it took the park's intent) leaves the task stopped, never `stopping` with no run.
 #[test]
 fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
@@ -1560,7 +1386,7 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
         }
         past_the_grace(&app, &id).await?;
         app.park_idle_sessions_now().await;
-        wait_for("the task to rest", Duration::from_secs(30), || async {
+        eventually("the task to rest", Duration::from_secs(30), || async {
             matches!(status_of(&app, &id).await.0, Some(TaskStatus::Stopped(_)))
         })
         .await?;
@@ -1576,7 +1402,7 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
     Ok(())
 }
 
-/// PRK-004 (review round 1, M3): a task chained after one that is Done and parked starts, as it
+/// A task chained after one that is Done and parked starts, as it
 /// starts after a Done one that kept its session.
 #[test]
 fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
@@ -1636,7 +1462,7 @@ fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
             .set_task_needs_you(&id, None, app.now())
             .await?;
         app.advance_all_chains().await;
-        wait_for(
+        eventually(
             "the chained task to leave its chain",
             Duration::from_secs(30),
             || async {
@@ -1653,7 +1479,7 @@ fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
     Ok(())
 }
 
-/// PRK-001 (review round 1, M4): a parked task keeps its scope claims: another task claiming
+/// A parked task keeps its scope claims: another task claiming
 /// the same paths is told of it.
 #[test]
 fn a_parked_task_keeps_its_claims() -> TestResult {
@@ -1692,7 +1518,7 @@ fn a_parked_task_keeps_its_claims() -> TestResult {
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("its first answer", Duration::from_secs(30), || async {
+        eventually("its first answer", Duration::from_secs(30), || async {
             screen(&app, &b).contains("ECHO: Feature: answer with an echo")
         })
         .await?;
@@ -1709,7 +1535,7 @@ fn a_parked_task_keeps_its_claims() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 1, M5): a session is parked only on a fresh look at its background work;
+/// A session is parked only on a fresh look at its background work;
 /// a look that gives no answer counts as work running and keeps the session.
 #[test]
 fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
@@ -1725,18 +1551,12 @@ fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
             answers_first_message: true,
             ..hooked()
         };
-        let (app, _) = start_hosted(
-            &data,
-            &fake,
-            agent,
-            (
-                0,
-                Arc::new(ScriptedUsage::default()),
-                Arc::new(yulius::wiring::clock::SystemClock),
-            ),
-            Some(host.clone()),
-            |config| config.park_after_ms = 1,
-        )
+        let (app, _) = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            host: Some(host.clone()),
+            ..Live::new(Some(&fake), agent)
+        }
+        .start(&data, 0, |config| config.park_after_ms = 1)
         .await?;
         let (id, _) = answered(&app, &data).await?;
         host.silence_work_probe(true);
@@ -1751,7 +1571,7 @@ fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 1, M6): what the person still has to answer in the session, or a
+/// What the person still has to answer in the session, or a
 /// person's pause, keeps the session, whatever the grace period.
 #[test]
 fn a_question_in_the_terminal_or_a_pause_keeps_the_session() -> TestResult {
@@ -1788,7 +1608,7 @@ fn a_question_in_the_terminal_or_a_pause_keeps_the_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-005 (review round 1, M6): a message to a parked task while every session is in use
+/// A message to a parked task while every session is in use
 /// queues the resume with its prompt; once a session is free it resumes with that message.
 #[test]
 fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
@@ -1806,7 +1626,7 @@ fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
             TaskMode::Prompt,
         )
         .await?;
-        wait_for(
+        eventually(
             "the second task's answer",
             Duration::from_secs(30),
             || async { screen(&app, &second).contains("ECHO: Busy: answer with an echo") },
@@ -1821,7 +1641,7 @@ fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
         assert_eq!(answer["delivered"], "resumed");
         assert_eq!(status_of(&app, &first).await.0, Some(TaskStatus::Queued));
         app.stop_task_now(&second).await?;
-        wait_for("the queued resume", Duration::from_secs(60), || async {
+        eventually("the queued resume", Duration::from_secs(60), || async {
             screen(&app, &first).contains("Later: answer with an echo")
         })
         .await?;
@@ -1835,7 +1655,7 @@ fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
     Ok(())
 }
 
-/// PRK-003 (review round 1, F11): a park whose session cannot be ended gives up: the session
+/// A park whose session cannot be ended gives up: the session
 /// goes on and a message is typed into it again, not refused as "parking" for ever.
 #[test]
 fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
@@ -1851,28 +1671,22 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
             answers_first_message: true,
             ..hooked()
         };
-        let (app, _) = start_hosted(
-            &data,
-            &fake,
-            agent,
-            (
-                0,
-                Arc::new(ScriptedUsage::default()),
-                Arc::new(yulius::wiring::clock::SystemClock),
-            ),
-            Some(host.clone()),
-            |config| {
-                config.park_after_ms = 1;
-                config.stop_escalation_ms = 500;
-            },
-        )
+        let (app, _) = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            host: Some(host.clone()),
+            ..Live::new(Some(&fake), agent)
+        }
+        .start(&data, 0, |config| {
+            config.park_after_ms = 1;
+            config.stop_escalation_ms = 500;
+        })
         .await?;
         let (id, caller) = answered(&app, &data).await?;
         host.refuse_ends(true);
         past_the_grace(&app, &id).await?;
         assert_eq!(app.park_idle_sessions_now().await, 1);
         host.shutdown_refused().await;
-        wait_for("the park to give up", Duration::from_secs(30), || async {
+        eventually("the park to give up", Duration::from_secs(30), || async {
             app.tool_task_message(
                 &caller,
                 &json!({"number": 1, "text": "Still here: answer with an echo"}),
@@ -1889,66 +1703,6 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
     Ok(())
 }
 
-pub(crate) async fn assert_cold_screen(
-    data: &Path,
-    id: &TaskId,
-    caller: &ProjectCaller,
-    expected: &str,
-) -> TestResult {
-    let restart = self::app(data, 8, 1).await?;
-    let ctx = AuthContext {
-        user: restart
-            .deps
-            .store
-            .user(&caller.user)
-            .await?
-            .ok_or("owner")?,
-        csrf_token: None,
-        session_hash: None,
-        token: None,
-    };
-    // Read through MCP first, before a page can warm the terminal hub.
-    let remote = yulius_app::remote::RemoteCaller {
-        ctx: ctx.clone(),
-        token_id: "cold-screen".into(),
-        scope: yulius_domain::permission::TokenScope::Read,
-        login: "admin".into(),
-        superagent: None,
-    };
-    let request = serde_json::from_value(json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "task_screen", "arguments": {"project":"acme/pool","task_id":id.as_str()},
-            "_meta": {"yulius/structured":true}}
-    }))?;
-    let result = restart
-        .remote_mcp_handle(&remote, request)
-        .await
-        .and_then(|reply| reply.result)
-        .ok_or("task_screen")?;
-    assert_eq!(
-        crate::support::tool_text(&result)["screen"],
-        expected.trim_end()
-    );
-    let terminal = restart
-        .terminal_open(
-            &ctx,
-            id.as_str(),
-            matches!(
-                status_of(&restart, id).await.0,
-                Some(TaskStatus::Queued | TaskStatus::WaitingCapacity | TaskStatus::Starting)
-            )
-            .then_some((22, 5)),
-        )
-        .await?;
-    assert_eq!(screen(&restart, id), expected);
-    assert_eq!(
-        restart.terminal_state(id).await?.parked_screen,
-        expected.contains("Yulius parked")
-    );
-    drop(terminal);
-    Ok(())
-}
-
 /// The last attempt's screen stays visible while capacity holds a parked resume in the queue.
 async fn queued_park_screen(
     app: &Arc<App>,
@@ -1956,7 +1710,7 @@ async fn queued_park_screen(
     data: &Path,
     caller: &ProjectCaller,
 ) -> TestResult {
-    wait_for(
+    eventually(
         "the committed park screen",
         Duration::from_secs(10),
         || async { screen(app, id).contains("Yulius parked") },
@@ -1966,7 +1720,7 @@ async fn queued_park_screen(
     // A real park wakes the queue asynchronously. Reconstruct the cold states
     // on a consistent copy so that drain cannot launch the synthetic queued run.
     let (_cold_dir, cold_data) = data_dir()?;
-    yulius_store::SqliteStore::open(&data.join("yulius.db"))?
+    crate::support::store::migrated(&data.join("yulius.db"))?
         .backup_to(&cold_data.join("yulius.db"))
         .await?;
     let cold = self::app(&cold_data, 8, 1).await?;
@@ -2041,7 +1795,7 @@ async fn queued_park_screen(
 }
 
 /// A run parked before the snapshot existed, its task already queued again: only the
-/// recorded park transition says the final screen was a park (SPEC-621 FIN-001).
+/// recorded park transition says the final screen was a park.
 async fn legacy_queued_park_screen(
     data: &Path,
     id: &TaskId,
@@ -2123,7 +1877,7 @@ async fn cold_task_screen(
         .to_owned())
 }
 
-/// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the
+/// A switch that starts after the park decided gives way to it: the
 /// task parks with the activity it had, and the switch says why it did not happen.
 #[test]
 fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
@@ -2163,7 +1917,7 @@ fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
     Ok(())
 }
 
-/// PRK-003 (review round 2): a parked session that does not hear the request to end is ended by
+/// A parked session that does not hear the request to end is ended by
 /// the escalation, and its loss parks the task all the same (`mark_lost` with the park's intent).
 #[test]
 fn a_session_deaf_to_the_park_is_parked_by_the_escalation() -> TestResult {
@@ -2179,21 +1933,15 @@ fn a_session_deaf_to_the_park_is_parked_by_the_escalation() -> TestResult {
             answers_first_message: true,
             ..hooked()
         };
-        let (app, _) = start_hosted(
-            &data,
-            &fake,
-            agent,
-            (
-                0,
-                Arc::new(ScriptedUsage::default()),
-                Arc::new(yulius::wiring::clock::SystemClock),
-            ),
-            Some(host.clone()),
-            |config| {
-                config.park_after_ms = 1;
-                config.stop_escalation_ms = 500;
-            },
-        )
+        let (app, _) = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            host: Some(host.clone()),
+            ..Live::new(Some(&fake), agent)
+        }
+        .start(&data, 0, |config| {
+            config.park_after_ms = 1;
+            config.stop_escalation_ms = 500;
+        })
         .await?;
         let (id, _) = answered(&app, &data).await?;
         host.deafen(true);
@@ -2215,7 +1963,7 @@ fn a_session_deaf_to_the_park_is_parked_by_the_escalation() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 2): a prompt Yulius held for a person's decision keeps the session (it
+/// A prompt Yulius held for a person's decision keeps the session (it
 /// is back in the prompt box).
 #[test]
 fn a_held_prompt_keeps_the_session() -> TestResult {
@@ -2251,7 +1999,7 @@ fn a_held_prompt_keeps_the_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-005 (review round 2): only who steers a task resumes it: another writer's Resume and
+/// Only who steers a task resumes it: another writer's Resume and
 /// message are refused, and the task stays parked.
 #[tokio::test]
 async fn only_its_owner_resumes_a_parked_task() -> TestResult {
@@ -2300,7 +2048,7 @@ async fn only_its_owner_resumes_a_parked_task() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 2): the onboarding task is never parked: its run's end decides the
+/// The onboarding task is never parked: its run's end decides the
 /// sandbox's onboarding.
 #[test]
 fn the_onboarding_task_is_not_parked() -> TestResult {
@@ -2323,7 +2071,7 @@ fn the_onboarding_task_is_not_parked() -> TestResult {
     Ok(())
 }
 
-/// PRK-003 (review round 3, L1): the session exits on the park's request and its reader takes
+/// The session exits on the park's request and its reader takes
 /// the park's intent, then holds; the escalation finds the run still recorded live and records
 /// its loss first. The task is parked all the same, not stopped as lost.
 #[test]
@@ -2366,7 +2114,7 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
                 move || {
                     tokio::task::block_in_place(|| {
                         handle.block_on(async {
-                            let _ = wait_for("the loss", Duration::from_secs(20), || async {
+                            let _ = eventually("the loss", Duration::from_secs(20), || async {
                                 app.deps
                                     .store
                                     .attempt(&run)
@@ -2403,7 +2151,7 @@ enum EndRequests {
     CloseThenCancel,
 }
 
-/// SPEC-563: escalation records the loss with the reader held just before or just after it
+/// Escalation records the loss with the reader held just before or just after it
 /// takes the request. EndDecided releases the reader once the loss has consumed the intent.
 fn host_loss_with_request(
     requests: EndRequests,
@@ -2460,7 +2208,7 @@ fn host_loss_with_request(
             tokio::time::timeout(bound, observed).await??,
             "reader held until loss"
         );
-        wait_for("the task to settle after loss", bound, || async {
+        eventually("the task to settle after loss", bound, || async {
             status_of(&app, &id)
                 .await
                 .0
@@ -2579,7 +2327,7 @@ fn an_unreadable_recorded_spec_keeps_the_session_through_digest_parking() -> Tes
             .store
             .set_spec_status(&id, Some("in-progress"))
             .await?;
-        let store = yulius_store::SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         store
             .execute_for_tests(
                 "ALTER TABLE tasks RENAME COLUMN spec_status TO unavailable_spec_status",
@@ -2640,7 +2388,7 @@ fn an_unfinished_goal_keeps_its_session() -> TestResult {
                 .ok_or("task")?;
             Ok::<_, Error>(app.task_summary(&task).await?)
         };
-        wait_for(
+        eventually(
             "the failed goal's turn end",
             Duration::from_secs(90),
             || async {
@@ -2717,7 +2465,7 @@ fn a_named_persons_answer_resumes_a_parked_task() -> TestResult {
         };
         app.answer_needs_you(&ctx, id.as_str(), "M1: yes", Some(1))
             .await?;
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Answer from bob")
         })
         .await?;
@@ -2800,7 +2548,7 @@ fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
             )
             .await?;
         assert_eq!(sent["delivered"], "answered", "{sent}");
-        wait_for("the resumed answer", Duration::from_secs(60), || async {
+        eventually("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Answer from bob")
         })
         .await?;
@@ -2819,7 +2567,7 @@ fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-553 PRK-102: ordinary owner terminal input and `continue_task_with_prompt` wake a parked
+/// Ordinary owner terminal input and `continue_task_with_prompt` wake a parked
 /// task through the supervisor preserving its exact `provider_session_id` and `worktree_path`,
 /// while bare interrupts/scroll, non-owners, and operator-stopped tasks are never woken.
 #[test]
@@ -2901,7 +2649,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
             false,
         )
         .await?;
-        wait_for("terminal wake echo", Duration::from_secs(30), || async {
+        eventually("terminal wake echo", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Wake from terminal: answer with an echo")
         })
         .await?;
@@ -2919,7 +2667,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
 
         // Park again and verify oversized ContinueTask.prompt (> 64 KiB) is rejected with Invalid
         // while keeping the task Parked, then wake cleanly via `continue_task` with a bounded prompt.
-        wait_for("idle again", Duration::from_secs(30), || async {
+        eventually("idle again", Duration::from_secs(30), || async {
             status_of(&app, &id).await.1 == Some(Activity::Waiting)
         })
         .await?;
@@ -2953,7 +2701,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
             },
         )
         .await?;
-        wait_for("reply wake echo", Duration::from_secs(30), || async {
+        eventually("reply wake echo", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Wake from reply: answer with an echo")
         })
         .await?;
@@ -2964,7 +2712,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
 
         // Operator stop boundary: an explicitly stopped task MUST NOT wake on terminal input.
         app.stop_task_now(&id).await?;
-        wait_for("stopped", Duration::from_secs(30), || async {
+        eventually("stopped", Duration::from_secs(30), || async {
             matches!(status_of(&app, &id).await.0, Some(TaskStatus::Stopped(_)))
         })
         .await?;
@@ -2985,7 +2733,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
     Ok(())
 }
 
-/// #325: initial pending checks become a durable failure before digest parking.
+/// Initial pending checks become a durable failure before digest parking.
 #[test]
 fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResult {
     use yulius_app::ci::CiRunRecord;
@@ -3054,7 +2802,7 @@ fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResu
             &json!({"number": 1, "text":"CI pending: answer with an echo"}),
         )
         .await?;
-        wait_for(
+        eventually(
             "the author to finish its turn while CI is pending",
             Duration::from_secs(30),
             || async {
@@ -3113,8 +2861,8 @@ fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResu
     Ok(())
 }
 
-/// SPEC-553 PRK-103: an idle task continues to park safely while CI runs on its open PR, does not
-/// wake on either a running check or a settled check (SPEC-612).
+/// An idle task continues to park safely while CI runs on its open PR, does not
+/// wake on either a running check or a settled check.
 #[test]
 fn parked_task_stays_parked_when_its_pull_request_checks_finish() -> TestResult {
     use yulius_app::ci::{CiJobRecord, CiRunRecord};
@@ -3356,8 +3104,8 @@ fn parked_task_stays_parked_when_its_pull_request_checks_finish() -> TestResult 
     Ok(())
 }
 
-/// SPEC-553 PRK-103: an unpublished clean committed fast-forward CI repair above a failing open
-/// PR head still needs its session when the task requests a person (SPEC-558 PKR-004).
+/// An unpublished clean committed fast-forward CI repair above a failing open
+/// PR head still needs its session when the task requests a person.
 #[test]
 fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> TestResult {
     use std::process::Command;
@@ -3501,7 +3249,7 @@ fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> Tes
             &yulius_contracts::api::tasks::ContinueTask::default(),
         )
         .await?;
-        wait_for(
+        eventually(
             "resumed for second repair",
             Duration::from_secs(30),
             || async {
@@ -3653,7 +3401,7 @@ async fn latest_digest(
     Ok(serde_json::from_str(&stored.body)?)
 }
 
-/// SPEC-512 DIG-003, DIG-004 (#1413), with part 1's parking off: the digest leaves a task that
+/// SPEC-512 DIG-003, DIG-004, with part 1's parking off: the digest leaves a task that
 /// asks its person running and lists it first; once nothing is asked, it parks the quiet task,
 /// lists it with what its last message left, and a message resumes it in its own session.
 #[test]
@@ -3686,7 +3434,7 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
         .await?;
         let prompt = format!("Budget {DIGEST_SECRET}: answer with an echo");
         let id = new_task(&app, &sandbox, &user, &prompt, TaskMode::Prompt).await?;
-        wait_for("the turn's end", Duration::from_secs(30), || async {
+        eventually("the turn's end", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: Budget")
                 && status_of(&app, &id).await.1 == Some(Activity::Waiting)
         })
@@ -3710,7 +3458,7 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
         past_the_grace(&app, &id).await?;
         let run = app.send_digests_now(Some(1)).await;
         assert_eq!((run.sent, run.parked), (1, 1));
-        wait_for("the digest's park", Duration::from_secs(30), || async {
+        eventually("the digest's park", Duration::from_secs(30), || async {
             status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
         })
         .await?;
@@ -3742,7 +3490,7 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
             )
             .await?;
         assert_eq!(answer["delivered"], "resumed");
-        wait_for("the resumed message", Duration::from_secs(60), || async {
+        eventually("the resumed message", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Go on: answer with an echo")
         })
         .await?;
@@ -3752,7 +3500,117 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
     Ok(())
 }
 
-/// SPEC-612: actual terminal recipients of a red integration branch, including reassignment.
+/// SPEC-676 RGS-009: the worker whose merge brought the failure in owns its repair, ahead of a
+/// worker with a lower number, and while the merge queue is stopped every worker hears that
+/// merges wait for that repair.
+#[test]
+fn the_breaker_owns_the_repair_and_every_worker_hears_that_merges_wait() -> TestResult {
+    use yulius_app::delivery::{
+        DeliveryRecord,
+        evidence::{Landing, LandingSource},
+    };
+    use yulius_domain::{ci::RunState, delivery::DeliveryStage};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 0).await?;
+        let (_finished, caller) = answered(&app, &data).await?;
+        let project = app
+            .deps
+            .store
+            .sandbox(&caller.sandbox)
+            .await?
+            .ok_or("project")?;
+        let mut ids = Vec::new();
+        for prompt in ["Other worker", "Breaking worker"] {
+            let id = new_task(&app, &project.id, &caller.user, prompt, TaskMode::Prompt).await?;
+            eventually("worker ready", Duration::from_secs(30), || async {
+                status_of(&app, &id).await.1 == Some(Activity::Waiting)
+            })
+            .await?;
+            crate::support::pr_watch::leave_verification_step(&app, &id).await?;
+            ids.push(id);
+        }
+        // A merge-first project: its gate's red after-merge run stops the merge queue.
+        let repo = data
+            .join("sandboxes")
+            .join(project.id.as_str())
+            .join("repo");
+        std::fs::write(
+            repo.join("yulius.toml"),
+            "[cd.dev]\nmerge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\n\
+             migrations = \"none\"\n[cd.prod]\n",
+        )?;
+        crate::support::git(&repo, &["add", "yulius.toml"])?;
+        crate::support::git(
+            &repo,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "merge-first",
+            ],
+        )?;
+        let sha = crate::support::git(&repo, &["rev-parse", "HEAD"])?;
+        crate::support::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
+        // The breaker merged a slice and still has a step ahead: it stays a worker.
+        let landing = Landing {
+            branch: "dev".into(),
+            head: sha.clone(),
+            sha: sha.clone(),
+            source: LandingSource::MergeCommand,
+        };
+        let merged = DeliveryRecord {
+            task_id: ids[1].clone(),
+            pr_number: Some(9),
+            stage: DeliveryStage::MergedIntegration,
+            updated_at: app.now(),
+        };
+        assert!(
+            app.deps
+                .store
+                .transition_with_landing(&DeliveryStage::None, &merged, None, Some(&landing))
+                .await?
+        );
+        crate::support::staging::recorded_gate(
+            &app,
+            &project.id,
+            &sha,
+            RunState::Failed,
+            Some("---- delivery::gate stdout ----\nassertion failed\n"),
+        )
+        .await?;
+        let breaker = app.deps.store.task(&ids[1]).await?.ok_or("breaker")?.number;
+        assert_eq!(app.tell_gate_repairs(&project).await?, 2);
+        eventually(
+            "workers saw their assignments",
+            Duration::from_secs(30),
+            || async {
+                screen(&app, &ids[1]).contains("You own this repair")
+                    && screen(&app, &ids[0]).contains(&format!("Task #{breaker} owns this repair"))
+            },
+        )
+        .await?;
+        assert!(
+            screen(&app, &ids[1]).contains("`repairs_gate: true`"),
+            "{}",
+            screen(&app, &ids[1])
+        );
+        assert!(
+            screen(&app, &ids[0]).contains("Your merges wait until the gate is green"),
+            "{}",
+            screen(&app, &ids[0])
+        );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Actual terminal recipients of a red integration branch, including reassignment.
 #[test]
 fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other() -> TestResult {
     use yulius_app::delivery::{
@@ -3774,19 +3632,19 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
         let mut ids = Vec::new();
         for prompt in ["Held worker", "Repair worker", "Other worker"] {
             let id = new_task(&app, &project.id, &caller.user, prompt, TaskMode::Prompt).await?;
-            wait_for("worker ready", Duration::from_secs(30), || async {
+            eventually("worker ready", Duration::from_secs(30), || async {
                 status_of(&app, &id).await.1 == Some(Activity::Waiting)
             })
             .await?;
-            crate::pr_watch::leave_verification_step(&app, &id).await?;
+            crate::support::pr_watch::leave_verification_step(&app, &id).await?;
             ids.push(id);
         }
         let repo = data
             .join("sandboxes")
             .join(project.id.as_str())
             .join("repo");
-        let sha = crate::cd::git(&repo, &["rev-parse", "HEAD"])?;
-        crate::cd::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
+        let sha = crate::support::git(&repo, &["rev-parse", "HEAD"])?;
+        crate::support::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
         let landing = Landing {
             branch: "dev".into(),
             head: sha.clone(),
@@ -3805,7 +3663,7 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
                 .transition_with_landing(&DeliveryStage::None, &merged, None, Some(&landing))
                 .await?
         );
-        crate::staging::recorded_gate(
+        crate::support::staging::recorded_gate(
             &app,
             &project.id,
             &sha,
@@ -3813,12 +3671,13 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
             Some("---- delivery::gate stdout ----\nassertion failed\n"),
         )
         .await?;
-        let (owner, terminal) = crate::task_message::terminal(&app, &caller, &ids[0]).await?;
+        let (owner, terminal) =
+            crate::support::task_message::terminal(&app, &caller, &ids[0]).await?;
         app.terminal_input(&owner, &terminal, b"keep my draft", false)
             .await?;
         let messages = || async { app.tell_gate_repairs(&project).await };
         assert_eq!(messages().await?, 2);
-        wait_for(
+        eventually(
             "workers saw their assignments",
             Duration::from_secs(30),
             || async {
@@ -3853,13 +3712,14 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
             .set_activity(&ids[1], Some(Activity::Done), app.now())
             .await?;
         assert_eq!(messages().await?, 1);
-        wait_for(
+        eventually(
             "remaining worker took over",
             Duration::from_secs(30),
             || async { screen(&app, &ids[2]).contains("You own this repair") },
         )
         .await?;
-        let (_, last_terminal) = crate::task_message::terminal(&app, &caller, &ids[2]).await?;
+        let (_, last_terminal) =
+            crate::support::task_message::terminal(&app, &caller, &ids[2]).await?;
         app.terminal_input(&owner, &last_terminal, b"another draft", false)
             .await?;
         assert_eq!(messages().await?, 0);
@@ -3882,15 +3742,22 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let browser = Arc::new(crate::delivery::HeldBrowserLookup::for_publication());
+        let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::for_publication());
         let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-        let (app, _, _) = crate::first_message::start_hosted_with_github(
-            &data, &fake, FakeAgentOptions { answers_first_message: true, ..hooked() },
-            (0, Arc::new(ScriptedUsage::default()), Arc::new(yulius::wiring::clock::SystemClock)),
-            None, Some(browser.clone()), |config| { config.max_live_sessions = 8; },
-        ).await?;
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            ..hooked()
+        };
+        let live = crate::support::live::Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            browser: Some(browser.clone()),
+            ..crate::support::live::Live::new(Some(&fake), agent)
+        };
+        let (app, _) = live
+            .start(&data, 0, |config| config.max_live_sessions = 8)
+            .await?;
         let (id, caller) = answered(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let task = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
@@ -3973,7 +3840,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
         assert_eq!(tokio::time::timeout(Duration::from_secs(10), check).await??, 0,
             "a busy browser defers the outcome to another tick");
         assert_eq!(app.deps.store.untold_staging_requests().await?.len(), 1);
-        wait_for("the outcome told", Duration::from_secs(30), || async {
+        eventually("the outcome told", Duration::from_secs(30), || async {
             app.tell_staging_outcomes().await;
             let shown = screen(&app, &id);
             shown.contains("staging request sr_1 for revision 0123456789ab")
@@ -3985,9 +3852,21 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
             app.deps.store.untold_staging_requests().await?.is_empty(),
             "told once"
         );
-        app.deps.store.set_activity(&id, Some(Activity::Done), app.now()).await?;
-        assert_eq!(app.capacity_view(&owner).await?.accounts[0].in_use_by, Some(0),
-            "a finished task releases its subscription once its outcome has been delivered");
+        // The outcome typed above starts a turn in the live session, and that turn's prompt hook
+        // can mark the task Working after the Done below. The task is finished once that
+        // turn has ended, so it is marked Done again until the read sees the subscription free.
+        eventually(
+            "a finished task releases its subscription once its outcome has been delivered",
+            Duration::from_secs(30),
+            || async {
+                app.deps.store.set_activity(&id, Some(Activity::Done), app.now()).await.is_ok()
+                    && app
+                        .capacity_view(&owner)
+                        .await
+                        .is_ok_and(|view| view.accounts[0].in_use_by == Some(0))
+            },
+        )
+        .await?;
         // A deploy retry can finish while the old failure notification checks the browser.
         // The old notification must leave this request's new verdict for the next tick.
         use yulius_domain::staging::StagingState::{DeployFailed, Deploying, Ready, Verified};
@@ -4042,7 +3921,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
         assert_eq!(check.await?, 0, "the previous failure cannot consume the retry's wake");
         assert!(!screen(&app, &id).contains("first-deploy"));
         assert_eq!(store.task_staging_wait(&id).await?, Some(Verified));
-        wait_for("the verified retry told", Duration::from_secs(30), || async {
+        eventually("the verified retry told", Duration::from_secs(30), || async {
             app.tell_staging_outcomes().await;
             screen(&app, &id).contains("retry-run")
         }).await?;
@@ -4063,7 +3942,7 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
     rt.block_on(async {
         let app = app(&data, 8, 0).await?;
         let (id, _) = answered(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let source = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("source")?;
@@ -4138,7 +4017,7 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
             app.now(),
         )
         .await?;
-        wait_for("the outcome told", Duration::from_secs(30), || async {
+        eventually("the outcome told", Duration::from_secs(30), || async {
             app.tell_handoff_outcomes().await;
             let shown = screen(&app, &id);
             shown.contains(&format!(
@@ -4325,10 +4204,10 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let clock = Arc::new(crate::support::TestClock(PRIOR_OBSERVATION.into()));
         let (app, github) = app_with_pulls_and_clock(&data, 8, 1, clock.clone(), |_| {}).await?;
         let (id, caller) = answered(&app, &data).await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let worktree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
-        let head = crate::pr_watch::git(worktree, &["rev-parse", "HEAD"])?;
+        let head = crate::support::git(worktree, &["rev-parse", "HEAD"])?;
         open_pull_at(&app, &github, &id, previously_seen.unwrap_or(1481), &head).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
@@ -4407,7 +4286,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         } else if matches!(case, QueueWatch::KeptDuringRead) {
             std::fs::write(&arms, &saved_arm)?;
             app.restore_armed_merges().await;
-            let (mut green, job) = crate::pr_watch::run(
+            let (mut green, job) = crate::support::pr_watch::run(
                 &caller.sandbox,
                 "green",
                 &head,
@@ -4501,7 +4380,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
                         .transition_delivery(&DeliveryStage::PrOpen, &old)
                         .await?
                 );
-                let (mut run, job) = crate::pr_watch::run(
+                let (mut run, job) = crate::support::pr_watch::run(
                     &caller.sandbox,
                     "old",
                     &head,
@@ -4649,7 +4528,7 @@ fn a_busy_terminal_writer_leaves_the_armed_notice_unheard() -> TestResult {
         let (id, caller) = answered(&app, &data).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
-        let head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        let head = crate::support::git(tree, &["rev-parse", "HEAD"])?;
         open_pull_at(&app, &github, &id, 1481, &head).await?;
         app.deps
             .store
@@ -4663,7 +4542,7 @@ fn a_busy_terminal_writer_leaves_the_armed_notice_unheard() -> TestResult {
                 },
             )
             .await?;
-        let (mut run, job) = crate::pr_watch::run(
+        let (mut run, job) = crate::support::pr_watch::run(
             &caller.sandbox,
             "held-writer-ci",
             &head,
@@ -4723,7 +4602,7 @@ fn a_busy_terminal_writer_leaves_the_armed_notice_unheard() -> TestResult {
         let current = app.watch_prs(&WatchBounds::default()).await;
         assert_eq!(current.len(), 1, "{current:?}");
         assert!(current[0].1.contains("held-writer-ci"));
-        wait_for(
+        eventually(
             "the agent received the CI notice",
             Duration::from_secs(10),
             || async { screen(&app, &id).contains("held-writer-ci") },

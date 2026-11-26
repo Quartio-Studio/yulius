@@ -16,7 +16,10 @@ use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{ModelTokens, TokenUsage};
 
-use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
+use crate::{
+    DbError, DbResult, SqliteStore, bad_column, opt_ts, parsed, text_as, text_parsed, to_i64,
+    to_u32, to_u64,
+};
 
 /// The status change of [`TaskStore::transition_task`], with its bookkeeping. A task that
 /// leaves the queue loses the start kept for its wait (SPEC-483 QST-001): a held prompt stays
@@ -31,7 +34,7 @@ fn transition(
     activity: Option<Activity>,
     at: Timestamp,
     idle: Option<(Activity, Timestamp, &AttemptId)>,
-) -> AppResult<bool> {
+) -> DbResult<bool> {
     let queued = matches!(next, TaskStatus::Queued).then_some(at.0);
     let (idle_activity, idle_updated_at, idle_attempt) = idle
         .map_or((None, None, None), |(activity, at, attempt)| {
@@ -64,12 +67,11 @@ fn transition(
                 idle_updated_at,
                 idle_attempt,
             ],
-        )
-        .map_err(db)?;
+        )?;
     Ok(n == 1)
 }
 
-fn keep_queued_start(c: &rusqlite::Connection, id: &str, start: &QueuedStart) -> AppResult<()> {
+fn keep_queued_start(c: &rusqlite::Connection, id: &str, start: &QueuedStart) -> DbResult<()> {
     c.execute(
         "UPDATE tasks SET queued_start = json_object('kind', ?2, 'prompt', ?3, \
                  'account', ?4, 'at', queued_at) WHERE id = ?1",
@@ -79,8 +81,7 @@ fn keep_queued_start(c: &rusqlite::Connection, id: &str, start: &QueuedStart) ->
             start.prompt,
             start.account_id.as_ref().map(AccountId::as_str)
         ],
-    )
-    .map_err(db)?;
+    )?;
     Ok(())
 }
 
@@ -98,109 +99,85 @@ const RESUME_ATTEMPT: &str = "CASE WHEN tasks.status IN ('parked', 'closed')
 const ATTEMPT_COLS: &str = "id, task_id, seq, harness, account_id, provider_session_id, launch_kind, \
     state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason, model";
 
-fn parse_id<T>(
-    column: &str,
-    text: &str,
-    f: fn(&str) -> Result<T, yulius_domain::ids::IdError>,
-) -> rusqlite::Result<T> {
-    f(text).map_err(|_| bad_column(column, text))
-}
-
-fn harness(text: &str) -> rusqlite::Result<Harness> {
-    Harness::parse(text).map_err(|_| bad_column("harness", text))
-}
-
 fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
     let id: String = row.get("id")?;
-    let sandbox: String = row.get("sandbox_id")?;
-    let status: String = row.get("status")?;
     let activity: Option<String> = row.get("activity")?;
-    let created_by: String = row.get("created_by")?;
-    let owner: String = row.get("owner_id")?;
     let origin: String = row.get("origin")?;
-    let harness_text: String = row.get("harness")?;
     Ok(TaskRecord {
-        id: parse_id("task id", &id, TaskId::parse)?,
+        id: parsed("task id", &id, TaskId::parse)?,
         resume_attempt_id: row
             .get::<_, Option<String>>("resume_attempt_id")?
             .as_deref()
-            .map(|id| parse_id("resume attempt id", id, AttemptId::parse))
+            .map(|id| parsed("resume attempt id", id, AttemptId::parse))
             .transpose()?,
-        sandbox_id: parse_id("sandbox id", &sandbox, SandboxId::parse)?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         number: to_u32(row.get("number")?),
         title: row.get("title")?,
         prompt: row.get("prompt")?,
-        harness: harness(&harness_text)?,
+        harness: text_parsed(row, "harness", "harness", Harness::parse)?,
         model: row.get("model")?,
         effort: row.get("effort")?,
         workflow_id: row.get("workflow_id")?,
-        status: TaskStatus::parse(&status).ok_or_else(|| bad_column("status", &status))?,
+        status: text_as(row, "status", "status", TaskStatus::parse)?,
         activity: activity.as_deref().and_then(Activity::parse),
         branch: row.get("branch")?,
         worktree_path: row.get("worktree_path")?,
         spec_path: row.get("spec_path")?,
         origin: TaskOrigin::parse(&origin),
         automation_run: row.get("automation_run")?,
-        created_by: parse_id("user id", &created_by, UserId::parse)?,
-        owner: parse_id("user id", &owner, UserId::parse)?,
+        created_by: text_parsed(row, "created_by", "user id", UserId::parse)?,
+        owner: text_parsed(row, "owner_id", "user id", UserId::parse)?,
         created_at: Timestamp(row.get("created_at")?),
         updated_at: Timestamp(row.get("updated_at")?),
-        closed_at: row.get::<_, Option<i64>>("closed_at")?.map(Timestamp),
-        archived_at: row.get::<_, Option<i64>>("archived_at")?.map(Timestamp),
-        queued_at: row.get::<_, Option<i64>>("queued_at")?.map(Timestamp),
+        closed_at: opt_ts(row, "closed_at")?,
+        archived_at: opt_ts(row, "archived_at")?,
+        queued_at: opt_ts(row, "queued_at")?,
         gate_blocks: to_u32(row.get("gate_blocks")?),
         wake_enabled: row.get("wake_enabled")?,
-        mode: {
-            let mode: String = row.get("mode")?;
-            TaskMode::parse(&mode).ok_or_else(|| bad_column("mode", &mode))?
-        },
+        mode: text_as(row, "mode", "mode", TaskMode::parse)?,
         supertask: row.get("supertask")?,
     })
 }
 
-fn attempt_state(connection: &rusqlite::Connection, id: &str) -> AppResult<AttemptState> {
+fn attempt_state(connection: &rusqlite::Connection, id: &str) -> DbResult<AttemptState> {
     let state: Option<String> = connection
         .query_row("SELECT state FROM attempts WHERE id = ?1", [id], |row| {
             row.get(0)
         })
-        .optional()
-        .map_err(db)?;
+        .optional()?;
     state
         .as_deref()
         .and_then(AttemptState::parse)
-        .ok_or(AppError::NotFound)
+        .ok_or(AppError::NotFound.into())
 }
 
 fn attempt_from_row(row: &Row<'_>) -> rusqlite::Result<AttemptRecord> {
     let id: String = row.get("id")?;
-    let task: String = row.get("task_id")?;
     let account: Option<String> = row.get("account_id")?;
-    let state: String = row.get("state")?;
     let kind: String = row.get("launch_kind")?;
-    let harness_text: String = row.get("harness")?;
     let pid = |name: &str| -> rusqlite::Result<Option<u32>> {
         Ok(row.get::<_, Option<i64>>(name)?.map(to_u32))
     };
     Ok(AttemptRecord {
-        id: parse_id("attempt id", &id, AttemptId::parse)?,
-        task_id: parse_id("task id", &task, TaskId::parse)?,
+        id: parsed("attempt id", &id, AttemptId::parse)?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         seq: to_u32(row.get("seq")?),
-        harness: harness(&harness_text)?,
+        harness: text_parsed(row, "harness", "harness", Harness::parse)?,
         account_id: account
             .as_deref()
-            .map(|a| parse_id("account id", a, AccountId::parse))
+            .map(|a| parsed("account id", a, AccountId::parse))
             .transpose()?,
         provider_session_id: row.get("provider_session_id")?,
         launch_kind: LaunchKind::parse(&kind),
         model: row.get("model")?,
-        state: AttemptState::parse(&state).ok_or_else(|| bad_column("attempt state", &state))?,
+        state: text_as(row, "state", "attempt state", AttemptState::parse)?,
         run_dir: row.get("run_dir")?,
         token_hash: row.get("token_hash")?,
         host_token: yulius_app::model::Sealed(row.get("host_token")?),
         ptyhost_pid: pid("ptyhost_pid")?,
         child_pid: pid("child_pid")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        ended_at: opt_ts(row, "ended_at")?,
         exit_code: row.get("exit_code")?,
         exit_reason: row.get("exit_reason")?,
     })
@@ -277,15 +254,14 @@ fn parts_from_json(text: Option<String>) -> rusqlite::Result<Vec<ModelTokens>> {
 }
 
 /// An attempt's stored figures as JSON, `None` without a row (SPEC-091 RCT-004).
-fn stored_metrics_json(c: &rusqlite::Connection, attempt: &str) -> AppResult<Option<String>> {
+fn stored_metrics_json(c: &rusqlite::Connection, attempt: &str) -> DbResult<Option<String>> {
     let row = c
         .query_row(
             "SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, model_parts FROM metrics WHERE attempt_id = ?1",
             [attempt],
             metrics_from_row,
         )
-        .optional()
-        .map_err(db)?;
+        .optional()?;
     Ok(row.map(|m| {
         let mut figures = serde_json::json!({
             "model": m.model,
@@ -306,11 +282,9 @@ fn stored_metrics_json(c: &rusqlite::Connection, attempt: &str) -> AppResult<Opt
 impl SqliteStore {
     async fn tasks_query(&self, sql: String, args: Vec<String>) -> AppResult<Vec<TaskRecord>> {
         self.call(move |c| {
-            let mut stmt = c.prepare(&sql).map_err(db)?;
-            let rows = stmt
-                .query_map(rusqlite::params_from_iter(args.iter()), task_from_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut stmt = c.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), task_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -321,11 +295,9 @@ impl SqliteStore {
         args: Vec<String>,
     ) -> AppResult<Vec<AttemptRecord>> {
         self.call(move |c| {
-            let mut stmt = c.prepare(&sql).map_err(db)?;
-            let rows = stmt
-                .query_map(rusqlite::params_from_iter(args.iter()), attempt_from_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut stmt = c.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), attempt_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -336,14 +308,13 @@ impl TaskStore for SqliteStore {
     async fn insert_task(&self, task: &TaskRecord) -> AppResult<TaskRecord> {
         let t = task.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let next: i64 = tx
                 .query_row(
                     "SELECT COALESCE(MAX(number), 0) + 1 FROM tasks WHERE sandbox_id = ?1",
                     [t.sandbox_id.as_str()],
                     |r| r.get(0),
-                )
-                .map_err(db)?;
+                )?;
             tx.execute(
                 &format!("INSERT INTO tasks ({TASK_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)"),
                 params![
@@ -375,20 +346,17 @@ impl TaskStore for SqliteStore {
                     t.supertask,
                     t.owner.as_str(),
                 ],
-            )
-            .map_err(db)?;
+            )?;
             // A new task is in its first state since it was created (SPEC-087 TIM-001).
             tx.execute(
                 "UPDATE tasks SET state_at = created_at, working_since = CASE \
                  WHEN status IN ('starting', 'running', 'switching', 'waiting_capacity') \
                  AND (activity IS NULL OR activity = 'working') THEN created_at END WHERE id = ?1",
                 [t.id.as_str()],
-            )
-            .map_err(db)?;
+            )?;
             let stored = tx
-                .query_row(&format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"), [t.id.as_str()], task_from_row)
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+                .query_row(&format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"), [t.id.as_str()], task_from_row)?;
+            tx.commit()?;
             Ok(stored)
         })
         .await
@@ -397,13 +365,12 @@ impl TaskStore for SqliteStore {
     async fn task(&self, id: &TaskId) -> AppResult<Option<TaskRecord>> {
         let id = id.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
                 [id],
                 task_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -415,13 +382,12 @@ impl TaskStore for SqliteStore {
     ) -> AppResult<Option<TaskRecord>> {
         let s = sandbox.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE sandbox_id = ?1 AND number = ?2"),
                 params![s, i64::from(number)],
                 task_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -506,13 +472,13 @@ impl TaskStore for SqliteStore {
         let queue = queue.cloned();
         let requested = requested.cloned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let claimed = tx.execute(
                 "UPDATE tasks SET archived_at = NULL, needs_you = NULL, updated_at = ?5 WHERE id = ?1 AND status = ?2
                  AND archived_at IS ?3 AND (SELECT id FROM attempts WHERE task_id = ?1
                  ORDER BY seq DESC LIMIT 1) IS ?4",
                 params![id, status.as_str(), archive, attempt.as_ref().map(AttemptId::as_str), at.0],
-            ).map_err(db)?;
+            )?;
             if claimed == 0 {
                 return Ok(None);
             }
@@ -520,7 +486,7 @@ impl TaskStore for SqliteStore {
             // back its archive, question and span changes together.
             let admission = if let Some(requested) = requested {
                 let task = tx.query_row(&format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
-                    [&id], task_from_row).map_err(db)?;
+                    [&id], task_from_row)?;
                 yulius_app::capacity::ContinuationAdmission::named(&task, crate::accounts::list_accounts(&tx)?, &requested, at)?
             } else {
                 yulius_app::capacity::ContinuationAdmission::Pool
@@ -534,7 +500,7 @@ impl TaskStore for SqliteStore {
             if let Some(start) = queue {
                 keep_queued_start(&tx, &id, &start)?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(Some(admission))
         })
         .await
@@ -551,12 +517,12 @@ impl TaskStore for SqliteStore {
         let start = start.clone();
         self.call(move |c| {
             // One transaction: a task is never queued without the start it was to make.
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             if !transition(&tx, &id, Some(expected), TaskStatus::Queued, None, at, None)? {
                 return Ok(false);
             }
             keep_queued_start(&tx, &id, &start)?;
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -577,8 +543,7 @@ impl TaskStore for SqliteStore {
                    WHEN ?1 = 'working' OR ?1 IS NULL THEN COALESCE(working_since, ?2) \
                    ELSE working_since END WHERE id = ?3",
                 params![activity.map(Activity::as_str), at.0, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -593,23 +558,21 @@ impl TaskStore for SqliteStore {
     ) -> AppResult<bool> {
         let id = id.as_str().to_owned();
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET activity = ?1, updated_at = ?2, \
+            let n = c.execute(
+                "UPDATE tasks SET activity = ?1, updated_at = ?2, \
                      state_at = CASE WHEN activity IS NOT ?1 THEN ?2 ELSE state_at END, \
                      working_since = CASE WHEN ?1 = 'needs_attention' THEN NULL \
                        WHEN ?1 = 'working' OR ?1 IS NULL THEN COALESCE(working_since, ?2) \
                        ELSE working_since END \
                      WHERE id = ?3 AND status = 'running' AND activity IS ?4 AND state_at = ?5",
-                    params![
-                        activity.map(Activity::as_str),
-                        at.0,
-                        id,
-                        from.0.map(Activity::as_str),
-                        from.1.0
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    activity.map(Activity::as_str),
+                    at.0,
+                    id,
+                    from.0.map(Activity::as_str),
+                    from.1.0
+                ],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -628,25 +591,23 @@ impl TaskStore for SqliteStore {
             .transpose()
             .map_err(AppError::internal)?;
         self.call(move |c| {
-            let n = c
-                .execute(
-                    // The reason carries the time of its flag: it is read only while the
-                    // task's state is still of that time (`task_attention`).
-                    "UPDATE tasks SET activity = 'needs_attention', updated_at = ?2, \
+            let n = c.execute(
+                // The reason carries the time of its flag: it is read only while the
+                // task's state is still of that time (`task_attention`).
+                "UPDATE tasks SET activity = 'needs_attention', updated_at = ?2, \
                      state_at = ?2, working_since = NULL, \
                      attention = CASE WHEN ?3 IS NULL THEN NULL ELSE json_set(?3, '$.at', ?2) END \
                      WHERE id = ?1 AND status = 'running' AND activity IS NOT 'needs_attention' \
                      AND (?4 = 0 OR (activity IS ?5 AND state_at = ?6))",
-                    params![
-                        id,
-                        at.0,
-                        reason,
-                        i64::from(from.is_some()),
-                        from.and_then(|f| f.0).map(Activity::as_str),
-                        from.map_or(0, |f| f.1.0),
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    id,
+                    at.0,
+                    reason,
+                    i64::from(from.is_some()),
+                    from.and_then(|f| f.0).map(Activity::as_str),
+                    from.map_or(0, |f| f.1.0),
+                ],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -665,19 +626,17 @@ impl TaskStore for SqliteStore {
             .transpose()
             .map_err(AppError::internal)?;
         self.call(move |c| {
-            let n = c
-                .execute(
-                    // The state and its time stay: only what the flag says changes, and only
-                    // while the task still reads the flag raised at `flagged`.
-                    "UPDATE tasks SET updated_at = ?4, \
+            let n = c.execute(
+                // The state and its time stay: only what the flag says changes, and only
+                // while the task still reads the flag raised at `flagged`.
+                "UPDATE tasks SET updated_at = ?4, \
                      attention = CASE WHEN ?3 IS NULL THEN NULL \
                        ELSE json_set(?3, '$.at', state_at) END \
                      WHERE id = ?1 AND status = 'running' AND activity = 'needs_attention' \
                      AND state_at = ?2 AND attention IS NOT CASE WHEN ?3 IS NULL THEN NULL \
                        ELSE json_set(?3, '$.at', state_at) END",
-                    params![id, flagged.0, reason, at.0],
-                )
-                .map_err(db)?;
+                params![id, flagged.0, reason, at.0],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -687,7 +646,7 @@ impl TaskStore for SqliteStore {
         let id = id.as_str().to_owned();
         let row: Option<(String, Option<String>, Option<String>)> = self
             .call(move |c| {
-                c.query_row(
+                Ok(c.query_row(
                     // CASE orders the checks: a row that is not JSON gives no start, not an
                     // error. The start is the task's while it is queued since it was written.
                     "SELECT json_extract(queued_start, '$.kind'), \
@@ -700,8 +659,7 @@ impl TaskStore for SqliteStore {
                     [id],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
-                .optional()
-                .map_err(db)
+                .optional()?)
             })
             .await?;
         // A kind or a subscription id of another shape (a newer Yulius wrote it) gives none.
@@ -721,7 +679,7 @@ impl TaskStore for SqliteStore {
         let id = id.as_str().to_owned();
         let row: Option<(String, i64)> = self
             .call(move |c| {
-                c.query_row(
+                Ok(c.query_row(
                     // CASE orders the checks: a row that is not JSON gives no reason, not an
                     // error.
                     "SELECT attention, state_at FROM tasks WHERE id = ?1 AND status = 'running' \
@@ -730,8 +688,7 @@ impl TaskStore for SqliteStore {
                     [id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .optional()
-                .map_err(db)
+                .optional()?)
             })
             .await?;
         // JSON of another shape (a newer Yulius wrote it) gives no reason either.
@@ -741,7 +698,7 @@ impl TaskStore for SqliteStore {
     async fn delete_task(&self, id: &TaskId) -> AppResult<bool> {
         let id = id.as_str().to_owned();
         self.call_access(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let statements = [
                 "DELETE FROM metrics WHERE task_id = ?1",
                 "DELETE FROM metrics_recounts WHERE task_id = ?1",
@@ -773,12 +730,10 @@ impl TaskStore for SqliteStore {
                 "UPDATE sandboxes SET onboarding_task_id = NULL WHERE onboarding_task_id = ?1",
             ];
             for sql in statements {
-                tx.execute(sql, [id.as_str()]).map_err(db)?;
+                tx.execute(sql, [id.as_str()])?;
             }
-            let deleted = tx
-                .execute("DELETE FROM tasks WHERE id = ?1", [id.as_str()])
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+            let deleted = tx.execute("DELETE FROM tasks WHERE id = ?1", [id.as_str()])?;
+            tx.commit()?;
             Ok(deleted > 0)
         })
         .await
@@ -787,18 +742,17 @@ impl TaskStore for SqliteStore {
     async fn task_times(&self, task: &TaskId) -> AppResult<Option<TaskTimes>> {
         let id = task.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT state_at, working_since FROM tasks WHERE id = ?1",
                 [id.as_str()],
                 |r| {
                     Ok(TaskTimes {
                         state_at: Timestamp(r.get(0)?),
-                        working_since: r.get::<_, Option<i64>>(1)?.map(Timestamp),
+                        working_since: opt_ts(r, 1)?,
                     })
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -809,8 +763,7 @@ impl TaskStore for SqliteStore {
             c.execute(
                 "UPDATE tasks SET working_since = ?1 WHERE id = ?2",
                 params![since.map(|t| t.0), id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -825,8 +778,7 @@ impl TaskStore for SqliteStore {
                     [id.as_str()],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(pin.flatten().and_then(|text| AccountId::parse(&text).ok()))
         })
         .await
@@ -839,8 +791,7 @@ impl TaskStore for SqliteStore {
             c.execute(
                 "UPDATE tasks SET pinned_account_id = ?1 WHERE id = ?2",
                 params![account, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -854,20 +805,18 @@ impl TaskStore for SqliteStore {
     ) -> AppResult<bool> {
         let id = task.as_str().to_owned();
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET working_since = ?1 \
+            let n = c.execute(
+                "UPDATE tasks SET working_since = ?1 \
                      WHERE id = ?2 AND status = 'running' AND activity IS ?3 AND state_at = ?4 \
                      AND working_since IS ?5",
-                    params![
-                        since.map(|t| t.0),
-                        id,
-                        from.0.map(Activity::as_str),
-                        from.1.state_at.0,
-                        from.1.working_since.map(|t| t.0)
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    since.map(|t| t.0),
+                    id,
+                    from.0.map(Activity::as_str),
+                    from.1.state_at.0,
+                    from.1.working_since.map(|t| t.0)
+                ],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -882,8 +831,7 @@ impl TaskStore for SqliteStore {
                     [id.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             row.map_or(Ok(None), person_pause_of)
         })
         .await
@@ -902,22 +850,20 @@ impl TaskStore for SqliteStore {
             attempt.as_str().to_owned(),
         );
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "UPDATE tasks SET paused_by = ?2, paused_at = ?3, paused_attempt = ?4, \
                  updated_at = ?3 WHERE id = ?1 AND paused_by IS NULL",
                 params![id, by, at.0, attempt],
-            )
-            .map_err(db)?;
-            let row: PauseRow = tx
-                .query_row(
-                    "SELECT paused_by, paused_at, paused_attempt FROM tasks WHERE id = ?1",
-                    [id.as_str()],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
-            person_pause_of(row)?.ok_or_else(|| AppError::internal("the pause was not recorded"))
+            )?;
+            let row: PauseRow = tx.query_row(
+                "SELECT paused_by, paused_at, paused_attempt FROM tasks WHERE id = ?1",
+                [id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            tx.commit()?;
+            Ok(person_pause_of(row)?
+                .ok_or_else(|| AppError::internal("the pause was not recorded"))?)
         })
         .await
     }
@@ -925,13 +871,11 @@ impl TaskStore for SqliteStore {
     async fn clear_person_pause(&self, task: &TaskId, at: Timestamp) -> AppResult<bool> {
         let id = task.as_str().to_owned();
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET paused_by = NULL, paused_at = NULL, paused_attempt = NULL, \
+            let n = c.execute(
+                "UPDATE tasks SET paused_by = NULL, paused_at = NULL, paused_attempt = NULL, \
                      updated_at = ?2 WHERE id = ?1 AND paused_by IS NOT NULL",
-                    params![id, at.0],
-                )
-                .map_err(db)?;
+                params![id, at.0],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -939,22 +883,18 @@ impl TaskStore for SqliteStore {
 
     async fn person_paused_tasks(&self) -> AppResult<Vec<(TaskId, PersonPause)>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT id, paused_by, paused_at, paused_attempt FROM tasks \
+            let mut stmt = c.prepare(
+                "SELECT id, paused_by, paused_at, paused_attempt FROM tasks \
                      WHERE paused_by IS NOT NULL ORDER BY paused_at LIMIT 1000",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
-                })
-                .map_err(db)?;
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
+            })?;
             let mut paused = Vec::new();
             for row in rows {
-                let (id, pause) = row.map_err(db)?;
+                let (id, pause) = row?;
                 if let Some(pause) = person_pause_of(pause)? {
-                    let task = TaskId::parse(&id).map_err(|_| db(bad_column("tasks.id", &id)))?;
+                    let task = TaskId::parse(&id).map_err(|_| bad_column("tasks.id", &id))?;
                     paused.push((task, pause));
                 }
             }
@@ -972,8 +912,7 @@ impl TaskStore for SqliteStore {
                     [id.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             match row {
                 Some((Some(by), Some(at))) => Ok(Some(ControlRequest {
                     by: UserId::parse(&by).map_err(|_| AppError::internal("bad user id"))?,
@@ -988,23 +927,21 @@ impl TaskStore for SqliteStore {
     async fn request_control(&self, task: &TaskId, by: &UserId, at: Timestamp) -> AppResult<bool> {
         let (id, by) = (task.as_str().to_owned(), by.as_str().to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "UPDATE tasks SET control_requested_by = ?2, control_requested_at = ?3, \
                  updated_at = ?3 WHERE id = ?1 AND control_requested_by IS NULL",
                 params![id, by, at.0],
-            )
-            .map_err(db)?;
+            )?;
             let waits = tx
                 .query_row(
                     "SELECT 1 FROM tasks WHERE id = ?1 AND control_requested_by = ?2",
                     params![id, by],
                     |_| Ok(()),
                 )
-                .optional()
-                .map_err(db)?
+                .optional()?
                 .is_some();
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(waits)
         })
         .await
@@ -1018,13 +955,11 @@ impl TaskStore for SqliteStore {
     ) -> AppResult<bool> {
         let (id, by) = (task.as_str().to_owned(), by.as_str().to_owned());
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET control_requested_by = NULL, control_requested_at = NULL, \
+            let n = c.execute(
+                "UPDATE tasks SET control_requested_by = NULL, control_requested_at = NULL, \
                      updated_at = ?3 WHERE id = ?1 AND control_requested_by = ?2",
-                    params![id, by, at.0],
-                )
-                .map_err(db)?;
+                params![id, by, at.0],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -1043,15 +978,13 @@ impl TaskStore for SqliteStore {
             to.as_str().to_owned(),
         );
         self.call_access(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
+            let n = c.execute(
+                "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
                      control_requested_at = NULL, updated_at = ?4, \
                      control_from = CASE WHEN control_from = ?3 THEN NULL ELSE ?2 END \
                      WHERE id = ?1 AND owner_id = ?2 AND control_requested_by = ?3",
-                    params![id, from, to, at.0],
-                )
-                .map_err(db)?;
+                params![id, from, to, at.0],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -1070,16 +1003,14 @@ impl TaskStore for SqliteStore {
             to.as_str().to_owned(),
         );
         self.call_access(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
+            let n = c.execute(
+                "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
                      control_requested_at = NULL, updated_at = ?4, \
                      control_from = CASE WHEN control_from = ?3 THEN NULL ELSE ?2 END \
                      WHERE id = ?1 AND owner_id = ?2 AND NOT EXISTS \
                      (SELECT 1 FROM users WHERE id = ?2 AND control_ask_first = 1)",
-                    params![id, from, to, at.0],
-                )
-                .map_err(db)?;
+                params![id, from, to, at.0],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -1098,14 +1029,12 @@ impl TaskStore for SqliteStore {
             to.as_str().to_owned(),
         );
         self.call_access(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
+            let n = c.execute(
+                "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
                      control_requested_at = NULL, updated_at = ?4, control_from = NULL \
                      WHERE id = ?1 AND owner_id = ?2",
-                    params![id, from, to, at.0],
-                )
-                .map_err(db)?;
+                params![id, from, to, at.0],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -1120,10 +1049,11 @@ impl TaskStore for SqliteStore {
                     [id.as_str()],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             from.flatten()
-                .map(|from| UserId::parse(&from).map_err(|_| AppError::internal("bad user id")))
+                .map(
+                    |from| Ok(UserId::parse(&from).map_err(|_| AppError::internal("bad user id"))?),
+                )
                 .transpose()
         })
         .await
@@ -1142,14 +1072,12 @@ impl TaskStore for SqliteStore {
             giver.as_str().to_owned(),
         );
         self.call_access(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET owner_id = ?3, control_from = NULL, \
+            let n = c.execute(
+                "UPDATE tasks SET owner_id = ?3, control_from = NULL, \
                      control_requested_by = NULL, control_requested_at = NULL, updated_at = ?4 \
                      WHERE id = ?1 AND owner_id = ?2 AND control_from = ?3",
-                    params![id, owner, giver, at.0],
-                )
-                .map_err(db)?;
+                params![id, owner, giver, at.0],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -1165,16 +1093,14 @@ impl TaskStore for SqliteStore {
         let (id, addition) = (id.as_str().to_owned(), addition.to_owned());
         let max = i64::try_from(max_bytes).unwrap_or(i64::MAX);
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET prompt = prompt || ?1, updated_at = ?2 \
+            let n = c.execute(
+                "UPDATE tasks SET prompt = prompt || ?1, updated_at = ?2 \
                      WHERE id = ?3 AND status = ?4 AND instr(prompt, ?1) = 0 \
                      AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
                      AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3) \
                      AND length(CAST(prompt AS BLOB)) + length(CAST(?1 AS BLOB)) <= ?5",
-                    params![addition, at.0, id, TaskStatus::Closed.as_str(), max],
-                )
-                .map_err(db)?;
+                params![addition, at.0, id, TaskStatus::Closed.as_str(), max],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -1190,25 +1116,23 @@ impl TaskStore for SqliteStore {
         let (id, addition) = (id.as_str().to_owned(), addition.to_owned());
         let max = i64::try_from(max_bytes).unwrap_or(i64::MAX);
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET prompt = prompt || ?1, updated_at = ?2 \
+            let n = c.execute(
+                "UPDATE tasks SET prompt = prompt || ?1, updated_at = ?2 \
                      WHERE id = ?3 AND status IN (?4, ?5, ?6, ?8) \
                      AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
                      AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3) \
                      AND length(CAST(prompt AS BLOB)) + length(CAST(?1 AS BLOB)) <= ?7",
-                    params![
-                        addition,
-                        at.0,
-                        id,
-                        TaskStatus::Queued.as_str(),
-                        TaskStatus::Chained.as_str(),
-                        TaskStatus::WaitingCapacity.as_str(),
-                        max,
-                        TaskStatus::Prepared.as_str()
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    addition,
+                    at.0,
+                    id,
+                    TaskStatus::Queued.as_str(),
+                    TaskStatus::Chained.as_str(),
+                    TaskStatus::WaitingCapacity.as_str(),
+                    max,
+                    TaskStatus::Prepared.as_str()
+                ],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -1227,24 +1151,22 @@ impl TaskStore for SqliteStore {
             prompt.to_owned(),
         );
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET prompt = ?1, updated_at = ?2 \
+            let n = c.execute(
+                "UPDATE tasks SET prompt = ?1, updated_at = ?2 \
                      WHERE id = ?3 AND status IN (?4, ?5, ?6, ?7) AND prompt = ?8 \
                      AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
                      AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3)",
-                    params![
-                        prompt,
-                        at.0,
-                        id,
-                        TaskStatus::Queued.as_str(),
-                        TaskStatus::Chained.as_str(),
-                        TaskStatus::WaitingCapacity.as_str(),
-                        TaskStatus::Prepared.as_str(),
-                        expected
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    prompt,
+                    at.0,
+                    id,
+                    TaskStatus::Queued.as_str(),
+                    TaskStatus::Chained.as_str(),
+                    TaskStatus::WaitingCapacity.as_str(),
+                    TaskStatus::Prepared.as_str(),
+                    expected
+                ],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -1253,21 +1175,17 @@ impl TaskStore for SqliteStore {
     async fn reorder_queued(&self, order: &[TaskId], at: Timestamp) -> AppResult<bool> {
         let order: Vec<String> = order.iter().map(|id| id.as_str().to_owned()).collect();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             // The whole queue as it is read (`tasks_with_status`): each task with its place.
             let mut queue: Vec<(String, i64)> = Vec::new();
             {
-                let mut read = tx
-                    .prepare(
-                        "SELECT id, COALESCE(queued_at, created_at) FROM tasks \
+                let mut read = tx.prepare(
+                    "SELECT id, COALESCE(queued_at, created_at) FROM tasks \
                          WHERE status = 'queued' ORDER BY COALESCE(queued_at, created_at), rowid",
-                    )
-                    .map_err(db)?;
-                let rows = read
-                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                    .map_err(db)?;
+                )?;
+                let rows = read.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
                 for row in rows {
-                    queue.push(row.map_err(db)?);
+                    queue.push(row?);
                 }
             }
             // The slots the named tasks hold, earliest first; each must be in the queue.
@@ -1319,10 +1237,9 @@ impl TaskStore for SqliteStore {
                          THEN json_set(queued_start, '$.at', ?2) ELSE queued_start END \
                      WHERE id = ?1 AND status = 'queued'",
                     params![id, place, at.0, named],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -1337,7 +1254,7 @@ impl TaskStore for SqliteStore {
         let id = id.as_str().to_owned();
         self.call(move |c| {
             c.execute("UPDATE tasks SET gate_blocks = MIN(gate_blocks + 1, ?2), updated_at = ?3 WHERE id = ?1",
-                params![id, ceiling, at.0]).map_err(db)?;
+                params![id, ceiling, at.0])?;
             Ok(())
         }).await
     }
@@ -1345,13 +1262,12 @@ impl TaskStore for SqliteStore {
     async fn update_task(&self, id: &TaskId, u: &TaskFieldUpdate, at: Timestamp) -> AppResult<()> {
         let (id, u) = (id.as_str().to_owned(), u.clone());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let set = |col: &str, value: rusqlite::types::Value| -> AppResult<()> {
+            let tx = c.transaction()?;
+            let set = |col: &str, value: rusqlite::types::Value| -> DbResult<()> {
                 tx.execute(
                     &format!("UPDATE tasks SET {col} = ?1, updated_at = ?2 WHERE id = ?3"),
                     params![value, at.0, id],
-                )
-                .map_err(db)?;
+                )?;
                 Ok(())
             };
             use rusqlite::types::Value as V;
@@ -1386,7 +1302,7 @@ impl TaskStore for SqliteStore {
             if let Some(v) = u.wake_enabled {
                 set("wake_enabled", V::Integer(i64::from(v)))?;
             }
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -1417,7 +1333,7 @@ impl TaskStore for SqliteStore {
                     a.model,
                 ],
             )
-            .map_err(|e| match db(e) {
+            .map_err(|e| match DbError::from(e).0 {
                 AppError::Conflict(_) => AppError::Conflict("task already has a live run".into()),
                 other => other,
             })?;
@@ -1456,12 +1372,11 @@ impl TaskStore for SqliteStore {
     async fn record_harness_draw(&self, task: &TaskId, at: Timestamp) -> AppResult<()> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            c.execute(
+            Ok(c.execute(
                 "INSERT OR IGNORE INTO task_harness_draws (task_id, drawn_at) VALUES (?1, ?2)",
                 params![task, at.0],
             )
-            .map(|_| ())
-            .map_err(db)
+            .map(|_| ())?)
         })
         .await
     }
@@ -1469,12 +1384,11 @@ impl TaskStore for SqliteStore {
     async fn harness_drawn(&self, task: &TaskId) -> AppResult<bool> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM task_harness_draws WHERE task_id = ?1)",
                 params![task],
                 |row| row.get::<_, bool>(0),
-            )
-            .map_err(db)
+            )?)
         })
         .await
     }
@@ -1482,12 +1396,11 @@ impl TaskStore for SqliteStore {
     async fn has_attempts(&self, task: &TaskId) -> AppResult<bool> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM attempts WHERE task_id = ?1)",
                 params![task],
                 |row| row.get::<_, bool>(0),
-            )
-            .map_err(db)
+            )?)
         })
         .await
     }
@@ -1527,7 +1440,7 @@ impl TaskStore for SqliteStore {
     ) -> AppResult<bool> {
         let (id, u) = (id.as_str().to_owned(), u.clone());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let current = attempt_state(&tx, &id)?;
             // One durable outcome: a terminal attempt is not transitioned again, not even to the
             // same state (its second observer is not first, SPEC-065).
@@ -1547,9 +1460,8 @@ impl TaskStore for SqliteStore {
                     u.exit_reason,
                     id
                 ],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             #[cfg(feature = "test-support")]
             if next.is_terminal() {
                 yulius_app::race::reached(
@@ -1568,8 +1480,7 @@ impl TaskStore for SqliteStore {
             c.execute(
                 "UPDATE attempts SET provider_session_id = ?1 WHERE id = ?2",
                 params![sid, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1594,8 +1505,7 @@ impl TaskStore for SqliteStore {
                     r.first_seen.0,
                     r.last_seen.0
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1608,27 +1518,22 @@ impl TaskStore for SqliteStore {
                 .prepare(
                     "SELECT id, sandbox_id, task_id, harness, session_id, transcript_ref, origin, first_seen, last_seen \
                      FROM provider_sessions WHERE task_id = ?1 ORDER BY last_seen, first_seen, rowid",
-                )
-                .map_err(db)?;
+                )?;
             let rows = stmt
                 .query_map([t], |r| {
-                    let sb: String = r.get(1)?;
-                    let tk: String = r.get(2)?;
-                    let h: String = r.get(3)?;
                     Ok(ProviderSessionRecord {
                         id: r.get(0)?,
-                        sandbox_id: parse_id("sandbox id", &sb, SandboxId::parse)?,
-                        task_id: parse_id("task id", &tk, TaskId::parse)?,
-                        harness: harness(&h)?,
+                        sandbox_id: text_parsed(r, 1, "sandbox id", SandboxId::parse)?,
+                        task_id: text_parsed(r, 2, "task id", TaskId::parse)?,
+                        harness: text_parsed(r, 3, "harness", Harness::parse)?,
                         session_id: r.get(4)?,
                         transcript_ref: r.get(5)?,
                         origin: r.get(6)?,
                         first_seen: Timestamp(r.get(7)?),
                         last_seen: Timestamp(r.get(8)?),
                     })
-                })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+                })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -1650,8 +1555,7 @@ impl TaskStore for SqliteStore {
                     "SELECT COUNT(*) FROM provider_sessions WHERE sandbox_id = ?1 AND harness = ?2 AND session_id = ?3",
                     params![s, h, id],
                     |r| r.get(0),
-                )
-                .map_err(db)?;
+                )?;
             Ok(n > 0)
         })
         .await
@@ -1689,8 +1593,7 @@ impl TaskStore for SqliteStore {
                     at.0,
                     parts_json(&m.parts)
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1700,10 +1603,9 @@ impl TaskStore for SqliteStore {
         let t = task.as_str().to_owned();
         self.call(move |c| {
             let mut stmt = c
-                .prepare("SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, model_parts FROM metrics WHERE task_id = ?1")
-                .map_err(db)?;
-            let rows = stmt.query_map([t], metrics_from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+                .prepare("SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, model_parts FROM metrics WHERE task_id = ?1")?;
+            let rows = stmt.query_map([t], metrics_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -1727,8 +1629,7 @@ impl TaskStore for SqliteStore {
                  VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(attempt_id) DO UPDATE SET cli_version = excluded.cli_version",
                 params![a, t, v, at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1754,8 +1655,7 @@ impl TaskStore for SqliteStore {
                  ON CONFLICT(attempt_id) DO UPDATE SET cli_version = excluded.cli_version \
                  WHERE metrics.cli_version IS NULL",
                 params![a, t, v, at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1764,41 +1664,32 @@ impl TaskStore for SqliteStore {
     async fn task_run_facts(&self, task: &TaskId) -> AppResult<Vec<RunFacts>> {
         let t = task.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare("SELECT attempt_id, model, cli_version FROM metrics WHERE task_id = ?1")
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([t], |r| {
-                    let attempt: String = r.get(0)?;
-                    Ok(RunFacts {
-                        attempt: parse_id("attempt id", &attempt, AttemptId::parse)?,
-                        model: r.get(1)?,
-                        cli_version: r.get(2)?,
-                    })
+            let mut stmt =
+                c.prepare("SELECT attempt_id, model, cli_version FROM metrics WHERE task_id = ?1")?;
+            let rows = stmt.query_map([t], |r| {
+                Ok(RunFacts {
+                    attempt: text_parsed(r, 0, "attempt id", AttemptId::parse)?,
+                    model: r.get(1)?,
+                    cli_version: r.get(2)?,
                 })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
 
     async fn live_cli_versions(&self) -> AppResult<Vec<(TaskId, String)>> {
         self.call(|c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT a.task_id, m.cli_version FROM attempts a \
+            let mut stmt = c.prepare(
+                "SELECT a.task_id, m.cli_version FROM attempts a \
                      JOIN metrics m ON m.attempt_id = a.id \
                      WHERE a.state IN ('spawning', 'live') AND m.cli_version IS NOT NULL \
                      ORDER BY a.started_at",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([], |r| {
-                    let task: String = r.get(0)?;
-                    Ok((parse_id("task id", &task, TaskId::parse)?, r.get(1)?))
-                })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((text_parsed(r, 0, "task id", TaskId::parse)?, r.get(1)?))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -1809,14 +1700,11 @@ impl TaskStore for SqliteStore {
                 .prepare(
                     "SELECT r.attempt_id FROM metrics_recounts r LEFT JOIN attempts a ON a.id = r.attempt_id \
                      WHERE r.outcome IS NULL ORDER BY COALESCE(a.started_at, 0), r.attempt_id",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([], |r| r.get::<_, String>(0))
-                .map_err(db)?;
+                )?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
             rows.map(|id| {
-                let id = id.map_err(db)?;
-                AttemptId::parse(&id).map_err(|_| db(bad_column("attempt_id", &id)))
+                let id = id?;
+                AttemptId::parse(&id).map_err(|_| bad_column("attempt_id", &id).into())
             })
             .collect()
         })
@@ -1832,15 +1720,14 @@ impl TaskStore for SqliteStore {
     ) -> AppResult<bool> {
         let (a, m) = (attempt.as_str().to_owned(), metrics.cloned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let task: Option<String> = tx
                 .query_row(
                     "SELECT task_id FROM metrics_recounts WHERE attempt_id = ?1 AND outcome IS NULL",
                     [&a],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             let Some(task) = task else {
                 return Ok(false);
             };
@@ -1864,16 +1751,14 @@ impl TaskStore for SqliteStore {
                         at.0,
                         parts_json(&m.parts)
                     ],
-                )
-                .map_err(db)?;
+                )?;
             }
             let after = stored_metrics_json(&tx, &a)?;
             tx.execute(
                 "UPDATE metrics_recounts SET outcome = ?2, after = ?3, done_at = ?4 WHERE attempt_id = ?1",
                 params![a, outcome.as_str(), after, at.0],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -1886,8 +1771,7 @@ impl TaskStore for SqliteStore {
                 "INSERT INTO feedback (task_id, user_id, verdict, comment, at) VALUES (?1, ?2, ?3, ?4, ?5) \
                  ON CONFLICT(task_id, user_id) DO UPDATE SET verdict = excluded.verdict, comment = excluded.comment, at = excluded.at",
                 params![f.task_id.as_str(), f.user_id.as_str(), f.verdict, f.comment, f.at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1897,20 +1781,19 @@ impl TaskStore for SqliteStore {
         let t = task.as_str().to_owned();
         let task = task.clone();
         self.call(move |c| {
-            let mut stmt = c.prepare("SELECT user_id, verdict, comment, at FROM feedback WHERE task_id = ?1 ORDER BY at").map_err(db)?;
-            let rows = stmt
-                .query_map([t], |r| {
-                    let u: String = r.get(0)?;
-                    Ok(FeedbackRecord {
-                        task_id: task.clone(),
-                        user_id: parse_id("user id", &u, UserId::parse)?,
-                        verdict: r.get(1)?,
-                        comment: r.get(2)?,
-                        at: Timestamp(r.get(3)?),
-                    })
+            let mut stmt = c.prepare(
+                "SELECT user_id, verdict, comment, at FROM feedback WHERE task_id = ?1 ORDER BY at",
+            )?;
+            let rows = stmt.query_map([t], |r| {
+                Ok(FeedbackRecord {
+                    task_id: task.clone(),
+                    user_id: text_parsed(r, 0, "user id", UserId::parse)?,
+                    verdict: r.get(1)?,
+                    comment: r.get(2)?,
+                    at: Timestamp(r.get(3)?),
                 })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -1921,8 +1804,7 @@ impl TaskStore for SqliteStore {
             c.execute(
                 "INSERT INTO switch_decisions (id, task_id, at, reason, inputs, from_desc, to_desc, outcome) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![d.id, d.task_id.as_str(), d.at.0, d.reason, d.inputs, d.from_desc, d.to_desc, d.outcome],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1934,8 +1816,7 @@ impl TaskStore for SqliteStore {
             c.execute(
                 "UPDATE switch_decisions SET outcome = ?1 WHERE id = ?2",
                 params![o, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -1946,8 +1827,7 @@ impl TaskStore for SqliteStore {
         let task = task.clone();
         self.call(move |c| {
             let mut stmt = c
-                .prepare("SELECT id, at, reason, inputs, from_desc, to_desc, outcome FROM switch_decisions WHERE task_id = ?1 ORDER BY at")
-                .map_err(db)?;
+                .prepare("SELECT id, at, reason, inputs, from_desc, to_desc, outcome FROM switch_decisions WHERE task_id = ?1 ORDER BY at")?;
             let rows = stmt
                 .query_map([t], |r| {
                     Ok(SwitchDecisionRecord {
@@ -1960,9 +1840,8 @@ impl TaskStore for SqliteStore {
                         to_desc: r.get(5)?,
                         outcome: r.get(6)?,
                     })
-                })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+                })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -1972,15 +1851,15 @@ impl TaskStore for SqliteStore {
 type PauseRow = (Option<String>, Option<i64>, Option<String>);
 
 /// A person's pause from its columns (SPEC-191); none unless all three are set.
-fn person_pause_of(row: PauseRow) -> AppResult<Option<PersonPause>> {
+fn person_pause_of(row: PauseRow) -> DbResult<Option<PersonPause>> {
     let (Some(by), Some(at), Some(attempt)) = row else {
         return Ok(None);
     };
     Ok(Some(PersonPause {
-        by: UserId::parse(&by).map_err(|_| db(bad_column("tasks.paused_by", &by)))?,
+        by: UserId::parse(&by).map_err(|_| bad_column("tasks.paused_by", &by))?,
         at: Timestamp(at),
         attempt: AttemptId::parse(&attempt)
-            .map_err(|_| db(bad_column("tasks.paused_attempt", &attempt)))?,
+            .map_err(|_| bad_column("tasks.paused_attempt", &attempt))?,
     }))
 }
 
@@ -1997,14 +1876,13 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
                        VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at, state_at, owner_id)
                        VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'working', 'ui', 'u1', 100, 100, 100, 'u1');",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let task = TaskId::parse("t1")?;
@@ -2041,14 +1919,13 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
                        VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at, state_at, owner_id)
                        VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'needs_attention', 'ui', 'u1', 100, 100, 100, 'u1');",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let task = TaskId::parse("t1")?;
@@ -2057,9 +1934,10 @@ mod tests {
             async move {
                 store
                     .call(move |c| {
-                        c.execute("UPDATE tasks SET attention = ?1 WHERE id = 't1'", [text])
-                            .map(|_| ())
-                            .map_err(db)
+                        Ok(
+                            c.execute("UPDATE tasks SET attention = ?1 WHERE id = 't1'", [text])
+                                .map(|_| ())?,
+                        )
                     })
                     .await
             }

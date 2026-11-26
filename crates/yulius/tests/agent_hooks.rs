@@ -1,11 +1,11 @@
 //! Internal agent endpoints over HTTP: hook events (briefing, the Stop
 //! discipline gate) and repository-scoped Git credentials, the task creator's own (SPEC-002
-//! §7.5, §8; AC-DSC-3, AC-COM-2, AC-COM-4, AC-GIT-3).
+//! §7.5, §8; AC-DSC-3).
 
 use crate::support;
+use crate::support::git;
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -19,34 +19,15 @@ use yulius_app::model::{
 };
 use yulius_app::ports::github::GitHubAppConfig;
 use yulius_app::ports::session::{
-    AttachedRun, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWelcome,
-    RunWriter, SessionHost, SpawnedRun,
+    AttachedRun, RunEvent, RunExit, RunReader, RunSignal, RunWelcome, RunWriter,
 };
-use yulius_app::{
-    context::App,
-    error::{AppError, AppResult},
-};
+use yulius_app::{context::App, error::AppResult};
 use yulius_domain::harness::Harness as Agent;
 use yulius_domain::ids::{AttemptId, MessageId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 const TOKEN: &str = "task-token-for-tests-0123456789abcdef";
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
-}
 
 struct Fixture {
     h: Harness,
@@ -76,7 +57,7 @@ async fn fixture_with_task(
     fixture_of(workflow, tweak, Agent::ClaudeCode).await
 }
 
-/// [`fixture_with_task`] whose task and live run are of `agent` (SPEC-503).
+/// [`fixture_with_task`] whose task and live run are of `agent`.
 async fn fixture_of(
     workflow: Option<(&str, bool)>,
     tweak: impl FnOnce(&mut TaskRecord),
@@ -93,7 +74,25 @@ async fn fixture_with_read_budget(
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
     let h = support::harness_with(support::HarnessOptions {
         git: Some(Arc::new(support::confined_git())),
-        session_host: Some(Arc::new(IdleSessionHost)),
+        // The fixtures seed a live attempt: the host only reattaches it, starting no CLI.
+        session_host: Some(Arc::new(support::ScriptedHost {
+            attach: Some(Box::new(|_| {
+                let (exit, events) = tokio::sync::oneshot::channel();
+                Ok(AttachedRun {
+                    welcome: RunWelcome {
+                        child_pid: 2,
+                        seq: 0,
+                        cols: 80,
+                        rows: 24,
+                        rendered: true,
+                        snapshot: None,
+                    },
+                    reader: Box::new(IdleSessionReader(events)),
+                    writer: Box::new(IdleSessionWriter(Some(exit))),
+                })
+            })),
+            ..support::ScriptedHost::default()
+        })),
         configure: Some(Box::new(move |config| {
             config.parked_pr_read_ms = read_budget_ms
         })),
@@ -410,7 +409,7 @@ async fn session_start_returns_the_project_briefing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-363 (task #346): a project whose change notes are a folder, one file per pull request,
+/// A project whose change notes are a folder, one file per pull request,
 /// is told to add one new file there instead of an entry at the top of a shared log, and its
 /// Recent changes quote the newest notes.
 #[tokio::test]
@@ -461,7 +460,7 @@ async fn a_changes_folder_briefs_one_new_file_per_change() -> TestResult {
     Ok(())
 }
 
-/// MSR-004 (SPEC-028): stored messages reach no hook: no digest, no turn-end block.
+/// Stored messages reach no hook: no digest, no turn-end block.
 #[tokio::test]
 async fn stored_messages_reach_no_hook() -> TestResult {
     let f = fixture().await?;
@@ -494,7 +493,7 @@ async fn stored_messages_reach_no_hook() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-006: only an Antigravity run's Stop of a failed turn skips the gate (its
+/// Only an Antigravity run's Stop of a failed turn skips the gate (its
 /// `error`; `antigravity::a_failed_antigravity_turn_leaves_its_task_waiting`): the same field
 /// from another harness's hook changes nothing.
 #[tokio::test]
@@ -661,7 +660,7 @@ async fn gate_gives_up(f: &Fixture) -> TestResult {
     Ok(())
 }
 
-/// SPEC-472 ATN-001..ATN-004 (#1221): a flag the gate raised says why to whoever opens the task
+/// A flag the gate raised says why to whoever opens the task
 /// later, also after a restart of Yulius. Its notice reaches only the viewers connected then.
 #[tokio::test]
 async fn a_flag_the_gate_raised_says_why_to_whoever_comes_later() -> TestResult {
@@ -719,7 +718,7 @@ async fn a_flag_the_gate_raised_says_why_to_whoever_comes_later() -> TestResult 
     Ok(())
 }
 
-/// SPEC-472 ATN-005: a flag raised by a Claude Code notice says the question is in the terminal,
+/// A flag raised by a Claude Code notice says the question is in the terminal,
 /// in Claude Code's own words (one line); a notice without words says only that; the idle
 /// reminder flags nothing and says nothing.
 #[tokio::test]
@@ -800,7 +799,7 @@ async fn a_notices_flag_carries_claude_codes_words() -> TestResult {
     Ok(())
 }
 
-/// SPEC-472 ATN-002: one flag, one reason, the first. A Claude Code notice on a task the gate
+/// One flag, one reason, the first. A Claude Code notice on a task the gate
 /// flagged changes neither the flag nor what it says: the gate's matter still stands once the
 /// notice is answered.
 #[tokio::test]
@@ -820,7 +819,7 @@ async fn a_notice_on_a_flagged_task_keeps_the_flags_reason() -> TestResult {
     Ok(())
 }
 
-/// DSC-013 (#139): features and fixes need a spec; research, questions, docs and chores do not.
+/// Features and fixes need a spec; research, questions, docs and chores do not.
 #[tokio::test]
 async fn stop_gate_asks_for_a_spec_only_where_it_matters() -> TestResult {
     let f = fixture().await?;
@@ -854,7 +853,7 @@ async fn stop_gate_asks_for_a_spec_only_where_it_matters() -> TestResult {
     Ok(())
 }
 
-/// STP-008 (#139): changing the repository while no step of the plan was ever started is
+/// Changing the repository while no step of the plan was ever started is
 /// nudged once at a turn end; the nudge is not a gate block and never repeats.
 #[tokio::test]
 async fn untracked_work_is_nudged_once() -> TestResult {
@@ -1087,7 +1086,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> Vec<String
     seen
 }
 
-/// ADR-0114 (SPEC-141 AC1): the agent's Git and `gh` hold the App's narrowed agent token, never
+/// The agent's Git and `gh` hold the App's narrowed agent token, never
 /// a person's: not before its owner signs in with GitHub, not after, and not for an owner without
 /// a linked account. A task with an owner who can act says nothing about the App.
 #[tokio::test]
@@ -1112,7 +1111,9 @@ async fn the_agents_git_never_holds_the_owners_token() -> TestResult {
     assert_eq!(gh.body["token"], "agent-inst");
     assert!(notices(&mut watch).is_empty());
 
-    // A task of an owner without a linked GitHub account gets the same token.
+    // A task of an owner without a linked GitHub account, who therefore may not work in the
+    // project, gets no token at all, never a person's. The superadmin, unlinked or not, keeps
+    // Admin and the agent token (above).
     let store = &f.h.app.deps.store;
     let unlinked = UserRecord {
         id: UserId::parse("u-local")?,
@@ -1138,10 +1139,19 @@ async fn the_agents_git_never_holds_the_owners_token() -> TestResult {
     attempt.task_id = task.id.clone();
     attempt.token_hash = f.h.app.deps.crypto.sha256_hex(b"local-task-token");
     store.insert_attempt(&attempt).await?;
-    assert_eq!(
-        agent_credential(&f, "local-task-token").await?,
-        "agent-inst"
-    );
+    let unlinked = call(
+        &f.h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com", "path": "acme/fixture.git"})),
+        &Creds {
+            bearer: Some("local-task-token".into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(unlinked.status, 404, "{}", unlinked.body);
+    assert!(unlinked.body.get("token").is_none(), "{}", unlinked.body);
 
     // Without the App installed there is nothing to hand out: refused, never a person's token.
     store.set_installation(None).await?;
@@ -1227,7 +1237,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for Isolated {
     fn release(&self, _: &SandboxId) {}
 }
 
-/// SPEC-173 CTR-001 (task #163, #550): the briefing says there is no container engine exactly
+/// The briefing says there is no container engine exactly
 /// when the server runs sandboxes isolated (an isolation adapter is installed).
 #[tokio::test]
 async fn an_isolated_sandboxs_briefing_names_the_missing_container_engine() -> TestResult {
@@ -1258,7 +1268,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for IsolatedWithDocker {
     }
 }
 
-/// SPEC-187 DKR-010: with an engine per sandbox the briefing says Docker works, and no longer
+/// With an engine per sandbox the briefing says Docker works, and no longer
 /// that there is no engine.
 #[tokio::test]
 async fn a_sandbox_with_an_engine_is_told_docker_works() -> TestResult {
@@ -1318,7 +1328,7 @@ async fn steps_follow_the_spec_plan_checklist() -> TestResult {
     Ok(())
 }
 
-/// SPEC-484 PLN-004, PLN-005, AC-11: a spec whose Plan lists every slice of a long task, 36 of
+/// A spec whose Plan lists every slice of a long task, 36 of
 /// them with their parts nested, five ticked, gives 36 steps (30 was the bound, and a longer
 /// Plan was cut). What the agent is told about the plan stands before the list in the
 /// briefing, where a long list cannot push it out, and nothing there tells it to merge slices.
@@ -1370,7 +1380,7 @@ async fn a_plan_of_every_slice_becomes_steps_and_is_not_told_to_shrink() -> Test
     Ok(())
 }
 
-/// SPEC-341 LSS-002: the spec sync now also runs while a turn goes on, next to the agent's step
+/// The spec sync now also runs while a turn goes on, next to the agent's step
 /// tools. It waits for the task's steps lock and reads the steps only then, so a status changed
 /// while it waited is kept, never written back to the one before.
 #[tokio::test]
@@ -1471,7 +1481,49 @@ async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
     Ok(())
 }
 
-/// SPEC-140 HKS-001 (#404): the hook client gives up after `HOOK_TIMEOUT` and lets the agent go on
+/// Discovery read only the first 500 directory entries, in directory order, so in a specs
+/// directory of 600+ files a task lost its spec. The task's two specs are written before and after
+/// 700 others, so one of them lies past the first 500 whether the directory lists oldest or newest
+/// first. Discovery lists every name and reads the one named with the task's branch slug first.
+#[tokio::test]
+async fn a_spec_among_hundreds_is_found_and_the_slug_named_one_wins() -> TestResult {
+    let f = fixture().await?;
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    std::fs::write(
+        f.worktree.join("yulius.toml"),
+        "[docs]\nspecs_dir = \"docs/plans\"\n",
+    )?;
+    let plans = f.worktree.join("docs/plans");
+    std::fs::create_dir_all(&plans)?;
+    let spec = "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout API\n\n\
+         ## Goal\n\nCustomers can pay.\n\n## Context\n\nNo checkout yet.\n\n\
+         ## Requirements\n\n- Card payments.\n\n## Plan\n\n- [x] Write spec\n- [ ] Implement API\n\n\
+         ## Acceptance Criteria\n\nA test order succeeds.\n\n## Test plan\n\n```sh\ncargo test\n```\n\n\
+         ## Decisions\n\n- Hosted payment page.\n";
+    // The branch is `feat/1-x`: `SPEC-900-x.md` is named with its slug, `0-old-copy.md` sorts first.
+    std::fs::write(plans.join("0-old-copy.md"), spec)?;
+    for n in 1..=700 {
+        std::fs::write(
+            plans.join(format!("SPEC-{n:03}-other.md")),
+            "---\nyulius-task: someone-else\nstatus: done\n---\n",
+        )?;
+    }
+    std::fs::write(plans.join("SPEC-900-x.md"), spec)?;
+    let body = hook(&f, "Stop", json!({})).await?;
+    assert!(body.is_null(), "the spec is found: {body:?}");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.spec_path.as_deref(), Some("docs/plans/SPEC-900-x.md"));
+
+    // Renamed again, without the slug: still found among the 700.
+    std::fs::remove_file(plans.join("SPEC-900-x.md"))?;
+    let body = hook(&f, "Stop", json!({})).await?;
+    assert!(body.is_null(), "the renamed spec is found: {body:?}");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.spec_path.as_deref(), Some("docs/plans/0-old-copy.md"));
+    Ok(())
+}
+
+/// The hook client gives up after `HOOK_TIMEOUT` and lets the agent go on
 /// (fail-open), closing its connection, and hyper then drops the request's handler. A hook Yulius
 /// received is still applied to its end, whatever becomes of its handler. Here a notice that asks a
 /// person: a layer starts its handler and never drives it further (as a dropped handler), and the
@@ -1581,7 +1633,7 @@ async fn attempt_session(f: &Fixture) -> Result<Option<String>, Box<dyn std::err
         .provider_session_id)
 }
 
-/// SPEC-281 SSN-001: the TUI's `SessionStart` naming another session (`/clear`) makes it the
+/// The TUI's `SessionStart` naming another session (`/clear`) makes it the
 /// attempt's and records it in the lineage at once, so a restart before the supervisor's next
 /// drift check cannot lose it.
 #[tokio::test]
@@ -1605,7 +1657,7 @@ async fn session_start_with_another_session_adopts_it_at_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-281 SSN-001: a session id the hook reports is a path component later; one Yulius does not
+/// A session id the hook reports is a path component later; one Yulius does not
 /// accept (a traversal, an option, too long) changes nothing.
 #[tokio::test]
 async fn session_start_ignores_an_invalid_session_id() -> TestResult {
@@ -1663,7 +1715,7 @@ async fn session_start_refuses_another_tasks_session() -> TestResult {
     Ok(())
 }
 
-/// SPEC-358 MSB-007 (review round 2): an answered Stop is kept in the run directory, so a
+/// An answered Stop is kept in the run directory, so a
 /// restarted server does not wake the turn it settled.
 #[tokio::test]
 async fn an_answered_stop_is_kept_in_the_run_directory() -> TestResult {
@@ -1709,7 +1761,7 @@ async fn pre_tool_use(
     ))
 }
 
-/// SPEC-426 EDG-002/003 (AC1, AC2): a code edit of a task that needs a spec waits until the spec
+/// A code edit of a task that needs a spec waits until the spec
 /// has a Plan; documentation, reads and files outside the worktree are never held.
 #[tokio::test]
 async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
@@ -1779,7 +1831,7 @@ async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
     Ok(())
 }
 
-/// SPEC-426 AC3: a task whose workflow needs no spec (research) and an onboarding task edit code
+/// A task whose workflow needs no spec (research) and an onboarding task edit code
 /// freely.
 #[tokio::test]
 async fn edits_without_a_spec_gate_pass() -> TestResult {
@@ -1795,7 +1847,7 @@ async fn edits_without_a_spec_gate_pass() -> TestResult {
     Ok(())
 }
 
-/// SPEC-426 EDG-002 (review round 1): a relative path is placed from the agent's folder (`cwd`),
+/// A relative path is placed from the agent's folder (`cwd`),
 /// a path through a link to the worktree is the worktree's, a task without a spec path is told
 /// the specs directory, and a Plan of nested items only is no Plan.
 #[tokio::test]
@@ -1852,7 +1904,7 @@ async fn edits_are_placed_from_the_agents_folder_and_through_links() -> TestResu
     Ok(())
 }
 
-/// SPEC-426 EDG-005 (review round 3): the edit gate never gives up. Claude Code runs each edit's
+/// The edit gate never gives up. Claude Code runs each edit's
 /// hook as its block finishes streaming, so neither call counts nor time windows tell one
 /// response from the next; the way through is always open (the spec is documentation), and an
 /// agent that loops meets the Stop gate, which asks a person after three blocks.
@@ -1893,7 +1945,7 @@ async fn the_edit_gate_holds_every_edit_until_the_plan_exists() -> TestResult {
     Ok(())
 }
 
-/// SPEC-426 EDG-002 (review round 4): what the gate cannot decide passes: a spec that exists but
+/// What the gate cannot decide passes: a spec that exists but
 /// cannot be read (a link) and a workflow the store cannot read never hold an edit, which would
 /// otherwise stay held for good.
 #[tokio::test]
@@ -1954,7 +2006,7 @@ async fn an_edit_the_gate_cannot_judge_passes() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-007: a Codex run's hooks reach Yulius as Claude Code's do: SessionStart names the
+/// A Codex run's hooks reach Yulius as Claude Code's do: SessionStart names the
 /// session (Codex has no `--session-id`) and answers the briefing in the shape Codex reads; a hook
 /// of another harness than the run's is refused, and an unknown harness is not a hook.
 #[tokio::test]
@@ -2707,7 +2759,7 @@ async fn goal_stop_rechecks_the_remaining_step_after_a_slow_observation() -> Tes
     for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
         assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
     }
-    let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+    let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::default());
     let (entered, release) = browser.hold_publication_lookup(&f.task);
     browser.running(&f.sandbox).await;
     let mut deps = f.h.app.deps.clone();
@@ -2760,7 +2812,7 @@ async fn goal_stop_during_spec_publication(check: bool) -> TestResult {
         f.worktree.join("docs/specs/checkout.md"),
         "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout\n\n## Goal\n\nVerify checkout.\n\n## Context\n\nFixture.\n\n## Requirements\n\n- Verify.\n\n## Plan\n\n- [x] Build checkout\n- [ ] Verify dev\n\n## Acceptance criteria\n\nCheckout verified.\n\n## Test plan\n\nRun tests.\n\n## Decisions\n\nUse fixtures.\n",
     )?;
-    let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+    let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::default());
     let (entered, release) = browser.hold_publication_lookup(&f.task);
     browser.running(&f.sandbox).await;
     let mut deps = f.h.app.deps.clone();
@@ -2860,7 +2912,7 @@ async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> Tes
     Ok(())
 }
 
-/// The PR watcher already pasted run `id`'s failure into the session (SPEC-578): what is
+/// The PR watcher already pasted run `id`'s failure into the session: what is
 /// left after that is the agent's own Stop.
 fn told_red_run(f: &Fixture, id: &str) -> TestResult {
     std::fs::write(
@@ -2889,7 +2941,7 @@ async fn red_ordinary_run(f: &Fixture, id: &str, sha: &str, at: i64) -> TestResu
 
 /// Quartio-v2 #325 stopped after five of seven steps with its pull request red (SPEC-558
 /// AC-3): either unfinished condition alone continues the goal, up to the Stop bound. The
-/// decision reads no GitHub: a held checks lookup cannot delay or change it (ADR-0447).
+/// decision reads no GitHub: a held checks lookup cannot delay or change it.
 #[tokio::test]
 async fn codex_goal_stop_continues_the_325_shape_and_a_red_pr_alone() -> TestResult {
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Step 1").await?;
@@ -2908,7 +2960,7 @@ async fn codex_goal_stop_continues_the_325_shape_and_a_red_pr_alone() -> TestRes
         .tool_steps_set(&ctx, &json!({"steps": steps}))
         .await?;
     install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
     red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
     told_red_run(&f, "red-at-head")?;
     let hold = f.h.github.hold_checks();
@@ -2953,13 +3005,7 @@ async fn codex_goal_stop_continues_the_325_shape_and_a_red_pr_alone() -> TestRes
 /// failure of a commit the agent has moved past, ends the turn and spends no attempt.
 #[tokio::test]
 async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
     told_red_run(&f, "red-earlier-head")?;
     red_ordinary_run(
         &f,
@@ -2980,29 +3026,47 @@ async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResu
         &[],
     )
     .await?;
-    let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(stop["decision"].is_null(), "{stop}");
-    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.gate_blocks, 0);
+    ends_uncharged(&f).await?;
     Ok(())
 }
 
-/// A failure the watch has not pasted in is not the gate's to charge (SPEC-578). Here the
+/// A failure the watch has not pasted in is not the gate's to charge. Here the
 /// watch cannot see the run (a busy sandbox pushed it out of its window), so Stop does not
 /// hand over to it, and only the told check keeps the turn from being charged.
 #[tokio::test]
 async fn codex_goal_stop_leaves_an_untold_failure_uncharged() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
+    told_red_run(&f, "an-older-run")?;
+    red_ordinary_run(&f, "untold-red-at-head", head.trim(), 10).await?;
+    busy_sandbox(&f).await?;
+    ends_uncharged(&f).await?;
+    Ok(())
+}
+
+/// A goal of `agent` whose one step is done and whose pull request #1461 is open: the fixture,
+/// the agent's context and the worktree's head.
+async fn finished_goal(
+    agent: Agent,
+) -> Result<(Fixture, yulius_app::coordination::AgentContext, String), Box<dyn std::error::Error>> {
+    let f = task_with_open_step(agent, TaskMode::Goal, "Finish compatibility").await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;
     f.h.app
         .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
         .await?;
     install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    told_red_run(&f, "an-older-run")?;
-    red_ordinary_run(&f, "untold-red-at-head", head.trim(), 10).await?;
-    busy_sandbox(&f).await?;
-    let stop = stop_of(&f, Agent::Codex).await?;
+    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    Ok((f, ctx, head))
+}
+
+/// A failed run at `head` that the watch told the agent about.
+async fn red_at_head(f: &Fixture, head: &str) -> TestResult {
+    told_red_run(f, "red-at-head")?;
+    red_ordinary_run(f, "red-at-head", head, 10).await
+}
+
+/// Codex's Stop ends the turn without spending an attempt.
+async fn ends_uncharged(f: &Fixture) -> TestResult {
+    let stop = stop_of(f, Agent::Codex).await?;
     assert!(stop["decision"].is_null(), "{stop}");
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
     assert_eq!(task.gate_blocks, 0);
@@ -3030,15 +3094,8 @@ async fn busy_sandbox(f: &Fixture) -> TestResult {
 /// The run is found by its commit, however many newer runs the sandbox has.
 #[tokio::test]
 async fn codex_goal_stop_finds_its_red_run_in_a_busy_sandbox() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    told_red_run(&f, "red-at-head")?;
-    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
+    red_at_head(&f, &head).await?;
     busy_sandbox(&f).await?;
     let stop = stop_of(&f, Agent::Codex).await?;
     assert_eq!(stop["decision"], "block", "{stop}");
@@ -3053,15 +3110,8 @@ async fn codex_goal_stop_finds_its_red_run_in_a_busy_sandbox() -> TestResult {
 /// another commit (the branch was updated outside the worktree): the turn ends uncharged.
 #[tokio::test]
 async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    told_red_run(&f, "red-at-head")?;
-    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
+    red_at_head(&f, &head).await?;
     super::delivery::insert_ci_attempt(
         &f.h.store,
         "newer-green-elsewhere",
@@ -3072,10 +3122,7 @@ async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResu
         &[],
     )
     .await?;
-    let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(stop["decision"].is_null(), "{stop}");
-    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.gate_blocks, 0);
+    ends_uncharged(&f).await?;
     Ok(())
 }
 
@@ -3083,23 +3130,15 @@ async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResu
 /// the watch (`run_superseded_by_pushed_head`): the turn ends uncharged.
 #[tokio::test]
 async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    let head = head.trim();
-    told_red_run(&f, "red-at-head")?;
-    red_ordinary_run(&f, "red-at-head", head, 10).await?;
+    let (f, ctx, head) = finished_goal(Agent::Codex).await?;
+    red_at_head(&f, &head).await?;
     let branch = ctx.task.branch.clone().ok_or("branch")?;
-    crate::pr_watch::git(
+    crate::support::git(
         &f.worktree,
         &["commit", "-q", "--allow-empty", "-m", "updated elsewhere"],
     )?;
-    let pushed = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    crate::pr_watch::git(
+    let pushed = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    crate::support::git(
         &f.worktree,
         &[
             "update-ref",
@@ -3107,11 +3146,8 @@ async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestRe
             pushed.trim(),
         ],
     )?;
-    crate::pr_watch::git(&f.worktree, &["reset", "-q", "--hard", head])?;
-    let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(stop["decision"].is_null(), "{stop}");
-    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.gate_blocks, 0);
+    crate::support::git(&f.worktree, &["reset", "-q", "--hard", &head])?;
+    ends_uncharged(&f).await?;
     Ok(())
 }
 
@@ -3120,15 +3156,8 @@ async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestRe
 #[tokio::test]
 async fn codex_goal_stop_ends_after_its_red_pr_merged() -> TestResult {
     use yulius_domain::delivery::DeliveryStage;
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-        .await?;
-    install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    told_red_run(&f, "red-at-head")?;
-    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    let (f, _, head) = finished_goal(Agent::Codex).await?;
+    red_at_head(&f, &head).await?;
     f.h.app
         .deps
         .store
@@ -3142,27 +3171,17 @@ async fn codex_goal_stop_ends_after_its_red_pr_merged() -> TestResult {
             },
         )
         .await?;
-    let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(stop["decision"].is_null(), "{stop}");
-    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.gate_blocks, 0);
+    ends_uncharged(&f).await?;
     Ok(())
 }
 
 /// Claude Code's native goal evaluator and Antigravity's own goal end their turns: the red
-/// pull request continues only a Codex goal (SPEC-558 PKR-003).
+/// pull request continues only a Codex goal.
 #[tokio::test]
 async fn a_red_pr_continues_no_other_harnesss_finished_goal() -> TestResult {
     for agent_kind in [Agent::ClaudeCode, Agent::Antigravity] {
-        let f = task_with_open_step(agent_kind, TaskMode::Goal, "Finish compatibility").await?;
-        let ctx = f.h.app.agent_context(TOKEN).await?;
-        f.h.app
-            .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
-            .await?;
-        install_compatibility_pull(&f).await?;
-        let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
-        told_red_run(&f, "red-at-head")?;
-        red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+        let (f, _, head) = finished_goal(agent_kind).await?;
+        red_at_head(&f, &head).await?;
         let stop = stop_of(&f, agent_kind).await?;
         assert!(stop["decision"].is_null(), "{agent_kind:?}: {stop}");
         let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
@@ -3370,7 +3389,7 @@ async fn goal_stop_answers_within_the_hook_deadline_while_browser_startup_is_hel
 
     for hold_first in [true, false] {
         let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
-        let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+        let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::default());
         if hold_first {
             browser.running(&f.sandbox).await;
         }
@@ -3483,7 +3502,7 @@ async fn task_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error
     Ok(support::tool_text(&reply))
 }
 
-/// SPEC-528: a background Stop and the agent's wake are both Working.
+/// A background Stop and the agent's wake are both Working.
 #[tokio::test]
 async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
     let f = task_with_open_step(Agent::Antigravity, TaskMode::Goal, "Run the tests").await?;
@@ -3516,7 +3535,7 @@ async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
     Ok(())
 }
 
-/// SPEC-528: an idle Stop with open work gives its reason and only a newer wake reopens it.
+/// An idle Stop with open work gives its reason and only a newer wake reopens it.
 #[tokio::test]
 async fn antigravity_prompt_mode_idle_stop_with_an_open_step_explains_the_wait() -> TestResult {
     let f = task_with_open_step(Agent::Antigravity, TaskMode::Prompt, "Run the tests").await?;
@@ -4144,51 +4163,6 @@ async fn a_delayed_goal_submit_retains_the_owner_and_the_next_draft() -> TestRes
     Ok(())
 }
 
-/// The parking fixtures already have a live attempt in the store. Its host can be
-/// reattached without starting a CLI or calling a provider.
-struct IdleSessionHost;
-
-#[async_trait::async_trait]
-impl SessionHost for IdleSessionHost {
-    async fn spawn(
-        &self,
-        _: &Path,
-        _: &str,
-        _: &str,
-        _: &LaunchPlan,
-        _: &[u8; 32],
-        _: (u16, u16),
-    ) -> AppResult<SpawnedRun> {
-        Err(AppError::Upstream(
-            "fixture only reattaches seeded runs".into(),
-        ))
-    }
-
-    async fn attach(&self, _: &Path, _: &[u8; 32]) -> AppResult<AttachedRun> {
-        let (exit, events) = tokio::sync::oneshot::channel();
-        Ok(AttachedRun {
-            welcome: RunWelcome {
-                child_pid: 2,
-                seq: 0,
-                cols: 80,
-                rows: 24,
-                rendered: true,
-                snapshot: None,
-            },
-            reader: Box::new(IdleSessionReader(events)),
-            writer: Box::new(IdleSessionWriter(Some(exit))),
-        })
-    }
-
-    fn inspect(&self, _: &Path) -> RunInspection {
-        RunInspection::Missing
-    }
-
-    fn terminate(&self, _: &Path) -> AppResult<()> {
-        Ok(())
-    }
-}
-
 struct IdleSessionReader(tokio::sync::oneshot::Receiver<RunEvent>);
 
 #[async_trait::async_trait]
@@ -4254,7 +4228,7 @@ async fn attach_idle_run(f: &Fixture, app: &Arc<App>) -> TestResult {
     let runtime = app.runtime(&f.task);
     let before = runtime.transcript_rounds();
     app.reconcile().await?;
-    crate::first_message::wait_for(
+    crate::support::eventually(
         "idle run transcript replay",
         std::time::Duration::from_secs(15),
         || async { runtime.transcript_rounds() >= before + 2 },
@@ -4299,7 +4273,7 @@ async fn one_open_step_keeps_an_idle_session_through_digest_and_grace_parking() 
         .tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
         .await?;
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
-    crate::first_message::wait_for(
+    crate::support::eventually(
         "the idle run to settle as parked",
         std::time::Duration::from_secs(15),
         || async {
@@ -5021,7 +4995,7 @@ async fn incomplete_git_overviews_preserve_the_current_parked_pr_observation() -
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
     f.h.github
         .set_checks("external", yulius_app::ports::github::ChecksState::Failure);
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     for open in [true, false] {
         // Omit both PRs; task #1 now needs a direct lookup. Hold it after #2's row was read.
         f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
@@ -5284,7 +5258,7 @@ async fn released_parked_check_reads_leave_the_next_two_reads_unblocked() -> Tes
     let github = support::FakeGitHub::default();
     let hold = github.hold_checks();
     github.release_checks(&hold);
-    let token = Secret("fixture".into());
+    let token = Secret::new("fixture".into());
     for sha in ["first", "second"] {
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -5597,7 +5571,7 @@ async fn a_parked_task_names_the_blocking_pr_when_its_branch_has_two_open_prs() 
         let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
         assert_eq!(summary["parked_needs_you"], true);
         assert_eq!(summary["parked_pr"], json!({"number":1461, "open":true}));
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         let brief =
             f.h.app
                 .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
@@ -5654,7 +5628,7 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
     let summary = serde_json::to_value(app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(summary["parked_needs_you"], true);
     assert_eq!(summary["parked_pr"], json!({"number":1461,"open":true}));
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let brief = app
         .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
         .await?;
@@ -5762,7 +5736,7 @@ async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged(
     let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(detail["parked_needs_you"], true);
     assert_eq!(detail["parked_pr"], json!({"number":1461, "open":false}));
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let brief =
         f.h.app
             .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
@@ -5810,7 +5784,7 @@ async fn parked_with_recorded_merge()
 async fn a_parked_merge_survives_unavailable_followup_discovery_on_every_display() -> TestResult {
     let (f, owner) = parked_with_recorded_merge().await?;
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     app.deps.store.set_installation(None).await?;
     f.h.github.no_installation.store(true, Ordering::SeqCst);
     let detail = app.task_detail(&owner, f.task.as_str()).await?;
@@ -5882,7 +5856,7 @@ async fn a_parked_merge_survives_a_stalled_branch_lookup_and_finds_a_replacement
     let mut config = f.h.app.config.clone();
     config.parked_pr_read_ms = 750;
     let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     *f.h.github
         .pull_list_hold
@@ -5939,7 +5913,7 @@ async fn a_parked_merge_survives_a_stalled_branch_lookup_and_finds_a_replacement
 async fn verify_followup_outage(closed: bool, second: bool, expected: Option<u64>) -> TestResult {
     let (f, owner) = parked_with_recorded_merge().await?;
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     {
         let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
@@ -6009,7 +5983,7 @@ async fn parked_followup_with_stalled_final_list(merged: bool) -> TestResult {
         });
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(
         app.tool_task_get(&caller, &args).await?["shows"],
@@ -6074,7 +6048,7 @@ async fn a_parked_merge_survives_saturated_followup_discovery_and_remains_a_prer
 -> TestResult {
     let (f, owner) = parked_with_recorded_merge().await?;
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     let gate = Arc::new(tokio::sync::Notify::new());
     f.h.github.hold_overview_list.store(true, Ordering::SeqCst);
@@ -6118,7 +6092,7 @@ async fn a_parked_merge_rechecks_local_work_after_stalled_followup_discovery() -
     let mut config = f.h.app.config.clone();
     config.parked_pr_read_ms = 750;
     let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     *f.h.github
         .pull_list_hold
         .lock()
@@ -6413,7 +6387,7 @@ async fn parked_lists_share_one_budget_for_unreadable_pr_heads() -> TestResult {
         record.activity = None;
         store.insert_task(&record).await?;
     }
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"prompt":"Wait for the outstanding PRs", "after_all_tasks":true});
     let problem = tokio::time::timeout(limit, f.h.app.tool_task_create(&caller, &args))
         .await
@@ -6761,7 +6735,7 @@ async fn a_parked_task_keeps_a_confirmed_failure_in_an_incomplete_check_report()
     use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
     let (f, owner) = owner_observed_external_pr().await?;
     install_app(&f).await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     for (state, unreadable, reason) in [
         (
             ChecksState::Failure,
@@ -6798,7 +6772,7 @@ async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> Test
     install_app(&f).await?;
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     for (at, state, reason) in [
         (
             21,
@@ -6844,7 +6818,7 @@ async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> Test
 async fn a_title_edit_during_a_parked_check_preserves_the_same_heads_failure() -> TestResult {
     let (f, owner) = owner_observed_external_pr().await?;
     install_app(&f).await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     let held = f.h.github.hold_checks();
     let reading = f.h.app.tool_task_get(&caller, &args);
@@ -6878,7 +6852,7 @@ async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestR
         install_app(&f).await?;
         let ctx = f.h.app.agent_context(TOKEN).await?;
         f.h.github.set_checks("abc123", state);
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         let args = json!({"task_id":f.task.as_str()});
         let held = f.h.github.hold_checks();
         let reading = f.h.app.tool_task_get(&caller, &args);
@@ -6908,7 +6882,7 @@ async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestR
     Ok(())
 }
 
-/// Another test of this process (#1644): its own runtime on its own thread, as libtest runs a
+/// Another test of this process: its own runtime on its own thread, as libtest runs a
 /// second test beside a parked-read case, with its own fixture whose main task is also `t-main`.
 /// Each [`Neighbour::read`] is one parked `task_get` of that task, which reaches
 /// `ParkedStatusRead` with the same key as the case's hook.
@@ -6939,7 +6913,7 @@ impl Neighbour {
                 while let Ok(reply) = inbox.recv() {
                     let answer = match &ready {
                         Ok((f, owner)) => {
-                            let caller = crate::task_message::superagent(
+                            let caller = crate::support::task_message::superagent(
                                 &f.sandbox,
                                 &owner.user.id,
                                 "admin",
@@ -7058,7 +7032,7 @@ async fn hold_dismissed_during_the_read(neighbour: Option<&Neighbour>) -> TestRe
             new_task_id: None,
         })
         .await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let app = Arc::clone(&f.h.app);
     let args = json!({"task_id":f.task.as_str()});
     let (at, resume) =
@@ -7098,7 +7072,7 @@ async fn tasks_list_skips_queue_capacity_reads_for_needs_you_nonmatches() -> Tes
     use yulius_app::ports::store::TaskStore as _;
     let f = fixture().await?;
     let mut queued = f.h.store.task(&f.task).await?.ok_or("task")?;
-    let caller = crate::task_message::superagent(&f.sandbox, &queued.created_by, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &queued.created_by, "admin");
     let now = f.h.app.now();
     f.h.store
         .set_activity(&f.task, Some(Activity::NeedsAttention), now)
@@ -7141,7 +7115,8 @@ async fn archived_task_list_spends_its_limit_on_archived_rows() -> TestResult {
     use yulius_app::ports::store::TaskStore as _;
     let f = fixture().await?;
     let mut archived = f.h.store.task(&f.task).await?.ok_or("task")?;
-    let caller = crate::task_message::superagent(&f.sandbox, &archived.created_by, "admin");
+    let caller =
+        crate::support::task_message::superagent(&f.sandbox, &archived.created_by, "admin");
     archived.id = TaskId::parse("archived-task")?;
     archived.number = 33;
     archived.status = TaskStatus::Closed;
@@ -7197,7 +7172,7 @@ async fn parked_needs_you_list_gives_two_stalled_rows_the_whole_remaining_window
         healthy.updated_at = Timestamp(f.h.app.now().0 + offset);
         store.insert_task(&healthy).await?;
     }
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let mut config = f.h.app.config.clone();
     config.parked_pr_read_ms = 2400;
     let budget = std::time::Duration::from_millis(config.parked_pr_read_ms);
@@ -7332,7 +7307,7 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
             Timestamp(now.0 + 1),
         )
         .await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &slow.created_by, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &slow.created_by, "admin");
     let all =
         f.h.app
             .tool_tasks_list(&caller, &json!({"scope":"all","limit":9}))
@@ -7449,7 +7424,7 @@ async fn plan_and_decision_read_during_the_hold(neighbour: Option<&Neighbour>) -
             None
         };
         let ctx = f.h.app.agent_context(TOKEN).await?;
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         let app = Arc::clone(&f.h.app);
         let id = f.task.clone();
         let (at, resume) =
@@ -7503,7 +7478,7 @@ async fn plan_and_decision_read_during_the_hold(neighbour: Option<&Neighbour>) -
         } else {
             assert!(row.is_none());
         }
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         let next =
             f.h.app
                 .tool_tasks_list(&caller, &json!({"scope":"needs_you"}))
@@ -7562,7 +7537,7 @@ async fn a_parked_directly_observed_merge_survives_an_unavailable_direct_read() 
             pulls[0].merged = merged;
             pulls[0].state = "closed".into();
         }
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
         for unavailable in [false, true] {
             if unavailable {
                 f.h.github.pulls.lock().map_err(|_| "pulls")?.clear();
@@ -7649,7 +7624,7 @@ async fn a_rate_limited_github_leaves_merged_tasks_done_and_reports_one_reset() 
         ..yulius_github::GitHubConfig::github_com()?
     })?);
     let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     for status in [TaskStatus::Parked, TaskStatus::Running] {
         app.deps
             .store
@@ -7737,7 +7712,7 @@ async fn a_finished_live_task_uses_its_recorded_merge_after_an_older_red_read() 
             },
         )
         .await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let row = app
         .tool_task_get(&caller, &json!({"task_id": f.task.as_str()}))
         .await?;
@@ -7752,7 +7727,7 @@ async fn unreadable_checks_keep_a_verified_head_but_do_not_test_a_new_push() -> 
     install_app(&f).await?;
     f.h.github.set_checks("abc123", ChecksState::Success);
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
     *f.h.github.checks_error.lock().map_err(|_| "checks")? =
@@ -7778,7 +7753,7 @@ async fn a_parked_new_head_with_unreadable_checks_survives_the_next_outage() -> 
     install_app(&f).await?;
     f.h.github.set_checks("abc123", ChecksState::Success);
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
     f.h.github.pulls.lock().map_err(|_| "pulls")?[0].head_sha = "new-sha".into();
@@ -7805,7 +7780,7 @@ async fn a_real_local_ci_error_supersedes_cached_green_during_a_github_outage() 
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
     super::delivery::insert_ci_attempt(
@@ -7880,7 +7855,7 @@ async fn a_partial_success_on_a_new_head_cannot_test_that_head_during_an_outage(
     let (f, owner) = owner_observed_external_pr().await?;
     install_app(&f).await?;
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     f.h.github.set_checks("abc123", ChecksState::Success);
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
@@ -7930,7 +7905,7 @@ async fn a_newly_confirmed_conflict_survives_an_unavailable_overview() -> TestRe
     install_app(&f).await?;
     f.h.github.set_checks("abc123", ChecksState::Success);
     let app = &f.h.app;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let caller = crate::support::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
     f.h.github.pulls.lock().map_err(|_| "pulls")?[0].mergeable = Some(false);

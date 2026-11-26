@@ -26,7 +26,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { workspace = true, features = ["net", "time"] }
+rustix = { workspace = true, features = ["net", "time", "pipe"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

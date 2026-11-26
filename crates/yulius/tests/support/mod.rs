@@ -50,7 +50,7 @@ pub struct FakeGitHub {
     pub fail_permissions: std::sync::atomic::AtomicBool,
     /// While set, permission lookups never answer (a GitHub that hangs; SPEC-118).
     pub hang_permissions: std::sync::atomic::AtomicBool,
-    /// The callback URLs registered in the App (SPEC-466); unset, GitHub gives no answer.
+    /// The callback URLs registered in the App; unset, GitHub gives no answer.
     pub callback_urls: Mutex<Option<Vec<String>>>,
     /// While set, asking about a callback fails with this (GitHub down).
     pub callback_error: Mutex<Option<String>>,
@@ -84,7 +84,7 @@ pub struct FakeGitHub {
     pub branch_pull_lookups: Mutex<Vec<String>>,
     /// Repositories the App installation can access (default: none).
     pub installation_repos: Mutex<Vec<GhRepo>>,
-    /// Branches (`owner/name:branch`) whose rules agents' tokens cannot bypass (ADR-0114); every
+    /// Branches (`owner/name:branch`) whose rules agents' tokens cannot bypass; every
     /// other branch is writable by them.
     pub guarded_branches: Mutex<Vec<String>>,
     /// A PR retargeted at GitHub after the client observed it and before the merge lands.
@@ -109,7 +109,7 @@ pub struct FakeGitHub {
     pub checks_error: Mutex<Option<AppError>>,
     /// The next retitles of pull requests fail with these errors, one each, in order.
     pub retitle_errors: Mutex<Vec<AppError>>,
-    /// While set, opening a pull request fails with this message (SPEC-139).
+    /// While set, opening a pull request fails with this message.
     pub create_pull_error: Mutex<Option<String>>,
     /// Repository side of PRs and refs; without it PR heads are unknown.
     pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
@@ -126,16 +126,16 @@ pub struct FakeGitHub {
     pub status_published: tokio::sync::Notify,
     /// When set, publishing a commit status fails as without the App permission.
     pub statuses_forbidden: std::sync::atomic::AtomicBool,
-    /// Issues opened (DLV-008).
+    /// Issues opened.
     pub issues: Mutex<Vec<(String, NewIssue)>>,
     /// When set, opening an issue fails as with GitHub down.
     pub fail_issues: std::sync::atomic::AtomicBool,
     /// Issues closed (number to the comments said, in order) by `set_issue_state`; any other
     /// issue is open.
     pub closed_issues: Mutex<HashMap<u64, Vec<String>>>,
-    /// When set, reading whether an issue is open fails as with GitHub down (SPEC-497).
+    /// When set, reading whether an issue is open fails as with GitHub down.
     pub fail_issue_reads: std::sync::atomic::AtomicBool,
-    /// When set, opening an issue waits for it; `issue_entered` says one began (SPEC-497).
+    /// When set, opening an issue waits for it; `issue_entered` says one began.
     pub issue_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub issue_entered: tokio::sync::Notify,
     /// Every comment `set_issue_state` added: (number, comment).
@@ -151,7 +151,7 @@ pub struct FakeGitHub {
     /// When set, permission lookups wait for it (a slow GitHub); `access_entered` says one began.
     pub access_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub access_entered: tokio::sync::Notify,
-    /// A ruleset like Yulius's own on its integration branch (SPEC-084): a merge needs the
+    /// A ruleset like Yulius's own on its integration branch: a merge needs the
     /// `yulius/ci` status at success on the head and the base in the head (strict "up to date");
     /// a pull request whose head lacks its base reads `behind`.
     pub strict: std::sync::atomic::AtomicBool,
@@ -216,7 +216,7 @@ impl GitHubPort for FakeGitHub {
             .cloned()
             .ok_or(AppError::Upstream("bad code".into()))?;
         Ok(GhUserToken {
-            access: Secret(format!("token-{}", user.login)),
+            access: Secret::new(format!("token-{}", user.login)),
             refresh: None,
             expires_at: None,
             refresh_expires_at: None,
@@ -300,10 +300,10 @@ impl GitHubPort for FakeGitHub {
         .then_some(1))
     }
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
-        Ok(Secret("inst".into()))
+        Ok(Secret::new("inst".into()))
     }
     async fn agent_token(&self, _: &GitHubAppConfig, _: u64, _: &str) -> AppResult<Secret> {
-        Ok(Secret("agent-inst".into()))
+        Ok(Secret::new("agent-inst".into()))
     }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
         Ok(self
@@ -703,7 +703,7 @@ impl GitHubPort for FakeGitHub {
                 ));
             }
         }
-        // GitHub titles a squash commit with the pull request's title (SPEC-069 BPL-008).
+        // GitHub titles a squash commit with the pull request's title.
         let message = if method == "squash" {
             format!("{} (#{number})", pull.title)
         } else {
@@ -870,9 +870,11 @@ pub struct Harness {
     /// The machine metrics (the data disk is settable).
     pub system: Arc<SettableSystem>,
     pub _dir: tempfile::TempDir,
+    /// Holds the store's file, apart from the data folder the app scans.
+    pub _store: tempfile::TempDir,
 }
 
-/// The real Git adapter as the server builds it: on Linux every command confined (ADR-0322),
+/// The real Git adapter as the server builds it: on Linux every command confined,
 /// with a test's temporary folder standing for one sandbox's, and with the shell allowed, as
 /// the tests' `origin` is a folder standing for GitHub ([`strict_git`] is the server's own).
 pub fn confined_git() -> yulius::wiring::git::GitAdapter {
@@ -895,7 +897,7 @@ pub fn strict_git() -> yulius::wiring::git::GitAdapter {
 }
 
 pub fn harness() -> Result<Harness, Box<dyn std::error::Error>> {
-    harness_with_git(Arc::new(yulius::wiring::pending::UnavailableGit))
+    harness_with_git(Arc::new(crate::support::pending::UnavailableGit))
 }
 
 /// Like [`harness`] with a specific Git adapter.
@@ -904,11 +906,11 @@ pub fn harness_with_git(
 ) -> Result<Harness, Box<dyn std::error::Error>> {
     build_harness(
         git,
-        Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+        Arc::new(crate::support::pending::UnavailableSessionHost),
     )
 }
 
-/// The shared builder: in-memory store, fake GitHub, fixed clock and system metrics.
+/// The shared builder: a migrated store of its own, fake GitHub, fixed clock and system metrics.
 pub fn build_harness(
     git: Arc<dyn yulius_app::ports::git::GitPort>,
     session_host: Arc<dyn yulius_app::ports::session::SessionHost>,
@@ -942,7 +944,7 @@ pub struct Creds {
 }
 
 /// The browser that started the GitHub sign-in with `state`: it holds the cookie the callback
-/// asks for (SPEC-483 A2).
+/// asks for.
 pub fn started(state: &str) -> Creds {
     Creds {
         oauth: Some(state.to_owned()),
@@ -1169,7 +1171,7 @@ pub fn harness_with_host(
     session_host: Arc<dyn yulius_app::ports::session::SessionHost>,
 ) -> Result<Harness, Box<dyn std::error::Error>> {
     build_harness(
-        Arc::new(yulius::wiring::pending::UnavailableGit),
+        Arc::new(crate::support::pending::UnavailableGit),
         session_host,
     )
 }
@@ -1333,7 +1335,7 @@ pub async fn insert_sandbox(
 }
 
 /// What a stop may take beyond its escalation: terminating the run's host and recording its end,
-/// on a starved runner (SPEC-140 TWT-001). That takes under a second measured at load 79. With the
+/// on a starved runner. That takes under a second measured at load 79. With the
 /// default 20 s escalation a stop may take 60 s, which suits a test that is short before its stop
 /// (nextest kills at 120 s).
 pub const STOP_SETTLE: std::time::Duration = std::time::Duration::from_secs(40);
@@ -1395,11 +1397,59 @@ pub async fn wait_stopped(app: &App, tasks: &[&yulius_domain::ids::TaskId]) -> T
 
 /// The real harness planning with the fake agent executable.
 pub mod agents;
-/// The real ptyhost whose next attach a test can hold (SPEC-077).
+/// The real ptyhost whose next attach a test can hold.
 pub mod gated;
+/// Process host and Git adapters whose every call fails.
+pub mod pending;
 /// Repository fixtures (real Git over local remotes) for project and import tests.
 pub mod repos;
-/// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).
+pub use repos::{git, git_stdout};
+/// Waiting on a condition.
+pub mod wait;
+pub use wait::eventually;
+/// A bare repository behind the fake GitHub.
+pub mod remote;
+pub use remote::BareRemote;
+/// A Google account for Antigravity tasks and its API key.
+pub mod antigravity;
+/// A sandbox with CD environments, its container holders and a process host that records
+/// containment.
+pub mod cd;
+/// A person's Superagent, by role.
+pub mod cd_rollback;
+/// The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and
+/// records.
+pub mod cockpit;
+/// A connected Codex account and Codex tasks.
+pub mod codex;
+/// A browser port whose lookups a test holds.
+pub mod delivery;
+/// A process host double answering what a test scripts.
+pub mod host;
+/// Real-process servers (the fake agent behind a real ptyhost).
+pub mod live;
+/// Apps whose pull requests a test scripts, and reads of parked tasks.
+pub mod parking;
+/// CI runs of a pull request and a verification step a task leaves.
+pub mod pr_watch;
+/// A person enrolled for secrets and their unlocked browser session.
+pub mod secrets;
+/// Synthetic keys and what a run sources into its environment.
+pub mod secrets_env;
+/// The integration branch's CI gates as staging reads them.
+pub mod staging;
+/// Stores copied from a migrated template.
+pub mod store;
+/// Live runs on subscriptions and the notices a task's terminal shows.
+pub mod subscription_moves;
+/// Subscriptions, running tasks on them and the hooks they send.
+pub mod subscription_pool;
+/// The fake agent's screen modes and a Superagent's terminal.
+pub mod task_message;
+/// Exhausted models, a person's context and a session's transcript lines.
+pub mod usage_credits;
+pub use host::ScriptedHost;
+/// A fake `main` source and update helper for instance update tests.
 pub mod updates;
 
 /// Repository side of the fake GitHub's pull request and ref endpoints (delivery tests back it
@@ -1496,7 +1546,7 @@ impl FakeGitHub {
     pub fn set_checks(&self, sha: &str, state: ChecksState) {
         self.set_checks_report(sha, state.into());
     }
-    /// Checks of `sha` with sources the App may not read (#111).
+    /// Checks of `sha` with sources the App may not read.
     pub fn set_checks_report(&self, sha: &str, report: ChecksReport) {
         if let Ok(mut m) = self.check_states.lock() {
             m.insert(sha.into(), report);
@@ -1718,13 +1768,13 @@ pub struct HarnessOptions {
     pub harness: Option<Arc<dyn yulius_app::ports::harness::HarnessPort>>,
     /// Provider usage probe (default: unavailable).
     pub usage: Option<Arc<dyn yulius_app::ports::usage::UsageProbe>>,
-    /// Store (default: a new in-memory database).
+    /// Store (default: a copy of the migrated template in a folder of its own).
     pub store: Option<SqliteStore>,
     /// Crypto (default: [`test_crypto`]).
     pub crypto: Option<Arc<dyn yulius_app::ports::Crypto>>,
 }
 
-/// Why a task reads `needs_attention`, as its API view says it (`attention`, SPEC-472): null
+/// Why a task reads `needs_attention`, as its API view says it (`attention`): null
 /// when the view says nothing.
 pub async fn attention(
     app: &App,
@@ -1826,9 +1876,10 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         None => tempfile::tempdir()?,
     };
     let data = dir.path().canonicalize()?;
+    let store_dir = tempfile::tempdir()?;
     let store = match options.store {
         Some(store) => store,
-        None => SqliteStore::open_in_memory()?,
+        None => store::migrated(&store_dir.path().join("yulius.db"))?,
     };
     let github = Arc::new(FakeGitHub::default());
     let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
@@ -1852,7 +1903,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         github: github.clone(),
         session_host: options
             .session_host
-            .unwrap_or_else(|| Arc::new(yulius::wiring::pending::UnavailableSessionHost)),
+            .unwrap_or_else(|| Arc::new(crate::support::pending::UnavailableSessionHost)),
         harness: options.harness.unwrap_or_else(|| {
             Arc::new(yulius::wiring::harness::HarnessAdapter::new(
                 "/bin/false".into(),
@@ -1861,7 +1912,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         }),
         git: options
             .git
-            .unwrap_or_else(|| Arc::new(yulius::wiring::pending::UnavailableGit)),
+            .unwrap_or_else(|| Arc::new(crate::support::pending::UnavailableGit)),
         browser: options
             .browser
             .unwrap_or_else(|| Arc::new(yulius::wiring::browser::UnavailableBrowser)),
@@ -1884,6 +1935,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         router,
         system,
         _dir: dir,
+        _store: store_dir,
     })
 }
 
@@ -1939,7 +1991,7 @@ pub async fn seed_github_user(
 
 /// A connected Claude subscription with no capacity left until a reset days away (past any clock a
 /// test advances): a start passes
-/// the account gate (SPEC-246) and then waits `waiting_capacity` without a process (ROT-010), as
+/// the account gate and then waits `waiting_capacity` without a process, as
 /// these harnesses have no process host.
 pub async fn exhausted_subscription(h: &Harness) -> Result<(), Box<dyn std::error::Error>> {
     use yulius_app::model::{AccountRecord, AccountStatus};
@@ -2210,7 +2262,7 @@ pub async fn replace_park_at(
         .join("worktrees")
         .join(target.as_str());
     std::fs::create_dir_all(&tree)?;
-    repos::git(&tree, &["init", "--quiet"])?;
+    git_stdout(&tree, &["init", "--quiet"])?;
     seed_live_attempt(h, target.as_str(), "first parked attempt").await?;
     let mut run = h
         .store
@@ -2297,7 +2349,7 @@ pub async fn assert_replacement_parked(
 }
 
 /// Calls an MCP tool with a task token; returns the `tools/call` result object, with the tool's
-/// record as `structuredContent` (SPEC-086 TOL-005): what an agent reads is its text.
+/// record as `structuredContent`: what an agent reads is its text.
 pub async fn mcp_tool(
     h: &Harness,
     token: &str,
@@ -2337,7 +2389,7 @@ pub fn tool_text(result: &serde_json::Value) -> serde_json::Value {
     )
 }
 
-/// Counts `pulls.updated` events for `sandbox` (SPEC-108) on an event bus subscription, checking
+/// Counts `pulls.updated` events for `sandbox` on an event bus subscription, checking
 /// that each reaches only that sandbox's viewers.
 pub struct PullAnnouncements {
     events: tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
@@ -2395,7 +2447,7 @@ impl PullAnnouncements {
     }
 }
 
-/// The `secrets.updated` events (SPEC-209) on an event bus subscription, checking that each is
+/// The `secrets.updated` events on an event bus subscription, checking that each is
 /// scoped like the secret it names (a sandbox's viewers, or everyone for a secret of every
 /// sandbox) and carries nothing else.
 pub struct SecretAnnouncements {
@@ -2456,7 +2508,7 @@ pub async fn point_reached(at: std::sync::mpsc::Receiver<()>) -> TestResult {
 }
 
 /// What the Bash wrapper of a Yulius from before fingerprint version 2 makes of `text` with the
-/// fingerprint file `file` (ADR-0313): that wrapper's own search, a rolling hash of every window
+/// fingerprint file `file`: that wrapper's own search, a rolling hash of every window
 /// of a needle's length modulo 2^61 - 1 at the file's `base`, confirmed by the salted SHA-256.
 /// `None` when that wrapper could not read the file (it takes version 1 only, with every field).
 pub fn old_wrapper_redacts(file: &[u8], text: &str) -> Option<String> {

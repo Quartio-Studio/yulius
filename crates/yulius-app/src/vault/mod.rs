@@ -51,6 +51,10 @@ use crate::error::{AppError, AppResult};
 use crate::ports::vault::{VaultSecretRecord, VaultSection};
 use crate::vidoc_key::{VIDOC_HOST, VIDOC_SECRET, VIDOC_SECRET_ID};
 
+/// What a text says when it could not be checked for agent secrets.
+pub(crate) const TEXT_WITHHELD: &str =
+    "[withheld: Yulius could not check this text for agent secrets]";
+
 /// Bound of remembered "already audited" keys before the memory is cleared.
 const AUDITED_KEYS_MAX: usize = 10_000;
 
@@ -228,6 +232,42 @@ pub(crate) const PERSONAL_SECRET_ENV: &str = "a personal secret is never copied 
 every task of this project can read them. Only the proxy sends a personal secret, to its hosts; \
 code that needs the value outside the proxy needs a project secret";
 
+/// A vault tool's arguments, or the refusal every tool gives for ones it cannot read.
+fn parse_args<T: serde::de::DeserializeOwned>(args: &serde_json::Value) -> AppResult<T> {
+    serde_json::from_value(args.clone())
+        .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))
+}
+
+/// The agent secret named `name` (compared trimmed) among `records`.
+///
+/// # Errors
+/// `Invalid` naming `name` as the caller wrote it.
+fn named<'a>(records: &'a [VaultSecretRecord], name: &str) -> AppResult<&'a VaultSecretRecord> {
+    records
+        .iter()
+        .find(|r| r.name == name.trim())
+        .ok_or_else(|| {
+            AppError::Invalid(format!(
+                "no agent secret named {name:?} applies to this project (see secrets_list)"
+            ))
+        })
+}
+
+/// Refuses a personal secret, `personal` saying why it never goes this way, and a production one.
+fn refuse_personal_or_prod(record: &VaultSecretRecord, personal: &str) -> AppResult<()> {
+    if matches!(record.scope(), crate::ports::vault::AgentScope::Personal(_)) {
+        return Err(AppError::Forbidden(format!("{}: {personal}", record.name)));
+    }
+    // A production secret is no agent's, by any way (ADR-0324).
+    if record.cd_prod {
+        return Err(AppError::Forbidden(format!(
+            "{}: {PRODUCTION_SECRET}",
+            record.name
+        )));
+    }
+    Ok(())
+}
+
 /// Agent secret payload (sealed as JSON).
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct AgentPayload {
@@ -349,6 +389,20 @@ impl App {
         }
         let candidates = self.deps.store.vault_agent_in(sandbox).await?;
         Ok(reach::resolve(candidates, holder))
+    }
+
+    /// The agent secret named `name` that applies to `sandbox` for `holder` ([`named`]).
+    ///
+    /// # Errors
+    /// Store failures; `Invalid` when none of that name applies.
+    async fn named_agent_secret(
+        &self,
+        sandbox: &SandboxId,
+        holder: Holder<'_>,
+        name: &str,
+    ) -> AppResult<VaultSecretRecord> {
+        let records = self.resolved_agent_secrets(sandbox, holder).await?;
+        named(&records, name).cloned()
     }
 
     /// The agent secrets an agent run, the Superagent or a granted CI job uses through the egress
@@ -510,13 +564,34 @@ impl App {
     /// (MCP results, transcripts) applies it; on a failure the text is withheld, never shown
     /// unredacted.
     pub async fn redact_for_sandbox(&self, sandbox: &SandboxId, text: &str) -> String {
-        match self.agent_secret_matcher(sandbox).await {
-            Ok(matcher) => redact_text(matcher.as_ref(), text).0,
-            Err(err) => {
-                tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
-                "[withheld: Yulius could not check this text for agent secrets]".into()
-            }
+        match self.redaction_matcher(sandbox).await {
+            Some(matcher) => redact_text(matcher.as_ref(), text).0,
+            None => TEXT_WITHHELD.into(),
         }
+    }
+
+    /// `value` with every text in it redacted as by [`App::redact_for_sandbox`]; `None` when the
+    /// agent secrets could not be loaded.
+    pub(crate) async fn redact_json_for_sandbox(
+        &self,
+        sandbox: &SandboxId,
+        mut value: serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let matcher = self.redaction_matcher(sandbox).await?;
+        yulius_contracts::redact::redact_json_strings(&mut value, &mut |_, text| {
+            *text = redact_text(matcher.as_ref(), text).0;
+            true
+        });
+        Some(value)
+    }
+
+    async fn redaction_matcher(&self, sandbox: &SandboxId) -> Option<Arc<PlainMatcher>> {
+        self.agent_secret_matcher(sandbox)
+            .await
+            .inspect_err(|err| {
+                tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
+            })
+            .ok()
     }
 
     /// Whether the egress proxy is wired: runs get the proxy environment.
@@ -561,6 +636,42 @@ fn instance_vidoc_record() -> VaultSecretRecord {
         updated_by: "instance".into(),
         updated_at: never,
         value_updated_at: never,
+        last_used_at: None,
+        requested_hosts: Vec::new(),
+        requested_by: None,
+        env_files: crate::ports::vault::EnvFiles::No,
+        env_requested_by: None,
+        cd_prod: false,
+        auto_allow: false,
+    }
+}
+
+/// An agent secret record for tests: no hosts, rules or injection, in no sandbox.
+#[cfg(test)]
+fn test_record(id: &str, name: &str) -> VaultSecretRecord {
+    use yulius_domain::time::Timestamp;
+    VaultSecretRecord {
+        id: id.into(),
+        section: VaultSection::Agent,
+        sandbox_id: None,
+        owner_id: None,
+        name: name.into(),
+        description: String::new(),
+        hosts: Vec::new(),
+        rules: Vec::new(),
+        injection: "none".into(),
+        header_name: None,
+        fields: vec!["value".into()],
+        envelope: crate::ports::Envelope {
+            kek_id: 1,
+            wrapped_key: Vec::new(),
+            ciphertext: Vec::new(),
+        },
+        created_by: "u".into(),
+        created_at: Timestamp(1),
+        updated_by: "u".into(),
+        updated_at: Timestamp(1),
+        value_updated_at: Timestamp(1),
         last_used_at: None,
         requested_hosts: Vec::new(),
         requested_by: None,

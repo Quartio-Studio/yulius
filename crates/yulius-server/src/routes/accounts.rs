@@ -16,7 +16,7 @@ use yulius_app::error::AppError;
 use yulius_app::hub::HubFrame;
 use yulius_contracts::api::admin::{
     AccountLoginCancelled, AccountLoginStarted, AccountView, CreateAccount, ImportAccountAuth,
-    ReplaceAccountToken, UpdateAccount,
+    ReplaceAccountToken, SetAccountBilling, UpdateAccount,
 };
 use yulius_contracts::terminal::{
     CLOSE_LAGGING, KIND_OUTPUT, KIND_SNAPSHOT, TerminalClientMsg, TerminalServerMsg, encode_binary,
@@ -64,6 +64,27 @@ pub async fn update(
     Json(req): Json<UpdateAccount>,
 ) -> ApiResult<Json<AccountView>> {
     Ok(Json(app.update_account(&ctx, &id, &req).await?))
+}
+
+/// `PUT /api/admin/accounts/{id}/billing`: when the subscription charges its card (SPEC-651). A
+/// body of another shape is 422 with a fixed sentence.
+pub async fn set_billing(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+    body: Result<Json<SetAccountBilling>, JsonRejection>,
+) -> ApiResult<Json<AccountView>> {
+    let req = token_body(body, r#"{"anchor": "2026-11-24", "period": "month"}"#)?;
+    Ok(Json(app.set_account_billing(&ctx, &id, &req).await?))
+}
+
+/// `DELETE /api/admin/accounts/{id}/billing`: removes the subscription's charge date.
+pub async fn remove_billing(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+) -> ApiResult<Json<AccountView>> {
+    Ok(Json(app.remove_account_billing(&ctx, &id).await?))
 }
 
 pub async fn delete(

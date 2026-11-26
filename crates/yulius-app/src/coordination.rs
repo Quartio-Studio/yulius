@@ -2,6 +2,7 @@
 //! STP-001/002). Callers are agents authenticated by their run's task token.
 
 use serde_json::{Value, json};
+use yulius_contracts::api::tasks::{PlanProgress, PlanRecord, PlanStep, StepChange};
 use yulius_domain::ids::{SandboxId, StepId, TaskId, UserId};
 use yulius_domain::task::{AttentionFacts, TaskStatus};
 
@@ -9,6 +10,7 @@ use crate::auth::rfc3339;
 use crate::context::App;
 use crate::discipline::{step_by_title, step_states};
 use crate::error::{AppError, AppResult};
+use crate::mcp_args::text_arg;
 use crate::model::{AttemptRecord, StepRecord, TaskRecord};
 use yulius_domain::steps::{self as rules, By, PlannedStep, StepStatus};
 
@@ -78,12 +80,6 @@ pub struct ProjectCaller {
     pub actor: String,
     /// Audit detail naming the caller.
     pub detail: Value,
-}
-
-fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| AppError::Invalid(format!("missing string argument `{key}`")))
 }
 
 impl App {
@@ -225,7 +221,7 @@ impl App {
             "activity": task.activity.map(|a| a.as_str()),
             "branch": task.branch,
             "spec_path": task.spec_path,
-            "steps": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current, "first_total": p.first_total},
+            "steps": PlanProgress::from(&p),
             // How it waits to start, as stored (SPEC-487 CHN-004): after one task (TSK-012), or
             // on its whole start rule (SPEC-017), never the rule's first task alone.
             "runs_after": chain.as_ref().filter(|c| c.rule.is_none()).map(|c| c.after_number),
@@ -540,7 +536,7 @@ impl App {
     /// # Errors
     /// `Invalid` (with the rule that was broken) or `NotFound`.
     pub async fn tool_step_update(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
-        let status = str_arg(args, "status")?;
+        let status = text_arg(args, "status")?;
         let parsed = StepStatus::parse(status)
             .ok_or_else(|| AppError::Invalid(format!("status must be one of {STEP_STATUSES:?}")))?;
         let runtime = self.runtime(&ctx.task.id);
@@ -551,7 +547,7 @@ impl App {
         } else if let Some(n) = args.get("ordinal").and_then(Value::as_u64) {
             steps.iter().find(|s| u64::from(s.ordinal) == n)
         } else {
-            step_by_title(&steps, str_arg(args, "title")?)
+            step_by_title(&steps, text_arg(args, "title")?)
         }
         .ok_or(AppError::NotFound)?;
         let index = steps
@@ -573,10 +569,14 @@ impl App {
             .await?;
         drop(steps_lock);
         self.publish_steps(&ctx.task).await;
-        let mut record = self.tool_steps_get(ctx).await?;
+        let mut record = self.plan_record(ctx).await?;
         // Which step changed, so the answer can say it (SPEC-086 TOL-002).
-        record["updated"] = json!({"ordinal": step.ordinal, "title": step.title, "status": status});
-        Ok(record)
+        record.updated = Some(StepChange {
+            ordinal: step.ordinal,
+            title: step.title.clone(),
+            status: status.to_owned(),
+        });
+        crate::person_tools::record(&record)
     }
 
     /// `steps_get`: the task's steps, the effort-weighted progress and the current nudges.
@@ -584,25 +584,33 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn tool_steps_get(&self, ctx: &AgentContext) -> AppResult<Value> {
+        crate::person_tools::record(&self.plan_record(ctx).await?)
+    }
+
+    async fn plan_record(&self, ctx: &AgentContext) -> AppResult<PlanRecord> {
         let records = self.deps.store.steps(&ctx.task.id).await?;
         let timings = self.deps.store.step_timings(&ctx.task.id).await?;
         let states = step_states(&records, &timings);
         let p = self.step_progress(&ctx.task.id, &records).await?;
-        let nudges = self.step_nudges(&ctx.task, &states).await;
-        Ok(json!({
-            "progress": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current, "first_total": p.first_total},
-            "steps": records.iter().zip(&states).map(|(s, st)| json!({
-                "id": s.id.as_str(),
-                "ordinal": s.ordinal,
-                "title": s.title,
-                "status": s.status,
-                "effort": s.effort,
-                "note": s.note,
-                "started_at": st.started_at.map(rfc3339),
-                "finished_at": st.finished_at.map(rfc3339),
-            })).collect::<Vec<_>>(),
-            "nudges": nudges,
-        }))
+        Ok(PlanRecord {
+            progress: PlanProgress::from(&p),
+            steps: records
+                .iter()
+                .zip(&states)
+                .map(|(s, st)| PlanStep {
+                    id: s.id.to_string(),
+                    ordinal: s.ordinal,
+                    title: s.title.clone(),
+                    status: s.status.clone(),
+                    effort: s.effort,
+                    note: s.note.clone(),
+                    started_at: st.started_at.map(rfc3339),
+                    finished_at: st.finished_at.map(rfc3339),
+                })
+                .collect(),
+            nudges: self.step_nudges(&ctx.task, &states).await,
+            updated: None,
+        })
     }
 
     pub(crate) async fn publish_steps(&self, task: &TaskRecord) {

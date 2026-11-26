@@ -13,7 +13,7 @@ use yulius_domain::intake::PromptClass;
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_u32};
+use crate::{SqliteStore, bad_column, opt_ts, parsed, text_as, text_parsed, to_u32};
 
 const CHAIN_COLS: &str = "task_id, after_task_id, after_number, blocked_reason, created_at, rule";
 const FORK_COLS: &str = "task_id, source_task_id, source_number, source_title, source_branch, \
@@ -22,18 +22,14 @@ const AUTO_COLS: &str = "task_id, mode_by, workflow_by, workflow_name, created_a
 const HOLD_COLS: &str = "id, task_id, class, prompt, prompt_sha256, percent, typed_by, state, \
     created_at, resolved_by, resolved_at, new_task_id";
 
-fn task_id(column: &str, text: &str) -> rusqlite::Result<TaskId> {
-    TaskId::parse(text).map_err(|_| bad_column(column, text))
-}
-
 fn chain_from_row(row: &Row<'_>) -> rusqlite::Result<ChainRecord> {
     let task: String = row.get("task_id")?;
     let after: Option<String> = row.get("after_task_id")?;
     Ok(ChainRecord {
-        task_id: task_id("task id", &task)?,
+        task_id: parsed("task id", &task, TaskId::parse)?,
         after_task_id: after
             .as_deref()
-            .map(|a| task_id("after task id", a))
+            .map(|a| parsed("after task id", a, TaskId::parse))
             .transpose()?,
         after_number: to_u32(row.get("after_number")?),
         blocked_reason: row.get("blocked_reason")?,
@@ -46,10 +42,10 @@ fn fork_from_row(row: &Row<'_>) -> rusqlite::Result<ForkRecord> {
     let task: String = row.get("task_id")?;
     let source: Option<String> = row.get("source_task_id")?;
     Ok(ForkRecord {
-        task_id: task_id("task id", &task)?,
+        task_id: parsed("task id", &task, TaskId::parse)?,
         source_task_id: source
             .as_deref()
-            .map(|s| task_id("source task id", s))
+            .map(|s| parsed("source task id", s, TaskId::parse))
             .transpose()?,
         source_number: to_u32(row.get("source_number")?),
         source_title: row.get("source_title")?,
@@ -64,13 +60,12 @@ fn fork_from_row(row: &Row<'_>) -> rusqlite::Result<ForkRecord> {
 
 fn hold_from_row(row: &Row<'_>) -> rusqlite::Result<HoldRecord> {
     let task: String = row.get("task_id")?;
-    let class: String = row.get("class")?;
     let typed_by: Option<String> = row.get("typed_by")?;
     let new_task: Option<String> = row.get("new_task_id")?;
     Ok(HoldRecord {
         id: row.get("id")?,
-        task_id: task_id("task id", &task)?,
-        class: PromptClass::parse(&class).ok_or_else(|| bad_column("prompt class", &class))?,
+        task_id: parsed("task id", &task, TaskId::parse)?,
+        class: text_as(row, "class", "prompt class", PromptClass::parse)?,
         prompt: row.get("prompt")?,
         prompt_sha256: row.get("prompt_sha256")?,
         percent: to_u32(row.get("percent")?),
@@ -81,10 +76,10 @@ fn hold_from_row(row: &Row<'_>) -> rusqlite::Result<HoldRecord> {
         state: row.get("state")?,
         created_at: Timestamp(row.get("created_at")?),
         resolved_by: row.get("resolved_by")?,
-        resolved_at: row.get::<_, Option<i64>>("resolved_at")?.map(Timestamp),
+        resolved_at: opt_ts(row, "resolved_at")?,
         new_task_id: new_task
             .as_deref()
-            .map(|t| task_id("new task id", t))
+            .map(|t| parsed("new task id", t, TaskId::parse))
             .transpose()?,
     })
 }
@@ -95,9 +90,8 @@ fn chosen_by(column: &str, text: Option<String>) -> rusqlite::Result<Option<Chos
 }
 
 fn auto_from_row(row: &Row<'_>) -> rusqlite::Result<AutoChoiceRecord> {
-    let task: String = row.get("task_id")?;
     Ok(AutoChoiceRecord {
-        task_id: task_id("task id", &task)?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         mode_by: chosen_by("auto mode", row.get("mode_by")?)?,
         workflow_by: chosen_by("auto workflow", row.get("workflow_by")?)?,
         workflow_name: row.get("workflow_name")?,
@@ -120,8 +114,7 @@ impl IntakeStore for SqliteStore {
                     c.created_at.0,
                     c.rule,
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -130,13 +123,13 @@ impl IntakeStore for SqliteStore {
     async fn chain(&self, task: &TaskId) -> AppResult<Option<ChainRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |conn| {
-            conn.query_row(
-                &format!("SELECT {CHAIN_COLS} FROM task_chains WHERE task_id = ?1"),
-                [task],
-                chain_from_row,
-            )
-            .optional()
-            .map_err(db)
+            Ok(conn
+                .query_row(
+                    &format!("SELECT {CHAIN_COLS} FROM task_chains WHERE task_id = ?1"),
+                    [task],
+                    chain_from_row,
+                )
+                .optional()?)
         })
         .await
     }
@@ -147,10 +140,9 @@ impl IntakeStore for SqliteStore {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {CHAIN_COLS} FROM task_chains WHERE after_task_id = ?1 ORDER BY created_at, task_id"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([task], chain_from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+                ))?;
+            let rows = stmt.query_map([task], chain_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -175,8 +167,7 @@ impl IntakeStore for SqliteStore {
                     f.transcript_ref,
                     f.created_at.0,
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -185,13 +176,13 @@ impl IntakeStore for SqliteStore {
     async fn fork_of(&self, task: &TaskId) -> AppResult<Option<ForkRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |conn| {
-            conn.query_row(
-                &format!("SELECT {FORK_COLS} FROM task_forks WHERE task_id = ?1"),
-                [task],
-                fork_from_row,
-            )
-            .optional()
-            .map_err(db)
+            Ok(conn
+                .query_row(
+                    &format!("SELECT {FORK_COLS} FROM task_forks WHERE task_id = ?1"),
+                    [task],
+                    fork_from_row,
+                )
+                .optional()?)
         })
         .await
     }
@@ -199,14 +190,12 @@ impl IntakeStore for SqliteStore {
     async fn forks_from(&self, task: &TaskId) -> AppResult<Vec<ForkRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |conn| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT {FORK_COLS} FROM task_forks WHERE source_task_id = ?1 \
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {FORK_COLS} FROM task_forks WHERE source_task_id = ?1 \
                      ORDER BY created_at, task_id"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([task], fork_from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map([task], fork_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -217,8 +206,7 @@ impl IntakeStore for SqliteStore {
             conn.execute(
                 "UPDATE task_chains SET blocked_reason = ?1 WHERE task_id = ?2",
                 params![reason, task],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -239,8 +227,7 @@ impl IntakeStore for SqliteStore {
                     params![task, start.0, at.0],
                 ),
                 None => conn.execute("DELETE FROM task_schedules WHERE task_id = ?1", [task]),
-            }
-            .map_err(db)?;
+            }?;
             Ok(())
         })
         .await
@@ -249,33 +236,28 @@ impl IntakeStore for SqliteStore {
     async fn task_schedule(&self, task: &TaskId) -> AppResult<Option<Timestamp>> {
         let task = task.as_str().to_owned();
         self.call(move |conn| {
-            conn.query_row(
-                "SELECT start_at FROM task_schedules WHERE task_id = ?1",
-                [task],
-                |row| row.get(0).map(Timestamp),
-            )
-            .optional()
-            .map_err(db)
+            Ok(conn
+                .query_row(
+                    "SELECT start_at FROM task_schedules WHERE task_id = ?1",
+                    [task],
+                    |row| row.get(0).map(Timestamp),
+                )
+                .optional()?)
         })
         .await
     }
 
     async fn due_prepared(&self, now: Timestamp) -> AppResult<Vec<TaskId>> {
         self.call(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT s.task_id FROM task_schedules s JOIN tasks t ON t.id = s.task_id \
+            let mut stmt = conn.prepare(
+                "SELECT s.task_id FROM task_schedules s JOIN tasks t ON t.id = s.task_id \
                      WHERE t.status = ?1 AND s.start_at <= ?2 \
                      ORDER BY s.start_at, s.task_id LIMIT 100",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map(params![TaskStatus::Prepared.as_str(), now.0], |row| {
-                    let id: String = row.get(0)?;
-                    task_id("task id", &id)
-                })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            )?;
+            let rows = stmt.query_map(params![TaskStatus::Prepared.as_str(), now.0], |row| {
+                text_parsed(row, 0, "task id", TaskId::parse)
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -285,20 +267,18 @@ impl IntakeStore for SqliteStore {
         self.call(move |conn| {
             // `transition_task`'s bookkeeping for prepared → queued (keep the two in step): a new
             // state, in line from now, no activity or working stretch.
-            let n = conn
-                .execute(
-                    "UPDATE tasks SET status = ?1, activity = NULL, updated_at = ?3, state_at = ?3, \
+            let n = conn.execute(
+                "UPDATE tasks SET status = ?1, activity = NULL, updated_at = ?3, state_at = ?3, \
                      working_since = NULL, queued_at = ?3, gate_blocks = 0 \
                      WHERE id = ?4 AND status = ?2 AND EXISTS \
                      (SELECT 1 FROM task_schedules WHERE task_id = ?4 AND start_at <= ?3)",
-                    params![
-                        TaskStatus::Queued.as_str(),
-                        TaskStatus::Prepared.as_str(),
-                        now.0,
-                        task
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    TaskStatus::Queued.as_str(),
+                    TaskStatus::Prepared.as_str(),
+                    now.0,
+                    task
+                ],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -307,7 +287,7 @@ impl IntakeStore for SqliteStore {
     async fn change_start(&self, change: &StartChange) -> AppResult<bool> {
         let c = change.clone();
         self.call(move |conn| {
-            let tx = conn.transaction().map_err(db)?;
+            let tx = conn.transaction()?;
             let task = c.task_id.as_str();
             // `transition_task`'s bookkeeping (keep the two in step): a new state, in line from
             // now when queued, no activity or working stretch.
@@ -325,13 +305,11 @@ impl IntakeStore for SqliteStore {
                         c.supertask,
                         task
                     ],
-                )
-                .map_err(db)?;
+                )?;
             if n != 1 {
                 return Ok(false);
             }
-            tx.execute("DELETE FROM task_chains WHERE task_id = ?1", [task])
-                .map_err(db)?;
+            tx.execute("DELETE FROM task_chains WHERE task_id = ?1", [task])?;
             if let Some(chain) = &c.chain {
                 tx.execute(
                     &format!("INSERT INTO task_chains ({CHAIN_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
@@ -343,8 +321,7 @@ impl IntakeStore for SqliteStore {
                         chain.created_at.0,
                         chain.rule,
                     ],
-                )
-                .map_err(db)?;
+                )?;
             }
             match c.start_at {
                 Some(start) => tx.execute(
@@ -353,9 +330,8 @@ impl IntakeStore for SqliteStore {
                     params![task, start.0, c.at.0],
                 ),
                 None => tx.execute("DELETE FROM task_schedules WHERE task_id = ?1", [task]),
-            }
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            }?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -381,8 +357,7 @@ impl IntakeStore for SqliteStore {
                         c.rule,
                         c.created_at.0,
                     ],
-                )
-                .map_err(db)?;
+                )?;
             Ok(n == 1)
         })
         .await
@@ -391,19 +366,17 @@ impl IntakeStore for SqliteStore {
     async fn block_chain(&self, evaluated: &ChainRecord, reason: &str) -> AppResult<bool> {
         let (c, reason) = (evaluated.clone(), reason.to_owned());
         self.call(move |conn| {
-            let n = conn
-                .execute(
-                    "UPDATE task_chains SET blocked_reason = ?1 WHERE task_id = ?2 \
+            let n = conn.execute(
+                "UPDATE task_chains SET blocked_reason = ?1 WHERE task_id = ?2 \
                      AND after_task_id IS ?3 AND rule IS ?4 AND created_at = ?5",
-                    params![
-                        reason,
-                        c.task_id.as_str(),
-                        c.after_task_id.as_ref().map(TaskId::as_str),
-                        c.rule,
-                        c.created_at.0,
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    reason,
+                    c.task_id.as_str(),
+                    c.after_task_id.as_ref().map(TaskId::as_str),
+                    c.rule,
+                    c.created_at.0,
+                ],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -412,7 +385,7 @@ impl IntakeStore for SqliteStore {
     async fn insert_hold(&self, hold: &HoldRecord) -> AppResult<()> {
         let h = hold.clone();
         self.call(move |conn| {
-            let tx = conn.transaction().map_err(db)?;
+            let tx = conn.transaction()?;
             tx.execute(
                 "UPDATE prompt_holds SET state = ?1, resolved_at = ?2, resolved_by = 'system' \
                  WHERE task_id = ?3 AND state = ?4",
@@ -422,8 +395,7 @@ impl IntakeStore for SqliteStore {
                     h.task_id.as_str(),
                     hold_state::PENDING
                 ],
-            )
-            .map_err(db)?;
+            )?;
             tx.execute(
                 &format!(
                     "INSERT INTO prompt_holds ({HOLD_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
@@ -442,9 +414,8 @@ impl IntakeStore for SqliteStore {
                     h.resolved_at.map(|t| t.0),
                     h.new_task_id.as_ref().map(TaskId::as_str),
                 ],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)
+            )?;
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -452,13 +423,13 @@ impl IntakeStore for SqliteStore {
     async fn hold(&self, id: &str) -> AppResult<Option<HoldRecord>> {
         let id = id.to_owned();
         self.call(move |conn| {
-            conn.query_row(
-                &format!("SELECT {HOLD_COLS} FROM prompt_holds WHERE id = ?1"),
-                [id],
-                hold_from_row,
-            )
-            .optional()
-            .map_err(db)
+            Ok(conn
+                .query_row(
+                    &format!("SELECT {HOLD_COLS} FROM prompt_holds WHERE id = ?1"),
+                    [id],
+                    hold_from_row,
+                )
+                .optional()?)
         })
         .await
     }
@@ -466,16 +437,16 @@ impl IntakeStore for SqliteStore {
     async fn pending_hold(&self, task: &TaskId) -> AppResult<Option<HoldRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |conn| {
-            conn.query_row(
-                &format!(
-                    "SELECT {HOLD_COLS} FROM prompt_holds WHERE task_id = ?1 AND state = ?2 \
+            Ok(conn
+                .query_row(
+                    &format!(
+                        "SELECT {HOLD_COLS} FROM prompt_holds WHERE task_id = ?1 AND state = ?2 \
                      ORDER BY created_at DESC LIMIT 1"
-                ),
-                params![task, hold_state::PENDING],
-                hold_from_row,
-            )
-            .optional()
-            .map_err(db)
+                    ),
+                    params![task, hold_state::PENDING],
+                    hold_from_row,
+                )
+                .optional()?)
         })
         .await
     }
@@ -498,16 +469,14 @@ impl IntakeStore for SqliteStore {
         let new_task = new_task.map(|t| t.as_str().to_owned());
         self.call(move |conn| {
             let pending = state == hold_state::PENDING;
-            let n = conn
-                .execute(
-                    "UPDATE prompt_holds SET state = ?1, \
+            let n = conn.execute(
+                "UPDATE prompt_holds SET state = ?1, \
                      resolved_by = CASE WHEN ?2 THEN NULL ELSE ?3 END, \
                      resolved_at = CASE WHEN ?2 THEN NULL ELSE ?4 END, \
                      new_task_id = COALESCE(?5, new_task_id) \
                      WHERE id = ?6 AND state = ?7",
-                    params![state, pending, by, at.0, new_task, id, expected],
-                )
-                .map_err(db)?;
+                params![state, pending, by, at.0, new_task, id, expected],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -527,8 +496,7 @@ impl IntakeStore for SqliteStore {
                      WHERE task_id = ?2 AND prompt_sha256 = ?3 AND state = ?4 AND resolved_at >= ?5 \
                      ORDER BY resolved_at DESC LIMIT 1)",
                     params![hold_state::CONSUMED, task, sha, hold_state::SENT, since.0],
-                )
-                .map_err(db)?;
+                )?;
             Ok(n == 1)
         })
         .await
@@ -546,8 +514,7 @@ impl IntakeStore for SqliteStore {
                     c.workflow_name,
                     c.created_at.0,
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -556,13 +523,13 @@ impl IntakeStore for SqliteStore {
     async fn auto_choice(&self, task: &TaskId) -> AppResult<Option<AutoChoiceRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |conn| {
-            conn.query_row(
-                &format!("SELECT {AUTO_COLS} FROM task_auto_choices WHERE task_id = ?1"),
-                [task],
-                auto_from_row,
-            )
-            .optional()
-            .map_err(db)
+            Ok(conn
+                .query_row(
+                    &format!("SELECT {AUTO_COLS} FROM task_auto_choices WHERE task_id = ?1"),
+                    [task],
+                    auto_from_row,
+                )
+                .optional()?)
         })
         .await
     }

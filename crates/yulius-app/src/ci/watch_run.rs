@@ -174,6 +174,8 @@ impl App {
                     .collect(),
                 identity: None,
                 join: join.map(|join| Box::new(ci_join(join))),
+                // The repository's script: not its to write the harness folders (SPEC-652 MEM-010).
+                guard: crate::memory_guard::sandbox_masks(&self.sandbox_dir(&sandbox.id)),
             };
             (containment, lease)
         } else {

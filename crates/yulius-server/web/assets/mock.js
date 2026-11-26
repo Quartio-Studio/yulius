@@ -2343,8 +2343,24 @@ function seedCi(params) {
         { revision: '7713224a587f', run_id: 'ci_gate', merge_task: 12, test: 'delivery::gate' },
         { revision: 'ef02b192abba', run_id: 'ci_gate', merge_task: 15, test: 'queue::serve' },
       ] : [],
+      // SPEC-676: a red after-merge gate stops the merge queue.
+      // `merge_stop=1` holds two armed merges; `one`, while the failure is still narrowed, one
+      // with no pull request; `none` nothing.
+      merge_stop: { 1: {
+        failures: [{ test: 'delivery::gate', revision: '7713224a587f', merge_task: 12 }, { test: 'queue::serve', revision: 'ef02b192abba', merge_task: 15 }],
+        run_id: 'ci_gate',
+        waiting: [{ task: 14, pull_request: 231 }, { task: 16, pull_request: 236 }],
+      }, one: {
+        failures: [{ test: 'tests (2/4)', revision: 'ef02b192abba', merge_task: null }],
+        run_id: 'ci_gate',
+        waiting: [{ task: 14, pull_request: null }],
+      }, none: {
+        failures: [{ test: 'delivery::gate', revision: '7713224a587f', merge_task: 12 }],
+        run_id: 'ci_gate',
+        waiting: [],
+      } }[params.get('merge_stop')] || null,
       runs: [
-        ...(params.get('gate_notice') === '1' ? [ciRun('ci_gate', 'branch/quartio', 'ef02b192abba', 'failed', 3, { failJob: 'test (2/2)' })] : []),
+        ...(params.get('gate_notice') === '1' || params.get('merge_stop') ? [ciRun('ci_gate', 'branch/quartio', 'ef02b192abba', 'failed', 3, { failJob: 'test (2/2)' })] : []),
         ciRun('ci_s4', 'branch/quartio', '9f3c2a1b7e4d', 'running', 1),
         // SPEC-162: a passed run whose "test (2/2)" exited with the skip code.
         ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22, { skipJob: 'test (2/2)' }),
@@ -2369,7 +2385,8 @@ function seedCi(params) {
     sb_three: {
       gate: { source: 'profile', jobs: [{ name: 'gate', command: 'make ci', matrix: null }] }, gate_problem: null, status_access: null, actions_workflows: [],
       gate_notices: params.get('gate_notice') === 'reader' ? [{ key: 'gate:store::retry', revision: '77aa01bc3d4e', run_id: 'ci_t1', merge_task: null, test: 'store::retry' }] : [],
-      runs: [params.get('gate_notice') === 'reader'
+      merge_stop: params.get('merge_stop') === 'reader' ? { failures: [{ test: 'store::retry', revision: '77aa01bc3d4e', merge_task: null }], run_id: 'ci_t1', waiting: [] } : null,
+      runs: [params.get('gate_notice') === 'reader' || params.get('merge_stop') === 'reader'
         ? ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'failed', 180, { failJob: 'test (1/2)' })
         : ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'passed', 180)],
       hygiene: { scanned_at: null, notes: [], items: [] },
@@ -2407,7 +2424,7 @@ function ciOverview(db, sid) {
   const ci = ciOf(db, sid);
   return {
     gate: clone(ci.gate), gate_problem: ci.gate_problem, gate_fallback: ci.gate_fallback || null, runs: ci.runs.map((r) => ciSummary(progressCi(r, db.ciRunMs))),
-    gate_notices: ci.gate_notices || [], can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
+    gate_notices: ci.gate_notices || [], merge_stop: ci.merge_stop || null, can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
   };
 }
 
@@ -4459,7 +4476,7 @@ route('PATCH', `/api/admin/users/${ID}`, ({ db, p, body }) => {
 route('GET', '/api/admin/accounts', ({ db }) => {
   adminOnly(db);
   const totals = (k, runs) => ({ runs, tasks: Math.max(1, runs - 1), ...poolSpend(k) });
-  return db.accounts.map((a, i) => (a.status === 'pending_login' ? a : { ...a, tokens_24h: totals(0.3 / (i + 1), 2), tokens_7d: totals(2 / (i + 1), 9) }));
+  return db.accounts.map((a, i) => withBilling(a.status === 'pending_login' ? a : { ...a, tokens_24h: totals(0.3 / (i + 1), 2), tokens_7d: totals(2 / (i + 1), 9) }));
 });
 /**
  * A pasted token, as the server checks it (SPEC-502 TKP-003, TKP-004): the shape `claude
@@ -4477,7 +4494,7 @@ function signedInByPaste(db, account) {
   db.unsignedAccounts.delete(account.id);
   // An email a person typed stays (SPEC-463 EML-004); one Claude gave was the old sign-in's.
   Object.assign(account, { status: 'ok', last_error: null, email: account.email_typed ? account.email : null });
-  emit(db, { type: 'account.updated', account });
+  emit(db, { type: 'account.updated', account: withBilling(account) });
 }
 // 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
 // With a pasted `token` it is `ok` at once and there is no `login_id` (SPEC-502 TKP-001).
@@ -4513,7 +4530,7 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
   if (immediate) {
     // A key's subscription has no usage windows to read (SPEC-503 CDX-008, SPEC-505).
     if (body.api_key) db.codexKeyAccounts.add(account.id);
-    emit(db, { type: 'account.updated', account });
+    emit(db, { type: 'account.updated', account: withBilling(account) });
     return json(201, { account });
   }
   db.unsignedAccounts.add(account.id);
@@ -4540,8 +4557,56 @@ route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   }
   // A typed email is marked, so nothing says Claude confirmed it (EML-006).
   if (given('email')) Object.assign(account, { email: email || null, email_typed: Boolean(email) });
-  emit(db, { type: 'account.updated', account });
-  return account;
+  emit(db, { type: 'account.updated', account: withBilling(account) });
+  return withBilling(account);
+});
+/**
+ * The first charge of a billing cycle on or after today, as the server counts it (SPEC-651
+ * BIL-002): the anchor's day each month (or year), the month's last day when it has none. Today
+ * is the page's own date here, so a test reads the same day the page shows.
+ */
+function nextCharge(anchor, period, now = Date.now()) {
+  const [, am, ad] = anchor.split('-').map(Number);
+  const t = new Date(now);
+  const [ty, tm, td] = [t.getFullYear(), t.getMonth(), t.getDate()];
+  const last = (y, m) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const on = (y, m) => [y, m, Math.min(ad, last(y, m))];
+  const month = period === 'year' ? am - 1 : tm;
+  let [y, m, d] = on(ty, month);
+  if (Date.UTC(y, m, d) < Date.UTC(ty, tm, td)) [y, m, d] = period === 'year' ? on(ty + 1, month) : on(tm === 11 ? ty + 1 : ty, (tm + 1) % 12);
+  return `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+/** `billing` as the server gives it: the cycle and its next charge, counted now (BIL-004). */
+function withBilling(account) {
+  const { billing_cycle: cycle, ...view } = account;
+  return { ...view, billing: cycle ? { ...cycle, next_charge_on: nextCharge(cycle.anchor, cycle.period) } : null };
+}
+// When a subscription charges its card (SPEC-651 BIL-003): a real `YYYY-MM-DD` in 2000..2100 and
+// `month` or `year`; DELETE removes it, also when none is set.
+route('PUT', `/api/admin/accounts/${ID}/billing`, ({ db, p, body }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  if (!body || Object.keys(body).some((key) => key !== 'anchor' && key !== 'period')) fail(422, 'invalid', 'the body must be JSON like {"anchor": "2026-11-24", "period": "month"}');
+  const anchor = typeof body.anchor === 'string' ? body.anchor : '';
+  const [y, m, d] = anchor.split('-').map(Number);
+  const real = /^\d{4}-\d{2}-\d{2}$/.test(anchor) && new Date(Date.UTC(y, m - 1, d)).getUTCDate() === d && m >= 1 && m <= 12;
+  if (!real) fail(422, 'invalid', 'the charge date must be a calendar date written YYYY-MM-DD');
+  if (y < 2000 || y > 2100) fail(422, 'invalid', 'the charge date must be between the years 2000 and 2100');
+  if (body.period !== 'month' && body.period !== 'year') fail(422, 'invalid', 'the period must be `month` or `year`');
+  account.billing_cycle = { anchor, period: body.period };
+  const view = withBilling(account);
+  emit(db, { type: 'account.updated', account: view });
+  return view;
+});
+route('DELETE', `/api/admin/accounts/${ID}/billing`, ({ db, p }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  delete account.billing_cycle;
+  const view = withBilling(account);
+  emit(db, { type: 'account.updated', account: view });
+  return view;
 });
 route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   adminOnly(db);
@@ -4625,7 +4690,7 @@ route('POST', `/api/admin/accounts/${ID}/import`, ({ db, p, body }) => {
   db.codexKeyAccounts.delete(account.id);
   db.unsignedAccounts.delete(account.id);
   Object.assign(account, { status: 'ok', last_error: null });
-  emit(db, { type: 'account.updated', account });
+  emit(db, { type: 'account.updated', account: withBilling(account) });
   return json(200, { account });
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
@@ -7305,7 +7370,7 @@ class LoginSession {
         if (working) account.last_error = `re-login failed: ${SIGN_IN_FAILED}`;
         else if (account.status === 'relogin') account.last_error = account.last_error || SIGN_IN_FAILED;
         else Object.assign(account, { status: 'error', last_error: SIGN_IN_FAILED });
-        emit(this.db, { type: 'account.updated', account });
+        emit(this.db, { type: 'account.updated', account: withBilling(account) });
       }
       this.end('error', 1, SIGN_IN_FAILED);
       return;
@@ -7328,12 +7393,12 @@ class LoginSession {
     if (account) {
       this.db.unsignedAccounts.delete(account.id);
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
-      emit(this.db, { type: 'account.updated', account });
+      emit(this.db, { type: 'account.updated', account: withBilling(account) });
       // Like the server, the email of the Claude account is read right after the sign-in ended
       // and arrives as a later update (SPEC-244 SUB-003).
       setTimeout(() => {
         if (!account.email) account.email = 'signed-in@example.com';
-        emit(this.db, { type: 'account.updated', account });
+        emit(this.db, { type: 'account.updated', account: withBilling(account) });
       }, 300);
     }
     this.end('ok', 0);
@@ -7835,7 +7900,7 @@ export function createMockTransport(params) {
     db.nextId += 1;
     const account = { id: `acc_${db.nextId}`, provider: 'openai', label: 'Codex', email: null, status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
     db.accounts.push(account);
-    emit(db, { type: 'account.updated', account });
+    emit(db, { type: 'account.updated', account: withBilling(account) });
   };
   if (params.get('codex') === '1') db.connectCodex();
   // An Antigravity account signed in elsewhere (`connectAntigravity()`, SPEC-505).
@@ -7846,13 +7911,13 @@ export function createMockTransport(params) {
       usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0,
     };
     db.accounts.push(account);
-    emit(db, { type: 'account.updated', account });
+    emit(db, { type: 'account.updated', account: withBilling(account) });
   };
   db.connectClaude = () => {
     db.nextId += 1;
     const account = { id: `acc_${db.nextId}`, provider: 'anthropic', label: 'Claude', email: 'signed-in@example.com', status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
     db.accounts.push(account);
-    emit(db, { type: 'account.updated', account });
+    emit(db, { type: 'account.updated', account: withBilling(account) });
   };
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
   // announced like the server does, unless `announce` is false (a change Yulius did not see).

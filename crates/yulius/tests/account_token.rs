@@ -1,13 +1,14 @@
-//! A subscription connected by pasting a token made with `claude setup-token` elsewhere
-//! (SPEC-502): created `ok` with no login terminal, or signed in again by a new paste; only the
+//! A subscription connected by pasting a token made with `claude setup-token` elsewhere:
+//! created `ok` with no login terminal, or signed in again by a new paste; only the
 //! token's shape is taken, a token Claude refuses (401) changes nothing, and the token is sealed
 //! like a captured one and never echoed or audited. The last test starts a real task on such a
 //! subscription with the fake agent.
 
-use crate::pool_supervision::{
-    ScriptedUsage, build_with, new_task, runtime, screen, seed, temp, wait_for,
-};
 use crate::support;
+use crate::support::eventually;
+use crate::support::live::pool::{
+    ScriptedUsage, build_with, new_task, runtime, screen, seed, temp,
+};
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -344,7 +345,7 @@ fn assert_no_token(body: &Value) {
     assert!(!text.contains("SYNTHETIC"), "{text}");
 }
 
-/// AC-1 (TKP-001, TKP-004, TKP-005, TKP-007): a pasted token makes a subscription `ok` at once,
+/// A pasted token makes a subscription `ok` at once,
 /// with no login, sealed like a captured token; the profile's 403 is "no email"; an email is
 /// stored; the audit says `via=token` and never holds the token.
 #[tokio::test]
@@ -418,7 +419,7 @@ async fn a_pasted_token_connects_a_subscription_at_once() -> TestResult {
     Ok(())
 }
 
-/// AC-2 (TKP-003, TKP-006): anything but the shape `claude setup-token` prints is 422, says what
+/// Anything but the shape `claude setup-token` prints is 422, says what
 /// a token looks like without echoing it, and creates nothing; a member may not paste.
 #[tokio::test]
 async fn a_malformed_token_is_refused_and_creates_nothing() -> TestResult {
@@ -466,7 +467,7 @@ async fn a_malformed_token_is_refused_and_creates_nothing() -> TestResult {
     Ok(())
 }
 
-/// TKP-006: a body that is not the request's shape is refused without quoting it, so a token sent
+/// A body that is not the request's shape is refused without quoting it, so a token sent
 /// as a bare string (or anywhere serde would quote it) never comes back in the answer.
 #[tokio::test]
 async fn a_malformed_body_never_echoes_the_token() -> TestResult {
@@ -517,7 +518,7 @@ async fn a_malformed_body_never_echoes_the_token() -> TestResult {
     Ok(())
 }
 
-/// TKP-005: a pasted token's usage is read right after it is stored, a new subscription's and a
+/// A pasted token's usage is read right after it is stored, a new subscription's and a
 /// replaced one's alike, as after a sign-in in the terminal.
 #[tokio::test]
 async fn a_pasted_token_has_its_usage_read_at_once() -> TestResult {
@@ -555,7 +556,7 @@ async fn a_pasted_token_has_its_usage_read_at_once() -> TestResult {
     Ok(())
 }
 
-/// AC-3 (TKP-004): a token Claude refuses (401) is 422 and creates nothing.
+/// A token Claude refuses (401) is 422 and creates nothing.
 #[tokio::test]
 async fn a_token_claude_refuses_creates_nothing() -> TestResult {
     let w = world().await?;
@@ -578,7 +579,7 @@ async fn a_token_claude_refuses_creates_nothing() -> TestResult {
     Ok(())
 }
 
-/// AC-4 (TKP-002, TKP-007): a new paste signs an existing subscription in again: a `relogin` one
+/// A new paste signs an existing subscription in again: a `relogin` one
 /// becomes `ok` with the new credential, audited `account.token_replaced` without the token; its
 /// running sign-in is cancelled first; malformed or refused tokens change nothing (the sign-in
 /// runs on, nothing is audited); unknown ids are 404 and members 403.
@@ -704,7 +705,7 @@ async fn a_new_token_signs_a_subscription_in_again() -> TestResult {
     Ok(())
 }
 
-/// AC-7 (TKP-005, SPEC-464 UCL-004, SPEC-463 EML-004): a new pasted token is a new sign-in as on
+/// A new pasted token is a new sign-in as on
 /// the rest of `dev`: the weekly model limits Claude reported to the old one go (its other windows
 /// stay), and an email a person typed stays, whatever Claude's profile says of the new token.
 #[tokio::test]
@@ -776,7 +777,7 @@ async fn a_new_token_drops_the_old_model_limits_and_keeps_a_typed_email() -> Tes
     Ok(())
 }
 
-/// AC-8 (TKP-011): a sign-in that has not ended 15 s after the paste cancelled it could still
+/// A sign-in that has not ended 15 s after the paste cancelled it could still
 /// store a token it captured over the pasted one, so the paste is refused with 409 and nothing is
 /// stored or audited. Here the sign-in ignores its stop and its host does not return when killed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -906,7 +907,7 @@ async fn a_paste_waits_out_every_running_sign_in() -> TestResult {
     Ok(())
 }
 
-/// TKP-002: a sign-in in the terminal that has already captured a token, and is still running, is
+/// A sign-in in the terminal that has already captured a token, and is still running, is
 /// ended first: its token is sealed as it ends, and the pasted one is stored after it and stays.
 #[tokio::test]
 async fn a_paste_wins_over_a_token_the_terminal_captured() -> TestResult {
@@ -958,7 +959,7 @@ async fn a_paste_wins_over_a_token_the_terminal_captured() -> TestResult {
     Ok(())
 }
 
-/// AC-5 (TKP-010): with real processes, a new task on an instance whose only subscription was
+/// With real processes, a new task on an instance whose only subscription was
 /// pasted starts on it, and its run gets the pasted token as `CLAUDE_CODE_OAUTH_TOKEN`.
 #[test]
 fn a_task_starts_on_a_pasted_subscription() -> TestResult {
@@ -996,7 +997,7 @@ fn a_task_starts_on_a_pasted_subscription() -> TestResult {
 
         let id = new_task(&app, &sandbox, &user, "Pasted").await?;
         let want = format!("ENV CLAUDE_CODE_OAUTH_TOKEN=set len={}", PASTED.len());
-        wait_for(
+        eventually(
             "the run on the pasted subscription",
             Duration::from_secs(30),
             || {
@@ -1010,11 +1011,11 @@ fn a_task_starts_on_a_pasted_subscription() -> TestResult {
             run.account_id.as_ref().map(AccountId::as_str),
             Some(created.account.id.as_str())
         );
-        crate::pool_supervision::stop(&app, &id).await
+        crate::support::live::pool::stop(&app, &id).await
     })
 }
 
-/// SPEC-503 CDX-015: a pasted token is Claude's: given for an `openai` subscription, or together
+/// A pasted token is Claude's: given for an `openai` subscription, or together
 /// with an API key or an `auth.json`, it is refused (422) without a word of it, nothing is created
 /// and Claude's profile is not asked.
 #[tokio::test]
@@ -1051,7 +1052,7 @@ async fn a_token_is_only_a_claude_subscriptions_credential() -> TestResult {
 const CODEX_DEVICE: &str = r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-device-access","refresh_token":"SYNTHETIC-device-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-09T10:00:00Z"}"#;
 const CODEX_IMPORT: &str = r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-import-access","refresh_token":"SYNTHETIC-import-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-09T12:00:00Z"}"#;
 
-/// SPEC-503 IMP-001 (slice C2 review): an import cancels every sign-in of the Codex subscription
+/// An import cancels every sign-in of the Codex subscription
 /// that runs, not the first found: "Sign in again" replaced one that holds a complete
 /// `auth.json` and is still stopping, and neither may write over the imported sign-in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1131,7 +1132,7 @@ async fn an_import_cancels_every_running_sign_in() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-015 (slice C2 review): a token pasted for a Codex subscription is refused up
+/// A token pasted for a Codex subscription is refused up
 /// front in its own words, not as a token Claude refused, and the sign-in running for the
 /// subscription goes on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1177,7 +1178,7 @@ async fn a_token_for_a_codex_subscription_is_refused_up_front() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-011 (slice C2 review): an import body of another shape is refused in a fixed
+/// An import body of another shape is refused in a fixed
 /// sentence, never with serde's, which would quote the `auth.json`; and nothing is stored.
 #[tokio::test]
 async fn a_malformed_import_never_echoes_the_auth_json() -> TestResult {

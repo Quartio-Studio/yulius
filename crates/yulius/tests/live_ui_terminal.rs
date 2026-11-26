@@ -1,6 +1,6 @@
 //! Opt-in live measurement of how a task's terminal appears (F 2026-10-09: "when I open Claude
 //! the font size changes 3 times and it loads for a while"), and of the Shell panel opening a
-//! working terminal without a click (UI-016). Real server, real detached ptyhost, the fake agent
+//! working terminal without a click. Real server, real detached ptyhost, the fake agent
 //! drawing full screen like Claude Code (`--tui`: redrawn in full on every resize) and the real UI
 //! in headless Chrome over an emulated remote connection (80 ms round trips).
 //!
@@ -22,6 +22,7 @@
 //! ```
 
 use crate::support;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -128,21 +129,6 @@ async fn until(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-}
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
 }
 
 /// Samples the task terminal on every animation frame (see the module docs); `__termRec.report()`

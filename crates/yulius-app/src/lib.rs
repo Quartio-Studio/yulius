@@ -3,6 +3,7 @@
 
 pub mod ability_reports;
 pub mod access;
+mod account_billing;
 mod account_email;
 pub mod account_gate;
 pub mod accounts;
@@ -68,9 +69,12 @@ pub mod live_files;
 pub(crate) mod live_text;
 pub mod manage;
 pub mod mcp;
+mod mcp_args;
 pub mod mcp_config;
 pub mod mcp_text;
 pub mod mcp_watch;
+pub mod memory_guard;
+mod merge_stop;
 pub mod merge_train;
 pub mod merges;
 pub mod metrics_recount;

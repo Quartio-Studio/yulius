@@ -17,15 +17,9 @@ use yulius_domain::ids::{AccountId, SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_u32, to_u64};
-
-fn task_id(text: &str) -> rusqlite::Result<TaskId> {
-    TaskId::parse(text).map_err(|_| bad_column("task id", text))
-}
-
-fn harness(text: &str) -> rusqlite::Result<Harness> {
-    Harness::parse(text).map_err(|_| bad_column("harness", text))
-}
+use crate::{
+    DbResult, SqliteStore, bad_column, opt_ts, parsed, text_as, text_parsed, to_u32, to_u64,
+};
 
 fn opt_u64(row: &Row<'_>, column: &str) -> rusqlite::Result<Option<u64>> {
     Ok(row.get::<_, Option<i64>>(column)?.map(to_u64))
@@ -33,30 +27,25 @@ fn opt_u64(row: &Row<'_>, column: &str) -> rusqlite::Result<Option<u64>> {
 
 fn task_row(row: &Row<'_>) -> rusqlite::Result<AnalyticsTask> {
     let id: String = row.get("id")?;
-    let sandbox: String = row.get("sandbox_id")?;
-    let status: String = row.get("status")?;
     let activity: Option<String> = row.get("activity")?;
-    let harness_text: String = row.get("harness")?;
     let origin: String = row.get("origin")?;
     Ok(AnalyticsTask {
-        id: task_id(&id)?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        id: parsed("task id", &id, TaskId::parse)?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         sandbox_slug: row.get("slug")?,
         number: to_u32(row.get("number")?),
         title: row.get("title")?,
-        harness: harness(&harness_text)?,
+        harness: text_parsed(row, "harness", "harness", Harness::parse)?,
         harness_drawn: row.get("harness_drawn")?,
-        status: TaskStatus::parse(&status).ok_or_else(|| bad_column("status", &status))?,
+        status: text_as(row, "status", "status", TaskStatus::parse)?,
         activity: activity.as_deref().and_then(Activity::parse),
         origin: TaskOrigin::parse(&origin),
         created_at: Timestamp(row.get("created_at")?),
-        closed_at: row.get::<_, Option<i64>>("closed_at")?.map(Timestamp),
+        closed_at: opt_ts(row, "closed_at")?,
     })
 }
 
 fn run_row(row: &Row<'_>) -> rusqlite::Result<AnalyticsRun> {
-    let task: String = row.get("task_id")?;
-    let harness_text: String = row.get("harness")?;
     let account: Option<String> = row.get("account_id")?;
     let has_metrics: Option<String> = row.get("metrics_attempt")?;
     let metrics = match has_metrics {
@@ -73,9 +62,9 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<AnalyticsRun> {
         }),
     };
     Ok(AnalyticsRun {
-        task_id: task_id(&task)?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         seq: to_u32(row.get("seq")?),
-        harness: harness(&harness_text)?,
+        harness: text_parsed(row, "harness", "harness", Harness::parse)?,
         account_id: match account {
             Some(a) => Some(AccountId::parse(&a).map_err(|_| bad_column("account id", &a))?),
             None => None,
@@ -83,7 +72,7 @@ fn run_row(row: &Row<'_>) -> rusqlite::Result<AnalyticsRun> {
         account_label: row.get("account_label")?,
         account_email: row.get("account_email")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        ended_at: opt_ts(row, "ended_at")?,
         metrics,
     })
 }
@@ -113,15 +102,13 @@ fn collect<T>(
     sql: &str,
     params: &[Value],
     f: fn(&Row<'_>) -> rusqlite::Result<T>,
-) -> AppResult<Vec<T>> {
-    let mut stmt = conn.prepare(sql).map_err(db)?;
-    let rows = stmt
-        .query_map(params_from_iter(params.iter()), f)
-        .map_err(db)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(db)
+) -> DbResult<Vec<T>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), f)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-fn read(conn: &Connection, query: &AnalyticsQuery) -> AppResult<AnalyticsData> {
+fn read(conn: &Connection, query: &AnalyticsQuery) -> DbResult<AnalyticsData> {
     if query.sandboxes.is_empty() || query.limit == 0 {
         return Ok(AnalyticsData::default());
     }
@@ -171,9 +158,8 @@ fn read(conn: &Connection, query: &AnalyticsQuery) -> AppResult<AnalyticsData> {
         ),
         &params,
         |row| {
-            let task: String = row.get("task_id")?;
             Ok(AnalyticsSwitch {
-                task_id: task_id(&task)?,
+                task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
                 at: Timestamp(row.get("at")?),
                 inputs: row.get("inputs")?,
             })
@@ -187,9 +173,8 @@ fn read(conn: &Connection, query: &AnalyticsQuery) -> AppResult<AnalyticsData> {
         ),
         &params,
         |row| {
-            let task: String = row.get("task_id")?;
             Ok(AnalyticsFeedback {
-                task_id: task_id(&task)?,
+                task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
                 verdict: row.get("verdict")?,
                 at: Timestamp(row.get("at")?),
             })

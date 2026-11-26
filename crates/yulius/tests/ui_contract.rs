@@ -36,7 +36,7 @@ const PUBLIC_PATHS: &[&str] = &[
     "/api/auth/github/callback",
     "/api/device/start",
     "/api/device/poll",
-    // A playground's guest link (SPEC-410): the link is the credential.
+    // A playground's guest link: the link is the credential.
     "/api/guest-invites/{}",
     "/api/guest-invites/{}/join",
 ];
@@ -520,7 +520,7 @@ fn resolve(file: &str, spec: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
-/// SPEC-505 AGY-010, SPEC-519 NEO-004: the composer offers Antigravity in a Google group whose
+/// The composer offers Antigravity in a Google group whose
 /// first model is the server's default for an Antigravity task (Gemini 4 Neon, whose effort the
 /// server sets when none is chosen), keeps Gemini 4 Carbon below it, and the browser mock creates
 /// an Antigravity task without a model on that default.
@@ -571,7 +571,7 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
             )),
         "the mock must use the shared {DEFAULT_ANTIGRAVITY_EFFORT} effort when Antigravity effort is omitted"
     );
-    // SPEC-620: a Claude Code task without a model or effort runs the server's defaults in the
+    // A Claude Code task without a model or effort runs the server's defaults in the
     // mock too, Opus 5.5 at the same shared effort.
     use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
     assert!(
@@ -593,7 +593,7 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
     Ok(())
 }
 
-/// SPEC-511 CXD-003: the composer's Codex entry sends no model, so the server's default runs, and
+/// The composer's Codex entry sends no model, so the server's default runs, and
 /// says which: GPT-6.2 Astra at high effort; the browser mock creates such a task on them.
 #[test]
 fn the_composer_says_codex_runs_its_default_model() -> TestResult {
@@ -623,7 +623,7 @@ fn the_composer_says_codex_runs_its_default_model() -> TestResult {
     Ok(())
 }
 
-/// SPEC-482 FBK-001: the pages name the fallback model the server launches (the Status line, the
+/// The pages name the fallback model the server launches (the Status line, the
 /// Capacity panel and "Run #N on…" work out from it what the pool does), and offer it.
 #[test]
 fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
@@ -638,8 +638,8 @@ fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
         "models.js does not fall back to {FALLBACK_CLAUDE_MODEL}"
     );
     assert!(models.contains(&format!("{{ id: '{FALLBACK_CLAUDE_MODEL}', name: '")));
-    // The page's rule is the server's: a Fable model falls back, and the default one does not
-    // (SPEC-493 MDL-002). The pages watch the review's model for the fallback line.
+    // The page's rule is the server's: a Fable model falls back, and the default one does not.
+    // The pages watch the review's model for the fallback line.
     assert!(models.contains("includes('fable') ? FALLBACK_MODEL : null"));
     assert_eq!(
         fallback_model(REVIEW_CLAUDE_MODEL),
@@ -662,7 +662,7 @@ fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
     Ok(())
 }
 
-/// SPEC-462 EFF-003, SPEC-520 RHM-006: the composer and Settings describe the no-choice item
+/// The composer and Settings describe the no-choice item
 /// ("Random") with each drawn harness's default model (`yulius_domain::harness`), and "Default"
 /// in the effort menu with the default effort, so a changed constant cannot leave the labels
 /// behind.
@@ -748,8 +748,8 @@ async fn embedded_assets_serve_with_content_types_and_every_import_resolves() ->
             && referenced.contains("/assets/vendor/xterm/xterm.mjs")
     );
     // The mock is the e2e suite's backend and the brand lab a design aid of mock mode, both
-    // served from the source tree; a real instance ships neither (SPEC-277 MCK-001; SPEC-483
-    // W1: the lab styles the page from its address, which made an approval one blind click).
+    // served from the source tree; a real instance ships neither (the lab styles the page from
+    // its address, which made an approval one blind click).
     let unshipped = [
         "/assets/mock.js",
         "/assets/lab.js",
@@ -786,8 +786,8 @@ async fn embedded_assets_serve_with_content_types_and_every_import_resolves() ->
     Ok(())
 }
 
-/// A demo link (`?mock=1`) opens the real app on a real instance, which has no mock to load
-/// (SPEC-277 MCK-002): the page is redirected without the parameter, other parameters kept.
+/// A demo link (`?mock=1`) opens the real app on a real instance, which has no mock to load:
+/// the page is redirected without the parameter, other parameters kept.
 #[tokio::test]
 async fn a_mock_link_opens_the_real_app() -> TestResult {
     let h = harness()?;

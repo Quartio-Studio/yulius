@@ -12,40 +12,34 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_i64, to_u64};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_as, text_parsed, to_i64, to_u64};
 
 const RUN_COLS: &str = "id, sandbox_id, environment, kind, requested_by, command, commit_sha, \
     state, output, exit_code, started_at, ended_at";
 
 fn delivery_from_row(row: &Row<'_>) -> rusqlite::Result<DeliveryRecord> {
-    let task: String = row.get("task_id")?;
-    let stage: String = row.get("stage")?;
     Ok(DeliveryRecord {
-        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
-        stage: DeliveryStage::decode(&stage).ok_or_else(|| bad_column("delivery stage", &stage))?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
+        stage: text_as(row, "stage", "delivery stage", DeliveryStage::decode)?,
         pr_number: row.get::<_, Option<i64>>("pr_number")?.map(to_u64),
         updated_at: Timestamp(row.get("updated_at")?),
     })
 }
 
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<EnvironmentRunRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
-    let kind: String = row.get("kind")?;
-    let user: String = row.get("requested_by")?;
-    let state: String = row.get("state")?;
     Ok(EnvironmentRunRecord {
         id: row.get("id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         environment: row.get("environment")?,
-        kind: EnvironmentRunKind::parse(&kind).ok_or_else(|| bad_column("run kind", &kind))?,
-        requested_by: UserId::parse(&user).map_err(|_| bad_column("user id", &user))?,
+        kind: text_as(row, "kind", "run kind", EnvironmentRunKind::parse)?,
+        requested_by: text_parsed(row, "requested_by", "user id", UserId::parse)?,
         command: row.get("command")?,
         commit: row.get("commit_sha")?,
-        state: EnvironmentRunState::parse(&state).ok_or_else(|| bad_column("run state", &state))?,
+        state: text_as(row, "state", "run state", EnvironmentRunState::parse)?,
         output: row.get("output")?,
         exit_code: row.get("exit_code")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        ended_at: opt_ts(row, "ended_at")?,
     })
 }
 
@@ -56,7 +50,7 @@ fn record_landing(
     task: &str,
     pr: Option<i64>,
     landed: &Landing,
-) -> AppResult<()> {
+) -> DbResult<()> {
     c.execute(
         "INSERT INTO task_merges(task_id, sandbox_id, pr_number, branch, head_sha, merged_sha)
          SELECT t.id, t.sandbox_id, d.pr_number, ?3, ?4, ?5 FROM tasks t JOIN delivery d ON d.task_id = t.id
@@ -66,7 +60,7 @@ fn record_landing(
                 AND (e.head_sha IS NULL OR e.head_sha = ?4) AND (e.merged_sha IS NULL OR e.merged_sha = ?5)))
          ON CONFLICT(task_id, merged_sha) DO NOTHING",
         params![task, pr, landed.branch, landed.head, landed.sha, landed.source == LandingSource::ClosedPull],
-    ).map_err(db)?;
+    )?;
     Ok(())
 }
 
@@ -75,13 +69,12 @@ impl DeliveryStore for SqliteStore {
     async fn delivery(&self, task: &TaskId) -> AppResult<Option<DeliveryRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT task_id, stage, pr_number, updated_at FROM delivery WHERE task_id = ?1",
                 [task],
                 delivery_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -107,12 +100,12 @@ impl DeliveryStore for SqliteStore {
                  AND (t.status='parked' OR coalesce(d.stage,'none')='none' OR
                      json_extract(p.snapshot,'$.state')='open' OR landing.pr_number IS NOT NULL)
                  ORDER BY t.id LIMIT ?3"
-            ).map_err(db)?;
+            )?;
             let rows = statement.query_map(params![sandbox, after, limit], |r| {
                 Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,Option<i64>>(3)?))
-            }).map_err(db)?;
+            })?;
             rows.map(|r| {
-                let (id, branch, json, pending) = r.map_err(db)?;
+                let (id, branch, json, pending) = r?;
                 Ok(PullDiscovery {
                     task: TaskId::parse(&id).map_err(yulius_app::error::AppError::internal)?,
                     branch, observation: serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)?,
@@ -137,11 +130,11 @@ impl DeliveryStore for SqliteStore {
                     params![task, number.map(to_i64)],
                     |row| row.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             snapshot
                 .map(|json| {
-                    serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)
+                    Ok(serde_json::from_str(&json)
+                        .map_err(yulius_app::error::AppError::internal)?)
                 })
                 .transpose()
         })
@@ -153,9 +146,8 @@ impl DeliveryStore for SqliteStore {
         let limit = i64::try_from(limit).map_err(yulius_app::error::AppError::internal)?;
         self.call(move |c| {
             let mut statement = c.prepare("SELECT pr_number FROM task_pull_observations WHERE task_id=?1
-                         AND json_extract(snapshot,'$.state')='open' ORDER BY pr_number DESC LIMIT ?2").map_err(db)?;
-            statement.query_map(params![task, limit], |row| row.get::<_, i64>(0).map(to_u64))
-                .map_err(db)?.collect::<rusqlite::Result<Vec<_>>>().map_err(db)
+                         AND json_extract(snapshot,'$.state')='open' ORDER BY pr_number DESC LIMIT ?2")?;
+            Ok(statement.query_map(params![task, limit], |row| row.get::<_, i64>(0).map(to_u64))?.collect::<rusqlite::Result<Vec<_>>>()?)
         }).await
     }
 
@@ -177,8 +169,7 @@ impl DeliveryStore for SqliteStore {
                           OR (json_extract(excluded.snapshot,'$.merged') AND
                               task_pull_observations.needs_confirmation AND NOT excluded.needs_confirmation)",
                 params![task, number, snapshot, needs_confirmation],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -193,7 +184,7 @@ impl DeliveryStore for SqliteStore {
         let task = task.to_string();
         let branch = branch.to_owned();
         let row: Option<(bool, Option<String>)> = self.call(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT t.activity IS 'working', CASE WHEN t.activity = 'needs_attention' THEN t.attention END
                  FROM tasks t JOIN delivery d ON d.task_id = t.id
                  WHERE t.id = ?1 AND d.stage = 'pr_open' AND d.pr_number = ?2 AND t.branch = ?3
@@ -204,7 +195,7 @@ impl DeliveryStore for SqliteStore {
                    AND NOT EXISTS (SELECT 1 FROM prompt_holds WHERE task_id = t.id AND state = 'pending')",
                 params![task, to_i64(pr), branch],
                 |r| Ok((r.get(0)?, r.get(1)?)),
-            ).optional().map_err(db)
+            ).optional()?)
         }).await?;
         Ok(row.and_then(|(working, reason)| {
             let attention = reason
@@ -218,17 +209,13 @@ impl DeliveryStore for SqliteStore {
     async fn deliveries(&self, sandbox: &SandboxId) -> AppResult<Vec<DeliveryRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT d.task_id, d.stage, d.pr_number, d.updated_at FROM delivery d \
+            let mut stmt = c.prepare(
+                "SELECT d.task_id, d.stage, d.pr_number, d.updated_at FROM delivery d \
                      JOIN tasks t ON t.id = d.task_id WHERE t.sandbox_id = ?1 ORDER BY t.number",
-                )
-                .map_err(db)?;
+            )?;
             let rows = stmt
-                .query_map([sandbox], delivery_from_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([sandbox], delivery_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -246,15 +233,14 @@ impl DeliveryStore for SqliteStore {
         let expected = expected.encode();
         let next = next.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let current: Option<(String, Option<i64>)> = tx
                 .query_row(
                     "SELECT stage, pr_number FROM delivery WHERE task_id = ?1",
                     [next.task_id.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             let (stage, pr) = current.as_ref().map_or(("none", None), |(s, n)| (s.as_str(), *n));
             if stage != expected || (stage == "pr_open" && next.stage == DeliveryStage::MergedIntegration
                 && pr.is_some() && pr != next.pr_number.map(to_i64)) {
@@ -273,18 +259,17 @@ impl DeliveryStore for SqliteStore {
                     next.updated_at.0,
                     (next.stage == DeliveryStage::MergedIntegration).then_some(next.updated_at.0),
                 ],
-            )
-            .map_err(db)?;
+            )?;
             if next.stage == DeliveryStage::PrOpen && let Some(pr) = next.pr_number {
                 tx.execute("DELETE FROM task_pull_observations WHERE task_id=?1 AND pr_number=?2
                             AND NOT json_extract(snapshot,'$.merged')",
-                    params![next.task_id.as_str(), to_i64(pr)]).map_err(db)?;
+                    params![next.task_id.as_str(), to_i64(pr)])?;
             }
             if next.stage == DeliveryStage::PrOpen && let (Some(base), Some(pr)) = (opening_base, next.pr_number) {
                 tx.execute(
                     "INSERT INTO task_merge_recovery(task_id, pr_number, branch) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
                     params![next.task_id.as_str(), to_i64(pr), base],
-                ).map_err(db)?;
+                )?;
             }
             // A merged pull request takes its review rounds along: the task's next one starts
             // at round 1 (SPEC-493 REV-002). Here, so every way a merge is recorded does it.
@@ -299,7 +284,7 @@ impl DeliveryStore for SqliteStore {
                                 branch = excluded.branch, head_sha = excluded.head_sha, merged_sha = excluded.merged_sha
                              WHERE task_merge_recovery.head_sha IS NULL",
                             params![next.task_id.as_str(), to_i64(pr), landing.branch, landing.head, landing.sha],
-                        ).map_err(db)?;
+                        )?;
                     }
                 }
                 tx.execute(
@@ -310,10 +295,9 @@ impl DeliveryStore for SqliteStore {
                         next.updated_at.0,
                         next.task_id.as_str()
                     ],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -328,14 +312,13 @@ impl DeliveryStore for SqliteStore {
         let (task, pr, known) = (task.to_string(), pr.map(to_i64), known.cloned());
         self.call(move |c| {
             let lookup = |c: &rusqlite::Connection| {
-                c.query_row(
+                Ok(c.query_row(
                     "SELECT merged_sha FROM task_merges WHERE task_id = ?1 AND pr_number IS ?2
                      ORDER BY rowid DESC LIMIT 1",
                     params![task, pr],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)
+                .optional()?)
             };
             let existing = lookup(c)?;
             if existing.is_none()
@@ -373,8 +356,7 @@ impl DeliveryStore for SqliteStore {
                         ))
                     },
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             let Some((pr_number, branch, head_sha)) = landing else {
                 return Ok(None);
             };
@@ -383,7 +365,7 @@ impl DeliveryStore for SqliteStore {
                 let found = c.query_row(
                     "SELECT at, seq FROM task_merge_runs WHERE task_id = ?1 AND merged_sha = ?2 AND run_id = ?3",
                     params![task, sha, cursor], |row| Ok((row.get(0)?, row.get(1)?)),
-                ).optional().map_err(db)?;
+                ).optional()?;
                 if found.is_none() {
                     return Ok(None);
                 }
@@ -397,17 +379,15 @@ impl DeliveryStore for SqliteStore {
                  WHERE task_id = ?1 AND merged_sha = ?2 AND (?3 IS NULL OR run_id = ?3)
                  AND (?4 IS NULL OR (at, seq, run_id) < (?5, ?6, ?4))
                  ORDER BY at DESC, seq DESC, run_id DESC LIMIT ?7",
-                )
-                .map_err(db)?;
+                )?;
             let (at, seq) = boundary.unzip();
             let rows = stmt
                 .query_map(params![task, sha, run_id, before, at, seq, LIMIT + 1], |row| {
                     let result: String = row.get(0)?;
                     serde_json::from_str::<EvidenceRun>(&result)
                         .map_err(|err| bad_column("merge evidence", &err.to_string()))
-                })
-                .map_err(db)?;
-            let mut runs = rows.collect::<Result<Vec<_>, _>>().map_err(db)?;
+                })?;
+            let mut runs = rows.collect::<Result<Vec<_>, _>>()?;
             if run_id.is_some() && runs.is_empty() {
                 return Ok(None);
             }
@@ -451,8 +431,7 @@ impl DeliveryStore for SqliteStore {
                     run.started_at.0,
                     run.ended_at.map(|t| t.0)
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -461,13 +440,12 @@ impl DeliveryStore for SqliteStore {
     async fn environment_run(&self, id: &str) -> AppResult<Option<EnvironmentRunRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {RUN_COLS} FROM environment_runs WHERE id = ?1"),
                 [id],
                 run_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -479,17 +457,13 @@ impl DeliveryStore for SqliteStore {
     ) -> AppResult<Vec<EnvironmentRunRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {RUN_COLS} FROM environment_runs WHERE sandbox_id = ?1 \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {RUN_COLS} FROM environment_runs WHERE sandbox_id = ?1 \
                      ORDER BY started_at DESC, rowid DESC LIMIT ?2"
-                ))
-                .map_err(db)?;
+            ))?;
             let rows = stmt
-                .query_map(params![sandbox, i64::from(limit)], run_from_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map(params![sandbox, i64::from(limit)], run_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -497,16 +471,12 @@ impl DeliveryStore for SqliteStore {
 
     async fn running_environment_runs(&self) -> AppResult<Vec<EnvironmentRunRecord>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {RUN_COLS} FROM environment_runs WHERE state = 'running'"
-                ))
-                .map_err(db)?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {RUN_COLS} FROM environment_runs WHERE state = 'running'"
+            ))?;
             let rows = stmt
-                .query_map([], run_from_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([], run_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -524,8 +494,7 @@ impl DeliveryStore for SqliteStore {
                 "UPDATE environment_runs SET output = ?2, commit_sha = COALESCE(?3, commit_sha) \
                  WHERE id = ?1 AND state = 'running'",
                 params![id, output, commit],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -546,8 +515,7 @@ impl DeliveryStore for SqliteStore {
                     "UPDATE environment_runs SET state = ?2, output = ?3, exit_code = ?4, ended_at = ?5 \
                      WHERE id = ?1 AND state = 'running'",
                     params![id, state.as_str(), output, exit_code, ended_at.0],
-                )
-                .map_err(db)?;
+                )?;
             Ok(changed == 1)
         })
         .await
@@ -629,7 +597,7 @@ mod tests {
                  INSERT INTO tasks (id,sandbox_id,number,title,prompt,harness,status,branch,origin,created_by,created_at,updated_at)
                  VALUES ('t2','s1',2,'Next','Prompt','codex','parked','next','ui','u1',1,2);
                  INSERT INTO delivery (task_id,stage,pr_number,updated_at) VALUES ('t1','merged_integration',1,2),('t2','merged_integration',2,2);"
-            ).map_err(db)?;
+            )?;
             Ok(())
         }).await?;
         for number in 1..=2 {

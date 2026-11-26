@@ -3655,3 +3655,94 @@ async fn a_pin_names_the_chosen_subscription_until_it_is_removed() -> R {
     assert_eq!(store.task_pin(&TaskId::parse("missing")?).await?, None);
     Ok(())
 }
+
+/// SPEC-651 BIL-001, BIL-005: a subscription's billing cycle is kept, replaced and removed; it
+/// stays across a new sign-in and a rename, and goes with the subscription.
+#[tokio::test]
+async fn a_subscriptions_billing_cycle_lasts_until_it_or_the_subscription_is_removed() -> R {
+    use yulius_app::model::{AccountChange, AccountRecord, AccountStatus, Sealed};
+    use yulius_app::ports::store::AccountStore;
+    use yulius_domain::billing::BillingCycle;
+    use yulius_domain::harness::Provider;
+    use yulius_domain::ids::AccountId;
+
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let account = |id: &str| -> Result<AccountRecord, Box<dyn std::error::Error>> {
+        Ok(AccountRecord {
+            id: AccountId::parse(id)?,
+            provider: Provider::Anthropic,
+            label: id.into(),
+            credential: Some(Sealed(vec![1])),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+    };
+    let (one, two) = (account("acc1")?, account("acc2")?);
+    store.insert_account(&one).await?;
+    store.insert_account(&two).await?;
+    assert!(store.account_billing().await?.is_empty(), "none by default");
+
+    let monthly = BillingCycle::parse("2026-11-24", "month")?;
+    let yearly = BillingCycle::parse("2025-02-03", "year")?;
+    store
+        .set_account_billing(&one.id, Some(monthly), Timestamp(2))
+        .await?;
+    store
+        .set_account_billing(&two.id, Some(yearly), Timestamp(2))
+        .await?;
+    let mut all = store.account_billing().await?;
+    all.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    assert_eq!(
+        all,
+        vec![(one.id.clone(), monthly), (two.id.clone(), yearly)]
+    );
+
+    // Replaced, then kept across a new credential and a rename.
+    let replaced = BillingCycle::parse("2026-12-01", "year")?;
+    store
+        .set_account_billing(&one.id, Some(replaced), Timestamp(3))
+        .await?;
+    store
+        .set_account_credential(&one.id, &Sealed(vec![2]), AccountStatus::Ok, Timestamp(4))
+        .await?;
+    store
+        .update_account(
+            &one.id,
+            &AccountChange {
+                label: Some("renamed".into()),
+                email: None,
+            },
+            Timestamp(5),
+        )
+        .await?;
+    assert!(
+        store
+            .account_billing()
+            .await?
+            .contains(&(one.id.clone(), replaced))
+    );
+
+    // Removed: only that subscription's cycle; removing none is no error.
+    store
+        .set_account_billing(&one.id, None, Timestamp(6))
+        .await?;
+    store
+        .set_account_billing(&one.id, None, Timestamp(7))
+        .await?;
+    assert_eq!(
+        store.account_billing().await?,
+        vec![(two.id.clone(), yearly)]
+    );
+
+    // A removed subscription takes its cycle with it.
+    store.delete_account(&two.id).await?;
+    assert!(store.account_billing().await?.is_empty());
+    Ok(())
+}

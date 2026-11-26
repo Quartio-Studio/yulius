@@ -114,24 +114,32 @@ fn bind_read_only(containment: &mut Containment, files: &[PlannedFile]) {
     }
 }
 
-/// A Superagent's fingerprint file (SPEC-352 SRF-001): `<run_dir>/scrub.json` (0600), named by
-/// `YULIUS_SCRUB_FILE` in place of any inherited one, and bound read-only into a contained session.
-/// The Bash wrapper reads it while Yulius cannot be reached, as a task run's.
+/// A run's fingerprint file, `<run_dir>/scrub.json` (0600), and the `YULIUS_SCRUB_FILE` entry
+/// naming it. The Bash wrapper reads it while Yulius cannot be reached.
+fn plan_scrub_file(
+    run_dir: &Path,
+    fingerprints: &FingerprintSet,
+) -> AppResult<(PlannedFile, (String, String))> {
+    let path = run_dir.join(FINGERPRINTS_FILE);
+    let env = (SCRUB_FILE_ENV.into(), path.to_string_lossy().into_owned());
+    let file = PlannedFile {
+        path,
+        contents: serde_json::to_vec(fingerprints).map_err(AppError::internal)?,
+        mode: 0o600,
+    };
+    Ok((file, env))
+}
+
+/// A Superagent's fingerprint file (SPEC-352 SRF-001): named in place of any inherited one, and
+/// bound read-only into a contained session.
 fn superagent_scrub_file(
     run_dir: &Path,
     fingerprints: &FingerprintSet,
     launch: &mut LaunchPlan,
 ) -> AppResult<()> {
-    let file = PlannedFile {
-        path: run_dir.join(FINGERPRINTS_FILE),
-        contents: serde_json::to_vec(fingerprints).map_err(AppError::internal)?,
-        mode: 0o600,
-    };
+    let (file, env) = plan_scrub_file(run_dir, fingerprints)?;
     launch.env.retain(|(key, _)| key != SCRUB_FILE_ENV);
-    launch.env.push((
-        SCRUB_FILE_ENV.into(),
-        file.path.to_string_lossy().into_owned(),
-    ));
+    launch.env.push(env);
     bind_read_only(&mut launch.containment, std::slice::from_ref(&file));
     launch.files.push(file);
     Ok(())
@@ -557,16 +565,9 @@ impl App {
             }
         }
         let fingerprints = self.scrub_fingerprints_for(&sandbox.id, holder).await?;
-        let scrub_file = run_dir.join(FINGERPRINTS_FILE);
-        launch.files.push(PlannedFile {
-            path: scrub_file.clone(),
-            contents: serde_json::to_vec(&fingerprints).map_err(AppError::internal)?,
-            mode: 0o600,
-        });
-        launch.env.push((
-            SCRUB_FILE_ENV.into(),
-            scrub_file.to_string_lossy().into_owned(),
-        ));
+        let (file, env) = plan_scrub_file(run_dir, &fingerprints)?;
+        launch.files.push(file);
+        launch.env.push(env);
         if let Some((script, prefix)) = self.scrub_shell_prefix(run_dir) {
             launch.files.push(script);
             launch.env.push(prefix);
@@ -926,7 +927,7 @@ impl App {
                     RULES_HOW,
                     "Website sign-in in the project browser: browser_fill_secret types the value into a field of a page on a bound host (open it with browser_open, find the field with browser_snapshot); a login's user name is in the description (older secrets may also store a user name or a two-factor seed: field username or totp).",
                     "A secret with no hosts (or not the one you need) is sent nowhere yet: work out the service's API host from its description and documentation and ask for it with secret_request_hosts; a person allows it on the Secrets page (they may be the person in front of you: give them the link). For a secret with auto_allow: true and no rules its creator let agents set it up: the hosts you ask for are bound at once, so ask only for the service's own documented hosts.",
-                    "Code that runs outside the proxy (a deploy script, ssh, a deployed app) reads its keys from the git-ignored .env of this repository: put a secret there with secret_copy_to_env, never by writing the file yourself (you would write [secret:NAME]). A person allows each secret once (env_files: allowed); until then the call asks them. A multi-line key (stored with literal \\n) is written as its file, line breaks and final line break included.",
+                    "Code that runs outside the proxy (a deploy script, ssh, a deployed app) reads its keys from the git-ignored .env of this repository: put a secret there with secret_copy_to_env, never by writing the file yourself (you would write [secret:NAME]). A person allows each secret once (env_files: allowed); until then the call asks them with an Allow button on the Secrets page. Dev-stage deploys get only secrets with that allowance: a secret a dev-stage [cd.*] table names (also one added to [cd.dev] secrets) with env_files not allowed is asked for with secret_copy_to_env. A multi-line key (stored with literal \\n) is written as its file, line breaks and final line break included.",
                     "To check that a value someone holds (a file, a key they pasted into a file) is the one in the vault, compute its SHA-256 in a shell without printing the value (for example sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and call secret_verify with the secret's name and that hash. It says whether it matches exactly, only without a final line break, or with its line breaks written as literal \\n (an agent secret never spans lines, so a multi-line key is stored that way), and on a match how many lines the value stands for.",
                     "A secret that is in a file you can reach (a key in ~/.ssh, a key or token you generated without printing it) becomes a new agent secret with secret_create_from_file: Yulius reads the file, so neither you nor anyone sees the value. Never print the file or ask a person to paste it. The new secret has no hosts and no .env allowance until a person allows them.",
                     "A secret with production: true is production's (its deploys get it): agents never use it, not through hosts, .env copies or the browser. When agent work needs the same value (a dev CI token that exists only as a production secret), ask for a copy as a new agent secret with secret_request_copy (its name and hosts); a person allows it on the Secrets page and you use the copy once it is listed.",
@@ -948,7 +949,7 @@ impl App {
                 "Several secrets on one host and one header: choose with the request header X-Yulius-Secret: NAME.",
                 RULES_HOW,
                 "Website sign-in in the project browser: browser_fill_secret types the value into a field of a page on a bound host; a login's user name is in the description (older secrets may also store a user name or a two-factor seed: field username or totp).",
-                "Code that runs outside Yulius' proxy (a deployed app, a deploy script) reads its keys from the project's git-ignored .env, named without values in the tracked .env.example. Put an agent secret there with secret_copy_to_env, never by writing or editing the file: you would write [secret:NAME], not the value. A person allows each secret once (env_files: allowed); until then the call asks them.",
+                "Code that runs outside Yulius' proxy (a deployed app, a deploy script) reads its keys from the project's git-ignored .env, named without values in the tracked .env.example. Put an agent secret there with secret_copy_to_env, never by writing or editing the file: you would write [secret:NAME], not the value. A person allows each secret once (env_files: allowed); until then the call asks them with an Allow button on the Secrets page. Dev-stage deploys get only secrets with that allowance: a secret a dev-stage [cd.*] table names (also one your change adds to [cd.dev] secrets) with env_files not allowed is asked for with secret_copy_to_env, not needs_you; when only the deploy uses it, no second call is needed once allowed.",
                 "A secret that is in a file you can reach (a key in ~/.ssh, a key or token you generated without printing it) becomes a new agent secret with secret_create_from_file: Yulius reads the file, so neither you nor anyone sees the value. Never print the file or ask a person to paste it. The new secret has no hosts and no .env allowance until a person allows them.",
                 "A secret with production: true is production's (its deploys get it): agents never use it, not through hosts, .env copies or the browser. When agent work needs the same value (a dev CI token that exists only as a production secret), ask for a copy as a new agent secret with secret_request_copy (its name and hosts); a person allows it on the Secrets page and you use the copy once it is listed.",
                 "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values yourself.",
@@ -965,8 +966,7 @@ impl App {
         user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: FillArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: FillArgs = super::parse_args(args)?;
         let field = args.field.as_deref().unwrap_or("value");
         if !matches!(field, "value" | "password" | "username" | "totp") {
             return Err(AppError::Invalid(
@@ -974,31 +974,9 @@ impl App {
             ));
         }
         let record = self
-            .resolved_agent_secrets(user.sandbox(), user.holder())
-            .await?
-            .into_iter()
-            .find(|r| r.name == args.secret.trim())
-            .ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "no agent secret named {:?} applies to this project (see secrets_list)",
-                    args.secret
-                ))
-            })?;
-        if matches!(record.scope(), AgentScope::Personal(_)) {
-            return Err(AppError::Forbidden(format!(
-                "{}: {}",
-                record.name,
-                super::PERSONAL_SECRET_BROWSER
-            )));
-        }
-        // A production secret is no agent's, by any way (ADR-0324).
-        if record.cd_prod {
-            return Err(AppError::Forbidden(format!(
-                "{}: {}",
-                record.name,
-                super::PRODUCTION_SECRET
-            )));
-        }
+            .named_agent_secret(user.sandbox(), user.holder(), &args.secret)
+            .await?;
+        super::refuse_personal_or_prod(&record, super::PERSONAL_SECRET_BROWSER)?;
         let browser = self.browser_session(user.sandbox()).await?;
         let tab = browser
             .tabs()
@@ -1327,139 +1305,182 @@ impl EgressPolicy for App {
                 "an agent secret holding a control character was not sent; a person replaces its value"
             );
         }
-        let resolve = |name: &str| -> Option<String> {
-            bound
-                .iter()
-                .find(|(r, _)| r.name == name)
-                .map(|(_, p)| p.value.clone())
-        };
-        let mut used: Vec<String> = Vec::new();
-        let mut chosen: Option<String> = None;
-        let mut headers: Vec<(String, Vec<u8>)> = Vec::with_capacity(request.headers.len() + 2);
-        for (name, value) in &request.headers {
-            match name.as_str() {
-                "x-yulius-secret" => {
-                    chosen = Some(String::from_utf8_lossy(value).trim().to_owned());
+        match decide(&request, &bound) {
+            Decided::Refuse(refusal) => refusal,
+            Decided::OutsideRules {
+                path_and_query,
+                denied,
+            } => {
+                let check = RuleCheck::of(&request, &path_and_query);
+                self.note_refusals(client, &check, &request.host, &denied)
+                    .await;
+                check.refusal(&request.host, &denied)
+            }
+            Decided::Forward {
+                path_and_query,
+                headers,
+                used,
+            } => {
+                for name in &used {
+                    if let Some((record, _)) = bound.iter().find(|(r, _)| &r.name == name) {
+                        self.note_agent_use(
+                            (client.use_key(), &client.actor()),
+                            record,
+                            "vault.agent.use",
+                            &request.host,
+                        )
+                        .await;
+                    }
                 }
-                "proxy-authorization" | "proxy-connection" | "accept-encoding" => {}
-                _ => {
-                    let value = substitute_header(name, value, &resolve, &mut used);
-                    headers.push((name.clone(), value));
-                }
-            }
-        }
-        let path_and_query = match substitute_placeholders(&request.path_and_query, resolve) {
-            Some(sub) => {
-                used.extend(sub.used);
-                sub.text
-            }
-            None => request.path_and_query.clone(),
-        };
-        if let Some(name) = &chosen
-            && !bound.iter().any(|(r, _)| &r.name == name)
-        {
-            return EgressDecision::Refuse {
-                status: 403,
-                message: format!(
-                    "Yulius: no agent secret named {name:?} is bound to {}",
-                    request.host
-                ),
-            };
-        }
-        // A secret with rules is used only by a request they allow (SPEC-627 MPR-002): its
-        // placeholder, its name in X-Yulius-Secret or its injected header outside them refuses
-        // the request, unless another secret's rules allow that header (MPR-003).
-        let check = RuleCheck::of(&request, &path_and_query);
-        let mut denied: Vec<&VaultSecretRecord> = Vec::new();
-        let named = used.iter().chain(chosen.iter());
-        for (record, _) in bound
-            .iter()
-            .filter(|(r, _)| named.clone().any(|n| n == &r.name))
-        {
-            if !check.fits(record) {
-                denied.push(record);
-            }
-        }
-        // Secrets that add a header the request lacks, grouped by header; those outside their
-        // rules apart.
-        let mut wanting: BTreeMap<String, Vec<&(VaultSecretRecord, AgentPayload)>> =
-            BTreeMap::new();
-        let mut unfit: BTreeMap<String, Vec<&VaultSecretRecord>> = BTreeMap::new();
-        for entry in &bound {
-            let (record, _) = entry;
-            if chosen.as_ref().is_some_and(|c| c != &record.name) {
-                continue;
-            }
-            if let Some(header) = injection_of(record).header_name()
-                && !headers.iter().any(|(n, _)| n == &header)
-            {
-                if check.fits(record) {
-                    wanting.entry(header).or_default().push(entry);
-                } else {
-                    unfit.entry(header).or_default().push(record);
+                EgressDecision::Forward {
+                    path_and_query,
+                    headers,
+                    used,
                 }
             }
-        }
-        for (header, records) in unfit {
-            if !wanting.contains_key(&header) {
-                denied.extend(records);
-            }
-        }
-        denied.sort_by(|a, b| a.name.cmp(&b.name));
-        denied.dedup_by(|a, b| a.id == b.id);
-        if !denied.is_empty() {
-            self.note_refusals(client, &check, &request.host, &denied)
-                .await;
-            return check.refusal(&request.host, &denied);
-        }
-        for (header, entries) in wanting {
-            if entries.len() > 1 {
-                let names: Vec<&str> = entries.iter().map(|(r, _)| r.name.as_str()).collect();
-                return EgressDecision::Refuse {
-                    status: 409,
-                    message: format!(
-                        "Yulius: several agent secrets add {header} for {}: {}. Choose one with the request header X-Yulius-Secret: <NAME>.",
-                        request.host,
-                        names.join(", ")
-                    ),
-                };
-            }
-            let (record, payload) = entries[0];
-            if let Some((name, value)) =
-                injection_of(record).render(payload.username.as_deref(), &payload.value)
-            {
-                headers.push((name, value.into_bytes()));
-                used.push(record.name.clone());
-            }
-        }
-        headers.push(("accept-encoding".into(), b"identity".to_vec()));
-        used.sort();
-        used.dedup();
-        for name in &used {
-            if let Some((record, _)) = bound.iter().find(|(r, _)| &r.name == name) {
-                self.note_agent_use(
-                    (client.use_key(), &client.actor()),
-                    record,
-                    "vault.agent.use",
-                    &request.host,
-                )
-                .await;
-            }
-        }
-        EgressDecision::Forward {
-            path_and_query,
-            headers,
-            used,
         }
     }
 
     async fn egress_redactor(&self, client: &EgressClient) -> Option<Arc<PlainMatcher>> {
-        self.agent_secret_matcher(&client.sandbox_id)
-            .await
-            .inspect_err(|err| {
-                tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
-            })
-            .ok()
+        self.redaction_matcher(&client.sandbox_id).await
+    }
+}
+
+/// What the proxy does with a request, decided without I/O.
+enum Decided<'a> {
+    /// Refuse it with this answer.
+    Refuse(EgressDecision),
+    /// Refuse it: it would use these secrets outside their rules (audited, then refused).
+    OutsideRules {
+        path_and_query: String,
+        denied: Vec<&'a VaultSecretRecord>,
+    },
+    /// Forward it; `used` names the secrets applied, sorted.
+    Forward {
+        path_and_query: String,
+        headers: Vec<(String, Vec<u8>)>,
+        used: Vec<String>,
+    },
+}
+
+/// Substitutes the placeholders, checks the secrets' rules and the header a secret adds, for a
+/// request to a host the `bound` secrets apply to.
+fn decide<'a>(
+    request: &EgressRequest,
+    bound: &'a [(VaultSecretRecord, AgentPayload)],
+) -> Decided<'a> {
+    let resolve = |name: &str| -> Option<String> {
+        bound
+            .iter()
+            .find(|(r, _)| r.name == name)
+            .map(|(_, p)| p.value.clone())
+    };
+    let mut used: Vec<String> = Vec::new();
+    let mut chosen: Option<String> = None;
+    let mut headers: Vec<(String, Vec<u8>)> = Vec::with_capacity(request.headers.len() + 2);
+    for (name, value) in &request.headers {
+        match name.as_str() {
+            "x-yulius-secret" => {
+                chosen = Some(String::from_utf8_lossy(value).trim().to_owned());
+            }
+            "proxy-authorization" | "proxy-connection" | "accept-encoding" => {}
+            _ => {
+                let value = substitute_header(name, value, &resolve, &mut used);
+                headers.push((name.clone(), value));
+            }
+        }
+    }
+    let path_and_query = match substitute_placeholders(&request.path_and_query, resolve) {
+        Some(sub) => {
+            used.extend(sub.used);
+            sub.text
+        }
+        None => request.path_and_query.clone(),
+    };
+    if let Some(name) = &chosen
+        && !bound.iter().any(|(r, _)| &r.name == name)
+    {
+        return Decided::Refuse(EgressDecision::Refuse {
+            status: 403,
+            message: format!(
+                "Yulius: no agent secret named {name:?} is bound to {}",
+                request.host
+            ),
+        });
+    }
+    // A secret with rules is used only by a request they allow (SPEC-627 MPR-002): its
+    // placeholder, its name in X-Yulius-Secret or its injected header outside them refuses
+    // the request, unless another secret's rules allow that header (MPR-003).
+    let check = RuleCheck::of(request, &path_and_query);
+    let mut denied: Vec<&VaultSecretRecord> = Vec::new();
+    let named = used.iter().chain(chosen.iter());
+    for (record, _) in bound
+        .iter()
+        .filter(|(r, _)| named.clone().any(|n| n == &r.name))
+    {
+        if !check.fits(record) {
+            denied.push(record);
+        }
+    }
+    // Secrets that add a header the request lacks, grouped by header; those outside their
+    // rules apart.
+    let mut wanting: BTreeMap<String, Vec<&(VaultSecretRecord, AgentPayload)>> = BTreeMap::new();
+    let mut unfit: BTreeMap<String, Vec<&VaultSecretRecord>> = BTreeMap::new();
+    for entry in bound {
+        let (record, _) = entry;
+        if chosen.as_ref().is_some_and(|c| c != &record.name) {
+            continue;
+        }
+        if let Some(header) = injection_of(record).header_name()
+            && !headers.iter().any(|(n, _)| n == &header)
+        {
+            if check.fits(record) {
+                wanting.entry(header).or_default().push(entry);
+            } else {
+                unfit.entry(header).or_default().push(record);
+            }
+        }
+    }
+    for (header, records) in unfit {
+        if !wanting.contains_key(&header) {
+            denied.extend(records);
+        }
+    }
+    denied.sort_by(|a, b| a.name.cmp(&b.name));
+    denied.dedup_by(|a, b| a.id == b.id);
+    if !denied.is_empty() {
+        return Decided::OutsideRules {
+            path_and_query,
+            denied,
+        };
+    }
+    for (header, entries) in wanting {
+        if entries.len() > 1 {
+            let names: Vec<&str> = entries.iter().map(|(r, _)| r.name.as_str()).collect();
+            return Decided::Refuse(EgressDecision::Refuse {
+                status: 409,
+                message: format!(
+                    "Yulius: several agent secrets add {header} for {}: {}. Choose one with the request header X-Yulius-Secret: <NAME>.",
+                    request.host,
+                    names.join(", ")
+                ),
+            });
+        }
+        let (record, payload) = entries[0];
+        if let Some((name, value)) =
+            injection_of(record).render(payload.username.as_deref(), &payload.value)
+        {
+            headers.push((name, value.into_bytes()));
+            used.push(record.name.clone());
+        }
+    }
+    headers.push(("accept-encoding".into(), b"identity".to_vec()));
+    used.sort();
+    used.dedup();
+    Decided::Forward {
+        path_and_query,
+        headers,
+        used,
     }
 }
 
@@ -1572,6 +1593,7 @@ mod tests {
                 binds: Vec::new(),
                 identity: None,
                 join: None,
+                guard: Vec::new(),
             },
             argv: Vec::new(),
             cwd: "/data/sandboxes/s1/repo".into(),
@@ -1616,6 +1638,7 @@ mod tests {
             binds: Vec::new(),
             identity: None,
             join: None,
+            guard: Vec::new(),
         };
         bind_read_only(&mut contained, std::slice::from_ref(&file));
         let Containment::Bubblewrap { readonly, .. } = &contained else {
@@ -1649,5 +1672,149 @@ mod tests {
         assert_eq!(used, vec!["PASS".to_owned()]);
         let untouched = substitute_header("x-other", b"plain", &resolve, &mut used);
         assert_eq!(untouched, b"plain".to_vec());
+    }
+
+    fn bound(
+        name: &str,
+        injection: &str,
+        rules: &[(&str, &str)],
+    ) -> (VaultSecretRecord, AgentPayload) {
+        let record = VaultSecretRecord {
+            hosts: vec!["api.example.com".into()],
+            rules: rules
+                .iter()
+                .filter_map(|(method, path)| {
+                    yulius_domain::vault::rules::SecretRule::parse(&[(*method).into()], path).ok()
+                })
+                .collect(),
+            injection: injection.into(),
+            ..crate::vault::test_record(&format!("id-{name}"), name)
+        };
+        assert_eq!(
+            record.rules.len(),
+            rules.len(),
+            "a test rule does not parse"
+        );
+        let payload = AgentPayload {
+            username: None,
+            value: format!("value-of-{name}"),
+            totp: None,
+        };
+        (record, payload)
+    }
+
+    fn request(method: &str, path: &str, headers: &[(&str, &str)]) -> EgressRequest {
+        EgressRequest {
+            method: method.into(),
+            host: "api.example.com".into(),
+            port: 443,
+            path_and_query: path.into(),
+            headers: headers
+                .iter()
+                .map(|(n, v)| ((*n).into(), v.as_bytes().to_vec()))
+                .collect(),
+        }
+    }
+
+    /// The decision alone: placeholders are replaced, the proxy's own headers are
+    /// dropped, the one secret that adds a missing header adds it, and `used` is sorted.
+    #[test]
+    fn a_request_is_forwarded_with_its_secrets_applied() {
+        let secrets = [bound("ATOKEN", "bearer", &[]), bound("ZKEY", "none", &[])];
+        let req = request(
+            "GET",
+            "/v1?key=yulius-secret-ZKEY",
+            &[
+                ("proxy-authorization", "x"),
+                ("accept-encoding", "gzip"),
+                ("x-a", "yulius-secret-ZKEY"),
+            ],
+        );
+        let Decided::Forward {
+            path_and_query,
+            headers,
+            used,
+        } = decide(&req, &secrets)
+        else {
+            panic!("not forwarded");
+        };
+        assert_eq!(path_and_query, "/v1?key=value-of-ZKEY");
+        assert_eq!(
+            headers,
+            vec![
+                ("x-a".to_owned(), b"value-of-ZKEY".to_vec()),
+                (
+                    "authorization".to_owned(),
+                    b"Bearer value-of-ATOKEN".to_vec()
+                ),
+                ("accept-encoding".to_owned(), b"identity".to_vec()),
+            ]
+        );
+        // Used twice and found before the injected one: sorted and deduplicated.
+        assert_eq!(used, vec!["ATOKEN".to_owned(), "ZKEY".to_owned()]);
+    }
+
+    #[test]
+    fn x_yulius_secret_must_name_a_bound_secret_and_picks_the_one_that_adds_a_header() {
+        let secrets = [bound("A", "bearer", &[]), bound("B", "bearer", &[])];
+        let Decided::Refuse(EgressDecision::Refuse { status, message }) =
+            decide(&request("GET", "/", &[]), &secrets)
+        else {
+            panic!("two secrets adding one header are not refused");
+        };
+        assert_eq!(status, 409);
+        assert!(
+            message.contains("several agent secrets add authorization"),
+            "{message}"
+        );
+        let Decided::Refuse(EgressDecision::Refuse { status, message }) =
+            decide(&request("GET", "/", &[("x-yulius-secret", "C")]), &secrets)
+        else {
+            panic!("an unknown chosen secret is not refused");
+        };
+        assert_eq!(status, 403);
+        assert_eq!(
+            message,
+            "Yulius: no agent secret named \"C\" is bound to api.example.com"
+        );
+        let Decided::Forward { used, .. } = decide(
+            &request("GET", "/", &[("x-yulius-secret", " B ")]),
+            &secrets,
+        ) else {
+            panic!("the chosen secret is not forwarded");
+        };
+        assert_eq!(used, vec!["B".to_owned()]);
+    }
+
+    #[test]
+    fn a_secret_used_outside_its_rules_is_denied_unless_another_adds_its_header() {
+        let reader = bound("READER", "none", &[("GET", "/repos/*")]);
+        let req = request("POST", "/repos/x?t=yulius-secret-READER", &[]);
+        let secrets = [reader];
+        let Decided::OutsideRules {
+            path_and_query,
+            denied,
+        } = decide(&req, &secrets)
+        else {
+            panic!("a placeholder outside its rules is not denied");
+        };
+        assert_eq!(path_and_query, "/repos/x?t=value-of-READER");
+        assert_eq!(
+            denied.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["READER"]
+        );
+        let secrets = [
+            bound("GETTER", "bearer", &[("GET", "/*")]),
+            bound("ANY", "bearer", &[]),
+        ];
+        let Decided::Forward { used, .. } = decide(&request("POST", "/x", &[]), &secrets) else {
+            panic!("the header of a secret outside its rules, added by another, is refused");
+        };
+        assert_eq!(used, vec!["ANY".to_owned()]);
+        let secrets = [bound("GETTER", "bearer", &[("GET", "/*")])];
+        assert!(matches!(
+            decide(&request("POST", "/x", &[]), &secrets),
+            Decided::OutsideRules { .. }
+        ));
     }
 }

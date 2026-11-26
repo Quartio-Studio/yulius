@@ -1,9 +1,10 @@
-//! Skill catalog and MCP configuration end to end (AC-SKL-1..3, AC-MCP-1/2): sources,
+//! Skill catalog and MCP configuration end to end: sources,
 //! toggles, the run skill set installed into both harness homes, the Open Mercato config, write-
 //! only sealed MCP secrets, attachments with scope override, and the connection test against a
 //! loopback HTTP server and a stdio child.
 
 use crate::support;
+use crate::support::eventually;
 
 use std::path::Path;
 
@@ -65,7 +66,7 @@ fn inode(path: &Path) -> std::io::Result<u64> {
     Ok(std::fs::symlink_metadata(path)?.ino())
 }
 
-/// SPEC-507 AC-1, AC-2, AC-4, AC-5: a server start with a changed skill refreshes the copy in a
+/// A server start with a changed skill refreshes the copy in a
 /// sandbox whose task is running, rewrites nothing else, leaves the agent's own skill alone, skips
 /// a sandbox without a home, logs a sandbox whose skills folder is behind a link and goes on, and
 /// audits what it did; a switched skill reaches the home at once.
@@ -187,7 +188,7 @@ async fn a_server_start_refreshes_every_sandboxs_skills() -> TestResult {
         1
     );
 
-    // A switched skill reaches the home at once (SKR-003).
+    // A switched skill reaches the home at once.
     let off = call(
         &w.h.router,
         Method::PUT,
@@ -226,24 +227,7 @@ async fn a_server_start_refreshes_every_sandboxs_skills() -> TestResult {
     Ok(())
 }
 
-/// Waits until `done` holds, at most 30 s (a condition, not a sleep: it is looked at again
-/// every 50 ms).
-async fn until<F, Fut>(what: &str, mut done: F) -> Result<(), Error>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !done().await {
-        if std::time::Instant::now() > deadline {
-            return Err(format!("timed out waiting for {what}").into());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    Ok(())
-}
-
-/// SPEC-507 review round 2: a repository `SKILL.md` an agent swaps for a FIFO after the catalog
+/// A repository `SKILL.md` an agent swaps for a FIFO after the catalog
 /// checked it, right before the open, never holds the server's start.
 #[tokio::test]
 async fn a_skill_md_swapped_for_a_fifo_never_holds_the_start() -> TestResult {
@@ -278,7 +262,7 @@ async fn a_skill_md_swapped_for_a_fifo_never_holds_the_start() -> TestResult {
     Ok(())
 }
 
-/// SPEC-507 review round 2: a `SKILL.md` that is a link to a file in its own skill is listed and
+/// A `SKILL.md` that is a link to a file in its own skill is listed and
 /// shown, as before the catalog opened files without following links.
 #[tokio::test]
 async fn a_linked_skill_md_inside_its_skill_is_shown() -> TestResult {
@@ -307,7 +291,7 @@ async fn a_linked_skill_md_inside_its_skill_is_shown() -> TestResult {
     Ok(())
 }
 
-/// SPEC-507 SKR-003, SKR-004 (review round 2): a switch whose request is dropped while its
+/// A switch whose request is dropped while its
 /// refresh waits for the launch lock still refreshes the home and audits it.
 #[tokio::test]
 async fn a_switch_dropped_while_it_waits_still_refreshes_the_home() -> TestResult {
@@ -364,24 +348,29 @@ async fn a_switch_dropped_while_it_waits_still_refreshes_the_home() -> TestResul
     go_tx.send(())?;
     start.await?;
     let store = w.h.store.clone();
-    until("the switch's refresh", || {
-        let store = store.clone();
-        let gone = !skills.join("om-fix").exists();
-        async move {
-            gone && store
-                .audit_details("studio", REFRESHED_AUDIT, 10)
-                .await
-                .is_ok_and(|d| {
-                    d.iter()
-                        .any(|e| e.starts_with("skill switched") && e.ends_with("removed om-fix"))
-                })
-        }
-    })
+    eventually(
+        "the switch's refresh",
+        std::time::Duration::from_secs(30),
+        || {
+            let store = store.clone();
+            let gone = !skills.join("om-fix").exists();
+            async move {
+                gone && store
+                    .audit_details("studio", REFRESHED_AUDIT, 10)
+                    .await
+                    .is_ok_and(|d| {
+                        d.iter().any(|e| {
+                            e.starts_with("skill switched") && e.ends_with("removed om-fix")
+                        })
+                    })
+            }
+        },
+    )
     .await?;
     Ok(())
 }
 
-/// SPEC-507 SKR-003 (review round 3): two switches in a row leave the home as the last one
+/// Two switches in a row leave the home as the last one
 /// stored, whichever refresh runs last: a refresh reads the skills under the launch lock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_home_follows_the_last_of_two_switches() -> TestResult {
@@ -636,7 +625,7 @@ async fn skill_catalog_sources_toggles_and_run_set() -> TestResult {
         "default enabled"
     );
 
-    // AC-SKL-1: the run set (enabled instance and pack skills) installs into both harness homes.
+    // The run set (enabled instance and pack skills) installs into both harness homes.
     let sandbox =
         w.h.store
             .sandbox(&SandboxId::parse("s1")?)
@@ -830,7 +819,7 @@ async fn mcp_secrets_are_write_only_sealed_and_attached_with_overrides() -> Test
     assert_eq!(kept.status, StatusCode::OK, "{}", kept.body);
     assert_eq!(kept.body["env_keys"], json!(["APIFY_TOKEN"]));
 
-    // AC-MCP-1: attachments carry opened secrets; the sandbox server overrides the instance one.
+    // Attachments carry opened secrets; the sandbox server overrides the instance one.
     let sandbox =
         w.h.store
             .sandbox(&SandboxId::parse("s1")?)
@@ -976,7 +965,7 @@ async fn test_server(w: &World, creds: &Creds, id: &str) -> Result<(StatusCode, 
     Ok((r.status, r.body))
 }
 
-/// MCP-003: a secret value may be a reference to an agent secret, `${secret:NAME}`. It is kept
+/// A secret value may be a reference to an agent secret, `${secret:NAME}`. It is kept
 /// write-only like any value and resolved when a run starts through the vault's hook; while
 /// nothing answers to it, the run gets the server without that variable or token (never the
 /// literal reference). Plain values are attached as before.

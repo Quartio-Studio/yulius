@@ -43,6 +43,20 @@ pub const EDIT_TOOLS: [(&str, &str); 4] = [
     ("NotebookEdit", "notebook_path"),
 ];
 
+/// The event of `yulius hook <harness> MemoryGuard`, answered in the sandbox without asking
+/// Yulius (SPEC-652 MEM-006): an edit of a read-only memory or instruction path is denied with
+/// [`MEMORY_READ_ONLY_SENTENCE`], and a tool result that a read-only path refused gets it as
+/// added context.
+pub const MEMORY_GUARD_EVENT: &str = "MemoryGuard";
+
+/// The run variable naming the session's read-only memory and instruction paths, one per line.
+pub const READONLY_PATHS_ENV: &str = "YULIUS_READONLY_PATHS";
+
+/// The one sentence a refused write of harness memory is explained with (SPEC-652 MEM-006).
+pub const MEMORY_READ_ONLY_SENTENCE: &str = "Yulius keeps this harness's memory and user-level \
+     instructions read-only (the owner's decision of 2026-11-25): put lasting knowledge in the \
+     repository through a pull request.";
+
 /// The `tool_input` field naming the file an edit tool writes (see [`EDIT_TOOLS`]).
 #[must_use]
 pub fn edited_file_field(tool: &str) -> Option<&'static str> {

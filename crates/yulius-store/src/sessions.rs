@@ -12,21 +12,16 @@ use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::{AccessLevel, TokenScope};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
-
-fn user_id(text: &str) -> rusqlite::Result<UserId> {
-    UserId::parse(text).map_err(|_| bad_column("user id", text))
-}
+use crate::{DbResult, SqliteStore, opt_ts, parsed, text_parsed};
 
 fn session_from_row(row: &Row<'_>) -> rusqlite::Result<WebSessionRecord> {
-    let uid: String = row.get("user_id")?;
     Ok(WebSessionRecord {
         id_hash: row.get("id_hash")?,
-        user_id: user_id(&uid)?,
+        user_id: text_parsed(row, "user_id", "user id", UserId::parse)?,
         csrf_token: row.get("csrf_token")?,
         created_at: Timestamp(row.get("created_at")?),
         expires_at: Timestamp(row.get("expires_at")?),
-        revoked_at: row.get::<_, Option<i64>>("revoked_at")?.map(Timestamp),
+        revoked_at: opt_ts(row, "revoked_at")?,
     })
 }
 
@@ -36,7 +31,10 @@ fn grant_from_row(row: &Row<'_>) -> rusqlite::Result<DeviceGrantRecord> {
         user_code: row.get("user_code")?,
         device_code_hash: row.get("device_code_hash")?,
         status: row.get("status")?,
-        user_id: uid.as_deref().map(user_id).transpose()?,
+        user_id: uid
+            .as_deref()
+            .map(|u| parsed("user id", u, UserId::parse))
+            .transpose()?,
         token: row.get::<_, Option<Vec<u8>>>("token_plain")?.map(Sealed),
         client_key: row.get("client_key")?,
         created_at: Timestamp(row.get("created_at")?),
@@ -44,12 +42,11 @@ fn grant_from_row(row: &Row<'_>) -> rusqlite::Result<DeviceGrantRecord> {
     })
 }
 
-fn insert_token(c: &rusqlite::Connection, t: &ApiTokenRecord) -> AppResult<()> {
+fn insert_token(c: &rusqlite::Connection, t: &ApiTokenRecord) -> DbResult<()> {
     c.execute(
         "INSERT INTO api_tokens (id, user_id, token_hash, label, scope, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![t.id, t.user_id.as_str(), t.token_hash, t.label, t.scope.as_str(), t.created_at.0],
-    )
-    .map_err(db)?;
+    )?;
     Ok(())
 }
 
@@ -69,8 +66,7 @@ impl SessionStore for SqliteStore {
             c.execute(
                 "INSERT INTO web_sessions (id_hash, user_id, csrf_token, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![s.id_hash, s.user_id.as_str(), s.csrf_token, s.created_at.0, s.expires_at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -79,13 +75,12 @@ impl SessionStore for SqliteStore {
     async fn web_session(&self, id_hash: &str) -> AppResult<Option<WebSessionRecord>> {
         let h = id_hash.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT id_hash, user_id, csrf_token, created_at, expires_at, revoked_at FROM web_sessions WHERE id_hash = ?1",
                 [h],
                 session_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -96,8 +91,7 @@ impl SessionStore for SqliteStore {
             c.execute(
                 "UPDATE web_sessions SET revoked_at = ?1 WHERE id_hash = ?2 AND revoked_at IS NULL",
                 params![at.0, h],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -106,18 +100,16 @@ impl SessionStore for SqliteStore {
     async fn revoke_user_credentials(&self, user: &UserId, at: Timestamp) -> AppResult<()> {
         let u = user.as_str().to_owned();
         self.call_access(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "UPDATE web_sessions SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
                 params![at.0, u],
-            )
-            .map_err(db)?;
+            )?;
             tx.execute(
                 "UPDATE api_tokens SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
                 params![at.0, u],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)
+            )?;
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -130,13 +122,12 @@ impl SessionStore for SqliteStore {
     async fn api_token(&self, token_hash: &str) -> AppResult<Option<ApiTokenRecord>> {
         let h = token_hash.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {API_TOKEN_COLUMNS} FROM api_tokens WHERE token_hash = ?1 AND revoked_at IS NULL"),
                 [h],
                 api_token_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -147,10 +138,9 @@ impl SessionStore for SqliteStore {
             let mut stmt = c
                 .prepare(&format!(
                     "SELECT {API_TOKEN_COLUMNS} FROM api_tokens WHERE user_id = ?1 AND revoked_at IS NULL ORDER BY created_at DESC, id"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([u], api_token_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+                ))?;
+            let rows = stmt.query_map([u], api_token_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -164,8 +154,7 @@ impl SessionStore for SqliteStore {
                 .execute(
                     "UPDATE api_tokens SET revoked_at = ?1 WHERE id = ?2 AND user_id = ?3 AND revoked_at IS NULL",
                     params![at.0, id, u],
-                )
-                .map_err(db)?;
+                )?;
             Ok(changed == 1)
         })
         .await
@@ -177,8 +166,7 @@ impl SessionStore for SqliteStore {
             c.execute(
                 "UPDATE api_tokens SET last_used_at = ?1 WHERE id = ?2",
                 params![at.0, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -193,15 +181,14 @@ impl SessionStore for SqliteStore {
         let per_client = i64::try_from(bounds.per_client).unwrap_or(i64::MAX);
         let total = i64::try_from(bounds.total).unwrap_or(i64::MAX);
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            tx.execute(PURGE_GRANTS, [g.created_at.0]).map_err(db)?;
+            let tx = c.transaction()?;
+            tx.execute(PURGE_GRANTS, [g.created_at.0])?;
             let (live, of_client): (i64, i64) = tx
                 .query_row(
                     "SELECT COUNT(*), COUNT(*) FILTER (WHERE client_key = ?1) FROM device_grants",
                     [&g.client_key],
                     |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(db)?;
+                )?;
             // A refused start still commits its purge (#169).
             let outcome = if of_client >= per_client {
                 DeviceGrantInsert::ClientFull
@@ -222,18 +209,17 @@ impl SessionStore for SqliteStore {
                         g.expires_at.0,
                         g.client_key
                     ],
-                )
-                .map_err(db)?;
+                )?;
                 DeviceGrantInsert::Inserted
             };
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(outcome)
         })
         .await
     }
 
     async fn purge_device_grants(&self, now: Timestamp) -> AppResult<usize> {
-        self.call(move |c| c.execute(PURGE_GRANTS, [now.0]).map_err(db))
+        self.call(move |c| Ok(c.execute(PURGE_GRANTS, [now.0])?))
             .await
     }
 
@@ -243,13 +229,12 @@ impl SessionStore for SqliteStore {
     ) -> AppResult<Option<DeviceGrantRecord>> {
         let h = device_code_hash.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {GRANT_COLS} FROM device_grants WHERE device_code_hash = ?1"),
                 [h],
                 grant_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -260,13 +245,12 @@ impl SessionStore for SqliteStore {
     ) -> AppResult<Option<DeviceGrantRecord>> {
         let code = user_code.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {GRANT_COLS} FROM device_grants WHERE user_code = ?1"),
                 [code],
                 grant_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -289,8 +273,7 @@ impl SessionStore for SqliteStore {
                 .execute(
                     "UPDATE device_grants SET status = ?1, user_id = ?2, token_plain = ?3 WHERE user_code = ?4 AND status = 'pending'",
                     params![status, uid, token, code],
-                )
-                .map_err(db)?;
+                )?;
             Ok(n == 1)
         })
         .await
@@ -304,18 +287,17 @@ impl SessionStore for SqliteStore {
     ) -> AppResult<bool> {
         let (code, t, sealed) = (user_code.to_owned(), token.clone(), sealed.0.clone());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let n = tx
                 .execute(
                     "UPDATE device_grants SET status = 'approved', user_id = ?1, token_plain = ?2 WHERE user_code = ?3 AND status = 'pending'",
                     params![t.user_id.as_str(), sealed, code],
-                )
-                .map_err(db)?;
+                )?;
             if n != 1 {
                 return Ok(false);
             }
             insert_token(&tx, &t)?;
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -328,8 +310,7 @@ impl SessionStore for SqliteStore {
                 .execute(
                     "UPDATE device_grants SET status = 'consumed', token_plain = NULL WHERE device_code_hash = ?1 AND status = 'approved'",
                     [h],
-                )
-                .map_err(db)?;
+                )?;
             Ok(n == 1)
         })
         .await
@@ -346,20 +327,17 @@ impl SessionStore for SqliteStore {
         let (h, next) = (state_hash.to_owned(), next_path.to_owned());
         let max_live = i64::try_from(max_live).unwrap_or(i64::MAX);
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            tx.execute("DELETE FROM oauth_states WHERE expires_at < ?1", [at.0]).map_err(db)?;
-            let live: i64 = tx
-                .query_row("SELECT COUNT(*) FROM oauth_states", [], |row| row.get(0))
-                .map_err(db)?;
+            let tx = c.transaction()?;
+            tx.execute("DELETE FROM oauth_states WHERE expires_at < ?1", [at.0])?;
+            let live: i64 = tx.query_row("SELECT COUNT(*) FROM oauth_states", [], |row| row.get(0))?;
             if live >= max_live {
                 return Ok(false);
             }
             tx.execute(
                 "INSERT INTO oauth_states (state_hash, next_path, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)",
                 params![h, next, at.0, expires_at.0],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -372,18 +350,16 @@ impl SessionStore for SqliteStore {
     ) -> AppResult<Option<String>> {
         let h = state_hash.to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let next: Option<String> = tx
                 .query_row(
                     "SELECT next_path FROM oauth_states WHERE state_hash = ?1 AND expires_at >= ?2",
                     params![h, now.0],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
-            tx.execute("DELETE FROM oauth_states WHERE state_hash = ?1", [h])
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+                .optional()?;
+            tx.execute("DELETE FROM oauth_states WHERE state_hash = ?1", [h])?;
+            tx.commit()?;
             Ok(next)
         })
         .await
@@ -399,7 +375,7 @@ impl PermissionStore for SqliteStore {
     ) -> AppResult<Option<CachedAccess>> {
         let (u, s) = (user.as_str().to_owned(), sandbox.as_str().to_owned());
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT level, checked_at FROM permission_cache WHERE user_id = ?1 AND sandbox_id = ?2",
                 params![u, s],
                 |r| {
@@ -407,8 +383,7 @@ impl PermissionStore for SqliteStore {
                     Ok(CachedAccess { level: AccessLevel::parse_or_none(&level), checked_at: Timestamp(r.get(1)?) })
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -429,14 +404,12 @@ impl PermissionStore for SqliteStore {
                     params![u, s],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             c.execute(
                 "INSERT INTO permission_cache (user_id, sandbox_id, level, checked_at) VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(user_id, sandbox_id) DO UPDATE SET level = excluded.level, checked_at = excluded.checked_at",
                 params![u, s, level.as_str(), at.0],
-            )
-            .map_err(db)?;
+            )?;
             // Only a changed level changes who may type (SPEC-118 KEY-002); a first one takes
             // nothing away (no grant was confirmed without it).
             if before.is_some_and(|before| before != level.as_str()) {
@@ -450,8 +423,7 @@ impl PermissionStore for SqliteStore {
     async fn clear_access(&self, user: &UserId) -> AppResult<()> {
         let u = user.as_str().to_owned();
         self.call_access(move |c| {
-            c.execute("DELETE FROM permission_cache WHERE user_id = ?1", [u])
-                .map_err(db)?;
+            c.execute("DELETE FROM permission_cache WHERE user_id = ?1", [u])?;
             Ok(())
         })
         .await
@@ -468,16 +440,15 @@ const API_TOKEN_COLUMNS: &str =
 
 /// An `api_tokens` row; an unknown scope reads as `read`, the narrowest (fail closed).
 fn api_token_row(r: &Row<'_>) -> rusqlite::Result<ApiTokenRecord> {
-    let uid: String = r.get(1)?;
     let scope: String = r.get(4)?;
     Ok(ApiTokenRecord {
         id: r.get(0)?,
-        user_id: user_id(&uid)?,
+        user_id: text_parsed(r, 1, "user id", UserId::parse)?,
         token_hash: r.get(2)?,
         label: r.get(3)?,
         scope: TokenScope::parse(&scope).unwrap_or(TokenScope::Read),
         created_at: Timestamp(r.get(5)?),
-        last_used_at: r.get::<_, Option<i64>>(6)?.map(Timestamp),
-        revoked_at: r.get::<_, Option<i64>>(7)?.map(Timestamp),
+        last_used_at: opt_ts(r, 6)?,
+        revoked_at: opt_ts(r, 7)?,
     })
 }

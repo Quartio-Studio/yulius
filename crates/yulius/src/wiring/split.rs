@@ -302,7 +302,7 @@ mod tests {
     }
 
     fn secret() -> Secret {
-        Secret(TOKEN.into())
+        Secret::new(TOKEN.into())
     }
 
     #[tokio::test]
@@ -362,7 +362,7 @@ mod tests {
         let program = fake_claude(dir.path(), "{}", 0)?;
         let wrong = ClaudeSplitProposer::new(&program, dir.path().join("rt2"));
         let err = wrong
-            .propose(&Secret("other".into()), "request")
+            .propose(&Secret::new("other".into()), "request")
             .await
             .err()
             .map(|e| e.0)

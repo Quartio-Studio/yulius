@@ -5,45 +5,40 @@ use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::AppResult;
 use yulius_app::model::{AccountChange, AccountRecord, AccountStatus, Sealed};
 use yulius_app::ports::store::AccountStore;
+use yulius_domain::billing::BillingCycle;
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_parsed};
 
 const COLS: &str = "id, provider, label, credential, status, usage, last_error, email, \
                     email_checked_at, email_typed, created_at, updated_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
-    let id: String = row.get("id")?;
-    let provider: String = row.get("provider")?;
     let status: String = row.get("status")?;
     Ok(AccountRecord {
-        id: AccountId::parse(&id).map_err(|_| bad_column("account id", &id))?,
-        provider: Provider::parse(&provider).map_err(|_| bad_column("provider", &provider))?,
+        id: text_parsed(row, "id", "account id", AccountId::parse)?,
+        provider: text_parsed(row, "provider", "provider", Provider::parse)?,
         label: row.get("label")?,
         credential: row.get::<_, Option<Vec<u8>>>("credential")?.map(Sealed),
         status: AccountStatus::parse(&status),
         usage_json: row.get("usage")?,
         last_error: row.get("last_error")?,
         email: row.get("email")?,
-        email_checked_at: row
-            .get::<_, Option<i64>>("email_checked_at")?
-            .map(Timestamp),
+        email_checked_at: opt_ts(row, "email_checked_at")?,
         email_typed: row.get("email_typed")?,
         created_at: Timestamp(row.get("created_at")?),
         updated_at: Timestamp(row.get("updated_at")?),
     })
 }
 
-pub(crate) fn list_accounts(c: &rusqlite::Connection) -> AppResult<Vec<AccountRecord>> {
-    let mut stmt = c
-        .prepare(&format!(
-            "SELECT {COLS} FROM accounts ORDER BY provider, created_at, id"
-        ))
-        .map_err(db)?;
-    let rows = stmt.query_map([], from_row).map_err(db)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(db)
+pub(crate) fn list_accounts(c: &rusqlite::Connection) -> DbResult<Vec<AccountRecord>> {
+    let mut stmt = c.prepare(&format!(
+        "SELECT {COLS} FROM accounts ORDER BY provider, created_at, id"
+    ))?;
+    let rows = stmt.query_map([], from_row)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// Each account's runs, tasks and tokens since `?1` (`account_tokens`).
@@ -75,8 +70,7 @@ impl AccountStore for SqliteStore {
                     a.created_at.0,
                     a.updated_at.0
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -85,13 +79,12 @@ impl AccountStore for SqliteStore {
     async fn account(&self, id: &AccountId) -> AppResult<Option<AccountRecord>> {
         let id = id.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM accounts WHERE id = ?1"),
                 [id],
                 from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -108,13 +101,12 @@ impl AccountStore for SqliteStore {
     ) -> AppResult<()> {
         let (id, change) = (id.as_str().to_owned(), change.clone());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             if let Some(label) = &change.label {
                 tx.execute(
                     "UPDATE accounts SET label = ?1, updated_at = ?2 WHERE id = ?3",
                     params![label, at.0, id],
-                )
-                .map_err(db)?;
+                )?;
             }
             match &change.email {
                 // Typed: the person's from now on. Whether Claude answered for this sign-in
@@ -124,8 +116,7 @@ impl AccountStore for SqliteStore {
                         "UPDATE accounts SET email = ?1, email_typed = 1, updated_at = ?2 \
                          WHERE id = ?3",
                         params![email, at.0, id],
-                    )
-                    .map_err(db)?;
+                    )?;
                 }
                 // Removed: Claude's again, and never answered, so the background round asks.
                 Some(None) => {
@@ -133,12 +124,11 @@ impl AccountStore for SqliteStore {
                         "UPDATE accounts SET email = NULL, email_typed = 0, \
                          email_checked_at = NULL, updated_at = ?1 WHERE id = ?2",
                         params![at.0, id],
-                    )
-                    .map_err(db)?;
+                    )?;
                 }
                 None => {}
             }
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -157,13 +147,11 @@ impl AccountStore for SqliteStore {
             email.map(str::to_owned),
         );
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE accounts SET email = CASE WHEN email_typed = 1 THEN email ELSE ?1 END, \
+            let changed = c.execute(
+                "UPDATE accounts SET email = CASE WHEN email_typed = 1 THEN email ELSE ?1 END, \
                      email_checked_at = ?2, updated_at = ?3 WHERE id = ?4 AND credential = ?5",
-                    params![email, checked_at.map(|t| t.0), at.0, id, cred],
-                )
-                .map_err(db)?;
+                params![email, checked_at.map(|t| t.0), at.0, id, cred],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -183,8 +171,7 @@ impl AccountStore for SqliteStore {
                  email = CASE WHEN email_typed = 1 THEN email ELSE NULL END, \
                  email_checked_at = NULL, updated_at = ?3 WHERE id = ?4",
                 params![cred, status.as_str(), at.0, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -203,13 +190,11 @@ impl AccountStore for SqliteStore {
             refreshed.0.clone(),
         );
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE accounts SET credential = ?1, updated_at = ?2 \
+            let changed = c.execute(
+                "UPDATE accounts SET credential = ?1, updated_at = ?2 \
                      WHERE id = ?3 AND credential = ?4",
-                    params![refreshed, at.0, id, previous],
-                )
-                .map_err(db)?;
+                params![refreshed, at.0, id, previous],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -232,8 +217,7 @@ impl AccountStore for SqliteStore {
             c.execute(
                 "UPDATE accounts SET status = ?1, usage = COALESCE(?2, usage), last_error = ?3, updated_at = ?4 WHERE id = ?5",
                 params![status.as_str(), usage, err, at.0, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -246,8 +230,7 @@ impl AccountStore for SqliteStore {
                 "UPDATE accounts SET last_error = ?1, updated_at = ?2 \
                  WHERE id = ?3 AND (last_error IS NULL OR last_error LIKE 'usage:%')",
                 params![note, at.0, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -260,8 +243,7 @@ impl AccountStore for SqliteStore {
                 "UPDATE accounts SET last_error = NULL, updated_at = ?1 \
                  WHERE id = ?2 AND last_error LIKE 'usage:%'",
                 params![at.0, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -272,22 +254,20 @@ impl AccountStore for SqliteStore {
         since: Timestamp,
     ) -> AppResult<Vec<yulius_app::model::AccountTokens>> {
         self.call(move |c| {
-            let mut statement = c.prepare(ACCOUNT_TOKENS_SQL).map_err(db)?;
-            let rows = statement
-                .query_map([since.0], |row| {
-                    let opt = |i: usize| row.get::<_, Option<i64>>(i).map(|v| v.map(crate::to_u64));
-                    Ok(yulius_app::model::AccountTokens {
-                        account_id: row.get(0)?,
-                        runs: crate::to_u32(row.get(1)?),
-                        tasks: crate::to_u32(row.get(2)?),
-                        input: opt(3)?,
-                        output: opt(4)?,
-                        cache_read: opt(5)?,
-                        cache_write: opt(6)?,
-                    })
+            let mut statement = c.prepare(ACCOUNT_TOKENS_SQL)?;
+            let rows = statement.query_map([since.0], |row| {
+                let opt = |i: usize| row.get::<_, Option<i64>>(i).map(|v| v.map(crate::to_u64));
+                Ok(yulius_app::model::AccountTokens {
+                    account_id: row.get(0)?,
+                    runs: crate::to_u32(row.get(1)?),
+                    tasks: crate::to_u32(row.get(2)?),
+                    input: opt(3)?,
+                    output: opt(4)?,
+                    cache_read: opt(5)?,
+                    cache_write: opt(6)?,
                 })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -295,17 +275,65 @@ impl AccountStore for SqliteStore {
     async fn delete_account(&self, id: &AccountId) -> AppResult<()> {
         let id = id.as_str().to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            tx.execute("DELETE FROM accounts WHERE id = ?1", [id.as_str()])
-                .map_err(db)?;
+            let tx = c.transaction()?;
+            // Its billing cycle goes with it (SPEC-651 BIL-005; the key cascades too).
+            tx.execute(
+                "DELETE FROM account_billing WHERE account_id = ?1",
+                [id.as_str()],
+            )?;
+            tx.execute("DELETE FROM accounts WHERE id = ?1", [id.as_str()])?;
             // A pin to it ends with it (SPEC-629 RBL-005).
             tx.execute(
                 "UPDATE tasks SET pinned_account_id = NULL WHERE pinned_account_id = ?1",
                 [id.as_str()],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn set_account_billing(
+        &self,
+        id: &AccountId,
+        cycle: Option<BillingCycle>,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            match cycle {
+                Some(cycle) => c.execute(
+                    "INSERT INTO account_billing (account_id, anchor, period, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4) ON CONFLICT (account_id) DO UPDATE SET \
+                     anchor = excluded.anchor, period = excluded.period, \
+                     updated_at = excluded.updated_at",
+                    params![
+                        id,
+                        cycle.anchor().to_string(),
+                        cycle.period().as_str(),
+                        at.0
+                    ],
+                ),
+                None => c.execute("DELETE FROM account_billing WHERE account_id = ?1", [id]),
+            }?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn account_billing(&self) -> AppResult<Vec<(AccountId, BillingCycle)>> {
+        self.call(|c| {
+            let mut stmt = c.prepare(
+                "SELECT account_id, anchor, period FROM account_billing ORDER BY account_id",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                let anchor: String = row.get(1)?;
+                let period: String = row.get(2)?;
+                let cycle = BillingCycle::parse(&anchor, &period)
+                    .map_err(|_| bad_column("billing cycle", &format!("{anchor} {period}")))?;
+                Ok((text_parsed(row, 0, "account id", AccountId::parse)?, cycle))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }

@@ -1,4 +1,4 @@
-//! Stages through the API (SPEC-137 STG-401, AC1, AC2, AC4, AC5): a task's lifecycle, a CI run
+//! Stages through the API: a task's lifecycle, a CI run
 //! of its pull request and CD runs are recorded as their states change, then read back as the
 //! task's timeline, the stages' percentiles and trend, the delivery figures and the export; a
 //! person without access sees none of it.
@@ -199,7 +199,7 @@ async fn lifecycle(f: &Fixture) -> TestResult {
     store
         .transition_delivery(&DeliveryStage::PrOpen, &merged)
         .await?;
-    // cd1's use was measured (SPEC-154), cd2's not.
+    // cd1's use was measured, cd2's not.
     let used = ResourceUse {
         cpu_ms: 42_000,
         memory_peak_mb: 300,
@@ -367,7 +367,7 @@ async fn the_summary_has_percentiles_a_daily_trend_and_delivery_figures() -> Tes
         ),
         (Some(2), Some(1), Some("dev"))
     );
-    // SPEC-154 USE-005: the percentiles of what the runs that measured it used.
+    // The percentiles of what the runs that measured it used.
     assert_eq!(
         (
             cd["cpu_p50_ms"].as_i64(),
@@ -501,7 +501,7 @@ async fn spans_export_as_csv_and_json_and_stay_inside_their_sandbox() -> TestRes
     Ok(())
 }
 
-/// Review L9: a task of another sandbox read through this sandbox's timeline shows nothing: not
+/// A task of another sandbox read through this sandbox's timeline shows nothing: not
 /// its spans and not this sandbox's CI runs that share its pull request's number.
 #[tokio::test]
 async fn a_task_of_another_sandbox_shows_no_timeline_here() -> TestResult {

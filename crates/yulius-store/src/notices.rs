@@ -11,7 +11,7 @@ use yulius_domain::notice::{NoticeKey, NoticeTone};
 use yulius_domain::notify::NoticeKind;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, db};
+use crate::{SqliteStore, opt_ts};
 
 const COLS: &str = "id, sandbox_id, user_id, admin_only, notice_key, category, tone, title, \
                     detail, link, decision, created_at, expires_at";
@@ -52,7 +52,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<NoticeRecord> {
         link: row.get(9)?,
         decision: row.get(10)?,
         created_at: Timestamp(row.get(11)?),
-        expires_at: row.get::<_, Option<i64>>(12)?.map(Timestamp),
+        expires_at: opt_ts(row, 12)?,
     })
 }
 
@@ -75,19 +75,17 @@ impl NoticeStore for SqliteStore {
         let keep = i64::try_from(keep.max(1)).unwrap_or(i64::MAX);
         self.call(move |c| {
             let (sandbox, user) = scope_of(n.sandbox.as_ref(), n.user.as_ref());
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let replaced = tx
                 .query_row(
                     &format!("SELECT {COLS} FROM notices WHERE {SCOPE} AND notice_key = ?3"),
                     params![sandbox, user, n.key.as_str()],
                     from_row,
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             if let Some(old) = &replaced {
                 // Its dismissals go with it (ON DELETE CASCADE): the newer one is unread.
-                tx.execute("DELETE FROM notices WHERE id = ?1", [&old.id])
-                    .map_err(db)?;
+                tx.execute("DELETE FROM notices WHERE id = ?1", [&old.id])?;
             }
             tx.execute(
                 &format!(
@@ -109,25 +107,20 @@ impl NoticeStore for SqliteStore {
                     n.created_at.0,
                     n.expires_at.map(|t| t.0),
                 ],
-            )
-            .map_err(db)?;
+            )?;
             // The scope keeps `keep` (NTC-004): its decisions first, then the newest, so a
             // burst of reports never drops a decision (NTC-005).
             let dropped = {
-                let mut stmt = tx
-                    .prepare(&format!(
-                        "DELETE FROM notices WHERE id IN (SELECT id FROM notices WHERE {SCOPE} \
+                let mut stmt = tx.prepare(&format!(
+                    "DELETE FROM notices WHERE id IN (SELECT id FROM notices WHERE {SCOPE} \
                          ORDER BY decision DESC, created_at DESC, id = ?4 DESC, id DESC \
                          LIMIT -1 OFFSET ?3) RETURNING {COLS}"
-                    ))
-                    .map_err(db)?;
+                ))?;
                 // On a tie of times the notice just stored stays (review of #1711).
-                stmt.query_map(params![sandbox, user, keep, n.id], from_row)
-                    .map_err(db)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(db)?
+                stmt.query_map(params![sandbox, user, keep, n.id], from_row)?
+                    .collect::<Result<Vec<_>, _>>()?
             };
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(PutNotice { replaced, dropped })
         })
         .await
@@ -142,20 +135,18 @@ impl NoticeStore for SqliteStore {
         let (sandbox, user) = scope_of(sandbox, user);
         let key = key.as_str().to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let removed = tx
                 .query_row(
                     &format!("SELECT {COLS} FROM notices WHERE {SCOPE} AND notice_key = ?3"),
                     params![sandbox, user, key],
                     from_row,
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             if let Some(old) = &removed {
-                tx.execute("DELETE FROM notices WHERE id = ?1", [&old.id])
-                    .map_err(db)?;
+                tx.execute("DELETE FROM notices WHERE id = ?1", [&old.id])?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(removed)
         })
         .await
@@ -164,13 +155,12 @@ impl NoticeStore for SqliteStore {
     async fn notice(&self, id: &str) -> AppResult<Option<NoticeRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM notices WHERE id = ?1"),
                 [id],
                 from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -196,9 +186,8 @@ impl NoticeStore for SqliteStore {
         self.call(move |c| {
             // The reader's reach is applied before the limit, so notices they cannot see never
             // crowd theirs out (review round 1).
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM notices n \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM notices n \
                      WHERE (n.user_id IS NULL OR n.user_id = ?1) \
                        AND (n.sandbox_id IN (SELECT value FROM json_each(?4)) \
                             OR (n.sandbox_id IS NULL AND (?5 OR n.user_id = ?1))) \
@@ -207,15 +196,13 @@ impl NoticeStore for SqliteStore {
                        AND NOT EXISTS (SELECT 1 FROM notice_dismissals d \
                                        WHERE d.notice_id = n.id AND d.user_id = ?1) \
                      ORDER BY n.created_at DESC, n.id DESC LIMIT ?3"
-                ))
-                .map_err(db)?;
-            stmt.query_map(
-                params![user, now.0, limit, sandboxes, instance_wide, admin],
-                from_row,
-            )
-            .map_err(db)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db)
+            ))?;
+            Ok(stmt
+                .query_map(
+                    params![user, now.0, limit, sandboxes, instance_wide, admin],
+                    from_row,
+                )?
+                .collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -223,18 +210,14 @@ impl NoticeStore for SqliteStore {
     async fn notice_sandboxes(&self, user: &UserId, now: Timestamp) -> AppResult<Vec<SandboxId>> {
         let user = user.to_string();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT DISTINCT sandbox_id FROM notices \
+            let mut stmt = c.prepare(
+                "SELECT DISTINCT sandbox_id FROM notices \
                      WHERE sandbox_id IS NOT NULL AND (user_id IS NULL OR user_id = ?1) \
                        AND (expires_at IS NULL OR expires_at > ?2)",
-                )
-                .map_err(db)?;
+            )?;
             let ids = stmt
-                .query_map(params![user, now.0], |r| r.get::<_, String>(0))
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map(params![user, now.0], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(ids
                 .iter()
                 .filter_map(|id| SandboxId::parse(id).ok())
@@ -252,19 +235,16 @@ impl NoticeStore for SqliteStore {
         let sandbox = sandbox.map(ToString::to_string).unwrap_or_default();
         let prefix = prefix.to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM notices \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM notices \
                      WHERE COALESCE(sandbox_id, '') = ?1 \
                        AND substr(notice_key, 1, length(?2)) = ?2 \
                        AND (expires_at IS NULL OR expires_at > ?3) \
                      ORDER BY created_at DESC, id DESC"
-                ))
-                .map_err(db)?;
-            stmt.query_map(params![sandbox, prefix, now.0], from_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)
+            ))?;
+            Ok(stmt
+                .query_map(params![sandbox, prefix, now.0], from_row)?
+                .collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -273,39 +253,35 @@ impl NoticeStore for SqliteStore {
         let id = id.to_owned();
         let user = user.to_string();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "INSERT INTO notice_dismissals (notice_id, user_id, dismissed_at) \
+            let changed = c.execute(
+                "INSERT INTO notice_dismissals (notice_id, user_id, dismissed_at) \
                      SELECT id, ?2, ?3 FROM notices WHERE id = ?1 \
                      ON CONFLICT(notice_id, user_id) DO NOTHING",
-                    params![id, user, at.0],
-                )
-                .map_err(db)?;
+                params![id, user, at.0],
+            )?;
             if changed > 0 {
                 return Ok(true);
             }
-            c.query_row("SELECT 1 FROM notices WHERE id = ?1", [id], |_| Ok(()))
-                .optional()
-                .map(|found| found.is_some())
-                .map_err(db)
+            Ok(
+                c.query_row("SELECT 1 FROM notices WHERE id = ?1", [id], |_| Ok(()))
+                    .optional()
+                    .map(|found| found.is_some())?,
+            )
         })
         .await
     }
 
     async fn prune_notices(&self, now: Timestamp) -> AppResult<u64> {
         self.call(move |c| {
-            let pruned = c
-                .execute(
-                    "DELETE FROM notices WHERE expires_at IS NOT NULL AND expires_at <= ?1",
-                    [now.0],
-                )
-                .map_err(db)?;
+            let pruned = c.execute(
+                "DELETE FROM notices WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+                [now.0],
+            )?;
             // A message the bot can no longer delete is forgotten (review round 1).
             c.execute(
                 "DELETE FROM telegram_keyed WHERE sent_at <= ?1",
                 [now.0.saturating_sub(KEYED_MESSAGE_MS)],
-            )
-            .map_err(db)?;
+            )?;
             Ok(u64::try_from(pruned).unwrap_or(u64::MAX))
         })
         .await
@@ -320,23 +296,21 @@ impl NoticeStore for SqliteStore {
     ) -> AppResult<Option<String>> {
         let (chat, scope, message) = (chat.to_owned(), scope.to_owned(), message.to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let earlier: Option<String> = tx
                 .query_row(
                     "SELECT message_id FROM telegram_keyed WHERE chat_id = ?1 AND scope = ?2",
                     params![chat, scope],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             tx.execute(
                 "INSERT INTO telegram_keyed (chat_id, scope, message_id, sent_at) \
                  VALUES (?1, ?2, ?3, ?4) ON CONFLICT(chat_id, scope) \
                  DO UPDATE SET message_id = excluded.message_id, sent_at = excluded.sent_at",
                 params![chat, scope, message, at.0],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             Ok(earlier.filter(|id| *id != message))
         })
         .await
@@ -353,13 +327,12 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1), ('u2', 'V', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
                        VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1),
                               ('s2', 't', 'o', 'q', 'main', '{}', 20010, 10, 'u1', 'not_needed', 1);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         Ok(store)

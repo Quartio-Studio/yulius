@@ -1,8 +1,9 @@
-//! Agent secrets an agent creates from a file (SPEC-211, ADR-0167): Yulius reads a file in the
+//! Agent secrets an agent creates from a file: Yulius reads a file in the
 //! task's worktree or home and stores it as an agent secret of the sandbox, without the value
 //! reaching the agent; a person still allows every use.
 
 use crate::support;
+use crate::support::git;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ struct World {
     h: support::Harness,
     writer: Creds,
     /// Alice's browser, the vault unlocked: what allowing `.env` copies of a secret allowed use
-    /// by use needs (ADR-0317).
+    /// by use needs.
     person: Creds,
     worktree: PathBuf,
     home: PathBuf,
@@ -73,7 +74,7 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
-    let person = crate::secrets::unlocked(&h, "u-alice").await?;
+    let person = crate::support::secrets::unlocked(&h, "u-alice").await?;
     Ok(World {
         h,
         writer,
@@ -81,21 +82,6 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
         worktree,
         home,
     })
-}
-
-fn git(dir: &std::path::Path, args: &[&str]) -> TestResult {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
 }
 
 fn sid() -> Result<SandboxId, Box<dyn std::error::Error>> {
@@ -138,7 +124,7 @@ async fn allow_env(w: &World, name: &str) -> TestResult {
     Ok(())
 }
 
-/// SPEC-211 SCF-002..SCF-006 (AC-2, AC-6, AC-8): a task stores a key in its home and a token in
+/// A task stores a key in its home and a token in
 /// its worktree as agent secrets of its sandbox; neither value reaches the agent, both are stored
 /// exactly (a person allows a `.env` copy, which `sh` reads back), each starts with no hosts and
 /// no `.env` allowance, created by the task's person and audited as the task; the file is deleted
@@ -146,7 +132,7 @@ async fn allow_env(w: &World, name: &str) -> TestResult {
 #[tokio::test]
 async fn a_task_stores_files_as_agent_secrets_without_seeing_them() -> TestResult {
     let w = world().await?;
-    let key = crate::secrets_env::openssh_key(7);
+    let key = crate::support::secrets_env::openssh_key(7);
     std::fs::write(w.home.join(".ssh/deploy_key"), &key)?;
     std::fs::create_dir_all(w.worktree.join("secrets"))?;
     std::fs::write(
@@ -205,7 +191,7 @@ async fn a_task_stores_files_as_agent_secrets_without_seeing_them() -> TestResul
         assert_eq!(record.injection, "none", "{name}");
         assert_eq!(record.env_files, EnvFiles::No, "{name}");
         assert!(!record.cd_prod, "{name}");
-        // SPEC-216: an agent never creates a secret that agents set up themselves.
+        // An agent never creates a secret that agents set up themselves.
         assert!(!record.auto_allow, "{name}");
         assert_eq!(record.created_by, "u-alice", "{name}");
     }
@@ -255,15 +241,15 @@ async fn a_task_stores_files_as_agent_secrets_without_seeing_them() -> TestResul
     let copied = copy().await?;
     assert_ne!(copied["isError"], true, "{copied}");
     assert_eq!(
-        crate::secrets_env::sourced(&w.worktree, "DEPLOY_SSH_KEY")?,
+        crate::support::secrets_env::sourced(&w.worktree, "DEPLOY_SSH_KEY")?,
         key
     );
     assert_eq!(
-        crate::secrets_env::sourced(&w.worktree, "API_TOKEN")?,
+        crate::support::secrets_env::sourced(&w.worktree, "API_TOKEN")?,
         API_TOKEN
     );
 
-    // Redacted from then on (AC-8).
+    // Redacted from then on.
     let echoed = support::mcp_tool(
         &w.h,
         TOKEN,
@@ -277,7 +263,7 @@ async fn a_task_stores_files_as_agent_secrets_without_seeing_them() -> TestResul
     Ok(())
 }
 
-/// SPEC-211 SCF-002, SCF-003 (AC-3): a link (the file or a folder on the way), a FIFO, a file
+/// A link (the file or a folder on the way), a FIFO, a file
 /// too large, binary or spanning lines without being a key, an absolute path, `..` and a missing
 /// file are refused without quoting content, and nothing is created.
 #[tokio::test]
@@ -342,7 +328,7 @@ async fn files_yulius_must_not_read_are_refused() -> TestResult {
     Ok(())
 }
 
-/// SPEC-211 SCF-004 (AC-4, AC-5): an existing name (of this sandbox or of every sandbox) is never
+/// An existing name (of this sandbox or of every sandbox) is never
 /// replaced, an invalid name is refused, and a task whose person only reads the sandbox cannot
 /// add a secret.
 #[tokio::test]
@@ -444,7 +430,7 @@ async fn a_root_swapped_for_a_link_and_reserved_names_are_refused() -> TestResul
     Ok(())
 }
 
-/// #643: a sandbox whose home was removed refuses `~/…` as a home that does not exist (the root
+/// A sandbox whose home was removed refuses `~/…` as a home that does not exist (the root
 /// of the walk, not a folder the caller named), and creates nothing.
 #[tokio::test]
 async fn a_missing_home_is_refused_as_not_existing() -> TestResult {

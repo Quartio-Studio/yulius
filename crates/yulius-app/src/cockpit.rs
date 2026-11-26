@@ -1331,6 +1331,7 @@ impl App {
             .mcp_attachments(record, crate::vault::Holder::Person(&user.id))
             .await?;
         let bearer = runtime.cockpit_token(self.deps.crypto.as_ref());
+        let memory_base = crate::memory_guard::sandbox_memory_base(&self.sandbox_dir(&record.id));
         let mut plan = self.deps.harness.plan_cockpit(&CockpitLaunch {
             cwd: folder.clone(),
             sandbox_dir: self.sandbox_dir(&record.id),
@@ -1342,12 +1343,13 @@ impl App {
             credential,
             yulius: Some((
                 self.config.internal_url.clone(),
-                crate::model::Secret(bearer.clone()),
+                crate::model::Secret::new(bearer.clone()),
             )),
             project_mcp_servers,
             mcp,
             contained: self.config.contained,
             only_yulius: None,
+            memory_base: memory_base.clone(),
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));
@@ -1364,6 +1366,20 @@ impl App {
         env.append(&mut plan.env);
         plan.env = env;
         plan.containment = space.containment.clone();
+        // Its memory and user-level instructions, read-only (SPEC-652 MEM-001).
+        if let crate::ports::session::Containment::Bubblewrap { guard, .. } = &mut plan.containment
+        {
+            *guard = crate::memory_guard::claude_guard(
+                &space.home_host,
+                &space.home_host.join(".claude"),
+                &space.home.join(".claude"),
+                &memory_base,
+            )?;
+            // Its hooks say why a write there fails (MEM-006).
+            if let Some(var) = crate::memory_guard::readonly_paths_env(guard) {
+                plan.env.push(var);
+            }
+        }
         // Behind the egress proxy as a task run is, with its own bearer (SPEC-186 SAV-001).
         self.vault_superagent_setup(record, &user.id, &runtime.run_dir, &bearer, &mut plan)
             .await?;

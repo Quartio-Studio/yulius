@@ -1,4 +1,4 @@
-//! SPEC-070, SPEC-490: a task is owned by one person, whose GitHub credentials it uses. Only the
+//! A task is owned by one person, whose GitHub credentials it uses. Only the
 //! owner steers the task; anyone else who may work in the project stops, archives and deletes
 //! it, and asks the owner for control, and a hand-over moves the task's GitHub identity to the
 //! new owner.
@@ -52,7 +52,7 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
 
 /// Who the task with live run token `token` acts as on GitHub: the login whose token opened the
 /// issue its agent asked Yulius for (Yulius's own GitHub calls carry the owner's token; the
-/// agent's shell never does, ADR-0114).
+/// agent's shell never does).
 async fn github_actor(h: &Harness, token: &str) -> Result<String, Box<dyn std::error::Error>> {
     let result = mcp_tool(
         h,
@@ -72,7 +72,7 @@ async fn github_actor(h: &Harness, token: &str) -> Result<String, Box<dyn std::e
         .ok_or("no issue opened")?)
 }
 
-/// AC1: a new task's owner is its creator, and its summary names them.
+/// A new task's owner is its creator, and its summary names them.
 #[tokio::test]
 async fn a_task_is_owned_by_its_creator() -> TestResult {
     let f = fixture().await?;
@@ -93,7 +93,7 @@ async fn a_task_is_owned_by_its_creator() -> TestResult {
     Ok(())
 }
 
-/// R2: what a task does on GitHub uses its owner's token, not its creator's.
+/// What a task does on GitHub uses its owner's token, not its creator's.
 #[tokio::test]
 async fn a_task_acts_on_github_as_its_owner() -> TestResult {
     let f = fixture().await?;
@@ -123,7 +123,7 @@ async fn auth(h: &Harness, id: &str) -> Result<AuthContext, Box<dyn std::error::
     })
 }
 
-/// The ways the web API steers a task (SPEC-490 OWN-004), each with a body that passes its
+/// The ways the web API steers a task, each with a body that passes its
 /// validation.
 fn steering(task: &str) -> Vec<(Method, String, Option<serde_json::Value>)> {
     let path = |rest: &str| format!("/api/tasks/{task}{rest}");
@@ -160,7 +160,7 @@ fn steering(task: &str) -> Vec<(Method, String, Option<serde_json::Value>)> {
     ]
 }
 
-/// What the refusal of control says (SPEC-490 OWN-004, SPEC-510 TKC-006): whose the task is, how
+/// What the refusal of control says: whose the task is, how
 /// to get control, and what is open to everyone.
 fn says_whose_and_how(message: &str) -> bool {
     message.contains("@alice")
@@ -169,7 +169,7 @@ fn says_whose_and_how(message: &str) -> bool {
         && message.contains("You can still stop, archive or delete it")
 }
 
-/// SPEC-490 OWN-004, AC-3 (SPEC-070 R3): a person who may work in the project but does not own
+/// A person who may work in the project but does not own
 /// the task steers nothing of it, and is told whose it is, how to ask and what they may do; an
 /// instance administrator is refused the same; the owner passes the ownership check.
 #[tokio::test]
@@ -227,7 +227,7 @@ async fn task_call(
     .await
 }
 
-/// SPEC-490 OWN-002, AC-1: a person who may work in the project stops, archives, restores and
+/// A person who may work in the project stops, archives, restores and
 /// deletes a task they do not own, with the checks these have for its owner (a running task is
 /// not archived or deleted before it is stopped).
 #[tokio::test]
@@ -275,7 +275,7 @@ async fn anyone_who_may_work_tidies_another_persons_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-490 OWN-005, AC-6: a stop, an archive and a restore of a task by someone who does not
+/// A stop, an archive and a restore of a task by someone who does not
 /// own it are audited under their login with the owner's, and the stop is said in the task's
 /// terminal; the owner's own page actions leave no such entry and say nothing.
 #[tokio::test]
@@ -366,7 +366,7 @@ async fn a_tidy_by_someone_else_names_them_and_the_owner() -> TestResult {
     Ok(())
 }
 
-/// SPEC-490 OWN-002: a task that waits to start is cancelled by anyone who may work.
+/// A task that waits to start is cancelled by anyone who may work.
 #[tokio::test]
 async fn anyone_who_may_work_cancels_a_task_that_waits() -> TestResult {
     let f = fixture().await?;
@@ -384,7 +384,7 @@ async fn anyone_who_may_work_cancels_a_task_that_waits() -> TestResult {
     Ok(())
 }
 
-/// SPEC-490 OWN-002, AC-2: tidying needs write access. A reader is refused (403) and a person
+/// Tidying needs write access. A reader is refused (403) and a person
 /// without access to the project does not see the task (404); nothing changes.
 #[tokio::test]
 async fn a_reader_tidies_nothing() -> TestResult {
@@ -408,7 +408,7 @@ async fn a_reader_tidies_nothing() -> TestResult {
     Ok(())
 }
 
-/// R3: the terminal opens read-only for a non-owner, and their input is refused.
+/// The terminal opens read-only for a non-owner, and their input is refused.
 #[tokio::test]
 async fn a_non_owner_watches_the_terminal_read_only() -> TestResult {
     let f = fixture().await?;
@@ -431,7 +431,7 @@ fn forbidden(result: &Result<(), yulius_app::error::AppError>) -> bool {
     matches!(result, Err(yulius_app::error::AppError::Forbidden(_)))
 }
 
-/// SPEC-118 KEY-002: the typist's write grant spares each keystroke the permission lookup, yet a
+/// The typist's write grant spares each keystroke the permission lookup, yet a
 /// hand-over refuses the previous owner's very next keystroke.
 #[tokio::test]
 async fn a_hand_over_refuses_the_previous_owners_next_keystroke() -> TestResult {
@@ -456,7 +456,7 @@ async fn a_hand_over_refuses_the_previous_owners_next_keystroke() -> TestResult 
     Ok(())
 }
 
-/// SPEC-118 KEY-002 (review): disabling the typist refuses their next keystroke, although the
+/// Disabling the typist refuses their next keystroke, although the
 /// viewer's own copy of the user (taken when the socket opened) is not disabled.
 #[tokio::test]
 async fn disabling_the_typist_refuses_their_next_keystroke() -> TestResult {
@@ -473,7 +473,7 @@ async fn disabling_the_typist_refuses_their_next_keystroke() -> TestResult {
     Ok(())
 }
 
-/// SPEC-118 KEY-002 (review): signing out (the web session revoked) refuses the next keystroke of
+/// Signing out (the web session revoked) refuses the next keystroke of
 /// a terminal opened with that session.
 #[tokio::test]
 async fn signing_out_refuses_the_next_keystroke() -> TestResult {
@@ -502,7 +502,7 @@ async fn signing_out_refuses_the_next_keystroke() -> TestResult {
     Ok(())
 }
 
-/// SPEC-118 KEY-003: a grant older than 30 s is re-confirmed beside the input. A GitHub downgrade
+/// A grant older than 30 s is re-confirmed beside the input. A GitHub downgrade
 /// found there (the permission cache expired) refuses the keystrokes after the one that found it.
 #[tokio::test]
 async fn a_downgrade_found_beside_the_input_refuses_the_next_keystroke() -> TestResult {
@@ -539,7 +539,7 @@ fn id_of(f: &Fixture) -> &str {
     f.task.id.as_str()
 }
 
-/// SPEC-490 OWN-002, AC-1: an agent acting for a person (here a task of Bob's) stops, archives
+/// An agent acting for a person (here a task of Bob's) stops, archives
 /// and deletes a task Bob does not own, as Bob may; it steers none (a message is refused with
 /// the owner's name).
 #[tokio::test]
@@ -618,7 +618,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFram
     seen
 }
 
-/// R4, R6, AC2, AC4: Bob asks, a second person waits for none, Alice declines; Bob asks again
+/// Bob asks, a second person waits for none, Alice declines; Bob asks again
 /// and Alice hands over: Bob owns the task, its Git acts as Bob, and Alice now only watches.
 #[tokio::test]
 async fn the_owner_hands_control_over_on_request() -> TestResult {
@@ -689,7 +689,7 @@ async fn the_owner_hands_control_over_on_request() -> TestResult {
     Ok(())
 }
 
-/// R4: the person who asked may withdraw; a request then waits no more.
+/// The person who asked may withdraw; a request then waits no more.
 #[tokio::test]
 async fn the_requester_withdraws() -> TestResult {
     let f = fixture().await?;
@@ -706,7 +706,7 @@ async fn the_requester_withdraws() -> TestResult {
     Ok(())
 }
 
-/// R5, AC5: with the owner gone, a request passes control at once.
+/// With the owner gone, a request passes control at once.
 #[tokio::test]
 async fn an_absent_owners_task_passes_at_once() -> TestResult {
     let f = fixture().await?;
@@ -735,7 +735,7 @@ async fn an_absent_owners_task_passes_at_once() -> TestResult {
     Ok(())
 }
 
-/// R4, AC6: a hand-over to someone who can no longer work in the project is refused and drops
+/// A hand-over to someone who can no longer work in the project is refused and drops
 /// their request; a person who may only read cannot ask.
 #[tokio::test]
 async fn control_passes_only_to_someone_who_may_work() -> TestResult {
@@ -767,7 +767,7 @@ async fn control_passes_only_to_someone_who_may_work() -> TestResult {
     Ok(())
 }
 
-/// R6, AC2: after a hand-over, the task's worktree commits as the new owner.
+/// After a hand-over, the task's worktree commits as the new owner.
 #[tokio::test]
 async fn a_hand_over_moves_the_commit_identity() -> TestResult {
     let h = crate::support::harness_with(crate::support::HarnessOptions {
@@ -780,7 +780,7 @@ async fn a_hand_over_moves_the_commit_identity() -> TestResult {
     h.github.set_perm("alice", "acme/repo", perms("write"));
     h.github.set_perm("bob", "acme/repo", perms("write"));
     let worktree = tempfile::tempdir()?;
-    crate::support::repos::git(worktree.path(), &["init", "-q"])?;
+    crate::support::git_stdout(worktree.path(), &["init", "-q"])?;
     seed_task(
         &h,
         "t1",
@@ -802,13 +802,13 @@ async fn a_hand_over_moves_the_commit_identity() -> TestResult {
         assert_eq!(r.status, 200, "{rest}: {}", r.body);
     }
     let config =
-        |key: &str| crate::support::repos::git(worktree.path(), &["config", "--worktree", key]);
+        |key: &str| crate::support::git_stdout(worktree.path(), &["config", "--worktree", key]);
     assert_eq!(config("user.name")?.trim(), "BOB");
     assert_eq!(config("user.email")?.trim(), "bob@users.noreply.github.com");
     Ok(())
 }
 
-/// R3 (review): the task's worktree is the owner's too: a non-owner reads its files but cannot
+/// The task's worktree is the owner's too: a non-owner reads its files but cannot
 /// write, create, delete or upload there, nor open a shell in it; the owner can.
 #[tokio::test]
 async fn a_non_owner_cannot_write_into_the_task_worktree() -> TestResult {
@@ -901,7 +901,7 @@ async fn disable(h: &Harness, id: &str) -> TestResult {
     Ok(())
 }
 
-/// R5 (review): a request that waits never locks a task. When the owner becomes absent, asking
+/// A request that waits never locks a task. When the owner becomes absent, asking
 /// again passes control whatever request waits; a waiting requester who can no longer work is
 /// replaced by the next person who asks.
 #[tokio::test]
@@ -929,7 +929,7 @@ async fn a_waiting_request_never_locks_the_task() -> TestResult {
     Ok(())
 }
 
-/// R4 (review): with the owner present, a waiting requester who can no longer work no longer
+/// With the owner present, a waiting requester who can no longer work no longer
 /// blocks others; a disabled requester's request cannot be accepted and is dropped, audited.
 #[tokio::test]
 async fn a_requester_who_cannot_work_gives_way() -> TestResult {
@@ -952,7 +952,7 @@ async fn a_requester_who_cannot_work_gives_way() -> TestResult {
     Ok(())
 }
 
-/// AC2 (review), ADR-0114: after a hand-over the agent's `gh` (a credential asked without a
+/// After a hand-over the agent's `gh` (a credential asked without a
 /// repository path) still gets the App's agent token, never the new owner's.
 #[tokio::test]
 async fn the_agents_gh_never_gets_the_new_owners_token() -> TestResult {
@@ -981,7 +981,7 @@ async fn the_agents_gh_never_gets_the_new_owners_token() -> TestResult {
     Ok(())
 }
 
-/// R4 (review round 2): when GitHub cannot tell whether the asker may still work, their request
+/// When GitHub cannot tell whether the asker may still work, their request
 /// is neither dropped nor accepted: the hand-over fails as unreachable and the request waits.
 #[tokio::test]
 async fn an_unknown_access_keeps_the_request_waiting() -> TestResult {
@@ -1028,7 +1028,7 @@ async fn an_unknown_access_keeps_the_request_waiting() -> TestResult {
     Ok(())
 }
 
-/// R4 (review round 3): an asker whose GitHub sign-in can no longer be renewed cannot work; the
+/// An asker whose GitHub sign-in can no longer be renewed cannot work; the
 /// owner's hand-over drops their request (409), never answering 401, which would sign the owner
 /// out.
 #[tokio::test]
@@ -1073,7 +1073,7 @@ async fn take_back(
     .await
 }
 
-/// SPEC-490 OWN-009, OWN-010, AC-9: Alice hands her task to Bob on his request and takes it back
+/// Alice hands her task to Bob on his request and takes it back
 /// without asking: it is hers again, acts on GitHub as her, Bob is refused control again, and the
 /// terminal and the audit say so. Nobody else takes it back, and once she has, nor does she.
 #[tokio::test]
@@ -1110,7 +1110,7 @@ async fn the_giver_takes_a_task_back() -> TestResult {
     let mut events = f.h.app.events.subscribe();
     let back = take_back(&f, &f.alice).await?;
     assert_eq!(back.status, 200, "{}", back.body);
-    // Bob, from whom it was taken, is told in his own event stream (OWN-010).
+    // Bob, from whom it was taken, is told in his own event stream.
     let mut told = Vec::new();
     while let Ok(envelope) = events.try_recv() {
         if let yulius_contracts::events::UiEvent::ControlTakenBack { task_id, by, .. } =
@@ -1145,7 +1145,7 @@ async fn the_giver_takes_a_task_back() -> TestResult {
     Ok(())
 }
 
-/// SPEC-490 OWN-009, AC-9, AC-10: the right ends when control moves again. Handed on by Bob to
+/// The right ends when control moves again. Handed on by Bob to
 /// Carol, only Bob takes it back; handed back to Alice on her request, nobody does; a giver who
 /// can no longer work is refused.
 #[tokio::test]
@@ -1248,7 +1248,7 @@ async fn ask_first(
     .await
 }
 
-/// SPEC-510 TKC-001, TKC-002, AC1: Bob takes Alice's task without asking. It acts on GitHub as
+/// Bob takes Alice's task without asking. It acts on GitHub as
 /// him, Carol's waiting request is dropped, Alice is told wherever she is and takes it back, and
 /// the terminal and the audit say so.
 #[tokio::test]
@@ -1299,7 +1299,7 @@ async fn a_teammate_takes_control_at_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-510 TKC-003, AC2: Alice chooses to be asked. Bob's take is refused naming her and the
+/// Alice chooses to be asked. Bob's take is refused naming her and the
 /// task stays hers; his request waits for her answer. The choice is hers alone and is read back
 /// from `/api/me`.
 #[tokio::test]
@@ -1332,7 +1332,7 @@ async fn an_owner_who_asks_first_is_asked() -> TestResult {
         "{message}"
     );
     assert_eq!(github_actor(&f.h, "tt").await?, "alice");
-    // Steering her task, Bob is told to ask her (TKC-006).
+    // Steering her task, Bob is told to ask her.
     let continued = call(
         &f.h.router,
         Method::POST,
@@ -1357,7 +1357,7 @@ async fn an_owner_who_asks_first_is_asked() -> TestResult {
     Ok(())
 }
 
-/// SPEC-510 TKC-004, AC3: an owner who can no longer act holds no task, whatever they chose.
+/// An owner who can no longer act holds no task, whatever they chose.
 #[tokio::test]
 async fn an_absent_owner_who_asks_first_loses_the_task_to_a_take() -> TestResult {
     let f = fixture().await?;
@@ -1372,7 +1372,7 @@ async fn an_absent_owner_who_asks_first_loses_the_task_to_a_take() -> TestResult
     Ok(())
 }
 
-/// SPEC-510 TKC-007, AC4: the owner, a reader and a disabled account take nothing.
+/// The owner, a reader and a disabled account take nothing.
 #[tokio::test]
 async fn a_take_is_refused_to_whoever_may_not_take() -> TestResult {
     let f = fixture().await?;
@@ -1400,14 +1400,14 @@ async fn a_take_is_refused_to_whoever_may_not_take() -> TestResult {
     Ok(())
 }
 
-/// SPEC-510 TKC-002 (review rounds 1 and 2): Alice takes back by taking control herself. She was
+/// Alice takes back by taking control herself. She was
 /// the giver, so it is a take-back: nobody may take it back afterwards, nothing promises it, and
 /// Bob, from whom it was taken, is told it was taken back.
 #[tokio::test]
 async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     let f = fixture().await?;
     assert_eq!(take(&f, &f.bob).await?.status, 200);
-    // Bob asking first does not keep the task from whoever it was taken from (ADR-0365).
+    // Bob asking first does not keep the task from whoever it was taken from.
     assert_eq!(ask_first(&f.h, &f.bob, true).await?.status, 200);
     let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
     let mut events = f.h.app.events.subscribe();
@@ -1444,7 +1444,7 @@ async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     Ok(())
 }
 
-/// What the agent of task `id` asks a person (SPEC-134), as the `needs_you` tool records it.
+/// What the agent of task `id` asks a person, as the `needs_you` tool records it.
 async fn ask(h: &Harness, id: &str) -> TestResult {
     let asked = yulius_app::needs_you::NeedsYouRecord {
         action: "Choose the staging region".into(),
@@ -1462,7 +1462,7 @@ async fn ask(h: &Harness, id: &str) -> TestResult {
     Ok(())
 }
 
-/// `POST /api/tasks/{id}/needs-you/answer` (SPEC-516) by `who`.
+/// `POST /api/tasks/{id}/needs-you/answer` by `who`.
 async fn answer(
     h: &Harness,
     id: &str,
@@ -1479,7 +1479,7 @@ async fn answer(
     .await
 }
 
-/// SPEC-516 NYA-004, AC2: an answer is refused, saying why, with nothing to answer, an empty
+/// An answer is refused, saying why, with nothing to answer, an empty
 /// text, a task that does not run, an agent asking in its terminal, the owner's personal secret
 /// within the run's reach, a reader and a disabled account; the request stays open and the task
 /// stays its owner's.
@@ -1567,7 +1567,7 @@ async fn a_needs_you_answer_is_refused_where_it_must_not_reach_the_agent() -> Te
     Ok(())
 }
 
-/// SPEC-516 NYA-004 (review round 1): the owner's personal MCP server for the project keeps a
+/// The owner's personal MCP server for the project keeps a
 /// teammate's answer out as their personal secret does.
 #[tokio::test]
 async fn the_owners_personal_mcp_server_keeps_a_teammates_answer_out() -> TestResult {
@@ -1598,7 +1598,7 @@ async fn the_owners_personal_mcp_server_keeps_a_teammates_answer_out() -> TestRe
     Ok(())
 }
 
-/// SPEC-516 NYA-004 (review round 1): an automation's task holds no person's secrets or servers,
+/// An automation's task holds no person's secrets or servers,
 /// so its owner's personal secret does not keep a teammate's answer out: it goes on to the
 /// session (here none is live, which is the refusal it meets).
 #[tokio::test]
@@ -1638,7 +1638,7 @@ async fn an_automations_task_is_answered_whatever_its_owners_personal_secrets() 
     Ok(())
 }
 
-/// SPEC-516 NYA-004 (review round 1): the access check may wait on GitHub; what the task is
+/// The access check may wait on GitHub; what the task is
 /// doing is decided from a read after it. The agent opens a question in its terminal meanwhile,
 /// and the answer is refused for it rather than typed into the menu.
 #[tokio::test]
@@ -1719,7 +1719,7 @@ async fn asked_of(
     Ok((at, named))
 }
 
-/// SPEC-512 ANS-001 (#1418): a request names whom it waits for; a login without write access to
+/// A request names whom it waits for; a login without write access to
 /// the project, or no person of the instance, refuses the whole request, saying which; the owner
 /// named is no one extra.
 #[tokio::test]
@@ -1754,9 +1754,9 @@ async fn a_needs_you_names_who_it_waits_for() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 ANS-002, ANS-003 (#1418): a named request is answered by its owner and whom it
+/// A named request is answered by its owner and whom it
 /// names, on the page and through `task_message`; another writer is refused with whom it asks.
-/// A request that names nobody stays any writer's (ADR-0370).
+/// A request that names nobody stays any writer's.
 #[tokio::test]
 async fn a_named_request_is_answered_by_whom_it_names() -> TestResult {
     let f = fixture().await?;
@@ -1836,7 +1836,7 @@ async fn a_named_request_is_answered_by_whom_it_names() -> TestResult {
     Ok(())
 }
 
-/// `POST /api/tasks/t1/needs-you/withdraw` of Bob by `who` (SPEC-512 ANS-005).
+/// `POST /api/tasks/t1/needs-you/withdraw` of Bob by `who`.
 async fn withdraw_bob(
     f: &Fixture,
     who: &Creds,
@@ -1851,7 +1851,7 @@ async fn withdraw_bob(
     .await
 }
 
-/// SPEC-512 ANS-004, ANS-005 (#1418): an answer to a request that was replaced, or by a person
+/// An answer to a request that was replaced, or by a person
 /// the owner withdrew, is refused saying which; only the owner withdraws, and it is audited.
 #[tokio::test]
 async fn an_answer_to_a_replaced_or_withdrawn_request_is_refused() -> TestResult {
@@ -1925,9 +1925,8 @@ async fn an_answer_to_a_replaced_or_withdrawn_request_is_refused() -> TestResult
     Ok(())
 }
 
-/// SPEC-512 ANS-006 (#1418): a person a request names answers it and nothing else: terminal
-/// input, Continue and merges stay the owner's; a stop is anyone's who may work there
-/// (ADR-0331).
+/// A person a request names answers it and nothing else: terminal
+/// input, Continue and merges stay the owner's; a stop is anyone's who may work there.
 #[tokio::test]
 async fn a_named_person_steers_nothing_else() -> TestResult {
     let f = fixture().await?;
@@ -1952,7 +1951,7 @@ async fn a_named_person_steers_nothing_else() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 ANS-001, ANS-005 (review of part 2): more than ten names, or a disabled person,
+/// More than ten names, or a disabled person,
 /// refuse the request; a withdrawal with no request, or of a login it does not name, is 409; a
 /// withdrawn person's own agent is refused too.
 #[tokio::test]
@@ -2003,7 +2002,7 @@ async fn naming_and_withdrawing_refuse_what_cannot_hold() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 ANS-001 (review of part 2): when GitHub does not answer, a named person's access is
+/// When GitHub does not answer, a named person's access is
 /// not judged "none": the request is refused saying it could not be checked now.
 #[tokio::test]
 async fn a_name_whose_access_cannot_be_checked_is_said_so() -> TestResult {
@@ -2022,7 +2021,7 @@ async fn a_name_whose_access_cannot_be_checked_is_said_so() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 ANS-001 (review round 3 of part 2): a person with no usable GitHub sign-in cannot
+/// A person with no usable GitHub sign-in cannot
 /// be named until they sign in again; a task whose run holds the owner's personal secrets
 /// names nobody else, since only its owner can answer it.
 #[tokio::test]
@@ -2068,5 +2067,317 @@ async fn names_that_could_never_answer_are_refused_with_why() -> TestResult {
     assert_eq!(personal["isError"], true, "{personal}");
     assert!(personal.to_string().contains("personal"), "{personal}");
     assert!(f.h.store.task_needs_you(&f.task.id).await?.is_none());
+    Ok(())
+}
+
+/// The answer of `/internal/git-credential` to the run with task token `token`.
+async fn agent_credential(
+    h: &Harness,
+    token: &str,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com", "path": "acme/repo.git"})),
+        &Creds {
+            bearer: Some(token.into()),
+            ..Creds::default()
+        },
+    )
+    .await
+}
+
+/// [`fixture`] with the GitHub App installed, so a run may be issued its agent token.
+async fn fixture_with_app() -> Result<Fixture, Box<dyn std::error::Error>> {
+    let f = fixture().await?;
+    f.h.store.init_instance("https://yulius.test", "x").await?;
+    crate::support::configure_github_app(&f.h).await?;
+    f.h.store.set_installation(Some(7)).await?;
+    Ok(f)
+}
+
+/// Disabling a task's owner stops the task, and its run
+/// is refused a git credential from then on; another person's task runs on.
+#[tokio::test]
+async fn a_disabled_owners_run_gets_no_git_credential_and_stops() -> TestResult {
+    let f = fixture_with_app().await?;
+    let admin = crate::support::setup_superadmin_creds(&f.h).await?;
+    let mut bobs = f.task.clone();
+    bobs.id = TaskId::parse("t2")?;
+    bobs.number = 2;
+    bobs.owner = UserId::parse("u-b")?;
+    f.h.store.insert_task(&bobs).await?;
+    let before = agent_credential(&f.h, "tt").await?;
+    assert_eq!(before.status, 200, "{}", before.body);
+
+    let disable = call(
+        &f.h.router,
+        Method::PATCH,
+        "/api/admin/users/u-a",
+        Some(json!({"disabled": true})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(disable.status, 200, "{}", disable.body);
+    let refused = agent_credential(&f.h, "tt").await?;
+    // Refused as a person's own git is after a disable (`workspace_git_credential`).
+    assert_eq!(refused.status, 401, "{}", refused.body);
+    assert!(refused.body.get("token").is_none(), "{}", refused.body);
+    // Asked to stop: its run ends as the supervisor reaps it.
+    let status = f.h.store.task(&f.task.id).await?.ok_or("task")?.status;
+    assert!(
+        status.is_resting() || status == TaskStatus::Stopping,
+        "{status:?}"
+    );
+    assert_eq!(audited(&f.h, "t1", "task.stopped").await?, 1);
+    // Bob's task, in the same project, runs on.
+    assert_eq!(
+        f.h.store.task(&bobs.id).await?.ok_or("t2")?.status,
+        TaskStatus::Running
+    );
+    Ok(())
+}
+
+/// An owner who lost write access to the project no longer has their run
+/// issued a git credential; Bob, who may still write, gets one for his own task.
+#[tokio::test]
+async fn an_owner_down_to_read_access_has_their_run_refused_a_git_credential() -> TestResult {
+    let f = fixture_with_app().await?;
+    let mut bobs = f.task.clone();
+    bobs.id = TaskId::parse("t2")?;
+    bobs.number = 2;
+    bobs.owner = UserId::parse("u-b")?;
+    f.h.store.insert_task(&bobs).await?;
+    seed_live_attempt(&f.h, "t2", "tt2").await?;
+
+    f.h.github.set_perm("alice", "acme/repo", perms("read"));
+    f.h.store
+        .put_access(
+            &UserId::parse("u-a")?,
+            &f.task.sandbox_id,
+            yulius_domain::permission::AccessLevel::Read,
+            f.h.app.now(),
+        )
+        .await?;
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+    let refused = agent_credential(&f.h, "tt").await?;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(refused.body.get("token").is_none(), "{}", refused.body);
+    // The terminal says why the agent's git fails, once however often it asks.
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    let said: Vec<String> = notices(&mut watch)
+        .into_iter()
+        .filter(|n| n.contains("no GitHub credential"))
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("@alice"), "{said:?}");
+    let bob = agent_credential(&f.h, "tt2").await?;
+    assert_eq!(bob.status, 200, "{}", bob.body);
+    assert_eq!(bob.body["token"], "agent-inst");
+
+    // Alice is absent from her task now: Bob takes control at once, and its run gets the token
+    // again, on his standing.
+    let taken = control(&f, Method::POST, "", &f.bob).await?;
+    assert_eq!(taken.status, 200, "{}", taken.body);
+    assert_eq!(taken.body["owner"]["login"], "bob");
+    // The refusal notice is the new owner's to see: Bob down to read hears it once, naming him.
+    level(&f, "u-b", "read").await?;
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    let said: Vec<String> = notices(&mut watch)
+        .into_iter()
+        .filter(|n| n.contains("no GitHub credential"))
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("@bob"), "{said:?}");
+    level(&f, "u-b", "write").await?;
+    let again = agent_credential(&f.h, "tt").await?;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.body["token"], "agent-inst");
+    // A credential issued again ends the episode: a later loss is said anew.
+    level(&f, "u-b", "read").await?;
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    let said = notices(&mut watch)
+        .into_iter()
+        .filter(|n| n.contains("no GitHub credential"))
+        .count();
+    assert_eq!(said, 1);
+    Ok(())
+}
+
+/// Sets `user`'s access to `acme/repo` to `perm` on GitHub and in the access cache.
+async fn level(f: &Fixture, user: &str, perm: &str) -> TestResult {
+    let login = if user == "u-a" { "alice" } else { "bob" };
+    f.h.github.set_perm(login, "acme/repo", perms(perm));
+    let level = match perm {
+        "read" => yulius_domain::permission::AccessLevel::Read,
+        _ => yulius_domain::permission::AccessLevel::Write,
+    };
+    f.h.store
+        .put_access(
+            &UserId::parse(user)?,
+            &f.task.sandbox_id,
+            level,
+            f.h.app.now(),
+        )
+        .await?;
+    Ok(())
+}
+
+/// The audit entries `action` of task `task`.
+async fn audits_of(
+    h: &Harness,
+    task: &str,
+    action: &str,
+) -> Result<Vec<yulius_app::automations::AuditEntry>, Box<dyn std::error::Error>> {
+    Ok(h.store
+        .automation_audit(task, 50)
+        .await?
+        .into_iter()
+        .filter(|e| e.action == action)
+        .collect())
+}
+
+/// Disables `u-a` (Alice) through the admin API.
+async fn disable_alice(f: &Fixture) -> TestResult {
+    let admin = crate::support::setup_superadmin_creds(&f.h).await?;
+    let disable = call(
+        &f.h.router,
+        Method::PATCH,
+        "/api/admin/users/u-a",
+        Some(json!({"disabled": true})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(disable.status, 200, "{}", disable.body);
+    Ok(())
+}
+
+/// Disabling a person stops every task of theirs that would start by itself, not only a
+/// running one, each audited with the reason and said in the task's terminal; a waiting task of
+/// another person stays.
+#[tokio::test]
+async fn disabling_stops_every_waiting_task_of_the_owner_and_says_why() -> TestResult {
+    let f = fixture().await?;
+    let waiting = [
+        ("t-q", TaskStatus::Queued),
+        ("t-c", TaskStatus::Chained),
+        ("t-p", TaskStatus::Prepared),
+        ("t-k", TaskStatus::Parked),
+        ("t-w", TaskStatus::WaitingCapacity),
+    ];
+    for (id, status) in waiting {
+        seed_task(&f.h, id, "s1", "u-a", status, None).await?;
+    }
+    seed_task(&f.h, "t-b", "s1", "u-b", TaskStatus::Queued, None).await?;
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+
+    disable_alice(&f).await?;
+    for (id, before) in waiting {
+        let task = f.h.store.task(&TaskId::parse(id)?).await?.ok_or(id)?;
+        assert_eq!(
+            task.status, RESTING,
+            "{id} was {before:?}, is {:?}",
+            task.status
+        );
+    }
+    let running = f.h.store.task(&f.task.id).await?.ok_or("t1")?.status;
+    assert!(
+        running.is_resting() || running == TaskStatus::Stopping,
+        "{running:?}"
+    );
+    for (id, _) in waiting.iter().chain([&("t1", TaskStatus::Running)]) {
+        let entries = audits_of(&f.h, id, "task.stopped").await?;
+        assert_eq!(entries.len(), 1, "{id}: {entries:?}");
+        let detail: serde_json::Value =
+            serde_json::from_str(entries[0].detail.as_deref().ok_or("no detail")?)?;
+        assert_eq!(
+            (
+                entries[0].actor.as_str(),
+                &detail["owner"],
+                &detail["reason"]
+            ),
+            ("superadmin", &json!("alice"), &json!("owner disabled")),
+            "{id}: {detail}"
+        );
+    }
+    assert!(
+        notices(&mut watch).contains(&"Stopped: its owner @alice was disabled.".to_owned()),
+        "the terminal says why"
+    );
+    let bobs = f.h.store.task(&TaskId::parse("t-b")?).await?.ok_or("t-b")?;
+    assert_eq!(bobs.status, TaskStatus::Queued);
+    assert!(audits_of(&f.h, "t-b", "task.stopped").await?.is_empty());
+    Ok(())
+}
+
+/// A stop that keeps losing to the task's own changes fails: the person stays disabled,
+/// their other tasks still stop, the failed one is not audited as stopped, and its run is refused
+/// a git credential all the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_that_fails_on_disable_leaves_the_rest_stopped_and_the_credential_refused()
+-> TestResult {
+    let f = fixture_with_app().await?;
+    seed_task(&f.h, "t-q", "s1", "u-a", TaskStatus::Queued, None).await?;
+    // A task id of its own: a hook left after this test's runtime ends would fire anywhere.
+    seed_task(&f.h, "t-stuck", "s1", "u-a", TaskStatus::Running, None).await?;
+    seed_live_attempt(&f.h, "t-stuck", "tt-stuck").await?;
+    // Handled after `t-stuck`: it shows the loop goes on past a failed stop.
+    seed_task(&f.h, "t-after", "s1", "u-a", TaskStatus::Running, None).await?;
+    seed_live_attempt(&f.h, "t-after", "tt-after").await?;
+    // Every round of its stop (4, the stop's bound) loses: between its read and its change the
+    // task moves between Running and Switching, from both of which a stop goes on.
+    for _ in 0..4 {
+        let store = f.h.store.clone();
+        let handle = tokio::runtime::Handle::current();
+        let now = f.h.app.now();
+        yulius_app::race::on(
+            yulius_app::race::Point::StopDecided,
+            std::path::Path::new("t-stuck"),
+            move || {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        let id = TaskId::parse("t-stuck").ok()?;
+                        let status = store.task(&id).await.ok()??.status;
+                        let next = if status == TaskStatus::Running {
+                            TaskStatus::Switching
+                        } else {
+                            TaskStatus::Running
+                        };
+                        store
+                            .transition_task(&id, Some(status), next, None, now)
+                            .await
+                            .ok()
+                    })
+                });
+            },
+        );
+    }
+
+    disable_alice(&f).await?;
+    let alice = f.h.store.user(&UserId::parse("u-a")?).await?.ok_or("u-a")?;
+    assert!(alice.disabled_at.is_some(), "the disable stays");
+    let queued = f.h.store.task(&TaskId::parse("t-q")?).await?.ok_or("t-q")?;
+    assert_eq!(queued.status, RESTING);
+    assert_eq!(audits_of(&f.h, "t-q", "task.stopped").await?.len(), 1);
+    let stuck = TaskId::parse("t-stuck")?;
+    let live = f.h.store.task(&stuck).await?.ok_or("t-stuck")?.status;
+    assert!(
+        matches!(live, TaskStatus::Running | TaskStatus::Switching),
+        "{live:?}"
+    );
+    assert!(audits_of(&f.h, "t-stuck", "task.stopped").await?.is_empty());
+    // Her other live tasks stop all the same, also the one handled after the failed stop.
+    for id in ["t1", "t-after"] {
+        let other = f.h.store.task(&TaskId::parse(id)?).await?.ok_or(id)?.status;
+        assert!(
+            other.is_resting() || other == TaskStatus::Stopping,
+            "{id}: {other:?}"
+        );
+        assert_eq!(audits_of(&f.h, id, "task.stopped").await?.len(), 1, "{id}");
+    }
+    let refused = agent_credential(&f.h, "tt-stuck").await?;
+    assert_eq!(refused.status, 401, "{}", refused.body);
     Ok(())
 }

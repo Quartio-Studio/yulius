@@ -195,6 +195,51 @@ pub(crate) fn open_dirs_below(
     Ok(dir)
 }
 
+/// What [`read_bounded_at`] found.
+pub(crate) enum Bounded {
+    /// No plain file: a folder, a FIFO or a device.
+    NotPlain,
+    /// More than the bound.
+    TooLarge,
+    /// The file's bytes, zeroed when dropped.
+    Bytes(zeroize::Zeroizing<Vec<u8>>),
+}
+
+/// Reads the file `name` in the folder `dir`, opened without following a link or waiting on a
+/// FIFO, at most `max` bytes: a file larger by its metadata is refused unread, and the read is
+/// bounded too. The room is reserved first and a copy not handed back is zeroed, so no partial or
+/// oversized copy is left in memory.
+///
+/// # Errors
+/// The open's error (`NotFound`, a link's `ELOOP`) or the read's.
+pub(crate) fn read_bounded_at(dir: &OwnedFd, name: &OsStr, max: usize) -> std::io::Result<Bounded> {
+    use std::io::Read as _;
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let file = std::fs::File::from(openat(dir, name, flags, Mode::empty())?);
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Ok(Bounded::NotPlain);
+    }
+    if meta.len() > u64::try_from(max).unwrap_or(u64::MAX) {
+        return Ok(Bounded::TooLarge);
+    }
+    let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(max + 1));
+    file.take(u64::try_from(max + 1).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max {
+        return Ok(Bounded::TooLarge);
+    }
+    Ok(Bounded::Bytes(bytes))
+}
+
+/// Removes the file `name` from the folder `dir`; a missing one is fine.
+pub(crate) fn remove_at(dir: &OwnedFd, name: &OsStr) -> AppResult<()> {
+    match unlinkat(dir, name, UnlinkatFlags::NoRemoveDir) {
+        Ok(()) | Err(Errno::ENOENT) => Ok(()),
+        Err(err) => Err(errno_error(err)),
+    }
+}
+
 /// The mode of the folders the server creates in a sandbox tree: never writable by others,
 /// whatever the umask (which can only take bits away; SPEC-402, #800).
 const FOLDER_MODE: Mode = Mode::from_bits_truncate(0o755);

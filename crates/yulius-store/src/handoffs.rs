@@ -8,7 +8,7 @@ use yulius_app::ports::store_ext::{HandoffRecord, HandoffStore};
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{SqliteStore, bad_column, text_parsed};
 
 const COLUMNS: &str = "id, source_task, source_sandbox, target_sandbox, owner, args, chain, depth, \
                        state, reason, target_task, created_at";
@@ -25,7 +25,6 @@ fn handoff_row(row: &Row<'_>) -> rusqlite::Result<HandoffRecord> {
     let source_sandbox = parse(2, "source sandbox")?;
     let target_sandbox = parse(3, "target sandbox")?;
     let owner = parse(4, "owner")?;
-    let chain: String = row.get(6)?;
     let target: Option<String> = row.get(10)?;
     Ok(HandoffRecord {
         id: row.get(0)?,
@@ -37,7 +36,7 @@ fn handoff_row(row: &Row<'_>) -> rusqlite::Result<HandoffRecord> {
             .map_err(|_| bad_column("sandbox id", &target_sandbox))?,
         owner: UserId::parse(&owner).map_err(|_| bad_column("user id", &owner))?,
         args: row.get(5)?,
-        chain: serde_json::from_str(&chain).map_err(|_| bad_column("chain", &chain))?,
+        chain: text_parsed(row, 6, "chain", |text| serde_json::from_str(text))?,
         depth: row.get(7)?,
         state: row.get(8)?,
         reason: row.get(9)?,
@@ -58,8 +57,7 @@ impl HandoffStore for SqliteStore {
                     [],
                     |r| r.get::<_, Option<String>>(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(doc.flatten())
         })
         .await
@@ -68,14 +66,12 @@ impl HandoffStore for SqliteStore {
     async fn set_handoff_setting(&self, doc: &str) -> AppResult<()> {
         let doc = doc.to_owned();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE instance SET handoffs = ?1 WHERE singleton = 1",
-                    [doc],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "UPDATE instance SET handoffs = ?1 WHERE singleton = 1",
+                [doc],
+            )?;
             if changed == 0 {
-                return Err(AppError::Conflict("the instance is not set up yet".into()));
+                return Err(AppError::Conflict("the instance is not set up yet".into()).into());
             }
             Ok(())
         })
@@ -105,8 +101,7 @@ impl HandoffStore for SqliteStore {
                     h.target_task.as_ref().map(TaskId::as_str),
                     h.created_at.0,
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -115,13 +110,12 @@ impl HandoffStore for SqliteStore {
     async fn handoff(&self, id: &str) -> AppResult<Option<HandoffRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLUMNS} FROM task_handoffs WHERE id = ?1"),
                 [id],
                 handoff_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -129,17 +123,13 @@ impl HandoffStore for SqliteStore {
     async fn handoffs_of_source(&self, task: &TaskId) -> AppResult<Vec<HandoffRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM task_handoffs WHERE source_task = ?1 \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM task_handoffs WHERE source_task = ?1 \
                      ORDER BY created_at DESC, rowid DESC LIMIT 50"
-                ))
-                .map_err(db)?;
+            ))?;
             let rows = stmt
-                .query_map([task], handoff_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([task], handoff_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -148,13 +138,12 @@ impl HandoffStore for SqliteStore {
     async fn handoff_of_target(&self, task: &TaskId) -> AppResult<Option<HandoffRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLUMNS} FROM task_handoffs WHERE target_task = ?1"),
                 [task],
                 handoff_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -172,14 +161,12 @@ impl HandoffStore for SqliteStore {
         let reason = reason.map(str::to_owned);
         let target = target_task.map(|t| t.as_str().to_owned());
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE task_handoffs SET state = ?3, reason = ?4, \
+            let changed = c.execute(
+                "UPDATE task_handoffs SET state = ?3, reason = ?4, \
                      target_task = COALESCE(?5, target_task), decided_at = ?6 \
                      WHERE id = ?1 AND state = ?2",
-                    params![id, from, to, reason, target, at.0],
-                )
-                .map_err(db)?;
+                params![id, from, to, reason, target, at.0],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -188,30 +175,25 @@ impl HandoffStore for SqliteStore {
     async fn handoffs_since(&self, owner: &UserId, since: Timestamp) -> AppResult<u32> {
         let owner = owner.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT COUNT(*) FROM task_handoffs \
                  WHERE owner = ?1 AND created_at >= ?2 AND state <> 'refused'",
                 params![owner, since.0],
                 |r| r.get(0),
-            )
-            .map_err(db)
+            )?)
         })
         .await
     }
 
     async fn untold_handoffs(&self) -> AppResult<Vec<HandoffRecord>> {
         self.call(|c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM task_handoffs \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM task_handoffs \
                      WHERE state = 'created' AND outcome_told = 0 AND target_task IS NOT NULL"
-                ))
-                .map_err(db)?;
+            ))?;
             let rows = stmt
-                .query_map([], handoff_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([], handoff_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -219,23 +201,19 @@ impl HandoffStore for SqliteStore {
 
     async fn settle_creating_handoffs(&self, at: Timestamp) -> AppResult<u64> {
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let made = tx
-                .execute(
-                    "UPDATE task_handoffs SET state = 'created', decided_at = ?1 \
+            let tx = c.transaction()?;
+            let made = tx.execute(
+                "UPDATE task_handoffs SET state = 'created', decided_at = ?1 \
                      WHERE state = 'creating' AND target_task IS NOT NULL",
-                    [at.0],
-                )
-                .map_err(db)?;
-            let lost = tx
-                .execute(
-                    "UPDATE task_handoffs SET state = 'refused', decided_at = ?1, \
+                [at.0],
+            )?;
+            let lost = tx.execute(
+                "UPDATE task_handoffs SET state = 'refused', decided_at = ?1, \
                      reason = 'interrupted before its task was made: ask again' \
                      WHERE state = 'creating' AND target_task IS NULL",
-                    [at.0],
-                )
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+                [at.0],
+            )?;
+            tx.commit()?;
             Ok(u64::try_from(made + lost).unwrap_or(u64::MAX))
         })
         .await
@@ -244,12 +222,10 @@ impl HandoffStore for SqliteStore {
     async fn mark_handoff_told(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE task_handoffs SET outcome_told = 1 WHERE id = ?1 AND outcome_told = 0",
-                    [id],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "UPDATE task_handoffs SET outcome_told = 1 WHERE id = ?1 AND outcome_told = 0",
+                [id],
+            )?;
             Ok(changed == 1)
         })
         .await

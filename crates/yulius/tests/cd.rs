@@ -1,21 +1,21 @@
-//! CD (deployment) end to end (SPEC-134, ADR-0109/0110/0111): a real repository whose
+//! CD (deployment) end to end: a real repository whose
 //! `yulius.toml` defines `[cd.dev]` and `[cd.prod]` with scripts, the real Git adapter and the real
 //! detached ptyhost running the deploys, the vault giving allowed secrets, and the fake GitHub
 //! promoting.
 
 use crate::support;
+use crate::support::cd::{
+    DEPLOY, Holders, Recording, TOKEN, VALUE, WAIT, fixture, fixture_configured, fixture_with,
+};
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::{
-    Creds, FakeRemote, HarnessOptions, call, configure_github_app, harness_with, perms,
-    seed_github_user, seed_sandbox,
-};
+use support::{Creds, call};
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::ci::cd::CdRunRecord;
 use yulius_app::ports::store_ext::{AutomationStore as _, CdStore as _};
@@ -27,218 +27,6 @@ use yulius_domain::time::Timestamp;
 
 pub(crate) type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 pub(crate) type TestResult = BoxResult<()>;
-
-const WAIT: Duration = Duration::from_secs(60);
-pub(crate) const VALUE: &str = "dev-deploy-token-9q2w7e5r";
-
-pub(crate) fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
-/// The bare `origin` as the fake GitHub's repository side: promotions merge and fast-forward it.
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .ok()
-    }
-    fn merge(&self, base: &str, head_sha: &str, _: &str, message: &str) -> Result<String, String> {
-        let run = |args: &[&str]| git(&self.0, args).map_err(|e| e.to_string());
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = run(&["merge-tree", "--write-tree", &base_sha, head_sha])?;
-        let commit = run(&[
-            "commit-tree",
-            &tree,
-            "-p",
-            &base_sha,
-            "-p",
-            head_sha,
-            "-m",
-            message,
-        ])?;
-        run(&[
-            "update-ref",
-            &format!("refs/heads/{base}"),
-            &commit,
-            &base_sha,
-        ])?;
-        Ok(commit)
-    }
-    fn create_branch(&self, branch: &str, sha: &str) -> Result<(), String> {
-        git(
-            &self.0,
-            &["update-ref", &format!("refs/heads/{branch}"), sha, ""],
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-    }
-    fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String> {
-        git(
-            &self.0,
-            &["update-ref", &format!("refs/heads/{branch}"), sha],
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-    }
-    fn delete_branch(&self, _: &str) -> Result<bool, String> {
-        Ok(false)
-    }
-}
-
-/// The deploy script: proves what it got (the secret's value, `YULIUS_CD_*`, no task token) and
-/// leaves a mark the verify script checks. It prints the value, which the stored output redacts.
-const DEPLOY: &str = r#"#!/bin/sh
-echo "deploying $YULIUS_CD_ENV $YULIUS_CD_BRANCH $YULIUS_CD_SHA"
-if [ "$DEV_TOKEN" = "dev-deploy-token-9q2w7e5r" ]; then echo token-ok; fi
-echo "the token is $DEV_TOKEN"
-if env | grep -q -E "YULIUS_TASK_TOKEN|GITHUB_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC"; then exit 9; fi
-echo clean-env
-if [ -f fail ]; then exit 3; fi
-if [ -f slow ]; then sleep 30; fi
-echo "$YULIUS_CD_SHA" > "$MARKS/$YULIUS_CD_ENV"
-echo "home $HOME"
-"#;
-
-const VERIFY: &str = r#"#!/bin/sh
-test "$(cat "$MARKS/$YULIUS_CD_ENV")" = "$YULIUS_CD_SHA" && echo verified
-"#;
-
-pub(crate) struct Fixture {
-    pub(crate) h: support::Harness,
-    pub(crate) alice: Creds,
-    pub(crate) bob: Creds,
-    pub(crate) origin: PathBuf,
-    pub(crate) work: PathBuf,
-    pub(crate) marks: PathBuf,
-    pub(crate) secret: String,
-}
-
-/// `yulius.toml` with CD tables `cd` (the marks directory replaces `{marks}`).
-pub(crate) async fn fixture(cd: &str) -> BoxResult<Fixture> {
-    fixture_with(cd, None).await
-}
-
-/// [`fixture`]; with `host`, runs are contained (`config.contained`) and go to that process host.
-async fn fixture_with(
-    cd: &str,
-    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
-) -> BoxResult<Fixture> {
-    fixture_configured(cd, host, Box::new(|_| {})).await
-}
-
-/// [`fixture_with`], then `configure` adjusts the configuration.
-async fn fixture_configured(
-    cd: &str,
-    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
-    configure: support::ConfigureFn,
-) -> BoxResult<Fixture> {
-    let contained = host.is_some();
-    // A short base: run sockets live at <data>/runs/cd-<uuid>/pty.sock (Unix path limit).
-    let dir = tempfile::Builder::new().prefix("ycd").tempdir_in("/tmp")?;
-    let root = dir.path().canonicalize()?;
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let _ = Command::new(&exe).arg("version").output();
-    let h = harness_with(HarnessOptions {
-        session_host: Some(host.unwrap_or_else(|| Arc::new(PtySessionHost::new(exe)))),
-        git: Some(Arc::new(crate::support::confined_git())),
-        dir: Some(dir),
-        configure: Some(Box::new(move |config| {
-            config.ci.job_timeout = Duration::from_secs(20);
-            config.contained = contained;
-            configure(config);
-        })),
-        ..HarnessOptions::default()
-    })?;
-    let data = h.app.config.data_dir.clone();
-    support::setup_superadmin_creds(&h).await?;
-    configure_github_app(&h).await?;
-    let alice = seed_github_user(&h, "u-alice", "alice").await?;
-    let bob = seed_github_user(&h, "u-bob", "bob").await?;
-    h.github.set_perm("alice", "acme/app", perms("write"));
-    h.github.set_perm("bob", "acme/app", perms("admin"));
-    seed_sandbox(&h, "s1", "app", "u-alice").await?;
-
-    let marks = root.join("marks");
-    std::fs::create_dir_all(&marks)?;
-    let origin = root.join("origin.git");
-    std::fs::create_dir_all(&origin)?;
-    git(&origin, &["init", "--bare", "-q", "-b", "main"])?;
-    let work = root.join("work");
-    git(
-        &root,
-        &["clone", "-q", origin.to_str().ok_or("path")?, "work"],
-    )?;
-    std::fs::create_dir_all(work.join("scripts/cd"))?;
-    std::fs::write(work.join("scripts/cd/deploy.sh"), DEPLOY)?;
-    std::fs::write(work.join("scripts/cd/verify.sh"), VERIFY)?;
-    let marks_text = marks.to_str().ok_or("path")?;
-    std::fs::write(work.join("yulius.toml"), cd.replace("{marks}", marks_text))?;
-    git(&work, &["add", "-A"])?;
-    git(&work, &["commit", "-q", "-m", "init"])?;
-    git(&work, &["push", "-q", "origin", "HEAD:main", "HEAD:dev"])?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
-    let repo = data.join("sandboxes/s1/repo");
-    std::fs::create_dir_all(repo.parent().ok_or("parent")?)?;
-    git(
-        &root,
-        &[
-            "clone",
-            "-q",
-            origin.to_str().ok_or("path")?,
-            repo.to_str().ok_or("path")?,
-        ],
-    )?;
-    let created = call(
-        &h.router,
-        Method::POST,
-        "/api/sandboxes/s1/agent-secrets",
-        // A person confirms its hosts and production (SPEC-216: agents do not set it up).
-        Some(
-            json!({"name": "DEV_TOKEN", "description": "dev machine", "value": VALUE, "auto_allow": false}),
-        ),
-        &alice,
-    )
-    .await?;
-    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
-    let secret = created.body["id"].as_str().ok_or("id")?.to_owned();
-    Ok(Fixture {
-        h,
-        alice,
-        bob,
-        origin,
-        work,
-        marks,
-        secret,
-    })
-}
 
 /// Dev deploys the scripts with the secret; production promotes and deploys the same scripts.
 fn full_cd() -> String {
@@ -256,146 +44,7 @@ fn full_cd() -> String {
         .to_owned()
 }
 
-impl Fixture {
-    pub(crate) async fn get(&self, path: &str) -> BoxResult<Value> {
-        let r = call(&self.h.router, Method::GET, path, None, &self.alice).await?;
-        assert_eq!(r.status, StatusCode::OK, "{path}: {}", r.body);
-        Ok(r.body)
-    }
-
-    pub(crate) async fn deploy(
-        &self,
-        who: &Creds,
-        env: &str,
-        confirm: Option<&str>,
-    ) -> BoxResult<support::Resp> {
-        call(
-            &self.h.router,
-            Method::POST,
-            &format!("/api/sandboxes/s1/cd/{env}/deploy"),
-            Some(json!({ "confirm": confirm })),
-            who,
-        )
-        .await
-    }
-
-    pub(crate) async fn allow_secret(&self) -> TestResult {
-        let now = self
-            .h
-            .store
-            .vault_get(&self.secret)
-            .await?
-            .ok_or("secret")?;
-        assert!(
-            self.h
-                .store
-                .vault_set_env_files(
-                    &self.secret,
-                    (now.env_files, now.env_requested_by.as_deref()),
-                    (EnvFiles::Allowed, None),
-                    None,
-                )
-                .await?
-        );
-        Ok(())
-    }
-
-    /// The state production's first secret has on the CD page.
-    async fn prod_secret_state(&self) -> BoxResult<Value> {
-        let overview = self.get("/api/sandboxes/s1/cd").await?;
-        Ok(overview["environments"][1]["secrets"][0]["state"].clone())
-    }
-
-    /// Waits until run `id` ended and returns it with its output.
-    pub(crate) async fn ended(&self, id: &str) -> BoxResult<Value> {
-        let deadline = tokio::time::Instant::now() + WAIT;
-        loop {
-            let run = self.get(&format!("/api/sandboxes/s1/cd/runs/{id}")).await?;
-            if run["state"] != "running" {
-                return Ok(run);
-            }
-            if tokio::time::Instant::now() > deadline {
-                return Err(format!("the CD run did not end: {run}").into());
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// Commits `files` (path, contents; `None` removes) on `branch` and pushes it.
-    pub(crate) fn push(&self, branch: &str, files: &[(&str, Option<&str>)]) -> BoxResult<String> {
-        git(
-            &self.work,
-            &["checkout", "-q", "-B", branch, &format!("origin/{branch}")],
-        )
-        .or_else(|_| git(&self.work, &["checkout", "-q", "-B", branch, "origin/dev"]))?;
-        for (path, contents) in files {
-            match contents {
-                Some(text) => std::fs::write(self.work.join(path), text)?,
-                None => std::fs::remove_file(self.work.join(path))?,
-            }
-        }
-        git(&self.work, &["add", "-A"])?;
-        git(&self.work, &["commit", "-q", "-m", "change"])?;
-        git(
-            &self.work,
-            &["push", "-q", "origin", &format!("HEAD:{branch}")],
-        )?;
-        git(&self.work, &["fetch", "-q", "origin"])?;
-        git(&self.work, &["rev-parse", "HEAD"])
-    }
-
-    pub(crate) fn head(&self, branch: &str) -> BoxResult<String> {
-        git(&self.origin, &["rev-parse", branch])
-    }
-
-    /// Records a passed rollback drill of `dev` at `branch`'s head, so a production deploy of
-    /// that tree is not refused for its rollback (SPEC-415): for tests about something else.
-    pub(crate) async fn prove(&self, branch: &str) -> TestResult {
-        let sha = self.head(branch)?;
-        let id = format!("drill-{}", &sha[..12]);
-        if self.h.store.cd_run(&id, false).await?.is_some() {
-            return Ok(());
-        }
-        let at = self.h.app.now();
-        self.h
-            .store
-            .insert_cd_run(&CdRunRecord {
-                id: id.clone(),
-                sandbox_id: SandboxId::parse("s1")?,
-                environment: "dev".into(),
-                stage: CdStage::Dev,
-                branch: "dev".into(),
-                sha,
-                state: RunState::Running,
-                reason: None,
-                requested_by: "yulius".into(),
-                task_id: None,
-                deploy: Some("true".into()),
-                verify: None,
-                note: None,
-                output: String::new(),
-                exit_code: None,
-                started_at: at,
-                ended_at: None,
-                kind: yulius_domain::rollback::CdRunKind::Drill,
-                source: None,
-                steps: Vec::new(),
-            })
-            .await?;
-        let end = yulius_app::ci::cd::CdRunEnd {
-            state: RunState::Passed,
-            reason: None,
-            exit_code: Some(0),
-            output: String::new(),
-            ended_at: at,
-            usage: None,
-        };
-        self.h.store.finish_cd_run(&id, &end).await?;
-        Ok(())
-    }
-}
-
-/// AC2 (CDR-001..003, CDA-001): a person deploys dev from the integration head in a fresh
+/// A person deploys dev from the integration head in a fresh
 /// checkout; the scripts see the allowed secret and `YULIUS_CD_*`, never a task token; the stored
 /// output never holds the value; the run's home is gone afterwards.
 #[tokio::test]
@@ -469,7 +118,7 @@ async fn a_person_deploys_dev_from_the_integration_head_with_its_allowed_secret(
     Ok(())
 }
 
-/// AC1 (CDC-003): a task branch that rewrites `[cd.dev]` changes nothing a deploy runs until it
+/// A task branch that rewrites `[cd.dev]` changes nothing a deploy runs until it
 /// is merged into the integration branch.
 #[tokio::test]
 async fn a_task_branch_never_changes_what_dev_deploys() -> TestResult {
@@ -505,7 +154,7 @@ async fn a_task_branch_never_changes_what_dev_deploys() -> TestResult {
     Ok(())
 }
 
-/// AC3 (CDR-001): a failing deploy skips verify and the run fails with its status; a second
+/// A failing deploy skips verify and the run fails with its status; a second
 /// request while one runs is refused, and cancelling ends the running one.
 #[tokio::test]
 async fn a_failing_deploy_skips_verify_and_one_run_at_a_time() -> TestResult {
@@ -548,7 +197,7 @@ async fn a_failing_deploy_skips_verify_and_one_run_at_a_time() -> TestResult {
     Ok(())
 }
 
-/// SPEC-300 RDB-002/003 (#664): a run whose files grow past the bound for a run (here into its
+/// A run whose files grow past the bound for a run (here into its
 /// cache, outside every sandbox quota, in folders a tool made read-only as Go's module cache
 /// does) is stopped before its timeout, recorded `error` saying why, and its cache is emptied, so
 /// the next run, which outlives a measurement, starts under the bound and passes.
@@ -600,7 +249,7 @@ async fn a_run_writing_past_its_disk_bound_is_stopped() -> TestResult {
     Ok(())
 }
 
-/// AC3 (CDC-002): an empty environment and an undefined one run nothing, and say what to add.
+/// An empty environment and an undefined one run nothing, and say what to add.
 #[tokio::test]
 async fn empty_and_undefined_environments_run_nothing() -> TestResult {
     let f = fixture("[cd.dev]\nabout = \"no dev machine yet\"\n").await?;
@@ -614,7 +263,7 @@ async fn empty_and_undefined_environments_run_nothing() -> TestResult {
     let prod = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(prod.status, StatusCode::CONFLICT, "{}", prod.body);
     assert!(prod.body.to_string().contains("add [cd.prod]"));
-    // SPEC-257: any name may be an environment; one no table defines says what to add.
+    // Any name may be an environment; one no table defines says what to add.
     let undefined = f.deploy(&f.alice, "staging", None).await?;
     assert_eq!(undefined.status, StatusCode::CONFLICT, "{}", undefined.body);
     assert!(undefined.body.to_string().contains("add [cd.staging]"));
@@ -624,7 +273,7 @@ async fn empty_and_undefined_environments_run_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-418 AC1: Yulius's own CD (an empty dev, a production that only promotes) deploys nothing a
+/// Yulius's own CD (an empty dev, a production that only promotes) deploys nothing a
 /// rollback could redeploy, so `cd_status` says rollback is not needed and why, never that it is
 /// missing.
 #[tokio::test]
@@ -663,7 +312,7 @@ async fn environments_that_deploy_nothing_need_no_rollback() -> TestResult {
             .is_some_and(|why| why.contains("reverting it on dev and promoting again")),
         "{overview}"
     );
-    // Review L3: rolling back what deploys nothing says so, not what to configure.
+    // Rolling back what deploys nothing says so, not what to configure.
     let refused =
         support::mcp_tool(&f.h, TOKEN, "cd_rollback", json!({"environment": "dev"})).await?;
     assert_eq!(refused["isError"], true, "{refused}");
@@ -676,7 +325,7 @@ async fn environments_that_deploy_nothing_need_no_rollback() -> TestResult {
     Ok(())
 }
 
-/// AC5 (CDR-004): a run left running by a restart is recorded as an error, never run again.
+/// A run left running by a restart is recorded as an error, never run again.
 #[tokio::test]
 async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
     let f = fixture(&full_cd()).await?;
@@ -718,7 +367,7 @@ async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
     Ok(())
 }
 
-/// SPEC-347 DCR-001/002 (#948): a deploy whose request is dropped as soon as its run is recorded
+/// A deploy whose request is dropped as soon as its run is recorded
 /// still runs its deploy and verify, never staying `running` with nothing executing it, and its
 /// permit is let go. Each poll of the request passes at most one store call and the test reads the
 /// store between polls, so the request is dropped at most one store call past its insert, while
@@ -884,7 +533,7 @@ async fn a_direct_deploy_waits_for_its_own_drill_only() -> TestResult {
     Ok(())
 }
 
-/// AC4 (CDA-002): production is a person's with administrator access who typed the project's
+/// Production is a person's with administrator access who typed the project's
 /// slug; the deploy promotes the integration branch (the promotion pull request, merged at once
 /// when its checks passed) and runs the scripts at the new production head.
 #[tokio::test]
@@ -931,7 +580,7 @@ async fn production_is_deployed_by_an_administrator_who_types_the_slug() -> Test
         stale.body
     );
     assert_eq!(f.head("main")?, main_before, "nothing was promoted");
-    // #780 (SPEC-401 VCD-004): a confirmation shorter than 7 characters is refused, even a
+    // A confirmation shorter than 7 characters is refused, even a
     // prefix of the commit it deploys; it never skips the check.
     for short in [&dev[..1], &dev[..6]] {
         let refused = call(
@@ -1001,9 +650,7 @@ async fn production_is_deployed_by_an_administrator_who_types_the_slug() -> Test
     Ok(())
 }
 
-pub(crate) const TOKEN: &str = "cd-task-token-s1-0123456789abcdef";
-
-/// AC2, AC4, AC6 (CDA-001/003, CDT-001..004): an agent reads CD, asks a person through
+/// An agent reads CD, asks a person through
 /// `needs_you`, deploys dev (its secret asked for first), waits for the run with `yulius wait`,
 /// and is refused production whatever it passes.
 #[tokio::test]
@@ -1023,7 +670,7 @@ async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestRes
     let shown = text["text"].as_str().unwrap_or_default();
     assert!(shown.contains("dev ([cd.dev] from dev): ready"), "{shown}");
     assert!(shown.contains("secrets: DEV_TOKEN not allowed"), "{shown}");
-    // The CI/CD page's CD tab, its canonical address (SPEC-151).
+    // The CI/CD page's CD tab, its canonical address.
     assert!(
         shown.contains("production-stage ones are deployed and rolled back by a person on ")
             && shown.ends_with("/ci?section=cd."),
@@ -1111,7 +758,7 @@ async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestRes
     let secret = f.h.store.vault_get(&f.secret).await?.ok_or("secret")?;
     assert_eq!(secret.env_files, EnvFiles::Asked);
     assert_eq!(secret.env_requested_by.as_deref(), Some("#1"));
-    // The task says what its person does, and where (SPEC-472 ATN-004).
+    // The task says what its person does, and where.
     assert_eq!(
         support::attention(&f.h.app, "t1").await?,
         json!({
@@ -1151,7 +798,7 @@ async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestRes
         "{read}"
     );
     assert_eq!(f.head("main")?, main_before, "an agent never promotes");
-    // Nor through a production environment of the delivery profile (ADR-0110).
+    // Nor through a production environment of the delivery profile.
     let profile = call(
         &f.h.router,
         Method::PATCH,
@@ -1193,7 +840,7 @@ async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestRes
     Ok(())
 }
 
-/// SPEC-327: a request reads What happened, Problem and To do (or Decide); `why` is the older
+/// A request reads What happened, Problem and To do (or Decide); `why` is the older
 /// name of `problem`, and the answer gives the agent the request to print in those parts.
 #[tokio::test]
 async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResult {
@@ -1282,7 +929,7 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
             .contains("describe other places in action or problem"),
         "{outside}"
     );
-    // A script link is refused too, so the UI's Open button never carries one (#701).
+    // A script link is refused too, so the UI's Open button never carries one.
     let script = tool(
         "needs_you",
         json!({"action": "x", "link": "javascript:alert(document.cookie)"}),
@@ -1296,7 +943,7 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
         "the open request keeps no link: {kept}"
     );
     assert_eq!(kept["problem"], "the free plan has 2 runners", "{kept}");
-    // SPEC-494 DFJ-013: the instance counts Docker Needs you; none so far.
+    // The instance counts Docker Needs you; none so far.
     let docker_needs_you = || async {
         let read = call(
             &f.h.router,
@@ -1309,7 +956,7 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
         Ok::<_, Box<dyn std::error::Error>>(read.body["needs_you"].clone())
     };
     assert_eq!(docker_needs_you().await?, 0);
-    // SPEC-494 DFJ-011: a request about the sandbox's Docker names its cause; it is shown, and
+    // A request about the sandbox's Docker names its cause; it is shown, and
     // the answer says it is shared; a cause Yulius does not know is refused.
     let shared = tool(
         "needs_you",
@@ -1339,7 +986,7 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
     Ok(())
 }
 
-/// CDT-004: a prompt typed into the task ends its request: a person answered.
+/// A prompt typed into the task ends its request: a person answered.
 #[tokio::test]
 async fn a_typed_prompt_ends_a_needs_you_request() -> TestResult {
     use yulius_domain::task::TaskStatus;
@@ -1423,7 +1070,7 @@ async fn a_typed_prompt_ends_a_needs_you_request() -> TestResult {
     Ok(())
 }
 
-/// Review C1 (CDC-003): nothing an agent can write in the sandbox changes what a deploy runs. A
+/// Nothing an agent can write in the sandbox changes what a deploy runs. A
 /// replacement planted in the sandbox clone (`git replace`) and files planted where checkouts
 /// used to live are ignored: the run executes the commit GitHub reports, from Yulius's own mirror.
 #[tokio::test]
@@ -1477,7 +1124,7 @@ async fn nothing_an_agent_writes_in_the_sandbox_changes_what_a_deploy_runs() -> 
     Ok(())
 }
 
-/// SPEC-216 SSA-003/004, AC-3/AC-4: production runs get a secret agents set up with no person's
+/// Production runs get a secret agents set up with no person's
 /// allowance; the production-only allowance and agents setting it up exclude each other.
 #[tokio::test]
 async fn production_gets_a_secret_agents_set_up() -> TestResult {
@@ -1492,8 +1139,8 @@ async fn production_gets_a_secret_agents_set_up() -> TestResult {
     .await?;
     f.prove("main").await?;
     let secret_path = format!("/api/agent-secrets/{}", f.secret);
-    // Letting agents set it up needs the two-factor unlock (ADR-0317).
-    let person = crate::secrets::unlocked(&f.h, "u-alice").await?;
+    // Letting agents set it up needs the two-factor unlock.
+    let person = crate::support::secrets::unlocked(&f.h, "u-alice").await?;
     let auto = |on: bool| {
         call(
             &f.h.router,
@@ -1550,7 +1197,7 @@ async fn production_gets_a_secret_agents_set_up() -> TestResult {
     let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     // Production deploys run the repository's command with the value: allowing it is the
-    // person's, after their two-factor code, never a token's (ADR-0317).
+    // person's, after their two-factor code, never a token's.
     let token = cd_prod(true).await?;
     assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
     assert_eq!(token.body["error"]["code"], "forbidden");
@@ -1573,7 +1220,7 @@ async fn production_gets_a_secret_agents_set_up() -> TestResult {
     Ok(())
 }
 
-/// #704 (SPEC-237 CAU-001, CAU-002): a secret the proxy sends to a host is one agents use, so
+/// A secret the proxy sends to a host is one agents use, so
 /// production never gets it and the page does not ask a person to allow it; dev is unchanged, and
 /// the refusal still names a plain secret waiting beside it.
 #[tokio::test]
@@ -1606,7 +1253,7 @@ async fn production_never_gets_a_secret_bound_to_hosts() -> TestResult {
         Method::PATCH,
         &format!("/api/agent-secrets/{}", f.secret),
         Some(json!({"hosts": ["api.example.com"]})),
-        &crate::secrets::unlocked(&f.h, "u-alice").await?,
+        &crate::support::secrets::unlocked(&f.h, "u-alice").await?,
     )
     .await?;
     assert_eq!(hosts.status, StatusCode::OK, "{}", hosts.body);
@@ -1631,7 +1278,7 @@ async fn production_never_gets_a_secret_bound_to_hosts() -> TestResult {
     Ok(())
 }
 
-/// Review H1 (CDR-002): production runs get only secrets a person allowed for production; an
+/// Production runs get only secrets a person allowed for production; an
 /// allowance for `.env` files (which any agent of the project could use) is not enough.
 #[tokio::test]
 async fn production_secrets_need_their_own_allowance() -> TestResult {
@@ -1647,7 +1294,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
     f.prove("main").await?;
     f.allow_secret().await?;
     // Agents use it (its .env copies), so no person can allow it for production (round 2, M-B):
-    // the page and the refusal say so instead of asking a person to allow it (#704, SPEC-237).
+    // the page and the refusal say so instead of asking a person to allow it.
     let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     let said = refused.body.to_string();
@@ -1701,8 +1348,8 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         waiting.body
     );
     // Someone who manages the secret (its maker) allows it on the Secrets page, after their
-    // two-factor code (ADR-0317): a session without the unlock is asked for it.
-    let person = crate::secrets::browser_session(&f.h, "u-alice").await?;
+    // two-factor code: a session without the unlock is asked for it.
+    let person = crate::support::secrets::browser_session(&f.h, "u-alice").await?;
     let allow_as_person = || {
         call(
             &f.h.router,
@@ -1716,7 +1363,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
     assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.body);
     assert_eq!(locked.body["error"]["code"], "reauth_required");
     assert_eq!(f.prod_secret_state().await?, "not_allowed");
-    crate::secrets::enroll(&f.h, &person).await?;
+    crate::support::secrets::enroll(&f.h, &person).await?;
     let allowed = allow_as_person().await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["cd_prod"], true);
@@ -1739,7 +1386,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         output.contains("token-ok") && !output.contains(VALUE),
         "{output}"
     );
-    // #717 (SPEC-401 VCD-005): an agent of the project reads that production run's output, which
+    // An agent of the project reads that production run's output, which
     // printed the production secret, with the value redacted.
     support::seed_task(
         &f.h,
@@ -1767,7 +1414,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         "{text}"
     );
     // A production secret is never given to agents: no .env copy, no hosts (round 2, M-B) and no
-    // MCP `${secret:NAME}` (round 3, M2).
+    // MCP `${secret:NAME}` (round 3).
     let env = call(
         &f.h.router,
         Method::POST,
@@ -1801,7 +1448,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         f.h.app.resolve_secret_ref(&sandbox, "DEV_TOKEN").await?,
         None
     );
-    // Agents cannot even ask for it (round 3, L3); task #1 is the agent seeded above.
+    // Agents cannot even ask for it (round 3); task #1 is the agent seeded above.
     for (tool, args) in [
         ("secret_copy_to_env", json!({"secrets": ["DEV_TOKEN"]})),
         (
@@ -1819,7 +1466,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
     Ok(())
 }
 
-/// Review H2 (CDR-004): a run left by a restart has its process host stopped and its files
+/// A run left by a restart has its process host stopped and its files
 /// removed, not only its row closed.
 #[tokio::test]
 async fn a_lost_run_leaves_no_files_behind() -> TestResult {
@@ -1827,7 +1474,7 @@ async fn a_lost_run_leaves_no_files_behind() -> TestResult {
     let run_dir = f.h.app.config.data_dir.join("runs/cd-lost2");
     std::fs::create_dir_all(run_dir.join("work/home"))?;
     std::fs::write(run_dir.join("work/home/key"), "secret material")?;
-    // A production run's files (SPEC-279 PDE-004).
+    // A production run's files.
     let files = f.h.app.config.data_dir.join("cd/s1/runs/cd-lost2");
     std::fs::create_dir_all(files.join("work/home"))?;
     std::fs::write(files.join("work/home/key"), "secret material")?;
@@ -1864,7 +1511,7 @@ async fn a_lost_run_leaves_no_files_behind() -> TestResult {
     Ok(())
 }
 
-/// SPEC-137 STG-301/302: a production deploy is measured stage by stage: the person's
+/// A production deploy is measured stage by stage: the person's
 /// confirmation (as the page measured it, up to an hour), the checks, the promotion, the run with
 /// its commit and trigger, its deploy with the stages its output names, and its verify.
 #[tokio::test]
@@ -1941,7 +1588,7 @@ async fn a_deploy_records_its_confirmation_checks_promotion_phases_and_stages() 
         (detail["requested_by"].as_str(), detail["sha"].as_str()),
         (Some("bob"), Some(f.head("main")?.as_str()))
     );
-    // SPEC-154 USE-003: what the deploy's processes used, as their host measured it.
+    // What the deploy's processes used, as their host measured it.
     assert!(
         detail["cpu_ms"].as_i64().is_some() && detail["memory_peak_mb"].as_i64() >= Some(1),
         "{detail}"
@@ -1992,7 +1639,7 @@ async fn a_deploy_records_its_confirmation_checks_promotion_phases_and_stages() 
     Ok(())
 }
 
-/// Dev and production plus a named environment of each stage (SPEC-257): staging next to dev,
+/// Dev and production plus a named environment of each stage: staging next to dev,
 /// the hosted platform and the self-hosted release next to production.
 fn named_cd() -> String {
     "[cd.dev]\n\
@@ -2015,7 +1662,7 @@ fn named_cd() -> String {
         .to_owned()
 }
 
-/// SPEC-257 AC2, AC5: every environment is listed with its stage, dev-stage first; a named
+/// Every environment is listed with its stage, dev-stage first; a named
 /// dev-stage environment deploys the integration head for a person with write access and an
 /// agent; a named production-stage one deploys the production head only for an administrator who
 /// typed the slug, never for an agent, and its run keeps name and stage.
@@ -2124,8 +1771,8 @@ async fn named_environments_deploy_by_their_stage() -> TestResult {
             "{refused}"
         );
     }
-    // The same for a person's own agent, by the tool it shares with their Superagent
-    // (SPEC-487, review of slice 2, F16): a production-stage environment by any name.
+    // The same for a person's own agent, by the tool it shares with their Superagent:
+    // a production-stage environment by any name.
     let operate = {
         use yulius_app::ports::store::SessionStore as _;
         let token = "yul_test_operate_alice";
@@ -2170,7 +1817,7 @@ async fn named_environments_deploy_by_their_stage() -> TestResult {
             refused.body
         );
     }
-    // #784: the agent's deploy validates the name as the person's does, before anything else.
+    // The agent's deploy validates the name as the person's does, before anything else.
     for env in ["../staging", "Staging", "staging/x", "dev prod", ""] {
         let refused = tool("cd_deploy", json!({"environment": env})).await?;
         assert_eq!(refused["isError"], true, "{refused}");
@@ -2206,7 +1853,7 @@ async fn named_environments_deploy_by_their_stage() -> TestResult {
     Ok(())
 }
 
-/// #788 (SPEC-314 RNE-001): a named production-stage environment naming a secret agents use is
+/// A named production-stage environment naming a secret agents use is
 /// refused with its own table to edit, not production's.
 #[tokio::test]
 async fn a_named_production_refusal_names_its_own_table() -> TestResult {
@@ -2230,7 +1877,7 @@ async fn a_named_production_refusal_names_its_own_table() -> TestResult {
     Ok(())
 }
 
-/// SPEC-257 CDN-006: a production-stage run of a named environment is cancelled only with
+/// A production-stage run of a named environment is cancelled only with
 /// administrator access, as production's.
 #[tokio::test]
 async fn a_named_production_run_is_cancelled_by_an_administrator() -> TestResult {
@@ -2249,7 +1896,7 @@ async fn a_named_production_run_is_cancelled_by_an_administrator() -> TestResult
     Ok(())
 }
 
-/// SPEC-257 CDN-004: relabelling a production environment as dev on the integration branch only
+/// Relabelling a production environment as dev on the integration branch only
 /// makes a dev environment of that name: it runs the integration head's table as dev, and nothing
 /// of production comes with the name.
 #[tokio::test]
@@ -2280,7 +1927,7 @@ async fn a_relabelled_environment_takes_the_integration_heads_stage() -> TestRes
         .ok_or("platform")?;
     assert_eq!(platform["stage"], "dev", "{overview}");
 
-    // Review H1: what a dev-stage run leaves in its cache never reaches the production-stage
+    // What a dev-stage run leaves in its cache never reaches the production-stage
     // environment of the same name, nor does its commit count as deployed there.
     let planting = relabelled.replace(
         "deploy = \"test ! -e",
@@ -2568,7 +2215,7 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
         .await?;
     assert_eq!(status, 200, "{set}");
 
-    // AC6: a state the vault does not hold: nothing runs.
+    // A state the vault does not hold: nothing runs.
     let (status, refused) = web
         .json(
             M::POST,
@@ -2600,7 +2247,7 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
         "{said}"
     );
 
-    // AC1: dev restores version 1 outside HOME, writes, and saves version 2.
+    // Dev restores version 1 outside HOME, writes, and saves version 2.
     let (_, overview) = web
         .json(M::GET, "/api/sandboxes/s1/cd", None, alice)
         .await?;
@@ -2695,7 +2342,7 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
     assert!(!error, "{restored}");
     assert_eq!(restored["version"], 2, "{restored}");
 
-    // AC2, AC3: a failing deploy holds the state while it runs.
+    // A failing deploy holds the state while it runs.
     f.push("dev", &[("fail", Some("x\n"))])?;
     std::fs::write(f.marks.join("hold"), "")?;
     let second = web.deploy("dev", None, alice).await?;
@@ -2724,9 +2371,9 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
     let held = String::from_utf8_lossy(&held).into_owned();
     assert_eq!(status, 409, "{held}");
     assert!(held.contains("held by dev run"), "{held}");
-    // AC4: production waits for it; the task changes its copy without saving.
+    // Production waits for it; the task changes its copy without saving.
     let third = web.deploy("prod", Some("app"), bob).await?;
-    // Its log is created just before it asks for the state, with no await between (#864).
+    // Its log is created just before it asks for the state, with no await between.
     exists(&data.join(format!("cd/s1/runs/cd-{third}/work/log"))).await?;
     let copy = home.join(".ops/inventory.db");
     let mut unsaved = std::fs::read_to_string(&copy)?;
@@ -2756,7 +2403,7 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
     assert!(!output.contains("task-unsaved"), "{output}");
     assert_eq!(web.operator(bob).await?["updated_by"], "cd:prod");
 
-    // AC5: the task's copy is stale: its save is refused until a restore replaces it.
+    // The task's copy is stale: its save is refused until a restore replaces it.
     let (_, listed) = tool("secrets_list", json!({})).await?;
     let state = &listed["states"][0];
     assert_eq!(state["stale"], true, "{listed}");
@@ -2781,7 +2428,7 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
     Ok(())
 }
 
-/// SPEC-278 failure paths (review of SPEC-278, M2): a deploy that leaves its state alone keeps
+/// SPEC-278 failure paths (review of SPEC-278): a deploy that leaves its state alone keeps
 /// the version; one that replaces its folder with a link ends as an error naming the state, the
 /// link is not followed and the version stays; a deploy cancelled while it waits for the hold
 /// ends cancelled and the holder keeps it.
@@ -2880,145 +2527,7 @@ async fn a_state_left_alone_broken_or_waited_for_keeps_its_version() -> TestResu
     Ok(())
 }
 
-/// The holders of a recording isolation adapter: the sandbox's and its production holder's
-/// joins, with the calls made.
-#[derive(Default)]
-pub(crate) struct Holders {
-    calls: std::sync::Mutex<Vec<&'static str>>,
-    /// The sandbox is under disk pressure.
-    over: bool,
-}
-
-impl Holders {
-    pub(crate) fn calls(&self) -> Vec<&'static str> {
-        self.calls.lock().map(|c| c.clone()).unwrap_or_default()
-    }
-
-    fn join(net_ns: u64, name: &str) -> yulius_app::ports::isolation::SandboxJoin {
-        yulius_app::ports::isolation::SandboxJoin {
-            holder_pid: 4242,
-            user_ns: net_ns + 1,
-            net_ns,
-            mnt_ns: net_ns + 2,
-            cgroup: Some(format!("/cg/{name}/agents").into()),
-            ci_cgroup: Some(format!("/cg/{name}/ci").into()),
-            system_root: format!("/fake/runtime/sandboxes/{name}/root").into(),
-            hostname: name.replace('.', "-"),
-            exec_shim: None,
-            extra_binds: vec![yulius_app::ports::session::Bind {
-                source: "/data/claude-code/versions/2.1.311".into(),
-                dest: "/opt/agent-cli".into(),
-                writable: false,
-            }],
-            private_dirs: Vec::new(),
-            system_passwd: None,
-            system_group: None,
-            host_system: None,
-            docker_dir: Some(format!("/fake/runtime/sandboxes/{name}/docker").into()),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl yulius_app::ports::isolation::SandboxIsolation for Holders {
-    async fn prepare(
-        &self,
-        _: &yulius_app::ports::isolation::SandboxRef,
-    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
-        self.calls
-            .lock()
-            .map_err(|_| yulius_app::error::AppError::internal("poisoned"))?
-            .push("prepare");
-        Ok(Some(Self::join(2, "s1")))
-    }
-    fn release(&self, _: &SandboxId) {
-        if let Ok(mut calls) = self.calls.lock() {
-            calls.push("release");
-        }
-    }
-    async fn prepare_production(
-        &self,
-        _: &yulius_app::ports::isolation::SandboxRef,
-    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
-        self.calls
-            .lock()
-            .map_err(|_| yulius_app::error::AppError::internal("poisoned"))?
-            .push("prepare_production");
-        Ok(Some(Self::join(20, "s1.prod")))
-    }
-    fn release_production(&self, _: &SandboxId) {
-        if let Ok(mut calls) = self.calls.lock() {
-            calls.push("release_production");
-        }
-    }
-    async fn disk(
-        &self,
-        _: &yulius_app::ports::isolation::SandboxRef,
-    ) -> Option<yulius_app::ports::isolation::DiskUsage> {
-        // Under the quota but past the upkeep's pressure point (review round 2).
-        self.over
-            .then_some(yulius_app::ports::isolation::DiskUsage {
-                used: 990_000_000,
-                limit: 1_000_000_000,
-            })
-    }
-    async fn measure_disk(
-        &self,
-        sandbox: &yulius_app::ports::isolation::SandboxRef,
-    ) -> Option<yulius_app::ports::isolation::DiskUsage> {
-        self.disk(sandbox).await
-    }
-    async fn prune_engine(&self, _: &yulius_app::ports::isolation::SandboxRef) -> Option<u64> {
-        if let Ok(mut calls) = self.calls.lock() {
-            calls.push("prune_engine");
-        }
-        Some(0)
-    }
-}
-
-/// A process host that records each run's containment and runs it uncontained (the joins are
-/// fakes), with the real ptyhost.
-pub(crate) struct Recording {
-    pub(crate) inner: PtySessionHost,
-    pub(crate) seen: std::sync::Mutex<Vec<yulius_app::ports::session::Containment>>,
-}
-
-#[async_trait::async_trait]
-impl yulius_app::ports::session::SessionHost for Recording {
-    async fn spawn(
-        &self,
-        run_dir: &Path,
-        attempt_id: &str,
-        task_id: &str,
-        plan: &yulius_app::ports::session::LaunchPlan,
-        token: &[u8; 32],
-        size: (u16, u16),
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        if let Ok(mut seen) = self.seen.lock() {
-            seen.push(plan.containment.clone());
-        }
-        let mut plan = plan.clone();
-        plan.containment = yulius_app::ports::session::Containment::None;
-        self.inner
-            .spawn(run_dir, attempt_id, task_id, &plan, token, size)
-            .await
-    }
-    async fn attach(
-        &self,
-        run_dir: &Path,
-        token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        self.inner.attach(run_dir, token).await
-    }
-    fn inspect(&self, run_dir: &Path) -> yulius_app::ports::session::RunInspection {
-        self.inner.inspect(run_dir)
-    }
-    fn terminate(&self, run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        self.inner.terminate(run_dir)
-    }
-}
-
-/// SPEC-279 PDE-003, PDE-004 (AC2, AC3): a production deploy prepares the sandbox's production
+/// A production deploy prepares the sandbox's production
 /// holder, never the sandbox's, joins it on the host's system with that holder's Docker
 /// directory, keeps its files in `<data>/cd/<sandbox>/runs` and removes them, and releases the
 /// production holder; a dev deploy keeps the sandbox's holder and `<data>/runs`.
@@ -3097,7 +2606,7 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     };
     assert_eq!(join.net_ns, 2);
     assert!(join.host_system.is_none());
-    // The agent CLI the sandbox's join names, at the host package's path (SPEC-421 CCU-003).
+    // The agent CLI the sandbox's join names, at the host package's path.
     assert_eq!(
         binds,
         &[yulius_app::ports::session::Bind {
@@ -3113,7 +2622,7 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     Ok(())
 }
 
-/// SPEC-279 PDE-006 (review finding 1, round 2): after a production run, a sandbox under disk
+/// After a production run, a sandbox under disk
 /// pressure has its engines pruned while the production engine still runs, so production's
 /// images and build cache never stay out of the upkeep's reach.
 #[tokio::test]
@@ -3150,7 +2659,7 @@ async fn a_production_run_over_the_quota_prunes_the_engines_after_it() -> TestRe
     Ok(())
 }
 
-/// SPEC-421 CCU-003 (review finding 5): a task's agent run in a joined sandbox binds the agent
+/// A task's agent run in a joined sandbox binds the agent
 /// CLI its join names, read-only at the host package's path.
 #[tokio::test]
 async fn an_agent_run_binds_the_agent_cli_of_its_join() -> TestResult {

@@ -1,8 +1,9 @@
-//! SPEC-614 (#1624): output a run printed that reaches the task's terminal only after a
+//! Output a run printed that reaches the task's terminal only after a
 //! replacement run attached is not shown on the replacement's screen, with real processes
 //! (supervisor → detached `yulius ptyhost` → fake agent). A session host wrapping the real one
 //! injects synthetic output into a run's own reader and holds it there until the test releases it.
 
+use crate::support::{TestResult, eventually};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -23,10 +24,9 @@ use yulius_domain::ids::{TaskId, UserId};
 
 use super::{
     Error, FakeAgentOptions, Point, answered, data_dir, hooked, locate_fake_agent,
-    park_through_terminal_exit, pause_at_key, request_one_park, runtime, screen, wait_for,
+    park_through_terminal_exit, pause_at_key, request_one_park, runtime, screen,
 };
-use crate::pool_supervision::ScriptedUsage;
-use crate::support::TestResult;
+use crate::support::live::pool::ScriptedUsage;
 
 /// What a held reader hands on once released, and the signals around it.
 struct Held {
@@ -180,23 +180,16 @@ async fn app_on(data: &Path, host: Arc<HoldingHost>) -> Result<Arc<App>, Error> 
         resume_prompts: true,
         ..hooked()
     };
-    let (app, _, _) = crate::first_message::start_hosted_with_github(
-        data,
-        &fake,
-        agent,
-        (
-            0,
-            Arc::new(ScriptedUsage::default()),
-            Arc::new(yulius::wiring::clock::SystemClock),
-        ),
-        Some(host),
-        None,
-        |config| {
-            config.max_live_sessions = 8;
-            config.park_after_ms = 1;
-            config.stop_escalation_ms = 1000;
-        },
-    )
+    let (app, _) = crate::support::live::Live {
+        usage: Arc::new(ScriptedUsage::default()),
+        host: Some(host),
+        ..crate::support::live::Live::new(Some(&fake), agent)
+    }
+    .start(data, 0, |config| {
+        config.max_live_sessions = 8;
+        config.park_after_ms = 1;
+        config.stop_escalation_ms = 1000;
+    })
     .await?;
     Ok(app)
 }
@@ -225,7 +218,7 @@ async fn resume_in_replacement(
         )
         .await?;
     assert_eq!(answer["delivered"], "resumed");
-    let answered = wait_for(
+    let answered = eventually(
         "the replacement's answer",
         Duration::from_secs(30),
         || async { screen(app, id).contains("Text for the second run only") },
@@ -239,7 +232,7 @@ async fn resume_in_replacement(
 
 const HELD: &str = "Old run chunk held in transit";
 
-/// AC-1 (TRO-001, TRO-004): a chunk of the first run held between its host and the hub while
+/// A chunk of the first run held between its host and the hub while
 /// that run is lost and a replacement attaches is not drawn on the replacement's screen nor sent
 /// to its viewers once released; the replacement's own output still reaches both.
 #[test]
@@ -250,7 +243,7 @@ fn a_held_chunk_of_an_old_run_does_not_reach_its_replacement() -> TestResult {
     })
 }
 
-/// AC-3 (TRO-002): a host snapshot of the first run held the same way does not replace the
+/// A host snapshot of the first run held the same way does not replace the
 /// replacement's screen once released.
 #[test]
 fn a_held_snapshot_of_an_old_run_does_not_reach_its_replacement() -> TestResult {
@@ -318,7 +311,7 @@ fn held_event_of_an_old_run(held: fn(u64) -> RunEvent) -> TestResult {
             &json!({"number": 1, "text": "Later text of the replacement"}),
         )
         .await?;
-        wait_for(
+        eventually(
             "the replacement's later answer",
             Duration::from_secs(30),
             || async { screen(&app, &id).contains("Later text of the replacement") },
@@ -338,7 +331,7 @@ fn held_event_of_an_old_run(held: fn(u64) -> RunEvent) -> TestResult {
 
 const SECRET: &str = concat!("tail_", "value_9f2c71ab3d");
 
-/// AC-2 (TRO-001, TRO-004): the first run prints synthetic text ending in the beginning of an
+/// The first run prints synthetic text ending in the beginning of an
 /// agent secret, so its terminal holds that tail. The tail's release is held while the run parks
 /// (its parked screen shows until the replacement attaches) and a replacement resumes it; once
 /// released, the tail is neither drawn on the replacement's screen nor sent to its viewers.

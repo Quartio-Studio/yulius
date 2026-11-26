@@ -14,7 +14,7 @@ use yulius_domain::time::Timestamp;
 use yulius_domain::vault::SecretRule;
 use yulius_domain::vault::rules::parse_rules;
 
-use crate::{SqliteStore, bad_column, db, to_i64, to_u32};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_as, text_parsed, to_i64, to_u32};
 
 const COLS: &str = "id, section, sandbox_id, name, description, hosts, injection, header_name, \
      fields, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
@@ -55,12 +55,11 @@ fn rules_column(row: &Row<'_>) -> rusqlite::Result<Vec<SecretRule>> {
 }
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
-    let section: String = row.get("section")?;
     let sandbox: Option<String> = row.get("sandbox_id")?;
     let owner: Option<String> = row.get("owner_id")?;
     Ok(VaultSecretRecord {
         id: row.get("id")?,
-        section: VaultSection::parse(&section).ok_or_else(|| bad_column("section", &section))?,
+        section: text_as(row, "section", "section", VaultSection::parse)?,
         sandbox_id: sandbox
             .as_deref()
             .map(|s| SandboxId::parse(s).map_err(|_| bad_column("sandbox id", s)))
@@ -86,13 +85,10 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
         updated_by: row.get("updated_by")?,
         updated_at: Timestamp(row.get("updated_at")?),
         value_updated_at: Timestamp(row.get("value_updated_at")?),
-        last_used_at: row.get::<_, Option<i64>>("last_used_at")?.map(Timestamp),
+        last_used_at: opt_ts(row, "last_used_at")?,
         requested_hosts: json_list(row, "requested_hosts")?,
         requested_by: row.get("requested_by")?,
-        env_files: {
-            let text: String = row.get("env_files")?;
-            EnvFiles::parse(&text).ok_or_else(|| bad_column("env_files", &text))?
-        },
+        env_files: text_as(row, "env_files", "env_files", EnvFiles::parse)?,
         env_requested_by: row.get("env_requested_by")?,
         cd_prod: row.get::<_, i64>("cd_prod")? != 0,
         auto_allow: row.get::<_, i64>("auto_allow")? != 0,
@@ -100,10 +96,9 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
 }
 
 fn copy_request(row: &Row<'_>) -> rusqlite::Result<VaultCopyRequest> {
-    let sandbox: String = row.get("sandbox_id")?;
     Ok(VaultCopyRequest {
         secret_id: row.get("secret_id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         name: row.get("name")?,
         hosts: json_list(row, "hosts")?,
         requested_by: row.get("requested_by")?,
@@ -119,7 +114,7 @@ fn to_json(list: &[String]) -> String {
 /// An agent secret's name must be unique within its scope (SPEC-245 SCP-002): one project's, the
 /// global ones, or one person's. Secrets of different scopes may share a name: a run resolves
 /// it by precedence.
-fn ensure_agent_unique(tx: &Transaction<'_>, record: &VaultSecretRecord) -> AppResult<()> {
+fn ensure_agent_unique(tx: &Transaction<'_>, record: &VaultSecretRecord) -> DbResult<()> {
     if record.section != VaultSection::Agent {
         return Ok(());
     }
@@ -135,8 +130,7 @@ fn ensure_agent_unique(tx: &Transaction<'_>, record: &VaultSecretRecord) -> AppR
             ],
             |r| r.get(0),
         )
-        .optional()
-        .map_err(db)?;
+        .optional()?;
     match clash {
         Some(_) => Err(AppError::Conflict(format!(
             "an agent secret named {} already exists {}",
@@ -146,19 +140,21 @@ fn ensure_agent_unique(tx: &Transaction<'_>, record: &VaultSecretRecord) -> AppR
                 yulius_app::ports::vault::AgentScope::Global => "among the global secrets",
                 yulius_app::ports::vault::AgentScope::Personal(_) => "among your personal secrets",
             }
-        ))),
+        ))
+        .into()),
         None => Ok(()),
     }
 }
 
 /// Inserts a row, keeping agent names unique where they apply.
-fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
+fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> DbResult<()> {
     // A production secret is sent to no host (ADR-0324): no row says otherwise, from the
     // first one on. Every later change keeps the pair apart by its own compare-and-set.
     if r.cd_prod && !r.hosts.is_empty() {
         return Err(AppError::Conflict(
             "a production secret has no hosts: production deploys get it, agents never".into(),
-        ));
+        )
+        .into());
     }
     ensure_agent_unique(tx, r)?;
     tx.execute(
@@ -194,28 +190,26 @@ fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
             rules_json(&r.rules),
             i64::from(r.cd_prod),
         ],
-    )
-    .map_err(db)?;
+    )?;
     Ok(())
 }
 
 /// `Capacity` when `cap` agent secrets already reach `sandbox`: its project secrets and the
 /// global and personal ones switched on for it (SPEC-248 FUP-003). Called in the transaction that
 /// adds one, so concurrent writes cannot pass it.
-fn ensure_room(c: &rusqlite::Connection, sandbox: &str, cap: usize) -> AppResult<()> {
-    let reaching: i64 = c
-        .query_row(
-            "SELECT COUNT(*) FROM vault_secrets WHERE section = 'agent' \
+fn ensure_room(c: &rusqlite::Connection, sandbox: &str, cap: usize) -> DbResult<()> {
+    let reaching: i64 = c.query_row(
+        "SELECT COUNT(*) FROM vault_secrets WHERE section = 'agent' \
              AND (sandbox_id = ?1 OR (sandbox_id IS NULL AND id IN \
              (SELECT secret_id FROM vault_enabled WHERE sandbox_id = ?1)))",
-            [sandbox],
-            |r| r.get(0),
-        )
-        .map_err(db)?;
+        [sandbox],
+        |r| r.get(0),
+    )?;
     if usize::try_from(reaching).unwrap_or(usize::MAX) >= cap {
         return Err(AppError::Capacity(format!(
             "at most {cap} agent secrets apply to one sandbox"
-        )));
+        ))
+        .into());
     }
     Ok(())
 }
@@ -225,9 +219,9 @@ impl VaultStore for SqliteStore {
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()> {
         let r = record.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             insert_row(&tx, &r)?;
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(())
         })
         .await
@@ -242,7 +236,7 @@ impl VaultStore for SqliteStore {
     ) -> AppResult<()> {
         let (r, sandbox, by) = (record.clone(), sandbox.as_str().to_owned(), by.to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             ensure_room(&tx, &sandbox, cap)?;
             insert_row(&tx, &r)?;
             if r.sandbox_id.is_none() {
@@ -250,10 +244,9 @@ impl VaultStore for SqliteStore {
                     "INSERT INTO vault_enabled (secret_id, sandbox_id, enabled_by, enabled_at) \
                      VALUES (?1, ?2, ?3, ?4)",
                     params![r.id, sandbox, by, at.0],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(())
         })
         .await
@@ -272,7 +265,7 @@ impl VaultStore for SqliteStore {
         // The rules the edit read: a stale edit never writes older (wider) rules back (SPEC-627).
         let seen_rules = rules_json(&seen.rules);
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             ensure_agent_unique(&tx, &r)?;
             let changed = tx
                 .execute(
@@ -304,9 +297,8 @@ impl VaultStore for SqliteStore {
                         rules_json(&r.rules),
                         seen_rules,
                     ],
-                )
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+                )?;
+            tx.commit()?;
             Ok(changed == 1)
         })
         .await
@@ -315,9 +307,7 @@ impl VaultStore for SqliteStore {
     async fn vault_delete(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            let n = c
-                .execute("DELETE FROM vault_secrets WHERE id = ?1", [id])
-                .map_err(db)?;
+            let n = c.execute("DELETE FROM vault_secrets WHERE id = ?1", [id])?;
             Ok(n == 1)
         })
         .await
@@ -326,13 +316,12 @@ impl VaultStore for SqliteStore {
     async fn vault_get(&self, id: &str) -> AppResult<Option<VaultSecretRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS}, cd_prod FROM vault_secrets WHERE id = ?1"),
                 [id],
                 from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -340,15 +329,13 @@ impl VaultStore for SqliteStore {
     async fn vault_team(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>> {
         let sandbox = sandbox.map(|s| s.as_str().to_owned());
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'team' \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'team' \
                      AND (?1 IS NULL OR sandbox_id IS NULL OR sandbox_id = ?1) \
                      ORDER BY name COLLATE NOCASE, created_at"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map([sandbox], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -356,30 +343,26 @@ impl VaultStore for SqliteStore {
     async fn vault_agent_in(&self, sandbox: &SandboxId) -> AppResult<Vec<VaultSecretRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'agent' \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'agent' \
                      AND (sandbox_id = ?1 OR (sandbox_id IS NULL AND id IN \
                      (SELECT secret_id FROM vault_enabled WHERE sandbox_id = ?1))) \
                      ORDER BY name, created_at"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map([sandbox], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
 
     async fn vault_agent_all(&self) -> AppResult<Vec<VaultSecretRecord>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'agent' \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'agent' \
                      ORDER BY name, created_at"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map([], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -387,13 +370,11 @@ impl VaultStore for SqliteStore {
     async fn vault_switched_on(&self, sandbox: &SandboxId) -> AppResult<Vec<String>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT secret_id FROM vault_enabled WHERE sandbox_id = ?1 ORDER BY secret_id",
-                )
-                .map_err(db)?;
-            let rows = stmt.query_map([sandbox], |r| r.get(0)).map_err(db)?;
-            rows.collect::<Result<Vec<String>, _>>().map_err(db)
+            let mut stmt = c.prepare(
+                "SELECT secret_id FROM vault_enabled WHERE sandbox_id = ?1 ORDER BY secret_id",
+            )?;
+            let rows = stmt.query_map([sandbox], |r| r.get(0))?;
+            Ok(rows.collect::<Result<Vec<String>, _>>()?)
         })
         .await
     }
@@ -409,24 +390,20 @@ impl VaultStore for SqliteStore {
         let (id, sandbox, by) = (id.to_owned(), sandbox.as_str().to_owned(), by.to_owned());
         self.call(move |c| {
             if !on {
-                let n = c
-                    .execute(
-                        "DELETE FROM vault_enabled WHERE secret_id = ?1 AND sandbox_id = ?2",
-                        params![id, sandbox],
-                    )
-                    .map_err(db)?;
+                let n = c.execute(
+                    "DELETE FROM vault_enabled WHERE secret_id = ?1 AND sandbox_id = ?2",
+                    params![id, sandbox],
+                )?;
                 return Ok(n == 1);
             }
-            let tx = c.transaction().map_err(db)?;
-            let switchable: bool = tx
-                .query_row(
-                    "SELECT EXISTS (SELECT 1 FROM vault_secrets WHERE id = ?1 \
+            let tx = c.transaction()?;
+            let switchable: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM vault_secrets WHERE id = ?1 \
                      AND section = 'agent' AND sandbox_id IS NULL) AND NOT EXISTS \
                      (SELECT 1 FROM vault_enabled WHERE secret_id = ?1 AND sandbox_id = ?2)",
-                    params![id, sandbox],
-                    |r| r.get(0),
-                )
-                .map_err(db)?;
+                params![id, sandbox],
+                |r| r.get(0),
+            )?;
             if !switchable {
                 return Ok(false);
             }
@@ -435,9 +412,8 @@ impl VaultStore for SqliteStore {
                 "INSERT INTO vault_enabled (secret_id, sandbox_id, enabled_by, enabled_at) \
                  VALUES (?1, ?2, ?3, ?4)",
                 params![id, sandbox, by, at.0],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -457,13 +433,11 @@ impl VaultStore for SqliteStore {
             by.map(str::to_owned),
         );
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE vault_secrets SET requested_hosts = ?3, requested_by = ?4 \
+            let changed = c.execute(
+                "UPDATE vault_secrets SET requested_hosts = ?3, requested_by = ?4 \
                      WHERE id = ?1 AND section = 'agent' AND requested_hosts = ?2",
-                    params![id, from, to, by],
-                )
-                .map_err(db)?;
+                params![id, from, to, by],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -486,15 +460,21 @@ impl VaultStore for SqliteStore {
             by.to_owned(),
         );
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE vault_secrets SET hosts = ?4, requested_hosts = '[]', requested_by = NULL, \
+            let changed = c.execute(
+                "UPDATE vault_secrets SET hosts = ?4, requested_hosts = '[]', requested_by = NULL, \
                      updated_by = ?5, updated_at = ?6 \
                      WHERE id = ?1 AND section = 'agent' AND requested_hosts = ?2 AND hosts = ?3 \
                      AND NOT (cd_prod = 1 AND ?4 != ?3) AND (?7 IS NULL OR auto_allow = ?7)",
-                    params![id, request, bound, hosts, by, at.0, auto_allow.map(i64::from)],
-                )
-                .map_err(db)?;
+                params![
+                    id,
+                    request,
+                    bound,
+                    hosts,
+                    by,
+                    at.0,
+                    auto_allow.map(i64::from)
+                ],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -503,17 +483,13 @@ impl VaultStore for SqliteStore {
     async fn vault_copy_requests(&self, sandbox: &SandboxId) -> AppResult<Vec<VaultCopyRequest>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT secret_id, sandbox_id, name, hosts, requested_by, reason, asked_at \
+            let mut stmt = c.prepare(
+                "SELECT secret_id, sandbox_id, name, hosts, requested_by, reason, asked_at \
                      FROM vault_copy_requests WHERE sandbox_id = ?1 ORDER BY secret_id",
-                )
-                .map_err(db)?;
+            )?;
             let rows = stmt
-                .query_map([sandbox], copy_request)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([sandbox], copy_request)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -528,43 +504,39 @@ impl VaultStore for SqliteStore {
         self.call(move |c| {
             let changed = match seen {
                 // Only for a production secret that is still there.
-                None => c
-                    .execute(
-                        "INSERT INTO vault_copy_requests (secret_id, sandbox_id, name, hosts, \
+                None => c.execute(
+                    "INSERT INTO vault_copy_requests (secret_id, sandbox_id, name, hosts, \
                          requested_by, reason, asked_at) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 \
                          WHERE EXISTS (SELECT 1 FROM vault_secrets WHERE id = ?1 \
                          AND section = 'agent' AND cd_prod = 1) \
                          ON CONFLICT (secret_id, sandbox_id) DO NOTHING",
-                        params![
-                            r.secret_id,
-                            r.sandbox_id.as_str(),
-                            r.name,
-                            to_json(&r.hosts),
-                            r.requested_by,
-                            r.reason,
-                            r.asked_at.0,
-                        ],
-                    )
-                    .map_err(db)?,
-                Some(seen) => c
-                    .execute(
-                        "UPDATE vault_copy_requests SET name = ?3, hosts = ?4, requested_by = ?5, \
+                    params![
+                        r.secret_id,
+                        r.sandbox_id.as_str(),
+                        r.name,
+                        to_json(&r.hosts),
+                        r.requested_by,
+                        r.reason,
+                        r.asked_at.0,
+                    ],
+                )?,
+                Some(seen) => c.execute(
+                    "UPDATE vault_copy_requests SET name = ?3, hosts = ?4, requested_by = ?5, \
                          reason = ?6, asked_at = ?7 WHERE secret_id = ?1 AND sandbox_id = ?2 \
                          AND name = ?8 AND hosts = ?9 AND requested_by = ?10",
-                        params![
-                            r.secret_id,
-                            r.sandbox_id.as_str(),
-                            r.name,
-                            to_json(&r.hosts),
-                            r.requested_by,
-                            r.reason,
-                            r.asked_at.0,
-                            seen.name,
-                            to_json(&seen.hosts),
-                            seen.requested_by,
-                        ],
-                    )
-                    .map_err(db)?,
+                    params![
+                        r.secret_id,
+                        r.sandbox_id.as_str(),
+                        r.name,
+                        to_json(&r.hosts),
+                        r.requested_by,
+                        r.reason,
+                        r.asked_at.0,
+                        seen.name,
+                        to_json(&seen.hosts),
+                        seen.requested_by,
+                    ],
+                )?,
             };
             Ok(changed == 1)
         })
@@ -579,19 +551,17 @@ impl VaultStore for SqliteStore {
     ) -> AppResult<bool> {
         let (seen, copy) = (seen.clone(), copy.cloned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let removed = tx
-                .execute(
-                    "DELETE FROM vault_copy_requests WHERE secret_id = ?1 AND sandbox_id = ?2 \
+            let tx = c.transaction()?;
+            let removed = tx.execute(
+                "DELETE FROM vault_copy_requests WHERE secret_id = ?1 AND sandbox_id = ?2 \
                      AND name = ?3 AND hosts = ?4",
-                    params![
-                        seen.secret_id,
-                        seen.sandbox_id.as_str(),
-                        seen.name,
-                        to_json(&seen.hosts),
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    seen.secret_id,
+                    seen.sandbox_id.as_str(),
+                    seen.name,
+                    to_json(&seen.hosts),
+                ],
+            )?;
             if removed != 1 {
                 return Ok(false);
             }
@@ -599,7 +569,7 @@ impl VaultStore for SqliteStore {
                 ensure_room(&tx, seen.sandbox_id.as_str(), cap)?;
                 insert_row(&tx, &copy)?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -619,15 +589,13 @@ impl VaultStore for SqliteStore {
             to_json(requested),
         );
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE vault_secrets SET hosts = ?3, requested_hosts = ?5, \
+            let changed = c.execute(
+                "UPDATE vault_secrets SET hosts = ?3, requested_hosts = ?5, \
                      requested_by = CASE WHEN ?5 = '[]' THEN NULL ELSE requested_by END \
                      WHERE id = ?1 AND section = 'agent' AND auto_allow = 1 AND cd_prod = 0 \
                      AND rules = '[]' AND hosts = ?2 AND requested_hosts = ?4",
-                    params![id, bound, hosts, waiting, requested],
-                )
-                .map_err(db)?;
+                params![id, bound, hosts, waiting, requested],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -648,22 +616,20 @@ impl VaultStore for SqliteStore {
             to.1.map(str::to_owned),
         );
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE vault_secrets SET env_files = ?4, env_requested_by = ?5 \
+            let changed = c.execute(
+                "UPDATE vault_secrets SET env_files = ?4, env_requested_by = ?5 \
                      WHERE id = ?1 AND section = 'agent' AND env_files = ?2 \
                      AND env_requested_by IS ?3 AND NOT (?4 = 'allowed' AND cd_prod = 1) \
                      AND (?6 IS NULL OR auto_allow = ?6)",
-                    params![
-                        id,
-                        from_state,
-                        from_by,
-                        to_state,
-                        to_by,
-                        auto_allow.map(i64::from)
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    id,
+                    from_state,
+                    from_by,
+                    to_state,
+                    to_by,
+                    auto_allow.map(i64::from)
+                ],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -672,24 +638,22 @@ impl VaultStore for SqliteStore {
     async fn vault_set_cd_prod(&self, id: &str, from: bool, to: bool) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let changed = tx
                 .execute(
                     "UPDATE vault_secrets SET cd_prod = ?3 \
                      WHERE id = ?1 AND section = 'agent' AND cd_prod = ?2 \
                      AND NOT (?3 = 1 AND (auto_allow = 1 OR env_files = 'allowed' OR hosts != '[]'))",
                     params![id, i64::from(from), i64::from(to)],
-                )
-                .map_err(db)?;
+                )?;
             // No longer a production secret: nothing is copied from it (SPEC-440 CPY-007).
             if changed == 1 && !to {
                 tx.execute(
                     "DELETE FROM vault_copy_requests WHERE secret_id = ?1",
                     params![id],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(changed == 1)
         })
         .await
@@ -697,11 +661,9 @@ impl VaultStore for SqliteStore {
 
     async fn vault_scope_pending(&self) -> AppResult<Vec<String>> {
         self.call(|c| {
-            let mut stmt = c
-                .prepare("SELECT id FROM vault_scope_pending ORDER BY id")
-                .map_err(db)?;
-            let rows = stmt.query_map([], |r| r.get(0)).map_err(db)?;
-            rows.collect::<Result<Vec<String>, _>>().map_err(db)
+            let mut stmt = c.prepare("SELECT id FROM vault_scope_pending ORDER BY id")?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            Ok(rows.collect::<Result<Vec<String>, _>>()?)
         })
         .await
     }
@@ -709,32 +671,27 @@ impl VaultStore for SqliteStore {
     async fn vault_assign(&self, id: &str, copies: &[VaultSecretRecord]) -> AppResult<bool> {
         let (id, copies) = (id.to_owned(), copies.to_vec());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let pending = tx
-                .execute("DELETE FROM vault_scope_pending WHERE id = ?1", [&id])
-                .map_err(db)?
-                == 1;
+            let tx = c.transaction()?;
+            let pending = tx.execute("DELETE FROM vault_scope_pending WHERE id = ?1", [&id])? == 1;
             let everywhere = tx
                 .query_row(
                     "SELECT 1 FROM vault_secrets WHERE id = ?1 AND sandbox_id IS NULL",
                     [&id],
                     |_| Ok(()),
                 )
-                .optional()
-                .map_err(db)?
+                .optional()?
                 .is_some();
             if !(pending && everywhere) {
-                tx.commit().map_err(db)?;
+                tx.commit()?;
                 return Ok(false);
             }
             if !copies.is_empty() {
-                tx.execute("DELETE FROM vault_secrets WHERE id = ?1", [&id])
-                    .map_err(db)?;
+                tx.execute("DELETE FROM vault_secrets WHERE id = ?1", [&id])?;
                 for copy in &copies {
                     insert_row(&tx, copy)?;
                 }
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -746,8 +703,7 @@ impl VaultStore for SqliteStore {
             c.execute(
                 "UPDATE vault_secrets SET last_used_at = ?2 WHERE id = ?1",
                 params![id, at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -760,8 +716,7 @@ impl VaultStore for SqliteStore {
                 "INSERT INTO vault_reauth (session_hash, at) VALUES (?1, ?2) \
                  ON CONFLICT(session_hash) DO UPDATE SET at = excluded.at",
                 params![hash, at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -770,14 +725,13 @@ impl VaultStore for SqliteStore {
     async fn vault_reauth(&self, session_hash: &str) -> AppResult<Option<Timestamp>> {
         let hash = session_hash.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT at FROM vault_reauth WHERE session_hash = ?1",
                 [hash],
                 |r| r.get::<_, i64>(0),
             )
             .optional()
-            .map(|at| at.map(Timestamp))
-            .map_err(db)
+            .map(|at| at.map(Timestamp))?)
         })
         .await
     }
@@ -785,7 +739,7 @@ impl VaultStore for SqliteStore {
     async fn vault_two_factor(&self, user_id: &str) -> AppResult<Option<TwoFactorRecord>> {
         let user = user_id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT user_id, kek_id, wrapped_key, ciphertext, created_at, confirmed_at, \
                  last_counter, failed_attempts, failed_at FROM vault_two_factor WHERE user_id = ?1",
                 [user],
@@ -798,17 +752,16 @@ impl VaultStore for SqliteStore {
                             ciphertext: r.get(3)?,
                         },
                         created_at: Timestamp(r.get(4)?),
-                        confirmed_at: r.get::<_, Option<i64>>(5)?.map(Timestamp),
+                        confirmed_at: opt_ts(r, 5)?,
                         last_counter: r
                             .get::<_, Option<i64>>(6)?
                             .map(|n| u64::try_from(n).unwrap_or(0)),
                         failed_attempts: to_u32(r.get(7)?),
-                        failed_at: r.get::<_, Option<i64>>(8)?.map(Timestamp),
+                        failed_at: opt_ts(r, 8)?,
                     })
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -832,8 +785,7 @@ impl VaultStore for SqliteStore {
                         r.envelope.ciphertext,
                         r.created_at.0,
                     ],
-                )
-                .map_err(db)?;
+                )?;
             Ok(n == 1)
         })
         .await
@@ -857,8 +809,7 @@ impl VaultStore for SqliteStore {
                      WHERE user_id = ?1 AND ciphertext = ?4 \
                      AND (last_counter IS NULL OR last_counter < ?2)",
                     params![user, counter, at.0, seed],
-                )
-                .map_err(db)?;
+                )?;
             Ok(n == 1)
         })
         .await
@@ -867,15 +818,14 @@ impl VaultStore for SqliteStore {
     async fn vault_two_factor_failed(&self, user_id: &str, at: Timestamp) -> AppResult<u32> {
         let user = user_id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "UPDATE vault_two_factor SET failed_attempts = failed_attempts + 1, failed_at = ?2 \
                  WHERE user_id = ?1 RETURNING failed_attempts",
                 params![user, at.0],
                 |r| r.get::<_, i64>(0),
             )
             .optional()
-            .map(|n| n.map_or(0, to_u32))
-            .map_err(db)
+            .map(|n| n.map_or(0, to_u32))?)
         })
         .await
     }
@@ -883,17 +833,14 @@ impl VaultStore for SqliteStore {
     async fn vault_reset_two_factor(&self, user_id: &str) -> AppResult<bool> {
         let user = user_id.to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "DELETE FROM vault_unlock WHERE session_hash IN \
                  (SELECT id_hash FROM web_sessions WHERE user_id = ?1)",
                 [&user],
-            )
-            .map_err(db)?;
-            let removed = tx
-                .execute("DELETE FROM vault_two_factor WHERE user_id = ?1", [&user])
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            let removed = tx.execute("DELETE FROM vault_two_factor WHERE user_id = ?1", [&user])?;
+            tx.commit()?;
             Ok(removed == 1)
         })
         .await
@@ -905,8 +852,7 @@ impl VaultStore for SqliteStore {
             c.execute(
                 "UPDATE vault_two_factor SET failed_attempts = 0, failed_at = NULL WHERE user_id = ?1",
                 [user],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -919,8 +865,7 @@ impl VaultStore for SqliteStore {
                 "INSERT INTO vault_unlock (session_hash, at) VALUES (?1, ?2) \
                  ON CONFLICT(session_hash) DO UPDATE SET at = excluded.at",
                 params![hash, at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -929,14 +874,13 @@ impl VaultStore for SqliteStore {
     async fn vault_unlock(&self, session_hash: &str) -> AppResult<Option<Timestamp>> {
         let hash = session_hash.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT at FROM vault_unlock WHERE session_hash = ?1",
                 [hash],
                 |r| r.get::<_, i64>(0),
             )
             .optional()
-            .map(|at| at.map(Timestamp))
-            .map_err(db)
+            .map(|at| at.map(Timestamp))?)
         })
         .await
     }
@@ -944,7 +888,7 @@ impl VaultStore for SqliteStore {
     async fn vault_meta(&self, name: &str) -> AppResult<Option<Envelope>> {
         let name = name.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 "SELECT kek_id, wrapped_key, ciphertext FROM vault_meta WHERE name = ?1",
                 [name],
                 |r| {
@@ -955,8 +899,7 @@ impl VaultStore for SqliteStore {
                     })
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -980,8 +923,7 @@ impl VaultStore for SqliteStore {
                         envelope.ciphertext,
                         at.0
                     ],
-                )
-                .map_err(db)?;
+                )?;
             Ok(n == 1)
         })
         .await
@@ -989,24 +931,20 @@ impl VaultStore for SqliteStore {
 
     async fn vault_audit(&self, limit: u32) -> AppResult<Vec<VaultAuditEntry>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT at, actor, action, target, detail FROM audit_log \
+            let mut stmt = c.prepare(
+                "SELECT at, actor, action, target, detail FROM audit_log \
                      WHERE action LIKE 'vault.%' ORDER BY id DESC LIMIT ?1",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([to_i64(u64::from(limit))], |r| {
-                    Ok(VaultAuditEntry {
-                        at: Timestamp(r.get(0)?),
-                        actor: r.get(1)?,
-                        action: r.get(2)?,
-                        target: r.get(3)?,
-                        detail: r.get(4)?,
-                    })
+            )?;
+            let rows = stmt.query_map([to_i64(u64::from(limit))], |r| {
+                Ok(VaultAuditEntry {
+                    at: Timestamp(r.get(0)?),
+                    actor: r.get(1)?,
+                    action: r.get(2)?,
+                    target: r.get(3)?,
+                    detail: r.get(4)?,
                 })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -1062,12 +1000,11 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 1, 1, 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 'a', 'o', 'a', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s2', 'b', 'o', 'b', 'main', '{}', 20010, 10, 'u1', 'not_needed', 1);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         Ok(store)
@@ -1119,10 +1056,9 @@ mod tests {
         }
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO vault_scope_pending (id) VALUES ('g'), ('t'), ('k'), ('m'), ('gone')",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         let mut pending = store.vault_scope_pending().await?;
@@ -1242,12 +1178,11 @@ mod tests {
         assert!(store.vault_get("a").await?.ok_or("row")?.rules.is_empty());
         store
             .call(|c| {
-                c.execute(
+                Ok(c.execute(
                     "UPDATE vault_secrets SET rules = '[{\"methods\":[],\"path\":\"/\"}]' \
                      WHERE id = 'a'",
                     [],
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         assert!(store.vault_get("a").await.is_err(), "unparsable rules");
@@ -1391,11 +1326,10 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         store
             .call(move |c| {
-                c.execute(
+                Ok(c.execute(
                     "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES (?1, 'P', 0, 0, 1)",
                     [id],
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         Ok(())
@@ -1544,10 +1478,7 @@ mod tests {
         );
         assert_eq!(ids(store.vault_agent_in(&s1).await?), ["p", "own"]);
         store
-            .call(|c| {
-                c.execute("DELETE FROM users WHERE id = 'u2'", [])
-                    .map_err(db)
-            })
+            .call(|c| Ok(c.execute("DELETE FROM users WHERE id = 'u2'", [])?))
             .await?;
         assert!(
             store.vault_get("p").await?.is_none(),
@@ -1560,10 +1491,7 @@ mod tests {
                 .await?
         );
         store
-            .call(|c| {
-                c.execute("DELETE FROM sandboxes WHERE id = 's2'", [])
-                    .map_err(db)
-            })
+            .call(|c| Ok(c.execute("DELETE FROM sandboxes WHERE id = 's2'", [])?))
             .await?;
         assert!(
             store.vault_get("g").await?.is_some(),
@@ -2010,10 +1938,7 @@ mod tests {
             .vault_insert(&record("a", VaultSection::Agent, Some("s2"), "KEY"))
             .await?;
         store
-            .call(|c| {
-                c.execute("DELETE FROM sandboxes WHERE id = 's2'", [])
-                    .map_err(db)
-            })
+            .call(|c| Ok(c.execute("DELETE FROM sandboxes WHERE id = 's2'", [])?))
             .await?;
         assert!(store.vault_get("a").await?.is_none());
         Ok(())
@@ -2129,11 +2054,10 @@ mod tests {
         let store = store_with_sandboxes().await?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u2', 'V', 0, 0, 1);
                      INSERT INTO web_sessions (id_hash, user_id, csrf_token, created_at, expires_at) VALUES ('h1a', 'u1', 'c', 1, 99), ('h1b', 'u1', 'c', 1, 99), ('h2', 'u2', 'c', 1, 99);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         for user in ["u1", "u2"] {

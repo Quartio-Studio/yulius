@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use yulius_app::error::{AppError, AppResult};
+use yulius_app::memory_guard;
 use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, McpAttachment, Observation,
     OutputMasker, ProvideFuture, ProvidedCli, SessionMode, SkillsRefresh, TranscriptWatch,
@@ -234,10 +235,10 @@ impl HarnessPort for HarnessAdapter {
                 Credential::ClaudeOauthToken(HSecret::new(l.credential.expose().to_owned()))
             }
             Harness::Codex => {
-                Credential::CodexAuthJson(HSecret::new(l.credential.expose().as_bytes().to_vec()))
+                Credential::CodexAuthJson(HSecret::bytes(l.credential.expose().as_bytes().to_vec()))
             }
             Harness::Antigravity => {
-                Credential::Antigravity(HSecret::new(l.credential.expose().as_bytes().to_vec()))
+                Credential::Antigravity(HSecret::bytes(l.credential.expose().as_bytes().to_vec()))
             }
         };
         let mode = match &l.mode {
@@ -280,6 +281,14 @@ impl HarnessPort for HarnessAdapter {
             // the sandbox home that bring one are switched off in the run's own settings, which
             // outrank the files a session, a `/plugin` or Claude Code's install dialog writes
             // (SPEC-485 LSP-003, ADR-0327).
+            // Its memory folder, read-only in a contained run (SPEC-652 MEM-002).
+            claude_memory_dir: (l.harness == Harness::ClaudeCode).then(|| {
+                let sandbox = l.sandbox_home.parent().unwrap_or(&l.sandbox_home);
+                memory_guard::claude_memory_dir(
+                    &l.sandbox_home.join(".claude"),
+                    &memory_guard::sandbox_memory_base(sandbox),
+                )
+            }),
             disabled_plugins: match l.harness {
                 Harness::ClaudeCode => language_server_plugins(
                     &l.sandbox_home.join(".claude"),
@@ -350,6 +359,11 @@ impl HarnessPort for HarnessAdapter {
             only_yulius: l.only_yulius.clone(),
             // As a task run: no plugin's language server (SPEC-485 LSP-003).
             disabled_plugins: language_server_plugins(&l.config_dir_host, &l.sandbox_dir, &l.cwd),
+            // Its memory folder, read-only in a contained run (SPEC-652 MEM-002).
+            claude_memory_dir: Some(memory_guard::claude_memory_dir(
+                &l.config_dir,
+                &l.memory_base,
+            )),
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // Contained, it bypasses approvals as a task run does, its warning accepted (SPEC-208).
@@ -1196,15 +1210,7 @@ impl TranscriptWatch for Watch {
             }
             heard = out.len();
         }
-        let now = Timestamp(
-            i64::try_from(
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map_or(0, |since| since.as_millis()),
-            )
-            .unwrap_or(i64::MAX),
-        );
-        out.extend(self.limits.report(self.tail.at_end(), now));
+        out.extend(self.limits.report(self.tail.at_end(), super::clock::now()));
         Ok(out)
     }
 
@@ -2000,8 +2006,9 @@ mod tests {
             yulius_exe: PathBuf::from("/bin/yulius"),
             yulius_url: "http://127.0.0.1:1".into(),
             mcp_servers: servers,
-            credential: Credential::ClaudeOauthToken(HSecret::new("token".into())),
+            credential: Credential::ClaudeOauthToken(HSecret::new("token")),
             disabled_plugins: Vec::new(),
+            claude_memory_dir: None,
         };
         launch::plan_launch(&request)?;
         Ok(())
@@ -2075,7 +2082,7 @@ mod tests {
             effort: None,
             contained: false,
             mcp: Vec::new(),
-            credential: Secret("token".into()),
+            credential: Secret::new("token".into()),
             codex_home: None,
             codex_program: None,
             antigravity_home: None,
@@ -2109,12 +2116,13 @@ mod tests {
             resume: None,
             continue_interrupted: false,
             model: None,
-            credential: Secret("token".into()),
+            credential: Secret::new("token".into()),
             yulius: None,
             project_mcp_servers: Vec::new(),
             mcp: Vec::new(),
             contained: false,
             only_yulius: None,
+            memory_base: PathBuf::from("/data/sandboxes/s1/repo"),
         })?;
         let settings = plan
             .argv
@@ -2218,7 +2226,7 @@ mod tests {
             effort: None,
             contained: false,
             mcp: Vec::new(),
-            credential: Secret("token".into()),
+            credential: Secret::new("token".into()),
             codex_home: None,
             codex_program: None,
             antigravity_home: None,
@@ -2234,12 +2242,13 @@ mod tests {
             resume: None,
             continue_interrupted: false,
             model: None,
-            credential: Secret("token".into()),
+            credential: Secret::new("token".into()),
             yulius: None,
             project_mcp_servers: Vec::new(),
             mcp: Vec::new(),
             contained: false,
             only_yulius: None,
+            memory_base: PathBuf::from("/data/sandboxes/s1/repo"),
         })?;
         assert_eq!(style(&config)?, "Concise");
         Ok(())

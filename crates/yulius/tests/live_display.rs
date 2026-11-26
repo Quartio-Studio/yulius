@@ -1,5 +1,5 @@
 //! Opt-in checks of the streamed sandbox browser on Linux with Xvfb, ffmpeg and a real Chrome
-//! (SPEC-002 ADR-15; SPEC-001 BRW-004..008, AC-BRW-9..12). They run the whole server path — the
+//! (SPEC-002 ADR-15; SPEC-001 BRW-004..008). They run the whole server path — the
 //! viewer WebSocket, the virtual display, the encoder, XTest — and read the page back over CDP
 //! and the video back through ffmpeg:
 //!
@@ -8,8 +8,8 @@
 //!   trusted events, and the change shows in the decoded video;
 //! - an image loads and a canvas animates in the video;
 //! - the agent's click reaches viewers as its cursor; `navigator.webdriver` is false;
-//! - Yulius refuses to open itself (BRW-008);
-//! - an agent secret typed with `browser_fill_secret` fills an xterm.js terminal (SPEC-648);
+//! - Yulius refuses to open itself;
+//! - an agent secret typed with `browser_fill_secret` fills an xterm.js terminal;
 //! - a contained process (the agents' and users' bubblewrap) reaches no display: no socket, no
 //!   cookie, no abstract socket, no TCP; another sandbox's cookie does not open a display.
 //!
@@ -140,7 +140,7 @@ window.clicks = [];
 addEventListener('click', (e) => clicks.push({ trusted: e.isTrusted, x: e.clientX, y: e.clientY }));
 </script></body></html>"#;
 
-/// A page that only listens to `paste` and `keydown` (SPEC-639 AC-1).
+/// A page that only listens to `paste` and `keydown`.
 const PASTE_PAGE: &str = r#"<!doctype html><html><head><title>paste</title></head>
 <body style="margin:0;height:100vh"><script>
 window.events = [];
@@ -680,10 +680,10 @@ async fn the_real_chrome_streams_takes_real_input_and_stays_out_of_containment()
     result
 }
 
-/// SPEC-639 AC-1: a viewer's paste (100 and 5 000 characters) reaches a page that only listens
+/// A viewer's paste (100 and 5 000 characters) reaches a page that only listens
 /// to `paste` and `keydown` as genuine `paste` events with the exact text, in order with the keys
 /// around it, and an xterm.js terminal takes both as its data, and an agent's `browser_type` after
-/// them (PST-005).
+/// them.
 #[tokio::test]
 #[ignore = "needs Linux with Xvfb, ffmpeg and Chrome (YULIUS_LIVE_DISPLAY=1)"]
 async fn a_viewer_paste_reaches_a_paste_listener_and_an_xterm_terminal() -> TestResult {
@@ -776,7 +776,7 @@ async fn pastes(live: &Live) -> TestResult {
     )
     .await?;
     assert_eq!(eval(&cdp, &url, "window.data").await?, json!(expected));
-    // An agent's browser_type fills the terminal too (SPEC-639 PST-005): real key presses,
+    // An agent's browser_type fills the terminal too: real key presses,
     // each line ended by Enter, which the terminal sends as a carriage return.
     let typed = mcp_tool(
         &live.h,
@@ -826,12 +826,12 @@ async fn pastes(live: &Live) -> TestResult {
     Ok(())
 }
 
-/// SPEC-648 AC-4 (#1740): an agent's `browser_fill_secret` fills an xterm.js terminal (a CLI
+/// An agent's `browser_fill_secret` fills an xterm.js terminal (a CLI
 /// sign-in prompt): the user name and the secret arrive as the terminal's data, typed as real
 /// key presses, and screenshots of the tab are refused from then on, as the terminal's focus is
 /// no password field (a canvas or WebGL renderer would draw where no probe reads). xterm.js drops inserted text (`Input.insertText`)
 /// while it has seen a key go down and not up, here a key a person holds in the viewer (as Ctrl
-/// is held for Ctrl+V, SPEC-639); key presses arrive in that state too.
+/// is held for Ctrl+V); key presses arrive in that state too.
 #[tokio::test]
 #[ignore = "needs Linux with Xvfb, ffmpeg and Chrome (YULIUS_LIVE_DISPLAY=1)"]
 async fn an_agent_secret_fills_an_xterm_terminal() -> TestResult {
@@ -1247,6 +1247,7 @@ for n in ({n1}, {n2}):
             binds: Vec::new(),
             identity: identity.clone(),
             join: None,
+            guard: None,
         };
         let argv = yulius_ptyhost::bwrap_argv(
             &spec,

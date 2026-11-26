@@ -26,15 +26,23 @@ use yulius_app::ports::store::{InstanceStore, SessionStore, UserStore};
 use yulius_domain::ids::UserId;
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::time::Timestamp;
-use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
 use super::{Creds, FakeGitHub, Harness, Resp, TestClock};
 
 type BoxError = Box<dyn std::error::Error>;
 
-/// Runs `git` with an isolated configuration; returns stdout.
-pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+/// Runs `git` in `dir` with an isolated configuration and a fixed identity; returns stdout as is.
+pub fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, BoxError> {
+    Ok(git_cli(dir, args)?)
+}
+
+/// [`git_stdout`] with surrounding whitespace trimmed: a SHA, a branch name, a count.
+pub fn git(dir: &Path, args: &[&str]) -> Result<String, BoxError> {
+    Ok(git_stdout(dir, args)?.trim().to_owned())
+}
+
+fn git_cli(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -49,6 +57,8 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
             "commit.gpgsign=false",
             "-c",
             "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsync=none",
         ])
         .args(args)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -123,7 +133,7 @@ impl LocalGit {
     }
 
     fn local_branch(repo: &Path, branch: &str) -> bool {
-        git(
+        git_cli(
             repo,
             &[
                 "rev-parse",
@@ -152,7 +162,7 @@ impl GitPort for LocalGit {
         let remote = self.remote(url)?;
         self.record(format!("clone {url} token={}", token.expose()));
         if dest.join(".git").exists() {
-            git(
+            git_cli(
                 dest,
                 &[
                     "fetch",
@@ -166,7 +176,7 @@ impl GitPort for LocalGit {
         }
         let parent = dest.parent().ok_or(AppError::NotFound)?;
         std::fs::create_dir_all(parent).map_err(AppError::internal)?;
-        git(
+        git_cli(
             parent,
             &[
                 "clone",
@@ -195,7 +205,7 @@ impl GitPort for LocalGit {
             .map_err(AppError::internal)?
             .unwrap_or(limit);
         let parent = work.parent().ok_or(AppError::NotFound)?;
-        git(
+        git_cli(
             parent,
             &[
                 "init",
@@ -206,7 +216,7 @@ impl GitPort for LocalGit {
             ],
         )
         .map_err(upstream)?;
-        git(
+        git_cli(
             work,
             &[
                 "fetch",
@@ -224,7 +234,7 @@ impl GitPort for LocalGit {
                 "git fetch wrote more than {limit} bytes"
             )));
         }
-        git(
+        git_cli(
             work,
             &[
                 "bundle",
@@ -237,7 +247,7 @@ impl GitPort for LocalGit {
             ],
         )
         .map_err(upstream)?;
-        let listed = git(
+        let listed = git_cli(
             work,
             &[
                 "for-each-ref",
@@ -252,7 +262,7 @@ impl GitPort for LocalGit {
             .map(|(name, sha)| (name.to_owned(), sha.to_owned()))
             .collect();
         branches.sort();
-        let tags = git(work, &["tag", "--list"])
+        let tags = git_cli(work, &["tag", "--list"])
             .map_err(upstream)?
             .lines()
             .filter(|line| !line.is_empty())
@@ -263,13 +273,13 @@ impl GitPort for LocalGit {
     /// As the real adapter: `origin/HEAD`, else the branch the clone's `HEAD` names (an empty
     /// clone's local default, not GitHub's).
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {
-        if let Ok(head) = git(
+        if let Ok(head) = git_cli(
             repo,
             &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
         ) {
             return Ok(head.trim().trim_start_matches("origin/").to_owned());
         }
-        let head = git(repo, &["symbolic-ref", "--short", "HEAD"]).map_err(upstream)?;
+        let head = git_cli(repo, &["symbolic-ref", "--short", "HEAD"]).map_err(upstream)?;
         Ok(head.trim().to_owned())
     }
 
@@ -277,7 +287,7 @@ impl GitPort for LocalGit {
         &self,
         repo: &Path,
     ) -> AppResult<Vec<yulius_app::ports::git::BranchInfo>> {
-        let refs = git(
+        let refs = git_cli(
             repo,
             &[
                 "for-each-ref",
@@ -300,7 +310,7 @@ impl GitPort for LocalGit {
 
     async fn branch_exists(&self, repo: &Path, branch: &str) -> AppResult<bool> {
         Ok(Self::local_branch(repo, branch)
-            || git(
+            || git_cli(
                 repo,
                 &[
                     "rev-parse",
@@ -321,9 +331,9 @@ impl GitPort for LocalGit {
     ) -> AppResult<()> {
         let path_text = path.to_string_lossy();
         if Self::local_branch(repo, branch) {
-            git(repo, &["worktree", "add", "--quiet", &path_text, branch]).map_err(upstream)?;
+            git_cli(repo, &["worktree", "add", "--quiet", &path_text, branch]).map_err(upstream)?;
         } else {
-            git(
+            git_cli(
                 repo,
                 &["worktree", "add", "--quiet", "-b", branch, &path_text, base],
             )
@@ -342,12 +352,12 @@ impl GitPort for LocalGit {
         if !path.starts_with(owned_root) || self.has_changes(path).await? {
             return Ok(false);
         }
-        git(repo, &["worktree", "remove", &path.to_string_lossy()]).map_err(upstream)?;
+        git_cli(repo, &["worktree", "remove", &path.to_string_lossy()]).map_err(upstream)?;
         Ok(true)
     }
 
     async fn has_changes(&self, worktree: &Path) -> AppResult<bool> {
-        Ok(!git(worktree, &["status", "--porcelain"])
+        Ok(!git_cli(worktree, &["status", "--porcelain"])
             .map_err(upstream)?
             .trim()
             .is_empty())
@@ -368,8 +378,8 @@ impl GitPort for LocalGit {
     }
 
     async fn set_identity(&self, worktree: &Path, name: &str, email: &str) -> AppResult<()> {
-        git(worktree, &["config", "user.name", name]).map_err(upstream)?;
-        git(worktree, &["config", "user.email", email]).map_err(upstream)?;
+        git_cli(worktree, &["config", "user.name", name]).map_err(upstream)?;
+        git_cli(worktree, &["config", "user.email", email]).map_err(upstream)?;
         Ok(())
     }
 
@@ -412,7 +422,7 @@ impl GitPort for LocalGit {
     }
 
     async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
-        Ok(git(
+        Ok(git_cli(
             repo,
             &[
                 "rev-parse",
@@ -426,16 +436,16 @@ impl GitPort for LocalGit {
     }
 
     async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
-        Ok(git(repo, &["show", &format!("{rev}:{path}")]).ok())
+        Ok(git_cli(repo, &["show", &format!("{rev}:{path}")]).ok())
     }
 
     async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {
-        let line = git(repo, &["rev-list", "--parents", "-n", "1", rev]).map_err(upstream)?;
+        let line = git_cli(repo, &["rev-list", "--parents", "-n", "1", rev]).map_err(upstream)?;
         Ok(line.split_whitespace().skip(1).map(str::to_owned).collect())
     }
 
     async fn merge_base(&self, repo: &Path, a: &str, b: &str) -> AppResult<Option<String>> {
-        Ok(git(repo, &["merge-base", a, b])
+        Ok(git_cli(repo, &["merge-base", a, b])
             .ok()
             .map(|sha| sha.trim().to_owned()))
     }
@@ -446,7 +456,7 @@ impl GitPort for LocalGit {
         if !dir.is_empty() {
             args.extend(["--", filter.as_str()]);
         }
-        Ok(git(repo, &args)
+        Ok(git_cli(repo, &args)
             .map_err(upstream)?
             .lines()
             .map(str::to_owned)
@@ -460,11 +470,11 @@ impl GitPort for LocalGit {
         name: &str,
         email: &str,
     ) -> AppResult<bool> {
-        git(worktree, &["add", "-A"]).map_err(upstream)?;
+        git_cli(worktree, &["add", "-A"]).map_err(upstream)?;
         if !self.has_changes(worktree).await? {
             return Ok(false);
         }
-        git(
+        git_cli(
             worktree,
             &[
                 "-c",
@@ -489,7 +499,7 @@ impl GitPort for LocalGit {
         remote_branch: &str,
         token: &Secret,
     ) -> AppResult<()> {
-        git(
+        git_cli(
             repo,
             &[
                 "push",
@@ -513,7 +523,7 @@ impl GitPort for LocalGit {
         prefix: &str,
     ) -> AppResult<Vec<String>> {
         let bundle_text = bundle.to_string_lossy();
-        let heads = git(repo, &["bundle", "list-heads", &bundle_text]).map_err(upstream)?;
+        let heads = git_cli(repo, &["bundle", "list-heads", &bundle_text]).map_err(upstream)?;
         let mut names = Vec::new();
         for line in heads.lines() {
             if let Some(branch) = line
@@ -524,7 +534,7 @@ impl GitPort for LocalGit {
                 names.push(format!("{prefix}/{branch}"));
             }
         }
-        git(
+        git_cli(
             repo,
             &[
                 "fetch",
@@ -750,10 +760,10 @@ impl GitHubPort for RepoGitHub {
         Ok(Some(7))
     }
     async fn installation_token(&self, _: &GitHubAppConfig, id: u64) -> AppResult<Secret> {
-        Ok(Secret(format!("inst-{id}")))
+        Ok(Secret::new(format!("inst-{id}")))
     }
     async fn agent_token(&self, _: &GitHubAppConfig, id: u64, _: &str) -> AppResult<Secret> {
-        Ok(Secret(format!("agent-inst-{id}")))
+        Ok(Secret::new(format!("agent-inst-{id}")))
     }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
         Ok(self
@@ -780,7 +790,7 @@ impl GitHubPort for RepoGitHub {
         }
         let path = self.remotes_dir.join(owner).join(format!("{name}.git"));
         std::fs::create_dir_all(&path).map_err(AppError::internal)?;
-        git(&path, &["init", "--quiet", "--bare"]).map_err(AppError::Upstream)?;
+        git_cli(&path, &["init", "--quiet", "--bare"]).map_err(AppError::Upstream)?;
         let repo = gh_repo(owner, name, true);
         if !self.selected_only.load(Ordering::SeqCst) {
             self.git.add_remote(&repo.clone_url, &path);
@@ -974,7 +984,7 @@ pub const OWNER: &str = "Quartio-Studio";
 
 impl World {
     /// A configured instance owned by [`OWNER`] (`org` or `user`), with a connected Claude
-    /// subscription that has no capacity left: starts pass the account gate (SPEC-246) and then
+    /// subscription that has no capacity left: starts pass the account gate and then
     /// wait without a process, as there is no process host here.
     pub async fn new(owner_kind: &str) -> Result<Self, BoxError> {
         let world = Self::without_claude(owner_kind).await?;
@@ -986,7 +996,8 @@ impl World {
     pub async fn without_claude(owner_kind: &str) -> Result<Self, BoxError> {
         let dir = tempfile::tempdir()?;
         let scratch = tempfile::tempdir()?;
-        let store = SqliteStore::open_in_memory()?;
+        let store_dir = tempfile::tempdir()?;
+        let store = super::store::migrated(&store_dir.path().join("yulius.db"))?;
         let base = Arc::new(FakeGitHub::default());
         let git = Arc::new(LocalGit::default());
         let github = Arc::new(RepoGitHub {
@@ -1021,7 +1032,7 @@ impl World {
             clock: clock.clone(),
             crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
             github: github.clone(),
-            session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+            session_host: Arc::new(crate::support::pending::UnavailableSessionHost),
             harness: Arc::new(yulius::wiring::harness::HarnessAdapter::new(
                 "/bin/false".into(),
                 "http://127.0.0.1:1",
@@ -1053,6 +1064,7 @@ impl World {
                 system,
                 router,
                 _dir: dir,
+                _store: store_dir,
             },
             github,
             git,
@@ -1173,7 +1185,7 @@ impl World {
             .join(owner)
             .join(format!("{name}.git"));
         std::fs::create_dir_all(&bare)?;
-        git(
+        git_cli(
             &bare,
             &[
                 "init",
@@ -1198,7 +1210,7 @@ impl World {
     ) -> Result<PathBuf, BoxError> {
         let seed = self.scratch.path().join("seed").join(owner).join(name);
         std::fs::create_dir_all(&seed)?;
-        git(&seed, &["init", "--quiet"])?;
+        git_cli(&seed, &["init", "--quiet"])?;
         for (path, contents) in files {
             let target = seed.join(path);
             if let Some(parent) = target.parent() {
@@ -1206,10 +1218,10 @@ impl World {
             }
             std::fs::write(target, contents)?;
         }
-        git(&seed, &["add", "-A"])?;
-        git(&seed, &["commit", "--quiet", "-m", "initial"])?;
+        git_cli(&seed, &["add", "-A"])?;
+        git_cli(&seed, &["commit", "--quiet", "-m", "initial"])?;
         for branch in branches {
-            git(&seed, &["branch", branch])?;
+            git_cli(&seed, &["branch", branch])?;
         }
         let bare = self
             .scratch
@@ -1218,7 +1230,7 @@ impl World {
             .join(owner)
             .join(format!("{name}.git"));
         std::fs::create_dir_all(bare.parent().ok_or("parent")?)?;
-        git(
+        git_cli(
             self.scratch.path(),
             &[
                 "clone",

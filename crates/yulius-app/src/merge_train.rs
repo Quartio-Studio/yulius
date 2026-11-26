@@ -51,11 +51,12 @@ use serde::{Deserialize, Serialize};
 use yulius_domain::ci::{CiRef, GateResult, RunState};
 use yulius_domain::delivery::{DeliveryStage, MergeMethod};
 use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::vault::redact::{PlainMatcher, redact_text};
 
-use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Verdict};
+use crate::agent_wait::{
+    ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Readiness, Verdict,
+};
 use crate::auth::AuthContext;
 use crate::ci::{CiJobRecord, CiRunRecord, PullHead, run_for_pull_head};
 use crate::context::App;
@@ -753,6 +754,12 @@ impl App {
         state: &mut SandboxTrains,
         train: Train,
     ) -> Option<Train> {
+        // A red after-merge gate holds every merge but its repair (SPEC-676 RGS-006): a
+        // candidate holding another is dissolved, and its members stay armed.
+        if let Some(reason) = self.held_by_red_gate(sandbox, &train).await {
+            self.dissolve(sandbox, &train, &reason).await;
+            return None;
+        }
         // A member whose own run did not pass leaves, whatever the candidate's run says: the
         // others form a candidate again without it (SPEC-493 MQC-002).
         if let Some(reason) = self.member_left(sandbox, &train).await {
@@ -837,6 +844,39 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Why `train` cannot merge while the after-merge gate is red (SPEC-676 RGS-006): a member
+    /// that is not the repair.
+    async fn held_by_red_gate(&self, sandbox: &SandboxRecord, train: &Train) -> Option<String> {
+        let stop = self.merge_stop(sandbox).await?;
+        for member in &train.members {
+            let Ok(id) = TaskId::parse(&member.task) else {
+                continue;
+            };
+            // One merged already is no longer held (review round 1).
+            if matches!(
+                self.deps.store.delivery(&id).await,
+                Ok(Some(record)) if past_merge(&record.stage)
+            ) {
+                continue;
+            }
+            let Ok(Some(task)) = self.deps.store.task(&id).await else {
+                continue;
+            };
+            let marked = self
+                .armed_or_deciding(&id)
+                .is_some_and(|armed| armed.repair);
+            if !stop.lets_through(task.number, marked) {
+                return Some(format!(
+                    "the after-merge gate of the integration branch is red ({}); #{} is not its \
+                     repair, and only the repair merges until the gate is green",
+                    stop.failures_text(),
+                    member.pr
+                ));
+            }
+        }
+        None
     }
 
     /// Why a member leaves `train` (SPEC-493 MQC-002, SPEC-497 MQW-001): its own run at the head
@@ -1446,50 +1486,33 @@ impl App {
             return keep(armed, format!("#{} has no worktree", member.pr));
         };
         let worktree = Path::new(worktree);
-        let idle = task.status == TaskStatus::Running
-            && task.activity.is_some_and(Activity::is_idle)
-            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
-        // A busy agent's turn ends soon: the train waits for it (bounded, TRN-006) instead of
-        // throwing its passed run away (SPEC-441 MQ-003).
-        if !idle || self.deps.git.has_changes(worktree).await.unwrap_or(true) {
-            return (Verdict::Keep(armed), Step::Wait);
-        }
-        let at = self
-            .deps
-            .git
-            .log(worktree, "HEAD", 1)
-            .await
-            .ok()
-            .and_then(|log| log.into_iter().next())
-            .map(|commit| commit.sha);
-        if at.as_deref() != Some(armed.head.as_str()) {
-            return (
-                Verdict::Keep(armed),
-                Step::Stop(format!("#{} moved on", member.pr)),
-            );
+        match self.queue_readiness(task, Some(&armed.head)).await {
+            Readiness::Ready => {}
+            Readiness::MovedOn => {
+                return (
+                    Verdict::Keep(armed),
+                    Step::Stop(format!("#{} moved on", member.pr)),
+                );
+            }
+            // A busy agent's turn ends soon: the train waits for it (bounded, TRN-006) instead of
+            // throwing its passed run away (SPEC-441 MQ-003).
+            Readiness::Working | Readiness::Shells | Readiness::Dirty | Readiness::NotRunning => {
+                return (Verdict::Keep(armed), Step::Wait);
+            }
         }
         let profile = delivery_profile(sandbox);
         let integration = profile.integration_branch.clone();
         let Ok(token) = self.task_github_token(task, sandbox).await else {
             return keep(armed, format!("#{} has no GitHub token", member.pr));
         };
-        let updating = self.now();
         let (head, moved) = match self
-            .deps
-            .git
-            .merge_integration(worktree, &integration, &token)
+            .bring_armed_up_to_date(&task.id, worktree, &integration, &token)
             .await
         {
             Ok(MergeIntegration::UpToDate) => (armed.head.clone(), false),
-            Ok(MergeIntegration::Merged(head)) => {
-                self.integration_update_span(&task.id, &integration, updating, "merged")
-                    .await;
-                (head, true)
-            }
+            Ok(MergeIntegration::Merged(head)) => (head, true),
             // Aborted: the one-by-one flow tells the agent what to resolve.
             Ok(MergeIntegration::Conflict(_)) => {
-                self.integration_update_span(&task.id, &integration, updating, "conflict")
-                    .await;
                 return keep(armed, format!("#{} conflicts after all", member.pr));
             }
             Err(err) => {
@@ -1520,8 +1543,15 @@ impl App {
             {
                 Ok(()) => {
                     self.save_armed_during(&task.id, deciding, &moved_armed);
-                    self.train_branch_updated(sandbox, task, branch, &head, &integration)
-                        .await;
+                    self.audit_branch_updated(
+                        sandbox,
+                        task,
+                        branch,
+                        &head,
+                        &integration,
+                        "the merge train",
+                    )
+                    .await;
                     keep(moved_armed.clone(), reason)
                 }
                 Err(err) => {
@@ -1556,8 +1586,15 @@ impl App {
             }
             // A restart from here on finds the pushed head armed (TRN-008).
             self.save_armed_during(&task.id, deciding, &moved_armed);
-            self.train_branch_updated(sandbox, task, branch, &head, &integration)
-                .await;
+            self.audit_branch_updated(
+                sandbox,
+                task,
+                branch,
+                &head,
+                &integration,
+                "the merge train",
+            )
+            .await;
         }
         if let Some(run) = recorded {
             self.ci_publish(&run).await;
@@ -1595,12 +1632,14 @@ impl App {
                     .filter(|n| *n != member.pr)
                     .collect();
                 let (actor, action, how) = armed.merge_audit(task.number);
+                let stopped = self.merge_stop(sandbox).await.is_some();
                 let detail = format!(
                     "merged at head {head} {how}; armed while the checks ran; in merge train {} \
-                     tested at {} (run {})",
+                     tested at {} (run {}){}",
                     listed(&numbers(&train.members)),
                     train.commit,
-                    train.run
+                    train.run,
+                    crate::merge_stop::repair_audit(armed.repair, stopped)
                 );
                 if let Err(err) = self
                     .deps
@@ -1641,29 +1680,6 @@ impl App {
                 ),
             ),
         }
-    }
-
-    async fn train_branch_updated(
-        &self,
-        sandbox: &SandboxRecord,
-        task: &TaskRecord,
-        branch: &str,
-        head: &str,
-        integration: &str,
-    ) {
-        let _ = self
-            .deps
-            .store
-            .audit(
-                self.now(),
-                "yulius",
-                "delivery.branch_updated",
-                Some(&format!("{}#{}", sandbox.slug, task.number)),
-                Some(&format!(
-                    "merged {integration} into {branch} at {head} for the merge train"
-                )),
-            )
-            .await;
     }
 
     /// Makes sure `head` (member `index`'s, with the tree the train predicted) has the train's
@@ -1823,11 +1839,19 @@ impl App {
         let tasks = self.deps.store.tasks(&sandbox.id, false).await.ok()?;
         let mut candidates = Vec::new();
         let mut still_armed = Vec::new();
+        let stop = self.merge_stop(sandbox).await;
         for task in tasks {
             let ArmedNow::Armed(armed) = self.armed_now(&task.id) else {
                 continue;
             };
             still_armed.push((task.id.to_string(), armed.armed_at));
+            // A red after-merge gate: a candidate forms only from repairs (SPEC-676 RGS-006).
+            if stop
+                .as_ref()
+                .is_some_and(|stop| !stop.lets_through(task.number, armed.repair))
+            {
+                continue;
+            }
             let Some(pr) = self
                 .deps
                 .store
@@ -1864,7 +1888,8 @@ impl App {
                 || state
                     .held_back
                     .contains(&(task.id.to_string(), armed.armed_at))
-                || !self.train_ready(&task, &armed).await
+                || task.branch.is_none()
+                || self.queue_readiness(&task, Some(&armed.head)).await != Readiness::Ready
             {
                 continue;
             }
@@ -2120,27 +2145,6 @@ impl App {
         }
     }
 
-    /// Whether `task` could be brought up to date now, as DLV-203 requires: running and idle
-    /// with nothing running in the background, nothing uncommitted, at the armed head.
-    async fn train_ready(&self, task: &TaskRecord, armed: &ArmedMerge) -> bool {
-        let Some(worktree) = task.worktree_path.as_deref().map(Path::new) else {
-            return false;
-        };
-        let idle = task.status == TaskStatus::Running
-            && task.activity.is_some_and(Activity::is_idle)
-            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
-        if !idle || task.branch.is_none() {
-            return false;
-        }
-        if self.deps.git.has_changes(worktree).await.unwrap_or(true) {
-            return false;
-        }
-        matches!(
-            self.deps.git.log(worktree, "HEAD", 1).await,
-            Ok(log) if log.first().is_some_and(|c| c.sha == armed.head)
-        )
-    }
-
     /// Train runs left going without a train (a lost or rewritten file) are cancelled.
     async fn cancel_stray_train_runs(&self, sandbox: &SandboxRecord) {
         let Ok(runs) = self.deps.store.ci_runs(&sandbox.id, 50).await else {
@@ -2161,7 +2165,9 @@ impl App {
 fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
     use yulius_domain::merge_queue::Dissolved;
     let has = |words: &[&str]| words.iter().any(|w| reason.contains(w));
-    if has(&["too long"]) {
+    if reason.starts_with("the after-merge gate of the integration branch is red") {
+        Dissolved::GateRed
+    } else if has(&["too long"]) {
         Dissolved::TooLong
     } else if has(&["ended failed: it leaves the candidate"])
         || (reason.starts_with("the own run of #") && reason.ends_with("ended failed"))
@@ -2279,6 +2285,12 @@ mod tests {
                 Dissolved::MemberFailed,
             ),
             ("#3 was armed again", Dissolved::MemberLeft),
+            (
+                "the after-merge gate of the integration branch is red (`a` (first at abc, \
+                 task #2)); #3 is not its repair, and only the repair merges until the gate is \
+                 green",
+                Dissolved::GateRed,
+            ),
             ("#3 is no longer armed", Dissolved::MemberLeft),
             ("its CI run failed", Dissolved::Bisected),
             (

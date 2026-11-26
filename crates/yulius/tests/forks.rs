@@ -1,4 +1,4 @@
-//! Forked tasks (SPEC-628): a fork continues a copy of its source's conversation (a fixture
+//! Forked tasks: a fork continues a copy of its source's conversation (a fixture
 //! conversation in the source's transcript) from the source branch's head, on its own branch and
 //! worktree, and the source goes on untouched.
 //!
@@ -6,13 +6,13 @@
 //! transcript under its new session id as `claude --resume <id> --fork-session` does; real
 //! worktrees over a local origin.
 
-use crate::pool_supervision::{
-    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, task, temp, wait_for,
-};
 use crate::support;
+use crate::support::live::pool::{
+    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, task, temp,
+};
+use crate::support::{eventually, git};
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,21 +35,6 @@ type BoxError = Box<dyn std::error::Error>;
 /// What the source said before it was forked: the fork's agent must have it.
 const FIXTURE_WORD: &str = "pelican-fixture-628";
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, BoxError> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
 async fn ctx(app: &App, user: &UserId) -> Result<AuthContext, BoxError> {
     Ok(AuthContext {
         user: app.deps.store.user(user).await?.ok_or("user")?,
@@ -60,7 +45,7 @@ async fn ctx(app: &App, user: &UserId) -> Result<AuthContext, BoxError> {
 }
 
 async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
-    wait_for("the run", Duration::from_secs(30), || {
+    eventually("the run", Duration::from_secs(30), || {
         let (app, id) = (app.clone(), id.clone());
         async move { screen(&app, &id).contains("FAKE-AGENT READY") }
     })
@@ -89,7 +74,7 @@ async fn latest_session(app: &App, id: &TaskId) -> Result<String, BoxError> {
         .session_id)
 }
 
-/// SPEC-628 FRK-004..008: the fork resumes a copy of the source's conversation, with `cwd` its
+/// The fork resumes a copy of the source's conversation, with `cwd` its
 /// own worktree, from the source branch's head commit; the source's record, plan, transcript,
 /// branch and live run are unchanged; both pages link the two.
 #[test]
@@ -185,7 +170,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
         ready(&app, &fork_id).await?;
         let fork = task(&app, &fork_id).await?;
 
-        // FRK-006: a copy of the source's session under a new id Yulius named.
+        // A copy of the source's session under a new id Yulius named.
         let attempt = app
             .deps
             .store
@@ -226,7 +211,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
             fork.worktree_path.as_deref().ok_or("worktree")?
         );
         assert!(!fork_text.contains("partial"));
-        wait_for("the opening turn", Duration::from_secs(30), || {
+        eventually("the opening turn", Duration::from_secs(30), || {
             let (app, id) = (app.clone(), fork_id.clone());
             async move { screen(&app, &id).contains("Try a hand-written parser instead.") }
         })
@@ -234,7 +219,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
         let opening = screen(&app, &fork_id);
         assert!(opening.contains("a fork of task #1"), "{opening}");
 
-        // FRK-005: its own branch and worktree, at the source's head; no uncommitted work.
+        // Its own branch and worktree, at the source's head; no uncommitted work.
         let fork_tree = PathBuf::from(fork.worktree_path.as_deref().ok_or("worktree")?);
         assert_ne!(fork.branch, source.branch);
         assert_ne!(fork_tree, worktree);
@@ -248,7 +233,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
         let fork_branch = fork.branch.clone().ok_or("branch")?;
         assert_eq!(git(&fork_tree, &["rev-parse", &fork_branch])?, head);
 
-        // FRK-001: the plan is a copy, statuses and notes kept.
+        // The plan is a copy, statuses and notes kept.
         let steps = app.deps.store.steps(&fork_id).await?;
         assert_eq!(steps.len(), 1);
         assert_eq!(
@@ -261,7 +246,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
         );
         assert_ne!(steps[0].id, step.id);
 
-        // FRK-004: the source is untouched and its run goes on.
+        // The source is untouched and its run goes on.
         let after = task(&app, &source_id).await?;
         assert_eq!(
             (
@@ -288,7 +273,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
             .ok_or("source run")?;
         assert_eq!(live.id, source_attempt.id);
 
-        // FRK-008: each page links the other.
+        // Each page links the other.
         let fork_summary = app.task_summary(&fork).await?;
         let origin = fork_summary.forked_from.ok_or("forked_from")?;
         assert_eq!(
@@ -338,7 +323,7 @@ async fn closed_task(
         .await?)
 }
 
-/// SPEC-628 FRK-002, FRK-003: an Antigravity task, a task without a conversation, a message over
+/// An Antigravity task, a task without a conversation, a message over
 /// 64 KiB and a model of another harness are refused, and nothing is created.
 #[test]
 fn forks_that_cannot_continue_are_refused_and_create_nothing() -> TestResult {
@@ -389,8 +374,8 @@ fn forks_that_cannot_continue_are_refused_and_create_nothing() -> TestResult {
             app.fork_task(&ctx, unstarted.id.as_str(), &codex_model)
                 .await,
         )?;
-        // A subscription of another provider, or one that is gone (FRK-002).
-        crate::codex::connect_codex(&app).await?;
+        // A subscription of another provider, or one that is gone.
+        crate::support::codex::connect_codex(&app).await?;
         for (account, said) in [
             ("a-codex", "is not a Claude subscription"),
             ("gone", "no longer exists"),
@@ -423,12 +408,12 @@ fn launch_of(attempt: &yulius_app::model::AttemptRecord) -> Result<String, BoxEr
     )?)
 }
 
-/// SPEC-628 FRK-002, FRK-006: a Codex fork that waits in the queue (the source holds the only
+/// A Codex fork that waits in the queue (the source holds the only
 /// session slot) keeps the subscription the person named, launches as `codex fork <source>`
 /// once the slot frees, adopts a session of its own, and its next launch resumes that session.
 #[test]
 fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> TestResult {
-    use crate::supervision::{build_full, screen_contains, seed_records, seed_repo};
+    use crate::support::live::supervision::{build_full, screen_contains, seed_records, seed_repo};
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -442,8 +427,8 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
         let app = build_full(&data, Some(&fake), agent, 1)?;
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
-        crate::codex::connect_codex(&app).await?;
-        let named = crate::codex::add_codex_account(
+        crate::support::codex::connect_codex(&app).await?;
+        let named = crate::support::codex::add_codex_account(
             &app,
             "a-codex-2",
             concat!(
@@ -453,8 +438,9 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
             ),
         )
         .await?;
-        let source_id = crate::codex::new_codex_task(&app, &sandbox, &user, "Parser").await?;
-        wait_for(
+        let source_id =
+            crate::support::codex::new_codex_task(&app, &sandbox, &user, "Parser").await?;
+        eventually(
             "the source's conversation",
             Duration::from_secs(30),
             || async {
@@ -491,7 +477,7 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
             .ok_or("the fork's start is kept")?;
         assert_eq!(kept.account_id.as_ref(), Some(&named));
         support::stop_tasks(&app, &[&source_id]).await?;
-        wait_for(
+        eventually(
             "the fork's own session",
             Duration::from_secs(30),
             || async {
@@ -538,7 +524,7 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
         support::stop_tasks(&app, &[&fork_id]).await?;
         app.continue_task(&ctx, fork_id.as_str(), &Default::default())
             .await?;
-        wait_for("the fork's second run", Duration::from_secs(30), || async {
+        eventually("the fork's second run", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .live_attempt(&fork_id)
@@ -564,7 +550,7 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
     Ok(())
 }
 
-/// SPEC-628 FRK-006: a fork whose first launch fails before a process runs has no session of its
+/// A fork whose first launch fails before a process runs has no session of its
 /// own, so its next launch is still a fork of the source's session.
 #[test]
 fn a_fork_whose_first_launch_failed_launches_as_a_fork_again() -> TestResult {
@@ -593,7 +579,7 @@ fn a_fork_whose_first_launch_failed_launches_as_a_fork_again() -> TestResult {
             .fork_task(&ctx, source_id.as_str(), &ForkTask::default())
             .await?;
         let fork_id = TaskId::parse(&summary.id)?;
-        wait_for("the failed launch", Duration::from_secs(30), || {
+        eventually("the failed launch", Duration::from_secs(30), || {
             let (app, id) = (app.clone(), fork_id.clone());
             async move { task(&app, &id).await.is_ok_and(|t| t.status.is_resting()) }
         })
@@ -626,7 +612,7 @@ fn a_fork_whose_first_launch_failed_launches_as_a_fork_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-628 FRK-001 (review round 1): a queue pass between the fork's task and its record starts
+/// A queue pass between the fork's task and its record starts
 /// nothing: the fork waits where the queue does not start it until its record is written, and
 /// then launches as a fork.
 #[test]
@@ -704,7 +690,7 @@ fn a_queue_pass_before_the_forks_record_starts_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-628 FRK-001: the `task_fork` tool forks a task of the project for the person the calling
+/// The `task_fork` tool forks a task of the project for the person the calling
 /// agent works for, with origin `agent`, and answers the new task and where it came from.
 #[test]
 fn the_task_fork_tool_forks_a_task_of_the_project() -> TestResult {
@@ -777,7 +763,7 @@ fn the_task_fork_tool_forks_a_task_of_the_project() -> TestResult {
     Ok(())
 }
 
-/// SPEC-628 FRK-001 (review round 2): a fork whose record cannot be written leaves nothing: its
+/// A fork whose record cannot be written leaves nothing: its
 /// source is deleted before the record is written, so the record's link fails, and the task, its
 /// stored copy and the staged copy are removed again.
 #[test]
@@ -867,7 +853,7 @@ fn summaries_of(
     found
 }
 
-/// SPEC-628 FRK-008 (UI review round 1): the source's page learns of its fork without a reload:
+/// The source's page learns of its fork without a reload:
 /// a fork publishes the source's summary with the fork in `forks`; deleting the fork publishes
 /// the source without it, and deleting the source publishes the fork with its origin's id gone.
 #[test]

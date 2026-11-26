@@ -97,7 +97,7 @@ pub fn read_key_file(path: &Path) -> Result<JevKey, String> {
 /// # Errors
 /// A message naming the path and the problem, never the secret.
 pub fn read_secret_file(path: &Path) -> Result<Secret, String> {
-    read_key_file(path).map(|key| Secret(key.0))
+    read_key_file(path).map(|key| Secret::new(key.0))
 }
 
 /// The Jev client.
@@ -125,10 +125,7 @@ impl JevClient {
     }
 
     fn build(key: JevKey, endpoint: String, https_only: bool) -> Result<Self, String> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
-            .redirect(reqwest::redirect::Policy::none())
+        let http = super::http::client_builder()
             .https_only(https_only)
             .timeout(MAX_DEADLINE)
             .build()
@@ -183,18 +180,9 @@ impl JevClient {
         if !response.status().is_success() {
             return Err(JevFailure::Unavailable);
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
+        super::http::read_bounded(&mut response, MAX_RESPONSE_BYTES)
             .await
-            .map_err(|_| JevFailure::Invalid("body"))?
-        {
-            if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err(JevFailure::Invalid("body"));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(bytes)
+            .map_err(|_| JevFailure::Invalid("body"))
     }
 }
 
@@ -402,7 +390,7 @@ impl JevConnector for JevKeys {
 pub fn config_key(path: Option<&Path>) -> Result<Option<Secret>, String> {
     match path {
         None => Ok(None),
-        Some(path) => read_key_file(path).map(|key| Some(Secret(key.0))),
+        Some(path) => read_key_file(path).map(|key| Some(Secret::new(key.0))),
     }
 }
 
@@ -659,7 +647,7 @@ mod tests {
     #[tokio::test]
     async fn a_test_request_tells_a_refused_key_from_an_unreachable_service() -> TestResult {
         let keys = |url: &str| JevKeys::with_endpoint(url.to_owned());
-        let key = Secret(KEY.into());
+        let key = Secret::new(KEY.into());
         let ok = fake(200, valid().to_string(), Duration::ZERO).await?;
         assert_eq!(keys(&ok.url).check(&key).await, JevCheck::Ok);
         assert_eq!(ok.calls.load(Ordering::SeqCst), 1, "one cheap request");
@@ -669,7 +657,7 @@ mod tests {
         assert_eq!(keys(&down.url).check(&key).await, JevCheck::Unreachable);
         let odd = fake(200, "{\"model\": \"other\"}".into(), Duration::ZERO).await?;
         assert_eq!(keys(&odd.url).check(&key).await, JevCheck::Invalid);
-        assert!(keys(&ok.url).connect(&Secret("short".into())).is_err());
+        assert!(keys(&ok.url).connect(&Secret::new("short".into())).is_err());
         let evaluator = keys(&ok.url).connect(&key).map_err(|e| e.to_string())?;
         let answer = evaluator
             .evaluate("REQUEST\nx", &SPLIT_QUESTION, Duration::from_secs(5))

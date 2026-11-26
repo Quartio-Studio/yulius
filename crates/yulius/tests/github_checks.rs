@@ -22,7 +22,7 @@ async fn the_adapter_reads_what_the_app_may_and_names_the_rest() -> TestResult {
         ..GitHubPermissions::default()
     };
     fake.set_permission("acme", "app", "dev", writer);
-    let token = Secret(fake.issue_user_token("dev").expose().to_owned());
+    let token = Secret::new(fake.issue_user_token("dev").expose().to_owned());
     let head = fake.add_commit("acme", "app", &[&root]);
     fake.set_check_runs(
         "acme",

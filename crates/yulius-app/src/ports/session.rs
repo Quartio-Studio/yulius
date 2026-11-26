@@ -48,6 +48,9 @@ pub enum Containment {
         /// The sandbox's namespace holder to join (SPEC-002 ADR-22); `None`: the previous
         /// containment.
         join: Option<Box<crate::ports::isolation::SandboxJoin>>,
+        /// The harness's memory and user-level instruction paths, bound read-only through
+        /// descriptors opened without following a link (SPEC-652); empty: none.
+        guard: Vec<yulius_contracts::ptyhost::GuardPath>,
     },
 }
 

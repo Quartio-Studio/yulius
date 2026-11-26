@@ -248,6 +248,10 @@ pub struct LaunchRequest {
     /// Plugins of the sandbox home (`name@marketplace`) this run switches off whatever a settings
     /// file says: the ones that bring a language server (SPEC-485 LSP-003, ADR-0327).
     pub disabled_plugins: Vec<String>,
+    /// Claude Code's auto-memory folder of the session, which Yulius keeps read-only (SPEC-652
+    /// MEM-002, MEM-006): the run settings name it as `autoMemoryDirectory` and deny edits there,
+    /// to `CLAUDE.md` and to `rules` in the configuration folder. `None`: neither.
+    pub claude_memory_dir: Option<PathBuf>,
 }
 
 /// A config file the supervisor writes before spawning.
@@ -623,6 +627,119 @@ fn reviewer_agents() -> Value {
     Value::Object(agents)
 }
 
+/// Run settings that keep a Claude Code session to the memory folder Yulius protects (SPEC-652
+/// MEM-002, MEM-006): `autoMemoryDirectory` names it, so the session reads exactly the folder its
+/// namespace binds read-only, and `permissions.deny` refuses Claude Code's own edits there and to
+/// `CLAUDE.md` and `rules` in `config_dir` (an absolute path in a rule starts with `//`).
+///
+/// `claudeMdExcludes` names the instruction files of every folder above `project` (the session's
+/// folder): Claude Code reads `CLAUDE.md`, `CLAUDE.local.md` and `.claude/` there up to `/`, and an
+/// agent could write one above its worktree, in the sandbox folder it owns, that every later
+/// session would load (review round 1, measured on 2.1.332). The project's own files still load.
+fn memory_settings(
+    settings: &mut Map<String, Value>,
+    memory_dir: &Path,
+    config_dir: &Path,
+    project: &Path,
+) -> Result<(), LaunchError> {
+    let memory = utf8(memory_dir, "claude_memory_dir")?;
+    let config = utf8(config_dir, "config_dir")?;
+    check(
+        memory_dir.is_absolute() && config_dir.is_absolute(),
+        "claude_memory_dir",
+    )?;
+    settings.insert("autoMemoryDirectory".into(), json!(memory));
+    settings.insert(
+        "permissions".into(),
+        json!({ "deny": [
+            format!("Edit(/{memory}/**)"),
+            format!("Edit(/{config}/CLAUDE.md)"),
+            format!("Edit(/{config}/rules/**)"),
+        ] }),
+    );
+    let mut excludes = Vec::new();
+    for folder in project.ancestors().skip(1) {
+        // The session's own configuration folder (the Global Superagent's is beside its working
+        // folder) is not a folder above it: its `CLAUDE.md` and `rules` load (review round 2).
+        let own = folder.join(".claude") == config_dir;
+        let folder = glob_escaped(utf8(folder, "worktree")?.trim_end_matches('/'));
+        for name in [
+            "CLAUDE.md",
+            "CLAUDE.local.md",
+            ".claude/CLAUDE.md",
+            ".claude/rules/**",
+        ] {
+            if !(own && name.starts_with(".claude/")) {
+                excludes.push(Value::String(format!("{folder}/{name}")));
+            }
+        }
+    }
+    settings.insert("claudeMdExcludes".into(), Value::Array(excludes));
+    // Claude Code takes the memory folder from this variable before `autoMemoryDirectory`, also
+    // from the user's `settings.json` `env`, which the agent can write: the run's own settings
+    // name the guarded folder there, and they outrank the user's (review round 2).
+    let env = settings
+        .entry("env")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Value::Object(env) = env {
+        env.insert(MEMORY_PATH_OVERRIDE_ENV.into(), json!(memory));
+        // Claude Code's memory instructions say it from the start (MEM-006).
+        env.insert(
+            MEMORY_GUIDELINES_ENV.into(),
+            json!(yulius_contracts::hooks::MEMORY_READ_ONLY_SENTENCE),
+        );
+    }
+    Ok(())
+}
+
+/// Claude Code's variable whose text it adds to its memory instructions (2.1.332).
+pub const MEMORY_GUIDELINES_ENV: &str = "CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES";
+
+/// Adds `yulius hook claude MemoryGuard` before the edit tools and after `Bash` to the hooks of
+/// a Claude Code session whose memory is read-only (SPEC-652 MEM-006): a refused write is said
+/// why in one sentence.
+fn memory_guard_hooks(hooks: &mut Map<String, Value>, exe: &Path) -> Result<(), LaunchError> {
+    let command = hook_line(exe, "claude", yulius_contracts::hooks::MEMORY_GUARD_EVENT)?;
+    for (event, matcher) in [
+        (
+            "PreToolUse",
+            crate::guard_client::EDIT_TOOLS
+                .map(|(tool, _)| tool)
+                .join("|"),
+        ),
+        ("PostToolUse", "Bash".to_owned()),
+        // A command that fails runs these instead (2.1.332).
+        ("PostToolUseFailure", "Bash".to_owned()),
+    ] {
+        let entry = json!({ "matcher": matcher, "hooks": [{
+            "type": "command",
+            "command": command,
+            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+        }] });
+        match hooks.entry(event).or_insert_with(|| json!([])) {
+            Value::Array(entries) => entries.push(entry),
+            other => *other = json!([entry]),
+        }
+    }
+    Ok(())
+}
+
+/// Claude Code's variable that names the auto-memory folder before `autoMemoryDirectory`
+/// (2.1.332).
+pub const MEMORY_PATH_OVERRIDE_ENV: &str = "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE";
+
+/// `path` with picomatch's special characters escaped, so it matches only itself.
+fn glob_escaped(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        if "\\*?[](){}!+@|^$".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     let Credential::ClaudeOauthToken(token) = &request.credential else {
         return Err(LaunchError::CredentialMismatch(request.harness));
@@ -709,6 +826,12 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         settings.as_object_mut(),
     ) {
         settings.insert(ENABLED_PLUGINS.into(), off);
+    }
+    if let (Some(memory), Some(settings)) = (&request.claude_memory_dir, settings.as_object_mut()) {
+        memory_settings(settings, memory, &config_dir, &request.worktree)?;
+        if let Some(Value::Object(hooks)) = settings.get_mut("hooks") {
+            memory_guard_hooks(hooks, &request.yulius_exe)?;
+        }
     }
 
     // Yulius's own tools go through `yulius mcp`, a stdio bridge to `${YULIUS_URL}/mcp` that
@@ -826,7 +949,7 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         argv,
         cwd: request.worktree.clone(),
         env,
-        secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())],
+        secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().to_owned())],
         files: vec![
             PlannedFile {
                 path: settings_path,
@@ -939,6 +1062,16 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         json!([{ "matcher": "^Bash$", "hooks": [{
             "type": "command",
             "command": hook_command(request, "codex", "PreToolUse")?,
+            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+        }] }]),
+    );
+    // A shell result refused on its read-only instruction files or memories is said why
+    // (SPEC-652 MEM-006).
+    hooks.insert(
+        "PostToolUse".to_owned(),
+        json!([{ "matcher": ".*", "hooks": [{
+            "type": "command",
+            "command": hook_command(request, "codex", yulius_contracts::hooks::MEMORY_GUARD_EVENT)?,
             "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
         }] }]),
     );
@@ -1060,7 +1193,7 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         files: vec![
             PlannedFile {
                 path: codex_home.join("auth.json"),
-                contents: auth.expose().clone(),
+                contents: auth.expose().to_owned(),
                 mode: PRIVATE_FILE_MODE,
             },
             PlannedFile {
@@ -1338,6 +1471,10 @@ pub struct CockpitRequest {
     /// Plugins of the config dir (`name@marketplace`) this session switches off whatever a
     /// settings file says: the ones that bring a language server (SPEC-485 LSP-003, ADR-0327).
     pub disabled_plugins: Vec<String>,
+    /// Claude Code's auto-memory folder of the session, which Yulius keeps read-only (SPEC-652
+    /// MEM-002, MEM-006): the run settings name it as `autoMemoryDirectory` and deny edits there,
+    /// to `CLAUDE.md` and to `rules` in the configuration folder. `None`: neither.
+    pub claude_memory_dir: Option<PathBuf>,
 }
 
 /// The Yulius MCP server of a Cockpit (SPEC-037 MGT-004).
@@ -1418,7 +1555,7 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
         argv.extend(["--resume".into(), id.clone()]);
     }
     validate_mcp_servers(&request.mcp_servers)?;
-    let mut secret_env = vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())];
+    let mut secret_env = vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().to_owned())];
     let mut servers = Map::new();
     let mut allowed = None;
     if let Some(yulius) = &request.yulius {
@@ -1452,7 +1589,7 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
                 .collect::<Vec<_>>()
                 .join(","),
         );
-        secret_env.push((COCKPIT_TOKEN_ENV.into(), bearer.clone()));
+        secret_env.push((COCKPIT_TOKEN_ENV.into(), bearer.to_owned()));
     }
     // The sandbox's servers, as a task run gets them (SPEC-147 SAM-001).
     for server in &request.mcp_servers {
@@ -1496,6 +1633,16 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
     }
     if let Some(off) = plugins_off(&request.disabled_plugins) {
         settings.insert(ENABLED_PLUGINS.into(), off);
+    }
+    if let Some(memory) = &request.claude_memory_dir {
+        memory_settings(&mut settings, memory, &request.config_dir, &request.cwd)?;
+        // A Superagent with tools (not the Global one) is said why a write fails (MEM-006).
+        if let (Some(exe), None) = (&request.redaction_exe, &request.only_yulius) {
+            let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
+            if let Value::Object(hooks) = hooks {
+                memory_guard_hooks(hooks, exe)?;
+            }
+        }
     }
     if !settings.is_empty() {
         argv.extend(["--settings".into(), Value::Object(settings).to_string()]);

@@ -1,7 +1,9 @@
 //! SPEC-191 PER: a person pauses a running task and resumes it later. Its run is frozen as an
-//! update freezes it (ADR-0131), or held at its turn boundary when it cannot be frozen; the pause
+//! update freezes it, or held at its turn boundary when it cannot be frozen; the pause
 //! is stored, survives an update and a restart, and every way Yulius ends the run thaws it first.
 
+use crate::support::eventually;
+use std::future::ready;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -91,18 +93,7 @@ async fn hook(f: &Fixture, event: &str) -> Result<u16, Box<dyn std::error::Error
         .as_u16())
 }
 
-/// Waits (bounded) until `check` holds.
-async fn eventually(mut check: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if check() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    false
-}
-
-/// AC-PER-1: the owner pauses the running task: its run is frozen, the pause stored and shown;
+/// The owner pauses the running task: its run is frozen, the pause stored and shown;
 /// pausing again changes nothing; resume thaws it and clears the pause. Someone else, and a task
 /// that is not running, are refused.
 #[tokio::test]
@@ -171,7 +162,7 @@ async fn a_person_pauses_and_resumes_a_running_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 GRP-001 (finding W2): Home's cards and the sandbox tabs count a paused task where
+/// Home's cards and the sandbox tabs count a paused task where
 /// the sidebar shows it, Paused under Working, whatever it was waiting for when it was paused.
 #[tokio::test]
 async fn a_paused_task_is_counted_working_whatever_it_waited_for() -> TestResult {
@@ -217,7 +208,7 @@ async fn a_paused_task_is_counted_working_whatever_it_waited_for() -> TestResult
     Ok(())
 }
 
-/// AC-PER-3: a run that cannot be frozen pauses at its turn boundary: pending until its Stop
+/// A run that cannot be frozen pauses at its turn boundary: pending until its Stop
 /// hook is held, and released by resume.
 #[tokio::test]
 async fn a_run_that_cannot_be_frozen_pauses_at_its_turn_boundary() -> TestResult {
@@ -237,7 +228,7 @@ async fn a_run_that_cannot_be_frozen_pauses_at_its_turn_boundary() -> TestResult
     Ok(())
 }
 
-/// PER-001: a freeze the kernel does not confirm is asked again, then thawed, and the run pauses
+/// A freeze the kernel does not confirm is asked again, then thawed, and the run pauses
 /// at its turn boundary instead.
 #[tokio::test]
 async fn a_freeze_that_never_settles_falls_back_to_the_turn_boundary() -> TestResult {
@@ -247,18 +238,18 @@ async fn a_freeze_that_never_settles_falls_back_to_the_turn_boundary() -> TestRe
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["pause"]["pending"], true, "not confirmed yet");
     let host = f.host.clone();
-    assert!(
-        eventually(|| host.thawed() == vec![RUN.to_owned()]).await,
-        "thawed after its passes: {:?}",
-        host.thawed()
-    );
+    eventually("thawed after its passes", Duration::from_secs(5), || {
+        ready(host.thawed() == vec![RUN.to_owned()])
+    })
+    .await
+    .map_err(|err| format!("{err}: {:?}", host.thawed()))?;
     assert_eq!(pause_of(&f).await?["pending"], true, "its turn goes on");
     assert_eq!(hook(&f, "Stop").await?, 202, "held at its turn boundary");
     assert_eq!(pause_of(&f).await?["pending"], false);
     Ok(())
 }
 
-/// AC-PER-4 (PER-004): stopping a paused task thaws its run before the agent is asked to end, and
+/// Stopping a paused task thaws its run before the agent is asked to end, and
 /// clears the pause.
 #[tokio::test]
 async fn stopping_a_paused_task_thaws_it_first() -> TestResult {
@@ -280,7 +271,7 @@ async fn stopping_a_paused_task_thaws_it_first() -> TestResult {
     Ok(())
 }
 
-/// AC-PER-4 (PER-003/004): a pause left on an older attempt is not shown and freezes nothing at
+/// A pause left on an older attempt is not shown and freezes nothing at
 /// start; a pause of the live run is frozen again by a restarted server.
 #[tokio::test]
 async fn a_restart_freezes_the_live_run_s_pause_again_and_ignores_an_old_one() -> TestResult {
@@ -309,7 +300,7 @@ async fn a_restart_freezes_the_live_run_s_pause_again_and_ignores_an_old_one() -
     Ok(())
 }
 
-/// Review M1 (PER-001/002): a resume that lands while the pause's freeze is under way never
+/// A resume that lands while the pause's freeze is under way never
 /// leaves the run frozen without a pause.
 #[tokio::test]
 async fn a_resume_during_the_pause_s_freeze_leaves_nothing_frozen() -> TestResult {
@@ -358,7 +349,7 @@ async fn a_resume_during_the_pause_s_freeze_leaves_nothing_frozen() -> TestResul
     Ok(())
 }
 
-/// Review M2 (PER-005): a paused task is not switched, and the launch-goal watch does not count
+/// A paused task is not switched, and the launch-goal watch does not count
 /// the time it is paused.
 #[tokio::test]
 async fn a_paused_task_is_not_switched_and_its_launch_goal_waits() -> TestResult {
@@ -390,7 +381,7 @@ async fn a_paused_task_is_not_switched_and_its_launch_goal_waits() -> TestResult
     Ok(())
 }
 
-/// Review M2 (PER-004): closing a paused task (TSK-014) thaws its run first and clears the pause.
+/// Closing a paused task thaws its run first and clears the pause.
 #[tokio::test]
 async fn closing_a_paused_task_thaws_it_first() -> TestResult {
     let f = fixture().await?;
@@ -402,7 +393,7 @@ async fn closing_a_paused_task_thaws_it_first() -> TestResult {
     Ok(())
 }
 
-/// Review L4 (PER-001): a run that cannot be frozen and waits at its prompt is paused already:
+/// A run that cannot be frozen and waits at its prompt is paused already:
 /// it makes no hook call until someone types, which the hold then catches.
 #[tokio::test]
 async fn an_idle_run_that_cannot_be_frozen_is_paused_at_once() -> TestResult {

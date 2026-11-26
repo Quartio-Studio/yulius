@@ -10,7 +10,7 @@ use yulius_app::ports::store_ext::{
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{DbError, SqliteStore, opt_ts, text_parsed};
 
 const COLUMNS: &str = "id, sandbox_id, name, script, every_seconds, cron, utc_offset_minutes, \
      expiry, timeout_seconds, secrets, owner_id, created_via, created_at, updated_at, paused, \
@@ -18,19 +18,12 @@ const COLUMNS: &str = "id, sandbox_id, name, script, every_seconds, cron, utc_of
      last_exit, last_failure, last_output, last_errors, failures, warned, runs, posts, \
      last_posted_at";
 
-fn ts(value: Option<i64>) -> Option<Timestamp> {
-    value.map(Timestamp)
-}
-
 fn watch_row(row: &Row<'_>) -> rusqlite::Result<WatchRecord> {
-    let sandbox: String = row.get(1)?;
-    let owner: String = row.get(10)?;
-    let secrets: String = row.get(9)?;
     let run_id: Option<String> = row.get(18)?;
     let running_since: Option<i64> = row.get(19)?;
     Ok(WatchRecord {
         id: row.get(0)?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, 1, "sandbox id", SandboxId::parse)?,
         name: row.get(2)?,
         script: row.get(3)?,
         every_seconds: row.get(4)?,
@@ -38,19 +31,19 @@ fn watch_row(row: &Row<'_>) -> rusqlite::Result<WatchRecord> {
         utc_offset_minutes: row.get(6)?,
         expiry: row.get(7)?,
         timeout_seconds: row.get(8)?,
-        secrets: serde_json::from_str(&secrets).map_err(|_| bad_column("secrets", &secrets))?,
-        owner: UserId::parse(&owner).map_err(|_| bad_column("owner id", &owner))?,
+        secrets: text_parsed(row, 9, "secrets", |text| serde_json::from_str(text))?,
+        owner: text_parsed(row, 10, "owner id", UserId::parse)?,
         created_via: row.get(11)?,
         created_at: Timestamp(row.get(12)?),
         updated_at: Timestamp(row.get(13)?),
         paused: row.get(14)?,
         since: Timestamp(row.get(15)?),
         ended_reason: row.get(16)?,
-        ended_at: ts(row.get(17)?),
+        ended_at: opt_ts(row, 17)?,
         state: WatchState {
             running: run_id.zip(running_since.map(Timestamp)),
-            last_started_at: ts(row.get(20)?),
-            last_ended_at: ts(row.get(21)?),
+            last_started_at: opt_ts(row, 20)?,
+            last_ended_at: opt_ts(row, 21)?,
             last_exit: row.get(22)?,
             last_failure: row.get(23)?,
             last_output: row.get(24)?,
@@ -59,22 +52,22 @@ fn watch_row(row: &Row<'_>) -> rusqlite::Result<WatchRecord> {
             warned: row.get(27)?,
             runs: row.get(28)?,
             posts: row.get(29)?,
-            last_posted_at: ts(row.get(30)?),
+            last_posted_at: opt_ts(row, 30)?,
         },
     })
 }
 
-/// A unique name taken: said as such; any other failure as `db` says it.
-fn named(err: rusqlite::Error) -> AppError {
+/// A unique name taken: said as such; any other failure as any database error.
+fn named(err: rusqlite::Error) -> DbError {
     let unique = matches!(
         &err,
         rusqlite::Error::SqliteFailure(code, _)
             if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
     );
     if unique {
-        return AppError::Conflict("this project already has a watch of that name".into());
+        return AppError::Conflict("this project already has a watch of that name".into()).into();
     }
-    db(err)
+    err.into()
 }
 
 fn secrets_json(secrets: &[String]) -> AppResult<String> {
@@ -94,17 +87,13 @@ fn put_pending(c: &rusqlite::Connection, p: &WatchPending) -> rusqlite::Result<u
 impl WatchStore for SqliteStore {
     async fn all_watches(&self) -> AppResult<Vec<WatchRecord>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM watches WHERE sandbox_id IN \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM watches WHERE sandbox_id IN \
                      (SELECT id FROM sandboxes WHERE removed_at IS NULL) ORDER BY sandbox_id, name"
-                ))
-                .map_err(db)?;
+            ))?;
             let rows = stmt
-                .query_map([], watch_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([], watch_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -113,16 +102,12 @@ impl WatchStore for SqliteStore {
     async fn watches_in(&self, sandbox: &SandboxId) -> AppResult<Vec<WatchRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM watches WHERE sandbox_id = ?1 ORDER BY name"
-                ))
-                .map_err(db)?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM watches WHERE sandbox_id = ?1 ORDER BY name"
+            ))?;
             let rows = stmt
-                .query_map([sandbox], watch_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([sandbox], watch_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -131,13 +116,12 @@ impl WatchStore for SqliteStore {
     async fn watch(&self, id: &str) -> AppResult<Option<WatchRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLUMNS} FROM watches WHERE id = ?1"),
                 [id],
                 watch_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -147,18 +131,17 @@ impl WatchStore for SqliteStore {
         let secrets = secrets_json(&r.secrets)?;
         let max = i64::try_from(max).unwrap_or(i64::MAX);
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let count: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM watches WHERE sandbox_id = ?1",
-                    [r.sandbox_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(db)?;
+            let tx = c.transaction()?;
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM watches WHERE sandbox_id = ?1",
+                [r.sandbox_id.as_str()],
+                |row| row.get(0),
+            )?;
             if count >= max {
                 return Err(AppError::Conflict(format!(
                     "a project has at most {max} watches; remove one first"
-                )));
+                ))
+                .into());
             }
             tx.execute(
                 "INSERT INTO watches (id, sandbox_id, name, script, every_seconds, cron,
@@ -185,7 +168,7 @@ impl WatchStore for SqliteStore {
                 ],
             )
             .map_err(named)?;
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -237,8 +220,7 @@ impl WatchStore for SqliteStore {
                          since = ?2, last_started_at = NULL WHERE id = ?1",
                     params![id, at.0],
                 )
-            }
-            .map_err(db)?;
+            }?;
             Ok(changed == 1)
         })
         .await
@@ -247,13 +229,11 @@ impl WatchStore for SqliteStore {
     async fn watch_due_again(&self, id: &str, at: Timestamp) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE watches SET since = ?2, last_started_at = NULL
+            let changed = c.execute(
+                "UPDATE watches SET since = ?2, last_started_at = NULL
                      WHERE id = ?1 AND paused = 0 AND ended_reason IS NULL AND run_id IS NULL",
-                    params![id, at.0],
-                )
-                .map_err(db)?;
+                params![id, at.0],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -262,13 +242,10 @@ impl WatchStore for SqliteStore {
     async fn delete_watch(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            tx.execute("DELETE FROM watch_pending WHERE watch_id = ?1", [&id])
-                .map_err(db)?;
-            let changed = tx
-                .execute("DELETE FROM watches WHERE id = ?1", [&id])
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+            let tx = c.transaction()?;
+            tx.execute("DELETE FROM watch_pending WHERE watch_id = ?1", [&id])?;
+            let changed = tx.execute("DELETE FROM watches WHERE id = ?1", [&id])?;
+            tx.commit()?;
             Ok(changed == 1)
         })
         .await
@@ -285,27 +262,23 @@ impl WatchStore for SqliteStore {
         self.call(move |c| {
             // The claim and the record as claimed, in one transaction: no claim is left behind
             // a read that failed (review round 2).
-            let tx = c.transaction().map_err(db)?;
-            let changed = tx
-                .execute(
-                    "UPDATE watches SET run_id = ?2, running_since = ?3, last_started_at = ?3
+            let tx = c.transaction()?;
+            let changed = tx.execute(
+                "UPDATE watches SET run_id = ?2, running_since = ?3, last_started_at = ?3
                      WHERE id = ?1 AND run_id IS NULL
                          AND (?4 OR (paused = 0 AND ended_reason IS NULL))
                          AND sandbox_id IN (SELECT id FROM sandboxes WHERE removed_at IS NULL)",
-                    params![id, run_id, at.0, forced],
-                )
-                .map_err(db)?;
+                params![id, run_id, at.0, forced],
+            )?;
             if changed != 1 {
                 return Ok(None);
             }
-            let claimed = tx
-                .query_row(
-                    &format!("SELECT {COLUMNS} FROM watches WHERE id = ?1"),
-                    [&id],
-                    watch_row,
-                )
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+            let claimed = tx.query_row(
+                &format!("SELECT {COLUMNS} FROM watches WHERE id = ?1"),
+                [&id],
+                watch_row,
+            )?;
+            tx.commit()?;
             Ok(Some(claimed))
         })
         .await
@@ -313,16 +286,12 @@ impl WatchStore for SqliteStore {
 
     async fn watches_running(&self) -> AppResult<Vec<WatchRecord>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM watches WHERE run_id IS NOT NULL ORDER BY id"
-                ))
-                .map_err(db)?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM watches WHERE run_id IS NOT NULL ORDER BY id"
+            ))?;
             let rows = stmt
-                .query_map([], watch_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([], watch_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -331,38 +300,36 @@ impl WatchStore for SqliteStore {
     async fn watch_run_ended(&self, id: &str, run_id: &str, end: &WatchRunEnd) -> AppResult<bool> {
         let (id, run_id, end) = (id.to_owned(), run_id.to_owned(), end.clone());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let s = &end.state;
-            let changed = tx
-                .execute(
-                    "UPDATE watches SET run_id = NULL, running_since = NULL,
+            let changed = tx.execute(
+                "UPDATE watches SET run_id = NULL, running_since = NULL,
                          last_ended_at = ?3, last_exit = ?4, last_failure = ?5, last_output = ?6,
                          last_errors = ?7, failures = ?8, warned = ?9, runs = ?10,
                          ended_reason = COALESCE(?11, ended_reason),
                          ended_at = CASE WHEN ?11 IS NULL THEN ended_at ELSE ?3 END
                      WHERE id = ?1 AND run_id = ?2",
-                    params![
-                        id,
-                        run_id,
-                        s.last_ended_at.map(|t| t.0),
-                        s.last_exit,
-                        s.last_failure,
-                        s.last_output,
-                        s.last_errors,
-                        s.failures,
-                        s.warned,
-                        s.runs,
-                        end.ended,
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    id,
+                    run_id,
+                    s.last_ended_at.map(|t| t.0),
+                    s.last_exit,
+                    s.last_failure,
+                    s.last_output,
+                    s.last_errors,
+                    s.failures,
+                    s.warned,
+                    s.runs,
+                    end.ended,
+                ],
+            )?;
             if changed != 1 {
                 return Ok(false);
             }
             for pending in &end.pending {
-                put_pending(&tx, pending).map_err(db)?;
+                put_pending(&tx, pending)?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(true)
         })
         .await
@@ -370,12 +337,10 @@ impl WatchStore for SqliteStore {
 
     async fn watch_pending(&self) -> AppResult<Vec<WatchPending>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT watch_id, notice_key, body, queued_at FROM watch_pending
+            let mut stmt = c.prepare(
+                "SELECT watch_id, notice_key, body, queued_at FROM watch_pending
                      ORDER BY queued_at, watch_id, notice_key",
-                )
-                .map_err(db)?;
+            )?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok(WatchPending {
@@ -384,10 +349,8 @@ impl WatchStore for SqliteStore {
                         body: row.get(2)?,
                         queued_at: Timestamp(row.get(3)?),
                     })
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -395,8 +358,11 @@ impl WatchStore for SqliteStore {
 
     async fn put_watch_pending(&self, pending: &WatchPending) -> AppResult<()> {
         let pending = pending.clone();
-        self.call(move |c| put_pending(c, &pending).map(|_| ()).map_err(db))
-            .await
+        self.call(move |c| {
+            put_pending(c, &pending)?;
+            Ok(())
+        })
+        .await
     }
 
     async fn drop_watch_pending(
@@ -407,13 +373,12 @@ impl WatchStore for SqliteStore {
     ) -> AppResult<()> {
         let (watch_id, key) = (watch_id.to_owned(), key.to_owned());
         self.call(move |c| {
-            c.execute(
+            Ok(c.execute(
                 "DELETE FROM watch_pending WHERE watch_id = ?1 AND notice_key = ?2
                      AND queued_at = ?3",
                 params![watch_id, key, queued_at.0],
             )
-            .map(|_| ())
-            .map_err(db)
+            .map(|_| ())?)
         })
         .await
     }
@@ -421,12 +386,11 @@ impl WatchStore for SqliteStore {
     async fn watch_posted(&self, id: &str, at: Timestamp) -> AppResult<()> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.execute(
+            Ok(c.execute(
                 "UPDATE watches SET posts = posts + 1, last_posted_at = ?2 WHERE id = ?1",
                 params![id, at.0],
             )
-            .map(|_| ())
-            .map_err(db)
+            .map(|_| ())?)
         })
         .await
     }
@@ -442,13 +406,12 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
                        VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1),
                               ('s2', 't', 'o', 'q', 'main', '{}', 20010, 10, 'u1', 'not_needed', 1);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         Ok(store)
@@ -542,10 +505,7 @@ mod tests {
             Some(Some(("r3".into(), Timestamp(80))))
         );
         store
-            .call(|c| {
-                c.execute("UPDATE sandboxes SET removed_at = 5 WHERE id = 's2'", [])
-                    .map_err(db)
-            })
+            .call(|c| Ok(c.execute("UPDATE sandboxes SET removed_at = 5 WHERE id = 's2'", [])?))
             .await?;
         let listed: Vec<_> = store
             .all_watches()

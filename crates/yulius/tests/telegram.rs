@@ -1,4 +1,4 @@
-//! The personal Telegram channel (SPEC-498) against a fake Bot API on 127.0.0.1: the bot set and
+//! The personal Telegram channel against a fake Bot API on 127.0.0.1: the bot set and
 //! removed by an instance administrator, chats linked with single-use codes and unlinked, and
 //! notifications filtered by the event stream's rule, redacted and rate bound. The real Telegram
 //! is never called.
@@ -60,7 +60,7 @@ struct FakeTelegram {
     file_asked: tokio::sync::Notify,
     /// Woken by every poll, once it has dropped the updates it confirms.
     polled: tokio::sync::Notify,
-    /// Messages deleted, as `(chat, message id)` (SPEC-624 NTC-007), and a wake-up for each.
+    /// Messages deleted, as `(chat, message id)`, and a wake-up for each.
     deleted: Mutex<Vec<(String, String)>>,
     deleted_changed: tokio::sync::Notify,
     /// While set, a delete is refused as Telegram refuses an old message's.
@@ -239,7 +239,7 @@ async fn bot_api(
         "sendMessage" => {
             let chat = body["chat_id"].as_i64().unwrap_or_default().to_string();
             let text = body["text"].as_str().unwrap_or_default().to_owned();
-            // Each sent message's id is its place among all sent (SPEC-512 TGI-002).
+            // Each sent message's id is its place among all sent.
             let id = fake.sent.lock().map_or(0, |mut sent| {
                 sent.push((chat, text));
                 sent.len()
@@ -332,7 +332,7 @@ struct World {
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
     let w = world_unstarted().await?;
     w.h.app.start_channel().await;
-    // Subscription problems are posted notices (SPEC-624 NTC-010), as the server starts them.
+    // Subscription problems are posted notices, as the server starts them.
     w.h.app.start_notice_producers();
     Ok(w)
 }
@@ -461,7 +461,7 @@ async fn ask(w: &World, task: &str, problem: &str) -> TestResult {
     ask_about(w, task, problem, None).await
 }
 
-/// [`ask`] naming a problem of the whole sandbox (`cause`, SPEC-494).
+/// [`ask`] naming a problem of the whole sandbox (`cause`).
 async fn ask_about(w: &World, task: &str, problem: &str, cause: Option<&str>) -> TestResult {
     let id = TaskId::parse(task)?;
     let request = NeedsYouRecord {
@@ -492,7 +492,7 @@ async fn barrier(w: &World, task: &str) -> TestResult {
     Ok(())
 }
 
-/// TGC-001, TGC-002: an instance administrator sets the bot (checked, sealed, audited, never
+/// An instance administrator sets the bot (checked, sealed, audited, never
 /// returned) and removing it stops polling and unlinks; others are refused.
 #[tokio::test]
 async fn an_instance_administrator_sets_and_removes_the_bot() -> TestResult {
@@ -579,7 +579,7 @@ async fn an_instance_administrator_sets_and_removes_the_bot() -> TestResult {
     Ok(())
 }
 
-/// TGC-011..TGC-013: a single-use 10-minute code from a browser session links a private chat;
+/// A single-use 10-minute code from a browser session links a private chat;
 /// a used, expired or group code does not; `/stop` and Settings unlink; all audited.
 #[tokio::test]
 async fn a_person_links_with_a_single_use_code_and_unlinks() -> TestResult {
@@ -659,7 +659,7 @@ async fn a_person_links_with_a_single_use_code_and_unlinks() -> TestResult {
     Ok(())
 }
 
-/// TGC-014: an unlinked chat gets one fixed reply, at most every 10 minutes, and nothing else.
+/// An unlinked chat gets one fixed reply, at most every 10 minutes, and nothing else.
 #[tokio::test]
 async fn an_unlinked_chat_gets_one_fixed_reply() -> TestResult {
     let w = world().await?;
@@ -692,7 +692,7 @@ async fn an_unlinked_chat_gets_one_fixed_reply() -> TestResult {
     Ok(())
 }
 
-/// TGC-020..TGC-023: a task entering Needs you reaches the linked people who see it, with its
+/// A task entering Needs you reaches the linked people who see it, with its
 /// link and its sandbox's agent secrets redacted; others and unwanted kinds get nothing.
 #[tokio::test]
 async fn needs_you_reaches_only_its_viewers_redacted() -> TestResult {
@@ -802,7 +802,7 @@ async fn needs_you_reaches_only_its_viewers_redacted() -> TestResult {
     Ok(())
 }
 
-/// TGC-024: seven notifications in one minute: five messages, then one summary of the other two.
+/// Seven notifications in one minute: five messages, then one summary of the other two.
 #[tokio::test]
 async fn a_burst_is_folded_into_one_summary() -> TestResult {
     let w = world().await?;
@@ -828,7 +828,7 @@ async fn a_burst_is_folded_into_one_summary() -> TestResult {
     Ok(())
 }
 
-/// TGC-003: after errors the poll retries with backoff, says so, and recovers.
+/// After errors the poll retries with backoff, says so, and recovers.
 #[tokio::test]
 async fn polling_retries_after_errors_and_recovers() -> TestResult {
     let w = world().await?;
@@ -842,7 +842,7 @@ async fn polling_retries_after_errors_and_recovers() -> TestResult {
     Ok(())
 }
 
-/// TGC-022: what was already the case when the bot became active (a start of the server, or a
+/// What was already the case when the bot became active (a start of the server, or a
 /// bot set in Settings) is not told; a change after it is, even one that moves no status or
 /// activity (review round 1: a chain blocked later was dropped for good).
 #[tokio::test]
@@ -943,7 +943,7 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: while the bot is active, what happens before anyone links is remembered, so
+/// While the bot is active, what happens before anyone links is remembered, so
 /// the first person to link is not told of hours-old states as new.
 #[tokio::test]
 async fn a_state_entered_before_anyone_linked_is_not_told_later() -> TestResult {
@@ -985,7 +985,7 @@ async fn subscription(w: &World, status: AccountStatus) -> TestResult {
 }
 
 /// Publishes `acc1`'s view with `status`, as the accounts code does after an edit or a sign-in
-/// (a status written without one is reconciled by the tick, SPEC-624).
+/// (a status written without one is reconciled by the tick).
 fn account_event(w: &World, status: &str) {
     use yulius_contracts::api::admin::{AccountUsageView, AccountView};
     use yulius_contracts::events::UiEvent;
@@ -1005,13 +1005,14 @@ fn account_event(w: &World, status: &str) {
                 in_use_by: 0,
                 tokens_24h: None,
                 tokens_7d: None,
+                billing: None,
                 usage_read: None,
             }),
         },
     );
 }
 
-/// Review round 1: a summary held for a chat is never sent after that chat was unlinked (TGC-013).
+/// A summary held for a chat is never sent after that chat was unlinked.
 #[tokio::test]
 async fn a_summary_never_reaches_a_chat_unlinked_meanwhile() -> TestResult {
     let w = world().await?;
@@ -1054,7 +1055,7 @@ async fn a_summary_never_reaches_a_chat_unlinked_meanwhile() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: subscription problems reach instance administrators who chose them, redacted;
+/// Subscription problems reach instance administrators who chose them, redacted;
 /// a disabled person gets nothing; a chat taken by another person is audited for the first.
 #[tokio::test]
 async fn subscription_problems_reach_administrators_and_disabled_people_get_nothing() -> TestResult
@@ -1102,6 +1103,7 @@ async fn subscription_problems_reach_administrators_and_disabled_people_get_noth
                 in_use_by: 0,
                 tokens_24h: None,
                 tokens_7d: None,
+                billing: None,
                 usage_read: None,
             }),
         },
@@ -1165,8 +1167,8 @@ async fn move_to(
     Ok(())
 }
 
-/// TGC-025: a subscription switch ("Continuing") is under the hood, as in the notification center
-/// (SPEC-468 CCF-008): it sends nothing, and a task that reads afterwards as it did before (its
+/// A subscription switch ("Continuing") is under the hood, as in the notification center:
+/// it sends nothing, and a task that reads afterwards as it did before (its
 /// turn ended with a step open: "Your turn") is not told again; one that reads differently is.
 #[tokio::test]
 async fn a_subscription_switch_is_no_news() -> TestResult {
@@ -1217,7 +1219,7 @@ async fn a_subscription_switch_is_no_news() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 PRK-004 (review of part 1): a parked task's Resume is no news: a "Your turn" told
+/// A parked task's Resume is no news: a "Your turn" told
 /// before the park is not told again when the resumed session reads idle as it did.
 #[tokio::test]
 async fn a_parked_tasks_resume_is_no_news() -> TestResult {
@@ -1260,7 +1262,7 @@ async fn a_parked_tasks_resume_is_no_news() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 (review of part 2): a task told it stopped abnormally, continued and stopped the
+/// A task told it stopped abnormally, continued and stopped the
 /// same way again, is told again: a start ends what was told of the run before.
 #[tokio::test]
 async fn a_failure_after_a_restart_is_told_again() -> TestResult {
@@ -1290,7 +1292,7 @@ async fn a_failure_after_a_restart_is_told_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-624 NTC-008, AC-6, AC-7: a task's newer state replaces its earlier message in the chat
+/// A task's newer state replaces its earlier message in the chat
 /// (the bot deletes it once the new one is sent); a delete Telegram refuses still lets the new
 /// message through; a message that is no notice deletes nothing.
 #[tokio::test]
@@ -1344,7 +1346,7 @@ async fn a_tasks_newer_state_replaces_its_message() -> TestResult {
     Ok(())
 }
 
-/// SPEC-624 NTC-007: a posted notice reaches the chats of the people who see its project and
+/// A posted notice reaches the chats of the people who see its project and
 /// chose its kind; the next one with its key replaces it, another key stands beside it.
 #[tokio::test]
 async fn a_posted_notice_replaces_its_message_by_key() -> TestResult {
@@ -1410,7 +1412,7 @@ async fn a_posted_notice_replaces_its_message_by_key() -> TestResult {
     Ok(())
 }
 
-/// TGC-026: tasks asking about their sandbox's Docker (SPEC-494) send one message per episode,
+/// Tasks asking about their sandbox's Docker send one message per episode,
 /// as the notification center shows one entry, not one per task; a new episode is told again.
 #[tokio::test]
 async fn a_sandbox_wide_docker_needs_you_is_told_once_per_episode() -> TestResult {
@@ -1457,7 +1459,7 @@ async fn a_sandbox_wide_docker_needs_you_is_told_once_per_episode() -> TestResul
     Ok(())
 }
 
-/// SPEC-510 TKC-002 (review round 1): a take reaches the chat of the person it was taken from,
+/// A take reaches the chat of the person it was taken from,
 /// under the Needs you choice, and no one else's; so does a take-back.
 #[tokio::test]
 async fn a_take_reaches_the_chat_of_whoever_it_was_taken_from() -> TestResult {
@@ -1504,7 +1506,7 @@ async fn a_take_reaches_the_chat_of_whoever_it_was_taken_from() -> TestResult {
     Ok(())
 }
 
-/// TGC-027: a person's request for control of a task (SPEC-490 OWN-008) reaches the task's
+/// A person's request for control of a task reaches the task's
 /// owner's chat once, under the Needs you choice, and no other viewer's.
 #[tokio::test]
 async fn a_request_for_control_reaches_the_owner_only() -> TestResult {
@@ -1580,7 +1582,7 @@ async fn a_request_for_control_reaches_the_owner_only() -> TestResult {
     Ok(())
 }
 
-/// TGC-003 (review round 1): a backlog of long messages (here 100 of 4096 CJK characters, about
+/// A backlog of long messages (here 100 of 4096 CJK characters, about
 /// 1.2 MB, over the client's 1 MiB answer bound) does not stop the poll: a `/start` behind it
 /// still links.
 #[tokio::test]
@@ -1599,7 +1601,7 @@ async fn a_backlog_of_long_messages_does_not_stop_linking() -> TestResult {
     Ok(())
 }
 
-/// TGC-022 (review round 2): at a start with a saved bot, what is already the case is read before
+/// At a start with a saved bot, what is already the case is read before
 /// anything is told: older states are not news, a later change is.
 #[tokio::test]
 async fn a_start_with_a_saved_bot_tells_only_later_changes() -> TestResult {
@@ -1663,7 +1665,7 @@ async fn a_start_with_a_saved_bot_tells_only_later_changes() -> TestResult {
     Ok(())
 }
 
-/// TGC-002 (review round 4): a Save whose request goes away while its bot waits for the seed
+/// A Save whose request goes away while its bot waits for the seed
 /// still finishes under the switch lock, so a Remove after it is never overtaken by that bot's
 /// activation (a dropped request let the notifier activate a removed bot).
 #[tokio::test]
@@ -1707,7 +1709,7 @@ async fn a_dropped_save_never_brings_a_removed_bot_back() -> TestResult {
     Ok(())
 }
 
-/// TGC-002 (review round 5): a Remove whose request goes away while it waits for the switch lock
+/// A Remove whose request goes away while it waits for the switch lock
 /// still stops the bot and is audited.
 #[tokio::test]
 async fn a_dropped_remove_is_still_audited() -> TestResult {
@@ -1759,7 +1761,7 @@ async fn set_digest(
     api(w, Method::PUT, "/api/admin/digest", Some(body), who).await
 }
 
-/// SPEC-512 DIG-001: the digest is off by default, set by an instance administrator only, its
+/// The digest is off by default, set by an instance administrator only, its
 /// time `HH:MM` and its threshold 1 to 720 hours; a change is audited.
 #[tokio::test]
 async fn the_digest_is_off_by_default_and_set_by_an_instance_administrator() -> TestResult {
@@ -1807,7 +1809,7 @@ async fn the_digest_is_off_by_default_and_set_by_an_instance_administrator() -> 
     Ok(())
 }
 
-/// SPEC-512 DIG-004 to DIG-006: one digest per person with something to report: what waits for
+/// One digest per person with something to report: what waits for
 /// them first, what was parked since the last one, how many still work; its texts redacted as
 /// the sandbox's transcripts are; in the browser and the linked chat, unless the person turned
 /// digests off there. A person with nothing gets none.
@@ -1929,7 +1931,7 @@ async fn a_digest_lists_what_waits_first_redacted_and_reaches_the_chat() -> Test
     Ok(())
 }
 
-/// SPEC-512 DIG-002: the digest runs once its time passed, once a day, and never while off.
+/// The digest runs once its time passed, once a day, and never while off.
 #[tokio::test]
 async fn the_digest_runs_once_a_day_after_its_time() -> TestResult {
     let w = world().await?;
@@ -1989,7 +1991,7 @@ async fn digest_of(w: &World, who: &Creds) -> Result<Value, Box<dyn std::error::
     Ok(api(w, Method::GET, "/api/me/digest", None, who).await?.body)
 }
 
-/// SPEC-512 DIG-004 (review round 1): a digest reaches only people who can see the project: not
+/// A digest reaches only people who can see the project: not
 /// an owner who lost access, not a named person without access; a named person who can see it
 /// gets the request, a withdrawn one does not, and a disabled owner gets nothing while the named
 /// person still does.
@@ -2046,7 +2048,7 @@ async fn a_digest_reaches_only_people_who_can_see_the_project() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 DIG-002 (review round 3): the same-day rule reads the run's claim, not where its
+/// The same-day rule reads the run's claim, not where its
 /// listing ended: a digest claimed at 23:59:30 whose listing ended after midnight does not cost
 /// the next day's.
 #[tokio::test]
@@ -2075,7 +2077,7 @@ async fn a_digest_whose_listing_ends_after_midnight_keeps_the_next_days() -> Tes
     Ok(())
 }
 
-/// Turns `who`'s intake on with `sandbox` as its project (SPEC-512 TGI-001).
+/// Turns `who`'s intake on with `sandbox` as its project.
 async fn intake_on(
     w: &World,
     who: &Creds,
@@ -2138,7 +2140,7 @@ async fn tasks_of(w: &World, sandbox: &str) -> Result<Vec<Value>, Box<dyn std::e
     Ok(r.body.as_array().cloned().unwrap_or_default())
 }
 
-/// SPEC-512 TGI-001: intake is off by default: a linked chat's message creates nothing and its
+/// Intake is off by default: a linked chat's message creates nothing and its
 /// answer says how to turn it on; it is turned on from a browser session with a project the
 /// person may work in, audited.
 #[tokio::test]
@@ -2209,7 +2211,7 @@ async fn telegram_intake_is_off_by_default_and_set_with_a_project() -> TestResul
     Ok(())
 }
 
-/// SPEC-512 TGI-003, TGI-004: with intake on, a message starts a task in the default project as
+/// With intake on, a message starts a task in the default project as
 /// the person, labelled from Telegram; a photo with a caption becomes its attachment; `/task`
 /// names another project; an unknown project is refused.
 #[tokio::test]
@@ -2217,7 +2219,7 @@ async fn with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment() -> 
     let w = world().await?;
     set_bot(&w, TOKEN_A).await?;
     signed_in_subscription(&w).await?;
-    crate::codex::connect_codex(&w.h.app).await?;
+    crate::support::codex::connect_codex(&w.h.app).await?;
     // The project's folder, where its attachments live.
     std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
     link(&w, &w.alice, 100).await?;
@@ -2231,7 +2233,7 @@ async fn with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment() -> 
     assert_eq!(tasks.len(), 1, "{tasks:?}");
     assert_eq!(tasks[0]["origin"], "telegram");
     assert_eq!(tasks[0]["owner"]["login"], "alice", "{}", tasks[0]);
-    // SPEC-620 CDM-001: a message names no agent, so the task runs Claude Code, chosen and not
+    // A message names no agent, so the task runs Claude Code, chosen and not
     // drawn, even with Codex usable too.
     assert_eq!(
         (&tasks[0]["harness"], &tasks[0]["harness_choice"]),
@@ -2285,7 +2287,7 @@ async fn with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment() -> 
     Ok(())
 }
 
-/// SPEC-512 TGI-002, TGI-004: a reply to a notification reaches its task as the person's
+/// A reply to a notification reaches its task as the person's
 /// `task_message`; a teammate's reply to it is refused by the owner rule and changes nothing;
 /// `/status` lists what waits for the person, redacted.
 #[tokio::test]
@@ -2340,7 +2342,7 @@ async fn a_reply_reaches_its_task_under_the_owner_rule() -> TestResult {
         .await?;
 
     // A new request replaces the one carol's notice told of: her reply to that notice answers
-    // nothing later (review round 2: the notice keeps its request's time, ANS-004).
+    // nothing later (review round 2: the notice keeps its request's time).
     let mut newer = asked.clone().ok_or("asked")?;
     newer.at += 1;
     w.h.store
@@ -2457,7 +2459,7 @@ async fn a_telegram_reply_keeps_the_selected_park() -> TestResult {
     support::assert_replacement_parked(&w.h, &target.id).await
 }
 
-/// SPEC-512 TGI-002 (review round 1): a reply is delivered: to a task that has not started it
+/// A reply is delivered: to a task that has not started it
 /// joins the request as the person's message, labelled from Telegram and audited; a reply to
 /// the bot's own answer about a task reaches that task too; a reply to a message about no task
 /// starts nothing.
@@ -2524,7 +2526,7 @@ async fn a_reply_is_delivered_and_a_reply_never_starts_a_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 TGI-003 (review round 1): the hourly bound of tools applies: the 21st task in an
+/// The hourly bound of tools applies: the 21st task in an
 /// hour is refused and creates nothing; at most 10 files, each at most 20 MB, are taken; a
 /// project the person may not work in is no project to them.
 #[tokio::test]
@@ -2611,7 +2613,7 @@ async fn prompts_by_number(
     Ok(out)
 }
 
-/// SPEC-512 TGI-002, TGI-003 (review of task #538): a whole poll answer from one chat (20
+/// A whole poll answer from one chat (20
 /// messages, as after a restart) is handled, each message in its turn: while the first (a
 /// photo) is still being fetched, the 19 behind it wait, and every one starts its task in the
 /// order it was sent.
@@ -2653,7 +2655,7 @@ async fn a_chats_whole_poll_answer_is_handled_in_order() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 TGI-002, TGI-003 (review of task #538): while a chat's message is being handled, 20
+/// While a chat's message is being handled, 20
 /// more wait their turn; one past that is not dropped silently: the chat is told some were not
 /// handled, and the waiting ones still run.
 #[tokio::test]
@@ -2709,7 +2711,7 @@ async fn a_message_past_the_chats_waiting_bound_is_answered() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 TGI-004 (review of task #538): `/start` without a code in a chat whose intake is on
+/// `/start` without a code in a chat whose intake is on
 /// gets the intake help, not "turn on Telegram intake".
 #[tokio::test]
 async fn a_start_with_intake_on_gets_the_intake_help() -> TestResult {
@@ -2744,7 +2746,7 @@ async fn photo_held_with_waiting(
     Ok(before)
 }
 
-/// SPEC-512 TGI-001 (review round 2 of task #538): turning intake off, or `/stop`, ends what
+/// Turning intake off, or `/stop`, ends what
 /// waits in the chat's lane too: a message queued behind a slow one starts nothing and gets
 /// the answer it would get now (the help with intake off, the unlinked reply after `/stop`).
 #[tokio::test]
@@ -2807,7 +2809,7 @@ async fn intake_off_or_stop_ends_what_waits_in_the_lane() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 TGI-001 (review round 3 of task #538): a message that waited while the chat was one
+/// A message that waited while the chat was one
 /// person's never runs as the person the chat is linked to by its turn.
 #[tokio::test]
 async fn what_waits_never_runs_as_the_chats_next_person() -> TestResult {
@@ -2860,7 +2862,7 @@ async fn what_waits_never_runs_as_the_chats_next_person() -> TestResult {
     Ok(())
 }
 
-/// SPEC-578 (round 1 finding #9): chat notifications redact generic credential shapes (such as
+/// Chat notifications redact generic credential shapes (such as
 /// `ghp_...`) in `needs_you` text in addition to sandbox vault values.
 #[tokio::test]
 async fn telegram_needs_you_notification_redacts_generic_credential_shapes() -> TestResult {
@@ -2899,7 +2901,7 @@ async fn telegram_needs_you_notification_redacts_generic_credential_shapes() -> 
     Ok(())
 }
 
-/// SPEC-626 BRK-015: a reply `reject` or `approve` to a brokered run's Needs you notice answers
+/// A reply `reject` or `approve` to a brokered run's Needs you notice answers
 /// that run as the person who replied, who manages the project's secrets; a reply to the notice
 /// of a run already answered answers nothing else.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3031,7 +3033,7 @@ async fn a_reply_to_a_runs_notice_answers_that_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-626 BRK-015 (review round 1 of slice 3): a reply to a run's notice is an answer or
+/// A reply to a run's notice is an answer or
 /// nothing; a reader may not answer; a line the notice could not show whole is approved on the
 /// Secrets page only (a reply rejects it); an approval by reply runs the command.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

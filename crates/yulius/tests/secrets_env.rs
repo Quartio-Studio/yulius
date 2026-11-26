@@ -1,11 +1,12 @@
-//! Agent secrets copied into a project's git-ignored `.env` (SPEC-129, ADR-0105): a person
+//! Agent secrets copied into a project's git-ignored `.env`: a person
 //! allows each secret once; `secret_copy_to_env` then writes the real value into an ignored dotenv
 //! file of the task's worktree, and the name into `.env.example`, without the agent seeing it.
 
 use crate::support;
+use crate::support::git;
+use crate::support::secrets_env::{key_file, openssh_key, pem_key, sourced};
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
@@ -19,21 +20,6 @@ use yulius_domain::task::TaskStatus;
 
 const VALUE: &str = concat!("sk_live_", "51EnvCopyValue9q2w");
 const TOKEN: &str = "env-task-token-s1-0123456789abcdef";
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
-}
 
 struct World {
     h: support::Harness,
@@ -138,7 +124,7 @@ async fn activity(w: &World) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
     Ok(got.body.as_array().cloned().unwrap_or_default())
 }
 
-/// SPEC-129 R4, AC5: a person who manages the secret allows, dismisses or revokes copying it
+/// A person who manages the secret allows, dismisses or revokes copying it
 /// into `.env` files; readers cannot; there must be something to answer.
 #[tokio::test]
 async fn people_allow_dismiss_and_revoke_env_copies() -> TestResult {
@@ -221,7 +207,7 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// SPEC-129 R1, R3, R6, R7, AC1, AC4: an agent asks to copy a secret, which writes nothing and
+/// An agent asks to copy a secret, which writes nothing and
 /// waits for a person; once allowed, the same call writes the real value into the ignored `.env`
 /// (mode 0600) and the name into `.env.example`, and the agent never sees the value.
 #[tokio::test]
@@ -267,7 +253,7 @@ async fn an_allowed_secret_is_copied_into_the_ignored_env() -> TestResult {
         task.activity,
         Some(yulius_domain::task::Activity::NeedsAttention)
     );
-    // The task says what its person does, and where (SPEC-472 ATN-004).
+    // The task says what its person does, and where.
     assert_eq!(
         support::attention(&w.h.app, "t1").await?,
         json!({
@@ -357,7 +343,7 @@ async fn task_activity(
     Ok(task.activity)
 }
 
-/// SPEC-213 SRA-001 to SRA-003 (#633): the answer to the last request a task waits for ends the
+/// The answer to the last request a task waits for ends the
 /// "Needs your action" its request raised; a task with a request still waiting, or flagged by
 /// something else, keeps it.
 #[tokio::test]
@@ -386,17 +372,17 @@ async fn the_answer_to_the_last_waiting_request_ends_the_flag() -> TestResult {
     );
     assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
 
-    // SRA-002: MAPS_KEY still waits.
+    // MAPS_KEY still waits.
     let allowed = answer(&w, &w.writer, true).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
 
-    // SRA-001: a dismissal answers too; nothing waits any more.
+    // A dismissal answers too; nothing waits any more.
     let dismissed = answer_seen(&w, &w.writer, &maps, false, "asked", Some("#1")).await?;
     assert_eq!(dismissed.status, StatusCode::OK, "{}", dismissed.body);
     assert_eq!(task_activity(&w).await?, Some(Activity::Working));
 
-    // SRA-003: a task flagged by something else before it asks keeps that flag.
+    // A task flagged by something else before it asks keeps that flag.
     w.h.store
         .set_activity(
             &yulius_domain::ids::TaskId::parse("t1")?,
@@ -412,7 +398,7 @@ async fn the_answer_to_the_last_waiting_request_ends_the_flag() -> TestResult {
     Ok(())
 }
 
-/// SPEC-213 SRA-003 (review of #633, round 1): a flag raised after the request, while the task
+/// A flag raised after the request, while the task
 /// already reads `needs_attention` (a question of the agent's), is not the request's: the answer
 /// leaves it.
 #[tokio::test]
@@ -439,7 +425,7 @@ async fn a_flag_raised_after_the_request_outlives_its_answer() -> TestResult {
     )
     .await?;
     assert_eq!(notice.status, StatusCode::OK, "{}", notice.body);
-    // The flag is the question's from now on, and so is what it says (SPEC-472 ATN-011): the
+    // The flag is the question's from now on, and so is what it says: the
     // secret's answer will not end it, so the secret's reason must not stay on it.
     let question = json!({"kind": "terminal", "problem": "Pick one", "action": null, "link": null});
     assert_eq!(support::attention(&w.h.app, "t1").await?, question);
@@ -457,7 +443,7 @@ async fn a_flag_raised_after_the_request_outlives_its_answer() -> TestResult {
     Ok(())
 }
 
-/// SPEC-472 ATN-011 (review round 1): whatever takes a secret request's flag over brings its
+/// Whatever takes a secret request's flag over brings its
 /// own reason, also a matter the session's work does not answer (a worker's permission prompt),
 /// and the secret's later answer (here: dismissed) changes neither the flag nor what it says.
 #[tokio::test]
@@ -552,7 +538,7 @@ async fn allow_on(
     .await
 }
 
-/// SPEC-472 ATN-011 (review round 2): a secret request's flag is still the request's after a
+/// A secret request's flag is still the request's after a
 /// restart of Yulius (an update, while the request waits for its person): the answer ends it,
 /// and with it the reason that says to answer on the Secrets page.
 #[tokio::test]
@@ -579,7 +565,7 @@ async fn a_secret_requests_flag_ends_with_its_answer_after_a_restart() -> TestRe
     Ok(())
 }
 
-/// SPEC-472 ATN-011, SPEC-213 SRA-003 (review round 2): after a restart of Yulius another
+/// After a restart of Yulius another
 /// matter still takes a secret request's flag over, with its reason, and the request's answer
 /// then leaves the flag, as without the restart.
 #[tokio::test]
@@ -622,7 +608,7 @@ async fn a_flag_taken_over_after_a_restart_outlives_the_requests_answer() -> Tes
     Ok(())
 }
 
-/// SPEC-213 SRA-001 (review of #633, round 1): deleting the secret a task waits for ends the
+/// Deleting the secret a task waits for ends the
 /// request, and with it the flag.
 #[tokio::test]
 async fn deleting_the_asked_secret_ends_the_flag() -> TestResult {
@@ -650,7 +636,7 @@ async fn deleting_the_asked_secret_ends_the_flag() -> TestResult {
     Ok(())
 }
 
-/// SPEC-129 R2, AC2: nothing is written where Git could commit it, outside the worktree, into a
+/// Nothing is written where Git could commit it, outside the worktree, into a
 /// template or through a link; unknown secrets and unallowed ones are not copied either.
 #[tokio::test]
 async fn copies_are_refused_where_git_could_commit_them() -> TestResult {
@@ -731,7 +717,7 @@ async fn copies_are_refused_where_git_could_commit_them() -> TestResult {
     Ok(())
 }
 
-/// SPEC-129 R8, AC6: `secrets_list` says whether each secret may be copied into `.env` files and
+/// `secrets_list` says whether each secret may be copied into `.env` files and
 /// that keys live in the git-ignored `.env`, copied with `secret_copy_to_env`.
 #[tokio::test]
 async fn secrets_list_teaches_the_env_default() -> TestResult {
@@ -740,7 +726,15 @@ async fn secrets_list_teaches_the_env_default() -> TestResult {
         support::tool_text(&support::mcp_tool(&w.h, TOKEN, "secrets_list", json!({})).await?);
     assert_eq!(listed["secrets"][0]["env_files"], "no", "{listed}");
     let advice = listed["how_to_use"].to_string();
-    for needle in [".env.example", "secret_copy_to_env", "git-ignored .env"] {
+    // The same allowance is what dev-stage deploys need, asked with the tool.
+    for needle in [
+        ".env.example",
+        "secret_copy_to_env",
+        "git-ignored .env",
+        "Allow button",
+        "Dev-stage deploys",
+        "[cd.dev] secrets",
+    ] {
         assert!(advice.contains(needle), "{needle}: {advice}");
     }
     Ok(())
@@ -889,7 +883,7 @@ async fn the_copy_is_checked_before_anyone_is_asked() -> TestResult {
     Ok(())
 }
 
-/// #475: a `.env` that cannot be updated without breaking it is refused before a person is
+/// A `.env` that cannot be updated without breaking it is refused before a person is
 /// asked, and nothing is written: a quote left open at the end of the file (a copied name already
 /// holding a value over several lines is replaced whole since SPEC-186). An existing `.env.example` keeps its mode when a
 /// name is added to it.
@@ -979,12 +973,12 @@ async fn secrets_of_every_project_are_answered_by_administrators() -> TestResult
     let allowed = answer_seen(&w, &admin, &id, true, "asked", Some(&by)).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["env_files"], "allowed");
-    // SPEC-213 SRA-001: the task asked as `#1 in app`.
+    // The task asked as `#1 in app`.
     assert_eq!(task_activity(&w).await?, Some(Activity::Working));
     Ok(())
 }
 
-/// SPEC-209 SRE-001/004 (#631): an agent's `.env` request is announced to the open Secrets pages
+/// An agent's `.env` request is announced to the open Secrets pages
 /// of the secret's sandbox; the same asker again changes nothing and is not announced.
 #[tokio::test]
 async fn an_env_request_is_announced_to_open_secrets_pages() -> TestResult {
@@ -1007,56 +1001,7 @@ async fn an_env_request_is_announced_to_open_secrets_pages() -> TestResult {
     Ok(())
 }
 
-/// A synthetic key file: `-----BEGIN <label>-----`, `body`, `-----END <label>-----`, each on
-/// its own line, with a final line break (the armour is built at run time so no scanner takes
-/// the source for a key).
-pub(crate) fn key_file(label: &str, body: &[&str]) -> String {
-    let mut lines = vec![format!("-----BEGIN {label}-----")];
-    lines.extend(body.iter().map(|l| (*l).to_owned()));
-    lines.push(format!("-----END {label}-----"));
-    format!("{}\n", lines.join("\n"))
-}
-
-/// A synthetic 3-line PEM key.
-pub(crate) fn pem_key() -> String {
-    key_file(
-        &format!("{} KEY", "SYNTHETIC ED25519"),
-        &["c3ludGhldGljLWVkMjU1MTktcGVtLWtleS1ib2R5"],
-    )
-}
-
-/// A synthetic 7-line OpenSSH key (`n` makes each a different one).
-pub(crate) fn openssh_key(n: u8) -> String {
-    let body: Vec<String> = (1..=5)
-        .map(|line| format!("c3ludGhldGljLW9wZW5zc2gta2V5LXZ{n}-bGluZS0w{line}"))
-        .collect();
-    let body: Vec<&str> = body.iter().map(String::as_str).collect();
-    key_file(&format!("{} PRIVATE KEY", "OPENSSH"), &body)
-}
-
-/// What `sh` reads for `name` from the `.env` in `dir`, byte for byte. The name is `sh`'s `$1`,
-/// never script text (AGENTS.md: no shell interpolation): `set -a` exports what `.env` sets and
-/// `printenv` prints it with one newline of its own, which is cut.
-pub(crate) fn sourced(dir: &Path, name: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let out = Command::new("sh")
-        .args(["-c", "set -a && . ./.env && printenv \"$1\"", "sh", name])
-        .current_dir(dir)
-        .output()?;
-    if !out.status.success() {
-        return Err(format!(
-            "sourcing .env for {name} failed (or it is unset): {}",
-            String::from_utf8_lossy(&out.stderr)
-        )
-        .into());
-    }
-    let mut value = String::from_utf8(out.stdout)?;
-    if value.pop() != Some('\n') {
-        return Err(format!("printenv printed no final newline for {name}").into());
-    }
-    Ok(value)
-}
-
-/// SPEC-406 TCF-003 (#772): `sourced` hands the name to `sh` as an argument, never as script
+/// `sourced` hands the name to `sh` as an argument, never as script
 /// text, so shell syntax in a name runs nothing; values come back byte for byte, a final newline
 /// included.
 #[test]
@@ -1073,7 +1018,7 @@ fn sourced_runs_no_shell_syntax_from_the_name() -> TestResult {
     Ok(())
 }
 
-/// SPEC-186 SAV-005: keys stored with literal `\n` (an agent secret never spans lines), with or
+/// Keys stored with literal `\n` (an agent secret never spans lines), with or
 /// without a final one, come out of the `.env` byte-identical to their files: a 3-line PEM key
 /// and a 7-line OpenSSH key. Their lines stay redacted when the file is read, and copying again
 /// after a rotation replaces the whole value.
@@ -1163,7 +1108,7 @@ async fn multi_line_keys_reach_the_env_byte_identical_to_their_files() -> TestRe
     Ok(())
 }
 
-/// SPEC-302 (#599): an encrypted PEM stored as an agent secret redacts its body lines, not its
+/// An encrypted PEM stored as an agent secret redacts its body lines, not its
 /// public RFC 1421 headers: a transcript holding `Proc-Type: 4,ENCRYPTED` shows it as it is.
 #[tokio::test]
 async fn an_encrypted_pem_redacts_its_body_not_its_headers() -> TestResult {
@@ -1191,7 +1136,7 @@ async fn an_encrypted_pem_redacts_its_body_not_its_headers() -> TestResult {
     Ok(())
 }
 
-/// SPEC-256 LOB-004: a secret created already allowed into `.env` files (the person's laptop
+/// A secret created already allowed into `.env` files (the person's laptop
 /// agent imports a deploy key) is copied by the first `secret_copy_to_env`, with no person;
 /// the allowance is audited at creation. Refused for a secret a person confirms (not
 /// `auto_allow`) and for a personal one.

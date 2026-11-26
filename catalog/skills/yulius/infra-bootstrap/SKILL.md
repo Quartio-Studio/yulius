@@ -7,7 +7,7 @@ description: Lay a project's engineering foundations the way a senior engineer w
 
 Foundations are what make every later task fast and safe. Lay them once, properly, for the
 project's own stack, then leave them stable: change them only when the product needs it (for
-example when it starts deploying for real), and record every change as a decision.
+example when it starts deploying for real), and update the ADR of each choice you change.
 
 ## Principles
 
@@ -21,7 +21,8 @@ example when it starts deploying for real), and record every change as a decisio
 - **Our own machines only.** CI runs on our own infrastructure through Yulius CI, which runs the
   gate for every pull request head and for the integration and production branches. Never add
   GitHub Actions or anything that needs a paid GitHub plan (rulesets, hosted runner minutes).
-- **Decide, don't ask.** Compare options, choose, and write an ADR per lasting choice.
+- **Decide, don't ask.** Compare options and choose; write an ADR only for a choice someone may
+  want to reverse (a dependency, a service, a storage format), with two rejected alternatives.
 - **Small pull requests.** Deliver the bootstrap as a short series of pull requests, one concern
   each, through the normal pipeline (`delivery-pipeline`). During onboarding, steps 1 and 2 land
   in the onboarding pull request itself, so the project starts work with its gate; never leave
@@ -34,7 +35,8 @@ example when it starts deploying for real), and record every change as a decisio
 ## Steps (each one a pull request of similar effort)
 
 1. **Gate and tests.** Add or complete:
-   - document the following mutation policy in AGENTS.md and apply it to the project’s mutation entry point. Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Install this rule in the project guidance. On Yulius, put temporary build trees under `$YULIUS_BUILD_SCRATCH` with a checkout-local build directory as fallback. Clean them when each command ends.
+   - say in AGENTS.md that mutation checks are by hand (the policy of the bundled skill
+     `test-driven-development`), and keep any mutation entry point for runs a request names. On Yulius, put temporary build trees under `$YULIUS_BUILD_SCRATCH` with a checkout-local build directory as fallback. Clean them when each command ends.
    - formatting check and linter with warnings as errors, type checking where the language has it;
    - a dead-code and unused-dependency check, cheap and with few false positives, pinned and with
      its allowlist committed (skill `dead-code-cleanup` names each language's tools, for example
@@ -272,7 +274,11 @@ example when it starts deploying for real), and record every change as a decisio
      `cd_deploy` when its task asks (then `yulius wait`), or a nightly automation that deploys and
      tests it. Production: only a person with administrator access, typing the project's slug;
      agents never promote or deploy it. What only a person can do (add a machine's credentials,
-     allow a secret, deploy production) you ask with `needs_you`, then carry on.
+     mark a production secret, deploy production) you ask with `needs_you`, then carry on. A
+     secret's allowance is asked with its tool, which shows the person an Allow button: a secret
+     a dev-stage `[cd.*]` table names, while `secrets_list` shows its `env_files` not allowed,
+     with `secret_copy_to_env` (the same allowance as `.env`; a deploy-only secret needs no copy
+     once allowed), hosts with `secret_request_hosts`.
    - Keys the app itself reads have one default place: a `.env` file Git ignores (`.gitignore`
      lists `.env`, `.env.*` and `!.env.example`), beside a committed `.env.example` that names
      every key with no values. Code loads `.env` when its variables are unset. When code that runs
@@ -281,7 +287,7 @@ example when it starts deploying for real), and record every change as a decisio
      `[secret:NAME]`.
 4. **Docs.** `AGENTS.md` (rules, commands, layout and the docs index), a `CLAUDE.md` pointer to
    it, `docs/product.md` (purpose, users, scope, current state), `docs/architecture.md` with a
-   Mermaid diagram, ADRs for the choices above, and the first entry of `docs/changes.md`. When
+   Mermaid diagram, an ADR for each choice above someone may want to reverse, and the first entry of `docs/changes.md`. When
    the repository already has equivalents, point `yulius.toml` `[docs]` at them.
 5. **GitHub hygiene (free features only).** Labels: `type: bug|enhancement|docs|chore|performance`,
    `priority: high|medium|low`, `area: <part>` per main area, `risk: high`. Issue templates with
@@ -315,5 +321,5 @@ example when it starts deploying for real), and record every change as a decisio
   `[cd.<name>]` and its `stage` for each further target, and each one that deploys has a deploy
   and a verify script that passed on a real run, and a `rollback` with its `migrations` line
   whose dev drill passed after two dev deploys; the gate tests the rollback script.
-- The docs describe the project as it is, and each choice has an ADR.
+- The docs describe the project as it is, and each choice someone may want to reverse has an ADR.
 - The critical and high-cost conventions are codified as primitives or checked by the gate.

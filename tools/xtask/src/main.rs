@@ -9,19 +9,18 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   doctor    Verify pinned compiler and repository-local tool versions
   quick     The checks of seconds: repository contracts and Rust formatting (run it before each
             commit you publish; ci and checks run it first)
+  quality   The pull request's repository checks: doctor, quick and the checker's tests (no
+            compile: lint compiles every target)
   check     Validate repository contracts and compile every target
   fmt       Format Rust sources
   lint      Check formatting and Clippy warnings
   macos     Compile every target for macOS (aarch64-apple-darwin) with Clippy warnings denied
-  test      Run nextest and documentation tests; in a CI matrix job valued `i/n`
-            ($YULIUS_CI_MATRIX) only shard i of n, the doctests in shard 1; --archive-file PATH
-            runs the tests using an existing nextest archive
+  test      Run nextest and documentation tests
   docs      Build workspace documentation with warnings denied
-  test-shard Build or acquire the current CI run's test archive and run this matrix partition
   deps      Check advisories, licenses, sources, and unused dependencies
   ci        Run all required gates, failing on the first failed command (the checker's tests,
             beside the Rust gates, fail it at its end)
-  checks    Run every gate of ci but test (Yulius CI runs the tests apart, in shards)
+  checks    Run every gate of ci but test (Yulius CI runs the tests in a job of their own)
   security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings
             and on open medium ones in the changed lines;
             --all scans the whole repository (needs a Vidoc key; not in ci)
@@ -35,7 +34,8 @@ fn stage_marker(name: &str) -> String {
     format!("::yulius-stage {name}")
 }
 
-/// Names the gate that starts now, when the job runs under Yulius CI (`YULIUS_CI=1`).
+/// Names the gate that starts now, when the job runs under Yulius CI (`YULIUS_CI=1`): a gate run
+/// alone (a CI job's `scripts/dev lint`) and each gate of `quality`, `checks` and `ci`.
 fn stage(name: &str) {
     if env::var_os("YULIUS_CI").is_some() {
         println!("{}", stage_marker(name));
@@ -148,18 +148,15 @@ fn gates(with_tests: bool, cargo: &str, python: &str) -> io::Result<()> {
     let (first, rest) = gates.split_at(2);
     for gate in first {
         stage(gate);
-        execute_in(gate, true, None)?;
+        execute_in(gate, true)?;
     }
     let (tests, rest) = beside(
         || checker_tests(python),
         || -> io::Result<()> {
             for gate in rest {
-                // `test` names its own stage.
-                if *gate != "test" {
-                    stage(gate);
-                }
+                stage(gate);
                 // The wait for the checker's tests is their stage's, not the last Rust gate's.
-                if let Err(error) = execute_in(gate, true, None) {
+                if let Err(error) = execute_in(gate, true) {
                     stage("checker-tests");
                     return Err(error);
                 }
@@ -187,7 +184,7 @@ fn beside<A: Send, B>(first: impl FnOnce() -> A + Send, second: impl FnOnce() ->
 }
 
 /// Runs `task`; `after_quick` leaves out of `check` and `lint` what `quick` already ran.
-fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Result<()> {
+fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
     let mut cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     // scripts/dev names the pinned Cargo it launched. Preserve explicit overrides by callers.
     if env::var("YULIUS_PROJECT_CARGO").as_deref() == Ok(cargo.as_str()) {
@@ -196,6 +193,14 @@ fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Resul
     let python = env::var("PYTHON").unwrap_or_else(|_| "python3".into());
     match task {
         "doctor" => run(&python, &["scripts/check_repository.py", "--doctor"]),
+        "quality" => {
+            for gate in ["doctor", "quick"] {
+                stage(gate);
+                execute_in(gate, true)?;
+            }
+            stage("checker-tests");
+            run(&python, &CHECKER_TESTS)
+        }
         "quick" => {
             run(&python, &["scripts/check_repository.py"])?;
             run(&cargo, &["fmt", "--all", "--", "--check"])
@@ -263,43 +268,15 @@ fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Resul
         }
         "docs" => docs(&cargo),
         "test" => {
-            // Its own stage, first (the quarantine's listing builds the tests), so the test
-            // stage's history goes on in the shards' job (SPEC-137).
-            stage("test");
-            let mut args = vec!["nextest", "run"];
-            if let Some(archive) = archive {
-                // The archive carries all build options. Fixtures and JUnit belong to this
-                // shard's checkout even when the other shard built the binaries.
-                args.extend(["--archive-file", archive, "--workspace-remap", "."]);
-            } else {
-                args.extend(["--locked", "--workspace", "--all-features"]);
-            }
-            args.extend(["--profile", "ci"]);
-            let scratch = archive.and_then(|_| {
-                env::var_os("YULIUS_BUILD_SCRATCH").or_else(|| env::var_os("YULIUS_CI_CACHE"))
-            });
-            let extracted = scratch
-                .map(|parent| {
-                    let mut builder = tempfile::Builder::new();
-                    builder.prefix("nextest-");
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt as _;
-                        builder.permissions(std::fs::Permissions::from_mode(0o700));
-                    }
-                    builder.tempdir_in(parent)
-                })
-                .transpose()?;
-            if let Some(dir) = &extracted {
-                let path = dir.path().to_str().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "non-UTF-8 extraction directory",
-                    )
-                })?;
-                // Both the quarantine list and run unpack the archive into this private directory.
-                args.extend(["--extract-to", path, "--extract-overwrite"]);
-            }
+            let mut args = vec![
+                "nextest",
+                "run",
+                "--locked",
+                "--workspace",
+                "--all-features",
+                "--profile",
+                "ci",
+            ];
             // Tests Yulius CI quarantined as flaky are left out (SPEC-497 OFC-002), each in its
             // own binary where this head builds it.
             let names = std::env::var("YULIUS_CI_QUARANTINE").unwrap_or_default();
@@ -329,21 +306,10 @@ fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Resul
                 println!("quarantined as flaky, left out: {quarantined}");
                 args.extend(["-E", filter.as_str()]);
             }
-            // A shard of a matrix job (`matrix = "1/2 2/2"`) runs its part of the tests, by a hash
-            // of each test's name; the doctests run in the first (SPEC-497 SHR-001).
-            let shard = shard_of(&env::var("YULIUS_CI_MATRIX").unwrap_or_default());
-            let partition = shard.map(|(index, count)| format!("hash:{index}/{count}"));
-            if let Some(partition) = &partition {
-                println!("shard {partition} of the tests");
-                args.extend(["--partition", partition.as_str()]);
-            }
             run(&cargo, &args)?;
-            if shard.is_none_or(|(index, _)| index == 1) {
-                run(&python, &["scripts/doctests.py"])?;
-            }
-            Ok(())
+            doctests(&cargo)
         }
-        // Everything `ci` runs but the tests, which a CI job of their own runs in shards.
+        // Everything `ci` runs but the tests, which a CI job of their own runs.
         "checks" => gates(false, &cargo, &python),
         "deps" => {
             run(&cargo, &["deny", "--locked", "check"])?;
@@ -352,6 +318,65 @@ fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Resul
         "ci" => gates(true, &cargo, &python),
         _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown task")),
     }
+}
+
+/// The workspace's library packages whose targets run doctests, from `cargo metadata`'s JSON:
+/// Cargo refuses `--doc` for a package without a library.
+fn library_packages(metadata: &serde_json::Value) -> Vec<String> {
+    const LIBRARIES: [&str; 5] = ["lib", "rlib", "dylib", "cdylib", "staticlib"];
+    let members: Vec<&serde_json::Value> = metadata["workspace_members"]
+        .as_array()
+        .map(|members| members.iter().collect())
+        .unwrap_or_default();
+    metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|package| members.contains(&&package["id"]))
+        .filter(|package| {
+            package["targets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|target| {
+                    target["doctest"].as_bool() == Some(true)
+                        && target["kind"].as_array().into_iter().flatten().any(|kind| {
+                            kind.as_str().is_some_and(|kind| {
+                                LIBRARIES.contains(&kind) || kind == "proc-macro"
+                            })
+                        })
+                })
+        })
+        .filter_map(|package| package["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The doctests of the workspace's library packages, if it has any.
+fn doctests(cargo: &str) -> io::Result<()> {
+    let metadata = ["metadata", "--locked", "--no-deps", "--format-version", "1"];
+    println!("+ {cargo} {}", metadata.join(" "));
+    let out = Command::new(cargo)
+        .args(metadata)
+        .stderr(std::process::Stdio::inherit())
+        .output()?;
+    if !out.status.success() {
+        return Err(io::Error::other(format!(
+            "{cargo} metadata failed: {}",
+            out.status
+        )));
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(io::Error::other)?;
+    let packages = library_packages(&metadata);
+    if packages.is_empty() {
+        println!("Doctests: not applicable (no workspace library targets with doctests enabled)");
+        return Ok(());
+    }
+    let mut args = vec!["test", "--locked", "--all-features", "--doc"];
+    for name in &packages {
+        args.extend(["--package", name.as_str()]);
+    }
+    run(cargo, &args)
 }
 
 /// The workspace's documentation, warnings as `RUSTDOCFLAGS` sets them.
@@ -366,14 +391,6 @@ fn docs(cargo: &str) -> io::Result<()> {
             "--no-deps",
         ],
     )
-}
-
-/// The shard a matrix value `i/n` names (1-based, `1 <= i <= n`, `n` at most 64), if it is one.
-fn shard_of(matrix: &str) -> Option<(u32, u32)> {
-    let (index, count) = matrix.trim().split_once('/')?;
-    let (index, count): (u32, u32) = (index.parse().ok()?, count.parse().ok()?);
-    (1..=64).contains(&count).then_some(())?;
-    (1..=count).contains(&index).then_some((index, count))
 }
 
 /// Execute the checker directly so its skip status and termination signals reach CI.
@@ -432,28 +449,10 @@ fn main() -> ExitCode {
         println!("{HELP}");
         return ExitCode::SUCCESS;
     }
-    let archive = match args.as_slice() {
-        [task, flag, path] if task == "test" && flag == "--archive-file" && !path.is_empty() => {
-            Some(path.as_str())
-        }
-        _ => None,
-    };
-    if (args.len() != 1 && archive.is_none() && args[0] != "security" && args[0] != "mutants")
+    if (args.len() != 1 && args[0] != "security" && args[0] != "mutants")
         || ![
-            "doctor",
-            "quick",
-            "check",
-            "fmt",
-            "lint",
-            "macos",
-            "test",
-            "deps",
-            "ci",
-            "checks",
-            "security",
-            "mutants",
-            "docs",
-            "test-shard",
+            "doctor", "quick", "quality", "check", "fmt", "lint", "macos", "test", "deps", "ci",
+            "checks", "security", "mutants", "docs",
         ]
         .contains(&args[0].as_str())
     {
@@ -461,14 +460,9 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let script = match args[0].as_str() {
-        "security" => Some("scripts/vidoc_scan.py"),
-        "test-shard" => Some("scripts/ci_test_shard.py"),
-        _ => None,
-    };
-    if let Some(script) = script {
+    if args[0] == "security" {
         return env::set_current_dir(root)
-            .and_then(|()| python_gate(script, &args[1..]))
+            .and_then(|()| python_gate("scripts/vidoc_scan.py", &args[1..]))
             .unwrap_or_else(|error| {
                 eprintln!("Gate failed: {error}");
                 ExitCode::FAILURE
@@ -492,9 +486,10 @@ fn main() -> ExitCode {
             }
         };
     }
-    if let Err(error) =
-        env::set_current_dir(root).and_then(|()| execute_in(&args[0], false, archive))
-    {
+    if !["quality", "checks", "ci"].contains(&args[0].as_str()) {
+        stage(&args[0]);
+    }
+    if let Err(error) = env::set_current_dir(root).and_then(|()| execute_in(&args[0], false)) {
         eprintln!("Gate failed: {error}");
         return ExitCode::FAILURE;
     }
@@ -503,7 +498,9 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{beside, gate_sequence, macos_env, quarantine_filter, shard_of, stage_marker};
+    use super::{
+        beside, gate_sequence, library_packages, macos_env, quarantine_filter, stage_marker,
+    };
     use std::path::Path;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -529,8 +526,8 @@ mod tests {
     }
 
     /// SPEC-506 FST-006 (AC-4): the checks of seconds run first, right after the tool check, in
-    /// `ci` and in `checks` (the CI job `quality`), so a format or contract failure ends a run
-    /// before the build; `checks` leaves the tests to their own jobs.
+    /// `ci` and in `checks`, so a format or contract failure ends a run before the build; `checks`
+    /// leaves the tests to their own jobs.
     #[test]
     fn the_quick_checks_run_first() {
         assert_eq!(
@@ -557,14 +554,25 @@ mod tests {
         assert_eq!(quarantine_filter("", "app\n"), "");
     }
 
-    /// SPEC-497 SHR-001: a matrix value `i/n` is a shard of the tests; anything else is none.
+    /// The doctests run for the workspace's libraries and proc-macros only: not for a binary,
+    /// nor for a dependency outside the workspace.
     #[test]
-    fn a_matrix_value_names_a_shard_of_the_tests() {
-        assert_eq!(shard_of("1/2"), Some((1, 2)));
-        assert_eq!(shard_of(" 2/2 "), Some((2, 2)));
-        for none in ["", "1", "0/2", "3/2", "a/2", "1/0", "1/65", "1/2/3"] {
-            assert_eq!(shard_of(none), None, "{none}");
-        }
+    fn doctests_select_the_workspaces_libraries() {
+        let binary_only = serde_json::json!({
+            "workspace_members": ["app"],
+            "packages": [{"id": "app", "name": "app", "targets": [{"kind": ["bin"], "doctest": false}]}],
+        });
+        assert!(library_packages(&binary_only).is_empty());
+        let mixed = serde_json::json!({
+            "workspace_members": ["core", "app", "macros"],
+            "packages": [
+                {"id": "core", "name": "core", "targets": [{"kind": ["lib"], "doctest": true}]},
+                {"id": "app", "name": "app", "targets": [{"kind": ["bin"], "doctest": false}]},
+                {"id": "macros", "name": "macros", "targets": [{"kind": ["proc-macro"], "doctest": true}]},
+                {"id": "external", "name": "external", "targets": [{"kind": ["lib"], "doctest": true}]},
+            ],
+        });
+        assert_eq!(library_packages(&mixed), ["core", "macros"]);
     }
 
     #[test]

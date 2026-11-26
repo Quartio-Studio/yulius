@@ -797,6 +797,7 @@ fn spawn_run_in(
         binds: Vec::new(),
         identity: None,
         join: Some(Box::new(join.clone())),
+        guard: None,
     };
     let probe_text = probe.to_string_lossy().into_owned();
     let mut inner = vec![
@@ -994,6 +995,7 @@ mod tests {
             binds: Vec::new(),
             identity: None,
             join: None,
+            guard: None,
         };
         let argv = yulius_ptyhost::bwrap_argv(&spec, &["/bin/true".to_owned()], "/s");
         assert_eq!(argv[0], "bwrap", "what bwrap_argv gives");

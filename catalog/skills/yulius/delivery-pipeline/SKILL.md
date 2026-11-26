@@ -33,7 +33,7 @@ Work starts from one concern with acceptance criteria. A GitHub issue is **ready
 Missing labels are created with the issue, never skipped (in Yulius: `issue_create`). A bug you
 find in code the change did not introduce, and a flaky test the change did not cause, become their
 own issues instead of widening the current task, named in the task's summary; a finding in the
-change's own code never does (section 4). A defect the task's own request reports, also one
+change's own code never does (`om-code-review`). A defect the task's own request reports, also one
 asked as a question ("why is this broken?", a screenshot of a fault) or confirmed while answering
 it, is fixed in the task, never filed instead (its issue, if one is opened, closes with the fix's
 `Fixes #N`): the plan grows the fixing steps, or the task asks the person whether to fix it when
@@ -83,40 +83,15 @@ outage). Commit and push with `om-check-and-commit`, and claim nothing without f
 
 ## 4. Independent review in a fresh session
 
-The author never reviews alone. Follow the task briefing for the reviewer and model of the active harness. It has **no shared context**: give it only the diff range
-(`<integration>...HEAD`), the spec path and the `om-code-review` skill, and for a later round the
-author's answers to the last report (outside Yulius: a subagent
-or a new session with no shared context). It is read-only: no edits, commits or label changes. It
-judges the code and the tests separately, reads the head's Yulius CI run, runs the tests it doubts,
-and returns a verdict for the exact head commit.
-A reviewer does not ask for changes because of CI alone: `delivery_merge` merges only a head whose
-own Yulius CI run passed. When the review finds nothing to fix and the head's run is still going, or
-failed in a way the change does not cause, the verdict is approve and the report says what CI still
-has to do. A failure the change causes (its own test, format or lint, or a contract its files break)
-is a blocker.
+The author never reviews alone. The reviewer has **no shared context**: give it only the diff
+range (`<integration>...HEAD`), the spec path and the `om-code-review` skill, and for a later round
+the author's answers to the last report (outside Yulius: a subagent or a new session with no
+shared context). It is read-only: no edits, commits or label changes. The rules of the review,
+the answers to its findings and what may become an issue are `om-code-review`'s.
 
-- Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
-  shows the problem, then the fix. Answer each finding in the pull request.
-- Re-review until approval under the task's existing authorization.
-  Before asking for another round, answer each finding of the
-  last report with the test that fails without its fix (or why no test can) and check every finding of
-  that report against the new head.
-- After an approval, fix the remaining nits within 20 product lines and merge without another round:
-  `delivery_merge` with the approved head counts them (tests and documents do not count). More than
-  that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
-
-**Findings in the change's own code are fixed, never deferred.**
-
-1. A finding in code or tests this change added or modified is fixed in this pull request,
-   test-first, and never becomes a follow-up issue. That covers every finding: a test that cannot
-   fail, a weak or missing assertion, a race, a missing regression test. If findings persist,
-   keep fixing or split the work into independently reviewable changes within scope.
-2. Only these may become a new issue: a bug in code the change did not introduce (pre-existing,
-   found on the way), a flaky test the change did not cause, and cosmetic nits (naming, wording)
-   left after 3 rounds. Each says why it is outside the change, with the evidence (for
-   example "present on the integration branch before this change").
-3. The reviewer classifies each finding as own code or pre-existing, and the pull request answers
-   every finding. Deferring an own-code finding makes the verdict request changes.
+After an approval, fix the remaining nits within 20 product lines and merge without another round:
+`delivery_merge` with the approved head counts them (tests and documents do not count). More than
+that, or a file leaving the change, needs a new round.
 
 ## 5. Pull request
 
@@ -178,6 +153,10 @@ With a merge-first staging target (a dev-stage `[cd.<name>]` with `merge_first =
   the repair. Yulius names one working task to repair it and tells the other workers who has it.
   Leave an assigned repair to its owner. If nobody is working, project CI and Status offer a
   person a rerun or a new task. Staging verifies the fix and serves the inherited requests.
+- Beside merge-first staging, a red after-merge gate stops the merge queue until it is green
+  again: armed merges wait in their places. Only the repair merges. Mark yours with
+  `delivery_merge`'s `repairs_gate: true`; the task whose merge broke the gate counts as the
+  repair.
 - Production is promoted only from the revision staging verified.
 
 A merge deploys nothing by itself. CD (deployment) is its own mechanism, like CI: the project's `[cd.dev]`
@@ -200,8 +179,8 @@ finish the rest.
 
 Delete the remote branch, the local branch and the worktree once merged; leave no stale
 branches, worktrees or tags (`git-hygiene`; in Yulius: `repo_hygiene`, `repo_cleanup`). Close
-the issue (by the merge into the default branch, or yourself after the merge), and add the entry
-to the changes log.
+the issue (by the merge into the default branch, or yourself after the merge), and add a line to
+the changes log when people using the project will notice the change.
 
 ## Test reliability
 
@@ -210,8 +189,7 @@ to the changes log.
 2. Inject the clock and seed randomness (or log the seed).
 3. Each test owns its data (unique keys) and cleans up; sort before comparing collections.
 4. Locks, transactions and migrations are tested against the real database engine.
-5. No retries: a flaky test is reproduced under load and fixed, or quarantined with an issue
-   and an owner. A skipped test is not a pass.
+5. A skipped test is not a pass; flaky tests follow `test-driven-development`.
 6. Show that a regression test fails without the fix.
 7. A change of a wire format updates the golden fixtures and both sides.
 
@@ -231,5 +209,3 @@ What we leave out on purpose: human approvals, paid GitHub rulesets and Actions 
 locks (claim paths and read the other task's status instead), and metrics dashboards.
 
 Parallel tasks claim the paths they change (`scope_claim`). On an overlap both tasks are told: wait for the other's pull request to merge and merge the integration branch before editing those files, or agree who changes what by a note on the claim. The other's status (`task_get`: its plan, pull request, claims and screen) says where it stands.
-
-Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).

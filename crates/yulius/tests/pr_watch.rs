@@ -1,116 +1,27 @@
-//! SPEC-444: a live task with an open pull request and no `yulius wait` running is told, by one
+//! A live task with an open pull request and no `yulius wait` running is told, by one
 //! watch pass each, of a red run at its head (jobs, failing tests, where to read the log), of a
 //! conflict with the integration branch and of its merge, each once and with its next step. Real
 //! repositories, the production Git adapter and a fake agent that echoes what it is typed.
 
+use crate::support::live::pool::{pool, pool_live};
+use crate::support::live::{Live, UNSERVED};
+use crate::support::pr_watch::{leave_verification_step, run};
+use crate::support::{eventually, git};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
 use yulius_app::delivery::DeliveryRecord;
 use yulius_app::pr_watch::WatchBounds;
-use yulius_domain::ci::{CiRef, GateSource, RunState};
+use yulius_domain::ci::{CiRef, RunState};
 use yulius_domain::delivery::DeliveryStage;
-use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::resources::Need;
+use yulius_domain::ids::TaskId;
 use yulius_domain::task::Activity;
 
-use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop, temp, wait_for};
+use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-pub(crate) async fn leave_verification_step(
-    app: &yulius_app::context::App,
-    task: &TaskId,
-) -> TestResult {
-    app.deps
-        .store
-        .replace_steps(
-            task,
-            &[yulius_app::model::StepRecord {
-                id: yulius_domain::ids::StepId::parse(&format!("verify-{task}"))?,
-                task_id: task.clone(),
-                ordinal: 1,
-                title: "Verify delivery".to_owned(),
-                status: "in_progress".to_owned(),
-                note: None,
-                updated_by: None,
-                updated_at: None,
-                effort: 1,
-            }],
-            "person",
-            app.now(),
-        )
-        .await?;
-    Ok(())
-}
-
-pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
-/// A run of pull request 7 at `head` that ended in `state`, with one job.
-pub(crate) fn run(
-    sandbox: &SandboxId,
-    id: &str,
-    head: &str,
-    state: RunState,
-    failures: Option<&str>,
-    queued: i64,
-) -> (CiRunRecord, CiJobRecord) {
-    let at = yulius_domain::time::Timestamp(1);
-    let run = CiRunRecord {
-        id: id.to_owned(),
-        sandbox_id: sandbox.clone(),
-        reference: CiRef::PullRequest(7),
-        sha: head.to_owned(),
-        source: GateSource::ProjectConfig,
-        state,
-        reason: None,
-        requested_by: "yulius".into(),
-        status_for: None,
-        status_note: None,
-        status_attempts: 0,
-        queued_at: yulius_domain::time::Timestamp(queued),
-        started_at: Some(at),
-        ended_at: Some(at),
-    };
-    let job = CiJobRecord {
-        id: format!("{id}-quality"),
-        run_id: id.to_owned(),
-        ordinal: 0,
-        name: "quality".into(),
-        key: "quality".into(),
-        command: "scripts/dev ci".into(),
-        matrix: None,
-        state,
-        reason: None,
-        exit_code: Some(if state == RunState::Failed { 100 } else { 0 }),
-        output: String::new(),
-        failures: failures.map(str::to_owned),
-        started_at: Some(at),
-        ended_at: Some(at),
-        need: Need::default(),
-        timeout_minutes: None,
-        exclusive: false,
-        waited_ms: None,
-    };
-    (run, job)
-}
-
-/// PRN-001, PRN-002, PRN-004, PRN-005, PRN-007.
 #[test]
 fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
     use yulius_ptyhost::test_support::locate_fake_agent;
@@ -123,7 +34,9 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000;
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         // The integration branch, `dev`, on the origin and in Yulius's clone.
         let seed_dir = data.join("seed");
@@ -131,7 +44,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
         git(&repo, &["fetch", "-q", "origin"])?;
         let id = new_task(&app, &sandbox, &user, "Watched").await?;
-        wait_for("the first answer", Duration::from_secs(30), || {
+        eventually("the first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: Watched: answer with an echo") }
         })
@@ -268,7 +181,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         }
         // A permission prompt or question waits for a person: nothing is typed over it, though
         // the session takes input (it was just typed into).
-        crate::parking::ask(&app, &id).await?;
+        crate::support::parking::ask(&app, &id).await?;
         assert!(watch(&app, &bounds, &id).await?.is_none(), "a person must act first");
         app.deps.store.set_task_needs_you(&id, None, app.now()).await?;
         let typed = typed_within(&app, &bounds, &id)
@@ -289,7 +202,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         echoed(&app, &id, "Never rebase or force-push").await?;
         assert!(watch(&app, &bounds, &id).await?.is_none(), "told once");
 
-        // Nothing moves while CI is idle: stalled (PRN-009), told once and shown with the task.
+        // Nothing moves while CI is idle: stalled, told once and shown with the task.
         let stalling = WatchBounds {
             stall_after_ms: 0,
             stall_quiet_ms: 0,
@@ -387,7 +300,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-491 DON-003: a pull request that conflicts with the integration branch is not tested,
+/// A pull request that conflicts with the integration branch is not tested,
 /// so its task is not Done, and its agent hears of the conflict also where no run exists at its
 /// head (a project without Yulius CI): the branch's pushed head, the pull request's, is asked.
 /// Told once per head.
@@ -403,14 +316,16 @@ fn a_conflict_is_told_without_a_run_at_the_head() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let seed_dir = data.join("seed");
         git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
         git(&repo, &["fetch", "-q", "origin"])?;
         let id = new_task(&app, &sandbox, &user, "Watched").await?;
-        wait_for("the first answer", Duration::from_secs(30), || {
+        eventually("the first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: Watched: answer with an echo") }
         })
@@ -467,7 +382,7 @@ fn a_conflict_is_told_without_a_run_at_the_head() -> TestResult {
     Ok(())
 }
 
-/// SPEC-553 REP-002, REP-004: with a real live agent PTY and FakeGitHub:
+/// With a real live agent PTY and FakeGitHub:
 /// 1. An actionable failed publication (`DirtyWorktree`) is delivered once by `watch_prs` and not
 ///    repeated on subsequent passes.
 /// 2. Resolving a newer `DirtyWorktree` failure by committing cleanly and pushing `repair2` never
@@ -483,32 +398,12 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
     use yulius_domain::time::Timestamp;
     use yulius_ptyhost::test_support::locate_fake_agent;
 
-    struct BareOrigin(std::path::PathBuf);
-    impl crate::support::FakeRemote for BareOrigin {
-        fn branch_sha(&self, branch: &str) -> Option<String> {
-            git(
-                &self.0,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("refs/heads/{branch}"),
-                ],
-            )
-            .ok()
-        }
-        fn merge(&self, _: &str, _: &str, _: &str, _: &str) -> Result<String, String> {
-            Err("merge not used in this test".into())
-        }
-        fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-            Err("fast_forward not used in this test".into())
-        }
-    }
-
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let github = Arc::new(crate::support::FakeGitHub::default());
-    github.set_remote(Arc::new(BareOrigin(data.join("origin.git"))));
+    github.set_remote(Arc::new(crate::support::BareRemote(
+        data.join("origin.git"),
+    )));
     github.add_user("code-admin", 1, "admin");
     github.set_perm("admin", "acme/pool", crate::support::perms("write"));
     let agent = crate::support::agents::FakeAgentOptions {
@@ -518,15 +413,11 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = crate::pool_supervision::build_served_tuned(
-            &data,
-            &fake,
-            Arc::new(crate::pool_supervision::ScriptedUsage::default()),
-            agent,
-            github.clone(),
-            "http://127.0.0.1:9",
-            |config| config.goal_ready_ms = 2_000,
-        )?;
+        let live = Live {
+            github: github.clone(),
+            ..pool_live(&fake, agent)
+        };
+        let app = pool(live, &data, UNSERVED, |config| config.goal_ready_ms = 2_000)?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         yulius_app::ports::store::PermissionStore::put_access(
             app.deps.store.as_ref(),
@@ -559,7 +450,7 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
         git(&repo, &["fetch", "-q", "origin"])?;
         let id = new_task(&app, &sandbox, &user, "Watched repair").await?;
-        wait_for("the first answer", Duration::from_secs(30), || {
+        eventually("the first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: Watched repair: answer with an echo") }
         })
@@ -582,7 +473,7 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
         let pr_head = git(&worktree, &["rev-parse", "HEAD"])?;
         let pull = github
             .create_pull(
-                &Secret("token-admin".into()),
+                &Secret::new("token-admin".into()),
                 "acme",
                 "pool",
                 &NewPull {
@@ -790,7 +681,7 @@ async fn echoed(
     id: &TaskId,
     line: &str,
 ) -> TestResult {
-    wait_for("the echo", Duration::from_secs(30), || {
+    eventually("the echo", Duration::from_secs(30), || {
         let shown = screen(app, id);
         async move { shown.contains(line) }
     })

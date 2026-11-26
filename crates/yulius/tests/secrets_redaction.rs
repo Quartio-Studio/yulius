@@ -1,21 +1,20 @@
-//! Exact-value redaction of agent secrets with real processes (SPEC-002 ADR-20, AC-VLT-4): the
+//! Exact-value redaction of agent secrets with real processes: the
 //! `yulius --scrub-exec` Bash wrapper and the `PostToolUse` hook as Claude Code runs them, and a
 //! fake agent in the real ptyhost whose terminal people watch.
 
 use crate::support;
+use crate::support::git;
+use crate::support::live::{Live, UNSERVED};
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
-use support::{FakeGitHub, TestResult};
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::session::PtySessionHost;
+use support::TestResult;
+use support::agents::FakeAgentOptions;
 use yulius_app::auth::AuthContext;
-use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{AccountRecord, AccountStatus, SandboxRecord, TaskOrigin, UserRecord};
 use yulius_contracts::api::secrets::AgentSecretInput;
@@ -23,8 +22,6 @@ use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 const VALUE: &str = concat!("sk_test_", "51NzQ9redactValue8f3a");
 const LABEL: &str = "[secret:STRIPE_KEY]";
@@ -130,7 +127,7 @@ fn scrub_exec(
     child.output()
 }
 
-/// AC-VLT-4: a value echoed by a command, written to a file and read back, base64-encoded or
+/// A value echoed by a command, written to a file and read back, base64-encoded or
 /// split across output chunks never reaches the agent; the command's status is kept; without
 /// fingerprints a run's command does not run.
 #[tokio::test]
@@ -259,21 +256,6 @@ async fn the_tool_hook_rewrites_results_that_hold_a_value() -> TestResult {
     Ok(())
 }
 
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(())
-}
-
 fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
     let origin = data.join("origin.git");
     std::fs::create_dir_all(&origin)?;
@@ -318,7 +300,7 @@ async fn wait_for(app: &App, task: &TaskId, needle: &str) -> TestResult {
     .into())
 }
 
-/// The task terminal people watch (VLT-007) and the run's environment: the agent's environment
+/// The task terminal people watch and the run's environment: the agent's environment
 /// holds the placeholder and the wrapper, never the value; a value typed or printed into the
 /// terminal shows as the label; the run's fingerprint file holds no value.
 #[test]
@@ -331,38 +313,18 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
-        let mut config = AppConfig::new(
-            data.clone(),
-            "https://yulius.test",
-            "http://127.0.0.1:9",
-            exe(),
-        );
-        config.contained = false;
-        let deps = Deps {
-            store: Arc::new(store),
-            clock: Arc::new(SystemClock),
-            crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-            github: Arc::new(FakeGitHub::default()),
-            session_host: Arc::new(PtySessionHost::new(exe())),
-            harness: Arc::new(FakeAgentHarness::new(
-                exe(),
-                fake.clone(),
-                FakeAgentOptions {
-                    report_env: vec![
-                        "STRIPE_KEY".into(),
-                        "CLAUDE_CODE_SHELL_PREFIX".into(),
-                        "YULIUS_SCRUB_FILE".into(),
-                    ],
-                    ..FakeAgentOptions::default()
-                },
-            )),
-            git: Arc::new(crate::support::confined_git()),
-            system: Arc::new(support::FixedSystem),
-            browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-            usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-        };
-        let app = App::new(config, deps);
+        let app = Live::new(
+            Some(&fake),
+            FakeAgentOptions {
+                report_env: vec![
+                    "STRIPE_KEY".into(),
+                    "CLAUDE_CODE_SHELL_PREFIX".into(),
+                    "YULIUS_SCRUB_FILE".into(),
+                ],
+                ..FakeAgentOptions::default()
+            },
+        )
+        .app(&data, UNSERVED, |_| {})?;
         let user = admin()?;
         let sandbox = sandbox_record(&user)?;
         app.deps.store.insert_user(&user).await?;
@@ -415,7 +377,7 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
         wait_for(&app, &task.id, "ENV CLAUDE_CODE_SHELL_PREFIX=set").await?;
         wait_for(&app, &task.id, "ENV YULIUS_SCRUB_FILE=set").await?;
         // The prefix is one program: Claude Code 2.1.292 spawns it as the command of a stdio MCP
-        // server with the server's command line as one quoted argument (SPEC-358).
+        // server with the server's command line as one quoted argument.
         let run_dir = std::path::PathBuf::from(
             app.deps
                 .store

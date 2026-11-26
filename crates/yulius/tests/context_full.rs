@@ -1,18 +1,19 @@
-//! A session whose context is full (SPEC-060, issue #213) with real processes: supervisor →
+//! A session whose context is full with real processes: supervisor →
 //! detached `yulius ptyhost` → fake agent that answers "Prompt is too long" like Claude Code
 //! 2.1.292. Yulius compacts it once, continues the task in a fresh session when compacting
 //! fails, and flags the task when the fresh session is full too.
 
+use crate::support::live::UNSERVED;
+use crate::support::live::pool::{pool, pool_live};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::pool_supervision::{
-    ScriptedUsage, build_tuned, build_with, echoed, new_task, runtime, screen, seed, stop, task,
-    temp, wait_for,
-};
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::pool::{
+    ScriptedUsage, build_with, echoed, new_task, runtime, screen, seed, stop, task, temp,
+};
+use crate::support::{TestResult, eventually};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::TryRecvError;
 use yulius_app::context::App;
@@ -63,7 +64,7 @@ fn audited(data: &Path, id: &TaskId) -> Result<Vec<String>, Box<dyn std::error::
 
 /// Waits until the task's recovery audit satisfies `done`, then returns it. A row is written a
 /// moment after the flag or the notice it goes with, so a test reading the audit right after
-/// those can see the row before (#430).
+/// those can see the row before.
 async fn audit_when(
     data: &Path,
     id: &TaskId,
@@ -71,7 +72,7 @@ async fn audit_when(
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let rows = || audited(data, id).unwrap_or_default();
     // A timeout is reported by the caller's assertion on what the audit then holds.
-    let _ = wait_for("the audit", Duration::from_secs(30), || {
+    let _ = eventually("the audit", Duration::from_secs(30), || {
         let ready = done(&rows());
         async move { ready }
     })
@@ -95,7 +96,7 @@ fn agent(full_after: u32, compact_fails: bool) -> FakeAgentOptions {
 async fn started(app: &Arc<App>, data: &Path) -> Result<TaskId, Box<dyn std::error::Error>> {
     let (sandbox, user) = seed(app, data, &["a-only"]).await?;
     let id = new_task(app, &sandbox, &user, "Full").await?;
-    wait_for("the first answer", Duration::from_secs(30), || {
+    eventually("the first answer", Duration::from_secs(30), || {
         let app = app.clone();
         let id = id.clone();
         async move { screen(&app, &id).contains("ECHO: Full: answer with an echo") }
@@ -122,7 +123,7 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
         let id = started(&app, &data).await?;
         let mut frames = app.runtime(&id).hub.watch();
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the compaction", Duration::from_secs(30), || {
+        eventually("the compaction", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -134,7 +135,7 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
             shown.contains("COMPACTED: Keep: task #1 \"Full\" and its goal: Full: answer with"),
             "the focus names the task: {shown}"
         );
-        wait_for(
+        eventually(
             "the wake-up after the compaction",
             Duration::from_secs(30),
             || {
@@ -145,7 +146,7 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
         )
         .await?;
         app.send_input(&id, b"next\r").await?;
-        wait_for("the next prompt", Duration::from_secs(30), || {
+        eventually("the next prompt", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { echoed(&app, &id).iter().any(|l| l == "next") }
@@ -220,7 +221,7 @@ fn published(
     (seen, collector)
 }
 
-/// CTX-002 (SPEC-085 STT-006): the refused prompt ends the turn, and while Yulius compacts the
+/// The refused prompt ends the turn, and while Yulius compacts the
 /// session by itself the task reads Working, not Your turn: nobody has to act. The compaction here
 /// never finishes, so nothing else moves the task; it never read idle since the prompt.
 #[test]
@@ -238,11 +239,11 @@ fn a_full_session_reads_working_while_yulius_compacts_it() -> TestResult {
         let id = started(&app, &data).await?;
         let (seen, collector) = published(&app, &id);
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the prompt worked on", Duration::from_secs(30), || {
+        eventually("the prompt worked on", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::Working)
         })
         .await?;
-        wait_for("the compaction asked for", Duration::from_secs(30), || {
+        eventually("the compaction asked for", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTING") }
@@ -253,7 +254,7 @@ fn a_full_session_reads_working_while_yulius_compacts_it() -> TestResult {
         // Two more watcher rounds: everything the session wrote by now was applied.
         let runtime = app.runtime(&id);
         let rounds = runtime.transcript_rounds();
-        wait_for("the transcript read", Duration::from_secs(20), || async {
+        eventually("the transcript read", Duration::from_secs(20), || async {
             runtime.transcript_rounds() >= rounds + 2
         })
         .await?;
@@ -274,7 +275,7 @@ fn a_full_session_reads_working_while_yulius_compacts_it() -> TestResult {
     Ok(())
 }
 
-/// CTX-002, CTX-006 (SPEC-085 STT-006): a person who types into the full session takes it over;
+/// A person who types into the full session takes it over;
 /// Yulius types nothing, says so, and the task waits for them (Your turn), not Working.
 #[test]
 fn a_full_session_a_person_types_into_waits_for_them() -> TestResult {
@@ -316,7 +317,7 @@ fn a_full_session_a_person_types_into_waits_for_them() -> TestResult {
                 .any(|n| n.contains("leaves the full session to you")),
             "the terminal says it: {said:?}"
         );
-        wait_for("Your turn", Duration::from_secs(10), || {
+        eventually("Your turn", Duration::from_secs(10), || {
             activity_is(&app, &id, Activity::Waiting)
         })
         .await?;
@@ -365,7 +366,7 @@ async fn served_on(
     tune: impl FnOnce(&mut yulius_app::context::AppConfig),
 ) -> Result<(Arc<App>, u16), Box<dyn std::error::Error>> {
     let usage = Arc::new(ScriptedUsage::default());
-    crate::first_message::start_with(data, fake, agent, port, usage, tune).await
+    crate::support::live::first_message::start_with(data, fake, agent, port, usage, tune).await
 }
 
 /// Waits for a notice that contains `words` and fails when the terminal never says it.
@@ -425,14 +426,14 @@ async fn refused_soon(
         .await?;
     assert!(app.has_draft(&id), "typed, not sent yet");
     app.terminal_input(&ctx, &attach, b"\r", false).await?;
-    wait_for("the prompt's submit", Duration::from_secs(30), || async {
+    eventually("the prompt's submit", Duration::from_secs(30), || async {
         !app.has_draft(&id)
     })
     .await?;
     Ok((id, ctx, attach))
 }
 
-/// SPEC-483 TYP-001: the way a context usually fills. A person types a prompt and sends it, and
+/// The way a context usually fills. A person types a prompt and sends it, and
 /// the full context refuses it: the prompt emptied the box, their keys are no draft, and Yulius
 /// compacts the session.
 #[test]
@@ -443,7 +444,7 @@ fn a_persons_own_refused_prompt_is_compacted() -> TestResult {
     rt.block_on(async {
         let (app, _) = served(&data, &fake, hooked(0), |_| {}).await?;
         let (id, _ctx, _attach) = refused_soon(&app, &data).await?;
-        wait_for("the compaction", Duration::from_secs(30), || {
+        eventually("the compaction", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -456,7 +457,7 @@ fn a_persons_own_refused_prompt_is_compacted() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-001: a person types while the turn runs and sends nothing; then the context is
+/// A person types while the turn runs and sends nothing; then the context is
 /// full. Their text may sit in the prompt box, so `/compact` typed now would be sent with it:
 /// Yulius holds the compaction, the task reads Needs your action with why and what to do, and
 /// nothing is typed. When they type on, the session is theirs (the flag ends, Your turn); when
@@ -474,7 +475,7 @@ fn a_possible_draft_holds_the_compaction_and_its_person_is_told() -> TestResult 
         app.terminal_input(&ctx, &attach, b"and then", false)
             .await?;
         assert!(app.has_draft(&id));
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
@@ -500,7 +501,7 @@ fn a_possible_draft_holds_the_compaction_and_its_person_is_told() -> TestResult 
         // They type on: the session is theirs now, the flag ends and the task waits for them.
         app.terminal_input(&ctx, &attach, b" this", false).await?;
         must_hear(&mut frames, &mut said, "leaves the full session to you").await?;
-        wait_for("Your turn", Duration::from_secs(30), || {
+        eventually("Your turn", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::Waiting)
         })
         .await?;
@@ -508,7 +509,7 @@ fn a_possible_draft_holds_the_compaction_and_its_person_is_told() -> TestResult 
         // They send it: the box is empty, the full context refuses the prompt, and that
         // refusal is compacted.
         app.terminal_input(&ctx, &attach, b"\r", false).await?;
-        wait_for("the compaction", Duration::from_secs(60), || {
+        eventually("the compaction", Duration::from_secs(60), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -521,7 +522,7 @@ fn a_possible_draft_holds_the_compaction_and_its_person_is_told() -> TestResult 
     Ok(())
 }
 
-/// SPEC-483 TYP-001: nobody answers the flag (a goal task whose person pressed a key hours ago
+/// Nobody answers the flag (a goal task whose person pressed a key hours ago
 /// and left), and the key left nothing in the box. The hold is bounded: after it Yulius types
 /// its command, the session is compacted and told to carry on (the command's Enter emptied the
 /// box, so the old key keeps nothing out any more), and the task works on instead of waiting
@@ -542,12 +543,12 @@ fn a_held_compaction_is_typed_once_its_hold_is_over() -> TestResult {
         let person = task(&app, &id).await?.created_by;
         app.record_typing(&id, &person);
         assert!(app.has_draft(&id));
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
         assert!(!screen(&app, &id).contains("COMPACT"), "held first");
-        wait_for("the compaction", Duration::from_secs(60), || {
+        eventually("the compaction", Duration::from_secs(60), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -557,7 +558,7 @@ fn a_held_compaction_is_typed_once_its_hold_is_over() -> TestResult {
             !activity_is(&app, &id, Activity::NeedsAttention).await,
             "the flag ended with the hold"
         );
-        wait_for("the wake-up", Duration::from_secs(30), || {
+        eventually("the wake-up", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Yulius: your context was full") }
@@ -570,7 +571,7 @@ fn a_held_compaction_is_typed_once_its_hold_is_over() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-001: nobody answers the flag and real text sits in the box. After the hold
+/// Nobody answers the flag and real text sits in the box. After the hold
 /// Yulius's command goes out behind that text, as a prompt, which the full context refuses:
 /// that refusal is the compaction's failure, and the task continues in a fresh session at
 /// once, not after the ten minutes a compaction's outcome gets.
@@ -588,11 +589,11 @@ fn a_command_sent_behind_real_text_continues_in_a_fresh_session() -> TestResult 
         let mut frames = app.runtime(&id).hub.watch();
         app.terminal_input(&ctx, &attach, b"and then", false)
             .await?;
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
-        wait_for("the fresh session", Duration::from_secs(60), || async {
+        eventually("the fresh session", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live
         })
@@ -613,7 +614,7 @@ fn a_command_sent_behind_real_text_continues_in_a_fresh_session() -> TestResult 
     Ok(())
 }
 
-/// SPEC-483 TYP-001 (review, round 3): during the hold the box is emptied without a key and
+/// During the hold the box is emptied without a key and
 /// without a turn: a prompt hook for a command reaches Yulius (sent here by the test with the
 /// run's own token, as a Claude Code that runs the hook for commands sends it). The hold is
 /// over: when Yulius types its command, the task does not read the hold's flag any more.
@@ -629,7 +630,7 @@ fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
         // only what Yulius knows of it.
         let person = task(&app, &id).await?.created_by;
         app.record_typing(&id, &person);
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
@@ -676,7 +677,7 @@ fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
         let answer = String::from_utf8_lossy(&answer);
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
         assert!(!app.has_draft(&id), "the command's submit emptied the box");
-        wait_for("the compaction", Duration::from_secs(60), || {
+        eventually("the compaction", Duration::from_secs(60), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -692,7 +693,7 @@ fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-001: Yulius restarts while a compaction is held. The hold did not give the
+/// Yulius restarts while a compaction is held. The hold did not give the
 /// recovery up: the new server ends the old flag and starts the recovery over, hold and all,
 /// and the task goes on (here in a fresh session: real text sits in the box).
 #[test]
@@ -706,7 +707,7 @@ fn a_compaction_held_at_a_restart_is_taken_up_again() -> TestResult {
         let (id, ctx, attach) = refused_soon(&app, &data).await?;
         app.terminal_input(&ctx, &attach, b"and then", false)
             .await?;
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
@@ -721,7 +722,7 @@ fn a_compaction_held_at_a_restart_is_taken_up_again() -> TestResult {
         })
         .await?;
         app.reconcile().await?;
-        wait_for("the fresh session", Duration::from_secs(90), || async {
+        eventually("the fresh session", Duration::from_secs(90), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live
         })
@@ -751,7 +752,7 @@ fn a_key_at(
     });
 }
 
-/// SPEC-483 TYP-002: a person starts to type just before Yulius types `/compact` (the terminal
+/// A person starts to type just before Yulius types `/compact` (the terminal
 /// was quiet and nobody had typed; Yulius may wait for the typing mark there). Asked again
 /// with the mark held, their key keeps the line out: the session is left to them.
 #[test]
@@ -783,7 +784,7 @@ fn a_key_just_before_the_compaction_keeps_it_out() -> TestResult {
                 .any(|n| n.contains("leaves the full session to you")),
             "{said:?}"
         );
-        wait_for("Your turn", Duration::from_secs(10), || {
+        eventually("Your turn", Duration::from_secs(10), || {
             activity_is(&app, &id, Activity::Waiting)
         })
         .await?;
@@ -798,7 +799,7 @@ fn a_key_just_before_the_compaction_keeps_it_out() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-001: a person types while Yulius compacts the session (here right after the
+/// A person types while Yulius compacts the session (here right after the
 /// command's Enter). The line that wakes the compacted session is not typed behind what they
 /// typed: the session is compacted, the terminal says that it was not told to carry on, and
 /// the task waits for them.
@@ -819,7 +820,7 @@ fn a_draft_typed_during_the_compaction_keeps_the_wake_up_out() -> TestResult {
         let mut frames = app.runtime(&id).hub.watch();
         a_key_at(&app, &id, &person, yulius_app::race::Point::LineEntered);
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the compaction", Duration::from_secs(30), || {
+        eventually("the compaction", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -833,7 +834,7 @@ fn a_draft_typed_during_the_compaction_keeps_the_wake_up_out() -> TestResult {
             "Yulius did not tell the session to carry on",
         )
         .await?;
-        wait_for("Your turn", Duration::from_secs(30), || {
+        eventually("Your turn", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::Waiting)
         })
         .await?;
@@ -848,7 +849,7 @@ fn a_draft_typed_during_the_compaction_keeps_the_wake_up_out() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-002: while Yulius types `/compact` (the line is in the prompt box, its Enter not
+/// While Yulius types `/compact` (the line is in the prompt box, its Enter not
 /// sent yet), nothing else is typed into the session: a message for the task is refused, as
 /// while another message is being typed, and the command is submitted as it was typed.
 #[test]
@@ -859,9 +860,14 @@ fn nothing_is_typed_between_a_line_of_yulius_and_its_enter() -> TestResult {
     rt.block_on(async {
         // A session without hooks counts as started half this time after its spawn: a message
         // for it is not refused for a session that still starts.
-        let app = build_tuned(&data, &fake, agent(1, false), |config| {
-            config.goal_ready_ms = 200;
-        })?;
+        let app = pool(
+            pool_live(&fake, agent(1, false)),
+            &data,
+            UNSERVED,
+            |config| {
+                config.goal_ready_ms = 200;
+            },
+        )?;
         let id = started(&app, &data).await?;
         let record = task(&app, &id).await?;
         let refused = Arc::new(std::sync::Mutex::new(None));
@@ -894,7 +900,7 @@ fn nothing_is_typed_between_a_line_of_yulius_and_its_enter() -> TestResult {
             );
         }
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the compaction", Duration::from_secs(30), || {
+        eventually("the compaction", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -923,7 +929,7 @@ async fn activity_is(app: &Arc<App>, id: &TaskId, activity: Activity) -> bool {
         .is_ok_and(|t| t.activity == Some(activity))
 }
 
-/// CTX-006: a compaction cut short (the person stopped the task and continued it) does not keep
+/// A compaction cut short (the person stopped the task and continued it) does not keep
 /// the episode waiting: the continued session's full context is compacted in its turn.
 #[test]
 fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResult {
@@ -944,7 +950,7 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), options)?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let id = new_task(&app, &sandbox, &user, "Full").await?;
-        wait_for("the compaction asked for", Duration::from_secs(30), || {
+        eventually("the compaction asked for", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTING") }
@@ -972,12 +978,12 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
             },
         )
         .await?;
-        wait_for("the continued run", Duration::from_secs(30), || async {
+        eventually("the continued run", Duration::from_secs(30), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live
         })
         .await?;
-        wait_for("the continued agent", Duration::from_secs(30), || {
+        eventually("the continued agent", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -985,11 +991,11 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
         .await?;
         // The continued session is just as full.
         app.send_input(&id, b"one\r").await?;
-        wait_for("the second compaction", Duration::from_secs(30), || async {
+        eventually("the second compaction", Duration::from_secs(30), || async {
             audited(&data, &id).is_ok_and(|a| a.len() == 2)
         })
         .await?;
-        wait_for("the second /compact typed", Duration::from_secs(30), || {
+        eventually("the second /compact typed", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTING") }
@@ -1002,7 +1008,7 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
     Ok(())
 }
 
-/// CTX-004/005: a fresh session that cannot start (here the repository is gone) leaves the full
+/// A fresh session that cannot start (here the repository is gone) leaves the full
 /// session as it is, so the task needs a person, told why.
 #[test]
 fn a_fresh_session_that_cannot_start_needs_a_person() -> TestResult {
@@ -1024,7 +1030,7 @@ fn a_fresh_session_that_cannot_start_needs_a_person() -> TestResult {
         std::fs::rename(repo.join(".git"), repo.join("git.away"))?;
         let mut frames = app.runtime(&id).hub.watch();
         app.send_input(&id, b"too much\r").await?;
-        wait_for("needs attention", Duration::from_secs(60), || {
+        eventually("needs attention", Duration::from_secs(60), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
@@ -1054,7 +1060,7 @@ fn a_fresh_session_that_cannot_start_needs_a_person() -> TestResult {
     Ok(())
 }
 
-/// CTX-004: a compaction that fails continues the task in a fresh session on the same
+/// A compaction that fails continues the task in a fresh session on the same
 /// subscription, opened with the handoff, which reaches the agent.
 #[test]
 fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
@@ -1071,7 +1077,7 @@ fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
         let id = started(&app, &data).await?;
         let mut frames = app.runtime(&id).hub.watch();
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the fresh session", Duration::from_secs(60), || async {
+        eventually("the fresh session", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live
         })
@@ -1083,7 +1089,7 @@ fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
             attempts[1].provider_session_id
         );
         assert_eq!(attempts[0].account_id, attempts[1].account_id);
-        wait_for("the handoff", Duration::from_secs(30), || {
+        eventually("the handoff", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Yulius: you continue task #1") }
@@ -1122,7 +1128,7 @@ fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
     Ok(())
 }
 
-/// CTX-005: a fresh session that is full too flags the task with the reason; no third run.
+/// A fresh session that is full too flags the task with the reason; no third run.
 #[test]
 fn a_full_fresh_session_needs_a_person() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1139,7 +1145,7 @@ fn a_full_fresh_session_needs_a_person() -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let id = new_task(&app, &sandbox, &user, "Full").await?;
         let mut frames = app.runtime(&id).hub.watch();
-        wait_for("needs attention", Duration::from_secs(90), || {
+        eventually("needs attention", Duration::from_secs(90), || {
             let app = app.clone();
             let id = id.clone();
             async move {
@@ -1171,7 +1177,7 @@ fn a_full_fresh_session_needs_a_person() -> TestResult {
             .map(String::as_str),
             Some("needs attention: the context is still full after compacting and a fresh session")
         );
-        // The task says it to whoever opens it later (SPEC-472 ATN-004).
+        // The task says it to whoever opens it later.
         assert_eq!(
             crate::support::attention(&app, id.as_str()).await?,
             serde_json::json!({
@@ -1190,7 +1196,7 @@ fn a_full_fresh_session_needs_a_person() -> TestResult {
     Ok(())
 }
 
-/// CTX-007: a session whose context filled while Yulius was down (its transcript ends in the
+/// A session whose context filled while Yulius was down (its transcript ends in the
 /// refusal) is compacted once the restarted server reattaches it.
 #[test]
 fn a_context_that_filled_during_a_restart_is_compacted_after_it() -> TestResult {
@@ -1238,7 +1244,7 @@ fn a_context_that_filled_during_a_restart_is_compacted_after_it() -> TestResult 
 
         // Phase 2: the new server reconciles, reattaches and replays the transcript.
         app.reconcile().await?;
-        wait_for(
+        eventually(
             "the compaction after the restart",
             Duration::from_secs(30),
             || {

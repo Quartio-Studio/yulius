@@ -1,11 +1,14 @@
-//! SPEC-580: Antigravity armed green PRs parked with background `yulius wait`,
+//! Antigravity armed green PRs parked with background `yulius wait`,
 //! fresh PR conflict reporting and immediate arm drop on conflict, and bounded
 //! check-in -> Needs You escalation for stalled armed green PRs.
 
 use crate::support;
+use crate::support::BareRemote;
+use crate::support::git;
+use crate::support::live::pool::{pool, pool_live};
+use crate::support::live::{Live, UNSERVED};
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -13,16 +16,14 @@ use std::time::Duration;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{
-    Creds, FakeRemote, HarnessOptions, call, configure_github_app, harness_with, perms,
-    seed_github_user, seed_sandbox,
+    Creds, HarnessOptions, call, configure_github_app, harness_with, perms, seed_github_user,
+    seed_sandbox,
 };
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
 use yulius_app::context::App;
 use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
-use yulius_app::ports::session::{
-    AttachedRun, BackgroundProbe, LaunchPlan, RunInspection, SessionHost, SpawnedRun, StrayProcess,
-};
+use yulius_app::ports::session::{BackgroundProbe, SessionHost};
 use yulius_app::ports::store::TaskStore;
 use yulius_app::pr_watch::WatchBounds;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
@@ -41,162 +42,6 @@ const YULIUS_TOML: &str = r#"[[ci.jobs]]
 name = "check"
 command = 'echo ok'
 "#;
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
-fn git_ok(dir: &Path, args: &[&str]) -> Option<String> {
-    git(dir, args).ok()
-}
-
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git_ok(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-    }
-
-    fn merge(&self, base: &str, head: &str, method: &str, message: &str) -> Result<String, String> {
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = git(&self.0, &["merge-tree", "--write-tree", &base_sha, head])
-            .map_err(|e| e.to_string())?;
-        let mut args = vec!["commit-tree", tree.as_str(), "-p", base_sha.as_str()];
-        if method == "merge" {
-            args.extend(["-p", head]);
-        }
-        args.extend(["-m", message]);
-        let commit = git(&self.0, &args).map_err(|e| e.to_string())?;
-        git(
-            &self.0,
-            &[
-                "update-ref",
-                &format!("refs/heads/{base}"),
-                &commit,
-                &base_sha,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(commit)
-    }
-
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-        .map_err(|e| e.to_string())
-    }
-
-    fn contains(&self, ancestor: &str, descendant: &str) -> Option<bool> {
-        let status = Command::new("git")
-            .args(["merge-base", "--is-ancestor", ancestor, descendant])
-            .current_dir(&self.0)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .ok()?;
-        status.code().map(|code| code == 0)
-    }
-}
-
-/// Real `PtySessionHost` wrapper whose background probe can be controlled for a synthetic live
-/// task attempt PID without spawning an actual `bwrap` container.
-struct ProbedHost {
-    inner: PtySessionHost,
-    shells: Arc<AtomicU32>,
-    waits: Arc<AtomicU32>,
-}
-
-#[async_trait::async_trait]
-impl SessionHost for ProbedHost {
-    async fn spawn(
-        &self,
-        run_dir: &Path,
-        attempt_id: &str,
-        task_id: &str,
-        plan: &LaunchPlan,
-        token: &[u8; 32],
-        size: (u16, u16),
-    ) -> yulius_app::error::AppResult<SpawnedRun> {
-        self.inner
-            .spawn(run_dir, attempt_id, task_id, plan, token, size)
-            .await
-    }
-
-    async fn attach(
-        &self,
-        run_dir: &Path,
-        token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<AttachedRun> {
-        self.inner.attach(run_dir, token).await
-    }
-
-    fn inspect(&self, run_dir: &Path) -> RunInspection {
-        self.inner.inspect(run_dir)
-    }
-
-    fn terminate(&self, run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        self.inner.terminate(run_dir)
-    }
-
-    fn background_shells(&self, child_pid: u32) -> Option<u32> {
-        if child_pid == 42_424 {
-            return Some(self.shells.load(Ordering::SeqCst));
-        }
-        self.inner.background_shells(child_pid)
-    }
-
-    fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
-        if child_pid == 42_424 {
-            return Some(BackgroundProbe {
-                shells: self.shells.load(Ordering::SeqCst),
-                waits: self.waits.load(Ordering::SeqCst),
-                strays: Vec::new(),
-            });
-        }
-        self.inner.background_probe(child_pid)
-    }
-
-    fn reap_strays(&self, strays: &[StrayProcess]) -> usize {
-        self.inner.reap_strays(strays)
-    }
-}
 
 fn valid_spec(task: &str) -> String {
     format!(
@@ -230,10 +75,35 @@ async fn fixture() -> BoxResult<Fixture> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let shells = Arc::new(AtomicU32::new(0));
     let waits = Arc::new(AtomicU32::new(0));
-    let host = Arc::new(ProbedHost {
-        inner: PtySessionHost::new(exe),
-        shells: Arc::clone(&shells),
-        waits: Arc::clone(&waits),
+    // A synthetic live attempt (pid 42 424) whose background probe the test sets, without a
+    // real container; every other run goes to the real host.
+    let real = Arc::new(PtySessionHost::new(exe));
+    let host = Arc::new(crate::support::ScriptedHost {
+        inner: Some(real.clone()),
+        background_shells: Some(Box::new({
+            let (inner, shells) = (Arc::clone(&real), Arc::clone(&shells));
+            move |pid| {
+                if pid == 42_424 {
+                    return Some(shells.load(Ordering::SeqCst));
+                }
+                inner.background_shells(pid)
+            }
+        })),
+        background_probe: Some(Box::new({
+            let inner = Arc::clone(&real);
+            let (shells, waits) = (Arc::clone(&shells), Arc::clone(&waits));
+            move |pid| {
+                if pid == 42_424 {
+                    return Some(BackgroundProbe {
+                        shells: shells.load(Ordering::SeqCst),
+                        waits: waits.load(Ordering::SeqCst),
+                        strays: Vec::new(),
+                    });
+                }
+                inner.background_probe(pid)
+            }
+        })),
+        ..crate::support::ScriptedHost::default()
     });
     let h = harness_with(HarnessOptions {
         session_host: Some(host),
@@ -267,7 +137,7 @@ async fn fixture() -> BoxResult<Fixture> {
     git(&work, &["add", "-A"])?;
     git(&work, &["commit", "-q", "-m", "init"])?;
     git(&work, &["push", "-q", "origin", "HEAD:main", "HEAD:dev"])?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     h.github.strict.store(true, Ordering::SeqCst);
 
     let data = h.app.config.data_dir.clone();
@@ -704,7 +574,6 @@ async fn antigravity_armed_green_pr_with_yulius_wait_merges_and_is_not_working()
     Ok(())
 }
 
-/// SPEC-580 AC-2:
 /// An Antigravity Stop with `fullyIdle: false` while a NON-wait background command/subagent runs
 /// (no `yulius wait`) settles `activity = Waiting` (the agent is idle at its prompt) while keeping
 /// `background_shells >= 1` (`shows = working`, preserving SPEC-528 so it never falsely shows
@@ -787,7 +656,7 @@ async fn antigravity_stop_with_non_wait_background_work_preserves_spec_528_and_w
 /// is still stale (unfetched) and GitHub reports `mergeable = false`, `task_delivery` must report
 /// `pr.conflicts = true` and `merge_armed` must drop the arm telling the agent to resolve the
 /// conflict (rather than waiting with `"as soon as your turn ends"`). A union-driver collision on
-/// `CHANGES.md` must still report `pr.conflicts = false` after refresh (SPEC-491 M1).
+/// `CHANGES.md` must still report `pr.conflicts = false` after refresh.
 #[tokio::test]
 async fn armed_green_pr_conflict_reports_conflicts_true_and_drops_arm() -> TestResult {
     let f = fixture().await?;
@@ -845,7 +714,6 @@ async fn armed_green_pr_conflict_reports_conflicts_true_and_drops_arm() -> TestR
     Ok(())
 }
 
-/// SPEC-580 AC-4:
 /// An armed green PR that makes no progress past the stated bound must send a check-in to the
 /// agent, and if that does not move it, escalate to Needs You via SPEC-578 (`needs_you_notice`,
 /// `tasks_list` / `task_get`, `wait_history`), and auto-clear when the PR later moves/merges.
@@ -904,8 +772,15 @@ async fn stalled_armed_green_pr_checks_in_then_escalates_to_needs_you_and_auto_c
         !notice.action.is_empty() && !notice.link.is_empty(),
         "notice must include concrete action and link: {notice:?}"
     );
+    assert!(
+        notice
+            .problem
+            .as_deref()
+            .is_some_and(|p| p.contains("Yulius still sees the agent's turn as working")),
+        "notice must say why the PR waits: {notice:?}"
+    );
 
-    // Verify tasks_list and task_get parity (SPEC-578).
+    // Verify tasks_list and task_get parity.
     let caller = yulius_app::coordination::ProjectCaller {
         sandbox: f.sandbox.clone(),
         user: task.owner.clone(),
@@ -1082,7 +957,7 @@ async fn antigravity_stop_with_both_shell_and_wait_holds_until_shell_exits() -> 
     );
 
     // Real shell exits; only `yulius wait` remains. `probe_idle_shells` alone (without another
-    // Stop hook) must clear `background_shells` to 0 and unblock `decidable_in` (SPEC-580 F2).
+    // Stop hook) must clear `background_shells` to 0 and unblock `decidable_in`.
     f.shells.store(0, Ordering::SeqCst);
     f.waits.store(1, Ordering::SeqCst);
     app.probe_idle_shells(&id).await;
@@ -1149,7 +1024,7 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
 
     // Local `origin/dev` now matches `pull.base_sha`: even if `origin` becomes temporarily
     // unreachable (fetch fails), `pull_conflicts` must skip fetching, keep `conflicts = false`,
-    // and never drop the armed merge on a transient fetch failure (SPEC-580 review F3).
+    // and never drop the armed merge on a transient fetch failure.
     git(
         &f.repo,
         &["remote", "set-url", "origin", "/nonexistent/origin.git"],
@@ -1184,9 +1059,8 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
 /// SPEC-578 `needs_you_notice` mentioning `"even after a check-in to the agent"`.
 #[test]
 fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestResult {
-    use crate::pool_supervision::{
-        ScriptedUsage, build_served_tuned, new_task, runtime, screen, seed, stop, temp, wait_for,
-    };
+    use crate::support::eventually;
+    use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::model::Secret;
     use yulius_app::ports::github::{GitHubPort, NewPull};
@@ -1196,7 +1070,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let github = Arc::new(crate::support::FakeGitHub::default());
-    github.set_remote(Arc::new(Origin(data.join("origin.git"))));
+    github.set_remote(Arc::new(BareRemote(data.join("origin.git"))));
     github.add_user("code-admin", 1, "admin");
     github.set_perm("admin", "acme/pool", perms("write"));
     let agent = crate::support::agents::FakeAgentOptions {
@@ -1206,15 +1080,11 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_served_tuned(
-            &data,
-            &fake,
-            Arc::new(ScriptedUsage::default()),
-            agent,
-            github.clone(),
-            "http://127.0.0.1:9",
-            |config| config.goal_ready_ms = 500,
-        )?;
+        let live = Live {
+            github: github.clone(),
+            ..pool_live(&fake, agent)
+        };
+        let app = pool(live, &data, UNSERVED, |config| config.goal_ready_ms = 500)?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         app.deps
             .store
@@ -1236,7 +1106,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         git(&repo, &["fetch", "-q", "origin"])?;
 
         let id = new_task(&app, &sandbox, &user, "ArmedStall").await?;
-        wait_for("first answer", Duration::from_secs(30), || {
+        eventually("first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: ArmedStall: answer with an echo") }
         })
@@ -1251,7 +1121,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         let head = git(&worktree, &["rev-parse", "HEAD"])?;
         let pull = github
             .create_pull(
-                &Secret("token-admin".into()),
+                &Secret::new("token-admin".into()),
                 "acme",
                 "pool",
                 &NewPull {
@@ -1329,7 +1199,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         app.restore_armed_merges().await;
 
         // Use a generous escalation bound during the check-in loop so heavy CI load cannot skip
-        // past `CheckIn` straight to `Escalate` before the PTY quiet window opens (SPEC-580 F6).
+        // past `CheckIn` straight to `Escalate` before the PTY quiet window opens.
         let check_in_bounds = WatchBounds {
             check_in_after_ms: 60 * 60 * 1000,
             stall_after_ms: 60 * 60 * 1000,
@@ -1369,7 +1239,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
             sent.contains("has been green for") && sent.contains("Your armed merge"),
             "unexpected check-in text: {sent}"
         );
-        wait_for("check-in echoed on screen", Duration::from_secs(15), || {
+        eventually("check-in echoed on screen", Duration::from_secs(15), || {
             let shown = screen(&app, &id);
             async move { shown.contains("Your armed merge") }
         })
@@ -1412,7 +1282,6 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
     })
 }
 
-/// SPEC-580 review F1:
 /// An active `/internal/agent/wait` long-poll alone (even when `host.background_probe` reports
 /// `waits = 0, shells = 0`, e.g. on platforms or wrapper trees without `/proc` visibility) lets
 /// Antigravity `Stop { fullyIdle: false }` settle cleanly (`activity = Waiting`, `yulius_wait =
@@ -1510,7 +1379,6 @@ async fn antigravity_stop_with_active_agent_wait_rpc_settles_without_probe_waits
     Ok(())
 }
 
-/// SPEC-580 review F4:
 /// When a dirty-worktree armed green PR is merged directly on GitHub while local delivery is still
 /// `PrOpen`, `watch_prs` checks GitHub before escalating and must NOT falsely open a Needs You
 /// notice for an already-merged PR.
@@ -1558,7 +1426,6 @@ async fn stalled_armed_green_pr_already_merged_on_github_does_not_escalate() -> 
     Ok(())
 }
 
-/// SPEC-580 merge review F2:
 /// When a stalled armed green PR disarms and the unarmed `watch_prs` pass defers via
 /// `observed_only()` (e.g. GitHub installation lookup unavailable while checking a dropped
 /// singleton), all four armed-stall fields (`armed_green_key`, `armed_green_since_ms`,
@@ -1699,6 +1566,57 @@ async fn disarmed_pr_on_deferred_pass_resets_stall_clock_before_rearm() -> TestR
     assert!(
         summary_after.needs_you.is_none() && summary_after.needs_you_notice.is_none(),
         "re-arming the same head after a deferred disarm must not immediately re-escalate: {summary_after:?}"
+    );
+    Ok(())
+}
+
+/// An armed green pull request whose worktree Git cannot read is waiting for the same reason as a
+/// dirty one: the merge queue does not touch a branch it cannot read, and the Needs You notice
+/// says so instead of a generic sentence (audit L2 F2: one default for a failed read, dirty).
+#[tokio::test]
+async fn stalled_armed_green_pr_with_an_unreadable_worktree_says_uncommitted() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f
+        .task_with(
+            1,
+            Harness::Antigravity,
+            Activity::Waiting,
+            &[("a.txt", "x\n")],
+        )
+        .await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &head).await?;
+    f.advance_origin_dev("other.txt", "moved\n", true)?;
+    // A corrupt index: `git status` fails, so whether anything is uncommitted cannot be read.
+    let index = git(
+        &worktree,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    )?;
+    std::fs::write(&index, "not an index")?;
+    assert!(git(&worktree, &["status", "--porcelain"]).is_err());
+    let id = TaskId::parse("t1")?;
+
+    let bounds = WatchBounds::default();
+    let _ = app.watch_prs(&bounds).await;
+    f.h.clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+    f.h.clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+
+    let task = app.deps.store.task(&id).await?.ok_or("t1")?;
+    let summary = app.task_summary(&task).await?;
+    let notice = summary
+        .needs_you_notice
+        .as_ref()
+        .ok_or("expected a Needs You notice after the armed-PR stall bound")?;
+    assert!(
+        notice
+            .problem
+            .as_deref()
+            .is_some_and(|p| p.contains("Uncommitted changes remain in the task worktree")),
+        "a worktree Git cannot read counts as uncommitted: {notice:?}"
     );
     Ok(())
 }

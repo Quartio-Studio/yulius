@@ -7,7 +7,9 @@ status: draft
 
 <!-- The form `spec_check` validates (skill `om-spec-writing`): the frontmatter above, with
 `status` one of draft, approved, in-progress, done or abandoned, and the seven sections below.
-Omit nothing; a section that does not apply says why in one line. -->
+Omit nothing; a section that does not apply says why in one line. Title the spec by what it
+delivers and name its file after that title (`SPEC-NNN-<title-slug>.md`); `spec_check` names the
+file it expects. -->
 
 ## Goal
 
@@ -39,8 +41,9 @@ where a person must look (UI).
 
 ## Decisions
 
-Each choice with the alternatives and why; a lasting one is an ADR in `docs/decisions/`. Open
-questions are decided with a reversible default and recorded here.
+Each choice with the alternatives and why; an ADR in `docs/decisions/` only for a choice of how
+the system is built or run that someone may want to reverse. Open questions are decided with a
+reversible default and recorded here.
 
 <!-- Before `status: done`: every Plan item ticked and an `## Evidence` section with the
 commands run and their results. A skipped gate is not a passing gate; test names are not

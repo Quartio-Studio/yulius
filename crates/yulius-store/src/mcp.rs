@@ -11,7 +11,7 @@ use yulius_app::ports::store_ext::McpStore;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{DbResult, SqliteStore, bad_column, text_as, text_parsed};
 
 const COLS: &str = "id, sandbox_id, name, transport, command, args, url, env, headers, enabled, \
                     created_at, origin, owner_id";
@@ -19,8 +19,6 @@ const COLS: &str = "id, sandbox_id, name, transport, command, args, url, env, he
 fn from_row(row: &Row<'_>) -> rusqlite::Result<McpServerRecord> {
     let sandbox: Option<String> = row.get("sandbox_id")?;
     let transport: String = row.get("transport")?;
-    let args: String = row.get("args")?;
-    let origin: String = row.get("origin")?;
     let owner: Option<String> = row.get("owner_id")?;
     Ok(McpServerRecord {
         id: row.get("id")?,
@@ -32,13 +30,13 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<McpServerRecord> {
         transport: McpTransport::parse(&transport)
             .ok_or_else(|| bad_column("transport", &transport))?,
         command: row.get("command")?,
-        args: serde_json::from_str(&args).map_err(|_| bad_column("args", &args))?,
+        args: text_parsed(row, "args", "args", |text| serde_json::from_str(text))?,
         url: row.get("url")?,
         env: row.get::<_, Option<Vec<u8>>>("env")?.map(Sealed),
         headers: row.get::<_, Option<Vec<u8>>>("headers")?.map(Sealed),
         enabled: row.get("enabled")?,
         created_at: Timestamp(row.get("created_at")?),
-        origin: McpOrigin::parse(&origin).ok_or_else(|| bad_column("origin", &origin))?,
+        origin: text_as(row, "origin", "origin", McpOrigin::parse)?,
         owner_id: owner
             .as_deref()
             .map(|o| UserId::parse(o).map_err(|_| bad_column("owner id", o)))
@@ -55,38 +53,31 @@ fn scope_of(server: &McpServerRecord) -> (Option<&str>, Option<&str>) {
 }
 
 /// Fails with `Conflict` when another server of the same scope has the same name key.
-fn ensure_unique(tx: &Transaction<'_>, server: &McpServerRecord) -> AppResult<()> {
-    let mut stmt = tx
-        .prepare("SELECT id, name FROM mcp_servers WHERE sandbox_id IS ?1 AND owner_id IS ?2")
-        .map_err(db)?;
-    let rows = stmt
-        .query_map(scope_of(server), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
-        .map_err(db)?;
+fn ensure_unique(tx: &Transaction<'_>, server: &McpServerRecord) -> DbResult<()> {
+    let mut stmt =
+        tx.prepare("SELECT id, name FROM mcp_servers WHERE sandbox_id IS ?1 AND owner_id IS ?2")?;
+    let rows = stmt.query_map(scope_of(server), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
     let key = name_key(&server.name);
     for row in rows {
-        let (id, name) = row.map_err(db)?;
+        let (id, name) = row?;
         if id != server.id && name_key(&name) == key {
-            return Err(AppError::Conflict("duplicate MCP server name".into()));
+            return Err(AppError::Conflict("duplicate MCP server name".into()).into());
         }
     }
     Ok(())
 }
 
 /// Fails with `Capacity` when the scope of `server` already holds `max` other servers.
-fn ensure_room(tx: &Transaction<'_>, server: &McpServerRecord, max: u32) -> AppResult<()> {
-    let count: i64 = tx
-        .query_row(
-            "SELECT COUNT(*) FROM mcp_servers WHERE sandbox_id IS ?1 AND owner_id IS ?2 AND id != ?3",
-            params![scope_of(server).0, scope_of(server).1, server.id],
-            |r| r.get(0),
-        )
-        .map_err(db)?;
+fn ensure_room(tx: &Transaction<'_>, server: &McpServerRecord, max: u32) -> DbResult<()> {
+    let count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM mcp_servers WHERE sandbox_id IS ?1 AND owner_id IS ?2 AND id != ?3",
+        params![scope_of(server).0, scope_of(server).1, server.id],
+        |r| r.get(0),
+    )?;
     if count >= i64::from(max) {
-        return Err(AppError::Capacity(format!(
-            "at most {max} MCP servers per scope"
-        )));
+        return Err(AppError::Capacity(format!("at most {max} MCP servers per scope")).into());
     }
     Ok(())
 }
@@ -101,18 +92,14 @@ impl McpStore for SqliteStore {
         let sandbox = sandbox.as_str().to_owned();
         let person = person.map(|p| p.as_str().to_owned());
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM mcp_servers \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM mcp_servers \
                      WHERE (sandbox_id IS NULL OR sandbox_id = ?1) \
                        AND (owner_id IS NULL OR owner_id = ?2) \
                      ORDER BY sandbox_id IS NOT NULL, name COLLATE NOCASE"
-                ))
-                .map_err(db)?;
-            let rows = stmt
-                .query_map(params![sandbox, person], from_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map(params![sandbox, person], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -120,13 +107,11 @@ impl McpStore for SqliteStore {
     async fn mcp_servers_reaching(&self, sandbox: &SandboxId) -> AppResult<Vec<McpServerRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM mcp_servers WHERE sandbox_id IS NULL OR sandbox_id = ?1"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM mcp_servers WHERE sandbox_id IS NULL OR sandbox_id = ?1"
+            ))?;
+            let rows = stmt.query_map([sandbox], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -134,13 +119,12 @@ impl McpStore for SqliteStore {
     async fn mcp_server(&self, id: &str) -> AppResult<Option<McpServerRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLS} FROM mcp_servers WHERE id = ?1"),
                 [id],
                 from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -152,7 +136,7 @@ impl McpStore for SqliteStore {
     ) -> AppResult<()> {
         let s = server.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             ensure_room(&tx, &s, max_per_scope)?;
             ensure_unique(&tx, &s)?;
             tx.execute(
@@ -174,9 +158,8 @@ impl McpStore for SqliteStore {
                     s.origin.as_str(),
                     s.owner_id.as_ref().map(UserId::as_str),
                 ],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)
+            )?;
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -188,15 +171,14 @@ impl McpStore for SqliteStore {
     ) -> AppResult<bool> {
         let s = server.clone();
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let moved = tx
                 .query_row(
                     "SELECT sandbox_id IS NOT ?2 OR owner_id IS NOT ?3 FROM mcp_servers WHERE id = ?1",
                     params![s.id, scope_of(&s).0, scope_of(&s).1],
                     |r| r.get::<_, bool>(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             if moved == Some(true) {
                 ensure_room(&tx, &s, max_per_scope)?;
             }
@@ -220,9 +202,8 @@ impl McpStore for SqliteStore {
                         scope_of(&s).0,
                         scope_of(&s).1,
                     ],
-                )
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
+                )?;
+            tx.commit()?;
             Ok(n > 0)
         })
         .await
@@ -231,9 +212,7 @@ impl McpStore for SqliteStore {
     async fn delete_mcp_server(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            let n = c
-                .execute("DELETE FROM mcp_servers WHERE id = ?1", [id])
-                .map_err(db)?;
+            let n = c.execute("DELETE FROM mcp_servers WHERE id = ?1", [id])?;
             Ok(n > 0)
         })
         .await
@@ -276,11 +255,10 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1), ('u2', 'V', 0, 0, 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 'a', 'o', 'a', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         store
@@ -321,10 +299,7 @@ mod tests {
         assert!(store.update_mcp_server(&moved, 1).await?);
 
         store
-            .call(|c| {
-                c.execute("DELETE FROM users WHERE id = 'u1'", [])
-                    .map_err(db)
-            })
+            .call(|c| Ok(c.execute("DELETE FROM users WHERE id = 'u1'", [])?))
             .await?;
         assert!(store.mcp_server("mine").await?.is_none());
         assert!(store.mcp_server("other").await?.is_none());

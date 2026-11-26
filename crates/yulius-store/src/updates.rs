@@ -13,7 +13,7 @@ use yulius_app::vidoc_key::{StoredVidocKey, VidocOff};
 use yulius_domain::time::Timestamp;
 use yulius_domain::update::RunState;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{SqliteStore, bad_column, opt_ts, text_as};
 
 const RUN_COLS: &str = "id, target_commit, from_commit, summary, state, outcome, error, \
     requested_by, created_at, state_since, finished_at";
@@ -23,20 +23,19 @@ fn state(column: &str, text: &str) -> rusqlite::Result<RunState> {
 }
 
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<UpdateRunRecord> {
-    let current: String = row.get("state")?;
     let outcome: Option<String> = row.get("outcome")?;
     Ok(UpdateRunRecord {
         id: row.get("id")?,
         target_commit: row.get("target_commit")?,
         from_commit: row.get("from_commit")?,
         summary: row.get("summary")?,
-        state: state("update state", &current)?,
+        state: text_as(row, "state", "update state", RunState::parse)?,
         outcome: outcome.map(|o| state("update outcome", &o)).transpose()?,
         error: row.get("error")?,
         requested_by: row.get("requested_by")?,
         created_at: Timestamp(row.get("created_at")?),
         state_since: Timestamp(row.get("state_since")?),
-        finished_at: row.get::<_, Option<i64>>("finished_at")?.map(Timestamp),
+        finished_at: opt_ts(row, "finished_at")?,
     })
 }
 
@@ -45,23 +44,21 @@ impl UpdateStore for SqliteStore {
     async fn insert_update_run(&self, run: &UpdateRunRecord) -> AppResult<bool> {
         let r = run.clone();
         self.call(move |c| {
-            let inserted = c
-                .execute(
-                    &format!(
-                        "INSERT OR IGNORE INTO update_runs ({RUN_COLS}) \
+            let inserted = c.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO update_runs ({RUN_COLS}) \
                          VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?7, NULL)"
-                    ),
-                    params![
-                        r.id,
-                        r.target_commit,
-                        r.from_commit,
-                        r.summary,
-                        r.state.as_str(),
-                        r.requested_by,
-                        r.created_at.0
-                    ],
-                )
-                .map_err(db)?;
+                ),
+                params![
+                    r.id,
+                    r.target_commit,
+                    r.from_commit,
+                    r.summary,
+                    r.state.as_str(),
+                    r.requested_by,
+                    r.created_at.0
+                ],
+            )?;
             Ok(inserted > 0)
         })
         .await
@@ -69,28 +66,26 @@ impl UpdateStore for SqliteStore {
 
     async fn open_update_run(&self) -> AppResult<Option<UpdateRunRecord>> {
         self.call(|c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {RUN_COLS} FROM update_runs WHERE finished_at IS NULL"),
                 [],
                 run_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
 
     async fn last_update_run(&self) -> AppResult<Option<UpdateRunRecord>> {
         self.call(|c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!(
                     "SELECT {RUN_COLS} FROM update_runs ORDER BY created_at DESC, rowid DESC LIMIT 1"
                 ),
                 [],
                 run_from_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -107,22 +102,20 @@ impl UpdateStore for SqliteStore {
         let (id, error) = (id.to_owned(), error.map(str::to_owned));
         self.call(move |c| {
             let finished = to.is_terminal().then_some(at.0);
-            let changed = c
-                .execute(
-                    "UPDATE update_runs SET state = ?3, outcome = COALESCE(?4, outcome), \
+            let changed = c.execute(
+                "UPDATE update_runs SET state = ?3, outcome = COALESCE(?4, outcome), \
                      error = COALESCE(?5, error), state_since = ?6, finished_at = ?7 \
                      WHERE id = ?1 AND state = ?2 AND finished_at IS NULL",
-                    params![
-                        id,
-                        from.as_str(),
-                        to.as_str(),
-                        outcome.map(RunState::as_str),
-                        error,
-                        at.0,
-                        finished
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    id,
+                    from.as_str(),
+                    to.as_str(),
+                    outcome.map(RunState::as_str),
+                    error,
+                    at.0,
+                    finished
+                ],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -142,8 +135,7 @@ impl UpdateStore for SqliteStore {
                         ))
                     },
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(row.and_then(|(key, at, by)| {
                 key.map(|bytes| StoredJevKey {
                     sealed: Sealed(bytes),
@@ -169,8 +161,7 @@ impl UpdateStore for SqliteStore {
                      jev_key_set_by = NULL WHERE singleton = 1",
                     [],
                 ),
-            }
-            .map_err(db)?;
+            }?;
             Ok(())
         })
         .await
@@ -191,8 +182,7 @@ impl UpdateStore for SqliteStore {
                         ))
                     },
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(row.and_then(|(key, at, by)| {
                 key.map(|bytes| StoredVidocKey {
                     sealed: Sealed(bytes),
@@ -218,8 +208,7 @@ impl UpdateStore for SqliteStore {
                      vidoc_key_set_by = NULL WHERE singleton = 1",
                     [],
                 ),
-            }
-            .map_err(db)?;
+            }?;
             Ok(())
         })
         .await
@@ -233,8 +222,7 @@ impl UpdateStore for SqliteStore {
                     [],
                     |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(row.and_then(|(at, by)| {
                 at.map(|at| VidocOff {
                     at: Timestamp(at),
@@ -258,11 +246,10 @@ impl UpdateStore for SqliteStore {
                      WHERE singleton = 1",
                     [],
                 ),
-            }
-            .map_err(db)?;
+            }?;
             // A switch that is not stored would come back on at the next start.
             if changed == 0 {
-                return Err(AppError::Conflict("the instance is not set up yet".into()));
+                return Err(AppError::Conflict("the instance is not set up yet".into()).into());
             }
             Ok(())
         })
@@ -275,8 +262,7 @@ impl UpdateStore for SqliteStore {
                 .query_row("SELECT limits FROM instance WHERE singleton = 1", [], |r| {
                     r.get::<_, Option<String>>(0)
                 })
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(doc.flatten())
         })
         .await
@@ -285,14 +271,12 @@ impl UpdateStore for SqliteStore {
     async fn set_limits(&self, doc: &str) -> AppResult<()> {
         let doc = doc.to_owned();
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE instance SET limits = ?1 WHERE singleton = 1",
-                    params![doc],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "UPDATE instance SET limits = ?1 WHERE singleton = 1",
+                params![doc],
+            )?;
             if changed == 0 {
-                return Err(AppError::Conflict("the instance is not set up yet".into()));
+                return Err(AppError::Conflict("the instance is not set up yet".into()).into());
             }
             Ok(())
         })
@@ -314,8 +298,7 @@ impl UpdateStore for SqliteStore {
                         ))
                     },
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(row.and_then(|(channel, at, by)| {
                 Some(ChosenChannel {
                     channel: channel?,
@@ -345,11 +328,10 @@ impl UpdateStore for SqliteStore {
                      claude_channel_set_by = NULL WHERE singleton = 1",
                     [],
                 ),
-            }
-            .map_err(db)?;
+            }?;
             // A choice that is not stored would be gone at the next start.
             if changed == 0 {
-                return Err(AppError::Conflict("the instance is not set up yet".into()));
+                return Err(AppError::Conflict("the instance is not set up yet".into()).into());
             }
             Ok(())
         })

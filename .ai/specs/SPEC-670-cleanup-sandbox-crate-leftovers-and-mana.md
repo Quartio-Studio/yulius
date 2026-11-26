@@ -1,0 +1,75 @@
+---
+yulius-task: d7b795c0-7e49-483c-83e3-275950cd2471
+status: done
+---
+
+# SPEC-670: Cleanup: sandbox crate leftovers and manager.rs split (audit L5)
+
+Task metadata only. The cleanup charter of 2026-11-25 asks for no spec for this chore. Yulius
+starts no CI run for a branch that changes code without a valid task spec, so this file exists
+for that reason alone. The design and the evidence are in each pull request's description.
+
+## Goal
+
+Carry out audit L5 findings F1, F3, F9 and F2 in `crates/yulius-sandbox`, with no change in
+behaviour: less code, and a `manager.rs` a person can read.
+
+## Context
+
+The audit report and the charter are the owner's attachments (`audit-2026-11-25/L5-runtime-adapters.md`,
+`CHARTER.md`). F1 is blocked: `crates/yulius/src/sandbox_cli.rs` and `crates/yulius/src/docker_smoke.rs`,
+outside this task's paths, still reach `docker_bind`. F8 and F15 are excluded (the owner decides).
+
+## Requirements
+
+- **CLN-001** Behaviour stays the same. Nothing the sandbox isolates today becomes reachable.
+- **CLN-002** A file split moves code verbatim in its own commit.
+
+## Plan
+
+- [x] F1: check what outside the crate reaches docker_bind (blocked: sandbox_cli.rs, docker_smoke.rs)
+- [x] PR A: drop the SPEC-187 relay branches (record.engine) from the manager
+- [x] PR A: drop the unguarded-engine replacement (the outdated-front path covers it)
+- [x] PR A: keep the per-tick restore_leaf (it also re-passes cpu and pids after a restart; under Not done)
+- [x] PR A: update comments and docs that describe the removed code
+- [x] PR A: run the sandbox crate tests and quick checks
+- [x] PR A: independent review approved, merge armed
+- [x] PR B: move the Docker front code verbatim into manager/docker.rs
+- [x] PR B: move the image build code verbatim into manager/build.rs
+- [x] PR B: move the system-layer code verbatim into system_layer.rs
+- [x] PR B: tests, quick checks, review approved, merge armed
+- [x] PR C: group the front fields of Live into FrontState
+- [x] PR C: tests, quick checks, review approved, merge armed
+- [x] Closing summary with Not done list
+
+## Acceptance criteria
+
+- **AC-1** (CLN-001) `scripts/cargo nextest run -p yulius-sandbox` passes unchanged except for
+  the tests of deleted code, and Yulius CI is green on each pull request's head.
+- **AC-2** (CLN-002) `git diff --color-moved` shows the move commit as moves only.
+
+## Test plan
+
+The existing `yulius-sandbox` tests, and Yulius CI. No new behaviour, so no new tests.
+
+## Decisions
+
+- This file is the minimum Yulius needs to run CI for a chore (see above). No ADR.
+
+## Evidence
+
+- #1768 (F3): merged at 133be74a2. #1779 (F2 part a, verbatim move): merged at c1c04c54f.
+  #1783 (F2 part b, `FrontState`): merged at 2a7e86c4c. Each merged on its head's green Yulius CI
+  run (quality, lint, macos, docs, deps, file-contracts). The test shards and e2e are skipped on
+  pull request heads (merge-first) and run on the merged revision. The independent reviews
+  approved `7c6a36a8f` (#1768, followed by its review's nits: three comment lines and an ADR
+  wording), `bb5a0ce14` (#1779) and `3773d2ce3` (#1783).
+- Each pull request: `scripts/cargo nextest run -p yulius-sandbox --no-fail-fast` 298 passed,
+  2 skipped; clippy clean; `scripts/dev quick` passed. #1779: the move commit's removed and added
+  lines match apart from scaffolding, and `scripts/dev macos` passed (reviewer).
+- Not done, with reasons in the pull requests: F1 (`docker_bind` is reached from
+  `crates/yulius/src/sandbox_cli.rs` and `crates/yulius/src/docker_smoke.rs`); F3's contract parts
+  (`HolderRecord.engine`, `DockerServe::Relay`); F9 (the per-tick `restore_leaf` also passes `cpu`
+  and `pids` down again, `unsplit_all` is reached from `crates/yulius/src/serve.rs`,
+  `settle_engine_group` serves every preparation, `adopt` is used by `host_setup`); the F2 mode
+  enum (`DockerFrontRecord.mode` and `docker_smoke.rs`). Security scan: disabled (Vidoc off).

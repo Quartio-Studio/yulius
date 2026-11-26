@@ -2584,6 +2584,7 @@ a.dl-task:hover { text-decoration: underline; }
 .modal .recovery-card { box-shadow: none; border: 0; padding: 0; max-width: none; }
 .modal .recovery-card .auth-logo { display: none; }
 .token-totals { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; }
+.account-billing { border-top: 1px solid var(--border); padding-top: 8px; }
 .kv-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: var(--fs-sm); line-height: var(--lh-sm); }
 
 /* ---------------------------------------------------------------- Brand details

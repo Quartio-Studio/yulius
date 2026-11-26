@@ -1,0 +1,152 @@
+---
+yulius-task: 8bb13626-56f5-427f-9a6d-8a2b592cd63e
+status: done
+---
+
+# SPEC-669: Cleanup of the secrets, vault and auth helpers (audit L4)
+
+## Goal
+
+Carry out findings F2, F5, F6, F7, F8 and F3 of the November 2026 L4 audit (secrets, identity, key
+custody) as behaviour-preserving cleanups, one pull request each, delivered in that order. Less
+code that does the same thing; sealing, injection, redaction and authorisation behave exactly as
+before and their existing tests pass unchanged.
+
+## Context
+
+- The audit report and the cleanup charter are attachments of the task (`audit-2026-11-25/`). The
+  charter asks chores for no spec; this file exists only because delivery opens no pull request
+  without one, and it holds no design.
+- Paths of this task: `yulius-app/src/vault/**`, `accounts.rs`, `auth.rs`, `scopes.rs`,
+  `admin.rs`, `access.rs`, `yulius-egress/**`, `yulius-domain/src/vault/**`,
+  `yulius-domain/src/redact.rs`, `yulius-harness/src/scrub_client.rs` and `secret.rs`. Parallel
+  tasks held `supervisor.rs` (#650), `mcp.rs` and `ports/**` (#656), `yulius-git/**` and
+  `yulius-github/**` (#651), `ci/**` (#652); #650 and #656 have since merged.
+- Out of scope by the request: F1, F4, F9 and Q5.
+
+## Requirements
+
+- R1. Every refusal text, audit entry and decision stays as it is.
+- R2. No test is weakened or deleted except tests of deleted code; folded tests keep every case.
+- R3. A file held by a parallel task is left and named under "Not done" in the pull request.
+- R4. The two possible authorisation gaps of the report's Q3 are checked first and, when real,
+  reported to the owner instead of fixed.
+
+## Plan
+
+- [x] F2: one named-agent-secret lookup and one personal/production refusal in the vault tools
+- [x] F2: one argument parser and one scrub-file planner in the vault tools
+- [x] F2: independent review of the vault-preamble PR
+- [x] F5: Q3 authorisation gaps checked (agent_git_credential, handoffs owner check)
+- [x] F5: one instance-admin rule (UserRecord::is_admin) and one token-scope rule (token_allows)
+- [x] F5: independent review of the auth-helper PR
+- [x] F6: one zeroizing Secret type shared by every crate
+- [x] F6: constructor shim removed, call sites moved to Secret::new
+- [x] F6: independent review of the Secret PR
+- [x] F7: one JSON string walker for redaction
+- [x] F7: one sandbox redaction for texts and records, the withheld text once
+- [x] F7: independent review of the redaction PR
+- [x] F8: pure egress decision with unit tests
+- [x] F8: egress_apply calls the pure decision
+- [x] F8: independent review of the egress PR
+- [x] F3: one no-follow bounded reader for login files
+- [x] F3: provide_cli and the shared credential constants
+- [x] F3: independent review of the credential-reader PR
+
+## Acceptance criteria
+
+- AC1. Each delivered finding's pull request merged into `dev` on green Yulius CI, or the finding
+  listed under "Not done" with the reason.
+- AC2. The touched test binaries pass with their existing assertions unchanged.
+
+## Test plan
+
+- `cargo test -p yulius-app --lib` and the whole `yulius` integration binary (`--test main`)
+  for every vault and auth change; the domain, harness and egress crates' own tests when touched.
+
+## Decisions
+
+- The vault's `session_hash.is_none()` checks stay: the two-factor unlock is stored per session
+  hash, and they equal `!is_browser()` only through how `auth.rs` builds contexts.
+- F5: one `UserRecord::is_admin` (not on `AuthContext`): the event fan-out, notices and the
+  login-terminal recheck hold a `UserRecord`, so one helper covers every site. The gating sites
+  keep their own refusal texts, so none is routed through `require_instance_admin` or
+  `require_superadmin` (their texts differ). `AuthContext::token_allows` folds the three copies of
+  "a token's scope narrows, a session's does not". The disabled-user rechecks after the extractor
+  stay: `App` methods are also called with contexts built outside the HTTP extractor, and no test
+  proves each of them refuses a disabled person first.
+- F6: the one `Secret` lives in `yulius-contracts`, not `yulius-domain` as the audit proposed:
+  the domain crate may use only `thiserror` and `toml`, and any other dependency (`zeroize`)
+  needs a boundary decision (`scripts/check_repository.py`), which a chore does not take. Every
+  crate that held a copy already depends on `yulius-contracts`. `new` takes `impl Into<String>`
+  as the GitHub and import copies did; a credential file's bytes use `Secret::bytes`.
+- F6: the GitHub installation flag stays on `model::Secret`, which now wraps the shared type.
+  Moving it to a GitHub port bearer type changes the token parameter of 23 port methods: 77
+  compile errors in 28 app files, most held by #651 (delivery) and #652 (ci), plus the wiring
+  adapter and two test fakes. That is beyond this chore's size and lanes.
+- F6: the GitHub copy printed `Secret([redacted])` under `Debug` and had a `Display`; the shared
+  type prints `Secret(<redacted>)` like the other three, and nothing formatted the GitHub one
+  with `Display`. Neither ever printed the value.
+- F7: `redact_json_strings` lives in `yulius-contracts` beside `Secret`, for the same reason
+  (the domain crate has no `serde_json`); transcripts, imports, the scrub client and MCP share it.
+- F7: the URL-userinfo and JWT scrubbers of `yulius-git`, `yulius-import` and `yulius-github`
+  keep their own code: they redact differently from the domain detectors. The domain JWT
+  detector wants segments of 12, 12 and 10 characters and a second `eyJ` segment (the GitHub
+  scrubber's own test token, third segment `c2ln`, would pass unredacted). For URLs, `yulius-git`
+  replaces the whole userinfo, the domain only the password and not a placeholder, and
+  `yulius-import` drops the userinfo. Sharing them changes what is redacted.
+- F7 changes `mcp.rs`, `transcripts.rs` and `yulius-import/src/redact.rs` because the finding
+  names their walkers; no live task held them (#656 had merged).
+- F8: the pure decision (`decide` in `vault/runtime.rs`) stays in the app, not
+  `yulius-domain/src/vault` as the audit proposed: it reads `VaultSecretRecord`, `AgentPayload`,
+  `EgressRequest`, `RuleCheck` and the substitution helpers, all app types, and moving them is
+  no cleanup. The liveness check, Vidoc, the loads, the audits and the control-character log
+  stay in `egress_apply`; the decision has unit tests without an `App`.
+- F3: `files::read_bounded_at(dir, name, max)` opens with `O_NOFOLLOW | O_NONBLOCK`, reserves
+  the room, reads at most `max` bytes and zeroes a copy it does not hand back; each caller keeps
+  its own mapping of a missing file, a link and a read error to its own result or refusal text.
+  `read_login_file` keeps its path signature (its tests are unchanged): its folder is opened by
+  path and the file below it without following a link, so a link swapped in after the old
+  `symlink_metadata` check is no longer followed (the audit's one stated change; the texts stay).
+  The run readers zero an oversized or half-read Codex copy too, as the Antigravity one did. One
+  corner differs: a `codex` folder the server may search but not list (never made so: it is
+  created 0700) now refuses with "did not store credentials", as the folder is opened to read.
+- F3: the credential constants live once in `yulius_domain::harness` and `yulius-harness`
+  re-exports them: the app may not depend on an adapter crate, so "export them from
+  yulius-harness" would not reach `accounts.rs` and the supervisor.
+- F3: `HarnessPort::provide_cli(provider, install)` replaces the provider matches at the account
+  creation, the background warm-up after a key or file, the sign-in start and the start
+  preflight. The startup warm-up keeps its two calls (each logs its own line) and the launch its
+  two (they fill different fields).
+- Helpers stay inside the vault module where the copies are all there (`parse_args`, `named`),
+  so the parallel MCP-argument cleanup (#656) is not raced.
+
+## Evidence
+
+- Delivered, each merged into `dev` on green Yulius CI after an independent review of its head:
+  - F2: PR #1780;
+  - F5: PR #1790;
+  - F6: PR #1822 (round 2 approved after the restored changes log and a whole-value assertion);
+  - F7: PR #1823;
+  - F8: PR #1827;
+  - F3: PR #1828 (approved; its two minors, a file refused unread by its metadata and a socket
+    as "not usable", are fixed in its last product commit).
+- For each PR: `cargo clippy --workspace --all-targets -- -D warnings` was clean, and
+  `cargo test -p yulius-app --lib` passed in full (741 to 744 tests). The touched crates'
+  tests passed: contracts, github, import, harness, store, server, egress and domain, as each
+  PR touched them.
+- `cargo test -p yulius --test main` (about 2,860 tests) passed for each PR except
+  `watches::run_bounds_are_enforced`. That test fails in this sandbox and on `dev` alike
+  (SIGXFSZ instead of EFBIG, #1795). `context_full::a_compaction_held_at_a_restart_is_taken_up_again`
+  failed once with `AddrInUse` on the shared host and passed 5/5 alone.
+- Q3: both authorisation gaps are real. They were reported to the owner (`needs_you`) and task
+  #659 (PR #1821, in review) fixes them, not this task:
+  - `hooks.rs` `agent_git_credential` gives a disabled person's runs a token;
+  - `handoffs.rs` `answer_handoff` checks the owner, not Control.
+- Not done:
+  - F6: the GitHub installation flag stays on `model::Secret`. The move breaks 28 app files,
+    most held by #651 and #652.
+  - F7: the URL and JWT scrubbers outside the domain stay, because sharing them changes what
+    is redacted.
+  - F1, F4, F9 and Q5: excluded by the request.
+- The security scan (Vidoc) is disabled for this project and was not run.

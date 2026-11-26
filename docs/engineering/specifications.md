@@ -6,8 +6,6 @@ briefing) in the form `spec_check` validates: start from [the template](../../.a
 and skill `om-spec-writing`. Record observable behavior, constraints, decisions and evidence
 rather than a code narrative.
 
-The form: a frontmatter with `yulius-task` (the task's id) and `status`, then the sections Goal,
-Context, Requirements, Plan (a `- [ ]` checklist), Acceptance criteria, Test plan and Decisions.
 The status moves draft → approved (optional) → in-progress → done, or abandoned; `done` needs
 every Plan item ticked and an Evidence section with the commands run and their results.
 `delivery_merge` refuses a head whose spec does not validate. The status is also the task's own
@@ -18,10 +16,15 @@ its last slice and sets `done` with it
 ([ADR-0332](../decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
 
 Use stable requirement IDs and acceptance scenarios. Separate user requirements, source
-observations and proposed defaults. Decide open questions with a reversible default and
-record it under Decisions; a lasting choice is an ADR in `docs/decisions/`, with alternatives
-and consequences. An explicit implementation request authorizes its scope, without an extra
-approval ceremony for routine engineering choices.
+observations and proposed defaults. Decide open questions with a reversible default and record
+it under Decisions. An ADR in `docs/decisions/` is only for a choice of how the system is built
+or run that someone may want to reverse (a dependency, an external service, a storage or wire
+format, the process or isolation model, a security boundary), with at least two rejected
+alternatives, one list item each; product behavior goes in the product summary. Refine an ADR in
+place; write a new one only to reverse it. The repository check refuses a branch that adds two
+ADRs, one with fewer than two alternatives, or one beside changes only to the web UI and its e2e
+tests. An explicit implementation request authorizes its scope, without an extra approval
+ceremony for routine engineering choices.
 
 For every nonterminal execution state, name its owner, exit trigger and failure/recovery
 behavior. Define boundaries, limits, cancellation and compatibility where they affect the

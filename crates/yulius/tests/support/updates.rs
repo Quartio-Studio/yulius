@@ -1,4 +1,4 @@
-//! A fake `main` source and update helper (SPEC-002 ADR-18): what GitHub shows and what the root
+//! A fake `main` source and update helper: what GitHub shows and what the root
 //! helper reports, set by the test.
 
 use std::collections::HashMap;
@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::support::pending::UnavailableSessionHost;
 use async_trait::async_trait;
-use yulius::wiring::pending::UnavailableSessionHost;
 use yulius_app::error::AppResult;
 use yulius_app::model::Secret;
 use yulius_app::ports::session::{
@@ -96,9 +96,9 @@ pub struct FakeHelper {
     pub requests: Mutex<Vec<HelperRequest>>,
     pub status: Mutex<Option<HelperStatus>>,
     pub cleared: AtomicUsize,
-    /// The kept re-check of the host (SPEC-203 HST-012).
+    /// The kept re-check of the host.
     pub host_check: Mutex<Option<yulius_contracts::update::HostCheckReport>>,
-    /// Why a restart would leave the server down (SPEC-458 RST-003).
+    /// Why a restart would leave the server down.
     pub blocker: Mutex<Option<String>>,
 }
 
@@ -143,7 +143,7 @@ impl FakeHelper {
 }
 
 impl FakeHelper {
-    /// Adds the new version's host re-check to the current status (SPEC-203 HST-012).
+    /// Adds the new version's host re-check to the current status.
     pub fn report_host_check(&self, report: yulius_contracts::update::HostCheckReport) {
         if let Ok(mut status) = self.status.lock()
             && let Some(status) = status.as_mut()
@@ -189,7 +189,7 @@ pub fn services(build: &str, source: &Arc<FakeSource>, helper: &Arc<FakeHelper>)
     services
 }
 
-/// A process host that freezes runs as the cgroup freezer would (SPEC-160): runs answer
+/// A process host that freezes runs as the cgroup freezer would: runs answer
 /// [`RunFreeze::Frozen`] unless set otherwise; every freeze, thaw and sweep is recorded.
 pub struct FreezingHost {
     /// What freezing a run directory answers (default frozen).

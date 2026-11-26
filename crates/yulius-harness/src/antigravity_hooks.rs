@@ -83,10 +83,33 @@ pub(crate) fn run(
     hold: HoldPolicy,
 ) -> i32 {
     let answer = answer(event, input, env, hold);
+    let readonly = !crate::memory_hook::guarded_paths(env).is_empty();
+    let answer = with_read_only_notice(event, answer, readonly);
     let _ignored = output
         .write_all(answer.to_string().as_bytes())
         .and_then(|()| output.flush());
     0
+}
+
+/// `answer` to `event`, with the sentence that the session's rules are read-only and where
+/// lasting knowledge goes injected at its start when it has `readonly` paths (SPEC-652 MEM-006):
+/// the CLI has no hook after a tool, so a refused write is explained up front.
+fn with_read_only_notice(event: &str, answer: Value, readonly: bool) -> Value {
+    if event != "SessionStart" || !readonly {
+        return answer;
+    }
+    let notice = json!({ "systemMessage": {
+        "systemMessage": yulius_contracts::hooks::MEMORY_READ_ONLY_SENTENCE
+    } });
+    let mut answer = match answer {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    };
+    match answer.entry("injectSteps").or_insert_with(|| json!([])) {
+        Value::Array(steps) => steps.push(notice),
+        other => *other = json!([notice]),
+    }
+    Value::Object(answer)
 }
 
 /// What the CLI is told when Yulius has nothing to say: go on.
@@ -301,6 +324,30 @@ mod tests {
             from_claude("SessionStart", "SessionStart", b"{}"),
             json!({})
         );
+    }
+
+    /// SPEC-652 MEM-006: an Antigravity session with read-only rules is told the sentence at its
+    /// start, after what Yulius says or alone; one without, and other events, are not.
+    #[test]
+    fn a_session_with_read_only_rules_is_told_why_at_its_start() {
+        let sentence = yulius_contracts::hooks::MEMORY_READ_ONLY_SENTENCE;
+        let said = json!({ "injectSteps": [{ "systemMessage": { "systemMessage": "briefing" } }] });
+        assert_eq!(
+            with_read_only_notice("SessionStart", said.clone(), true),
+            json!({ "injectSteps": [
+                { "systemMessage": { "systemMessage": "briefing" } },
+                { "systemMessage": { "systemMessage": sentence } },
+            ] })
+        );
+        assert_eq!(
+            with_read_only_notice("SessionStart", json!({}), true),
+            json!({ "injectSteps": [{ "systemMessage": { "systemMessage": sentence } }] })
+        );
+        assert_eq!(
+            with_read_only_notice("SessionStart", said.clone(), false),
+            said
+        );
+        assert_eq!(with_read_only_notice("Stop", json!({}), true), json!({}));
     }
 
     /// A payload without a prompt is no turn's start; an unknown event asks nothing.

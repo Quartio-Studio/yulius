@@ -33,7 +33,10 @@ use yulius_contracts::api::admin::{
 };
 use yulius_contracts::events::UiEvent;
 use yulius_contracts::terminal::TerminalServerMsg;
-use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, OFFERED_CLAUDE_MODELS, Provider};
+use yulius_domain::harness::{
+    CLAUDE_TOKEN_MIN_BODY, CLAUDE_TOKEN_PREFIX, CODEX_AUTH_MAX_BYTES as CODEX_LOGIN_AUTH_MAX,
+    DEFAULT_CLAUDE_MODEL, OFFERED_CLAUDE_MODELS, Provider,
+};
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, ModelFamily, UsageWindow};
@@ -80,10 +83,6 @@ pub const LOGIN_INPUT_MAX: usize = 64 * 1024;
 pub const LABEL_MAX: usize = 80;
 /// Longest pasted token, prefix included (SPEC-502 TKP-003).
 pub const PASTED_TOKEN_MAX: usize = 512;
-/// Prefix of the long-lived token `claude setup-token` prints.
-const CLAUDE_TOKEN_PREFIX: &str = "sk-ant-oat01-";
-/// Fewest token characters after the prefix (as the login terminal's capture).
-const CLAUDE_TOKEN_MIN_BODY: usize = 20;
 /// Why a pasted token was not taken: its shape (never the token itself).
 const PASTED_TOKEN_SHAPE: &str = "the token must be what claude setup-token prints: \
      sk-ant-oat01- followed by letters, digits, - and _ (at most 512 characters)";
@@ -297,39 +296,37 @@ impl LoginTerminal {
     }
 }
 
-/// The largest `auth.json` a Codex sign-in may leave (`yulius_harness::login`'s bound).
-const CODEX_LOGIN_AUTH_MAX: usize = 1024 * 1024;
-
 /// The credentials file a Codex sign-in wrote at `path`, when it is a plain file within
-/// [`CODEX_LOGIN_AUTH_MAX`] and `problem` finds none in it; a refused copy is scrubbed
-/// (SPEC-503 CDX-005). The bound is checked before reading, and the
-/// read itself is bounded too: the sign-in's process writes it.
+/// [`CODEX_LOGIN_AUTH_MAX`] and `problem` finds none in it. It is opened without following a link
+/// and read bounded, as the sign-in's process writes it; a refused copy is zeroed.
 fn read_login_file(
     path: &Path,
     problem: impl FnOnce(&[u8]) -> Option<String>,
 ) -> Result<Vec<u8>, String> {
-    let agent = "Codex";
-    use std::io::Read as _;
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|_| format!("the {agent} sign-in did not store credentials"))?;
-    let too_large = || format!("the {agent} credentials file is too large");
-    if !meta.is_file() {
-        return Err(format!("the {agent} credentials file is not usable"));
-    }
-    if meta.len() > CODEX_LOGIN_AUTH_MAX as u64 {
-        return Err(too_large());
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .and_then(|file| {
-            file.take(CODEX_LOGIN_AUTH_MAX as u64 + 1)
-                .read_to_end(&mut bytes)
-        })
-        .map_err(|_| format!("the {agent} credentials file could not be read"))?;
-    if bytes.len() > CODEX_LOGIN_AUTH_MAX {
-        scrub(Some(bytes));
-        return Err(too_large());
-    }
+    use crate::files::Bounded;
+    let missing = || "the Codex sign-in did not store credentials".to_owned();
+    let unusable = || "the Codex credentials file is not usable".to_owned();
+    let unreadable = || "the Codex credentials file could not be read".to_owned();
+    let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(missing());
+    };
+    let dir = crate::files::open_dirs_below(folder, &[], false).map_err(|_| missing())?;
+    let bytes = match crate::files::read_bounded_at(&dir, name, CODEX_LOGIN_AUTH_MAX) {
+        Ok(Bounded::Bytes(mut bytes)) => std::mem::take(&mut *bytes),
+        Ok(Bounded::NotPlain) => return Err(unusable()),
+        Ok(Bounded::TooLarge) => return Err("the Codex credentials file is too large".into()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(missing()),
+        // A link, or a socket (which cannot be opened).
+        Err(err)
+            if matches!(
+                err.raw_os_error(),
+                Some(nix::libc::ELOOP | nix::libc::ENXIO)
+            ) =>
+        {
+            return Err(unusable());
+        }
+        Err(_) => return Err(unreadable()),
+    };
     match problem(&bytes) {
         None => Ok(bytes),
         Some(why) => {
@@ -418,6 +415,7 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         in_use_by: in_use_count(&account.id, live),
         tokens_24h: None,
         tokens_7d: None,
+        billing: None,
         usage_read: None,
     }
 }
@@ -531,7 +529,7 @@ struct PastedToken(Secret);
 
 impl PastedToken {
     fn wipe(&mut self) {
-        self.0.0.zeroize();
+        self.0.zeroize();
         #[cfg(test)]
         PASTED_WIPES.with(|wipes| wipes.set(wipes.get() + 1));
     }
@@ -561,7 +559,7 @@ fn pasted_token(token: &str) -> AppResult<PastedToken> {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         });
     if shaped {
-        Ok(PastedToken(Secret(token.to_owned())))
+        Ok(PastedToken(Secret::new(token.to_owned())))
     } else {
         Err(AppError::Invalid(PASTED_TOKEN_SHAPE.into()))
     }
@@ -576,7 +574,7 @@ fn human_duration(d: Duration) -> String {
     }
 }
 
-fn actor(ctx: &AuthContext) -> String {
+pub(crate) fn actor(ctx: &AuthContext) -> String {
     ctx.user.label()
 }
 
@@ -697,7 +695,7 @@ impl App {
         self.config.data_dir.join("logins")
     }
 
-    fn publish_account(&self, view: AccountView) {
+    pub(crate) fn publish_account(&self, view: AccountView) {
         self.events.publish(
             None,
             true,
@@ -711,12 +709,13 @@ impl App {
         let store = &self.deps.store;
         if let (Ok(Some(account)), Ok(live)) =
             (store.account(id).await, self.working_attempts().await)
+            && let Ok(view) = self.account_view_with_billing(&account, &live).await
         {
-            self.publish_account(account_view(&account, &live));
+            self.publish_account(view);
         }
     }
 
-    async fn load_account(&self, id: &str) -> AppResult<AccountRecord> {
+    pub(crate) async fn load_account(&self, id: &str) -> AppResult<AccountRecord> {
         let id = AccountId::parse(id).map_err(|_| AppError::NotFound)?;
         self.deps
             .store
@@ -755,6 +754,7 @@ impl App {
         let day = store.account_tokens(now.plus_millis(-DAY_MS)).await?;
         let week = store.account_tokens(now.plus_millis(-7 * DAY_MS)).await?;
         let runs = store.token_runs(now.plus_millis(-7 * DAY_MS)).await?;
+        let mut billing = self.billing_views().await?;
         let find = |list: &[crate::model::AccountTokens], id: &str| {
             list.iter().find(|t| t.account_id == id).cloned()
         };
@@ -764,6 +764,7 @@ impl App {
             .iter()
             .map(|a| {
                 let mut view = account_view(a, &live);
+                view.billing = billing.remove(&a.id);
                 let cost = |days: i64| account_cost(&runs, &a.id, now.plus_millis(-days * DAY_MS));
                 view.tokens_24h = Some(TokenTotalsView {
                     cost_usd: cost(1),
@@ -818,7 +819,9 @@ impl App {
         };
         let usage_read = refreshed.map_err(|failure| AppError::Upstream(failure.message))?;
         let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
-        let mut view = account_view(&updated, &self.working_attempts().await?);
+        let mut view = self
+            .account_view_with_billing(&updated, &self.working_attempts().await?)
+            .await?;
         view.usage_read = Some(usage_read);
         let now = self.now();
         view.tokens_24h = Some(totals_view(
@@ -925,7 +928,7 @@ impl App {
             .open(sealed)
             .ok()
             .and_then(|bytes| String::from_utf8(bytes).ok())
-            .map(Secret)
+            .map(Secret::new)
             .ok_or_else(|| UsageFailure::new("the stored credential cannot be read"))
     }
 
@@ -1264,14 +1267,10 @@ impl App {
             }
             None => None,
         };
-        // A Codex sign-in needs the Codex CLI: installed before the account exists, so a request
-        // that waits for it and goes away leaves no account without a sign-in (SPEC-503 CLI-002).
-        if sealed.is_none() && provider == Provider::OpenAi {
-            self.deps.harness.provide_codex(true).await?;
-        }
-        // An Antigravity sign-in needs its CLI the same way (SPEC-505 AGY-007).
-        if sealed.is_none() && provider == Provider::Google {
-            self.deps.harness.provide_antigravity(true).await?;
+        // A Codex or Antigravity sign-in needs its CLI: installed before the account exists, so a
+        // request that waits for it and goes away leaves no account without a sign-in.
+        if sealed.is_none() {
+            self.deps.harness.provide_cli(provider, true).await?;
         }
         let store = &self.deps.store;
         let now = self.now();
@@ -1314,13 +1313,7 @@ impl App {
             // does not wait for it (SPEC-503 CLI-001, SPEC-505 AGY-007).
             let app = Arc::clone(self);
             tokio::spawn(async move {
-                let provided = match provider {
-                    Provider::Google => app.deps.harness.provide_antigravity(true).await,
-                    Provider::OpenAi => app.deps.harness.provide_codex(true).await,
-                    // A Claude account takes no API key or file: it never gets here.
-                    Provider::Anthropic => Ok(None),
-                };
-                if let Err(err) = provided {
+                if let Err(err) = app.deps.harness.provide_cli(provider, true).await {
                     tracing::warn!(error = %err, "the agent CLI is not ready; the next start tries again");
                 }
             });
@@ -1521,7 +1514,9 @@ impl App {
         }
         self.capacity_changed();
         let account = store.account(id).await?.ok_or(AppError::NotFound)?;
-        let view = account_view(&account, &self.working_attempts().await?);
+        let view = self
+            .account_view_with_billing(&account, &self.working_attempts().await?)
+            .await?;
         self.publish_account(view.clone());
         let app = Arc::clone(self);
         let id = account.id.clone();
@@ -1579,7 +1574,9 @@ impl App {
             .account(&account.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let view = account_view(&updated, &self.working_attempts().await?);
+        let view = self
+            .account_view_with_billing(&updated, &self.working_attempts().await?)
+            .await?;
         self.publish_account(view.clone());
         Ok(view)
     }
@@ -1766,7 +1763,9 @@ impl App {
             )
             .await?;
         let account = self.load_account(account.id.as_str()).await?;
-        let view = account_view(&account, &self.working_attempts().await?);
+        let view = self
+            .account_view_with_billing(&account, &self.working_attempts().await?)
+            .await?;
         self.publish_account(view.clone());
         self.capacity_changed();
         Ok(AccountLoginStarted {
@@ -1798,7 +1797,9 @@ impl App {
             )
             .await?;
         Ok(AccountLoginStarted {
-            account: account_view(&account, &self.working_attempts().await?),
+            account: self
+                .account_view_with_billing(&account, &self.working_attempts().await?)
+                .await?,
             login_id: Some(session.id.clone()),
         })
     }
@@ -1838,9 +1839,7 @@ impl App {
         async move {
             match app.signed_in_user(&ctx).await {
                 None => Some("signed out"),
-                Some(user) if !(user.is_superadmin || user.is_instance_admin) => {
-                    Some("access revoked")
-                }
+                Some(user) if !user.is_admin() => Some("access revoked"),
                 Some(_) => None,
             }
         }
@@ -1969,24 +1968,14 @@ impl App {
         self: &Arc<Self>,
         account: &AccountRecord,
     ) -> AppResult<Arc<LoginSession>> {
-        // Codex signs in with the CLI Yulius provides, installed before the start lock so a first
-        // install holds no other sign-in (SPEC-503 CLI-002).
-        let program = match account.provider {
-            Provider::OpenAi => self
-                .deps
-                .harness
-                .provide_codex(true)
-                .await?
-                .map(|cli| cli.program),
-            // Antigravity signs in with the CLI Yulius provides too (SPEC-505 AGY-007).
-            Provider::Google => self
-                .deps
-                .harness
-                .provide_antigravity(true)
-                .await?
-                .map(|cli| cli.program),
-            Provider::Anthropic => None,
-        };
+        // Codex and Antigravity sign in with the CLI Yulius provides, installed before the start
+        // lock so a first install holds no other sign-in.
+        let program = self
+            .deps
+            .harness
+            .provide_cli(account.provider, true)
+            .await?
+            .map(|cli| cli.program);
         let _serialized = self.logins.start.lock().await;
         self.prune_logins();
         let replaced = {
@@ -2417,7 +2406,7 @@ impl App {
             Err("the sign-in was replaced by an imported auth.json".to_owned())
         } else {
             self.take_credential(session)
-                .map(Secret)
+                .map(Secret::new)
                 .ok_or_else(|| "the sign-in ended without producing a token".to_owned())
         };
         // A cancel that comes after the token was printed still keeps it: the sign-in had
@@ -2444,7 +2433,7 @@ impl App {
             Some(Ok(mut secret)) => {
                 let stored = self.store_credential(&session.account_id, &secret).await;
                 // The plaintext copy goes once the credential is sealed (or could not be).
-                secret.0.zeroize();
+                secret.zeroize();
                 match stored {
                     Ok(()) => LoginPhase::Succeeded,
                     // The account was removed meanwhile: nothing to sign in.
@@ -2595,6 +2584,34 @@ mod tests {
         std::os::unix::fs::symlink(&path, &link)?;
         assert!(read_login_file(&link, usable).is_err());
         assert!(read_login_file(dir.path(), usable).is_err());
+        Ok(())
+    }
+
+    /// Each kind of unusable sign-in file keeps its own refusal: a socket and a link are "not
+    /// usable" like a folder, a missing file is not stored, a larger one is too large.
+    #[test]
+    fn a_codex_sign_ins_unusable_file_says_why() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let usable = |_: &[u8]| None;
+        let unusable = Err("the Codex credentials file is not usable".to_owned());
+        let path = dir.path().join("auth.json");
+        assert_eq!(
+            read_login_file(&path, usable),
+            Err("the Codex sign-in did not store credentials".to_owned())
+        );
+        let socket = dir.path().join("socket.json");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
+        assert_eq!(read_login_file(&socket, usable), unusable);
+        std::fs::write(&path, b"{}")?;
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link)?;
+        assert_eq!(read_login_file(&link, usable), unusable);
+        assert_eq!(read_login_file(dir.path(), usable), unusable);
+        std::fs::File::create(&path)?.set_len(u64::try_from(CODEX_LOGIN_AUTH_MAX)? + 1)?;
+        assert_eq!(
+            read_login_file(&path, usable),
+            Err("the Codex credentials file is too large".to_owned())
+        );
         Ok(())
     }
     use std::cell::Cell;

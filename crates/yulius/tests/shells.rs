@@ -6,6 +6,8 @@
 //! AC-UI-7, AC-UI-8, HRN-002; F 2026-10-09).
 
 use crate::support;
+use crate::support::eventually;
+use std::future::ready;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -258,17 +260,6 @@ fn pid_alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
 
-async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while tokio::time::Instant::now() < deadline {
-        if check() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 /// Host and child pids recorded by the ptyhost.
 fn run_pids(run_dir: &Path) -> Result<(i32, i32), Box<dyn std::error::Error>> {
     let status: Value =
@@ -424,7 +415,7 @@ async fn scenario(f: &Fixture) -> TestResult {
     let served = serve(f.h.router.clone()).await?;
     let task_before = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("t1")?;
 
-    // Read users cannot open a shell (AC-UI-7); foreign tasks are invisible.
+    // Read users cannot open a shell; foreign tasks are invisible.
     assert_eq!(
         create(f, &f.reader, "s1", None).await?.status,
         StatusCode::FORBIDDEN
@@ -468,7 +459,7 @@ async fn scenario(f: &Fixture) -> TestResult {
     read_until(
         &mut socket,
         &mut screen,
-        // The user's own persistent home, not the sandbox's (UI-016).
+        // The user's own persistent home, not the sandbox's.
         &format!("home={}", f.data.join("users/u-alice/home").display()),
     )
     .await?;
@@ -478,7 +469,7 @@ async fn scenario(f: &Fixture) -> TestResult {
     read_until(&mut socket, &mut screen, "sandboxes/s1/repo\u{1b}\\").await?;
     assert!(screen.contains("\u{1b}]7;file://"), "{screen:?}");
 
-    // Shells are private: read users and other writers cannot see them (UI-016).
+    // Shells are private: read users and other writers cannot see them.
     let refused = ws_connect(
         served.addr,
         &format!("/api/shells/{repo_shell}/terminal"),
@@ -585,7 +576,7 @@ async fn scenario(f: &Fixture) -> TestResult {
             .contains(&(worktree_shell.clone(), "tests".to_owned()))
     );
 
-    // Another user's terminals stay private (UI-016): carol, a writer of the same sandbox, lists
+    // Another user's terminals stay private: carol, a writer of the same sandbox, lists
     // none of alice's, cannot rename, close or attach to them, and has her own bound.
     assert_eq!(listed(&list(f, &carol, "s1").await?), vec![]);
     for (method, body) in [
@@ -652,11 +643,11 @@ async fn scenario(f: &Fixture) -> TestResult {
             .iter()
             .any(|(id, _)| *id == closing)
     );
-    wait_for("the closed shell to exit", || {
-        !pid_alive(closing_child) && !pid_alive(closing_host)
+    eventually("the closed shell to exit", WAIT, || {
+        ready(!pid_alive(closing_child) && !pid_alive(closing_host))
     })
     .await?;
-    wait_for("its directory to go", || !closing_dir.exists()).await?;
+    eventually("its directory to go", WAIT, || ready(!closing_dir.exists())).await?;
     let again = call(
         &f.h.router,
         Method::DELETE,
@@ -693,9 +684,9 @@ async fn scenario(f: &Fixture) -> TestResult {
         tokio::time::timeout(WAIT, socket.next()).await?,
         Some(Ok(Message::Close(_))) | None
     ));
-    wait_for("the shell to end", || runtime.has_ended()).await?;
-    wait_for("the host and shell to exit", || {
-        !pid_alive(child_pid) && !pid_alive(host_pid)
+    eventually("the shell to end", WAIT, || ready(runtime.has_ended())).await?;
+    eventually("the host and shell to exit", WAIT, || {
+        ready(!pid_alive(child_pid) && !pid_alive(host_pid))
     })
     .await?;
     assert!(!run_dir.exists(), "run directory removed");
@@ -711,11 +702,13 @@ async fn scenario(f: &Fixture) -> TestResult {
     assert_eq!(f.h.app.sandbox_shells(&sid).len(), MAX_SHELLS_PER_SANDBOX);
 
     // Shells without viewers for a day are ended (injected clock).
-    wait_for("viewers to leave", || {
-        f.h.app
-            .sandbox_shells(&sid)
-            .iter()
-            .all(|shell| shell.viewer_count() == 0)
+    eventually("viewers to leave", WAIT, || {
+        ready(
+            f.h.app
+                .sandbox_shells(&sid)
+                .iter()
+                .all(|shell| shell.viewer_count() == 0),
+        )
     })
     .await?;
     f.h.clock
@@ -726,14 +719,14 @@ async fn scenario(f: &Fixture) -> TestResult {
     assert_eq!(f.h.app.reap_idle_shells().await, MAX_SHELLS_PER_SANDBOX);
     assert!(f.h.app.sandbox_shells(&sid).is_empty());
 
-    // Shells never touch task state (HRN-002).
+    // Shells never touch task state.
     let task_after = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("t1")?;
     assert_eq!(task_after, task_before);
     assert!(f.h.store.attempts(&TaskId::parse("t1")?).await?.is_empty());
     Ok(())
 }
 
-/// SPEC-077 DRS-002 (#250): the client goes away while its terminal's process runs but before the
+/// The client goes away while its terminal's process runs but before the
 /// start finished. The terminal still ends live, usable and saved, never listed yet unusable;
 /// ending it leaves nothing.
 #[tokio::test]
@@ -753,12 +746,12 @@ async fn a_terminal_start_whose_request_is_dropped_still_ends_live() -> TestResu
     }
     f.gate.release();
     let shells = f.data.join("shells");
-    wait_for("the dropped start's terminal to be saved", || {
-        std::fs::read_dir(&shells).is_ok_and(|entries| {
+    eventually("the dropped start's terminal to be saved", WAIT, || {
+        ready(std::fs::read_dir(&shells).is_ok_and(|entries| {
             entries
                 .filter_map(Result::ok)
                 .any(|entry| entry.path().join("shell.json").is_file())
-        })
+        }))
     })
     .await?;
     let listed = listed(&list(&f, &f.writer, "s1").await?);
@@ -777,7 +770,7 @@ async fn a_terminal_start_whose_request_is_dropped_still_ends_live() -> TestResu
     Ok(())
 }
 
-/// SPEC-146 SHE-001 (#346): a terminal whose host cannot be ended (the end request is lost and
+/// A terminal whose host cannot be ended (the end request is lost and
 /// `terminate` fails) is not recorded as ended: it stays listed, live and attachable with its
 /// run directory and processes, and its viewer is told. Once the host can be ended, closing it
 /// again ends it.
@@ -845,12 +838,15 @@ async fn a_terminal_whose_host_cannot_be_ended_stays_live() -> TestResult {
             break;
         }
     }
-    wait_for("the run directory's removal", || !run_dir.exists()).await?;
+    eventually("the run directory's removal", WAIT, || {
+        ready(!run_dir.exists())
+    })
+    .await?;
     assert!(listed(&list(&f, &f.writer, "s1").await?).is_empty());
     Ok(())
 }
 
-/// SPEC-146 SHE-001 (review round 1): a terminal whose host died while its process lives on (it
+/// A terminal whose host died while its process lives on (it
 /// ignores the hang-up) and cannot be ended is not recorded as ended when the connection is lost:
 /// it stays listed with its run directory and its viewer is told. A later close ends it once its
 /// process can be ended.
@@ -866,8 +862,11 @@ async fn a_terminal_whose_host_died_but_whose_process_survives_stays_live() -> T
     let (host, child) = run_pids(&run_dir)?;
     // The recorded child becomes a process that outlives its host: same pid, session and start.
     input(&mut socket, "trap '' HUP; exec sleep 600\r").await?;
-    wait_for("the child to be sleep", || {
-        std::fs::read_to_string(format!("/proc/{child}/comm")).is_ok_and(|c| c.trim() == "sleep")
+    eventually("the child to be sleep", WAIT, || {
+        ready(
+            std::fs::read_to_string(format!("/proc/{child}/comm"))
+                .is_ok_and(|c| c.trim() == "sleep"),
+        )
     })
     .await?;
 
@@ -907,8 +906,11 @@ async fn a_terminal_whose_host_died_but_whose_process_survives_stays_live() -> T
             break;
         }
     }
-    wait_for("the process to end", || !pid_alive(child)).await?;
-    wait_for("the run directory's removal", || !run_dir.exists()).await?;
+    eventually("the process to end", WAIT, || ready(!pid_alive(child))).await?;
+    eventually("the run directory's removal", WAIT, || {
+        ready(!run_dir.exists())
+    })
+    .await?;
     Ok(())
 }
 
@@ -957,8 +959,8 @@ async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestRe
     let (adopted, removed) = g.h.app.adopt_shells().await;
     assert_eq!((adopted, removed), (1, 2));
     assert!(!orphan.exists());
-    wait_for("the unadoptable shell to end", || {
-        !pid_alive(gone_child) && !pid_alive(gone_host)
+    eventually("the unadoptable shell to end", WAIT, || {
+        ready(!pid_alive(gone_child) && !pid_alive(gone_host))
     })
     .await?;
     assert!(!gone_dir.exists());
@@ -977,8 +979,8 @@ async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestRe
     assert!(pid_alive(child_pid), "the same process");
 
     g.h.app.end_all_shells().await;
-    wait_for("the shell processes to exit", || {
-        !pid_alive(child_pid) && !pid_alive(host_pid)
+    eventually("the shell processes to exit", WAIT, || {
+        ready(!pid_alive(child_pid) && !pid_alive(host_pid))
     })
     .await?;
     assert!(!run_dir.exists());
@@ -986,8 +988,7 @@ async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestRe
 }
 
 /// A contained shell runs as the user's sandbox identity: their login, root inside the
-/// sandbox, `sudo` works, and files written to `~` land in their own persistent home
-/// (UI-016, AC-UI-8).
+/// sandbox, `sudo` works, and files written to `~` land in their own persistent home.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn contained_shells_run_as_the_user_with_root_in_their_own_home() -> TestResult {
@@ -1052,7 +1053,7 @@ fn bwrap_runnable() -> Result<(), String> {
     }
 }
 
-/// SPEC-070 (review): a shell in a task's worktree is its owner's. Once the task is handed to
+/// A shell in a task's worktree is its owner's. Once the task is handed to
 /// someone else, the former owner's shell there takes no more input and cannot be reopened.
 #[tokio::test]
 async fn a_task_shell_stops_taking_input_once_the_task_is_handed_over() -> TestResult {
@@ -1100,7 +1101,7 @@ async fn a_task_shell_stops_taking_input_once_the_task_is_handed_over() -> TestR
     Ok(())
 }
 
-/// SPEC-118 KEY-001, KEY-005 (task #103): once the shell's viewer is confirmed, its keystrokes and
+/// Once the shell's viewer is confirmed, its keystrokes and
 /// resizes reach the shell and the echo comes back while every permission check hangs — GitHub
 /// stops answering and the permission cache has expired, so the 300 ms re-check that starts
 /// meanwhile never finishes: the viewer's loop does not wait for it.
@@ -1142,7 +1143,7 @@ async fn shell_keystrokes_never_wait_for_a_permission_check() -> TestResult {
     Ok(())
 }
 
-/// SPEC-276 RDA-002 (review round 2): a person's Shell may run tests in a resting task's worktree
+/// A person's Shell may run tests in a resting task's worktree
 /// after Cargo released its lock, so while a Shell of the sandbox lives the sweep keeps the
 /// task's compiled artifacts; once it is closed they go.
 #[tokio::test]
@@ -1195,8 +1196,8 @@ async fn a_live_shell_keeps_a_resting_task_s_build_artifacts() -> TestResult {
     .await?;
     assert!(closed.status.is_success(), "{:?}", closed.body);
     let s1 = SandboxId::parse("s1")?;
-    wait_for("the shell to end", || {
-        f.h.app.sandbox_shells(&s1).is_empty()
+    eventually("the shell to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&s1).is_empty())
     })
     .await?;
     f.h.app.sweep_build_caches(Level::Critical).await;
@@ -1204,7 +1205,7 @@ async fn a_live_shell_keeps_a_resting_task_s_build_artifacts() -> TestResult {
     Ok(())
 }
 
-/// SPEC-359 VSB-006: a terminal is told where its sandbox's Vidoc switch is.
+/// A terminal is told where its sandbox's Vidoc switch is.
 #[tokio::test]
 async fn a_terminal_is_told_where_the_sandboxs_vidoc_switch_is() -> TestResult {
     use yulius_app::ports::store::SandboxStore as _;
@@ -1231,7 +1232,7 @@ async fn a_terminal_is_told_where_the_sandboxs_vidoc_switch_is() -> TestResult {
     Ok(())
 }
 
-/// SPEC-338 VOF-002 (review round 1): a terminal of a project whose Vidoc scans are switched off
+/// A terminal of a project whose Vidoc scans are switched off
 /// gets `YULIUS_VIDOC=off`, so a scan typed there says "disabled" too.
 #[tokio::test]
 async fn a_switched_off_projects_terminal_scans_nothing() -> TestResult {
@@ -1253,7 +1254,7 @@ async fn a_switched_off_projects_terminal_scans_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-356 VIO-002 (review round 1): while a superadmin has Vidoc off for the instance, a
+/// While a superadmin has Vidoc off for the instance, a
 /// terminal of a project whose own switch is on gets `YULIUS_VIDOC=off` too.
 #[tokio::test]
 async fn a_terminal_follows_the_instance_vidoc_switch() -> TestResult {
@@ -1297,7 +1298,7 @@ async fn a_terminal_follows_the_instance_vidoc_switch() -> TestResult {
     Ok(())
 }
 
-/// SPEC-398 VSH-003 (#801, review rounds 1 and 2): an agent can swap the sandbox repository for a
+/// An agent can swap the sandbox repository for a
 /// link to a host folder. The shell's folder, by which the Superagent's launch keys its Claude Code
 /// trust, names the link with only the sandbox directory resolved, never where the link leads;
 /// so does the folder of a shell adopted again after a server restart.
@@ -1332,7 +1333,7 @@ async fn a_shell_folder_never_resolves_a_link_below_the_sandbox() -> TestResult 
     Ok(())
 }
 
-/// SPEC-421 CCU-003: a person's shell in an isolated sandbox gets the agent CLI its join names
+/// A person's shell in an isolated sandbox gets the agent CLI its join names
 /// (Yulius's up-to-date copy at the host package's path), read-only.
 #[tokio::test]
 async fn an_isolated_shell_binds_the_agent_cli_of_its_join() -> TestResult {

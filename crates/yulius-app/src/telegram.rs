@@ -280,7 +280,7 @@ impl App {
             .open(&stored.sealed)
             .ok()
             .and_then(|bytes| String::from_utf8(bytes).ok())
-            .map(Secret);
+            .map(Secret::new);
         let Some(token) = token else {
             tracing::warn!("the saved Telegram bot token cannot be opened with this master key");
             return;
@@ -694,7 +694,7 @@ impl App {
     ) -> AppResult<TelegramBotView> {
         self.require_instance_admin(ctx)?;
         let services = self.channel_services()?;
-        let token = Secret(token.expose().trim().to_owned());
+        let token = Secret::new(token.expose().trim().to_owned());
         if token.expose().is_empty() {
             return Err(AppError::Invalid(
                 "paste the bot token from @BotFather".into(),
@@ -841,7 +841,7 @@ impl App {
                     sandbox_id: l.intake_sandbox.clone(),
                 }),
             choices: choices_view(link.map_or_else(NotifyChoices::default, |l| l.choices)),
-            account_choice: ctx.user.is_superadmin || ctx.user.is_instance_admin,
+            account_choice: ctx.user.is_admin(),
         })
     }
 
@@ -985,7 +985,7 @@ impl App {
         ctx: &AuthContext,
         choices: &TelegramChoices,
     ) -> AppResult<MyTelegramView> {
-        let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+        let admin = ctx.user.is_admin();
         let choices = NotifyChoices {
             needs_you: choices.needs_you,
             done: choices.done,

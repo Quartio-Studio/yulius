@@ -1,4 +1,4 @@
-//! The `yulius` integration tests, linked into this one test binary (SPEC-033): each file is a
+//! The `yulius` integration tests, linked into this one test binary: each file is a
 //! module. Every test binary links the whole product (about 190 MB), so fifty of them filled
 //! sandboxes' disks. Add a file next to this one and declare it below; the repository check fails
 //! on a file that is not declared. Run one file's tests with
@@ -8,6 +8,7 @@
 
 mod support;
 
+mod account_billing;
 mod account_email;
 mod account_token;
 mod account_usage;
@@ -78,6 +79,7 @@ mod local_ci;
 mod manage_tools;
 mod mcp_coordination;
 mod mcp_scopes;
+mod memory_guard;
 mod merge_train;
 mod metrics_recount;
 mod migration;

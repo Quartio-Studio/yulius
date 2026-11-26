@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use yulius_git::{
-    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, RemoveBelow,
+    Author, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, RemoveBelow,
     SquashInput, SquashLanding, TrainInput, TrainLanding, TrainStep, WorktreeRemoval,
     validate_branch_name,
 };
@@ -1063,12 +1063,15 @@ fn bundle_round_trip_into_import_branches() -> TestResult {
     let first = fx.git.rev_parse(&repo, "main")?;
     fx.git.create_branch(&repo, "feat/x", "main")?;
     let full = fx.path("full.bundle");
-    fx.git.create_bundle(
+    fx.raw(
         &repo,
-        &full,
         &[
-            BundleSpec::Include("refs/heads/main".to_owned()),
-            BundleSpec::Include("refs/heads/feat/x".to_owned()),
+            "bundle",
+            "create",
+            "--quiet",
+            path_str(&full)?,
+            "refs/heads/main",
+            "refs/heads/feat/x",
         ],
     )?;
 
@@ -1106,12 +1109,15 @@ fn bundle_round_trip_into_import_branches() -> TestResult {
         .commit_all(&repo, "later", &author())?
         .ok_or("no commit")?;
     let incremental = fx.path("incremental.bundle");
-    fx.git.create_bundle(
+    fx.raw(
         &repo,
-        &incremental,
         &[
-            BundleSpec::Include("refs/heads/main".to_owned()),
-            BundleSpec::Exclude(first.clone()),
+            "bundle",
+            "create",
+            "--quiet",
+            path_str(&incremental)?,
+            "refs/heads/main",
+            &format!("^{first}"),
         ],
     )?;
     let empty = fx.path("empty");
@@ -1131,7 +1137,7 @@ fn bundle_round_trip_into_import_branches() -> TestResult {
     )?;
     assert_eq!(moved, vec![("import/main".to_owned(), second)]);
 
-    // Imports only land under import/, and empty bundles are refused before running git.
+    // Imports only land under import/.
     assert!(matches!(
         fx.git.fetch_bundle_into(
             &target,
@@ -1140,14 +1146,6 @@ fn bundle_round_trip_into_import_branches() -> TestResult {
                 source: "refs/heads/main".to_owned(),
                 target_branch: "main".to_owned(),
             }],
-        ),
-        Err(GitError::InvalidInput { .. })
-    ));
-    assert!(matches!(
-        fx.git.create_bundle(
-            &repo,
-            &fx.path("none.bundle"),
-            &[BundleSpec::Exclude(first)]
         ),
         Err(GitError::InvalidInput { .. })
     ));
@@ -1941,7 +1939,7 @@ fn merge_attributes_in_info_reach_every_worktree() -> TestResult {
     fs::write(repo.join("changes.md"), "# Changes\n\n- other\n- first\n")?;
     fx.git.commit_all(&repo, "other entry", &author())?;
     assert_eq!(
-        fx.git.merge_tree(&feature, "HEAD", "main")?,
+        fx.git.merge_tree_from(&feature, None, "HEAD", "main")?,
         None,
         "without the attribute the logs conflict"
     );
@@ -1955,7 +1953,11 @@ fn merge_attributes_in_info_reach_every_worktree() -> TestResult {
     assert!(text.starts_with("*.png binary\n"), "{text}");
     assert!(text.contains("/changes.md merge=union"), "{text}");
 
-    assert!(fx.git.merge_tree(&feature, "HEAD", "main")?.is_some());
+    assert!(
+        fx.git
+            .merge_tree_from(&feature, None, "HEAD", "main")?
+            .is_some()
+    );
     let merged = fx.git.merge_into(&feature, "main")?;
     assert!(matches!(merged, MergeInto::Merged(_)), "{merged:?}");
     let log = fs::read_to_string(feature.join("changes.md"))?;
@@ -2150,10 +2152,7 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     let head = fx.git.rev_parse(&feature, "HEAD")?;
     let base = fx.git.rev_parse(&repo, "origin/dev")?;
 
-    assert_eq!(
-        fx.git.merge_conflicts(&feature, "origin/dev", "HEAD")?,
-        None
-    );
+    assert_eq!(conflicts(&fx.git, &feature, "origin/dev", "HEAD")?, None);
     assert_eq!(
         fx.git.rev_parse(&remote, "dev")?,
         base,
@@ -2219,7 +2218,7 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     fs::write(other.join(unusual), "a different y\n")?;
     fx.git.commit_all(&other, "feat: y", &author())?;
     assert_eq!(
-        fx.git.merge_conflicts(&other, "origin/dev", "HEAD")?,
+        conflicts(&fx.git, &other, "origin/dev", "HEAD")?,
         Some(vec!["x.txt".into(), unusual.into()])
     );
     assert_eq!(
@@ -2272,7 +2271,7 @@ exec git "$@"
 "#,
     )?;
     let git = isolated(Git::new(&wrapper), &fx.home);
-    let result = git.merge_tree(&repo, "main", "HEAD");
+    let result = git.merge_tree_from(&repo, None, "main", "HEAD");
     assert!(
         matches!(result, Err(GitError::Parse { command: "merge-tree", ref detail }) if detail.contains("not-a-tree-id")),
         "{result:?}"
@@ -2304,10 +2303,7 @@ fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
         }
         fx.git.commit_all(tree, content, &author())?;
     }
-    let preview = fx
-        .git
-        .merge_conflicts(&branch, "main", "HEAD")?
-        .ok_or("expected conflicts")?;
+    let preview = conflicts(&fx.git, &branch, "main", "HEAD")?.ok_or("expected conflicts")?;
     assert_eq!(
         preview,
         [
@@ -3048,4 +3044,17 @@ fn first_parent_position_orders_a_branchs_own_commits() -> TestResult {
     );
     assert!(at("0123456789abcdef0123456789abcdef01234567").is_err());
     Ok(())
+}
+
+/// The paths where merging `head` into `base` conflicts, `None` for a clean merge.
+fn conflicts(
+    git: &Git,
+    worktree: &Path,
+    base: &str,
+    head: &str,
+) -> Result<Option<Vec<String>>, GitError> {
+    Ok(match git.preview_merge(worktree, base, head)? {
+        yulius_git::TrainStep::Clean { .. } => None,
+        yulius_git::TrainStep::Conflict(files) => Some(files),
+    })
 }

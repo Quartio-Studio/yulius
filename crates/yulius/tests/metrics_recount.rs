@@ -1,5 +1,5 @@
 //! Runs recorded before SPEC-087 get their metrics from their transcripts, once (SPEC-091
-//! RCT-003, RCT-004): a store upgraded from schema version 22 with the wrong figures of old runs,
+//! RCT-003): a store upgraded from schema version 22 with the wrong figures of old runs,
 //! the real harness adapter and transcripts on disk in the sandbox's home.
 
 use std::path::{Path, PathBuf};
@@ -8,7 +8,6 @@ use crate::support::{self, HarnessOptions, TestResult};
 use yulius_app::model::MetricsRecord;
 use yulius_app::ports::store::TaskStore;
 use yulius_domain::ids::TaskId;
-use yulius_store::SqliteStore;
 
 const SESSION: &str = "5d2a8c41-3e6f-4b7a-9c0d-1e2f3a4b5c6d";
 const WORKTREE: &str = "/work/demo";
@@ -147,7 +146,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
     let db = data.join("yulius.db");
     old_store(&db, &outside(&data).to_string_lossy())?;
     // The upgrade queues the eight runs recorded before it.
-    let store = SqliteStore::open(&db)?;
+    let store = crate::support::store::migrated(&db)?;
     let h = support::harness_with(HarnessOptions {
         dir: Some(dir),
         store: Some(store),
@@ -155,7 +154,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
     })?;
     transcripts(&h, &data)?;
     // A restart took `a1` to run this version; its lines, which no live watch read, name
-    // another: the recount's word replaces the assumption (SPEC-461 CCM-011).
+    // another: the recount's word replaces the assumption.
     {
         use yulius_app::ports::store::TaskStore as _;
         let (run, task) = (
@@ -206,7 +205,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
         (Some(77), Some(2), Some(1_000)),
         "a run whose transcript is gone keeps its figures"
     );
-    // The Claude Code a run's lines name is recorded with its figures (SPEC-461 CCM-011): no
+    // The Claude Code a run's lines name is recorded with its figures: no
     // live watch read these runs. A run whose window holds no line names none.
     let ran_on: Vec<(String, String)> = {
         use yulius_app::ports::store::TaskStore as _;
@@ -301,7 +300,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-143 RDM-003 (#389, SPEC-091 RCT-004): the start's recovery recounts nothing while
+/// The start's recovery recounts nothing while
 /// reconciliation fails — a run it did not end would be recorded `live` and never counted — and the
 /// next start that reconciles recounts the queue. Reconciliation fails here on a running task whose
 /// row the store cannot read; the recount never reads that task.
@@ -320,7 +319,7 @@ async fn the_recount_waits_for_a_reconciliation_that_succeeds() -> TestResult {
          INSERT INTO attempts (id, task_id, seq, harness, provider_session_id, launch_kind, state, run_dir, token_hash, host_token, started_at, ended_at) VALUES
            ('a1', 't1', 1, 'claude', 'gone-session', 'new', 'exited', '/r/a1', 'h1', x'00', 1, 2);",
     )?;
-    let store = SqliteStore::open(&db)?;
+    let store = crate::support::store::migrated(&db)?;
     let h = support::harness_with(HarnessOptions {
         dir: Some(dir),
         store: Some(store),

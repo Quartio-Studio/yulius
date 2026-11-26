@@ -1,11 +1,11 @@
-//! Merge-first staging end to end (SPEC-575 MFS-003 to MFS-008): a project whose `[cd.staging]`
+//! Merge-first staging end to end: a project whose `[cd.staging]`
 //! is the merge-first target, the real Git adapter and process host deploying it, tasks' agents
 //! asking through `cd_deploy`, and the full gate's verdicts recorded at exact revisions.
 
+use crate::support::staging::{gate, recorded_gate_as, sandbox, token};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use yulius_app::ci::{CiJobRecord, CiRunRecord};
 use yulius_app::ports::store::{
     AuditStore as _, SandboxStore as _, TaskStore as _, UserStore as _,
 };
@@ -13,14 +13,13 @@ use yulius_app::ports::store_ext::{
     CdStore as _, CiStore as _, DeliveryStore as _, StagingChange, StagingRequestRecord,
     StagingStore as _,
 };
-use yulius_domain::ci::{CiRef, GateSource, RunState};
+use yulius_domain::ci::{CiRef, RunState};
 use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::resources::Need;
 use yulius_domain::staging::StagingState;
 use yulius_domain::task::TaskStatus;
 
-use crate::cd::{BoxResult, Fixture, TestResult, fixture};
 use crate::support;
+use crate::support::cd::{BoxResult, Fixture, TestResult, fixture};
 
 const WAIT: Duration = Duration::from_secs(60);
 
@@ -35,10 +34,6 @@ fn staging_toml() -> String {
      verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
      rollback = \"true\"\nmigrations = \"none: the test app keeps no data\"\n"
         .to_owned()
-}
-
-fn token(task: &str) -> String {
-    format!("staging-task-token-{task}-0123456789abcdef")
 }
 
 /// A task with a live agent.
@@ -58,138 +53,6 @@ async fn land(f: &Fixture, task: &str, file: &str) -> BoxResult<String> {
         ))
         .await?;
     Ok(sha)
-}
-
-/// The integration branch's CI run at `sha`: the quick checks passed, the full suite `full`.
-async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
-    recorded_gate(&f.h.app, &SandboxId::parse("s1")?, sha, full, None).await
-}
-
-pub(crate) async fn recorded_gate(
-    app: &yulius_app::context::App,
-    sandbox: &SandboxId,
-    sha: &str,
-    full: RunState,
-    failures: Option<&str>,
-) -> BoxResult<String> {
-    recorded_gate_as(
-        app,
-        sandbox,
-        sha,
-        full,
-        failures,
-        format!("ci-{}", &sha[..12]),
-    )
-    .await
-}
-
-/// [`recorded_gate`] as run `id` (a rerun of the same revision).
-async fn recorded_gate_as(
-    app: &yulius_app::context::App,
-    sandbox: &SandboxId,
-    sha: &str,
-    full: RunState,
-    failures: Option<&str>,
-    id: String,
-) -> BoxResult<String> {
-    let state = if full == RunState::Passed {
-        RunState::Passed
-    } else {
-        full
-    };
-    let run = CiRunRecord {
-        id: id.clone(),
-        sandbox_id: sandbox.clone(),
-        reference: CiRef::Branch("dev".into()),
-        sha: sha.to_owned(),
-        source: GateSource::ProjectConfig,
-        state,
-        reason: None,
-        requested_by: "yulius".into(),
-        status_for: None,
-        status_note: None,
-        status_attempts: 0,
-        queued_at: app.now(),
-        started_at: Some(app.now()),
-        ended_at: Some(app.now()),
-    };
-    let job = |name: &str, state: RunState| CiJobRecord {
-        id: format!("{id}-{name}"),
-        run_id: id.clone(),
-        ordinal: u32::from(name == "full"),
-        name: name.to_owned(),
-        key: name.to_owned(),
-        command: "true".into(),
-        matrix: None,
-        state,
-        reason: None,
-        exit_code: Some(i32::from(state != RunState::Passed)),
-        output: String::new(),
-        failures: None,
-        started_at: run.started_at,
-        ended_at: run.ended_at,
-        need: Need::default(),
-        timeout_minutes: None,
-        exclusive: false,
-        waited_ms: None,
-    };
-    app.deps
-        .store
-        .insert_ci_run(&run, &[job("quick", RunState::Passed), job("full", full)])
-        .await?;
-    if let Some(failures) = failures {
-        assert!(
-            app.deps
-                .store
-                .transition_ci_job(
-                    &format!("{id}-full"),
-                    &[full],
-                    full,
-                    &yulius_app::ci::CiJobUpdate {
-                        failures: Some(failures.to_owned()),
-                        ..Default::default()
-                    }
-                )
-                .await?
-        );
-    }
-    Ok(id)
-}
-
-/// Whether a new red gate asks people for help in a native-goal session fixture.
-pub(crate) async fn red_gate_needs_people(
-    app: &yulius_app::context::App,
-    project: &SandboxId,
-    owner: &yulius_domain::ids::UserId,
-) -> BoxResult<bool> {
-    let repo = app
-        .config
-        .data_dir
-        .join("sandboxes")
-        .join(project.as_str())
-        .join("repo");
-    let sha = crate::cd::git(&repo, &["rev-parse", "HEAD"])?;
-    crate::cd::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
-    recorded_gate(
-        app,
-        project,
-        &sha,
-        RunState::Failed,
-        Some("---- gate::test stdout ----"),
-    )
-    .await?;
-    let ctx = yulius_app::auth::AuthContext {
-        user: app.deps.store.user(owner).await?.ok_or("owner")?,
-        csrf_token: None,
-        session_hash: None,
-        token: None,
-    };
-    let status = app.status(&ctx).await?;
-    Ok(status
-        .sandboxes
-        .iter()
-        .flat_map(|s| &s.gate_notices)
-        .any(|n| n.test == "gate::test"))
 }
 
 /// `task`'s agent asks for staging; the request it was given.
@@ -337,7 +200,7 @@ async fn inherited_gate_receipts_preserve_the_origin_and_leave_finished_tasks_qu
             }
         }
     }
-    // Their turns ended: a finished task mid-turn is decided once it is idle (SPEC-631 SWK-001).
+    // Their turns ended: a finished task mid-turn is decided once it is idle.
     for task in ["breaker", "later1", "later2", "later3", "mixed"] {
         f.h.store
             .set_activity(
@@ -388,7 +251,7 @@ async fn a_closed_merge_owners_failed_test_reaches_the_project_without_a_staging
         .execute_for_tests("UPDATE tasks SET activity='waiting' WHERE id='answered'")
         .await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     for view in [
         f.get("/api/sandboxes/s1/ci").await?,
         f.get("/api/status").await?,
@@ -403,13 +266,13 @@ async fn a_closed_merge_owners_failed_test_reaches_the_project_without_a_staging
     }
     let fix = f.push("dev", &[("fixed", Some("yes"))])?;
     gate(&f, &fix, RunState::Passed).await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let status = f.get("/api/status").await?;
     assert_eq!(status["sandboxes"][0]["gate_notices"], json!([]));
     Ok(())
 }
 
-/// SPEC-624 NTC-010, AC-10: a failure nobody repairs is one notice `gate:<test>` for the
+/// A failure nobody repairs is one notice `gate:<test>` for the
 /// project's people, posted once across ticks and removed once the gate passes.
 #[tokio::test]
 async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResult {
@@ -419,7 +282,7 @@ async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResu
     let revision = land(&f, "closed", "closed").await?;
     named_gate(&f, &revision, &["flaky::result"]).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -456,13 +319,13 @@ async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResu
 
     let fix = f.push("dev", &[("fixed", Some("yes"))])?;
     gate(&f, &fix, RunState::Passed).await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     f.h.app.tell_gate_repairs(&sandbox).await?;
     assert!(gate_notices().await?.is_empty());
     Ok(())
 }
 
-/// SPEC-624 review round 1 of #1711: a project with a working task does not tell its people
+/// A project with a working task does not tell its people
 /// "nobody repairs it" while that task is only momentarily unable to take the notice (no
 /// session to type into, a draft, typing); a test name posting changes is posted once.
 #[tokio::test]
@@ -474,7 +337,7 @@ async fn a_momentarily_busy_worker_raises_no_gate_notice() -> TestResult {
     let long = format!("suite::a  spaced {}", "x".repeat(300));
     named_gate(&f, &revision, &[long.as_str()]).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -520,7 +383,7 @@ async fn a_green_branch_starts_the_grace_period_again() -> TestResult {
     named_gate(&f, &revision, &["flaky::result"]).await?;
     agent(&f, "worker").await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -542,11 +405,11 @@ async fn a_green_branch_starts_the_grace_period_again() -> TestResult {
     }
     let fix = f.push("dev", &[("fixed", Some("yes"))])?;
     gate(&f, &fix, RunState::Passed).await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     f.h.app.tell_gate_repairs(&sandbox).await?;
     let broken = f.push("dev", &[("broken", Some("again"))])?;
     named_gate(&f, &broken, &["other::test"]).await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     f.h.app.tell_gate_repairs(&sandbox).await?;
     assert_eq!(gate_count().await?, 0, "a new grace period");
     // ...which, run to its end, tells the new failure: the 0 above was a grace period, not a
@@ -569,7 +432,7 @@ async fn a_worker_unavailable_past_the_grace_period_raises_the_gate_notice() -> 
     named_gate(&f, &revision, &["flaky::result"]).await?;
     agent(&f, "worker").await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -607,7 +470,7 @@ async fn many_unrepaired_failures_are_bounded_notices() -> TestResult {
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     named_gate(&f, &revision, &refs).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -677,7 +540,7 @@ async fn a_passed_rerun_clears_a_missing_owners_notice_and_resets_test_ownership
     let descendant = f.push("dev", &[("later", Some("later"))])?;
     let run = named_gate(&f, &descendant, &["delivery::gate"]).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
     assert_eq!(notices[0]["revision"], orphan);
     assert_eq!(notices[0]["run_id"], run);
@@ -732,7 +595,7 @@ async fn an_inherited_verification_step_waits_and_receives_its_inclusion() -> Te
     let later = land(&f, "verify", "later").await?;
     named_gate(&f, &later, &["delivery::gate"]).await?;
     let task = TaskId::parse("verify")?;
-    crate::pr_watch::leave_verification_step(&f.h.app, &task).await?;
+    crate::support::pr_watch::leave_verification_step(&f.h.app, &task).await?;
     ask(&f, "verify").await?;
     settle(&f).await?;
     assert_eq!(
@@ -763,7 +626,7 @@ async fn a_partial_later_gate_keeps_the_unknown_job_and_offers_its_current_run()
     let run = named_gate(&f, &later, &["ui::fresh"]).await?;
     f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='cancelled',reason='stopped early: job quick failed',failures=NULL WHERE id='{run}-full';
         UPDATE ci_jobs SET state='failed',failures='---- ui::fresh stdout ----' WHERE id='{run}-quick'")).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -791,14 +654,14 @@ async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_ret
     let sha = f.push("dev", &[("broken", Some("broken"))])?;
     let first = gate(&f, &sha, RunState::Error).await?;
     let project = sandbox(&f).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
     let mut current = String::new();
     for retry in 1..=2 {
         current = format!("rerun-{retry}");
-        let (mut run, mut quick) = crate::pr_watch::run(
+        let (mut run, mut quick) = crate::support::pr_watch::run(
             &project.id,
             &current,
             &sha,
@@ -850,7 +713,7 @@ async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_ret
             );
         }
     }
-    let (mut pass, job) = crate::pr_watch::run(
+    let (mut pass, job) = crate::support::pr_watch::run(
         &project.id,
         "passing-rerun",
         &sha,
@@ -876,7 +739,7 @@ async fn rerunning_an_ancestor_keeps_the_archived_red_heads_notice_and_rerun_tar
     agent(&f, "owner").await?;
     let head = land(&f, "owner", "broken").await?;
     let failed = named_gate(&f, &head, &["suite::broken"]).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -1025,9 +888,9 @@ async fn a_green_rerun_that_skips_an_unresolved_job_keeps_the_notice_and_staging
     let first = gate(&f, &sha, RunState::Error).await?;
     let project = sandbox(&f).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     for id in ["skip-one", "skip-two"] {
-        let (mut run, quick) = crate::pr_watch::run(
+        let (mut run, quick) = crate::support::pr_watch::run(
             &project.id,
             id,
             &sha,
@@ -1081,7 +944,7 @@ async fn a_green_rerun_that_skips_an_unresolved_job_keeps_the_notice_and_staging
         request(&f, &receipt.id).await?.state,
         StagingState::Included
     );
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     assert_eq!(
         f.get("/api/status").await?["sandboxes"][0]["gate_notices"],
         json!([])
@@ -1331,7 +1194,7 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
     settle(&f).await?;
     assert_eq!(deployed(&f).await?, [r1.clone(), r3.clone()]);
 
-    // The queue as people and agents read it, with its run and revision ids (SPEC-575).
+    // The queue as people and agents read it, with its run and revision ids.
     let overview = f.get("/api/sandboxes/s1/cd").await?;
     let staging = overview["environments"]
         .as_array()
@@ -1575,7 +1438,7 @@ async fn a_lost_deploy_is_retried_and_concurrent_tasks_deploy_in_revision_order(
     Ok(())
 }
 
-/// SPEC-575 MFS-003: a revision no run judged gets one candidate run of the full gate at exactly
+/// A revision no run judged gets one candidate run of the full gate at exactly
 /// that commit, with the full suite in it. Another round queues no second one, and a run of the
 /// revision that skipped the full suite judges nothing.
 #[tokio::test]
@@ -1626,7 +1489,7 @@ async fn a_revision_nobody_judged_gets_one_candidate_run_of_the_full_gate() -> T
 const ROLLBACK: &str = "#!/bin/sh\necho \"$YULIUS_CD_RELEASE_SHA\" > \"$MARKS/staging\"\necho restored >> \"$MARKS/restores\"\n";
 const STAGING_VERIFY: &str = "#!/bin/sh\ntest \"$(cat \"$MARKS/staging\")\" = \"${YULIUS_CD_RELEASE_SHA:-$YULIUS_CD_SHA}\" && echo verified\n";
 
-/// SPEC-575 MFS-007: a revision whose full gate passed but whose deploy fails is
+/// A revision whose full gate passed but whose deploy fails is
 /// `deploy_failed` with that run. Yulius puts staging back on its last verified release with one
 /// restore (a rollback run of that release, verified), never a second one, and the same
 /// revision may be asked again (a retried deployment).
@@ -1725,7 +1588,7 @@ async fn a_failed_deploy_puts_staging_back_on_its_last_verified_release() -> Tes
     Ok(())
 }
 
-/// SPEC-575 MFS-009: with a merge-first target, a person's production deploy promotes only the
+/// With a merge-first target, a person's production deploy promotes only the
 /// revision staging verified, including while the next integration commit is still checking.
 #[tokio::test]
 async fn production_is_promoted_only_from_the_verified_staging_revision() -> TestResult {
@@ -1755,7 +1618,7 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     // A newer revision is checking. The page offers the verified revision for confirmation.
     let r2 = land(&f, "t2", "two.txt").await?;
     let checking = gate(&f, &r2, RunState::Running).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -1775,18 +1638,18 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     assert_eq!(prod["promotes_from"], r1);
     // An existing release ref pointing elsewhere is refused and never overwritten.
     let pin = format!("refs/heads/yulius/release/{r1}");
-    crate::cd::git(&f.origin, &["update-ref", &pin, &r2])?;
+    crate::support::git(&f.origin, &["update-ref", &pin, &r2])?;
     let moved = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(moved.status, axum::http::StatusCode::CONFLICT);
-    assert_eq!(crate::cd::git(&f.origin, &["rev-parse", &pin])?, r2);
+    assert_eq!(crate::support::git(&f.origin, &["rev-parse", &pin])?, r2);
     assert!(!git_contains(&f, "main", &r1)?);
-    crate::cd::git(&f.origin, &["update-ref", "-d", &pin, &r2])?;
+    crate::support::git(&f.origin, &["update-ref", "-d", &pin, &r2])?;
     // An open promotion PR for the moving dev head remains independent of A's release.
     use yulius_app::ports::github::{GitHubPort as _, NewPull};
     let current_head_pr =
         f.h.github
             .create_pull(
-                &yulius_app::model::Secret("fixture-bob".into()),
+                &yulius_app::model::Secret::new("fixture-bob".into()),
                 "acme",
                 "app",
                 &NewPull {
@@ -1948,11 +1811,11 @@ async fn running_dev_ci_releases_only_the_preceding_green_revision() -> TestResu
     f.h.store.insert_ci_run(&rerun, &[]).await?;
     // Cross a complete batch of first-parent history without any intervening verdict.
     let mut d = f.push("dev", &[("d.txt", Some("checking"))])?;
-    let tree = crate::cd::git(&f.work, &["rev-parse", "HEAD^{tree}"])?;
+    let tree = crate::support::git(&f.work, &["rev-parse", "HEAD^{tree}"])?;
     for _ in 0..128 {
-        d = crate::cd::git(&f.work, &["commit-tree", &tree, "-p", &d, "-m", "pending"])?;
+        d = crate::support::git(&f.work, &["commit-tree", &tree, "-p", &d, "-m", "pending"])?;
     }
-    crate::cd::git(
+    crate::support::git(
         &f.work,
         &["push", "-q", "origin", &format!("{d}:refs/heads/dev")],
     )?;
@@ -2264,7 +2127,7 @@ async fn staging_and_the_running_drill_agree_on_the_release_revision() -> TestRe
     running.state = RunState::Running;
     running.ended_at = None;
     f.h.store.insert_cd_run(&running).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -2324,7 +2187,7 @@ async fn retiring_staging_keeps_its_last_verified_release_available() -> TestRes
     let config = "[[ci.jobs]]\nname = \"checks\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n";
     let c = f.push("dev", &[("yulius.toml", Some(config))])?;
     gate(&f, &c, RunState::Running).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -2404,8 +2267,8 @@ async fn a_release_retry_verifies_the_merge_receipt_and_honors_optional_checks()
     let landed = f.head("main")?;
     assert_ne!(landed, a);
     assert_eq!(
-        crate::cd::git(&f.origin, &["rev-parse", "main^{tree}"])?,
-        crate::cd::git(&f.origin, &["rev-parse", &format!("{a}^{{tree}}")])?
+        crate::support::git(&f.origin, &["rev-parse", "main^{tree}"])?,
+        crate::support::git(&f.origin, &["rev-parse", &format!("{a}^{{tree}}")])?
     );
     let id = TaskId::parse("t1")?;
     assert_eq!(
@@ -2440,14 +2303,6 @@ fn git_contains(f: &Fixture, branch: &str, sha: &str) -> BoxResult<bool> {
         .success())
 }
 
-async fn sandbox(f: &Fixture) -> BoxResult<yulius_app::model::SandboxRecord> {
-    Ok(f.h
-        .store
-        .sandbox(&SandboxId::parse("s1")?)
-        .await?
-        .ok_or("s1")?)
-}
-
 /// The agent's `cd_deploy` of staging when it is refused: its error text.
 async fn refused(f: &Fixture, task: &str) -> BoxResult<String> {
     let answer = support::mcp_tool(
@@ -2461,7 +2316,7 @@ async fn refused(f: &Fixture, task: &str) -> BoxResult<String> {
     Ok(answer.to_string())
 }
 
-/// SPEC-575 review round 1 of slice 2 (B1): staging deploys for a task under its owner's write
+/// Staging deploys for a task under its owner's write
 /// access, as every deploy for a task does. A request is refused without it, and a request
 /// whose owner lost it before its turn ends `deploy_failed` with nothing deployed.
 #[tokio::test]
@@ -2534,7 +2389,7 @@ async fn a_staging_deploy_is_the_requesting_tasks_cd_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 review round 1 of slice 2: a person's cancel of a staging deploy stands. The request
+/// A person's cancel of a staging deploy stands. The request
 /// ends `deploy_failed` saying so, and nothing deploys that revision again by itself.
 #[tokio::test]
 async fn a_cancelled_staging_deploy_is_not_started_again() -> TestResult {
@@ -2582,7 +2437,7 @@ async fn a_cancelled_staging_deploy_is_not_started_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 review round 1 of slice 2: while another run of the environment goes on (a person's
+/// While another run of the environment goes on (a person's
 /// rollback, a drill), a ready request waits for it, costing no attempt, then deploys.
 #[tokio::test]
 async fn a_ready_request_waits_for_another_run_of_the_environment() -> TestResult {
@@ -2714,7 +2569,7 @@ async fn a_later_configuration_refusal_invalidates_an_old_candidate_outside_rece
     let sha = f.push("dev", &[("merged", Some("merged"))])?;
     let earlier = gate(&f, &sha, RunState::Failed).await?;
     let project = sandbox(&f).await?;
-    let (mut refusal, job) = crate::pr_watch::run(
+    let (mut refusal, job) = crate::support::pr_watch::run(
         &project.id,
         "refused",
         &sha,
@@ -2752,7 +2607,7 @@ async fn a_test_that_moves_cells_keeps_its_origin_until_the_new_cell_passes() ->
     f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='passed',failures=NULL WHERE id='{run}-full';
         UPDATE ci_jobs SET state='failed',failures='---- moved::test stdout ----' WHERE id='{run}-quick'")).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
     assert_eq!(notices[0]["revision"], first);
     let third = f.push("dev", &[("third", Some("third"))])?;
@@ -2763,14 +2618,14 @@ async fn a_test_that_moves_cells_keeps_its_origin_until_the_new_cell_passes() ->
             "UPDATE ci_jobs SET name='other' WHERE id='{run}-full'"
         ))
         .await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
     assert_eq!(notices.as_array().ok_or("notices")?.len(), 1, "{notices}");
     assert_eq!(notices[0]["test"], "new::test");
     Ok(())
 }
 
-/// SPEC-575 MFS-003 (review round 1 of slice 2): the candidate run queued for a revision is not
+/// The candidate run queued for a revision is not
 /// superseded when the branch moves on, CI runs it to its verdict, the request deploys on that
 /// verdict, and the branch reaching the same commit queues no second full run of it.
 #[tokio::test]
@@ -2819,7 +2674,7 @@ async fn a_candidate_run_survives_the_branch_moving_on_and_decides() -> TestResu
     Ok(())
 }
 
-/// SPEC-575 MFS-004 and MFS-005 (review round 1 of slice 2): a task with an open step is
+/// A task with an open step is
 /// refused, a project with no CI gate is refused, and a newer landing of the same task
 /// supersedes its waiting request.
 #[tokio::test]
@@ -2871,7 +2726,7 @@ async fn requests_are_refused_or_superseded_as_the_task_stands() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 MFS-006 (review round 1 of slice 2): a waiting request whose revision left the
+/// A waiting request whose revision left the
 /// integration branch's own history, or whose environment stopped being the merge-first target,
 /// is superseded, saying why, and never deploys.
 #[tokio::test]
@@ -2921,7 +2776,7 @@ async fn a_request_whose_revision_or_target_went_away_is_superseded() -> TestRes
 }
 
 fn git_origin(f: &Fixture, args: &[&str]) -> BoxResult<String> {
-    crate::cd::git(&f.origin, args)
+    crate::support::git(&f.origin, args)
 }
 
 /// A deploy script that runs an irreversible migration, says so, and fails.
@@ -3005,7 +2860,7 @@ async fn a_failed_deploy_past_a_rollback_barrier_is_not_restored() -> TestResult
     Ok(())
 }
 
-/// SPEC-575 (review round 2 of slice 2): after a person's rollback of staging, the queue shows
+/// After a person's rollback of staging, the queue shows
 /// what staging serves, not the newest verified request, and production would promote that.
 #[tokio::test]
 async fn the_queue_shows_what_staging_serves_after_a_rollback() -> TestResult {
@@ -3043,7 +2898,7 @@ async fn the_queue_shows_what_staging_serves_after_a_rollback() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 MFS-008 (review round 2 of slice 2): while an update holds new deploys, a ready
+/// While an update holds new deploys, a ready
 /// request waits, costing no attempt, and deploys once the gate opens.
 #[tokio::test]
 async fn a_ready_request_waits_while_an_update_holds_deploys() -> TestResult {
@@ -3076,7 +2931,7 @@ async fn a_ready_request_waits_while_an_update_holds_deploys() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 MFS-003 (review rounds 1 and 2 of slice 2): a pinned deploy runs only a full
+/// A pinned deploy runs only a full
 /// commit of the integration head's own first-parent history, and only for a dev-stage
 /// environment.
 #[tokio::test]
@@ -3252,7 +3107,8 @@ async fn a_busy_task_view_cannot_hold_the_staging_queue() -> TestResult {
         updated_at: f.h.app.now(),
     };
     assert!(f.h.store.insert_staging_request(&staged).await?);
-    let browser = std::sync::Arc::new(crate::delivery::HeldBrowserLookup::for_publication());
+    let browser =
+        std::sync::Arc::new(crate::support::delivery::HeldBrowserLookup::for_publication());
     let mut deps = f.h.app.deps.clone();
     deps.browser = browser.clone();
     let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
@@ -3372,7 +3228,7 @@ async fn the_final_step_waits_for_staging_until_its_answer_is_delivered() -> Tes
     Ok(())
 }
 
-/// SPEC-575 MFS-013: a task whose work merged into a merge-first project reads in
+/// A task whose work merged into a merge-first project reads in
 /// `delivery_status` that staging waits for its request, then where its request stands. A task
 /// whose session began before its project switched (the switch's own task) learns it there,
 /// since every merge receipt sends the agent to `delivery_status`.
@@ -3477,7 +3333,7 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     Ok(())
 }
 
-/// SPEC-575 MFS-013 (review round 1 of MFS-013): after a failed gate the line says how to go on,
+/// After a failed gate the line says how to go on,
 /// and once the fix merged it names the fix's revision as due, then the newer request.
 #[tokio::test]
 async fn delivery_status_after_a_failed_gate_names_the_fix() -> TestResult {
@@ -3530,7 +3386,7 @@ fn promoting_toml() -> String {
     )
 }
 
-/// SPEC-591 STG-008: Yulius's own `yulius.toml` makes `[cd.dev]` its merge-first staging target, so
+/// Yulius's own `yulius.toml` makes `[cd.dev]` its merge-first staging target, so
 /// a person's production deploy and the Delivery page's promotion are refused while staging has
 /// not verified a revision whose full suite passed: a red or untested dev is fixed forward, never
 /// promoted.
@@ -3580,7 +3436,7 @@ async fn promote_page(f: &Fixture) -> BoxResult<support::Resp> {
     .await
 }
 
-/// SPEC-575 MFS-009 (review round 3 of slice 2): the Delivery page's promotion waits, like a
+/// The Delivery page's promotion waits, like a
 /// production deploy, until staging serves the integration head, verified. It reads that through
 /// the verified CD mirror: an agent rewriting the `yulius.toml` object in its clone only makes
 /// it refuse. Once staging verified the head, the same promotion promotes exactly it.
@@ -3598,8 +3454,8 @@ async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult
     // What an agent can do in its own clone: rewrite the table's object without merge_first.
     // The mirror keeps the object it already holds, so the promotion is refused as unverified.
     let clone = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&clone, &["fetch", "-q", "origin"])?;
-    let blob = crate::cd::git(&clone, &["rev-parse", &format!("{r2}:yulius.toml")])?;
+    crate::support::git(&clone, &["fetch", "-q", "origin"])?;
+    let blob = crate::support::git(&clone, &["rev-parse", &format!("{r2}:yulius.toml")])?;
     let text = std::fs::read_to_string(f.work.join("yulius.toml"))?;
     let object = clone.join(".git/objects").join(&blob[..2]).join(&blob[2..]);
     let rewrite = "import sys, zlib, os\nc = open(sys.argv[2], 'rb').read()\np = sys.argv[1]\n\
@@ -3684,7 +3540,7 @@ async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult
     Ok(())
 }
 
-/// SPEC-575 MFS-009 (review round 3 of slice 2): with the profile's automatic promotion, a merge
+/// With the profile's automatic promotion, a merge
 /// promotes nothing while staging has not verified it. The queue's verified deploy of that
 /// revision runs the promotion that waited, and production gets exactly it.
 #[tokio::test]
@@ -3780,7 +3636,7 @@ async fn a_promotion_whose_verified_head_cannot_be_read_is_refused() -> TestResu
     Ok(())
 }
 
-/// SPEC-575 MFS-009 (review round 1 of slice 4): with automatic promotion, staging verifying an
+/// With automatic promotion, staging verifying an
 /// older revision while the integration head moved on promotes nothing; the verified deploy of
 /// the head promotes exactly it.
 #[tokio::test]
@@ -3906,7 +3762,7 @@ async fn an_unreadable_head_fails_the_automatic_promotion() -> TestResult {
     Ok(())
 }
 
-/// A person asks the merge-first target for the integration head (SPEC-650 PST-001).
+/// A person asks the merge-first target for the integration head.
 async fn person_asks(f: &Fixture, who: &crate::support::Creds) -> BoxResult<Value> {
     let answer = crate::support::call(
         &f.h.router,
@@ -3932,7 +3788,7 @@ async fn staging_view(f: &Fixture) -> BoxResult<Value> {
         .clone())
 }
 
-/// SPEC-650 PST-001, PST-002, PST-005: with no task finishing anything, a person's request
+/// With no task finishing anything, a person's request
 /// deploys the green head; a red head waits, in plain words, and the next green head deploys
 /// and includes it.
 #[tokio::test]
@@ -3996,7 +3852,7 @@ async fn a_persons_request_deploys_the_green_head_and_a_red_one_waits_for_the_ne
     Ok(())
 }
 
-/// SPEC-650 PST-001, PST-005: while the head's full gate runs, a person's request waits for it
+/// While the head's full gate runs, a person's request waits for it
 /// and the page says so; the plain deploy of the target names the request that works.
 #[tokio::test]
 async fn a_persons_request_waits_while_the_heads_gate_runs() -> TestResult {
@@ -4048,7 +3904,7 @@ async fn alice_answers(
         .await)
 }
 
-/// SPEC-650 PST-004: the Superagent's `cd_deploy` of the merge-first target waits on its panel
+/// The Superagent's `cd_deploy` of the merge-first target waits on its panel
 /// as a production deploy does, for a person with write access; approved with the slug, it
 /// records the person's staging request; declined, nothing.
 #[tokio::test]
@@ -4057,7 +3913,7 @@ async fn the_superagents_staging_deploy_waits_on_the_panel_then_asks_the_queue()
     let f = fixture(&staging_toml()).await?;
     let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
     gate(&f, &r1, RunState::Passed).await?;
-    let alices = crate::cd_rollback::superagent("u-alice", "alice")?;
+    let alices = crate::support::cd_rollback::superagent("u-alice", "alice")?;
     assert!(f.h.app.superagent_staging(&alices, "staging").await?);
     assert!(!f.h.app.superagent_staging(&alices, "dev").await?);
     assert!(!f.h.app.superagent_production(&alices, "staging").await?);
@@ -4218,7 +4074,7 @@ async fn a_carried_request_whose_deploy_failed_is_not_deployed_again() -> TestRe
     Ok(())
 }
 
-/// Review round 1, finding 4: after a rollback of staging, a person's ask for the head deploys
+/// After a rollback of staging, a person's ask for the head deploys
 /// it again instead of answering with its old verified request.
 #[tokio::test]
 async fn a_persons_ask_after_a_rollback_deploys_the_head_again() -> TestResult {
@@ -4260,7 +4116,7 @@ async fn a_persons_ask_after_a_rollback_deploys_the_head_again() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 2: a deleted task's request (its task id cleared, `task:<n>` kept)
+/// A deleted task's request (its task id cleared, `task:<n>` kept)
 /// stays a task's: its red gate fails as a task's does, nothing is carried for it, it never
 /// answers a person's ask, and the page names a deleted task.
 #[tokio::test]
@@ -4298,7 +4154,7 @@ async fn a_deleted_tasks_request_is_never_taken_for_a_persons() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 6: a person's red request moves on once a rerun of its revision
+/// A person's red request moves on once a rerun of its revision
 /// passed the full gate, without a new merge.
 #[tokio::test]
 async fn a_persons_red_request_deploys_once_a_rerun_passes() -> TestResult {
@@ -4327,7 +4183,7 @@ async fn a_persons_red_request_deploys_once_a_rerun_passes() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 7: who may ask, and who a request deploys as.
+/// Who may ask, and who a request deploys as.
 /// - A reader is refused, and so is an environment that is not the target.
 /// - A second person's ask answers the pending request.
 /// - A request whose asker lost write access before its deploy fails, saying why; the next
@@ -4373,7 +4229,7 @@ async fn who_asks_for_staging_and_who_it_deploys_as() -> TestResult {
         "{}",
         dev.body
     );
-    let carols = crate::cd_rollback::superagent("u-carol", "carol")?;
+    let carols = crate::support::cd_rollback::superagent("u-carol", "carol")?;
     let refused = f
         .ask_release(
             &carols,
@@ -4386,7 +4242,7 @@ async fn who_asks_for_staging_and_who_it_deploys_as() -> TestResult {
     assert!(
         f.h.app
             .superagent_on_panel(
-                &crate::cd_rollback::superagent("u-alice", "alice")?,
+                &crate::support::cd_rollback::superagent("u-alice", "alice")?,
                 CrossAction::Deploy,
                 "staging"
             )
@@ -4439,7 +4295,7 @@ async fn who_asks_for_staging_and_who_it_deploys_as() -> TestResult {
     Ok(())
 }
 
-/// Review round 2, finding 1: a rerun that passes with a skipped job moves a person's red request
+/// A rerun that passes with a skipped job moves a person's red request
 /// on when nothing is left open in that job, as a first verdict does; a rerun that skipped the
 /// job that failed leaves it waiting.
 #[tokio::test]
@@ -4480,7 +4336,7 @@ async fn a_rerun_with_a_skipped_job_moves_a_red_request_only_when_nothing_is_ope
     Ok(())
 }
 
-/// Review round 2, finding 2: a deleted task's inherited request is never carried for a person;
+/// A deleted task's inherited request is never carried for a person;
 /// only the person's own waiting request is.
 #[tokio::test]
 async fn a_deleted_tasks_inherited_request_is_not_carried() -> TestResult {
@@ -4579,7 +4435,7 @@ async fn the_schedule_asks_for_the_head_after_the_configured_merges() -> TestRes
     Ok(())
 }
 
-/// SPEC-650 PST-006: with only the timer on, staging behind the head is asked for once it has
+/// With only the timer on, staging behind the head is asked for once it has
 /// not changed for `serve_every_minutes`; `0` for both keys never asks.
 #[tokio::test]
 async fn the_schedule_asks_for_the_head_on_its_timer() -> TestResult {
@@ -4629,7 +4485,7 @@ async fn the_schedule_asks_for_the_head_on_its_timer() -> TestResult {
     Ok(())
 }
 
-/// SPEC-650 PST-006: the background tick checks each project's schedule, at most every 5
+/// The background tick checks each project's schedule, at most every 5
 /// minutes (each check reads the head from GitHub).
 #[tokio::test]
 async fn the_staging_tick_checks_the_schedule_at_most_every_5_minutes() -> TestResult {
@@ -5084,5 +4940,445 @@ async fn a_needs_you_card_may_ask_a_named_person_who_can_press_the_deploy() -> T
     );
     let bob = card(json!(["bob"])).await?;
     assert_eq!(bob["isError"], false, "{bob}");
+    Ok(())
+}
+
+/// The candidate run judging `sha`, if one was queued.
+async fn candidate(f: &Fixture, sha: &str) -> BoxResult<Option<String>> {
+    let runs =
+        f.h.store
+            .ci_runs_for_sha(&SandboxId::parse("s1")?, sha)
+            .await?;
+    let mut candidates = runs
+        .iter()
+        .filter(|run| run.reference == CiRef::Candidate(sha.to_owned()));
+    let first = candidates.next().map(|run| run.id.clone());
+    assert!(candidates.next().is_none(), "one candidate run: {runs:?}");
+    Ok(first)
+}
+
+/// Ends run `id` with the full suite `full`, naming its failing `tests` as CI retains them.
+async fn finish(f: &Fixture, id: &str, full: RunState, tests: &[&str]) -> TestResult {
+    let blocks = tests
+        .iter()
+        .map(|name| format!("---- {name} stdout ----\nassertion failed\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let state = full.as_str();
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET state = CASE WHEN job_key = 'full' THEN '{state}' ELSE 'passed' END, \
+             exit_code = CASE WHEN job_key = 'full' AND '{state}' <> 'passed' THEN 1 ELSE 0 END, \
+             failures = CASE WHEN job_key = 'full' AND '{blocks}' <> '' THEN '{blocks}' END \
+             WHERE run_id = '{id}'; \
+             UPDATE ci_runs SET state = '{state}' WHERE id = '{id}'"
+        ))
+        .await?;
+    Ok(())
+}
+
+/// A request below a newer revision whose full gate passed gets no run of its
+/// own. Nobody asked for the green revision and a red head sits above it, yet Yulius asks for the
+/// green revision itself, deploys it and includes the request (review round 1, finding 1).
+#[tokio::test]
+async fn a_request_under_a_green_newer_revision_gets_no_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "older").await?;
+    agent(&f, "newer").await?;
+    let older = land(&f, "older", "older").await?;
+    let newer = land(&f, "newer", "newer").await?;
+    let green = gate(&f, &newer, RunState::Passed).await?;
+    let red = f.push("dev", &[("red", Some("red"))])?;
+    named_gate(&f, &red, &["gate::red"]).await?;
+    let asked = ask(&f, "older").await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &older).await?, None, "no run of its own");
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::Inherited, "{row:?}");
+    let note = row.note.unwrap_or_default();
+    assert!(
+        note.contains(&newer[..12]) && note.contains(&green) && note.contains("no run of its own"),
+        "{note}"
+    );
+    for _ in 0..3 {
+        f.h.app.staging_advance(&sandbox, "staging").await?;
+    }
+    settle(&f).await?;
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&newer));
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::Included, "{row:?}");
+    assert_eq!(candidate(&f, &newer).await?, None, "its own pass judged it");
+    Ok(())
+}
+
+/// SPEC-653 NWF-001 for a person's request (review round 1, finding 2): covered by a newer green
+/// revision, it says so instead of a failure, and the green revision deploys and includes it.
+#[tokio::test]
+async fn a_persons_request_under_a_green_newer_revision_says_so_and_is_included() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let r1 = f.push("dev", &[("one.txt", Some("1"))])?;
+    gate(&f, &r1, RunState::Running).await?;
+    let asked = person_asks(&f, &f.alice).await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let r2 = f.push("dev", &[("two.txt", Some("2"))])?;
+    gate(&f, &r2, RunState::Passed).await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(request(&f, &id).await?.state, StagingState::Inherited);
+    let view = staging_view(&f).await?;
+    let mine = view["requests"]
+        .as_array()
+        .ok_or("requests")?
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .ok_or("the request")?
+        .clone();
+    assert_eq!(
+        mine["waiting"],
+        format!(
+            "Tests passed on a newer revision containing {}: it deploys with that revision",
+            &r1[..7]
+        ),
+        "{view}"
+    );
+    for _ in 0..3 {
+        f.h.app.staging_advance(&sandbox, "staging").await?;
+    }
+    settle(&f).await?;
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&r2));
+    assert_eq!(request(&f, &id).await?.state, StagingState::Included);
+    Ok(())
+}
+
+/// Of three waiting requests the newest gets the only run. Its new
+/// failure narrows the range: the middle request is judged, then the older one, and only the
+/// merge that brought the failure fails its gate; the newest inherits it.
+#[tokio::test]
+async fn the_newest_goes_first_and_a_new_failure_is_narrowed_to_its_merge() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b", "c"] {
+        agent(&f, task).await?;
+    }
+    // The integration branch's run of an earlier revision holds the lane while they ask.
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    let holding = gate(&f, &base, RunState::Running).await?;
+    let a = land(&f, "a", "a").await?;
+    let b = land(&f, "b", "b").await?;
+    let c = land(&f, "c", "c").await?;
+    let mut ids = Vec::new();
+    for task in ["a", "b", "c"] {
+        ids.push(ask(&f, task).await?["id"].as_str().ok_or("id")?.to_owned());
+    }
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    for sha in [&a, &b, &c] {
+        assert_eq!(candidate(&f, sha).await?, None, "the lane is held");
+    }
+    finish(&f, &holding, RunState::Passed, &[]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &a).await?, None);
+    assert_eq!(candidate(&f, &b).await?, None);
+    let newest = candidate(&f, &c)
+        .await?
+        .ok_or("the newest is judged first")?;
+
+    // It fails with a new failure: the middle request of its range is judged, and nobody is
+    // told who broke the gate yet.
+    finish(&f, &newest, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &a).await?, None);
+    let middle = candidate(&f, &b)
+        .await?
+        .ok_or("a narrowing run on the middle")?;
+    assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Testing);
+    finish(&f, &middle, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let oldest = candidate(&f, &a).await?.ok_or("then the older half")?;
+    assert_eq!(request(&f, &ids[1]).await?.state, StagingState::Testing);
+    finish(&f, &oldest, RunState::Passed, &[]).await?;
+    settle(&f).await?;
+
+    let breaker = request(&f, &ids[1]).await?;
+    assert_eq!(breaker.state, StagingState::GateFailed, "{breaker:?}");
+    let note = breaker.note.unwrap_or_default();
+    assert!(note.contains("new failures: gate::x"), "{note}");
+    let newest = request(&f, &ids[2]).await?;
+    assert_eq!(newest.state, StagingState::Inherited, "{newest:?}");
+    let note = newest.note.unwrap_or_default();
+    assert!(
+        note.contains(&format!("gate::x from {}", &b[..12])),
+        "{note}"
+    );
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&a));
+    assert_eq!(request(&f, &ids[0]).await?.state, StagingState::Verified);
+    Ok(())
+}
+
+/// While a red revision's range still holds a waiting request, nobody is
+/// named as the breaker, even when the lane is busy and the narrowing run cannot start yet.
+/// Once it is narrowed, the notice names the merge that brought the failure.
+#[tokio::test]
+async fn no_repair_owner_is_named_before_a_new_failure_is_narrowed() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b", "c"] {
+        agent(&f, task).await?;
+    }
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    gate(&f, &base, RunState::Passed).await?;
+    let a = land(&f, "a", "a").await?;
+    let b = land(&f, "b", "b").await?;
+    let c = land(&f, "c", "c").await?;
+    // The integration branch's run judges c while they ask.
+    let judging_c = gate(&f, &c, RunState::Running).await?;
+    let mut ids = Vec::new();
+    for task in ["a", "b", "c"] {
+        ids.push(ask(&f, task).await?["id"].as_str().ok_or("id")?.to_owned());
+    }
+    let sandbox = sandbox(&f).await?;
+    // A later merge's run holds the lane when c fails with a new failure.
+    let d = f.push("dev", &[("d", Some("d"))])?;
+    let judging_d = gate(&f, &d, RunState::Running).await?;
+    finish(&f, &judging_c, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &b).await?, None, "the lane is busy");
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
+    let notices = || async {
+        BoxResult::Ok(f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone())
+    };
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    assert_eq!(notices().await?, json!([]), "c may not be the breaker");
+    assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Testing);
+
+    finish(&f, &judging_d, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let middle = candidate(&f, &b).await?.ok_or("the narrowing run")?;
+    finish(&f, &middle, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(notices().await?, json!([]), "a may still be the breaker");
+    let oldest = candidate(&f, &a).await?.ok_or("the older half")?;
+    finish(&f, &oldest, RunState::Passed, &[]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.app.tell_gate_repairs(&sandbox).await?;
+    let notices = notices().await?;
+    assert_eq!(notices[0]["test"], "gate::x", "{notices}");
+    assert_eq!(notices[0]["revision"], b.as_str(), "{notices}");
+    assert_eq!(request(&f, &ids[1]).await?.state, StagingState::GateFailed);
+    assert_eq!(request(&f, &ids[2]).await?.state, StagingState::Inherited);
+    Ok(())
+}
+
+/// SPEC-676 RGS-002 (review round 1 of task #660): a red verdict stops the merge queue at
+/// once, while its range is still narrowed and nobody is named yet; only a marked repair would
+/// go through. Once narrowed, the stop names the breaker, whose merge goes through.
+#[tokio::test]
+async fn a_red_verdict_stops_the_merge_queue_while_it_is_narrowed() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b", "c"] {
+        agent(&f, task).await?;
+    }
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    gate(&f, &base, RunState::Passed).await?;
+    let a = land(&f, "a", "a").await?;
+    let b = land(&f, "b", "b").await?;
+    let c = land(&f, "c", "c").await?;
+    let judging_c = gate(&f, &c, RunState::Running).await?;
+    for task in ["a", "b", "c"] {
+        ask(&f, task).await?;
+    }
+    let sandbox = sandbox(&f).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
+    assert_eq!(
+        f.h.app.merge_stop(&sandbox).await,
+        None,
+        "c is still judged"
+    );
+    finish(&f, &judging_c, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.clock
+        .0
+        .fetch_add(16_000, std::sync::atomic::Ordering::SeqCst);
+    let stop = f.h.app.merge_stop(&sandbox).await.ok_or("stopped")?;
+    assert_eq!(stop.failures.len(), 1, "{stop:?}");
+    assert_eq!(
+        (stop.failures[0].test.as_str(), stop.failures[0].merge_task),
+        ("gate::x", None),
+        "nobody is named before the range is narrowed"
+    );
+    assert!(stop.breakers().is_empty());
+    let number = |id: &str| {
+        let f = &f;
+        let id = id.to_owned();
+        async move {
+            BoxResult::Ok(
+                f.h.store
+                    .task(&TaskId::parse(&id)?)
+                    .await?
+                    .ok_or("task")?
+                    .number,
+            )
+        }
+    };
+    assert!(!stop.lets_through(number("b").await?, false));
+    assert!(
+        stop.lets_through(number("a").await?, true),
+        "a marked repair"
+    );
+
+    let middle = candidate(&f, &b).await?.ok_or("the narrowing run")?;
+    finish(&f, &middle, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let oldest = candidate(&f, &a).await?.ok_or("the older half")?;
+    finish(&f, &oldest, RunState::Passed, &[]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.clock
+        .0
+        .fetch_add(16_000, std::sync::atomic::Ordering::SeqCst);
+    let stop = f.h.app.merge_stop(&sandbox).await.ok_or("still stopped")?;
+    assert_eq!(stop.breakers(), [number("b").await?], "{stop:?}");
+    assert!(stop.lets_through(number("b").await?, false));
+    assert!(!stop.lets_through(number("c").await?, false));
+    Ok(())
+}
+
+/// SPEC-676 RGS-009 (review round 1 of task #660): a new repair owner is the breaker when one
+/// is available, before a lower number; an owner already assigned keeps the repair when a
+/// breaker becomes available.
+#[tokio::test]
+async fn the_repair_goes_to_the_breaker_but_stays_with_its_owner() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore as _;
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b"] {
+        agent(&f, task).await?;
+    }
+    let sid = SandboxId::parse("s1")?;
+    let (a, b) = (TaskId::parse("a")?, TaskId::parse("b")?);
+    let number = |id: &TaskId| {
+        let f = &f;
+        let id = id.clone();
+        async move { BoxResult::Ok(f.h.store.task(&id).await?.ok_or("task")?.number) }
+    };
+    let (na, nb) = (number(&a).await?, number(&b).await?);
+    assert!(na < nb);
+    let owner =
+        |recipients: Vec<yulius_app::ci::RepairRecipient>| recipients.first().map(|r| r.owner);
+    let both = [a.clone(), b.clone()];
+    assert_eq!(
+        owner(
+            f.h.store
+                .reconcile_gate_repair(&sid, "x", &both, &[nb])
+                .await?
+        ),
+        Some(nb),
+        "the breaker before a lower number"
+    );
+    f.h.store.reconcile_gate_repair(&sid, "", &[], &[]).await?;
+    assert_eq!(
+        owner(
+            f.h.store
+                .reconcile_gate_repair(&sid, "x", std::slice::from_ref(&a), &[nb])
+                .await?
+        ),
+        Some(na),
+        "the breaker is not available"
+    );
+    let later =
+        f.h.store
+            .reconcile_gate_repair(&sid, "x", &both, &[nb])
+            .await?;
+    assert!(
+        later.iter().all(|r| r.owner == na),
+        "the owner keeps it: {later:?}"
+    );
+    Ok(())
+}
+
+/// A person's cancel of a request's own candidate stands,
+/// also when a newer red revision with only earlier failures would answer it without a run.
+#[tokio::test]
+async fn a_cancelled_candidate_fails_its_gate_under_a_red_revision() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "a").await?;
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    named_gate(&f, &base, &["gate::x"]).await?;
+    let a = land(&f, "a", "a").await?;
+    let asked = ask(&f, "a").await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let own = candidate(&f, &a).await?.ok_or("its own candidate")?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET state = 'cancelled' WHERE id = '{own}'; \
+             UPDATE ci_jobs SET state = 'cancelled' WHERE run_id = '{own}'"
+        ))
+        .await?;
+    let later = f.push("dev", &[("later", Some("later"))])?;
+    named_gate(&f, &later, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let row = request(&f, &id).await?;
+    assert_eq!(row.state, StagingState::GateFailed, "{row:?}");
+    assert_eq!(row.ci_run_id.as_deref(), Some(own.as_str()));
+    Ok(())
+}
+
+/// A request between two red revisions with the same failure
+/// needs no run. The queue reads below the lowest request down to the judged revision whose
+/// failures the newer red one is compared with.
+#[tokio::test]
+async fn a_request_between_red_revisions_with_the_same_failure_gets_no_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "a").await?;
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    named_gate(&f, &base, &["gate::x"]).await?;
+    let a = land(&f, "a", "a").await?;
+    let later = f.push("dev", &[("later", Some("later"))])?;
+    named_gate(&f, &later, &["gate::x"]).await?;
+    let asked = ask(&f, "a").await?;
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &a).await?, None, "no narrowing run");
+    let row = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(row.state, StagingState::Inherited, "{row:?}");
+    assert!(
+        row.note
+            .is_some_and(|note| note.contains("failed only on failures from earlier merges")),
+    );
+    Ok(())
+}
+
+/// A round that moved a covered request to `inherited` and
+/// ended before it asked for the green revision (an error, a restart) is made good by a later
+/// round, although no request is testing any more.
+#[tokio::test]
+async fn a_covered_request_left_by_an_interrupted_round_is_still_served() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "older").await?;
+    let older = land(&f, "older", "older").await?;
+    let newer = f.push("dev", &[("newer", Some("newer"))])?;
+    let judging = gate(&f, &newer, RunState::Running).await?;
+    let asked = ask(&f, "older").await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let sandbox = sandbox(&f).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    assert_eq!(candidate(&f, &older).await?, None, "the lane is held");
+    // The interrupted round: covered, and nothing asked for the green revision.
+    finish(&f, &judging, RunState::Passed, &[]).await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE staging_requests SET state = 'inherited', \
+             note = 'the full gate passed on revision {}, which contains it' WHERE id = '{id}'",
+            &newer[..12]
+        ))
+        .await?;
+    for _ in 0..3 {
+        f.h.app.staging_advance(&sandbox, "staging").await?;
+    }
+    settle(&f).await?;
+    assert_eq!(deployed(&f).await?, std::slice::from_ref(&newer));
+    assert_eq!(request(&f, &id).await?.state, StagingState::Included);
     Ok(())
 }

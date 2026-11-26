@@ -198,7 +198,7 @@ fn display_of(f: &Fixture) -> Result<&FakeDisplay, Box<dyn std::error::Error>> {
     Ok(f.display.as_ref().ok_or("no display")?)
 }
 
-/// SPEC-206 RMV-003 (#624): removing a sandbox stops its browser at once (it waited for the
+/// Removing a sandbox stops its browser at once (it waited for the
 /// 30-minute idle reaper); another sandbox's browser goes on.
 #[tokio::test]
 async fn removing_the_sandbox_stops_its_browser() -> TestResult {
@@ -249,7 +249,7 @@ async fn removing_the_sandbox_stops_its_browser() -> TestResult {
     .await
 }
 
-/// SPEC-206 RMV-003 (review of #193): a task of a removed sandbox still stopping can call the
+/// A task of a removed sandbox still stopping can call the
 /// browser tools; they start no browser for the removed sandbox (it lived until the 30-minute
 /// reaper).
 #[tokio::test]
@@ -349,7 +349,7 @@ async fn viewers_need_write_access_and_drive_a_per_sandbox_browser() -> TestResu
             .await?;
         send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "down", "key": "h", "code": "KeyH"})).await?;
         // Composed text without a key (IME) is inserted: a key event carries at most four
-        // characters. A paste is not a `char` (SPEC-639).
+        // characters. A paste is not a `char`.
         send(&mut socket, json!({"type": "key", "tab_id": new_tab, "event": "char", "text": "hi there"})).await?;
         assert!(f.fake.wait_for_calls("Input.dispatchMouseEvent", 1, WAIT).await);
         assert!(f.fake.wait_for_calls("Input.dispatchKeyEvent", 1, WAIT).await);
@@ -502,7 +502,7 @@ async fn agent_tools_drive_the_tabs_the_viewer_sees() -> TestResult {
             .filter_map(|t| t["name"].as_str())
             .filter(|n| n.starts_with("browser_"))
             .collect();
-        // The eight browser tools, plus typing an agent secret (SPEC-002 ADR-20).
+        // The eight browser tools, plus typing an agent secret.
         assert_eq!(names.len(), 9, "{names:?}");
         assert!(names.contains(&"browser_fill_secret"));
 
@@ -568,7 +568,7 @@ async fn agent_tools_drive_the_tabs_the_viewer_sees() -> TestResult {
             .await?,
         );
         assert_eq!(typed["chars"], 6);
-        // Real key presses (SPEC-639): "alice" and Enter, a key down and up each.
+        // Real key presses: "alice" and Enter, a key down and up each.
         assert_eq!(f.fake.calls_for("Input.dispatchKeyEvent").len(), 12);
         assert!(f.fake.calls_for("Input.insertText").is_empty());
         let snapshot =
@@ -617,7 +617,7 @@ async fn agent_tools_drive_the_tabs_the_viewer_sees() -> TestResult {
     .await
 }
 
-/// `browser_fill_secret` (SPEC-002 ADR-20, AC-VLT-6): an agent secret is typed into a page of a
+/// `browser_fill_secret`: an agent secret is typed into a page of a
 /// bound host without the agent receiving it; another host's page is refused; the page text the
 /// agent reads back is redacted.
 #[tokio::test]
@@ -658,7 +658,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
         assert_eq!(filled["isError"], false, "{filled}");
         assert!(!filled.to_string().contains(VALUE), "the result holds no value");
         assert_eq!(tool_text(&filled)["filled"], true);
-        // Typed as real key presses (SPEC-648).
+        // Typed as real key presses.
         assert_eq!(
             f.fake.field_value("#password").as_deref(),
             Some(VALUE),
@@ -714,7 +714,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
         );
         assert_eq!(f.fake.calls_for("Input.dispatchKeyEvent").len(), before);
 
-        // SPEC-483 E3: the tab went on to another site and Yulius has not heard of it yet (it
+        // The tab went on to another site and Yulius has not heard of it yet (it
         // still lists the bound host's page). The page is asked where the typing begins:
         // nothing is typed, and the answer names where the tab is.
         mcp_tool(
@@ -801,7 +801,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
             json!({"tab_id": tab, "url": "https://evil.example/login"}),
         )
         .await?;
-        // A secret bound to no host yet (SPEC-121) is typed nowhere; the agent learns to ask.
+        // A secret bound to no host yet is typed nowhere; the agent learns to ask.
         let unbound = support::call(
             &f.h.router,
             axum::http::Method::POST,
@@ -839,10 +839,10 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
     .await
 }
 
-/// SPEC-483 E8 and E9: the page rule also covers where the keys can end up besides the tab's
+/// The page rule also covers where the keys can end up besides the tab's
 /// own document: a frame of another site with the focus, and the page a navigation under way
 /// is bringing. Both answer as a page the secret is not for, naming the site, with no key sent.
-/// E10: so for the secret's user name (and its one-time code, typed the same way), which was
+/// So for the secret's user name (and its one-time code, typed the same way), which was
 /// typed on what Yulius had last heard of the tab.
 #[tokio::test]
 async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving() -> TestResult
@@ -1028,7 +1028,7 @@ async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_le
     .await
 }
 
-/// SPEC-450 (#1113): pixels cannot be redacted, so a screenshot of a page that may show a secret
+/// Pixels cannot be redacted, so a screenshot of a page that may show a secret
 /// typed with `browser_fill_secret` is refused, pointing to `browser_snapshot`: a plain-text
 /// field (and from then on every page of its origin), an edited value, a page in another tab
 /// echoing the key, a page showing any agent secret, a page that cannot be read. A password field
@@ -1185,7 +1185,7 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
     .await
 }
 
-/// SPEC-450 SSC-004: when the agent secrets cannot be loaded to check the page, no screenshot is
+/// When the agent secrets cannot be loaded to check the page, no screenshot is
 /// taken (as a result that could not be checked is withheld).
 #[tokio::test]
 async fn a_screenshot_is_refused_when_the_secrets_cannot_be_checked() -> TestResult {
@@ -1250,8 +1250,8 @@ async fn a_screenshot_is_refused_when_the_secrets_cannot_be_checked() -> TestRes
     .await
 }
 
-/// SPEC-405 VEV-001 (#710): a production secret (`cd_prod`) is never typed into a page: the
-/// refusal is for what it is, before any host is looked at (it has none, ADR-0324).
+/// A production secret (`cd_prod`) is never typed into a page: the
+/// refusal is for what it is, before any host is looked at (it has none).
 #[tokio::test]
 async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
     const VALUE: &str = "prod-pass-5512-qrs";
@@ -1326,7 +1326,7 @@ async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult 
         run.id = yulius_domain::ids::AttemptId::parse("browser-goal-run")?;
         run.task_id = task.id.clone();
         run.account_id =
-            Some(crate::pool_supervision::add_account(&f.h.app, "browser-account").await?);
+            Some(crate::support::live::pool::add_account(&f.h.app, "browser-account").await?);
         run.token_hash = f.h.app.deps.crypto.sha256_hex(token.as_bytes());
         let run_dir = tempfile::tempdir()?;
         run.run_dir = run_dir.path().to_string_lossy().into_owned();
@@ -1357,7 +1357,7 @@ async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult 
         // The live tab already owns a human action before the task activity has caught up.
         browser.request_user_action(&tab, "Sign in to the test account", Some(&task.id))?;
         use yulius_app::ports::browser::BrowserPort;
-        let lookup = Arc::new(crate::delivery::HeldBrowserLookup::with_session(
+        let lookup = Arc::new(crate::support::delivery::HeldBrowserLookup::with_session(
             browser.clone(),
         ));
         let (entered, release) = lookup.hold_publication_lookup(&task.id);
@@ -1438,7 +1438,7 @@ async fn user_action_requests_mark_the_task_notify_viewers_and_return_a_link() -
         let task = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("task")?;
         assert_eq!(task.activity, Some(Activity::NeedsAttention));
         // The task says it too, with the tab: a page opened later hears no event, and reads
-        // the tabs only with its Browser panel open (SPEC-472 ATN-004).
+        // the tabs only with its Browser panel open.
         assert_eq!(
             support::attention(&f.h.app, "t1").await?,
             json!({
@@ -1596,7 +1596,7 @@ async fn next_video(socket: &mut Socket) -> Result<(bool, Vec<u8>), Box<dyn std:
     Ok((decoded.keyframe, decoded.data.to_vec()))
 }
 
-/// ADR-15: a browser on a virtual display is streamed as H.264 video: the decoder configuration
+/// A browser on a virtual display is streamed as H.264 video: the decoder configuration
 /// first, then access units from a keyframe; the viewport resizes the display and restarts the
 /// encoder at the new size; a viewer that joins later starts at once from the cached group.
 #[tokio::test]
@@ -1704,7 +1704,7 @@ async fn the_display_streams_video_from_a_keyframe_and_follows_the_viewport() ->
     .await
 }
 
-/// SPEC-483 E1 (ADR-0318): on a virtual display a viewer's clicks and keys are real input that
+/// On a virtual display a viewer's clicks and keys are real input that
 /// reaches Chrome's own windows (its file chooser, DevTools), which run on the host. They are
 /// refused (a button press, a key press, typed text), with what an administrator runs, until
 /// the browser itself answers that the host's managed policy is in force; moving the pointer
@@ -1722,7 +1722,7 @@ async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResul
         let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
         let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
         let key = json!({"type": "key", "tab_id": tab, "event": "down", "key": "a", "code": "KeyA", "modifiers": 0});
-        // Typed text (an IME) and a paste are input too (SPEC-639).
+        // Typed text (an IME) and a paste are input too.
         let text = json!({"type": "key", "tab_id": tab, "event": "char", "text": "ab"});
         let paste = json!({"type": "paste", "tab_id": tab, "text": "pasted"});
 
@@ -1787,7 +1787,7 @@ async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResul
     .await
 }
 
-/// SPEC-493 DEF-002 (AC-24): a running browser that an agent clicked in while the host's
+/// A running browser that an agent clicked in while the host's
 /// policy was not in force may still show a native file chooser that click opened, and the
 /// policy closes no window. When the policy appears, viewers' input stays off and says why,
 /// until the browser restarts; a browser no agent touched in that time takes input at once
@@ -1807,7 +1807,7 @@ async fn an_enter_typed_before_the_policy_keeps_input_off_until_a_restart() -> T
     chooser_before_the_policy("browser_type", |tab| json!({"tab_id": tab, "text": "\n"})).await
 }
 
-/// Review round 1 of fix 10b: on a host set up from the start, an agent that clicks or types
+/// On a host set up from the start, an agent that clicks or types
 /// before any viewer pressed anything (the policy was never asked yet) opens no chooser, and
 /// the viewer it hands over to (a captcha, a sign-in) gets input. The first rule took "never
 /// asked" for "not in force" and locked such a browser until its restart.
@@ -1843,7 +1843,7 @@ async fn an_agent_first_on_a_host_with_the_policy_keeps_viewers_input() -> TestR
     Ok(())
 }
 
-/// Review round 2 of fix 10b: on a host without the policy an agent clicks before anything
+/// On a host without the policy an agent clicks before anything
 /// asked it; its own look finds "no" and marks the browser, so once the policy appears the
 /// viewer is still refused, for the restart's reason (the reviewer's probe).
 #[tokio::test]
@@ -1890,7 +1890,7 @@ async fn an_agent_first_without_the_policy_keeps_input_off_until_a_restart() -> 
     .await
 }
 
-/// Review round 2 of fix 10b: one look at the policy that fails during an agent's click (Chrome
+/// One look at the policy that fails during an agent's click (Chrome
 /// busy) is asked once more before it counts as "no": on a host with the policy the browser is
 /// not marked for a hiccup, and its viewer keeps input.
 #[tokio::test]
@@ -1929,7 +1929,7 @@ async fn a_look_at_the_policy_that_fails_once_is_asked_again() -> TestResult {
     .await
 }
 
-/// AC-24: an agent's `tool` with `args(tab)` while the policy is not in force.
+/// An agent's `tool` with `args(tab)` while the policy is not in force.
 async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) -> TestResult {
     with_display(FakeDisplay::new(), |f| async move {
         let display = display_of(&f)?;
@@ -2069,7 +2069,7 @@ async fn a_page_button_returns_its_fresh_copy_only_to_the_clicking_socket() -> T
     }).await
 }
 
-/// ADR-15: a viewer's pointer and keys are real input on the display (XTest), the wheel scrolls
+/// A viewer's pointer and keys are real input on the display (XTest), the wheel scrolls
 /// the shown tab by CSS pixels through CDP, text no key types is inserted, copy answers with the
 /// selection, and everything the viewer held is released when it leaves.
 #[tokio::test]
@@ -2155,7 +2155,7 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
     .await
 }
 
-/// SPEC-639 (PST-001, PST-002, PST-004, PST-006): a viewer's paste is one real paste on the
+/// A viewer's paste is one real paste on the
 /// display (its CLIPBOARD and the paste key, Shift+Insert), whole and in order with the keys
 /// around it, never inserted through CDP; one the page did not take is answered `paste_failed`,
 /// and one over 32 KiB is refused, not cut.
@@ -2301,7 +2301,7 @@ async fn a_viewer_paste_is_a_real_paste_on_the_display_in_order_with_keys() -> T
     .await
 }
 
-/// SPEC-639 PST-004 (review round 1): while a paste is on its way to the page the viewer's
+/// While a paste is on its way to the page the viewer's
 /// connection goes on (other answers arrive), and the outcome comes when the page did not take
 /// it.
 #[tokio::test]
@@ -2339,7 +2339,7 @@ async fn a_paste_on_its_way_does_not_hold_up_the_viewers_connection() -> TestRes
     .await
 }
 
-/// SPEC-639 (review round 2), ADR-0423: a paste after a click that wrote the page's copy ends
+/// A paste after a click that wrote the page's copy ends
 /// that offer, so accepting it never hands out the pasted text.
 #[tokio::test]
 async fn a_paste_ends_the_page_copy_offer_of_the_click_before() -> TestResult {
@@ -2364,7 +2364,7 @@ async fn a_paste_ends_the_page_copy_offer_of_the_click_before() -> TestResult {
     .await
 }
 
-/// SPEC-639 PST-003: without a display a paste is typed as key presses through CDP (each
+/// Without a display a paste is typed as key presses through CDP (each
 /// character a key down with its text and a key up, a line break Enter), never inserted.
 #[tokio::test]
 async fn a_headless_paste_is_typed_as_key_presses() -> TestResult {
@@ -2420,7 +2420,7 @@ async fn a_headless_paste_is_typed_as_key_presses() -> TestResult {
     .await
 }
 
-/// ADR-0318 (review of slice 6): the policy probe's tab is known by the id Chrome gave it, never
+/// The policy probe's tab is known by the id Chrome gave it, never
 /// by its address. A page that opens a window at the probe's address gets an ordinary tab: it
 /// is listed and, on the display, becomes the shown tab, so the panel never shows one tab's
 /// address over another window's picture.
@@ -2453,7 +2453,7 @@ async fn a_page_cannot_hide_a_window_behind_the_probes_address() -> TestResult {
     .await
 }
 
-/// ADR-0318 (review of slice 6, round 2): what Chrome announces while a probe waits for the id
+/// What Chrome announces while a probe waits for the id
 /// of its own tab is listed once the id is known, unless it is the probe's; and a tab that
 /// goes to a page of Chrome's own stays a tab (Chrome still shows it).
 #[tokio::test]
@@ -2503,7 +2503,7 @@ async fn tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_st
     .await
 }
 
-/// ADR-0318 (review of slice 6, round 3): a page made and closed again while a probe waits for
+/// A page made and closed again while a probe waits for
 /// the id of its own tab is no tab afterwards.
 #[tokio::test]
 async fn a_tab_made_and_closed_while_the_probe_waits_is_no_tab() -> TestResult {
@@ -2528,7 +2528,7 @@ async fn a_tab_made_and_closed_while_the_probe_waits_is_no_tab() -> TestResult {
     .await
 }
 
-/// ADR-0318: a page of Chrome itself is no tab (Chrome 157 reports its address bar's popup,
+/// A page of Chrome itself is no tab (Chrome 157 reports its address bar's popup,
 /// `chrome://omnibox-popup.top-chrome/`, as a page): viewers are never shown it, and it never
 /// becomes the shown tab; the page opened after it is.
 #[tokio::test]
@@ -2567,7 +2567,7 @@ async fn chromes_own_pages_are_no_tabs() -> TestResult {
     .await
 }
 
-/// ADR-15: a page opening a page (a link to a new tab, an OAuth popup) brings it to the front of
+/// A page opening a page (a link to a new tab, an OAuth popup) brings it to the front of
 /// the display, so the panel shows it as the active tab; watching a tab brings it to the front
 /// for every viewer.
 #[tokio::test]
@@ -2637,7 +2637,7 @@ async fn pages_opened_by_pages_and_watched_tabs_come_to_the_front() -> TestResul
     .await
 }
 
-/// ADR-15: when the display's encoder cannot run, viewers are told why and get JPEG frames.
+/// When the display's encoder cannot run, viewers are told why and get JPEG frames.
 #[tokio::test]
 async fn a_broken_encoder_falls_back_to_labelled_jpeg_frames() -> TestResult {
     let display = FakeDisplay::new();
@@ -2671,7 +2671,7 @@ async fn a_broken_encoder_falls_back_to_labelled_jpeg_frames() -> TestResult {
     .await
 }
 
-/// ADR-15: the browser's display is stopped with the browser (encoder and X server reaped).
+/// The browser's display is stopped with the browser (encoder and X server reaped).
 #[tokio::test]
 async fn the_display_stops_with_the_browser() -> TestResult {
     let display = FakeDisplay::new();
@@ -2692,7 +2692,7 @@ async fn the_display_stops_with_the_browser() -> TestResult {
 }
 
 /// An `Authorization` header of another scheme is refused, never taken as absent: the request
-/// does not fall back to the session cookie it also carries (SPEC-483 slice 29, review).
+/// does not fall back to the session cookie it also carries.
 #[tokio::test]
 async fn another_authorization_scheme_beside_a_session_cookie_is_refused() -> TestResult {
     let h = support::harness()?;
@@ -3252,7 +3252,7 @@ async fn legacy_browser_attention_without_needs_you_stays_visible_and_clears() -
     .await
 }
 
-/// SPEC-578: superseding a browser handoff on tab A with tab B clears tab A; the handoff stays
+/// Superseding a browser handoff on tab A with tab B clears tab A; the handoff stays
 /// open while parked; non-owners cannot dismiss it; clearing via viewer WS (`clear_action`) clears
 /// the tab and persisted request and stays cleared.
 #[tokio::test]
@@ -3425,7 +3425,7 @@ async fn browser_handoff_allows_inline_answer_clears_without_viewers_and_emits_o
             "browser handoff must not be rejected as a terminal prompt: {msg}"
         );
         // If a terminal prompt replaces the browser attention flag, `answer_needs_you` MUST still
-        // refuse with "asks in its terminal now" (NYA-004).
+        // refuse with "asks in its terminal now".
         let (_, flagged_at) =
             f.h.store
                 .stored_task_attention(&task_id)

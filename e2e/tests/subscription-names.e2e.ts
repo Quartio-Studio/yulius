@@ -361,7 +361,8 @@ test('with the mouse: the name, then the pencil of the email under it; both are 
 
 test("an email saved with Tab leaves the keyboard on that card's next control", async ({ app, browser, screen }) => {
   await openSubscriptions(app, browser);
-  // Claude #3 needs a new sign-in: the control after its email is "Sign in again".
+  // Claude #3 needs a new sign-in, so it offers no Refresh: the control after its email is its
+  // charge date's button (SPEC-651), then "Sign in again".
   await screen.getByRole('button', 'Change the email of Claude #3').click();
   const email = screen.getByRole('textbox', 'Email of Claude #3');
   await expect(email).toBeFocused();
@@ -372,7 +373,7 @@ test("an email saved with Tab leaves the keyboard on that card's next control", 
   await expect.poll(() => browser.evaluate(() => {
     const control = document.activeElement;
     return { control: control?.textContent ?? null, of: control?.closest('.card')?.querySelector('.account-name strong')?.textContent ?? null };
-  })).toEqual({ control: 'Sign in again', of: 'Claude #3' });
+  })).toEqual({ control: 'Set charge date', of: 'Claude #3' });
   expect(await sentFor(browser, 'acc_c3')).toBe(1);
 });
 

@@ -13,13 +13,14 @@
 //! `YULIUS_ISOLATION_TEST_SYSTEM` reuses a built `system/` directory (a base build copies about
 //! 6 GB). The limits test needs a delegated cgroup: run it in a transient unit,
 //! `systemd-run --uid=<user> -p Delegate=yes -p DelegateSubgroup=server --wait --pipe … isolation_limits`
-//! with `YULIUS_ISOLATION_TEST_LIMITS=1`. The Docker test (SPEC-187) needs the same unit, Docker
+//! with `YULIUS_ISOLATION_TEST_LIMITS=1`. The Docker test needs the same unit, Docker
 //! installed on the host and its kernel modules: `… isolation_docker` (and `isolation_docker_live`,
 //! SPEC-196) with `YULIUS_ISOLATION_TEST_DOCKER=1`.
 
 #![cfg(target_os = "linux")]
 
 use crate::support;
+use crate::support::git;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -77,22 +78,6 @@ struct Iso {
     s2: SandboxRecord,
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@t")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@t")
-        .output()?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).into_owned().into())
-    }
-}
-
 fn clone_repo(data: &Path, sandbox: &str) -> TestResult {
     let origin = data.join(format!("origin-{sandbox}.git"));
     std::fs::create_dir_all(&origin)?;
@@ -118,7 +103,8 @@ fn clone_repo(data: &Path, sandbox: &str) -> TestResult {
             &origin.to_string_lossy(),
             &repo.to_string_lossy(),
         ],
-    )
+    )?;
+    Ok(())
 }
 
 fn ensure_base(data: &Path, exe: &Path) -> TestResult {
@@ -379,7 +365,25 @@ async fn agent(iso: &Iso, sandbox: &str) -> Result<TaskId, Box<dyn std::error::E
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
     let id = TaskId::parse(created.body["id"].as_str().ok_or("task id")?)?;
-    wait_screen(iso, &id, "FAKE-AGENT READY", WAIT).await?;
+    if let Err(err) = wait_screen(iso, &id, "FAKE-AGENT READY", WAIT).await {
+        // Why it did not start: the task, and each attempt's end and its host's record.
+        let task = iso.h.app.deps.store.task(&id).await?;
+        let mut why = format!("{err}\ntask: {task:?}\n");
+        for attempt in iso.h.app.deps.store.attempts(&id).await? {
+            why.push_str(&format!(
+                "attempt {:?} {:?}: exit {:?}\n",
+                attempt.state, attempt.exit_reason, attempt.exit_code
+            ));
+            for name in ["exit.json", "status.json"] {
+                let path = Path::new(&attempt.run_dir).join(name);
+                why.push_str(&format!(
+                    "{name}: {}\n",
+                    std::fs::read_to_string(path).unwrap_or_default()
+                ));
+            }
+        }
+        return Err(why.into());
+    }
     Ok(id)
 }
 
@@ -630,6 +634,15 @@ async fn end_to_end(iso: &Iso, forward: u16, blocked: u16) -> TestResult {
     assert!(!Path::new("/usr/games/cowsay").exists(), "not on the host");
     eprintln!("other sandbox:\n{}", out.trim());
 
+    // A note in the memory folder every session of s1 reads, before its agent starts.
+    let s1 = iso.data.join("sandboxes/s1");
+    let memory = s1
+        .join("home/.claude/projects")
+        .join(yulius_app::memory_guard::claude_key(&s1.join("repo")))
+        .join("memory");
+    std::fs::create_dir_all(&memory)?;
+    std::fs::write(memory.join("MEMORY.md"), "existing note\n")?;
+
     // An agent's session in s1: same system layer, root, IS_SANDBOX, its own apt install.
     let task = agent(iso, "s1").await?;
     let screen = agent_sh(
@@ -649,6 +662,41 @@ async fn end_to_end(iso: &Iso, forward: u16, blocked: u16) -> TestResult {
     ] {
         assert!(screen.contains(expected), "{expected}: {screen}");
     }
+    // SPEC-652 in a joined run (the holder's namespaces, its seccomp filter, the run's
+    // capabilities): the agent's shell reads the note and cannot write, add, delete or rename
+    // away its memory, nor write its user instructions.
+    let m = memory.display();
+    let screen = agent_sh(
+        iso,
+        &task,
+        &format!(
+            "(echo x >> {m}/MEMORY.md) 2>/dev/null && echo mem-append-wrote || echo mem-append-refused; (echo n > {m}/new.md) 2>/dev/null && echo mem-create-wrote || echo mem-create-refused; rm -f {m}/MEMORY.md 2>/dev/null && echo mem-delete-wrote || echo mem-delete-refused; mv {m} {m}.x 2>/dev/null && echo mem-rename-wrote || echo mem-rename-refused; (echo r >> $HOME/.claude/CLAUDE.md) 2>/dev/null && echo claude-md-wrote || echo claude-md-refused; echo mem-read=$(cat {m}/MEMORY.md); echo MEM-$((40+2))-DONE"
+        ),
+        "MEM-42-DONE",
+        WAIT,
+    )
+    .await?;
+    eprintln!("guarded memory:\n{}", screen.trim());
+    for expected in [
+        "mem-append-refused",
+        "mem-create-refused",
+        "mem-delete-refused",
+        "mem-rename-refused",
+        "claude-md-refused",
+        "mem-read=existing note",
+    ] {
+        assert!(screen.contains(expected), "{expected}: {screen}");
+    }
+    // A result line, not the echoed command (which names every outcome).
+    assert!(
+        !screen.lines().any(|line| line.trim().ends_with("-wrote")),
+        "{screen}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(memory.join("MEMORY.md"))?,
+        "existing note\n"
+    );
+    assert_eq!(std::fs::read_dir(&memory)?.count(), 1);
     // Attachments and the worktree are at their host paths; host secrets are not.
     let attachment = iso
         .data
@@ -717,7 +765,7 @@ async fn isolation_limits() -> TestResult {
     };
     let (forward, _hello) = hello_server().await?;
     let iso = fixture(limits, Some(delegation.clone()), forward).await?;
-    // SPEC-053 CPU-202: a process left in the sandbox group by an older server.
+    // A process left in the sandbox group by an older server.
     let group = delegation.unit.join("sandboxes/s1");
     std::fs::create_dir_all(&group)?;
     let mut stray = std::process::Command::new("sleep").arg("300").spawn()?;
@@ -745,7 +793,7 @@ async fn isolation_limits() -> TestResult {
             std::fs::read_to_string(group.join("cpu.max"))?.trim(),
             "100000 100000"
         );
-        // SPEC-053: the CPU goes to the leaves by weight, and the shell runs in `agents`.
+        // The CPU goes to the leaves by weight, and the shell runs in `agents`.
         if delegation.controllers.iter().any(|c| c == "cpu") {
             assert!(std::fs::read_to_string(group.join("cgroup.subtree_control"))?.contains("cpu"));
             for (leaf, weight) in [("system", "100"), ("agents", "100"), ("ci", "400")] {
@@ -792,7 +840,7 @@ async fn isolation_limits() -> TestResult {
             .ok_or_else(|| format!("forks were not limited: {out}"))?;
         assert!(refused_after < 64, "at most pids.max tasks: {out}");
         eprintln!("pids.max 64: {}", out.trim());
-        // SPEC-268 PID-002: CI jobs stop at their leaf (3/8 of 64) while the agents' shell still
+        // CI jobs stop at their leaf (3/8 of 64) while the agents' shell still
         // forks; without the leaf limit the CI forker took the whole sandbox.
         if ["cpu", "pids"]
             .iter()
@@ -895,10 +943,10 @@ async fn isolation_disk_quota_refuses_new_runs() -> TestResult {
     Ok(())
 }
 
-/// Two services, one fetching from the other by its service name (SPEC-187).
+/// Two services, one fetching from the other by its service name.
 const COMPOSE: &str = "services:\n  web:\n    image: busybox\n    command: [\"sh\", \"-c\", \"mkdir -p /w && echo compose-web > /w/index.html && httpd -f -p 8080 -h /w\"]\n  probe:\n    image: busybox\n    depends_on: [web]\n    command: [\"sh\", \"-c\", \"for i in $$(seq 30); do wget -qO- http://web:8080/ && exit 0; sleep 1; done; exit 1\"]\n";
 
-/// The sandbox's own Docker engine end to end (SPEC-187, ADR-0151): as an agent and in a user's
+/// The sandbox's own Docker engine end to end: as an agent and in a user's
 /// shell, `docker run`, `docker build` and `docker compose` work; containers reach neither the
 /// host's loopback, another sandbox nor the host's Docker; `--privileged` stays inside the
 /// sandbox. Needs a delegated cgroup (like `isolation_limits`), Docker installed on the host and
@@ -934,7 +982,7 @@ async fn isolation_docker() -> TestResult {
     guarded(&iso, docker_end_to_end(&iso, &delegation, forward, blocked)).await
 }
 
-/// SPEC-196 (#597): Docker reaches runs whatever their age, the way an update meets them: a
+/// Docker reaches runs whatever their age, the way an update meets them: a
 /// holder serving no engine and a run started then (without the Docker directory) get it once
 /// the holder is adopted with Docker on; the refusal before names its reason; a recreated
 /// socket keeps the old run working; a new run has `DOCKER_HOST`. The scenario is
@@ -1026,7 +1074,7 @@ async fn docker_end_to_end(
     .await?;
     assert!(screen.contains("built-in-the-sandbox"), "{screen}");
 
-    // The engine lives below the sandbox's engine group, which holds its limits (ADR-0339).
+    // The engine lives below the sandbox's engine group, which holds its limits.
     let engine_group = delegation.unit.join("sandboxes/s1/engine/inside");
     assert!(
         !std::fs::read_to_string(engine_group.join("cgroup.procs"))?
@@ -1124,6 +1172,37 @@ async fn docker_end_to_end(
     .await?;
     assert!(!out.contains("seen-"), "{out}");
     assert!(out.contains("hidden-master.key"), "{out}");
+
+    // A container's `-v` of the home's `.claude` (or of the home above it)
+    // finds an empty folder, and nothing it writes there reaches the sandbox's files.
+    let claude = iso.data.join("sandboxes/s1/home/.claude");
+    let memory = claude.join("projects/-k/memory");
+    std::fs::create_dir_all(&memory)?;
+    std::fs::write(memory.join("MEMORY.md"), "existing note\n")?;
+    let out = run(
+        &mut sh,
+        &format!(
+            "docker run --rm -v {c}:/c -v {h}:/h busybox sh -c 'echo c-entries=$(ls -A /c | wc -l) h-claude=$(ls -A /h/.claude | wc -l); mkdir -p /c/projects/-k/memory 2>/dev/null; echo x >> /c/projects/-k/memory/MEMORY.md 2>/dev/null; echo x >> /h/.claude/CLAUDE.md 2>/dev/null; echo mask-done'",
+            c = claude.display(),
+            h = claude.parent().ok_or("home")?.display()
+        ),
+        APT_WAIT,
+    )
+    .await?;
+    eprintln!("masked from containers:\n{}", out.trim());
+    assert!(out.contains("c-entries=0 h-claude=0"), "{out}");
+    assert!(out.contains("mask-done"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(memory.join("MEMORY.md"))?,
+        "existing note\n"
+    );
+    // An agent session's guard may have left an empty `CLAUDE.md` as its mount point: nothing
+    // the container wrote is in it.
+    assert_eq!(
+        std::fs::read_to_string(claude.join("CLAUDE.md")).unwrap_or_default(),
+        "",
+        "{out}"
+    );
 
     // `--privileged` stays inside the sandbox: its user namespace, no nested one, and even in the
     // engine's cgroup namespace (`--cgroupns=host`) only the engine's tree, not the sandbox's

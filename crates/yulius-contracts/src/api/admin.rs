@@ -117,11 +117,38 @@ pub struct AccountView {
     /// Tokens Yulius observed on this account in the last 7 days.
     #[serde(default)]
     pub tokens_7d: Option<TokenTotalsView>,
+    /// When the subscription charges its card (SPEC-651): `null` until an administrator gives a
+    /// charge date.
+    #[serde(default)]
+    pub billing: Option<AccountBillingView>,
     /// Only in the answer of `POST /api/admin/accounts/{id}/usage`: whether Claude gave a
     /// usage reading this time (`false` for a sign-in that may not read its usage, whose
     /// windows are then as they were; SPEC-473).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_read: Option<bool>,
+}
+
+/// A subscription's billing cycle (SPEC-651 BIL-004): the charge date an administrator gave and
+/// how often it repeats, and the next charge counted from them (dates `YYYY-MM-DD`, today in UTC).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountBillingView {
+    /// The charge date an administrator gave: the last charge or the next one.
+    pub anchor: String,
+    /// `month` or `year`.
+    pub period: String,
+    /// The first charge on or after today.
+    pub next_charge_on: String,
+}
+
+/// `PUT /api/admin/accounts/{id}/billing` (SPEC-651 BIL-003): a charge date (`YYYY-MM-DD`, years
+/// 2000 to 2100) and how often it repeats (`month` or `year`). Any other field is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetAccountBilling {
+    /// The date of a charge: the last one or the next one.
+    pub anchor: String,
+    /// `month` or `year`.
+    pub period: String,
 }
 
 /// Token totals of an account's runs; `None` values are unknown (runs without usage data).

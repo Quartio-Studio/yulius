@@ -1,4 +1,4 @@
-//! Managing the project through the Yulius MCP server (SPEC-037): a task's agent creates tasks
+//! Managing the project through the Yulius MCP server: a task's agent creates tasks
 //! with `task_create` on its creator's authority, within a per-project bound.
 
 use crate::support;
@@ -49,8 +49,8 @@ async fn task_create(
     ))
 }
 
-/// AC-MGT-1: an agent creates a task, also chained after its own; the task belongs to the
-/// agent's creator, has origin `agent` and is queued like one from New task (MGT-001, MGT-002).
+/// An agent creates a task, also chained after its own; the task belongs to the
+/// agent's creator, has origin `agent` and is queued like one from New task.
 #[tokio::test]
 async fn an_agent_creates_tasks_for_its_creator() -> TestResult {
     let h = world().await?;
@@ -128,7 +128,7 @@ async fn task_create_refuses_invalid_requests() -> TestResult {
     Ok(())
 }
 
-/// MGT-002: an agent whose creator can no longer work in the project creates nothing.
+/// An agent whose creator can no longer work in the project creates nothing.
 #[tokio::test]
 async fn an_agent_whose_creator_lost_access_creates_nothing() -> TestResult {
     let h = world().await?;
@@ -148,7 +148,7 @@ async fn an_agent_whose_creator_lost_access_creates_nothing() -> TestResult {
     Ok(())
 }
 
-/// MGT-003: at most 20 tool-created tasks per project and rolling hour.
+/// At most 20 tool-created tasks per project and rolling hour.
 #[tokio::test]
 async fn tool_created_tasks_are_bounded_per_hour() -> TestResult {
     let h = world().await?;
@@ -170,7 +170,7 @@ async fn tool_created_tasks_are_bounded_per_hour() -> TestResult {
     Ok(())
 }
 
-/// MGT-002: an agent whose creator lost write access creates or changes no automation either.
+/// An agent whose creator lost write access creates or changes no automation either.
 #[tokio::test]
 async fn an_agent_whose_creator_lost_access_changes_no_automation() -> TestResult {
     let h = world().await?;
@@ -214,7 +214,7 @@ async fn an_agent_whose_creator_lost_access_changes_no_automation() -> TestResul
     Ok(())
 }
 
-/// MGT-002: a disabled creator's agent creates nothing.
+/// A disabled creator's agent creates nothing.
 #[tokio::test]
 async fn an_agent_whose_creator_is_disabled_creates_nothing() -> TestResult {
     use yulius_app::ports::store::UserStore;
@@ -238,7 +238,7 @@ async fn audits(h: &support::Harness, target: &str) -> Result<Vec<(String, Strin
         .collect())
 }
 
-/// AC-MGT-5 (MGT-008, MGT-010): an agent stops, archives and deletes another task of its
+/// An agent stops, archives and deletes another task of its
 /// project as the UI would, each audited with the agent as the actor.
 #[tokio::test]
 async fn an_agent_stops_archives_and_deletes_another_task() -> TestResult {
@@ -312,7 +312,7 @@ async fn an_agent_stops_archives_and_deletes_another_task() -> TestResult {
     Ok(())
 }
 
-/// AC-MGT-6 (MGT-009): a task's agent cannot stop, archive or delete its own task.
+/// A task's agent cannot stop, archive or delete its own task.
 #[tokio::test]
 async fn an_agent_cannot_stop_archive_or_delete_its_own_task() -> TestResult {
     let h = world().await?;
@@ -334,7 +334,7 @@ async fn an_agent_cannot_stop_archive_or_delete_its_own_task() -> TestResult {
     Ok(())
 }
 
-/// MGT-008: the UI's rules hold (a live task is neither archived nor deleted before it is
+/// The UI's rules hold (a live task is neither archived nor deleted before it is
 /// stopped), and a task of another project is not found.
 #[tokio::test]
 async fn task_tools_follow_the_uis_rules() -> TestResult {
@@ -372,7 +372,7 @@ async fn task_tools_follow_the_uis_rules() -> TestResult {
     Ok(())
 }
 
-/// AC-MGT-7 (MGT-008, MGT-011): once the creator lost write access, the agent stops, deletes
+/// Once the creator lost write access, the agent stops, deletes
 /// and runs nothing.
 #[tokio::test]
 async fn an_agent_whose_creator_lost_access_stops_and_deletes_nothing() -> TestResult {
@@ -429,7 +429,7 @@ async fn an_agent_whose_creator_lost_access_stops_and_deletes_nothing() -> TestR
     Ok(())
 }
 
-/// MGT-011: an agent runs an automation now and deletes it, as the UI does, audited with the
+/// An agent runs an automation now and deletes it, as the UI does, audited with the
 /// agent; another project's automation is not found.
 #[tokio::test]
 async fn an_agent_runs_an_automation_now_and_deletes_it() -> TestResult {
@@ -504,7 +504,7 @@ async fn an_agent_runs_an_automation_now_and_deletes_it() -> TestResult {
     Ok(())
 }
 
-/// MGT-011: an automation of another project is not found, even when the creator may work there
+/// An automation of another project is not found, even when the creator may work there
 /// too; it is neither run nor deleted.
 #[tokio::test]
 async fn automation_tools_stay_in_the_callers_project() -> TestResult {
@@ -567,7 +567,7 @@ async fn task_archive_refuses_a_non_boolean_archived() -> TestResult {
     Ok(())
 }
 
-/// MGT-012: none of the tools that stop, delete or run something is pre-allowed in the
+/// None of the tools that stop, delete or run something is pre-allowed in the
 /// Cockpit: Claude Code asks the person first.
 #[test]
 fn the_cockpit_asks_before_every_changing_tool() {
@@ -587,7 +587,7 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "sandbox_request_amend",
         "sandbox_request_withdraw",
         "person_ask",
-        // The changing ones of the person's project tools (SPEC-487).
+        // The changing ones of the person's project tools.
         "task_restart",
         "task_pause",
         "task_unpause",
@@ -630,7 +630,7 @@ fn the_cockpit_asks_before_every_changing_tool() {
 }
 
 /// The tools a Cockpit runs without asking are among those it is served, so a rename cannot
-/// silently drop one from the allowlist (MGT-004, MGT-006).
+/// silently drop one from the allowlist.
 #[test]
 fn the_cockpits_read_only_tools_are_served_to_it() {
     for tool in yulius_harness::launch::COCKPIT_READ_ONLY_TOOLS {
@@ -641,7 +641,7 @@ fn the_cockpits_read_only_tools_are_served_to_it() {
     }
 }
 
-/// SPEC-230 TMS-001: `task_message` is the Superagent's only: a task's agent is not served it
+/// `task_message` is the Superagent's only: a task's agent is not served it
 /// and cannot call it.
 #[tokio::test]
 async fn a_task_agent_cannot_message_other_tasks() -> TestResult {
@@ -771,7 +771,7 @@ async fn after_all_tasks_names_every_task_that_has_not_ended() -> TestResult {
         None,
     )
     .await?;
-    // Tasks that will not become done by themselves are not waited for (review round 1, M4):
+    // Tasks that will not become done by themselves are not waited for (review round 1):
     // one that is stopping, and a session that answered and has nothing open (the list reads
     // "Answered" under Done; it never becomes `done` and would hold the rule for ever).
     seed_task(
@@ -883,7 +883,7 @@ async fn after_all_tasks_names_every_task_that_has_not_ended() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 CHN-005: with no task left that has not ended, `after_all_tasks` starts the task
+/// With no task left that has not ended, `after_all_tasks` starts the task
 /// now and says so; with more than a rule can name, it is refused with what to do.
 #[tokio::test]
 async fn after_all_tasks_with_nothing_left_starts_now() -> TestResult {
@@ -948,7 +948,7 @@ async fn after_all_tasks_with_nothing_left_starts_now() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 CHN-004, CHN-005 (review round 1, L8): `task_update` with `after_all_tasks` and
+/// `task_update` with `after_all_tasks` and
 /// nothing left starts the task now and says so, and a task that has started no longer answers
 /// how it waited.
 #[tokio::test]
@@ -1006,7 +1006,7 @@ async fn task_update_after_all_tasks_with_nothing_left_starts_now() -> TestResul
     Ok(())
 }
 
-/// Review round 1, L11: a caller whose person may not work in the project learns nothing of
+/// A caller whose person may not work in the project learns nothing of
 /// its tasks from `after_all_tasks`' bound.
 #[tokio::test]
 async fn after_all_tasks_counts_nothing_for_a_person_without_access() -> TestResult {
@@ -1043,7 +1043,7 @@ async fn after_all_tasks_counts_nothing_for_a_person_without_access() -> TestRes
     Ok(())
 }
 
-/// SPEC-628 FRK-001, FRK-003: `task_fork` forks a task of the project for the agent's creator;
+/// `task_fork` forks a task of the project for the agent's creator;
 /// a task without a conversation is refused, said in words, and nothing is created.
 #[tokio::test]
 async fn task_fork_refuses_a_task_without_a_conversation() -> TestResult {
@@ -1074,7 +1074,7 @@ async fn task_fork_refuses_a_task_without_a_conversation() -> TestResult {
     Ok(())
 }
 
-/// SPEC-628: forking changes nothing of the source, so anyone who may work in the project forks
+/// Forking changes nothing of the source, so anyone who may work in the project forks
 /// another person's task (view of the task, work in the project); a reader may not.
 #[tokio::test]
 async fn a_writer_may_fork_another_persons_task_and_a_reader_may_not() -> TestResult {

@@ -79,6 +79,10 @@ SPEC-612 supersedes automatic parked-session wakes and finished-task repair inst
   - A run that already judged that commit counts. Otherwise Yulius queues one candidate run
     (`CiRef::Candidate`).
   - The candidate run is not superseded while its request is waiting.
+  - Which waiting request is judged, and which needs no run of its own, is
+    [SPEC-653](SPEC-653-staging-the-full-gate-judges-the-newest.md)'s (ADR-0480): the newest first,
+    none for a request a green revision contains, and under a red revision only to narrow a new
+    failure to its merge. One full-gate run at a time.
 - **MFS-004 Agent requests deployment through Yulius.**
   - A task agent's `cd_deploy` of the merge-first environment records a staging request; it
     never deploys the branch head directly.

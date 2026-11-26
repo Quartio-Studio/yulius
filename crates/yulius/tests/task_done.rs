@@ -1,4 +1,4 @@
-//! A task whose goal Claude Code records as achieved is Done (SPEC-001 TSK-014, AC-TSK-13).
+//! A task whose goal Claude Code records as achieved is Done.
 //!
 //! End to end: supervisor → detached `yulius ptyhost` → fake agent shaped like Claude Code
 //! 2.1.292 (goal records in its transcript, Bash-tool background shells) running Claude Code's
@@ -6,19 +6,18 @@
 //! server restart that replays the transcripts.
 
 use crate::support;
+use crate::support::live::{Live, listen, serve_internal, url_of};
+use crate::support::{eventually, git};
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use support::TestResult;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
-use yulius::wiring::clock::SystemClock;
+use support::agents::FakeAgentOptions;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius::wiring::session::PtySessionHost;
-use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::context::{App, AppConfig};
 use yulius_app::error::AppResult;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
@@ -36,7 +35,6 @@ use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
 type BoxError = Box<dyn std::error::Error>;
@@ -49,11 +47,11 @@ async fn start(
     agent: FakeAgentOptions,
     port: u16,
 ) -> Result<(Arc<App>, u16), BoxError> {
-    start_on(data, fake, agent, port, None, None, false, None).await
+    start_holding(data, live(fake, agent), port, |_| {}, Hold::default()).await
 }
 
 /// A session host that connects to a run only once the agent's SessionStart hook was answered, so
-/// the hook lands before the supervisor watches the run, as on a busy host (#243). Bounded: without
+/// the hook lands before the supervisor watches the run, as on a busy host. Bounded: without
 /// a hook the attach goes ahead after 30 s.
 struct AttachAfterSessionStart {
     inner: PtySessionHost,
@@ -95,45 +93,6 @@ impl SessionHost for AttachAfterSessionStart {
     }
 }
 
-/// [`start`], and with `attach_late` the run is attached only after its SessionStart hook.
-async fn start_with(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    port: u16,
-    attach_late: bool,
-) -> Result<(Arc<App>, u16), BoxError> {
-    start_on(data, fake, agent, port, None, None, attach_late, None).await
-}
-
-/// [`start`] on `host` (default: the real one, attached late with `attach_late`), with the stop
-/// and close escalation shortened to `escalation_ms` and at most `sessions` live sessions.
-#[allow(clippy::too_many_arguments)]
-async fn start_on(
-    data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
-    port: u16,
-    host: Option<Arc<dyn SessionHost>>,
-    escalation_ms: Option<u64>,
-    attach_late: bool,
-    sessions: Option<u32>,
-) -> Result<(Arc<App>, u16), BoxError> {
-    start_holding(
-        data,
-        fake,
-        agent,
-        port,
-        host,
-        (escalation_ms, None),
-        attach_late,
-        sessions,
-        None,
-        None,
-    )
-    .await
-}
-
 /// A `/goal` prompt hook the test server handles only after `hold` and, within 30 s, once a Stop
 /// that arrived meanwhile was answered (not held): the first one once `armed`. `stop_handled`
 /// says that Stop was answered first (the late path), `handled` when the prompt was handled.
@@ -146,7 +105,7 @@ struct LateHook {
     handled: tokio::sync::watch::Sender<bool>,
 }
 
-/// What a test sees and decides of the turn hooks at the internal listener (SPEC-453): each Stop
+/// What a test sees and decides of the turn hooks at the internal listener: each Stop
 /// Yulius answered (not held) is reported on `stop_answered`, and while `prompts_lost` is set a
 /// `UserPromptSubmit` never reaches Yulius: its client fails open, as on an unreachable server.
 #[derive(Clone)]
@@ -155,74 +114,51 @@ struct TurnHooks {
     prompts_lost: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// [`start_on`], and with `late_goal` the server sees a `/goal` prompt hook (a resumed session's
-/// typed goal) only after its hold, then handles it to its end, as a loaded host does once the
-/// hook client gave up waiting (SPEC-346); with `turn_hooks` the test follows the turn hooks.
-/// The pair shortens the stop and close escalation, and a switch's wait for its old session.
-#[allow(clippy::too_many_arguments)]
+/// The fake agent with `agent`'s options; Bob writes the fixture's repository (a hand-over during
+/// a launch).
+fn live(fake: &Path, agent: FakeAgentOptions) -> Live {
+    let live = Live::new(Some(fake), agent);
+    live.github
+        .set_perm("bob", "acme/done", support::perms("write"));
+    live
+}
+
+/// How a test's server watches its hooks, beyond what [`Live`] builds.
+#[derive(Default)]
+struct Hold {
+    /// The run is attached only after its SessionStart hook (when `live` names no host).
+    attach_late: bool,
+    /// The server sees a `/goal` prompt hook (a resumed session's typed goal) only after its
+    /// hold, then handles it to its end, as a loaded host does once the hook client gave up
+    /// waiting.
+    late_goal: Option<LateHook>,
+    /// The test follows the turn hooks.
+    turn_hooks: Option<TurnHooks>,
+}
+
+/// A server built from `live` on `port` (0 = any free port), `tune` applied, its hooks held as
+/// `hold` says; returns its port.
 async fn start_holding(
     data: &Path,
-    fake: &Path,
-    agent: FakeAgentOptions,
+    mut live: Live,
     port: u16,
-    host: Option<Arc<dyn SessionHost>>,
-    (escalation_ms, switch_end_ms): (Option<u64>, Option<u64>),
-    attach_late: bool,
-    sessions: Option<u32>,
-    late_goal: Option<LateHook>,
-    turn_hooks: Option<TurnHooks>,
+    tune: impl FnOnce(&mut AppConfig),
+    Hold {
+        attach_late,
+        late_goal,
+        turn_hooks,
+    }: Hold,
 ) -> Result<(Arc<App>, u16), BoxError> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
-    let listener = socket.listen(64)?;
+    let listener = listen(port)?;
     let port = listener.local_addr()?.port();
-    let url = format!("http://127.0.0.1:{port}");
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
     let (session_started, session_started_rx) = tokio::sync::watch::channel(false);
-    config.contained = false;
-    if let Some(ms) = escalation_ms {
-        config.stop_escalation_ms = ms;
+    if live.host.is_none() && attach_late {
+        live.host = Some(Arc::new(AttachAfterSessionStart {
+            inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
+            session_started: session_started_rx,
+        }));
     }
-    if let Some(ms) = switch_end_ms {
-        config.switch_end_ms = ms;
-    }
-    if let Some(sessions) = sessions {
-        config.max_live_sessions = sessions;
-    }
-    let deps = Deps {
-        store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-        clock: Arc::new(SystemClock),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new({
-            let github = support::FakeGitHub::default();
-            // Bob writes the fixture's repository (a hand-over during a launch, SPEC-248).
-            github.set_perm("bob", "acme/done", support::perms("write"));
-            github
-        }),
-        session_host: if let Some(host) = host {
-            host
-        } else if attach_late {
-            Arc::new(AttachAfterSessionStart {
-                inner: PtySessionHost::new(exe.clone()),
-                session_started: session_started_rx,
-            })
-        } else {
-            Arc::new(PtySessionHost::new(exe.clone()))
-        },
-        harness: Arc::new(FakeAgentHarness {
-            inner: HarnessAdapter::new(exe.clone(), url),
-            fake: fake.to_path_buf(),
-            options: agent,
-            yulius_exe: exe,
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-    };
-    let app = App::new(config, deps);
+    let app = live.app(data, &url_of(&listener)?, tune)?;
     // Says when a SessionStart hook was answered (the hook client waits for that answer).
     let session_start_answered = axum::middleware::from_fn(
         move |request: axum::extract::Request, next: axum::middleware::Next| {
@@ -275,7 +211,7 @@ async fn start_holding(
                     return next.run(request).await;
                 }
                 late.holding.store(true, SeqCst);
-                // Its own task: the client hanging up does not cancel it (ADR-0115).
+                // Its own task: the client hanging up does not cancel it.
                 let handling = tokio::spawn(async move {
                     tokio::time::sleep(late.hold).await;
                     let mut stopped = late.stop_handled.subscribe();
@@ -324,28 +260,13 @@ async fn start_holding(
             }
         },
     );
-    let internal = yulius_server::internal_router(app.clone())
-        .layer(goal_held)
-        .layer(turn_followed)
-        .layer(session_start_answered)
-        .into_make_service_with_connect_info::<SocketAddr>();
-    tokio::spawn(async move { axum::serve(listener, internal).await });
+    serve_internal(&app, listener, |router| {
+        router
+            .layer(goal_held)
+            .layer(turn_followed)
+            .layer(session_start_answered)
+    });
     Ok((app, port))
-}
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
 }
 
 /// A user, a sandbox whose repository is a clone of a bare origin, and a Claude account.
@@ -432,7 +353,7 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserId), BoxError> {
     Ok((sandbox.id, user.id))
 }
 
-/// A goal-mode task (TSK-010): Yulius types `/goal <prompt>` once the session is ready.
+/// A goal-mode task: Yulius types `/goal <prompt>` once the session is ready.
 async fn goal_task(
     app: &Arc<App>,
     sandbox: &SandboxId,
@@ -458,21 +379,6 @@ async fn goal_task(
         })
         .await?;
     Ok(record.id)
-}
-
-async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if check().await {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
 }
 
 async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, BoxError> {
@@ -526,7 +432,7 @@ fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
     Ok((dir, data))
 }
 
-/// TSK-014: the goal turn ends cleanly (Stop hook), Claude Code records the goal as achieved and
+/// The goal turn ends cleanly (Stop hook), Claude Code records the goal as achieved and
 /// no shell is left: the task is Done. Typing again makes it Working; after that turn it waits
 /// for the user (the achieved goal no longer counts), but it answered with nothing open: nobody
 /// has to act, and it is not counted in Needs you (SPEC-429; task #17 of another project read
@@ -545,21 +451,21 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the achieved goal", Duration::from_secs(90), || {
+        eventually("the achieved goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
-        // SPEC-117 ONE-001: the session's only first message is its goal, the launch prompt.
+        // The session's only first message is its goal, the launch prompt.
         let launch = first_launch(&app, &id).await?;
         assert!(
             launch.contains("prompt: Some(\"/goal Tidy the parser and verify it\\n\\nDone = "),
             "{launch}"
         );
-        wait_for("Done", Duration::from_secs(20), || async {
+        eventually("Done", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
-        wait_for("the shell probe", Duration::from_secs(20), || async {
+        eventually("the shell probe", Duration::from_secs(20), || async {
             shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
         })
         .await?;
@@ -573,11 +479,11 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
         // The user types again: Working, then (the turn ends) their turn, not Done.
         let mut events = app.events.subscribe();
         app.send_input(&id, b"also rename the module\r").await?;
-        wait_for("the second turn", Duration::from_secs(20), || {
+        eventually("the second turn", Duration::from_secs(20), || {
             screen_contains(&app, &id, "ECHO: also rename the module")
         })
         .await?;
-        wait_for("Your turn", Duration::from_secs(20), || async {
+        eventually("Your turn", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
@@ -616,11 +522,11 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             .counts;
         assert_eq!(counts.needs_attention, 0, "answered: nobody has to act");
         // It reads Answered under Done, where Archive is offered: archiving closes its session
-        // as for a Done task, not "stop the task first" (SPEC-429 ANS-007).
+        // as for a Done task, not "stop the task first".
         let archived = app.archive_task(&ctx, id.as_str(), true).await?;
         assert!(archived.archived, "archived");
         // Closed, not stopped; it stays Running until its session is gone (`close_task_now`).
-        wait_for("the close", Duration::from_secs(30), || async {
+        eventually("the close", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Closed)
@@ -651,7 +557,7 @@ fn an_idle_compaction_leaves_a_done_task_done() -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Fix the status").await?;
-        wait_for("Done", Duration::from_secs(90), || async {
+        eventually("Done", Duration::from_secs(90), || async {
             shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
         })
         .await?;
@@ -679,14 +585,14 @@ fn an_idle_compaction_leaves_a_done_task_done() -> TestResult {
                 }
             }
         });
-        wait_for("the idle compaction", Duration::from_secs(30), || {
+        eventually("the idle compaction", Duration::from_secs(30), || {
             screen_contains(&app, &id, "COMPACTED WHILE IDLE")
         })
         .await?;
         // Its records were written before it said so: two more watcher rounds read them.
         let runtime = app.runtime(&id);
         let rounds = runtime.transcript_rounds();
-        wait_for("the compaction read", Duration::from_secs(20), || async {
+        eventually("the compaction read", Duration::from_secs(20), || async {
             runtime.transcript_rounds() >= rounds + 2
         })
         .await?;
@@ -703,7 +609,7 @@ fn an_idle_compaction_leaves_a_done_task_done() -> TestResult {
     Ok(())
 }
 
-/// SPEC-085 STT-005: a person types `/compact` into the idle session of a Done task. Claude Code
+/// A person types `/compact` into the idle session of a Done task. Claude Code
 /// writes the command as typed, compacts and writes its records (no turn, no Stop hook): the task
 /// stays Done throughout and after. A prompt typed right after is work as always.
 #[test]
@@ -720,7 +626,7 @@ fn a_typed_compaction_leaves_a_done_task_done() -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Fix the status").await?;
-        wait_for("Done", Duration::from_secs(90), || async {
+        eventually("Done", Duration::from_secs(90), || async {
             shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
         })
         .await?;
@@ -747,14 +653,14 @@ fn a_typed_compaction_leaves_a_done_task_done() -> TestResult {
         });
         let seen_now = || seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
         app.send_input(&id, b"/compact keep the plan\r").await?;
-        wait_for("the compaction", Duration::from_secs(20), || {
+        eventually("the compaction", Duration::from_secs(20), || {
             screen_contains(&app, &id, "COMPACTED: keep the plan")
         })
         .await?;
         // Its records were written before it said so: two more watcher rounds read them.
         let runtime = app.runtime(&id);
         let rounds = runtime.transcript_rounds();
-        wait_for("the compaction read", Duration::from_secs(20), || async {
+        eventually("the compaction read", Duration::from_secs(20), || async {
             runtime.transcript_rounds() >= rounds + 2
         })
         .await?;
@@ -767,15 +673,15 @@ fn a_typed_compaction_leaves_a_done_task_done() -> TestResult {
 
         // A prompt typed right after is work: Working, then (the goal no longer counts) Your turn.
         app.send_input(&id, b"also rename the module\r").await?;
-        wait_for("the prompt's turn", Duration::from_secs(20), || {
+        eventually("the prompt's turn", Duration::from_secs(20), || {
             screen_contains(&app, &id, "ECHO: also rename the module")
         })
         .await?;
-        wait_for("Your turn", Duration::from_secs(20), || async {
+        eventually("Your turn", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        wait_for("the Working update", Duration::from_secs(10), || async {
+        eventually("the Working update", Duration::from_secs(10), || async {
             seen_now().iter().any(|a| a == "working")
         })
         .await?;
@@ -784,55 +690,6 @@ fn a_typed_compaction_leaves_a_done_task_done() -> TestResult {
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
-}
-
-/// The real session host whose probe also finds `waits` shells that only run `yulius wait`
-/// (what `yulius_ptyhost::shells::count_background` tells apart on a real process tree).
-struct WaitingHost {
-    inner: PtySessionHost,
-    waits: Arc<std::sync::atomic::AtomicU32>,
-}
-
-#[async_trait::async_trait]
-impl SessionHost for WaitingHost {
-    async fn spawn(
-        &self,
-        run_dir: &Path,
-        attempt_id: &str,
-        task_id: &str,
-        plan: &LaunchPlan,
-        token: &[u8; 32],
-        size: (u16, u16),
-    ) -> AppResult<SpawnedRun> {
-        self.inner
-            .spawn(run_dir, attempt_id, task_id, plan, token, size)
-            .await
-    }
-
-    async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
-        self.inner.attach(run_dir, token).await
-    }
-
-    fn inspect(&self, run_dir: &Path) -> RunInspection {
-        self.inner.inspect(run_dir)
-    }
-
-    fn terminate(&self, run_dir: &Path) -> AppResult<()> {
-        self.inner.terminate(run_dir)
-    }
-
-    fn background_shells(&self, child_pid: u32) -> Option<u32> {
-        self.inner.background_shells(child_pid)
-    }
-
-    fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
-        self.inner
-            .background_probe(child_pid)
-            .map(|found| BackgroundProbe {
-                waits: self.waits.load(std::sync::atomic::Ordering::SeqCst),
-                ..found
-            })
-    }
 }
 
 /// SPEC-085 STT-002 ("needs you was too often": 173 idle periods of 37 tasks read Your turn while
@@ -853,11 +710,34 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
         };
         let waits = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-        let host = Arc::new(WaitingHost {
-            inner: PtySessionHost::new(exe),
-            waits: Arc::clone(&waits),
+        // The real host, whose probe also finds `waits` shells that only run `yulius wait` (what
+        // `yulius_ptyhost::shells::count_background` tells apart on a real process tree).
+        let real = Arc::new(PtySessionHost::new(exe));
+        let host = Arc::new(support::ScriptedHost {
+            inner: Some(real.clone()),
+            background_probe: Some(Box::new({
+                let (inner, waits) = (Arc::clone(&real), Arc::clone(&waits));
+                move |pid| {
+                    inner.background_probe(pid).map(|found| BackgroundProbe {
+                        waits: waits.load(std::sync::atomic::Ordering::SeqCst),
+                        ..found
+                    })
+                }
+            })),
+            reap_strays: Some(Box::new(|_| 0)),
+            ..support::ScriptedHost::default()
         });
-        let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
+        let (app, _) = start_holding(
+            &data,
+            Live {
+                host: Some(host),
+                ..live(&fake, agent)
+            },
+            0,
+            |_| {},
+            Hold::default(),
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let ctx = yulius_app::auth::AuthContext {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
@@ -882,13 +762,13 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
                 summary.yulius_wait,
             ))
         };
-        wait_for("Your turn", Duration::from_secs(90), || async {
+        eventually("Your turn", Duration::from_secs(90), || async {
             view().await.ok() == Some((Some("waiting".into()), Some(0), false))
         })
         .await?;
-        // Its goal failed: the work is unfinished, so it is the person's turn (SPEC-429 ANS-002).
+        // Its goal failed: the work is unfinished, so it is the person's turn.
         // The fake's turn is shorter than a transcript read, so the record may come after it: the
-        // UI is told then, not left reading Answered (ANS-008).
+        // UI is told then, not left reading Answered.
         let published = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 match events.recv().await {
@@ -913,7 +793,7 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
 
         // The agent waits for its checks: the next probe finds it.
         waits.store(1, std::sync::atomic::Ordering::SeqCst);
-        wait_for("the wait in the view", Duration::from_secs(20), || async {
+        eventually("the wait in the view", Duration::from_secs(20), || async {
             view().await.ok() == Some((Some("waiting".into()), Some(0), true))
         })
         .await?;
@@ -921,7 +801,7 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
 
         // The wait returned and the agent stopped: Your turn again.
         waits.store(0, std::sync::atomic::Ordering::SeqCst);
-        wait_for("the wait over", Duration::from_secs(20), || async {
+        eventually("the wait over", Duration::from_secs(20), || async {
             view().await.ok() == Some((Some("waiting".into()), Some(0), false))
         })
         .await?;
@@ -933,7 +813,7 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
 }
 
 /// A goal task that got its goal from its launch prompt, then stopped and continued: the resumed
-/// session (no prompt) gets its `/goal` typed once it reads input (SPEC-117 ONE-007). Returns
+/// session (no prompt) gets its `/goal` typed once it reads input. Returns
 /// once the resumed run's screen replaced the first one's, before its goal.
 async fn continued_goal_task(
     app: &Arc<App>,
@@ -951,7 +831,7 @@ async fn continued_goal_task_with(
     before: impl FnOnce(&TaskId),
 ) -> Result<TaskId, BoxError> {
     let id = goal_task(app, sandbox, user, "Tidy the parser").await?;
-    wait_for("the launch goal", Duration::from_secs(60), || {
+    eventually("the launch goal", Duration::from_secs(60), || {
         screen_contains(app, &id, "GOAL SET")
     })
     .await?;
@@ -972,7 +852,7 @@ async fn continued_goal_task_with(
         },
     )
     .await?;
-    wait_for("the resumed session", Duration::from_secs(60), || async {
+    eventually("the resumed session", Duration::from_secs(60), || async {
         let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
         attempts.len() == 2
             && attempts[1].state == AttemptState::Live
@@ -985,7 +865,7 @@ async fn continued_goal_task_with(
 
 /// The resumed session's goal was typed: its launch had no prompt, and the goal turn ran.
 async fn goal_typed_into_the_resumed_session(app: &App, id: &TaskId) -> TestResult {
-    wait_for("the typed goal", Duration::from_secs(60), || {
+    eventually("the typed goal", Duration::from_secs(60), || {
         screen_contains(app, id, "ECHO: /goal Tidy the parser")
     })
     .await?;
@@ -999,7 +879,7 @@ async fn goal_typed_into_the_resumed_session(app: &App, id: &TaskId) -> TestResu
     Ok(())
 }
 
-/// TSK-010, SPEC-117 ONE-007: a goal typed into a resumed session whose TUI drops the first
+/// A goal typed into a resumed session whose TUI drops the first
 /// submit is typed again until Claude Code takes it, so the task goes on instead of showing the
 /// goal unsubmitted.
 #[test]
@@ -1020,8 +900,8 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
         let (sandbox, user) = seed(&app, &data).await?;
         let id = continued_goal_task(&app, &sandbox, &user).await?;
         goal_typed_into_the_resumed_session(&app, &id).await?;
-        // About a second after the goal turn, also at a load average of 60 (SPEC-067).
-        wait_for("Done", Duration::from_secs(45), || async {
+        // About a second after the goal turn, also at a load average of 60.
+        eventually("Done", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
@@ -1031,7 +911,7 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-002: the TUI dropped the typed goal's submit, so the goal may still sit in the
+/// The TUI dropped the typed goal's submit, so the goal may still sit in the
 /// prompt box until a later try submits it. A message for the task that comes meanwhile is
 /// refused, as while a message is being typed: typed now, it would be sent with the goal by the
 /// next Enter, or erased when the goal is typed again.
@@ -1093,7 +973,7 @@ fn nothing_is_typed_while_a_typed_goal_is_not_taken() -> TestResult {
     Ok(())
 }
 
-/// SPEC-346 LPH-002, LPH-003 (#921): the goal typed into a resumed session (after a dropped
+/// The goal typed into a resumed session (after a dropped
 /// submit, as above) whose `UserPromptSubmit` the server handles only after the hook client gave
 /// up (5 s): the agent ran the goal turn meanwhile, its Stop waited for the verdict and Claude
 /// Code recorded the goal as met. The late prompt changes nothing, and the task is Done. Before,
@@ -1122,15 +1002,13 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
         };
         let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            live(&fake, agent),
             0,
-            None,
-            (None, None),
-            false,
-            None,
-            Some(late.clone()),
-            None,
+            |_| {},
+            Hold {
+                late_goal: Some(late.clone()),
+                ..Hold::default()
+            },
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -1143,7 +1021,7 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
             *late.stop_handled.borrow(),
             "the goal turn's Stop was handled before its prompt (the late path)"
         );
-        wait_for(
+        eventually(
             "Done after the late prompt",
             Duration::from_secs(45),
             || async { activity(&app, &id).await == Some(Activity::Done) },
@@ -1173,21 +1051,19 @@ async fn start_following(
     let hooks = Some(turn.clone());
     let (app, _) = start_holding(
         data,
-        fake,
-        agent,
+        live(fake, agent),
         0,
-        None,
-        (None, None),
-        false,
-        None,
-        None,
-        hooks,
+        |_| {},
+        Hold {
+            turn_hooks: hooks,
+            ..Hold::default()
+        },
     )
     .await?;
     Ok((app, turn, answered))
 }
 
-/// SPEC-453 TPO-001 (#1066): a goal turn's Stop arrives while the transcript watcher is between
+/// A goal turn's Stop arrives while the transcript watcher is between
 /// its last-Stop check of that turn's prompt and the turn it starts for it: the Stop waits for
 /// the prompt, opens its verdict wait after it, and Claude Code's "met" makes the task Done.
 /// Before, the watcher cleared the verdict wait the Stop had just opened: "met" found no waited
@@ -1204,7 +1080,7 @@ fn a_goal_whose_stop_races_its_transcript_prompt_is_done() -> TestResult {
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
         // The launch goal is met: the watcher read its whole turn.
-        wait_for("the launch goal Done", Duration::from_secs(90), || async {
+        eventually("the launch goal Done", Duration::from_secs(90), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
@@ -1227,11 +1103,11 @@ fn a_goal_whose_stop_races_its_transcript_prompt_is_done() -> TestResult {
         });
         app.send_input(&id, b"/goal Tidy the lexer too\r").await?;
         // Its prompt hook was answered (Working) before the agent echoes it.
-        wait_for("the typed goal's turn", Duration::from_secs(30), || {
+        eventually("the typed goal's turn", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: /goal Tidy the lexer too")
         })
         .await?;
-        wait_for("Done", Duration::from_secs(45), || async {
+        eventually("Done", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
@@ -1242,7 +1118,7 @@ fn a_goal_whose_stop_races_its_transcript_prompt_is_done() -> TestResult {
     Ok(())
 }
 
-/// SPEC-453 TPO-002 (#1066): a turn Yulius knows only from the transcript (its prompt hook was
+/// A turn Yulius knows only from the transcript (its prompt hook was
 /// lost) whose Stop read the task before the watcher's prompt set Working: the Stop settles the
 /// task as it is by then, Your turn. It used to settle from its copy, which already read Your
 /// turn, so it wrote nothing and the task stayed Working with the agent idle.
@@ -1274,17 +1150,17 @@ fn a_stop_that_raced_its_transcript_prompt_settles_the_turn() -> TestResult {
             })
             .await?
             .id;
-        wait_for("the run", Duration::from_secs(90), || {
+        eventually("the run", Duration::from_secs(90), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
         // An ordinary turn first: its hooks arrive and its Stop leaves Your turn.
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the first turn's Stop", Duration::from_secs(30), || async {
+        eventually("the first turn's Stop", Duration::from_secs(30), || async {
             answered.try_recv().is_ok()
         })
         .await?;
-        wait_for("Your turn", Duration::from_secs(20), || async {
+        eventually("Your turn", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
@@ -1300,20 +1176,20 @@ fn a_stop_that_raced_its_transcript_prompt_settles_the_turn() -> TestResult {
             let _ = tokio::task::block_in_place(|| released.recv_timeout(Duration::from_secs(30)));
         });
         app.send_input(&id, b"also rename the module\r").await?;
-        wait_for(
+        eventually(
             "the Stop about to settle",
             Duration::from_secs(30),
             || async { parked.try_recv().is_ok() },
         )
         .await?;
-        wait_for(
+        eventually(
             "the transcript's prompt",
             Duration::from_secs(30),
             || async { activity(&app, &id).await == Some(Activity::Working) },
         )
         .await?;
         release.send(())?;
-        wait_for(
+        eventually(
             "Your turn after the Stop",
             Duration::from_secs(20),
             || async { activity(&app, &id).await == Some(Activity::Waiting) },
@@ -1325,7 +1201,7 @@ fn a_stop_that_raced_its_transcript_prompt_settles_the_turn() -> TestResult {
     Ok(())
 }
 
-/// TSK-010 (#243), SPEC-117 ONE-007: a resumed session's SessionStart hook answered before the
+/// A resumed session's SessionStart hook answered before the
 /// supervisor watches the run (a fast TUI, a busy host) still counts: the goal is typed once the
 /// TUI is quiet, not after the 45 s fallback for a TUI without hooks.
 #[test]
@@ -1339,7 +1215,17 @@ fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> T
             hooks: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_with(&data, &fake, agent, 0, true).await?;
+        let (app, _) = start_holding(
+            &data,
+            live(&fake, agent),
+            0,
+            |_| {},
+            Hold {
+                attach_late: true,
+                ..Hold::default()
+            },
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = continued_goal_task(&app, &sandbox, &user).await?;
         // Well under the hookless fallback (45 s): the goal follows the hook, not the fallback.
@@ -1356,7 +1242,7 @@ fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> T
     Ok(())
 }
 
-/// SPEC-011, SPEC-117 ONE-001, SPEC-212 WHL-001: a goal task writes its request file (the request,
+/// A goal task writes its request file (the request,
 /// its attached files and the definition of done) and starts from a `/goal` that is the whole
 /// request, each attached file at its place, then the definition of done, given as the launch
 /// prompt: one first message, nothing typed into the session.
@@ -1392,7 +1278,7 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             })
             .await?;
         let id = record.id;
-        wait_for("the goal to start", Duration::from_secs(90), || {
+        eventually("the goal to start", Duration::from_secs(90), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
@@ -1425,7 +1311,7 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         assert!(!screen[..set].contains("ECHO:"), "{screen}");
         assert!(!screen[..set].contains("/goal"), "{screen}");
         // Nor after it: the goal turn's own echo is the only answer, and the goal is set once.
-        wait_for("the goal turn's answer", Duration::from_secs(30), || {
+        eventually("the goal turn's answer", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: /goal Make the header blue")
         })
         .await?;
@@ -1441,15 +1327,15 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
     Ok(())
 }
 
-/// SPEC-052 AC-QMS-3: a message queued while the task waited reaches the agent with its request
+/// A message queued while the task waited reaches the agent with its request
 /// when it starts: in the request file and the goal of a goal task, in the first message of a
 /// prompt task.
 ///
-/// The wait is real (SPEC-082 TST-002): another task holds the only session slot, so the
+/// The wait is real: another task holds the only session slot, so the
 /// session limit queues the task and nothing can start it before its message is in; the
 /// holder's stop then frees the slot and the queue starts it. Before, the test moved a task to
 /// `queued` itself while slots were free: any pass of the queue (the previous task's stop or
-/// Done, SES-101) could start it first, and the message was refused about one run in four.
+/// Done) could start it first, and the message was refused about one run in four.
 #[test]
 fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1461,7 +1347,16 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
             hooks: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(&data, &fake, agent, 0, None, None, false, Some(1)).await?;
+        let (app, _) = start_holding(
+            &data,
+            live(&fake, agent),
+            0,
+            |config| {
+                config.max_live_sessions = 1;
+            },
+            Hold::default(),
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let ctx = yulius_app::auth::AuthContext {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
@@ -1487,12 +1382,12 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
         };
         for mode in [TaskMode::Goal, TaskMode::Prompt] {
             // A prompt task holds the only slot: after its turn it waits for its person and is
-            // never Done, so it keeps the slot until it is stopped (SES-101).
+            // never Done, so it keeps the slot until it is stopped.
             let holder = app
                 .create_task_internal(new_task(TaskMode::Prompt, "Hold the slot"))
                 .await?
                 .id;
-            wait_for("the holder's session", Duration::from_secs(60), || async {
+            eventually("the holder's session", Duration::from_secs(60), || async {
                 first_launch(&app, &holder).await.is_ok()
                     && task(&app, &holder)
                         .await
@@ -1522,7 +1417,7 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
                 // A goal task's request file carries the message, and a short request is
                 // quoted in the goal itself, the message with it.
                 TaskMode::Goal => {
-                    wait_for("the goal", Duration::from_secs(60), || {
+                    eventually("the goal", Duration::from_secs(60), || {
                         screen_contains(&app, &id, "GOAL SET")
                     })
                     .await?;
@@ -1548,7 +1443,7 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
                 TaskMode::Prompt => {
                     // Its session runs (the launch file is written before the spawn; a stop
                     // during the start waits for the whole escalation).
-                    wait_for("the first launch", Duration::from_secs(60), || async {
+                    eventually("the first launch", Duration::from_secs(60), || async {
                         first_launch(&app, &id).await.is_ok()
                             && task(&app, &id)
                                 .await
@@ -1582,9 +1477,9 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
     Ok(())
 }
 
-/// SPEC-034 LIM-003, SPEC-072 LRS-004 (#278): a goal session whose turn a usage limit cut moves to
+/// A goal session whose turn a usage limit cut moves to
 /// another subscription by a continued resume; Claude Code redoes the cut turn first, and the goal
-/// is typed again after that turn's Stop, not during it, and once, as one line (SPEC-212 WHL-003).
+/// is typed again after that turn's Stop, not during it, and once, as one line.
 #[test]
 fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1628,7 +1523,7 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
             .create_task_internal(NewTask {
                 sandbox: sandbox.clone(),
                 created_by: user.clone(),
-                // SPEC-212 WHL-003: more than one line; the typed goal is one.
+                // More than one line; the typed goal is one.
                 prompt: "Make the header blue\n\nand the footer".into(),
                 harness: Harness::ClaudeCode,
                 title: Some("Blue header".into()),
@@ -1644,12 +1539,12 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
             })
             .await?
             .id;
-        wait_for("the goal to start", Duration::from_secs(90), || {
+        eventually("the goal to start", Duration::from_secs(90), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the continued run", Duration::from_secs(90), || async {
+        eventually("the continued run", Duration::from_secs(90), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
         })
@@ -1659,7 +1554,7 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
         )?;
         assert!(launch.contains("continue_interrupted: true"), "{launch}");
         // The new run's screen only: its continued turn, then the goal.
-        wait_for(
+        eventually(
             "the goal after the continued turn",
             Duration::from_secs(90),
             || {
@@ -1683,7 +1578,7 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
         );
         assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
         // The whole condition reached the goal as one line: none of it was submitted apart.
-        wait_for("the typed goal's turn", Duration::from_secs(30), || {
+        eventually("the typed goal's turn", Duration::from_secs(30), || {
             screen_contains(
                 &app,
                 &id,
@@ -1738,12 +1633,12 @@ fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> 
             })
             .await?
             .id;
-        wait_for("the run", Duration::from_secs(60), || {
+        eventually("the run", Duration::from_secs(60), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for(
+        eventually(
             "the pause at the limit",
             Duration::from_secs(30),
             || async {
@@ -1754,14 +1649,14 @@ fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> 
             },
         )
         .await?;
-        wait_for(
+        eventually(
             "the continued turn's Stop answered",
             Duration::from_secs(60),
             || screen_contains(&app, &id, "CONTINUED STOP ANSWERED"),
         )
         .await?;
         // The pause closes, then the task runs: wait for both.
-        wait_for("the task to run", Duration::from_secs(30), || async {
+        eventually("the task to run", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Running)
@@ -1775,10 +1670,10 @@ fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> 
     Ok(())
 }
 
-/// SPEC-030 PIMG-002: a prompt-mode task with an attached image starts with no command-line
+/// A prompt-mode task with an attached image starts with no command-line
 /// prompt; its first message is typed into the TUI with the image pasted (`[Image #1]`, as
 /// Claude Code attaches a pasted image) and the other files mentioned. An older prompt's files
-/// follow its text, so the image is pasted after it (SPEC-124 INL-007).
+/// follow its text, so the image is pasted after it.
 #[test]
 fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1813,7 +1708,7 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
             .id;
         // The answer spans lines: wait for all of it, not its first line (under load the
         // lines after `ECHO: Make it blue` reached the screen after it was read).
-        wait_for("the first message", Duration::from_secs(90), || {
+        eventually("the first message", Duration::from_secs(90), || {
             let app = app.clone();
             let id = id.clone();
             async move {
@@ -1837,7 +1732,7 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
     Ok(())
 }
 
-/// SPEC-124 INL-007: an image written inside the text (`@'path'`, as the composer writes it) is
+/// An image written inside the text (`@'path'`, as the composer writes it) is
 /// pasted where it sits: one first message with `[Image #1]` between the words around it.
 #[test]
 fn an_image_in_the_text_is_pasted_where_it_sits() -> TestResult {
@@ -1871,7 +1766,7 @@ fn an_image_in_the_text_is_pasted_where_it_sits() -> TestResult {
             })
             .await?
             .id;
-        wait_for("the first message", Duration::from_secs(90), || {
+        eventually("the first message", Duration::from_secs(90), || {
             screen_contains(
                 &app,
                 &id,
@@ -1889,7 +1784,7 @@ fn an_image_in_the_text_is_pasted_where_it_sits() -> TestResult {
     Ok(())
 }
 
-/// TSK-014: the goal turn leaves a background shell (Claude Code's Bash tool shape): the task is
+/// The goal turn leaves a background shell (Claude Code's Bash tool shape): the task is
 /// shown Working with one background shell until the shell ends, then Done.
 #[test]
 fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
@@ -1906,11 +1801,11 @@ fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Start the dev server").await?;
-        wait_for("the achieved goal", Duration::from_secs(90), || {
+        eventually("the achieved goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
-        wait_for("one background shell", Duration::from_secs(20), || async {
+        eventually("one background shell", Duration::from_secs(20), || async {
             shown(&app, &id)
                 .await
                 .ok()
@@ -1922,11 +1817,11 @@ fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
             "the shell still runs"
         );
         // Claude Code wakes the agent when the shell ends; its Stop settles the task.
-        wait_for("the shell's end", Duration::from_secs(30), || {
+        eventually("the shell's end", Duration::from_secs(30), || {
             screen_contains(&app, &id, "BACKGROUND DONE")
         })
         .await?;
-        wait_for("Done without shells", Duration::from_secs(20), || async {
+        eventually("Done without shells", Duration::from_secs(20), || async {
             shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
         })
         .await?;
@@ -1936,7 +1831,7 @@ fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
     Ok(())
 }
 
-/// SPEC-486 WFL-006: a prompt that reaches a session whose workflow a usage limit paused (here
+/// A prompt that reaches a session whose workflow a usage limit paused (here
 /// the move off the limited subscription was refused, so the session stays where it is) is told,
 /// through the prompt hook, to resume the run by its id and not to start it again. Before the
 /// limit, and for a session without a workflow, the hook adds nothing.
@@ -1974,17 +1869,17 @@ fn a_prompt_at_a_workflow_paused_by_a_limit_is_told_to_resume_it() -> TestResult
             })
             .await?;
         let id = goal_task(&app, &sandbox, &user, "Audit the code").await?;
-        wait_for("the goal", Duration::from_secs(90), || {
+        eventually("the goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
         app.send_input(&id, b"before\r").await?;
-        wait_for("the first answer", Duration::from_secs(30), || {
+        eventually("the first answer", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: before")
         })
         .await?;
         app.send_input(&id, b"/workflow\r").await?;
-        wait_for("the refused move", Duration::from_secs(60), || async {
+        eventually("the refused move", Duration::from_secs(60), || async {
             store
                 .switches(&id)
                 .await
@@ -1998,7 +1893,7 @@ fn a_prompt_at_a_workflow_paused_by_a_limit_is_told_to_resume_it() -> TestResult
         let run = app.dynamic_workflows(&id);
         assert_eq!(run.len(), 1, "{run:?}");
         app.send_input(&id, b"continue\r").await?;
-        wait_for("the answer", Duration::from_secs(30), || {
+        eventually("the answer", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: continue")
         })
         .await?;
@@ -2038,11 +1933,11 @@ fn a_goal_achieved_in_a_woken_turn_makes_the_task_done(stop_lost: bool) -> TestR
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("the achieved goal", Duration::from_secs(90), || {
+        eventually("the achieved goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
-        wait_for("Done without shells", Duration::from_secs(30), || async {
+        eventually("Done without shells", Duration::from_secs(30), || async {
             shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
         })
         .await?;
@@ -2122,15 +2017,15 @@ fn a_woken_turn_keeps_the_working_stretch(prompt_lost: bool) -> TestResult {
         let (sandbox, user) = seed(&app, &data).await?;
         let mut events = app.events.subscribe();
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("idle with its shell", Duration::from_secs(90), || async {
+        eventually("idle with its shell", Duration::from_secs(90), || async {
             shown(&app, &id).await.ok() == Some((Some("waiting".into()), Some(1)))
         })
         .await?;
-        wait_for("the shell's end, seen", Duration::from_secs(30), || async {
+        eventually("the shell's end, seen", Duration::from_secs(30), || async {
             shown(&app, &id).await.ok() == Some((Some("waiting".into()), Some(0)))
         })
         .await?;
-        wait_for(
+        eventually(
             "the stretch ended with the shell",
             Duration::from_secs(5),
             || stretch_ended(&app, &id),
@@ -2140,7 +2035,7 @@ fn a_woken_turn_keeps_the_working_stretch(prompt_lost: bool) -> TestResult {
             !screen_contains(&app, &id, "BACKGROUND DONE").await,
             "the probe saw the shell's end before Claude Code woke the session"
         );
-        wait_for(
+        eventually(
             "Done after the woken turn",
             Duration::from_secs(30),
             || async { shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0))) },
@@ -2158,20 +2053,20 @@ fn a_woken_turn_keeps_the_working_stretch(prompt_lost: bool) -> TestResult {
             "one working stretch through the woken turn: {stretches:?}"
         );
 
-        // The person types: a new stretch (WSW-002), although the task stayed in the state its
+        // The person types: a new stretch, although the task stayed in the state its
         // last stretch ended in.
-        wait_for(
+        eventually(
             "the stretch ended with the turn",
             Duration::from_secs(5),
             || stretch_ended(&app, &id),
         )
         .await?;
         app.send_input(&id, b"one more\r").await?;
-        wait_for("the typed turn", Duration::from_secs(20), || {
+        eventually("the typed turn", Duration::from_secs(20), || {
             screen_contains(&app, &id, "ECHO: one more")
         })
         .await?;
-        wait_for("Your turn", Duration::from_secs(20), || async {
+        eventually("Your turn", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
@@ -2197,7 +2092,7 @@ fn a_wake_read_from_the_transcript_keeps_the_working_stretch() -> TestResult {
     a_woken_turn_keeps_the_working_stretch(true)
 }
 
-/// SPEC-079 BGW-001 (#305), SES-101: under a limit of one session, a Done task with a background
+/// Under a limit of one session, a Done task with a background
 /// shell still holds the slot; once the shell ends, the queued task starts at once (no tick runs
 /// in this test, so without the drain it would never start).
 #[test]
@@ -2212,10 +2107,19 @@ fn a_done_task_whose_shell_ends_frees_its_slot_at_once() -> TestResult {
             goal_background: Some(10),
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(&data, &fake, agent, 0, None, None, false, Some(1)).await?;
+        let (app, _) = start_holding(
+            &data,
+            live(&fake, agent),
+            0,
+            |config| {
+                config.max_live_sessions = 1;
+            },
+            Hold::default(),
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let first = goal_task(&app, &sandbox, &user, "Start the dev server").await?;
-        wait_for("Done with its shell", Duration::from_secs(90), || async {
+        eventually("Done with its shell", Duration::from_secs(90), || async {
             shown(&app, &first)
                 .await
                 .ok()
@@ -2229,11 +2133,11 @@ fn a_done_task_whose_shell_ends_frees_its_slot_at_once() -> TestResult {
             !screen_contains(&app, &first, "BACKGROUND DONE").await,
             "the shell still runs"
         );
-        wait_for("the shell's end", Duration::from_secs(30), || {
+        eventually("the shell's end", Duration::from_secs(30), || {
             screen_contains(&app, &first, "BACKGROUND DONE")
         })
         .await?;
-        wait_for(
+        eventually(
             "the queued task to start",
             Duration::from_secs(20),
             || async {
@@ -2250,7 +2154,7 @@ fn a_done_task_whose_shell_ends_frees_its_slot_at_once() -> TestResult {
     Ok(())
 }
 
-/// STA-001 (SPEC-032, tasks #24 and #25): the goal turn ends with a background agent still
+/// The goal turn ends with a background agent still
 /// working (Claude Code's `turn_duration` says one is pending): the task is not Done, it is
 /// Working with that background work said, until the agent finishes and wakes the session.
 #[test]
@@ -2268,11 +2172,11 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
-        wait_for("the achieved goal", Duration::from_secs(90), || {
+        eventually("the achieved goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
-        wait_for("one pending agent", Duration::from_secs(40), || async {
+        eventually("one pending agent", Duration::from_secs(40), || async {
             shown(&app, &id)
                 .await
                 .ok()
@@ -2284,14 +2188,14 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
             "the agent still works"
         );
         // The agent ends and wakes the session; the turn after it says nothing is pending.
-        wait_for("the agent's end", Duration::from_secs(45), || {
+        eventually("the agent's end", Duration::from_secs(45), || {
             screen_contains(&app, &id, "AGENT DONE")
         })
         .await?;
         // Nothing pending and not Working: the fake's wake-up turn settles at once, so the goal
         // still counts; a real session's later wake-up turn reads "Your turn" (the prompt-like
         // line resets the goal), which this check does not pin.
-        wait_for("nothing pending, idle", Duration::from_secs(60), || async {
+        eventually("nothing pending, idle", Duration::from_secs(60), || async {
             shown(&app, &id)
                 .await
                 .ok()
@@ -2306,7 +2210,7 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
     Ok(())
 }
 
-/// SPEC-079 BGW-006 (task #74): the goal turn's background agent first stops with background work
+/// The goal turn's background agent first stops with background work
 /// of its own still running. Its notification (`completed`, the note that its result may be
 /// interim) wakes the session, and the turn record after it counts no agent. The task stays
 /// Working, the agent counted, until the same agent's final notification; then it is idle with
@@ -2327,7 +2231,7 @@ fn an_agent_that_stopped_with_its_own_work_running_keeps_the_task_working() -> T
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
-        wait_for("the interim notification", Duration::from_secs(90), || {
+        eventually("the interim notification", Duration::from_secs(90), || {
             screen_contains(&app, &id, "AGENT INTERIM")
         })
         .await?;
@@ -2353,7 +2257,7 @@ fn an_agent_that_stopped_with_its_own_work_running_keeps_the_task_working() -> T
             counted,
             "the stopped agent was counted while the task was idle"
         );
-        wait_for("nothing running, idle", Duration::from_secs(30), || async {
+        eventually("nothing running, idle", Duration::from_secs(30), || async {
             shown(&app, &id)
                 .await
                 .ok()
@@ -2368,7 +2272,7 @@ fn an_agent_that_stopped_with_its_own_work_running_keeps_the_task_working() -> T
     Ok(())
 }
 
-/// SPEC-079 BGW-003 (#265): the goal turn leaves a Monitor stream (no process: only the transcript
+/// The goal turn leaves a Monitor stream (no process: only the transcript
 /// says it runs). The task is Working with it counted until the stream ends (its notification wakes
 /// the session) or, when it never reports, until its expiry.
 fn a_monitor_counts_until_it_ends_or_expires(ends: bool) -> TestResult {
@@ -2386,11 +2290,11 @@ fn a_monitor_counts_until_it_ends_or_expires(ends: bool) -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Watch CI").await?;
-        wait_for("the achieved goal", Duration::from_secs(90), || {
+        eventually("the achieved goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
-        wait_for("the monitor counted", Duration::from_secs(10), || async {
+        eventually("the monitor counted", Duration::from_secs(10), || async {
             shown(&app, &id)
                 .await
                 .ok()
@@ -2398,13 +2302,13 @@ fn a_monitor_counts_until_it_ends_or_expires(ends: bool) -> TestResult {
         })
         .await?;
         if ends {
-            wait_for("the stream's end", Duration::from_secs(20), || {
+            eventually("the stream's end", Duration::from_secs(20), || {
                 screen_contains(&app, &id, "MONITOR DONE")
             })
             .await?;
         }
         // Ended: at once; expired: after its 16 s and the next probe (every 5 s).
-        wait_for("nothing running, idle", Duration::from_secs(30), || async {
+        eventually("nothing running, idle", Duration::from_secs(30), || async {
             shown(&app, &id)
                 .await
                 .ok()
@@ -2494,7 +2398,7 @@ async fn runs_on_the_spare(app: &App, id: &TaskId) -> bool {
         })
 }
 
-/// SPEC-483 SWT-001: the look at the session's background work gives no answer (the probe timed
+/// The look at the session's background work gives no answer (the probe timed
 /// out, the process table could not be read) at a turn's end that would move the session to
 /// another subscription. Work that cannot be told is taken as running, as everywhere else that
 /// asks: the session stays and is answered, and moves at a later turn's end, once the look
@@ -2514,29 +2418,29 @@ fn a_switch_waits_while_the_background_work_cannot_be_told() -> TestResult {
             goal_delay_ms: Some(3_000),
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, agent)
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         spare_subscription(&app).await?;
         host.silence_probe(true);
         let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
-        wait_for("the goal", Duration::from_secs(90), || {
+        eventually("the goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
         first_subscription_nearly_full(&app).await?;
         let runs = || async { app.deps.store.attempts(&id).await.unwrap_or_default().len() };
         // The turn's end is answered (the task is done) or the session is moved.
-        wait_for("the goal turn's end", Duration::from_secs(90), || async {
+        eventually("the goal turn's end", Duration::from_secs(90), || async {
             activity(&app, &id).await == Some(Activity::Done) || runs().await >= 2
         })
         .await?;
@@ -2547,10 +2451,10 @@ fn a_switch_waits_while_the_background_work_cannot_be_told() -> TestResult {
             run_states(&app, &id).await
         );
         // The look answers again: the next turn's end moves the session (a turn longer than
-        // the time in which its prompt's record may still be unread, SPEC-471 CCQ-004).
+        // the time in which its prompt's record may still be unread).
         host.silence_probe(false);
         app.send_input(&id, b"/work 3000 go on\r").await?;
-        wait_for("the move", Duration::from_secs(60), || {
+        eventually("the move", Duration::from_secs(60), || {
             runs_on_the_spare(&app, &id)
         })
         .await?;
@@ -2560,7 +2464,7 @@ fn a_switch_waits_while_the_background_work_cannot_be_told() -> TestResult {
     Ok(())
 }
 
-/// SPEC-079 BGW-004 (#271): the goal turn launches a background agent while the task's
+/// The goal turn launches a background agent while the task's
 /// subscription is at its threshold. The Stop decides a proactive switch, which would end the
 /// agent: it waits while the agent is pending and is made at the Stop after the agent finished.
 #[test]
@@ -2581,7 +2485,7 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
         let store = &app.deps.store;
         spare_subscription(&app).await?;
         let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
-        wait_for("the goal", Duration::from_secs(90), || {
+        eventually("the goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
@@ -2593,7 +2497,7 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
         // The task's subscription reaches the switch threshold before the turn ends.
         first_subscription_nearly_full(&app).await?;
         let switched = || async { store.attempts(&id).await.unwrap_or_default().len() >= 2 };
-        wait_for("the goal turn's end", Duration::from_secs(90), || async {
+        eventually("the goal turn's end", Duration::from_secs(90), || async {
             screen_contains(&app, &id, "Goal achieved").await || switched().await
         })
         .await?;
@@ -2602,12 +2506,12 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
             "no switch while the agent launched in the turn is pending"
         );
         assert!(!screen_contains(&app, &id, "AGENT DONE").await);
-        wait_for("the agent's end", Duration::from_secs(30), || {
+        eventually("the agent's end", Duration::from_secs(30), || {
             screen_contains(&app, &id, "AGENT DONE")
         })
         .await?;
         // The wake-up turn's Stop makes the switch.
-        wait_for("the switch", Duration::from_secs(60), || {
+        eventually("the switch", Duration::from_secs(60), || {
             runs_on_the_spare(&app, &id)
         })
         .await?;
@@ -2617,7 +2521,7 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
     Ok(())
 }
 
-/// SPEC-140 STP-001 (#464): a stop that comes while the task's run is launching (spawned, Yulius
+/// A stop that comes while the task's run is launching (spawned, Yulius
 /// not attached yet) finds no run to ask. The run is asked once it is attached, so it ends at once
 /// as stopped, not when the escalation terminates it (here 60 s, beyond the wait).
 #[test]
@@ -2630,15 +2534,17 @@ fn a_stop_while_the_run_is_launching_ends_it_once_attached() -> TestResult {
             "CARGO_BIN_EXE_yulius"
         ))));
         host.arm();
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            FakeAgentOptions::default(),
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, FakeAgentOptions::default())
+            },
             0,
-            Some(host.clone()),
-            Some(60_000),
-            false,
-            None,
+            |config| {
+                config.stop_escalation_ms = 60_000;
+            },
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -2646,7 +2552,7 @@ fn a_stop_while_the_run_is_launching_ends_it_once_attached() -> TestResult {
         tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
         app.stop_task_now(&id).await?;
         host.release();
-        wait_for("the stop", Duration::from_secs(30), || async {
+        eventually("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
@@ -2663,7 +2569,7 @@ fn a_stop_while_the_run_is_launching_ends_it_once_attached() -> TestResult {
     Ok(())
 }
 
-/// SPEC-140 STP-002 (review): a stop that ended no run leaves no intent for the next run. Here a
+/// A stop that ended no run leaves no intent for the next run. Here a
 /// switch's old run has ended and its new run waits for the launch (another task's launch holds
 /// it), the task is stopped then, and the switch gives up and rests it (SPEC-250 STW-006: not
 /// stopping with no run until a second stop). Continued, the task's resumed run is not shut down
@@ -2682,20 +2588,20 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
             hooks: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, agent)
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the launch goal", Duration::from_secs(60), || {
+        eventually("the launch goal", Duration::from_secs(60), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
@@ -2707,7 +2613,7 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
             let (app, id) = (app.clone(), id.clone());
             tokio::spawn(async move { app.switch_task_now(&id, None, "manual", None).await })
         };
-        wait_for("the old run's end", Duration::from_secs(30), || async {
+        eventually("the old run's end", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Switching)
@@ -2723,7 +2629,7 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
         host.release();
         let refused = tokio::time::timeout(Duration::from_secs(60), switch).await??;
         assert!(refused.is_err(), "{refused:?}");
-        // The switch that gives up rests the task its stop left with no run (SPEC-250 STW-006).
+        // The switch that gives up rests the task its stop left with no run.
         assert_eq!(
             task(&app, &id).await?.status,
             TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled),
@@ -2806,10 +2712,20 @@ async fn gated_goal_task(
         hooks: true,
         ..FakeAgentOptions::default()
     };
-    let (app, _) = start_on(data, fake, agent, 0, Some(host.clone()), None, false, None).await?;
+    let (app, _) = start_holding(
+        data,
+        Live {
+            host: Some(host.clone()),
+            ..live(fake, agent)
+        },
+        0,
+        |_| {},
+        Hold::default(),
+    )
+    .await?;
     let (sandbox, user) = seed(&app, data).await?;
     let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-    wait_for("the launch goal", Duration::from_secs(60), || {
+    eventually("the launch goal", Duration::from_secs(60), || {
         screen_contains(&app, &id, "GOAL SET")
     })
     .await?;
@@ -2843,27 +2759,30 @@ async fn gated_goal_task_ending_with(
     ))));
     let (app, _) = start_holding(
         data,
-        fake,
-        agent,
+        Live {
+            host: Some(host.clone()),
+            ..live(fake, agent)
+        },
         0,
-        Some(host.clone()),
-        (None, Some(switch_end_ms)),
-        false,
-        None,
-        None,
-        turn_hooks,
+        |config| {
+            config.switch_end_ms = switch_end_ms;
+        },
+        Hold {
+            turn_hooks,
+            ..Hold::default()
+        },
     )
     .await?;
     let (sandbox, user) = seed(&app, data).await?;
     let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-    wait_for("the launch goal", Duration::from_secs(60), || {
+    eventually("the launch goal", Duration::from_secs(60), || {
         screen_contains(&app, &id, "GOAL SET")
     })
     .await?;
     Ok((app, host, id))
 }
 
-/// SPEC-483 SWT-002: the session a switch asked to end does not end in time, and its host cannot
+/// The session a switch asked to end does not end in time, and its host cannot
 /// be terminated (a process that survives the kill). No new session starts beside it: the run
 /// stays the task's live run, the task runs and says so to a person, and the switch failed.
 /// The run's end is no longer the switch's: a session that leaves by itself afterwards ends as
@@ -2919,7 +2838,7 @@ fn a_switch_whose_old_run_cannot_be_ended_starts_no_new_run() -> TestResult {
         );
         host.refuse_ends(false);
         app.send_input(&id, b"/exit\r").await?;
-        wait_for("the task at rest", Duration::from_secs(30), || async {
+        eventually("the task at rest", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
@@ -2938,7 +2857,7 @@ fn a_switch_whose_old_run_cannot_be_ended_starts_no_new_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-635 EFL-001 (#1611): the switch's old run cannot be ended while its goal turn's prompt
+/// The switch's old run cannot be ended while its goal turn's prompt
 /// hook is still on its way, as on a loaded host. That prompt and the turn's Stop come after the
 /// flag was raised: the task keeps reading the flag "Yulius could not end this session", which
 /// no work of that session answers. Before, the prompt set Working and the Stop settled the turn:
@@ -2998,7 +2917,7 @@ fn a_late_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResult {
     Ok(())
 }
 
-/// SPEC-635 EFL-001 (review round 1): with the "could not end" flag standing, a person's prompt
+/// With the "could not end" flag standing, a person's prompt
 /// whose hook never reaches Yulius starts its turn from the transcript (the watcher's user turn),
 /// and that turn's Stop settles it: the flag stays.
 #[test]
@@ -3048,7 +2967,7 @@ fn a_transcript_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResul
     Ok(())
 }
 
-/// SPEC-635 EFL-001 (review round 1): with the "could not end" flag standing, the person
+/// With the "could not end" flag standing, the person
 /// interrupts a turn (Claude Code's interrupt line, no Stop): the flag stays.
 #[test]
 fn an_interrupted_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResult {
@@ -3074,14 +2993,14 @@ fn an_interrupted_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestRes
             },
         );
         app.send_input(&id, b"/work 60000 long\r").await?;
-        wait_for("the turn at work", Duration::from_secs(30), || {
+        eventually("the turn at work", Duration::from_secs(30), || {
             screen_contains(&app, &id, "WORKING")
         })
         .await?;
         app.send_input(&id, b"\x03").await?;
         tokio::task::spawn_blocking(move || settled.recv_timeout(Duration::from_secs(60)))
             .await??;
-        wait_for("the interrupt on screen", Duration::from_secs(30), || {
+        eventually("the interrupt on screen", Duration::from_secs(30), || {
             screen_contains(&app, &id, "INTERRUPTED")
         })
         .await?;
@@ -3123,7 +3042,7 @@ async fn flag_still_stands(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// SPEC-635 EFL-003 (review round 2): a session write looks at the task after the failure was
+/// A session write looks at the task after the failure was
 /// recorded but before its flag is stored, and writes only once the flag is stored. The flag
 /// stays: a write that saw the failure leaves the task as it is until the flag stands. Before,
 /// it saw no flag yet and wrote over it.
@@ -3176,7 +3095,7 @@ fn a_write_that_looked_before_the_flag_was_stored_leaves_it() -> TestResult {
     Ok(())
 }
 
-/// SPEC-635 EFL-002 (review round 1): the run cannot be ended, but the task reads another
+/// The run cannot be ended, but the task reads another
 /// matter's flag (as when it was flagged already and the "could not end" flag was never raised:
 /// a close or a lost connection of a task that waits on a question). That flag is answered as
 /// before: a person's prompt and its turn move the task on. Before, every session write was
@@ -3216,7 +3135,7 @@ fn another_flag_on_a_run_that_cannot_be_ended_is_answered_as_before() -> TestRes
     Ok(())
 }
 
-/// SPEC-635 EFL-002 (review round 1): a capacity pause replaced the "could not end" flag (the
+/// A capacity pause replaced the "could not end" flag (the
 /// task left Running) and its release made the task run again. The flag is gone, so the session's
 /// turns settle the task as before. Before, every write stayed refused and the task read Working
 /// for good.
@@ -3275,7 +3194,7 @@ fn a_run_that_cannot_be_ended_follows_its_session_once_a_pause_replaced_its_flag
 
 /// The launch goal's turn of a [`gated_goal_task_ending`] task is over: the task is Done.
 async fn settled_launch_goal(app: &App, id: &TaskId) -> TestResult {
-    wait_for("the launch goal Done", Duration::from_secs(90), || async {
+    eventually("the launch goal Done", Duration::from_secs(90), || async {
         activity(app, id).await == Some(Activity::Done)
     })
     .await
@@ -3292,7 +3211,7 @@ async fn typed_turn_settles(app: &App, id: &TaskId, prompt: &str) -> TestResult 
     app.send_input(id, format!("{prompt}\r").as_bytes()).await?;
     tokio::task::spawn_blocking(move || settled.recv_timeout(Duration::from_secs(60))).await??;
     let echo = format!("ECHO: {prompt}");
-    wait_for("the echo", Duration::from_secs(30), || {
+    eventually("the echo", Duration::from_secs(30), || {
         screen_contains(app, id, &echo)
     })
     .await
@@ -3306,7 +3225,7 @@ async fn ends_by_itself(
 ) -> Result<(), BoxError> {
     host.refuse_ends(false);
     app.send_input(id, b"/exit\r").await?;
-    wait_for("the task at rest", Duration::from_secs(30), || async {
+    eventually("the task at rest", Duration::from_secs(30), || async {
         task(app, id).await.is_ok_and(|t| !t.status.is_live())
     })
     .await?;
@@ -3314,7 +3233,7 @@ async fn ends_by_itself(
     Ok(())
 }
 
-/// SPEC-483 SWT-002: the session a switch asked to end does not end in time and its host is
+/// The session a switch asked to end does not end in time and its host is
 /// terminated. The switch failed and starts no new run: the task rests as
 /// `stopped_switch_timeout` with its one run ended. Who records the run's end first, its reader
 /// (`switch_timeout`) or the switch (`lost`), is the order the two tests below force; here
@@ -3397,7 +3316,7 @@ where
             let recorded = wait_in_hook(&handle, async {
                 let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
                 then(app.clone(), id.clone()).await?;
-                wait_for("the run's end", Duration::from_secs(30), || async {
+                eventually("the run's end", Duration::from_secs(30), || async {
                     matches!(
                         app.deps.store.attempt(&run.id).await,
                         Ok(Some(a)) if a.state.is_terminal()
@@ -3412,7 +3331,7 @@ where
     );
 }
 
-/// SPEC-483 SWT-002 (review): the run's reader sees its host go before the switch that gave the
+/// The run's reader sees its host go before the switch that gave the
 /// run up records the loss. The loss is that switch's all the same: the task rests as
 /// `stopped_switch_timeout`, not `stopped_lost`.
 #[test]
@@ -3433,7 +3352,7 @@ fn a_run_its_switch_gave_up_is_that_switchs_loss_whoever_sees_it_first() -> Test
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review): the run exits by itself after the switch gave it up, before its
+/// The run exits by itself after the switch gave it up, before its
 /// host is terminated. Its exit is recorded as the switch's timeout and rests the task the same
 /// way: it is not left switching with no run.
 #[test]
@@ -3454,7 +3373,7 @@ fn a_run_that_exits_as_its_switch_gives_it_up_rests_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review): the same exit, and the host then cannot be terminated (the test
+/// The same exit, and the host then cannot be terminated (the test
 /// host refuses). The run ended, so nothing is said about a session that could not be ended and
 /// the task is not put back to running with no run.
 #[test]
@@ -3482,7 +3401,7 @@ fn a_run_that_exits_before_a_refused_kill_rests_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review): the old run ends by itself just as the switch's wait runs out: its
+/// The old run ends by itself just as the switch's wait runs out: its
 /// end is being recorded (the switch's intent was taken) when the switch looks. The switch waits
 /// for that word and goes on: the run ended as switched and the new run starts, instead of a
 /// task left switching with no run.
@@ -3533,7 +3452,7 @@ fn a_run_whose_end_is_being_recorded_as_the_wait_runs_out_is_switched() -> TestR
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review, round 2): the session leaves by itself after the switch made the
+/// The session leaves by itself after the switch made the
 /// task `switching` and before the switch claims the run's end. Its end closes the task, as it
 /// does without a switch, and the switch gives way: the task is not left switching with no run,
 /// and nothing says a session did not end in time.
@@ -3557,8 +3476,8 @@ fn a_run_that_ends_before_its_switch_claims_it_closes_the_task() -> TestResult {
                         app.send_input(&id, b"/exit\r").await?;
                         // The run's end is recorded and its task rests: "before its switch
                         // claims it" means the whole end, or a loaded host lets the switch go
-                        // on between the two and wait out its bound (#1456).
-                        wait_for("the run's end", Duration::from_secs(30), || async {
+                        // on between the two and wait out its bound.
+                        eventually("the run's end", Duration::from_secs(30), || async {
                             matches!(
                                 app.deps.store.attempt(&run.id).await,
                                 Ok(Some(a)) if a.state.is_terminal()
@@ -3601,7 +3520,7 @@ fn a_run_that_ends_before_its_switch_claims_it_closes_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review, round 2): the run's exit is being recorded (its recorder took the
+/// The run's exit is being recorded (its recorder took the
 /// given-up intent) when the kill is refused and the switch puts the task back to running. The
 /// switch waits for that record before it asks whether the run lives: the run ended, so nothing
 /// says a session could not be ended, and the task rests as after the timeout.
@@ -3625,7 +3544,7 @@ fn a_run_whose_exit_is_being_recorded_at_a_refused_kill_rests_the_task() -> Test
                 move || {
                     let _ = taken.send(());
                     let running = wait_in_hook(&handle, async {
-                        wait_for(
+                        eventually(
                             "the task running again",
                             Duration::from_secs(30),
                             || async {
@@ -3708,7 +3627,7 @@ async fn stop_on_worker(app: &Arc<App>, id: &TaskId) -> TestResult {
 
 /// Waits until `id` rests: it must be stopped, with no live run.
 async fn expect_stopped(app: &Arc<App>, id: &TaskId) -> TestResult {
-    let rests = wait_for("the stop", Duration::from_secs(30), || async {
+    let rests = eventually("the stop", Duration::from_secs(30), || async {
         task(app, id).await.is_ok_and(|t| !t.status.is_live())
     })
     .await;
@@ -3725,7 +3644,7 @@ async fn expect_stopped(app: &Arc<App>, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-001 (#527): a stop reads the task while its switch's new run is launching
+/// A stop reads the task while its switch's new run is launching
 /// (`Switching`), and the switch completes (`Running`) before the stop's status change. The stop
 /// reads the task again and stops it from there: the task ends stopped, not running with no run.
 #[test]
@@ -3786,7 +3705,7 @@ fn a_stop_that_loses_to_a_completing_switch_still_ends_the_task() -> TestResult 
     Ok(())
 }
 
-/// SPEC-250 STW-003: the run ends by itself after a stop decided to end it, before the stop's
+/// The run ends by itself after a stop decided to end it, before the stop's
 /// status change (the agent exited at that moment). Its end rests the task, so the task ends
 /// stopped, not stopping with no run left to end.
 #[test]
@@ -3806,7 +3725,7 @@ fn a_run_that_ends_before_the_stops_change_still_ends_the_task() -> TestResult {
                 move || {
                     let ended = wait_in_hook(&handle, async {
                         app.send_input(&id, b"/exit\r").await?;
-                        wait_for("the run's end", Duration::from_secs(30), || async {
+                        eventually("the run's end", Duration::from_secs(30), || async {
                             matches!(
                                 app.deps.store.attempt(&run.id).await,
                                 Ok(Some(a)) if a.state.is_terminal()
@@ -3814,7 +3733,7 @@ fn a_run_that_ends_before_the_stops_change_still_ends_the_task() -> TestResult {
                         })
                         .await?;
                         // Its end is recorded: the task rests (only with the fix).
-                        wait_for("the task at rest", Duration::from_secs(10), || async {
+                        eventually("the task at rest", Duration::from_secs(10), || async {
                             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
                         })
                         .await
@@ -3837,7 +3756,7 @@ fn a_run_that_ends_before_the_stops_change_still_ends_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-006: a stop lands while a switch waits for its old run to end. The stop takes
+/// A stop lands while a switch waits for its old run to end. The stop takes
 /// over that end, so the switch starts no new run: the task ends stopped with its one run ended,
 /// not stopped (or running) with a new run nobody ends.
 #[test]
@@ -3870,7 +3789,7 @@ fn a_stop_while_a_switch_ends_its_old_run_starts_no_new_run() -> TestResult {
                 Path::new(key.as_str()),
                 move || {
                     wait_in_hook(&handle, async {
-                        let new_run = wait_for("a new run", Duration::from_secs(30), || async {
+                        let new_run = eventually("a new run", Duration::from_secs(30), || async {
                             app.deps.store.attempts(&id).await.unwrap_or_default().len() >= 2
                         });
                         tokio::select! {
@@ -3926,7 +3845,7 @@ async fn switch_result(
     outcome.ok_or_else(|| "no switch result".into())
 }
 
-/// SPEC-250 STW-006 (review): a stop lands after the switch's status change, before the switch
+/// A stop lands after the switch's status change, before the switch
 /// sets its intent for the old run. The switch keeps the stop's intent and gives up: the task ends
 /// stopped with its one run, not stopping with no run (or queued again).
 #[test]
@@ -3966,7 +3885,7 @@ fn a_stop_before_a_switch_sets_its_intent_starts_no_new_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-006 (review): a close reads the task running, a switch starts and asks the old
+/// A close reads the task running, a switch starts and asks the old
 /// run to end, then the close sets its intent. The switch gives up and the old run's end closes the
 /// task from `Switching`: it ends closed, not switching with no run. The run's end is held until
 /// the switch answered, so the switch says why from what the close told it, not from a status the
@@ -4055,7 +3974,7 @@ fn a_close_that_overtakes_a_switch_closes_the_task() -> TestResult {
             switched.as_ref().is_err_and(|e| e.contains("closed")),
             "{switched:?}"
         );
-        let rests = wait_for("the close", Duration::from_secs(30), || async {
+        let rests = eventually("the close", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await;
@@ -4108,7 +4027,7 @@ fn pause_at_switch(app: &Arc<App>, id: &TaskId) -> tokio::sync::watch::Receiver<
     )
 }
 
-/// SPEC-250 STW-006 (review round 3): the switch goes on from `WaitingCapacity`, and before its
+/// The switch goes on from `WaitingCapacity`, and before its
 /// launch takes the lock, the capacity loop's start runs the task (`Running`). That start won: the
 /// switch is completed, not overtaken.
 #[test]
@@ -4149,7 +4068,7 @@ fn a_switch_whose_paused_task_another_start_runs_is_completed() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-006 (review round 2): a task paused for capacity during its switch (a Stop
+/// A task paused for capacity during its switch (a Stop
 /// hook's wait moves `Switching` to `WaitingCapacity`) is not overtaken: the switch goes on and
 /// launches, as before SPEC-250.
 #[test]
@@ -4186,7 +4105,7 @@ async fn kill_run_host(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// SPEC-301 LRS-001 (#686): a run's connection is lost while the server runs, after output that
+/// A run's connection is lost while the server runs, after output that
 /// came since its last settled turn. The loss saves the hub's screen: the run's `final-screen`
 /// shows that output, not the screen its last turn settled on.
 #[test]
@@ -4234,7 +4153,7 @@ fn screen_at_terminal_transition(lost: bool) -> TestResult {
             .id;
 
         // Task creation queues its launch. The first response proves the run is attached.
-        let answered = wait_for("the first answer", Duration::from_secs(90), || {
+        let answered = eventually("the first answer", Duration::from_secs(90), || {
             screen_contains(&app, &id, "ECHO: one more")
         })
         .await;
@@ -4242,7 +4161,7 @@ fn screen_at_terminal_transition(lost: bool) -> TestResult {
         let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
         let run_dir = PathBuf::from(&run.run_dir);
         // The settled turn's save, so the output below comes after it.
-        let settled = wait_for("the settled turn's screen", Duration::from_secs(20), || {
+        let settled = eventually("the settled turn's screen", Duration::from_secs(20), || {
             let saved = std::fs::read(run_dir.join("final-screen"))
                 .is_ok_and(|s| String::from_utf8_lossy(&s).contains("ECHO: one more"));
             async move { saved }
@@ -4283,7 +4202,7 @@ fn screen_at_terminal_transition(lost: bool) -> TestResult {
             (AttemptState::Killed, Some("closed"))
         };
         assert_eq!((ended.state, ended.exit_reason.as_deref()), outcome);
-        let rests = wait_for("the ended task", Duration::from_secs(30), || async {
+        let rests = eventually("the ended task", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await;
@@ -4321,20 +4240,22 @@ async fn continue_on_held_attach(data: &Path, fake: &Path) -> Result<HeldContinu
         hooks: true,
         ..FakeAgentOptions::default()
     };
-    let (app, _) = start_on(
+    let (app, _) = start_holding(
         data,
-        fake,
-        agent,
+        Live {
+            host: Some(host.clone()),
+            ..live(fake, agent)
+        },
         0,
-        Some(host.clone()),
-        Some(5_000),
-        false,
-        None,
+        |config| {
+            config.stop_escalation_ms = 5_000;
+        },
+        Hold::default(),
     )
     .await?;
     let (sandbox, user) = seed(&app, data).await?;
     let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-    wait_for("the launch goal", Duration::from_secs(60), || {
+    eventually("the launch goal", Duration::from_secs(60), || {
         screen_contains(&app, &id, "GOAL SET")
     })
     .await?;
@@ -4375,7 +4296,7 @@ async fn continue_on_held_attach(data: &Path, fake: &Path) -> Result<HeldContinu
 
 /// Waits until `attempt` is recorded lost.
 async fn lost(app: &App, attempt: &yulius_domain::ids::AttemptId) -> TestResult {
-    wait_for("the run's loss", Duration::from_secs(30), || async {
+    eventually("the run's loss", Duration::from_secs(30), || async {
         app.deps
             .store
             .attempt(attempt)
@@ -4398,7 +4319,7 @@ fn not_the_run_befores_screen(run_dir: &str) -> TestResult {
     Ok(())
 }
 
-/// SPEC-301 LRS-001 (review): a continued task's new run is lost before Yulius attached to it
+/// A continued task's new run is lost before Yulius attached to it
 /// (its stop's escalation ends it). The hub still shows the previous run's screen, which is not
 /// the new run's: the new run saves no screen.
 #[test]
@@ -4426,7 +4347,7 @@ fn a_run_lost_before_it_attached_saves_no_screen_of_the_run_before() -> TestResu
     Ok(())
 }
 
-/// SPEC-301 LRS-001 (review round 2): the new run is lost just as Yulius attaches to it, once it
+/// The new run is lost just as Yulius attaches to it, once it
 /// counts as the task's attached run. Its hub shows its own screen by then: the run before's is
 /// not saved as its own.
 #[test]
@@ -4471,7 +4392,7 @@ fn a_run_lost_as_it_attaches_saves_no_screen_of_the_run_before() -> TestResult {
     Ok(())
 }
 
-/// SPEC-301 (review round 3), TSK-006: a viewer controls the size as a continued run attaches and
+/// A viewer controls the size as a continued run attaches and
 /// changes it just after the attach took it. The run ends at the viewer's new size, not the one
 /// the attach read.
 #[test]
@@ -4507,7 +4428,7 @@ fn a_size_changed_as_the_run_attaches_is_kept() -> TestResult {
         assert_eq!(app.runtime(&held.id).hub.size(), (90, 25));
         // The PTY follows too: the agent reports the size it reads.
         app.send_input(&held.id, b"/size\r").await?;
-        wait_for("the PTY's size", Duration::from_secs(20), || {
+        eventually("the PTY's size", Duration::from_secs(20), || {
             screen_contains(app, &held.id, "SIZE 25 90")
         })
         .await?;
@@ -4518,7 +4439,7 @@ fn a_size_changed_as_the_run_attaches_is_kept() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-006 (review): the old run is lost while the switch waits for its end. The switch
+/// The old run is lost while the switch waits for its end. The switch
 /// gives up and says the session ended: the task rests lost with its one run, and nothing
 /// starts that no one asked for.
 #[test]
@@ -4540,7 +4461,7 @@ fn a_switch_whose_old_run_is_lost_starts_no_new_run() -> TestResult {
                 .is_err_and(|e| e.contains("the session ended")),
             "{switched:?}"
         );
-        let rests = wait_for("the loss", Duration::from_secs(30), || async {
+        let rests = eventually("the loss", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await;
@@ -4556,7 +4477,7 @@ fn a_switch_whose_old_run_is_lost_starts_no_new_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-005 (review): a stop lands while a lost run's loss is recorded, between its read
+/// A stop lands while a lost run's loss is recorded, between its read
 /// of the task and its status change. The loss is recorded again from `Stopping`: the task rests,
 /// not stopping with no run.
 #[test]
@@ -4584,7 +4505,7 @@ fn a_stop_while_a_runs_loss_is_recorded_still_ends_the_task() -> TestResult {
             .await??;
         let made = stop_made.borrow().clone();
         assert_eq!(made, Some(Ok(())));
-        let rests = wait_for("the loss", Duration::from_secs(30), || async {
+        let rests = eventually("the loss", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await;
@@ -4619,7 +4540,7 @@ async fn resume(app: &Arc<App>, id: &TaskId) -> AppResult<()> {
         .await
 }
 
-/// SPEC-458 RUN-002, RUN-003 (#439): a task that rests while its run lives under this server. A
+/// A task that rests while its run lives under this server. A
 /// start is refused and changes nothing (it used to leave the task `failed_precondition`, which
 /// takes no message, with the run going on); a stop ends that run, and then the task continues.
 #[test]
@@ -4643,14 +4564,14 @@ fn a_refused_start_leaves_a_resting_task_with_a_live_run_as_it_was() -> TestResu
         );
         assert!(app.deps.store.live_attempt(&id).await?.is_some());
         app.stop_task_now(&id).await?;
-        let ended = wait_for("the run's end", Duration::from_secs(60), || async {
+        let ended = eventually("the run's end", Duration::from_secs(60), || async {
             matches!(app.deps.store.live_attempt(&id).await, Ok(None))
         })
         .await;
         assert!(ended.is_ok(), "{}", run_states(&app, &id).await);
         assert!(task(&app, &id).await?.status.is_resting());
         resume(&app, &id).await?;
-        wait_for("the new run", Duration::from_secs(60), || async {
+        eventually("the new run", Duration::from_secs(60), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Running)
@@ -4686,11 +4607,11 @@ async fn second_server(data: &Path, fake: &Path) -> Result<Arc<App>, BoxError> {
         hooks: true,
         ..FakeAgentOptions::default()
     };
-    let (app, _) = start_on(data, fake, agent, 0, None, None, false, None).await?;
+    let (app, _) = start_holding(data, live(fake, agent), 0, |_| {}, Hold::default()).await?;
     Ok(app)
 }
 
-/// SPEC-458 RUN-002 (ADR-0050): a start finds a live run on record that this server holds no
+/// A start finds a live run on record that this server holds no
 /// connection to, its host killed from outside. It ends what is left of it, records it lost and
 /// starts the new run, instead of answering "task already has a live run" for ever.
 #[test]
@@ -4706,7 +4627,7 @@ fn a_start_settles_a_run_no_server_holds_before_it_starts_the_next() -> TestResu
     rt.block_on(async {
         let app = second_server(&data, &fake).await?;
         resume(&app, &id).await?;
-        wait_for("the new run", Duration::from_secs(60), || async {
+        eventually("the new run", Duration::from_secs(60), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Running)
@@ -4784,14 +4705,14 @@ fn continuing_an_unheld_run_waits_for_the_observer_that_recorded_its_loss() -> T
     result
 }
 
-/// SPEC-458 RUN-003: Stop on such a task ends the run (its host still runs here) and records it
+/// Stop on such a task ends the run (its host still runs here) and records it
 /// lost, instead of answering "task is stopped_server_lost" and changing nothing.
 #[test]
 fn a_stop_settles_a_run_no_server_holds() -> TestResult {
     stop_unheld_run(false)
 }
 
-/// #1449: the agent exits after inspection and the host lingers to deliver its exit frame.
+/// The agent exits after inspection and the host lingers to deliver its exit frame.
 #[test]
 fn a_stop_settles_a_run_whose_detached_host_lingers() -> TestResult {
     stop_unheld_run(true)
@@ -4833,7 +4754,7 @@ fn stop_unheld_run(delay_host_exit: bool) -> TestResult {
                     );
                     let published = wait_in_hook(
                         &handle,
-                        wait_for(
+                        eventually(
                             "the detached host to publish its child's exit",
                             Duration::from_secs(10),
                             || async { exit.exists() },
@@ -4869,7 +4790,7 @@ fn stop_unheld_run(delay_host_exit: bool) -> TestResult {
             task(&app, &id).await?.status,
             TaskStatus::Stopped(StopReason::ServerLost)
         );
-        wait_for(
+        eventually(
             "the stopped host to exit",
             Duration::from_secs(10),
             || async { fixture_host_exited(host) },
@@ -4881,7 +4802,7 @@ fn stop_unheld_run(delay_host_exit: bool) -> TestResult {
     Ok(())
 }
 
-/// SPEC-507 SKR-005 (review round 2): a skill refresh holds the launch lock while it installs
+/// A skill refresh holds the launch lock while it installs
 /// into a sandbox's home, so a launch there (whose install writes the same folder) waits for it
 /// and goes on once it ended.
 #[test]
@@ -4940,7 +4861,7 @@ fn a_launch_waits_for_a_skill_refresh_of_its_home() -> TestResult {
             .await?
             .map_err(|_| "the launch never went on after the refresh")?;
         start.await??;
-        wait_for("the run", Duration::from_secs(60), || async {
+        eventually("the run", Duration::from_secs(60), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Running)
@@ -4953,7 +4874,7 @@ fn a_launch_waits_for_a_skill_refresh_of_its_home() -> TestResult {
     Ok(())
 }
 
-/// SPEC-458 RUN-001 (#439): the start-up reconciliation runs while a task launches (the queue
+/// The start-up reconciliation runs while a task launches (the queue
 /// starts one as soon as a lost run frees its slot), between `Starting` and its run's record. The
 /// task is not taken for one a dead server left starting: it used to rest `stopped_server_lost`
 /// with its run going on.
@@ -4989,7 +4910,7 @@ fn the_startup_reconciliation_leaves_a_launching_task_alone() -> TestResult {
         let _ = go.send(());
         start.await??;
         assert_eq!(during, TaskStatus::Starting);
-        wait_for("the run", Duration::from_secs(60), || async {
+        eventually("the run", Duration::from_secs(60), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Running)
@@ -5058,7 +4979,7 @@ fn a_start_during_a_launch_leaves_the_run_being_launched_alone() -> TestResult {
     Ok(())
 }
 
-/// Review of SPEC-458 (RUN-001): the start-up sweep rests only what the server before this one
+/// Review of SPEC-458: the start-up sweep rests only what the server before this one
 /// left live. A task that was resting when the reconciliation began and that this server moved
 /// on meanwhile is this server's, also in the moment it has no run on record.
 #[test]
@@ -5102,7 +5023,7 @@ fn the_startup_sweep_rests_only_what_the_earlier_server_left() -> TestResult {
     Ok(())
 }
 
-/// Review of SPEC-458 (RUN-001): a run this server attached to again is its own. When that run
+/// Review of SPEC-458: a run this server attached to again is its own. When that run
 /// ends while the reconciliation still goes on, the task is for a moment live without a run on
 /// record; the sweep must leave it to the run's own end, not rest it as a dead server's.
 #[test]
@@ -5157,7 +5078,7 @@ fn the_startup_sweep_leaves_a_task_whose_run_this_server_holds_again() -> TestRe
     Ok(())
 }
 
-/// SPEC-250 STW-005: a stop lands while the end of the task's run is recorded, between the end's
+/// A stop lands while the end of the task's run is recorded, between the end's
 /// read of the task and its status change (the agent exited at that moment). The end's change is
 /// made again from the stop's status: the task ends stopped, not stopping with no run.
 #[test]
@@ -5191,7 +5112,7 @@ fn a_stop_while_a_runs_end_is_recorded_still_ends_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-079 BGW-005 (#264): Yulius's Stop hook runs before the goal evaluator. While the goal is
+/// Yulius's Stop hook runs before the goal evaluator. While the goal is
 /// open the turn waits for the verdict: the verdict "not met" sends the agent on, and the task
 /// never reads Your turn or Done in between; the verdict "met" makes it Done.
 #[test]
@@ -5211,7 +5132,7 @@ fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("the goal", Duration::from_secs(90), || {
+        eventually("the goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
@@ -5241,15 +5162,15 @@ fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
             }
         });
         let seen_now = || seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        wait_for("the verdict", Duration::from_secs(30), || {
+        eventually("the verdict", Duration::from_secs(30), || {
             screen_contains(&app, &id, "GOAL NOT MET")
         })
         .await?;
-        wait_for("Done", Duration::from_secs(60), || async {
+        eventually("Done", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
-        wait_for("the Done update", Duration::from_secs(10), || async {
+        eventually("the Done update", Duration::from_secs(10), || async {
             seen_now().last().map(String::as_str) == Some("done")
         })
         .await?;
@@ -5270,7 +5191,7 @@ fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
     Ok(())
 }
 
-/// SPEC-079 BGW-005 (#264): the goal turn's Stop waits for the verdict. "failed" makes the task
+/// The goal turn's Stop waits for the verdict. "failed" makes the task
 /// wait for its person before the turn's record (6 s later) comes; no verdict at all settles it at
 /// that record as before, well before the 20 s bound. Neither reads Done.
 fn an_unmet_goal_leaves_the_task_waiting(verdict: &'static str) -> TestResult {
@@ -5292,11 +5213,11 @@ fn an_unmet_goal_leaves_the_task_waiting(verdict: &'static str) -> TestResult {
         } else {
             "GOAL UNMET"
         };
-        wait_for("the verdict or the record", Duration::from_secs(90), || {
+        eventually("the verdict or the record", Duration::from_secs(90), || {
             screen_contains(&app, &id, settled_by)
         })
         .await?;
-        wait_for("Your turn", Duration::from_secs(4), || async {
+        eventually("Your turn", Duration::from_secs(4), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
@@ -5306,7 +5227,7 @@ fn an_unmet_goal_leaves_the_task_waiting(verdict: &'static str) -> TestResult {
                 "the verdict settled it, not the record"
             );
         }
-        wait_for("the turn's record", Duration::from_secs(20), || {
+        eventually("the turn's record", Duration::from_secs(20), || {
             screen_contains(&app, &id, "GOAL UNMET")
         })
         .await?;
@@ -5351,18 +5272,18 @@ fn a_session_goes_on_from_its_stop(verdict: bool, marker: &str) -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for(marker, Duration::from_secs(90), || {
+        eventually(marker, Duration::from_secs(90), || {
             screen_contains(&app, &id, marker)
         })
         .await?;
         // Well before the agent's next record (the verdict case: 10 s), the task works.
-        wait_for(
+        eventually(
             "Working while the session goes on",
             Duration::from_secs(7),
             || async { activity(&app, &id).await == Some(Activity::Working) },
         )
         .await?;
-        wait_for("Done", Duration::from_secs(60), || async {
+        eventually("Done", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
@@ -5382,7 +5303,7 @@ fn a_stop_a_hook_continued_does_not_leave_the_task_waiting() -> TestResult {
     a_session_goes_on_from_its_stop(false, "STOP CONTINUED")
 }
 
-/// STA-004 (review of SPEC-032): the goal verdict "not met" sends the agent on, then an API error
+/// The goal verdict "not met" sends the agent on, then an API error
 /// ends that turn and Claude Code runs no Stop hook. The task does not stay Working for good: the
 /// record that closes the turn makes it wait for the person again.
 #[test]
@@ -5402,19 +5323,19 @@ fn a_continued_turn_that_dies_without_a_stop_leaves_the_task_waiting() -> TestRe
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("the verdict", Duration::from_secs(90), || {
+        eventually("the verdict", Duration::from_secs(90), || {
             screen_contains(&app, &id, "GOAL NOT MET")
         })
         .await?;
-        wait_for("Working", Duration::from_secs(4), || async {
+        eventually("Working", Duration::from_secs(4), || async {
             activity(&app, &id).await == Some(Activity::Working)
         })
         .await?;
-        wait_for("the turn's death", Duration::from_secs(30), || {
+        eventually("the turn's death", Duration::from_secs(30), || {
             screen_contains(&app, &id, "CONTINUATION DIED")
         })
         .await?;
-        wait_for("Your turn again", Duration::from_secs(10), || async {
+        eventually("Your turn again", Duration::from_secs(10), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
@@ -5465,7 +5386,7 @@ fn a_goal_turn_claude_code_retries_after_an_api_error_stays_working() -> TestRes
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("the API error", Duration::from_secs(90), || {
+        eventually("the API error", Duration::from_secs(90), || {
             screen_contains(&app, &id, "API ERROR")
         })
         .await?;
@@ -5485,7 +5406,7 @@ fn a_goal_turn_claude_code_retries_after_an_api_error_stays_working() -> TestRes
     Ok(())
 }
 
-/// SPEC-333 AER-002: the goal turn and Claude Code's three retries all fail, and Claude Code gives
+/// The goal turn and Claude Code's three retries all fail, and Claude Code gives
 /// up ("Goal paused after 3 automatic retries · <cause>"). The task is in Needs you, with a request
 /// that says what happened and to send a message, and stays there once the record that closes the
 /// turn is read; it read Working while the retries ran. With `check_errors` each turn ended cleanly
@@ -5506,7 +5427,7 @@ fn spent_goal_retries_put_the_task_in_needs_you(check_errors: bool, cause: &str)
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("the first failure", Duration::from_secs(90), || {
+        eventually("the first failure", Duration::from_secs(90), || {
             screen_contains(&app, &id, "API ERROR")
         })
         .await?;
@@ -5521,7 +5442,7 @@ fn spent_goal_retries_put_the_task_in_needs_you(check_errors: bool, cause: &str)
         // The record that closes the turn was written with the notice: two more rounds read it.
         let runtime = app.runtime(&id);
         let rounds = runtime.transcript_rounds();
-        wait_for(
+        eventually(
             "the turn's record read",
             Duration::from_secs(20),
             || async { runtime.transcript_rounds() >= rounds + 2 },
@@ -5579,14 +5500,14 @@ fn a_goal_cleared_while_a_retry_is_armed_leaves_the_task_waiting() -> TestResult
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("the goal cleared", Duration::from_secs(90), || {
+        eventually("the goal cleared", Duration::from_secs(90), || {
             screen_contains(&app, &id, "GOAL CLEARED")
         })
         .await?;
         let seen = activities_until(&app, &id, Activity::Waiting, Duration::from_secs(20)).await?;
         assert_eq!(seen.last(), Some(&Some(Activity::Waiting)));
         assert!(
-            crate::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
+            crate::support::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
             "a cleared goal leaves the red branch with the project"
         );
         stop(&app, &id).await
@@ -5618,7 +5539,7 @@ fn a_restart_after_an_api_error(
         let (app, port) = start(&data, &fake, agent.clone(), 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("the API error", Duration::from_secs(90), || {
+        eventually("the API error", Duration::from_secs(90), || {
             screen_contains(&app, &id, "API ERROR")
         })
         .await?;
@@ -5628,7 +5549,7 @@ fn a_restart_after_an_api_error(
 
     let rt = runtime()?;
     rt.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         let record = TaskStore::task(&store, &id).await?.ok_or("task")?;
         let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
         let attempt = TaskStore::live_attempt(&store, &id)
@@ -5638,7 +5559,7 @@ fn a_restart_after_an_api_error(
         let adapter = HarnessAdapter::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius")), "x");
         let home = data.join("sandboxes").join("s-done").join("home");
         let transcript = adapter.claude_transcript(&home, &worktree, &session);
-        wait_for(marker, Duration::from_secs(60), || async {
+        eventually(marker, Duration::from_secs(60), || async {
             std::fs::read_to_string(&transcript).is_ok_and(|t| {
                 t.rsplit_once(marker)
                     .is_some_and(|(_, after)| after.contains("turn_duration"))
@@ -5670,7 +5591,7 @@ fn a_restart_while_claude_code_retries_keeps_the_task_working() -> TestResult {
 #[test]
 fn a_restart_after_spent_goal_retries_puts_the_task_in_needs_you() -> TestResult {
     a_restart_after_an_api_error(4, 1_000, "automatic retries", async |app, id| {
-        wait_for("Needs you", Duration::from_secs(20), || async {
+        eventually("Needs you", Duration::from_secs(20), || async {
             activity(app, id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -5687,7 +5608,7 @@ fn a_restart_after_spent_goal_retries_puts_the_task_in_needs_you() -> TestResult
     })
 }
 
-/// The fake agent of a goal task whose retries Claude Code spends (SPEC-469): four API errors,
+/// The fake agent of a goal task whose retries Claude Code spends: four API errors,
 /// then its pause.
 fn pausing_agent() -> FakeAgentOptions {
     FakeAgentOptions {
@@ -5731,7 +5652,7 @@ async fn pause_asks(app: &App, id: &TaskId) -> bool {
 async fn paused_goal_task(app: &Arc<App>, data: &Path) -> Result<TaskId, BoxError> {
     let (sandbox, user) = seed(app, data).await?;
     let id = goal_task(app, &sandbox, &user, "Merge on green").await?;
-    wait_for("the goal's pause", Duration::from_secs(120), || async {
+    eventually("the goal's pause", Duration::from_secs(120), || async {
         activity(app, &id).await == Some(Activity::NeedsAttention)
     })
     .await?;
@@ -5766,11 +5687,11 @@ fn a_session_claude_code_wakes_after_its_goal_pause_no_longer_needs_you() -> Tes
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let id = paused_goal_task(&app, &data).await?;
         std::fs::write(&wake, "")?;
-        wait_for("the woken turn's work", Duration::from_secs(60), || {
+        eventually("the woken turn's work", Duration::from_secs(60), || {
             screen_contains(&app, &id, "WOKEN")
         })
         .await?;
-        wait_for(
+        eventually(
             "the request to end with the agent's work",
             Duration::from_secs(20),
             || async { !pause_asks(&app, &id).await },
@@ -5782,7 +5703,7 @@ fn a_session_claude_code_wakes_after_its_goal_pause_no_longer_needs_you() -> Tes
             "the woken turn runs"
         );
         // The end is audited for `system`; the row is written after the change is published.
-        wait_for(
+        eventually(
             "the audit of the request's end",
             Duration::from_secs(20),
             || async {
@@ -5796,7 +5717,7 @@ fn a_session_claude_code_wakes_after_its_goal_pause_no_longer_needs_you() -> Tes
         .await?;
         // The turn ends (no goal verdict): the task waits, and still asks nobody.
         std::fs::write(&hold, "")?;
-        wait_for("the woken turn's end", Duration::from_secs(60), || async {
+        eventually("the woken turn's end", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
@@ -5807,7 +5728,7 @@ fn a_session_claude_code_wakes_after_its_goal_pause_no_longer_needs_you() -> Tes
     Ok(())
 }
 
-/// SPEC-469 GPW-001: the paused session goes on with no prompt anyone sees (a hidden
+/// The paused session goes on with no prompt anyone sees (a hidden
 /// continuation: no prompt hook, no prompt record that starts a turn). The agent's work alone
 /// says so: the request ends, and the task that read Needs you from the pause reads Working, as
 /// it does after a visible wake-up.
@@ -5827,22 +5748,22 @@ fn a_session_that_goes_on_unprompted_after_its_goal_pause_no_longer_needs_you() 
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let id = paused_goal_task(&app, &data).await?;
         std::fs::write(&wake, "")?;
-        wait_for("the session's work", Duration::from_secs(60), || {
+        eventually("the session's work", Duration::from_secs(60), || {
             screen_contains(&app, &id, "WOKEN")
         })
         .await?;
-        wait_for(
+        eventually(
             "the request to end with the agent's work",
             Duration::from_secs(20),
             || async { !pause_asks(&app, &id).await },
         )
         .await?;
-        wait_for("Working", Duration::from_secs(10), || async {
+        eventually("Working", Duration::from_secs(10), || async {
             activity(&app, &id).await == Some(Activity::Working)
         })
         .await?;
         std::fs::write(&hold, "")?;
-        wait_for("the turn's end", Duration::from_secs(60), || async {
+        eventually("the turn's end", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
@@ -5875,7 +5796,7 @@ fn a_session_yulius_restarts_after_its_goal_pause_no_longer_needs_you() -> TestR
         app.switch_task_now(&id, None, "manual", None).await?;
         // The resumed session took its goal; its turn is held before its first line. Its own
         // screen: until the run attaches, the task still shows the paused run's.
-        wait_for(
+        eventually(
             "the resumed session's goal",
             Duration::from_secs(90),
             || async {
@@ -5889,7 +5810,7 @@ fn a_session_yulius_restarts_after_its_goal_pause_no_longer_needs_you() -> TestR
         .await?;
         let runtime = app.runtime(&id);
         let rounds = runtime.transcript_rounds();
-        wait_for(
+        eventually(
             "the resumed session read",
             Duration::from_secs(20),
             || async { runtime.transcript_rounds() >= rounds + 2 },
@@ -5901,13 +5822,13 @@ fn a_session_yulius_restarts_after_its_goal_pause_no_longer_needs_you() -> TestR
             "a session that has not answered yet shows nothing"
         );
         std::fs::write(&hold, "")?;
-        wait_for(
+        eventually(
             "the request to end with the resumed session's answer",
             Duration::from_secs(30),
             || async { !pause_asks(&app, &id).await },
         )
         .await?;
-        wait_for("Done", Duration::from_secs(60), || async {
+        eventually("Done", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
@@ -5938,7 +5859,7 @@ fn a_session_paused_again_after_it_worked_asks_again() -> TestResult {
         app.switch_task_now(&id, None, "manual", None).await?;
         // The resumed run's own screen first: until it attaches, the task still shows the
         // paused run's, with its pause.
-        wait_for("the resumed session", Duration::from_secs(90), || async {
+        eventually("the resumed session", Duration::from_secs(90), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2
                 && attempts[1].state == AttemptState::Live
@@ -5946,13 +5867,13 @@ fn a_session_paused_again_after_it_worked_asks_again() -> TestResult {
                 && !screen_contains(&app, &id, "GOAL PAUSED").await
         })
         .await?;
-        wait_for(
+        eventually(
             "the resumed session's pause",
             Duration::from_secs(120),
             || screen_contains(&app, &id, "GOAL PAUSED"),
         )
         .await?;
-        wait_for("Needs you again", Duration::from_secs(20), || async {
+        eventually("Needs you again", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -5992,12 +5913,12 @@ fn a_woken_turn_the_api_refuses_again_still_needs_you() -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let id = paused_goal_task(&app, &data).await?;
         std::fs::write(&wake, "")?;
-        wait_for("the refused turn", Duration::from_secs(60), || {
+        eventually("the refused turn", Duration::from_secs(60), || {
             screen_contains(&app, &id, "WAKE DIED")
         })
         .await?;
         // The record that closes the refused turn settles it (no Stop hook ran): Your turn.
-        wait_for(
+        eventually(
             "the refused turn's end",
             Duration::from_secs(30),
             || async { activity(&app, &id).await == Some(Activity::Waiting) },
@@ -6019,7 +5940,7 @@ fn a_woken_turn_the_api_refuses_again_still_needs_you() -> TestResult {
     Ok(())
 }
 
-/// SPEC-469 GPW-006: the store refuses the write that ends the request (a trigger aborts it)
+/// The store refuses the write that ends the request (a trigger aborts it)
 /// when the agent's first work is read. Nothing is lost: the request stays, and the agent's
 /// next work ends it once the store takes the write.
 #[test]
@@ -6043,14 +5964,14 @@ fn a_request_the_store_could_not_end_ends_at_the_agents_next_work() -> TestResul
              BEGIN SELECT RAISE(ABORT, 'refused for the test'); END",
         )?;
         std::fs::write(&wake, "")?;
-        wait_for("the woken turn's work", Duration::from_secs(60), || {
+        eventually("the woken turn's work", Duration::from_secs(60), || {
             screen_contains(&app, &id, "WOKEN")
         })
         .await?;
         // The work line was written before the marker: two more rounds read it.
         let runtime = app.runtime(&id);
         let rounds = runtime.transcript_rounds();
-        wait_for("the work read", Duration::from_secs(20), || async {
+        eventually("the work read", Duration::from_secs(20), || async {
             runtime.transcript_rounds() >= rounds + 2
         })
         .await?;
@@ -6061,7 +5982,7 @@ fn a_request_the_store_could_not_end_ends_at_the_agents_next_work() -> TestResul
         db.execute_batch("DROP TRIGGER refuse_the_end")?;
         // The answer is the agent's next work.
         std::fs::write(&hold, "")?;
-        wait_for(
+        eventually(
             "the request to end at the agent's next work",
             Duration::from_secs(30),
             || async { !pause_asks(&app, &id).await },
@@ -6073,7 +5994,7 @@ fn a_request_the_store_could_not_end_ends_at_the_agents_next_work() -> TestResul
     Ok(())
 }
 
-/// SPEC-469 GPW-003: the agent asked a person for something before Claude Code paused the goal
+/// The agent asked a person for something before Claude Code paused the goal
 /// (Yulius opens no second request). The session's work after the pause is no answer to the
 /// agent's question: its request stays, as SPEC-134 says.
 #[test]
@@ -6105,18 +6026,18 @@ fn the_agents_own_request_stays_when_the_session_works_after_a_goal_pause() -> T
             .store
             .set_task_needs_you(&id, Some(&asked), Timestamp(1))
             .await?;
-        wait_for("the goal's pause", Duration::from_secs(120), || async {
+        eventually("the goal's pause", Duration::from_secs(120), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
         std::fs::write(&wake, "")?;
-        wait_for("the woken turn's work", Duration::from_secs(60), || {
+        eventually("the woken turn's work", Duration::from_secs(60), || {
             screen_contains(&app, &id, "WOKEN")
         })
         .await?;
         let runtime = app.runtime(&id);
         let rounds = runtime.transcript_rounds();
-        wait_for("the work read", Duration::from_secs(20), || async {
+        eventually("the work read", Duration::from_secs(20), || async {
             runtime.transcript_rounds() >= rounds + 2
         })
         .await?;
@@ -6138,7 +6059,7 @@ fn the_agents_own_request_stays_when_the_session_works_after_a_goal_pause() -> T
 async fn transcript_read(app: &App, id: &TaskId) -> TestResult {
     let runtime = app.runtime(id);
     let rounds = runtime.transcript_rounds();
-    wait_for("the transcript read", Duration::from_secs(20), || async {
+    eventually("the transcript read", Duration::from_secs(20), || async {
         runtime.transcript_rounds() >= rounds + 2
     })
     .await
@@ -6154,7 +6075,7 @@ async fn flagged_then_paused_goal_task(
 ) -> Result<TaskId, BoxError> {
     let (sandbox, user) = seed(app, data).await?;
     let id = goal_task(app, &sandbox, &user, "Merge on green").await?;
-    wait_for("the held pause", Duration::from_secs(120), || {
+    eventually("the held pause", Duration::from_secs(120), || {
         screen_contains(app, &id, "PAUSE HELD")
     })
     .await?;
@@ -6165,7 +6086,7 @@ async fn flagged_then_paused_goal_task(
         .set_activity(&id, Some(Activity::NeedsAttention), app.now())
         .await?;
     std::fs::write(hold, "")?;
-    wait_for(
+    eventually(
         "the request for the pause",
         Duration::from_secs(60),
         || async { matches!(goal_pause_request(app, &id).await, Ok(Some(_))) },
@@ -6184,11 +6105,11 @@ async fn the_request_ends_and_the_flag_stays(
     wake: &Path,
 ) -> TestResult {
     std::fs::write(wake, "")?;
-    wait_for("the session's work", Duration::from_secs(60), || {
+    eventually("the session's work", Duration::from_secs(60), || {
         screen_contains(app, id, "WOKEN")
     })
     .await?;
-    wait_for(
+    eventually(
         "the request to end with the agent's work",
         Duration::from_secs(20),
         || async { !pause_asks(app, id).await },
@@ -6214,7 +6135,7 @@ fn unprompted_agent(wake: &Path, hold: &Path) -> FakeAgentOptions {
     }
 }
 
-/// SPEC-469 GPW-003 (review round 1): a task that another matter flagged before Claude Code
+/// A task that another matter flagged before Claude Code
 /// paused the goal keeps that flag. The pause asks its request beside it; the session's work
 /// (no visible prompt) ends the request, and the task still reads Needs you.
 #[test]
@@ -6239,7 +6160,7 @@ fn a_task_flagged_before_the_goal_pause_keeps_that_flag_through_the_agents_work(
     Ok(())
 }
 
-/// SPEC-469 GPW-003 and GPW-004 (review round 1): the same across a restart of Yulius. The new
+/// The same across a restart of Yulius. The new
 /// server takes the time of the pause's flag from the task's state only when the task reads
 /// Needs you since the request was asked; this task was flagged before.
 #[test]
@@ -6258,7 +6179,7 @@ fn a_task_flagged_before_the_goal_pause_keeps_that_flag_after_a_restart() -> Tes
         async |app, id| {
             // The replay is applied (the transcript ends in the pause): as it was.
             let runtime = app.runtime(id);
-            wait_for(
+            eventually(
                 "the transcript read again",
                 Duration::from_secs(30),
                 || async { runtime.transcript_rounds() >= 2 },
@@ -6272,7 +6193,7 @@ fn a_task_flagged_before_the_goal_pause_keeps_that_flag_after_a_restart() -> Tes
     )
 }
 
-/// SPEC-469 (review round 1): the flag the pause raised is replaced without a word (a status
+/// The flag the pause raised is replaced without a word (a status
 /// change does that, as when a held turn ends), and another matter flags the task afterwards.
 /// The time of the pause's flag says nothing about that later one: the session's work ends the
 /// request for the pause and leaves the task in Needs you.
@@ -6316,13 +6237,13 @@ async fn task_flagged_by_a_notice_of(
 ) -> Result<TaskId, BoxError> {
     let (sandbox, user) = seed(app, data).await?;
     let id = goal_task(app, &sandbox, &user, "Merge on green").await?;
-    wait_for("Done", Duration::from_secs(90), || async {
+    eventually("Done", Duration::from_secs(90), || async {
         activity(app, &id).await == Some(Activity::Done)
     })
     .await?;
     app.send_input(&id, format!("/notify {kind}\r").as_bytes())
         .await?;
-    wait_for("the notice's flag", Duration::from_secs(30), || async {
+    eventually("the notice's flag", Duration::from_secs(30), || async {
         activity(app, &id).await == Some(Activity::NeedsAttention)
             && screen_contains(app, &id, "NOTIFIED").await
     })
@@ -6350,7 +6271,7 @@ fn a_notice_is_answered_by_the_agents_next_work() -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let id = task_flagged_by_a_notice(&app, &data).await?;
         app.send_input(&id, b"/tool\r").await?;
-        wait_for(
+        eventually(
             "Working with the agent's work",
             Duration::from_secs(30),
             || async { activity(&app, &id).await == Some(Activity::Working) },
@@ -6384,7 +6305,7 @@ fn repeated_ask(sequence: &[u8]) -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let id = task_flagged_by_a_notice(&app, &data).await?;
         app.send_input(&id, sequence).await?;
-        wait_for(
+        eventually(
             "both notices and the work",
             Duration::from_secs(30),
             || async {
@@ -6423,7 +6344,7 @@ fn a_flag_raised_after_a_notices_is_not_lifted_by_the_agents_work() -> TestResul
             .set_activity(&id, Some(Activity::NeedsAttention), app.now())
             .await?;
         app.send_input(&id, b"/tool\r").await?;
-        wait_for("the agent's work", Duration::from_secs(30), || {
+        eventually("the agent's work", Duration::from_secs(30), || {
             screen_contains(&app, &id, "TOOL")
         })
         .await?;
@@ -6465,7 +6386,7 @@ fn agent_token(data: &Path) -> Result<String, BoxError> {
     Err("no process of this run holds a task token".into())
 }
 
-/// SPEC-472 ATN-011 (review round 2): the agent asked for a secret (Needs you: answer it on the
+/// The agent asked for a secret (Needs you: answer it on the
 /// Secrets page), then Claude Code asks the person something. The flag is the question's from
 /// then on. The person answers the question first and the agent works on: that work answers
 /// the flag, as it does for a question on an unflagged task, so the task does not keep reading
@@ -6482,7 +6403,7 @@ fn a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_wo
         let (app, _) = start(&data, &fake, noticing_agent(), 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("Done", Duration::from_secs(90), || async {
+        eventually("Done", Duration::from_secs(90), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
@@ -6534,7 +6455,7 @@ fn a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_wo
         );
 
         app.send_input(&id, b"/notify permission_prompt\r").await?;
-        wait_for("the question's reason", Duration::from_secs(30), || async {
+        eventually("the question's reason", Duration::from_secs(30), || async {
             screen_contains(&app, &id, "NOTIFIED").await
                 && why().await.is_ok_and(|why| why["kind"] == "terminal")
         })
@@ -6542,7 +6463,7 @@ fn a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_wo
         // What the agent does next is later than the notice by more than the clock's step.
         transcript_read(&app, &id).await?;
         app.send_input(&id, b"/tool\r").await?;
-        wait_for(
+        eventually(
             "Working with the agent's work",
             Duration::from_secs(30),
             || async { activity(&app, &id).await == Some(Activity::Working) },
@@ -6551,7 +6472,7 @@ fn a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_wo
         assert!(why().await?.is_null(), "no flag, no reason");
 
         // The request still waits on the Secrets page; its answer changes nothing of the task
-        // (a dismissal: allowing needs the person's two-factor unlock, ADR-0317).
+        // (a dismissal: allowing needs the person's two-factor unlock).
         app.answer_host_request(
             &ctx,
             &secret.id,
@@ -6580,7 +6501,7 @@ fn noticing_agent() -> FakeAgentOptions {
 /// replay lifts no flag.
 async fn still_flagged_after_the_replay(app: &Arc<App>, id: &TaskId) -> TestResult {
     let runtime = app.runtime(id);
-    wait_for(
+    eventually(
         "the transcript read again",
         Duration::from_secs(30),
         || async { runtime.transcript_rounds() >= 2 },
@@ -6590,7 +6511,7 @@ async fn still_flagged_after_the_replay(app: &Arc<App>, id: &TaskId) -> TestResu
     Ok(())
 }
 
-/// SPEC-472 ATN-010 (#1221): Yulius restarts (an update freezes every agent mid-turn) while a
+/// Yulius restarts (an update freezes every agent mid-turn) while a
 /// session asks its person something. The new server never saw the notice that flagged the
 /// task; the person answers, the agent goes on, and its work still makes the task Working: it
 /// does not read "Needs your action · its question is in the terminal" over a working session
@@ -6609,7 +6530,7 @@ fn a_notice_is_answered_by_the_agents_work_after_a_restart() -> TestResult {
                 "the flag still says what it is"
             );
             app.send_input(id, b"/tool\r").await?;
-            wait_for(
+            eventually(
                 "Working with the agent's work",
                 Duration::from_secs(30),
                 || async { activity(app, id).await == Some(Activity::Working) },
@@ -6621,9 +6542,9 @@ fn a_notice_is_answered_by_the_agents_work_after_a_restart() -> TestResult {
     )
 }
 
-/// SPEC-472 ATN-010: what the session's work does not answer before a restart, it does not
+/// What the session's work does not answer before a restart, it does not
 /// answer after one: a worker's permission prompt stays through the main session's work, as
-/// while Yulius watches (STA-003).
+/// while Yulius watches.
 #[test]
 fn a_workers_notice_is_not_answered_by_the_agents_work_after_a_restart() -> TestResult {
     worker_notice_after_restart(false)
@@ -6676,13 +6597,13 @@ fn a_worker_asking_during_reattachment_keeps_its_flag() -> TestResult {
             tokio::time::timeout(Duration::from_secs(20), reading.wait_for(|read| *read)).await??;
             app.send_input(id, b"/notify worker_permission_prompt\r")
                 .await?;
-            wait_for("the worker's notice", Duration::from_secs(15), || async {
+            eventually("the worker's notice", Duration::from_secs(15), || async {
                 matches!(app.deps.store.task_attention(id).await, Ok(Some((reason, _))) if !reason.work_answers)
             }).await?;
             let _ = release.send(());
             still_flagged_after_the_replay(app, id).await?;
             app.send_input(id, b"/tool\r").await?;
-            wait_for("the session's work", Duration::from_secs(15), || {
+            eventually("the session's work", Duration::from_secs(15), || {
                 screen_contains(app, id, "TOOL")
             })
             .await?;
@@ -6703,7 +6624,7 @@ fn worker_notice_after_restart(second: bool) -> TestResult {
             let id = task_flagged_by_a_notice(app, data).await?;
             app.send_input(&id, b"/notify worker_permission_prompt\r")
                 .await?;
-            wait_for(
+            eventually(
                 "the second hook's answer",
                 Duration::from_secs(30),
                 || async {
@@ -6722,7 +6643,7 @@ fn worker_notice_after_restart(second: bool) -> TestResult {
         async |app, id| {
             still_flagged_after_the_replay(app, id).await?;
             app.send_input(id, b"/tool\r").await?;
-            wait_for("the agent's work", Duration::from_secs(30), || {
+            eventually("the agent's work", Duration::from_secs(30), || {
                 screen_contains(app, id, "TOOL")
             })
             .await?;
@@ -6737,7 +6658,7 @@ fn worker_notice_after_restart(second: bool) -> TestResult {
     )
 }
 
-/// SPEC-472 ATN-010: the flag a notice raised before a restart was replaced without a word and
+/// The flag a notice raised before a restart was replaced without a word and
 /// another matter flagged the task afterwards. The agent's work after the restart does not lift
 /// that flag: the reason kept with the notice's flag speaks for that flag only.
 #[test]
@@ -6760,7 +6681,7 @@ fn a_flag_raised_after_a_notices_is_not_lifted_after_a_restart() -> TestResult {
             still_flagged_after_the_replay(app, id).await?;
             assert!(support::attention(app, id.as_str()).await?.is_null());
             app.send_input(id, b"/tool\r").await?;
-            wait_for("the agent's work", Duration::from_secs(30), || {
+            eventually("the agent's work", Duration::from_secs(30), || {
                 screen_contains(app, id, "TOOL")
             })
             .await?;
@@ -6775,7 +6696,7 @@ fn a_flag_raised_after_a_notices_is_not_lifted_after_a_restart() -> TestResult {
     )
 }
 
-/// SPEC-469 GPW-004: Yulius restarts while a session whose goal Claude Code paused waits for a
+/// Yulius restarts while a session whose goal Claude Code paused waits for a
 /// person (Needs you, with the request). `down` runs while no server does, with the session's
 /// transcript; `check` runs with the new server, once it reattached the run.
 fn a_restart_while_a_goal_is_paused(
@@ -6811,7 +6732,7 @@ fn a_restart_after(
 
     let rt = runtime()?;
     rt.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         let record = TaskStore::task(&store, &id).await?.ok_or("task")?;
         let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
         let attempt = TaskStore::live_attempt(&store, &id)
@@ -6832,7 +6753,7 @@ fn a_restart_after(
     Ok(())
 }
 
-/// SPEC-469 GPW-004: the session is still paused when Yulius starts again, and keeps its request.
+/// The session is still paused when Yulius starts again, and keeps its request.
 /// Claude Code wakes it afterwards: the request ends then, although the new server never saw the
 /// pause itself.
 #[test]
@@ -6850,7 +6771,7 @@ fn a_session_woken_after_a_restart_no_longer_needs_you() -> TestResult {
         async |app, id| {
             // The replay is applied (the transcript ends in the pause): still Needs you.
             let runtime = app.runtime(id);
-            wait_for(
+            eventually(
                 "the transcript read again",
                 Duration::from_secs(30),
                 || async { runtime.transcript_rounds() >= 2 },
@@ -6859,7 +6780,7 @@ fn a_session_woken_after_a_restart_no_longer_needs_you() -> TestResult {
             assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
             assert!(pause_asks(app, id).await, "still paused: still asked");
             std::fs::write(&wake, "")?;
-            wait_for(
+            eventually(
                 "the request to end with the agent's work",
                 Duration::from_secs(60),
                 || async { !pause_asks(app, id).await },
@@ -6867,7 +6788,7 @@ fn a_session_woken_after_a_restart_no_longer_needs_you() -> TestResult {
             .await?;
             assert_eq!(activity(app, id).await, Some(Activity::Working));
             std::fs::write(&hold, "")?;
-            wait_for("the woken turn's end", Duration::from_secs(60), || async {
+            eventually("the woken turn's end", Duration::from_secs(60), || async {
                 activity(app, id).await == Some(Activity::Waiting)
             })
             .await?;
@@ -6877,7 +6798,7 @@ fn a_session_woken_after_a_restart_no_longer_needs_you() -> TestResult {
     )
 }
 
-/// SPEC-469 GPW-004 (review round 1): Yulius restarts while the session is paused, and the
+/// Yulius restarts while the session is paused, and the
 /// session then goes on with no prompt anyone sees. The new server never saw the pause flag the
 /// task, and still the agent's work is past that flag: the request ends and the task reads
 /// Working, not Needs you until the turn ends.
@@ -6896,7 +6817,7 @@ fn a_session_that_goes_on_unprompted_after_a_restart_no_longer_needs_you() -> Te
         async |_| Ok(()),
         async |app, id| {
             let runtime = app.runtime(id);
-            wait_for(
+            eventually(
                 "the transcript read again",
                 Duration::from_secs(30),
                 || async { runtime.transcript_rounds() >= 2 },
@@ -6905,18 +6826,18 @@ fn a_session_that_goes_on_unprompted_after_a_restart_no_longer_needs_you() -> Te
             assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
             assert!(pause_asks(app, id).await, "still paused: still asked");
             std::fs::write(&wake, "")?;
-            wait_for(
+            eventually(
                 "the request to end with the agent's work",
                 Duration::from_secs(60),
                 || async { !pause_asks(app, id).await },
             )
             .await?;
-            wait_for("Working", Duration::from_secs(10), || async {
+            eventually("Working", Duration::from_secs(10), || async {
                 activity(app, id).await == Some(Activity::Working)
             })
             .await?;
             std::fs::write(&hold, "")?;
-            wait_for("the turn's end", Duration::from_secs(60), || async {
+            eventually("the turn's end", Duration::from_secs(60), || async {
                 activity(app, id).await == Some(Activity::Waiting)
             })
             .await?;
@@ -6926,7 +6847,7 @@ fn a_session_that_goes_on_unprompted_after_a_restart_no_longer_needs_you() -> Te
     )
 }
 
-/// SPEC-469 GPW-004: Claude Code wakes the paused session while Yulius is down, and the agent
+/// Claude Code wakes the paused session while Yulius is down, and the agent
 /// works. The start reads that from the transcript: the request ends and the task follows its
 /// session (Working while the woken turn runs, waiting once it ended), not Needs you for good.
 #[test]
@@ -6942,7 +6863,7 @@ fn a_session_woken_while_yulius_was_down_no_longer_needs_you() -> TestResult {
         agent,
         async |transcript| {
             std::fs::write(&wake, "")?;
-            wait_for("the woken turn's work", Duration::from_secs(60), || async {
+            eventually("the woken turn's work", Duration::from_secs(60), || async {
                 std::fs::read_to_string(transcript).is_ok_and(|t| {
                     t.rsplit_once("bfakepaused")
                         .is_some_and(|(_, after)| after.contains(r#""stop_reason":"tool_use""#))
@@ -6951,18 +6872,18 @@ fn a_session_woken_while_yulius_was_down_no_longer_needs_you() -> TestResult {
             .await
         },
         async |app, id| {
-            wait_for(
+            eventually(
                 "the request to end at the start",
                 Duration::from_secs(30),
                 || async { !pause_asks(app, id).await },
             )
             .await?;
-            wait_for("Working", Duration::from_secs(10), || async {
+            eventually("Working", Duration::from_secs(10), || async {
                 activity(app, id).await == Some(Activity::Working)
             })
             .await?;
             std::fs::write(&hold, "")?;
-            wait_for("the woken turn's end", Duration::from_secs(60), || async {
+            eventually("the woken turn's end", Duration::from_secs(60), || async {
                 activity(app, id).await == Some(Activity::Waiting)
             })
             .await?;
@@ -6992,12 +6913,12 @@ fn a_restart_keeps_done_tasks_done_and_applies_goals_achieved_meanwhile() -> Tes
         let (app, port) = start(&data, &fake, agent.clone(), 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let done = goal_task(&app, &sandbox, &user, "Finish before the restart").await?;
-        wait_for("Done", Duration::from_secs(90), || async {
+        eventually("Done", Duration::from_secs(90), || async {
             activity(&app, &done).await == Some(Activity::Done)
         })
         .await?;
         let late = goal_task(&app, &sandbox, &user, "Finish during the restart").await?;
-        wait_for("the second goal", Duration::from_secs(90), || {
+        eventually("the second goal", Duration::from_secs(90), || {
             screen_contains(&app, &late, "GOAL SET")
         })
         .await?;
@@ -7008,7 +6929,7 @@ fn a_restart_keeps_done_tasks_done_and_applies_goals_achieved_meanwhile() -> Tes
     // While Yulius is down the second agent achieves its goal; its Stop hook goes unanswered.
     let rt = runtime()?;
     rt.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         let record = TaskStore::task(&store, &late).await?.ok_or("task")?;
         let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
         let attempt = TaskStore::live_attempt(&store, &late)
@@ -7018,7 +6939,7 @@ fn a_restart_keeps_done_tasks_done_and_applies_goals_achieved_meanwhile() -> Tes
         let adapter = HarnessAdapter::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius")), "x");
         let home = data.join("sandboxes").join("s-done").join("home");
         let transcript = adapter.claude_transcript(&home, &worktree, &session);
-        wait_for(
+        eventually(
             "the goal recorded meanwhile",
             Duration::from_secs(30),
             || async {
@@ -7038,7 +6959,7 @@ fn a_restart_keeps_done_tasks_done_and_applies_goals_achieved_meanwhile() -> Tes
         let (app, _) = start(&data, &fake, agent, port).await?;
         let mut events = app.events.subscribe();
         app.reconcile().await?;
-        wait_for("the late goal applied", Duration::from_secs(20), || async {
+        eventually("the late goal applied", Duration::from_secs(20), || async {
             activity(&app, &late).await == Some(Activity::Done)
         })
         .await?;
@@ -7062,7 +6983,7 @@ fn a_restart_keeps_done_tasks_done_and_applies_goals_achieved_meanwhile() -> Tes
         }
         // Both sessions are still the same processes and keep working.
         app.send_input(&done, b"one more\r").await?;
-        wait_for(
+        eventually(
             "Your turn after typing",
             Duration::from_secs(20),
             || async { activity(&app, &done).await == Some(Activity::Waiting) },
@@ -7086,9 +7007,9 @@ fn run_pids(run_dir: &Path) -> Result<(i32, i32), BoxError> {
 
 /// SPEC-229 (task #215, 2026-10-18: the host rebooted and #213/#214, Done with their pull requests
 /// merged, read "Stopped (server restarted)" with a blank terminal): a reboot ends every session
-/// while Yulius is down. A task whose goal was achieved lost nothing and is Closed (RBT-001); one
+/// while Yulius is down. A task whose goal was achieved lost nothing and is Closed; one
 /// whose turn ended otherwise is Stopped (server restarted); both keep the screen their last turn
-/// ended on (RBT-002).
+/// ended on.
 #[test]
 fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -7107,13 +7028,13 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
         let done = goal_task(&app, &sandbox, &user, "Finish before the reboot").await?;
         let waiting = goal_task(&app, &sandbox, &user, "Wait at the reboot").await?;
         for id in [&done, &waiting] {
-            wait_for("Done", Duration::from_secs(90), || async {
+            eventually("Done", Duration::from_secs(90), || async {
                 activity(&app, id).await == Some(Activity::Done)
             })
             .await?;
         }
         app.send_input(&waiting, b"one more\r").await?;
-        wait_for("Your turn", Duration::from_secs(20), || async {
+        eventually("Your turn", Duration::from_secs(20), || async {
             activity(&app, &waiting).await == Some(Activity::Waiting)
         })
         .await?;
@@ -7135,7 +7056,7 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
         }
         app.reconcile().await?;
         for run_dir in &run_dirs {
-            wait_for(
+            eventually(
                 "the reattached run's screen",
                 Duration::from_secs(10),
                 || {
@@ -7157,7 +7078,7 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
     // The reboot: every process ends with no exit recorded (the host first, so nobody records it).
     let rt = runtime()?;
     rt.block_on(async {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         let mut run_dirs = Vec::new();
         for id in [&done, &waiting] {
             let attempt = TaskStore::live_attempt(&store, id)
@@ -7172,7 +7093,7 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
                 );
             }
             for pid in [host, child] {
-                wait_for("the process gone", Duration::from_secs(10), || async move {
+                eventually("the process gone", Duration::from_secs(10), || async move {
                     process_gone(pid.unsigned_abs())
                 })
                 .await?;
@@ -7321,7 +7242,7 @@ async fn a_chain_starts_when_its_predecessor_achieves_its_goal() -> TestResult {
     Ok(())
 }
 
-/// TSK-014, UI-006: a Done task (goal achieved, no shell left) can be archived: the session is
+/// A Done task (goal achieved, no shell left) can be archived: the session is
 /// closed as it is archived. A task that only waits for the user still has to be stopped first.
 #[test]
 fn a_done_task_can_be_archived() -> TestResult {
@@ -7343,14 +7264,14 @@ fn a_done_task_can_be_archived() -> TestResult {
             token: None,
         };
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the shell probe", Duration::from_secs(90), || async {
+        eventually("the shell probe", Duration::from_secs(90), || async {
             shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
         })
         .await?;
         let archived = app.archive_task(&ctx, id.as_str(), true).await?;
         assert!(archived.archived);
         // Closed, not stopped: the finished session ends like one the user left.
-        wait_for("the close", Duration::from_secs(30), || async {
+        eventually("the close", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Closed)
@@ -7362,7 +7283,7 @@ fn a_done_task_can_be_archived() -> TestResult {
     Ok(())
 }
 
-/// SPEC-153 OLC-003 (#431, SPEC-106 OTR-004): a live, Done onboarding task with plan steps open,
+/// A live, Done onboarding task with plan steps open,
 /// in a `preparing` sandbox whose project validates, is archived: closed, its run's end awaited
 /// (an open plan does not make the sandbox ready while the run lives), then archived, and the
 /// sandbox is `ready`.
@@ -7382,7 +7303,17 @@ fn a_done_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
             "CARGO_BIN_EXE_yulius"
         ))));
         host.silence_work_probe(true);
-        let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
+        let (app, _) = start_holding(
+            &data,
+            Live {
+                host: Some(host),
+                ..live(&fake, agent)
+            },
+            0,
+            |_| {},
+            Hold::default(),
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         // The project validates in the sandbox's clone.
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
@@ -7425,7 +7356,7 @@ fn a_done_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
             .await?;
         // Archiving uses the achieved goal and absence of known background work. A
         // timed-out process probe is represented by an unknown count.
-        let done = wait_for(
+        let done = eventually(
             "the achieved onboarding goal",
             Duration::from_secs(90),
             || async { activity(&app, &id).await == Some(Activity::Done) },
@@ -7462,7 +7393,7 @@ fn onboarding_audit(data: &Path, sandbox: &SandboxId) -> Result<Vec<String>, Box
     Ok(rows.filter_map(Result::ok).flatten().collect())
 }
 
-/// SPEC-153 OLC-001 (#406): an admin's Skip that lands while Start onboarding is starting the
+/// An admin's Skip that lands while Start onboarding is starting the
 /// onboarding task (held at its run's attach) is never undone: the sandbox stays `skipped`.
 #[test]
 fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
@@ -7473,15 +7404,15 @@ fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
         let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
             "CARGO_BIN_EXE_yulius"
         ))));
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            FakeAgentOptions::default(),
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, FakeAgentOptions::default())
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -7512,7 +7443,7 @@ fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
         let skipper = Arc::clone(&app);
         let sid = sandbox.to_string();
         let skip = tokio::spawn(async move { skipper.skip_onboarding(&admin, &sid).await });
-        wait_for("the skip", Duration::from_secs(30), || async {
+        eventually("the skip", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .sandbox(&sandbox)
@@ -7547,7 +7478,7 @@ fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
     Ok(())
 }
 
-/// SPEC-153 OLC-001 (review): a refresh that sees the onboarding task start writes `preparing`
+/// A refresh that sees the onboarding task start writes `preparing`
 /// (as `system`) before Start onboarding does; the start's own write then loses, and the person
 /// who pressed Start onboarding is still in the audit log.
 #[test]
@@ -7559,15 +7490,15 @@ fn a_start_onboarding_a_refresh_got_ahead_of_is_audited_as_its_person() -> TestR
         let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
             "CARGO_BIN_EXE_yulius"
         ))));
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            FakeAgentOptions::default(),
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, FakeAgentOptions::default())
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -7617,7 +7548,7 @@ fn a_start_onboarding_a_refresh_got_ahead_of_is_audited_as_its_person() -> TestR
     Ok(())
 }
 
-/// SPEC-039 (DDL-001): a Done task can be deleted like an ended one: its idle session is closed
+/// A Done task can be deleted like an ended one: its idle session is closed
 /// first, and the deletion returns only once the run has ended, so nothing of it is left behind.
 #[test]
 fn a_done_task_can_be_deleted_its_session_is_closed_first() -> TestResult {
@@ -7639,7 +7570,7 @@ fn a_done_task_can_be_deleted_its_session_is_closed_first() -> TestResult {
             token: None,
         };
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the shell probe", Duration::from_secs(90), || async {
+        eventually("the shell probe", Duration::from_secs(90), || async {
             shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
         })
         .await?;
@@ -7834,15 +7765,17 @@ async fn running_task(
     ),
     BoxError,
 > {
-    let (app, _) = start_on(
+    let (app, _) = start_holding(
         data,
-        fake,
-        FakeAgentOptions::default(),
+        Live {
+            host: Some(host),
+            ..live(fake, FakeAgentOptions::default())
+        },
         0,
-        Some(host),
-        Some(300),
-        false,
-        None,
+        |config| {
+            config.stop_escalation_ms = 300;
+        },
+        Hold::default(),
     )
     .await?;
     let (sandbox, user) = seed(&app, data).await?;
@@ -7853,7 +7786,7 @@ async fn running_task(
         token: None,
     };
     let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-    wait_for("the session", Duration::from_secs(60), || async {
+    eventually("the session", Duration::from_secs(60), || async {
         app.deps
             .store
             .live_attempt(&id)
@@ -7872,7 +7805,7 @@ async fn running_task(
     Ok((app, ctx, id, attempt))
 }
 
-/// SPEC-065 END-001 (#284, review): when the agent survives termination but its host is gone,
+/// When the agent survives termination but its host is gone,
 /// the connection to the run is lost; the run is still not recorded as ended, so the task stays
 /// undeletable.
 #[test]
@@ -7891,7 +7824,7 @@ fn a_run_whose_agent_survives_termination_is_not_ended_when_its_connection_is_lo
         let _agent = KillGroupOnDrop(attempt.child_pid.and_then(|p| i32::try_from(p).ok()));
         app.stop_task_now(&id).await?;
         // The escalation's terminate, then the lost connection's.
-        wait_for(
+        eventually(
             "the second termination",
             Duration::from_secs(20),
             || async { host.terminations.load(std::sync::atomic::Ordering::SeqCst) >= 2 },
@@ -7916,7 +7849,7 @@ fn a_run_whose_agent_survives_termination_is_not_ended_when_its_connection_is_lo
     Ok(())
 }
 
-/// SPEC-065 END-005 and END-003 (#290, #285): a run whose host never takes the shutdown request
+/// A run whose host never takes the shutdown request
 /// is still escalated and ended when it is closed for deletion; when the close returns, the run's
 /// ending is fully recorded, so the task chained after it already has its outcome, and deleting
 /// the predecessor then gives it one outcome: "#N was deleted".
@@ -8036,7 +7969,7 @@ impl SessionHost for HeldSpawn {
     }
 }
 
-/// SPEC-248 FUP-002 (review round 1): control passing while a run is launched — its fingerprint
+/// Control passing while a run is launched — its fingerprint
 /// file computed for the previous owner, not yet written — still leaves the run the new owner's
 /// fingerprints once it is live.
 #[test]
@@ -8055,15 +7988,15 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
             transcript: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, agent)
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -8168,8 +8101,8 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
                     .flatten()
                     .is_some_and(|a| a.state == AttemptState::Live)
             };
-            wait_for("the live run", Duration::from_secs(30), live).await?;
-            wait_for(
+            eventually("the live run", Duration::from_secs(30), live).await?;
+            eventually(
                 "the new owner's fingerprints",
                 Duration::from_secs(10),
                 || async {
@@ -8224,15 +8157,15 @@ fn a_hand_over_during_a_launch_restarts_a_run_holding_personal_mcp_servers() -> 
             transcript: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start_on(
+        let (app, _) = start_holding(
             &data,
-            &fake,
-            agent,
+            Live {
+                host: Some(host.clone()),
+                ..live(&fake, agent)
+            },
             0,
-            Some(host.clone()),
-            None,
-            false,
-            None,
+            |_| {},
+            Hold::default(),
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -8296,7 +8229,7 @@ fn a_hand_over_during_a_launch_restarts_a_run_holding_personal_mcp_servers() -> 
             );
             host.released.send_replace(true);
             let id = attempt.task_id.clone();
-            wait_for("the resumed run", Duration::from_secs(60), || async {
+            eventually("the resumed run", Duration::from_secs(60), || async {
                 let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
                 attempts.len() == 2 && attempts[1].state == AttemptState::Live
             })
@@ -8318,7 +8251,7 @@ fn a_hand_over_during_a_launch_restarts_a_run_holding_personal_mcp_servers() -> 
 /// SPEC-487 CHN-002 (13 November 2026: #466, #467 and #468 were started "after #465" while it
 /// went from one merged slice to the next): a merged slice with explicit work left makes a running task Done only
 /// once the task was told of the merge and the turn that news starts has ended. A task chained
-/// after it waits through all of it: while the news is not typed, and (review round 1, H1) while
+/// after it waits through all of it: while the news is not typed, and (review round 1) while
 /// it is typed and its turn has not begun. Real hooks: the prompt hook of the news is held at
 /// its check, where the task still reads idle.
 #[test]
@@ -8357,15 +8290,15 @@ fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult
             supertask: false,
         };
         let id = app.create_task_internal(new_task("Sliced")).await?.id;
-        wait_for("the first answer", Duration::from_secs(90), || {
+        eventually("the first answer", Duration::from_secs(90), || {
             screen_contains(&app, &id, "ECHO: Sliced: answer with an echo")
         })
         .await?;
-        wait_for("the first turn's end", Duration::from_secs(30), || async {
+        eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8437,7 +8370,7 @@ fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult
             .replace_steps(&id, &[], "person", app.now())
             .await?;
         let _ = go_on.send(());
-        wait_for(
+        eventually(
             "the chained task's start",
             Duration::from_secs(60),
             || async { status().await != Some(TaskStatus::Chained) },
@@ -8500,15 +8433,15 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
             supertask: false,
         };
         let id = app.create_task_internal(new_task("Sliced")).await?.id;
-        wait_for("the first answer", Duration::from_secs(90), || {
+        eventually("the first answer", Duration::from_secs(90), || {
             screen_contains(&app, &id, "ECHO: Sliced: answer with an echo")
         })
         .await?;
-        wait_for("the first turn's end", Duration::from_secs(30), || async {
+        eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8531,7 +8464,7 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
         // A turn runs (held), and the merge lands meanwhile: its news is typed into the queue.
         std::fs::remove_file(&may_end)?;
         app.send_input(&id, b"Go on with the next slice\r").await?;
-        wait_for("the running turn", Duration::from_secs(30), || {
+        eventually("the running turn", Duration::from_secs(30), || {
             screen_contains(&app, &id, "TURN HELD")
         })
         .await?;
@@ -8551,18 +8484,18 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
                 .any(|(task, text)| task == &id && text.contains("Pull request #7 is merged")),
             "{typed:?}"
         );
-        wait_for("the queued news", Duration::from_secs(30), || {
+        eventually("the queued news", Duration::from_secs(30), || {
             screen_contains(&app, &id, "QUEUED: Yulius, about your pull request #7")
         })
         .await?;
 
         // That turn ends; the queue is not handed on yet. Idle and told, and still going on.
         std::fs::write(&may_end, b"")?;
-        wait_for("the held hand-over", Duration::from_secs(30), || {
+        eventually("the held hand-over", Duration::from_secs(30), || {
             screen_contains(&app, &id, "QUEUED TURN HELD")
         })
         .await?;
-        wait_for("the turn's end", Duration::from_secs(30), || async {
+        eventually("the turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
@@ -8583,7 +8516,7 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
         std::fs::write(&may_turn, b"")?;
         // (That turn's own end may look before its lines were read: the watch's next pass, run
         // here as its 20 s loop would, lets the chain go on.)
-        wait_for(
+        eventually(
             "the chained task's start",
             Duration::from_secs(60),
             || async {
@@ -8605,8 +8538,8 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
 }
 
 /// SPEC-487 CHN-002 (review round 3, R3-1): Claude Code hands a notification of its own, a
-/// slash command or a `!` line on alone, and a prompt behind it at the next turn's end
-/// (SPEC-479). News that waits in the queue behind such an entry is still due after that
+/// slash command or a `!` line on alone, and a prompt behind it at the next turn's end.
+/// News that waits in the queue behind such an entry is still due after that
 /// entry's turn: the queue holds it, whatever turn began after it was typed.
 #[test]
 fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult {
@@ -8653,15 +8586,15 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
             supertask: false,
         };
         let id = app.create_task_internal(new_task("Sliced")).await?.id;
-        wait_for("the first answer", Duration::from_secs(90), || {
+        eventually("the first answer", Duration::from_secs(90), || {
             screen_contains(&app, &id, "ECHO: Sliced: answer with an echo")
         })
         .await?;
-        wait_for("the first turn's end", Duration::from_secs(30), || async {
+        eventually("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
-        crate::pr_watch::leave_verification_step(&app, &id).await?;
+        crate::support::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8683,7 +8616,7 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
         let act = |want: Activity| {
             let (app, id) = (app.clone(), id.clone());
             async move {
-                wait_for("the activity", Duration::from_secs(30), || async {
+                eventually("the activity", Duration::from_secs(30), || async {
                     activity(&app, &id).await == Some(want)
                 })
                 .await
@@ -8692,13 +8625,13 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
         // A turn runs (held). An entry Claude Code hands on alone is queued, then the news.
         std::fs::remove_file(&may_end)?;
         app.send_input(&id, b"Go on with the next slice\r").await?;
-        wait_for("the running turn", Duration::from_secs(30), || {
+        eventually("the running turn", Duration::from_secs(30), || {
             screen_contains(&app, &id, "TURN HELD")
         })
         .await?;
         app.send_input(&id, b"/alone a notification of its own\r")
             .await?;
-        wait_for("the queued entry", Duration::from_secs(30), || {
+        eventually("the queued entry", Duration::from_secs(30), || {
             screen_contains(&app, &id, "QUEUED: ")
         })
         .await?;
@@ -8713,7 +8646,7 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
             .await?;
         let typed = app.watch_prs(&bounds).await;
         assert!(typed.iter().any(|(task, _)| task == &id), "{typed:?}");
-        wait_for("the queued news", Duration::from_secs(30), || {
+        eventually("the queued news", Duration::from_secs(30), || {
             screen_contains(&app, &id, "Yulius, about your pull request #7")
         })
         .await?;
@@ -8735,7 +8668,7 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
         std::fs::write(&may_end, b"")?;
         act(Activity::Waiting).await?;
         // The watcher read what that turn wrote: the queue still holds the news.
-        wait_for("the queue as read", Duration::from_secs(30), || async {
+        eventually("the queue as read", Duration::from_secs(30), || async {
             app.claude_queue_holds(&id)
         })
         .await?;
@@ -8755,7 +8688,7 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
             .replace_steps(&id, &[], "person", app.now())
             .await?;
         std::fs::write(&may_hand, b"")?;
-        wait_for(
+        eventually(
             "the chained task's start",
             Duration::from_secs(60),
             || async {
@@ -8775,7 +8708,7 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
     Ok(())
 }
 
-/// #1190: a process that exited and is not reaped yet counts as gone; a running one does not.
+/// A process that exited and is not reaped yet counts as gone; a running one does not.
 #[test]
 fn an_exited_process_not_yet_reaped_is_gone() -> TestResult {
     let mut running = std::process::Command::new("sleep").arg("30").spawn()?;
@@ -8854,12 +8787,12 @@ fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> T
             })
             .await?
             .id;
-        wait_for("the first answer", Duration::from_secs(90), || {
+        eventually("the first answer", Duration::from_secs(90), || {
             screen_contains(&app, &id, "ECHO: Fix: answer with an echo")
         })
         .await?;
         let idle = || async { activity(&app, &id).await == Some(Activity::Waiting) };
-        wait_for("the first turn's end", Duration::from_secs(30), idle).await?;
+        eventually("the first turn's end", Duration::from_secs(30), idle).await?;
         // Its pull request merged (#1623 at 11:05) with nothing declared left.
         let store = &app.deps.store;
         let open = DeliveryRecord {
@@ -8894,7 +8827,7 @@ fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> T
                 .map(|s| (s.counts.running, s.counts.needs_attention, s.counts.queued))
         };
         let done = || async { counts().await == Some((0, 0, 0)) };
-        wait_for("Done once merged", Duration::from_secs(20), done).await?;
+        eventually("Done once merged", Duration::from_secs(20), done).await?;
 
         // 11:12:36: it waits for the staging verdict in a background shell, its turn over.
         let wait = format!(
@@ -8902,7 +8835,7 @@ fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> T
             heard.display()
         );
         app.send_input(&id, wait.as_bytes()).await?;
-        wait_for("the waiting shell", Duration::from_secs(30), || async {
+        eventually("the waiting shell", Duration::from_secs(30), || async {
             app.probe_idle_shells(&id).await;
             shown(&app, &id).await.ok().and_then(|(_, shells)| shells) == Some(1)
         })
@@ -8974,7 +8907,7 @@ fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> T
                 "the finished task's waiting agent hears {request}"
             );
             assert!(store.untold_staging_requests().await?.is_empty());
-            wait_for("the outcome's turn", Duration::from_secs(30), || async {
+            eventually("the outcome's turn", Duration::from_secs(30), || async {
                 screen_contains(
                     &app,
                     &id,
@@ -8983,7 +8916,7 @@ fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> T
                 .await
             })
             .await?;
-            wait_for("its end", Duration::from_secs(30), idle).await?;
+            eventually("its end", Duration::from_secs(30), idle).await?;
             assert_eq!(
                 app.deps.store.attempts(&id).await?.len(),
                 1,
@@ -9053,11 +8986,11 @@ fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> T
         assert!(!screen_contains(&app, &id, "sr-held").await);
         set_activity(Activity::Waiting).await?;
         assert_eq!(app.tell_staging_outcomes().await, 1, "typed once idle");
-        wait_for("the held outcome's turn", Duration::from_secs(30), || {
+        eventually("the held outcome's turn", Duration::from_secs(30), || {
             screen_contains(&app, &id, "ECHO: Yulius: staging request sr-held")
         })
         .await?;
-        wait_for("its end", Duration::from_secs(30), idle).await?;
+        eventually("its end", Duration::from_secs(30), idle).await?;
 
         // The wait ends between the decision and the admission: nothing is typed, and the next
         // tick records the outcome silently. The agent stopped its wait: Done, nobody acting.
@@ -9069,7 +9002,7 @@ fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> T
         });
         support::point_reached(decided).await?;
         std::fs::write(&heard, b"")?;
-        wait_for("the wait's end", Duration::from_secs(30), || async {
+        eventually("the wait's end", Duration::from_secs(30), || async {
             app.probe_idle_shells(&id).await;
             shown(&app, &id).await.ok().and_then(|(_, shells)| shells) == Some(0)
         })
@@ -9083,7 +9016,7 @@ fn a_finished_tasks_wait_hears_its_staging_outcome_and_the_task_ends_done() -> T
             "recorded"
         );
         assert!(!screen_contains(&app, &id, "sr-race").await, "not typed");
-        wait_for("Done after the wait", Duration::from_secs(30), done).await?;
+        eventually("Done after the wait", Duration::from_secs(30), done).await?;
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

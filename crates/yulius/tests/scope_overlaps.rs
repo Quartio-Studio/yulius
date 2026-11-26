@@ -1,14 +1,17 @@
-//! SPEC-493 SCO-001 to SCO-003: a claim that overlaps a live task's claim is told to both. The
+//! A claim that overlaps a live task's claim is told to both. The
 //! claiming agent's answer names the holding task, what it changes and where its pull request
 //! stands; the holding task's session gets one message naming the claiming task and the paths.
 //! A fake agent echoes what it is typed.
 
+use crate::support::live::UNSERVED;
+use crate::support::live::pool::{pool, pool_live};
 use std::time::Duration;
 
 use serde_json::json;
 use yulius_app::coordination::AgentContext;
 
-use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop, temp, wait_for};
+use crate::support::eventually;
+use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -28,7 +31,7 @@ async fn agent(
     })
 }
 
-/// AC-21 (SCO-001): B claims `crates/a/**` while live task A holds `crates/a/src/x.rs`. B's
+/// B claims `crates/a/**` while live task A holds `crates/a/src/x.rs`. B's
 /// answer names A, its title, its note, its step in progress and its pull request (none yet);
 /// A's session gets one message naming B and the paths, and a second claim of the same paths
 /// types nothing again.
@@ -44,14 +47,14 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent_options, |config| {
+        let app = pool(pool_live(&fake, agent_options), &data, UNSERVED, |config| {
             config.goal_ready_ms = 2_000;
         })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let a = new_task(&app, &sandbox, &user, "Refactor x").await?;
         let b = new_task(&app, &sandbox, &user, "Feature y").await?;
         for (id, title) in [(&a, "Refactor x"), (&b, "Feature y")] {
-            wait_for("the first answer", Duration::from_secs(30), || {
+            eventually("the first answer", Duration::from_secs(30), || {
                 let shown = screen(&app, id);
                 let want = format!("ECHO: {title}: answer with an echo");
                 async move { shown.contains(&want) }
@@ -88,7 +91,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         );
         let told =
             "claimed paths that overlap your claims: `crates/a/**` (yours: `crates/a/src/x.rs`)";
-        wait_for("the holder told", Duration::from_secs(30), || {
+        eventually("the holder told", Duration::from_secs(30), || {
             let shown = screen(&app, &a);
             async move { shown.contains(told) }
         })
@@ -106,13 +109,13 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
             "{}",
             screen(&app, &a)
         );
-        let again = wait_for("a second message", Duration::from_secs(25), || {
+        let again = eventually("a second message", Duration::from_secs(25), || {
             let shown = screen(&app, &a);
             async move { shown.matches(echoed).count() > 1 }
         })
         .await;
         assert!(again.is_err(), "told twice: {}", screen(&app, &a));
-        // Review round 2: once A has a pull request, the answer says its stage and the state of
+        // Once A has a pull request, the answer says its stage and the state of
         // Yulius CI's newest run of it.
         let open = yulius_app::delivery::DeliveryRecord {
             task_id: a.clone(),
@@ -150,7 +153,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         assert_eq!(pull_request["stage"], "pr_open", "{answer}");
         assert_eq!(pull_request["checks"], "passed", "{answer}");
         assert_eq!(pull_request["merge_armed"], false, "{answer}");
-        // SCO-002: both tasks' views (the page's and the list's) carry the overlap.
+        // Both tasks' views (the page's and the list's) carry the overlap.
         let b_number = app.deps.store.task(&b).await?.ok_or("b")?.number;
         let view = |id: yulius_domain::ids::TaskId| {
             let app = app.clone();
@@ -173,7 +176,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
             "{seen_by_b:?}"
         );
         assert_eq!(seen_by_b[0].patterns, ["crates/a/**"]);
-        // AC-22 (SCO-004): a task created with paths a live task holds is not made blind: the
+        // A task created with paths a live task holds is not made blind: the
         // answer names the holder and offers to run it after that task; with `after_task` it
         // is made, waiting behind it, holding its paths.
         let caller = claimer.caller();
@@ -225,7 +228,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         app.tool_scope_release(&holder, &json!({})).await?;
         assert!(view(a.clone()).await?.is_empty());
         assert!(view(b.clone()).await?.is_empty());
-        // Review round 1: claimed again after the release, the holder is told again; a claim
+        // Claimed again after the release, the holder is told again; a claim
         // widened by a new pair tells only that pair.
         let pastes = |app: &std::sync::Arc<yulius_app::context::App>| {
             screen(app, &a).matches("200~Yulius: task #").count()
@@ -234,7 +237,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
             .await?;
         app.tool_scope_claim(&claimer, &json!({"pattern": "crates/a/**"}))
             .await?;
-        wait_for(
+        eventually(
             "told again after the release",
             Duration::from_secs(40),
             || {
@@ -248,7 +251,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
             &json!({"patterns": ["crates/a/**", "crates/a/src/*.rs"]}),
         )
         .await?;
-        wait_for("the new pair told", Duration::from_secs(40), || {
+        eventually("the new pair told", Duration::from_secs(40), || {
             let shown = screen(&app, &a);
             async move {
                 shown.contains(

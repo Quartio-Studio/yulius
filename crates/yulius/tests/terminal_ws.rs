@@ -4,9 +4,9 @@
 //! (SPEC-001 AC-TSK-2, AC-TSK-6; SPEC-002 §7.7).
 
 use crate::support;
+use crate::support::git;
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -30,21 +30,6 @@ const ORIGIN: &str = "https://yulius.test";
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
-}
 
 /// Collected terminal traffic of one viewer.
 #[derive(Default)]
@@ -97,7 +82,7 @@ async fn read_until(
 
 /// A harness with the fake agent, a cloned fixture repository, an account, and two users of
 /// sandbox `s1`: alice (write) and bob (read). `second` is alice on another device ("carol" in
-/// the tests' labels): only a task's owner types into it (SPEC-070), from any of her windows.
+/// the tests' labels): only a task's owner types into it, from any of her windows.
 struct Fixture {
     h: support::Harness,
     writer: support::Creds,
@@ -316,7 +301,7 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
     .await?;
     assert!(!wv.screen.contains("ECHO: intruder") && !rv.screen.contains("ECHO: intruder"));
 
-    // TSK-006: the last writer to type controls the terminal; every viewer learns who.
+    // The last writer to type controls the terminal; every viewer learns who.
     let last_state = |v: &Viewer| v.texts.iter().rev().find(|t| t["type"] == "state").cloned();
     assert_eq!(
         last_state(&wv).ok_or("writer state")?["controller"],
@@ -353,7 +338,7 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
         last_state(v).is_some_and(|s| s["controller"] == true)
     })
     .await?;
-    // #78: a wheel turn another writer forwards to a full-screen app (`scroll`) reaches the app
+    // A wheel turn another writer forwards to a full-screen app (`scroll`) reaches the app
     // but neither takes control nor resizes the terminal to that viewer's window.
     let task_id = yulius_domain::ids::TaskId::parse(&tid)?;
     let controller = h.app.runtime(&task_id).hub.controller();
@@ -371,7 +356,7 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
     );
     drop(c);
 
-    // AC-ACC-5: a downgrade on GitHub reaches open sockets once the permission cache expires.
+    // A downgrade on GitHub reaches open sockets once the permission cache expires.
     h.github.set_perm("alice", "acme/fixture", perms("read"));
     h.clock
         .0
@@ -560,7 +545,7 @@ fn sized(viewer: &Viewer, controller: bool, cols: u16, rows: u16) -> bool {
 /// active viewer's window size, automatically. A viewer alone keeps it while idle; a viewer who
 /// opens the task takes it from an idle one; typing (or `take_control`, a click) takes it at once;
 /// a watcher's own size is kept for when it controls; an idle or leaving controller hands it to
-/// the active viewer, whose last reported size the PTY takes at once (TSK-006, UI-019).
+/// the active viewer, whose last reported size the PTY takes at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_active_viewer_sets_the_size_and_an_idle_one_hands_it_over() -> TestResult {
     let Fixture {

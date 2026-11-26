@@ -1,5 +1,5 @@
 //! End-to-end HTTP tests: setup, sign-in, CSRF, admission, GitHub-mirrored visibility and
-//! access on every sandbox and task route (AC-ACC-1..5).
+//! access on every sandbox and task route.
 
 use crate::support;
 
@@ -105,7 +105,7 @@ async fn setup_requires_token_confirmation_and_happens_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-242 PWM-001/002: 8 characters are enough (a keyboard pattern too, `zaq1@WSX` from the
+/// 8 characters are enough (a keyboard pattern too, `zaq1@WSX` from the
 /// user feedback); 7 are refused with a message that says the minimum.
 #[tokio::test]
 async fn setup_accepts_eight_characters_and_refuses_seven_saying_the_minimum() -> TestResult {
@@ -161,7 +161,7 @@ async fn password_login_rate_limit_and_csrf() -> TestResult {
     )
     .await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
-    // Its own code, so the page can tell a stale token from other refusals (SPEC-337 CSR-001).
+    // Its own code, so the page can tell a stale token from other refusals.
     assert_eq!(refused.body["error"]["code"], "csrf_invalid");
     assert_eq!(
         refused.body["error"]["message"],
@@ -279,7 +279,7 @@ fn fill(path: &str, sandbox: &str, task: &str) -> String {
     path.replace("{sid}", sandbox).replace("{tid}", task)
 }
 
-/// AC-ACC-4 (#52): a sandbox the user cannot see answers exactly like one that does not exist
+/// A sandbox the user cannot see answers exactly like one that does not exist
 /// on every sandbox and task route, and a read user is refused every change to a task.
 #[tokio::test]
 async fn invisible_sandboxes_answer_like_missing_ones_and_read_users_cannot_change_tasks()
@@ -297,7 +297,7 @@ async fn invisible_sandboxes_answer_like_missing_ones_and_read_users_cannot_chan
         let seen = call(&h.router, Method::GET, path, None, &alice).await?;
         assert_eq!(seen.status, StatusCode::OK, "{path}");
     }
-    // MSR-005 (SPEC-028): a task has no messages route.
+    // A task has no messages route.
     for (method, body) in [
         (Method::GET, None),
         (Method::POST, Some(json!({"body": "hi"}))),
@@ -380,7 +380,7 @@ async fn github_callback(
     h: &support::Harness,
     query: &str,
 ) -> Result<support::Resp, Box<dyn std::error::Error>> {
-    // As the browser that started the sign-in: it holds the state's cookie (SPEC-483 A2).
+    // As the browser that started the sign-in: it holds the state's cookie.
     let state = query
         .split('&')
         .find_map(|pair| pair.strip_prefix("state="))
@@ -434,7 +434,7 @@ async fn malformed_github_sign_in_queries_return_to_sign_in() -> TestResult {
 }
 
 /// Before the GitHub App is connected, GitHub sign-in lands on the sign-in page with a reason,
-/// never on a JSON error, and the public setup status says so (SPEC-422, #1069).
+/// never on a JSON error, and the public setup status says so.
 #[tokio::test]
 async fn github_sign_in_without_an_app_returns_to_the_sign_in_page() -> TestResult {
     let h = harness()?;
@@ -465,7 +465,7 @@ async fn github_sign_in_without_an_app_returns_to_the_sign_in_page() -> TestResu
             "next=/&prompt=select_account",
             "/signin?error=github_unconfigured&next=/",
         ),
-        // A `next` leaving the site is dropped, as everywhere else (#60).
+        // A `next` leaving the site is dropped, as everywhere else.
         ("next=//evil.example", "/signin?error=github_unconfigured"),
         ("", "/signin?error=github_unconfigured"),
     ] {
@@ -488,7 +488,7 @@ async fn github_sign_in_without_an_app_returns_to_the_sign_in_page() -> TestResu
 }
 
 /// A GitHub App that cannot be read (here: stored bytes that are not its configuration) is a
-/// failed start, said on the sign-in page, not a JSON error (SPEC-422 GSU-001).
+/// failed start, said on the sign-in page, not a JSON error.
 #[tokio::test]
 async fn github_sign_in_that_cannot_start_returns_to_the_sign_in_page() -> TestResult {
     let h = harness()?;
@@ -531,7 +531,7 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
     .await?;
     assert_eq!(admit.status, StatusCode::CREATED);
 
-    // A refusal returns to the sign-in page naming the refused account (ACC-004), not an error.
+    // A refusal returns to the sign-in page naming the refused account, not an error.
     let denied = github_login(&h, "code-mallory").await?;
     assert_eq!(denied.status, StatusCode::SEE_OTHER, "not admitted");
     assert_eq!(
@@ -597,7 +597,7 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
         "invisible sandbox is not found"
     );
 
-    // Upgrade on GitHub: visible after the cache TTL (AC-ACC-5).
+    // Upgrade on GitHub: visible after the cache TTL.
     h.github.set_perm(
         "alice",
         "Quartio-Studio/studio",
@@ -633,7 +633,7 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
     let gone = call(&h.router, Method::GET, "/api/sandboxes", None, &alice).await?;
     assert_eq!(gone.body.as_array().map(Vec::len), Some(0));
 
-    // Disabling ends alice's sessions (AC-ACC-3).
+    // Disabling ends alice's sessions.
     let users = call(&h.router, Method::GET, "/api/admin/users", None, &admin).await?;
     let alice_id = users.body[0]["id"].as_str().ok_or("id")?.to_owned();
     let disable = call(
@@ -703,7 +703,7 @@ async fn a_reused_github_login_does_not_take_over_a_linked_account() -> TestResu
     Ok(())
 }
 
-/// SPEC-483 A2: a GitHub sign-in completes only in the browser that started it. Its callback
+/// A GitHub sign-in completes only in the browser that started it. Its callback
 /// link, handed to someone else, would sign them in as whoever made it (what they then enter as
 /// "themselves" lands in that account); without the start's cookie, or with another start's, it
 /// is refused and the state is not spent, so the starting browser still finishes.
@@ -755,7 +755,7 @@ async fn a_github_sign_in_completes_only_in_the_browser_that_started_it() -> Tes
         assert!(kept.contains(part), "{part}: {kept}");
     }
 
-    /// What a callback answers for the start's cookie: gone (ACR-003).
+    /// What a callback answers for the start's cookie: gone.
     const CLEARED: &str = "__Host-yulius_oauth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure";
     let link = format!("/api/auth/github/callback?code=code-admitted&state={state}");
     let another_start = github_state(&h, "next=/").await?;
@@ -783,7 +783,7 @@ async fn a_github_sign_in_completes_only_in_the_browser_that_started_it() -> Tes
     Ok(())
 }
 
-/// SPEC-483 A4: anyone may start a GitHub sign-in and each start stores a state, so starts are
+/// Anyone may start a GitHub sign-in and each start stores a state, so starts are
 /// limited per client: the eleventh within a minute is refused with a reason, storing nothing.
 #[tokio::test]
 async fn github_sign_in_starts_are_limited_per_client() -> TestResult {
@@ -812,7 +812,7 @@ async fn github_sign_in_starts_are_limited_per_client() -> TestResult {
 
 /// The same-window case (F 2026-10-09): the browser's GitHub account is refused, GitHub's
 /// account picker is offered, and a reload or a denial lands on the sign-in page, never on a raw
-/// error (ACC-004, AC-ACC-3).
+/// error.
 #[tokio::test]
 async fn refused_github_sign_ins_return_to_the_sign_in_page_with_their_reason() -> TestResult {
     let h = harness()?;
@@ -1006,7 +1006,7 @@ async fn live_tokens(h: &support::Harness, user: &UserRecord) -> Result<usize, A
     Ok(h.store.api_tokens_of(&user.id).await?.len())
 }
 
-/// #725 (SPEC-392 VAT-001): approving a grant that is no longer pending, by the same person or
+/// Approving a grant that is no longer pending, by the same person or
 /// another, answers `Conflict` and issues no token; of two approvals at once exactly one wins and
 /// only its token exists.
 #[tokio::test]
@@ -1062,7 +1062,7 @@ async fn a_second_device_approval_leaves_no_token() -> TestResult {
     Ok(())
 }
 
-/// #169: live device grants are bounded per client and per instance, whatever the per-minute
+/// Live device grants are bounded per client and per instance, whatever the per-minute
 /// limit lets through; past either bound a start is refused with `Capacity` (429).
 #[tokio::test]
 async fn device_grants_are_bounded_per_client_and_instance() -> TestResult {
@@ -1094,7 +1094,7 @@ async fn device_grants_are_bounded_per_client_and_instance() -> TestResult {
     Ok(())
 }
 
-/// #169: the background purge deletes consumed grants at once and the rest once they expired;
+/// The background purge deletes consumed grants at once and the rest once they expired;
 /// polling a purged grant reads "expired", like an unknown one.
 #[tokio::test]
 async fn device_grants_disappear_within_one_purge() -> TestResult {
@@ -1144,7 +1144,7 @@ async fn device_grants_disappear_within_one_purge() -> TestResult {
     Ok(())
 }
 
-/// OPS-002 / AC-OPS-2: another frontend (for example a desktop app) uses the API with a bearer
+/// Another frontend (for example a desktop app) uses the API with a bearer
 /// token from an allowlisted origin; other origins get neither CORS headers nor WebSockets.
 #[tokio::test]
 async fn allowlisted_origins_get_cors_and_websockets() -> TestResult {
@@ -1199,7 +1199,7 @@ async fn allowlisted_origins_get_cors_and_websockets() -> TestResult {
     Ok(())
 }
 
-/// #56: every public response carries the baseline security headers (no framing at all, not
+/// Every public response carries the baseline security headers (no framing at all, not
 /// even by Yulius itself — BRW-008 —, a script and style policy, no MIME sniffing, no referrer
 /// to other origins) and the server's tag, which the preview proxy uses to refuse showing Yulius
 /// inside itself.
@@ -1229,7 +1229,7 @@ async fn public_responses_carry_security_headers() -> TestResult {
         // W1b of SPEC-483: scripts, styles, fonts, images, media, connections and workers only
         // from Yulius itself (the editor's workers, pasted images and attached recordings are
         // `blob:`, icons `data:`), no plugins, frames or `<base>`, and nothing may frame Yulius.
-        // No `form-action`: the GitHub App's manifest is posted to GitHub (review round 1, F1).
+        // No `form-action`: the GitHub App's manifest is posted to GitHub (review round 1).
         assert_eq!(
             header("content-security-policy").as_deref(),
             Some(
@@ -1259,7 +1259,7 @@ async fn public_responses_carry_security_headers() -> TestResult {
     Ok(())
 }
 
-/// #60: after GitHub sign-in the server returns only to a path on this site.
+/// After GitHub sign-in the server returns only to a path on this site.
 #[tokio::test]
 async fn github_sign_in_returns_only_to_local_paths() -> TestResult {
     let h = harness()?;
@@ -1292,7 +1292,7 @@ async fn github_sign_in_returns_only_to_local_paths() -> TestResult {
     Ok(())
 }
 
-/// #66: an open event stream follows revoked access and closes for a disabled user within the
+/// An open event stream follows revoked access and closes for a disabled user within the
 /// re-check interval, as new requests would.
 #[tokio::test]
 async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> TestResult {
@@ -1365,7 +1365,7 @@ async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> T
     Ok(())
 }
 
-/// SPEC-191 LIV-001: a quiet event stream still says it is alive, every heartbeat interval, so a
+/// A quiet event stream still says it is alive, every heartbeat interval, so a
 /// page can tell a dead connection from a quiet one.
 #[tokio::test]
 async fn a_quiet_event_stream_sends_heartbeats() -> TestResult {
@@ -1454,7 +1454,7 @@ async fn admin_rounds_until(
     }
 }
 
-/// #722 (EVS-001/002): an open event stream follows instance administration. Once the superadmin
+/// An open event stream follows instance administration. Once the superadmin
 /// removes it, the next re-check stops admin-only events (such as `account.updated`) without
 /// closing the stream.
 #[tokio::test]
@@ -1496,7 +1496,7 @@ async fn an_event_stream_stops_admin_events_once_administration_is_removed() -> 
     Ok(())
 }
 
-/// #722 (EVS-002): gaining instance administration takes effect on an open event stream at the
+/// Gaining instance administration takes effect on an open event stream at the
 /// next re-check, without a reconnect.
 #[tokio::test]
 async fn an_event_stream_starts_admin_events_once_administration_is_granted() -> TestResult {
@@ -1660,7 +1660,7 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
     );
     // Steering someone's task is theirs alone, also for the superadmin (SPEC-070, SPEC-490
     // OWN-004): it acts on GitHub as them. Putting it away is open to whoever may work in the
-    // project (OWN-002).
+    // project.
     let continued = call(
         &h.router,
         Method::POST,
@@ -1807,7 +1807,7 @@ async fn the_superadmins_sockets_survive_the_visibility_recheck() -> TestResult 
         .map_err(|code| format!("closed: {code:?}"))?;
     let state: Value = serde_json::from_str(&state)?;
     assert_eq!(state["type"], "state");
-    // Alice owns the task: the superadmin watches it (SPEC-070).
+    // Alice owns the task: the superadmin watches it.
     assert_eq!(state["can_write"], false, "only the owner types");
     let mut events = ws_connect(served.addr, "/api/events", &admin, &origin).await?;
     let sandbox = SandboxId::parse("s1")?;

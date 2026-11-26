@@ -10,13 +10,12 @@ use yulius_app::ports::vault::{AgentStateRecord, AgentStateStore, StateRestore};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_i64, to_u32};
+use crate::{SqliteStore, text_parsed, to_i64, to_u32};
 
 const COLS: &str = "id, sandbox_id, name, description, version, bytes, files, created_by, \
      created_at, updated_by, updated_at, restored_path, restored_version, restored_by, restored_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<AgentStateRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
     let restored = match row.get::<_, Option<String>>("restored_path")? {
         Some(path) => Some(StateRestore {
             path,
@@ -30,7 +29,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<AgentStateRecord> {
     };
     Ok(AgentStateRecord {
         id: row.get("id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         name: row.get("name")?,
         description: row.get("description")?,
         version: to_u32(row.get("version")?),
@@ -49,13 +48,11 @@ impl AgentStateStore for SqliteStore {
     async fn agent_states(&self, sandbox: &SandboxId) -> AppResult<Vec<AgentStateRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM agent_states WHERE sandbox_id = ?1 ORDER BY name"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM agent_states WHERE sandbox_id = ?1 ORDER BY name"
+            ))?;
+            let rows = stmt.query_map([sandbox], from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -67,7 +64,7 @@ impl AgentStateStore for SqliteStore {
     ) -> AppResult<Option<(AgentStateRecord, Envelope)>> {
         let (sandbox, name) = (sandbox.as_str().to_owned(), name.to_owned());
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!(
                     "SELECT {COLS}, kek_id, wrapped_key, ciphertext FROM agent_states \
                      WHERE sandbox_id = ?1 AND name = ?2"
@@ -84,8 +81,7 @@ impl AgentStateStore for SqliteStore {
                     ))
                 },
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -107,64 +103,60 @@ impl AgentStateStore for SqliteStore {
                 restored.map(|s| s.at.0),
             );
             let n = match expect {
-                None => c
-                    .execute(
-                        "INSERT OR IGNORE INTO agent_states (id, sandbox_id, name, description, \
+                None => c.execute(
+                    "INSERT OR IGNORE INTO agent_states (id, sandbox_id, name, description, \
                          version, bytes, files, kek_id, wrapped_key, ciphertext, created_by, \
                          created_at, updated_by, updated_at, restored_path, restored_version, \
                          restored_by, restored_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, \
                          ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-                        params![
-                            r.id,
-                            r.sandbox_id.as_str(),
-                            r.name,
-                            r.description,
-                            i64::from(r.version),
-                            to_i64(r.bytes),
-                            to_i64(r.files),
-                            i64::from(archive.kek_id),
-                            archive.wrapped_key,
-                            archive.ciphertext,
-                            r.created_by,
-                            r.created_at.0,
-                            r.updated_by,
-                            r.updated_at.0,
-                            path,
-                            restored_version,
-                            by,
-                            at,
-                        ],
-                    )
-                    .map_err(db)?,
-                Some(expect) => c
-                    .execute(
-                        "UPDATE agent_states SET description = ?2, version = ?3, bytes = ?4, \
+                    params![
+                        r.id,
+                        r.sandbox_id.as_str(),
+                        r.name,
+                        r.description,
+                        i64::from(r.version),
+                        to_i64(r.bytes),
+                        to_i64(r.files),
+                        i64::from(archive.kek_id),
+                        archive.wrapped_key,
+                        archive.ciphertext,
+                        r.created_by,
+                        r.created_at.0,
+                        r.updated_by,
+                        r.updated_at.0,
+                        path,
+                        restored_version,
+                        by,
+                        at,
+                    ],
+                )?,
+                Some(expect) => c.execute(
+                    "UPDATE agent_states SET description = ?2, version = ?3, bytes = ?4, \
                          files = ?5, kek_id = ?6, wrapped_key = ?7, ciphertext = ?8, \
                          updated_by = ?9, updated_at = ?10, restored_path = ?11, \
                          restored_version = ?12, restored_by = ?13, restored_at = ?14 \
                          WHERE id = ?1 AND version = ?15 AND restored_path IS ?16 \
                          AND restored_version IS ?17",
-                        params![
-                            r.id,
-                            r.description,
-                            i64::from(r.version),
-                            to_i64(r.bytes),
-                            to_i64(r.files),
-                            i64::from(archive.kek_id),
-                            archive.wrapped_key,
-                            archive.ciphertext,
-                            r.updated_by,
-                            r.updated_at.0,
-                            path,
-                            restored_version,
-                            by,
-                            at,
-                            expect.version,
-                            expect.path,
-                            expect.restored_version,
-                        ],
-                    )
-                    .map_err(db)?,
+                    params![
+                        r.id,
+                        r.description,
+                        i64::from(r.version),
+                        to_i64(r.bytes),
+                        to_i64(r.files),
+                        i64::from(archive.kek_id),
+                        archive.wrapped_key,
+                        archive.ciphertext,
+                        r.updated_by,
+                        r.updated_at.0,
+                        path,
+                        restored_version,
+                        by,
+                        at,
+                        expect.version,
+                        expect.path,
+                        expect.restored_version,
+                    ],
+                )?,
             };
             Ok(n == 1)
         })
@@ -178,23 +170,21 @@ impl AgentStateStore for SqliteStore {
     ) -> AppResult<bool> {
         let (id, expect, restore) = (expect.id.clone(), Expected::of(expect), restore.clone());
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE agent_states SET restored_path = ?1, restored_version = ?2, \
+            let n = c.execute(
+                "UPDATE agent_states SET restored_path = ?1, restored_version = ?2, \
                      restored_by = ?3, restored_at = ?4 WHERE id = ?5 AND version = ?6 \
                      AND restored_path IS ?7 AND restored_version IS ?8",
-                    params![
-                        restore.path,
-                        i64::from(restore.version),
-                        restore.by,
-                        restore.at.0,
-                        id,
-                        expect.version,
-                        expect.path,
-                        expect.restored_version,
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    restore.path,
+                    i64::from(restore.version),
+                    restore.by,
+                    restore.at.0,
+                    id,
+                    expect.version,
+                    expect.path,
+                    expect.restored_version,
+                ],
+            )?;
             Ok(n == 1)
         })
         .await
@@ -228,11 +218,10 @@ mod tests {
         let store = SqliteStore::open_in_memory()?;
         store
             .call(|c| {
-                c.execute_batch(
+                Ok(c.execute_batch(
                     "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 1, 1, 1);
                      INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 'a', 'o', 'a', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);",
-                )
-                .map_err(db)
+                )?)
             })
             .await?;
         Ok(store)
@@ -351,10 +340,7 @@ mod tests {
         let store = store().await?;
         assert!(store.agent_state_put(&record(1)?, sealed(1), None).await?);
         store
-            .call(|c| {
-                c.execute("DELETE FROM sandboxes WHERE id = 's1'", [])
-                    .map_err(db)
-            })
+            .call(|c| Ok(c.execute("DELETE FROM sandboxes WHERE id = 's1'", [])?))
             .await?;
         assert!(
             store

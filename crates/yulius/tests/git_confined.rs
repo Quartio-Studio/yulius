@@ -1,8 +1,9 @@
-//! The server's own Git, confined (SPEC-483 G1, ADR-0322): the real adapter exactly as the
+//! The server's own Git, confined: the real adapter exactly as the
 //! server builds it, in the server's folder layout, against a clone whose every file an agent
 //! writes. Whatever the clone's configuration names is not run, and a link in the clone leads
 //! Git nowhere outside the sandbox's folders.
 
+use crate::support::git;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -12,24 +13,8 @@ use yulius_app::ports::git::GitPort;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// Plain Git, as the agent in its sandbox (or the test's own set-up) runs it.
-fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
 fn token() -> Secret {
-    Secret("unused-for-local-remotes".into())
+    Secret::new("unused-for-local-remotes".into())
 }
 
 /// A data folder as a server's: sandbox `s1` (a playground: its origin is the folder
@@ -161,7 +146,7 @@ async fn a_sandboxes_everyday_git_works_confined() -> TestResult {
     Ok(())
 }
 
-/// G1: what the clone's configuration names is never run by the server's Git. Each case sets
+/// What the clone's configuration names is never run by the server's Git. Each case sets
 /// what an agent can set (the clone's `.git/config`, a `.gitattributes`) so that the named
 /// command would leave a marker, and then lets the server do its ordinary work.
 #[tokio::test]
@@ -345,7 +330,7 @@ async fn the_loader_is_never_started_with_a_file_of_the_clone() -> TestResult {
     Ok(())
 }
 
-/// G1: a link in the clone leads the server's Git nowhere outside the sandbox's folders: a
+/// A link in the clone leads the server's Git nowhere outside the sandbox's folders: a
 /// file of the host it would overwrite stays, one it would read is not repeated in an error,
 /// and another sandbox's objects are not read through an alternate.
 #[tokio::test]
@@ -397,7 +382,7 @@ async fn a_link_in_the_clone_leads_git_nowhere_outside() -> TestResult {
     Ok(())
 }
 
-/// G1: of the folders of this machine, a transfer by the remote's name goes only to the
+/// Of the folders of this machine, a transfer by the remote's name goes only to the
 /// sandbox's own origin. A configuration that names another sandbox's origin, another
 /// sandbox's clone or a folder of the host gets no transfer: nothing arrives there and nothing
 /// comes from there.
@@ -447,7 +432,7 @@ async fn only_the_sandboxes_own_origin_is_taken_from_its_configuration() -> Test
     Ok(())
 }
 
-/// G2 (ADR-0323): a transfer with a remote on the web carries the server's token, and in the
+/// A transfer with a remote on the web carries the server's token, and in the
 /// clone it would be shaped by the clone's configuration, where a key for a URL beats the
 /// server's own. Here the clone names a proxy (for every address and for the remote's) and
 /// switches the certificate check off; the remote itself answers nobody. The server's fetch,
@@ -484,7 +469,7 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
     ] {
         git(&w.repo, &["config", key, value])?;
     }
-    let secret = Secret("the-servers-token-0451".into());
+    let secret = Secret::new("the-servers-token-0451".into());
     let fetched = w.adapter.merge_integration(&w.wt, "main", &secret).await;
     let pushed = w.adapter.push(&w.wt, "feat/1", "feat/1", &secret).await;
     let listed = w.adapter.remote_branch_head(&w.wt, "feat/1", &secret).await;
@@ -1302,7 +1287,7 @@ fn the_doctor_reports_the_confinement() -> TestResult {
         .find(|line| line.contains("git confinement"))
         .ok_or_else(|| format!("no such check in: {said}"))?;
     assert!(line.starts_with("ok"), "{line}");
-    // And that this machine's Git leaves a missing object missing when told to (ADR-0323).
+    // And that this machine's Git leaves a missing object missing when told to.
     let line = said
         .lines()
         .find(|line| line.contains("git missing objects"))

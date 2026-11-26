@@ -1,4 +1,4 @@
-//! Whether GitHub accepts the instance's own sign-in address (SPEC-466, ADR-0302): the kept
+//! Whether GitHub accepts the instance's own sign-in address: the kept
 //! answer, when GitHub is asked, what Settings → Instance and the sign-in page are told, and the
 //! loopback endpoint of root's commands.
 
@@ -81,7 +81,7 @@ async fn start_sign_in(h: &Harness) -> Result<String, Box<dyn std::error::Error>
     Ok(start.location.ok_or("no location")?)
 }
 
-/// MVC-002: without a GitHub App there is no answer and GitHub is never asked.
+/// Without a GitHub App there is no answer and GitHub is never asked.
 #[tokio::test]
 async fn without_an_app_github_is_never_asked() -> TestResult {
     let h = harness()?;
@@ -102,7 +102,7 @@ async fn without_an_app_github_is_never_asked() -> TestResult {
     Ok(())
 }
 
-/// MVC-002, MVC-003, MVC-010, MVC-012: a start finds the callback missing; the superadmin gets the
+/// A start finds the callback missing; the superadmin gets the
 /// App's link and both values; the answer is re-checked while it is read, until it is registered.
 #[tokio::test]
 async fn a_missing_callback_is_said_and_rechecked_until_it_is_registered() -> TestResult {
@@ -149,7 +149,7 @@ async fn a_missing_callback_is_said_and_rechecked_until_it_is_registered() -> Te
     Ok(())
 }
 
-/// MVC-003: the sign-in page alone re-checks a missing callback (nobody is signed in).
+/// The sign-in page alone re-checks a missing callback (nobody is signed in).
 #[tokio::test]
 async fn the_sign_in_page_rechecks_a_missing_callback() -> TestResult {
     let h = harness()?;
@@ -181,7 +181,7 @@ async fn the_sign_in_page_rechecks_a_missing_callback() -> TestResult {
     Ok(())
 }
 
-/// MVC-010, MVC-011: "Check again" asks at once; GitHub giving no answer is said with the reason
+/// "Check again" asks at once; GitHub giving no answer is said with the reason
 /// and blocks nothing; a person's App has its own settings address; members are refused.
 #[tokio::test]
 async fn check_again_asks_at_once_and_says_why_github_gave_no_answer() -> TestResult {
@@ -237,7 +237,7 @@ async fn check_again_asks_at_once_and_says_why_github_gave_no_answer() -> TestRe
     Ok(())
 }
 
-/// MVC-003: one check runs at a time; a second demand waits for it and takes its answer.
+/// One check runs at a time; a second demand waits for it and takes its answer.
 #[tokio::test]
 async fn a_second_demand_takes_the_running_check_s_answer() -> TestResult {
     use std::future::Future as _;
@@ -277,7 +277,7 @@ async fn a_second_demand_takes_the_running_check_s_answer() -> TestResult {
     Ok(())
 }
 
-/// MVC-013: the check never blocks sign-in and a start asks GitHub nothing: GitHub decides, and
+/// The check never blocks sign-in and a start asks GitHub nothing: GitHub decides, and
 /// no visitor can make the instance ask. Password sign-in works throughout.
 #[tokio::test]
 async fn a_sign_in_start_always_goes_to_github_and_asks_nothing() -> TestResult {
@@ -327,7 +327,7 @@ async fn a_sign_in_start_always_goes_to_github_and_asks_nothing() -> TestResult 
     Ok(())
 }
 
-/// MVC-010: after a move the address names where the instance came from and what its first start
+/// After a move the address names where the instance came from and what its first start
 /// did with the tasks.
 #[tokio::test]
 async fn the_address_names_the_move() -> TestResult {
@@ -359,7 +359,7 @@ async fn the_address_names_the_move() -> TestResult {
     Ok(())
 }
 
-/// MVC-020: root's commands ask over the loopback listener with the server's key, about the
+/// Root's commands ask over the loopback listener with the server's key, about the
 /// instance's own URL or the one a move goes to.
 #[tokio::test]
 async fn the_loopback_endpoint_answers_with_the_server_s_key() -> TestResult {
@@ -447,7 +447,7 @@ async fn the_loopback_endpoint_answers_with_the_server_s_key() -> TestResult {
     Ok(())
 }
 
-/// MVC-020: an instance without an App says so to root, and GitHub is not asked.
+/// An instance without an App says so to root, and GitHub is not asked.
 #[tokio::test]
 async fn the_loopback_endpoint_says_when_there_is_no_app() -> TestResult {
     let h = harness()?;
@@ -536,7 +536,7 @@ async fn the_adapter_asks_the_fake_github() -> TestResult {
     Ok(())
 }
 
-/// MVC-021: the question of `yulius instance migrate` reaches the running server's loopback
+/// The question of `yulius instance migrate` reaches the running server's loopback
 /// listener, and its answer makes the plan's line with the App's own link.
 #[tokio::test]
 async fn the_move_s_question_is_answered_by_the_running_server() -> TestResult {
@@ -606,7 +606,7 @@ async fn not_asked(h: &Harness, admin: &Creds, count: usize) -> TestResult {
     Ok(())
 }
 
-/// MVC-003: a missing callback that nobody fixes is asked for ever less often while it is read,
+/// A missing callback that nobody fixes is asked for ever less often while it is read,
 /// never before it is due, and a person's demand or a changed answer makes the next looks quick
 /// again.
 #[tokio::test]
@@ -673,7 +673,7 @@ async fn a_callback_that_stays_missing_is_asked_for_less_often_until_someone_dem
     Ok(())
 }
 
-/// MVC-003: a demand that waited for a check a read had started takes its answer, and is a
+/// A demand that waited for a check a read had started takes its answer, and is a
 /// demand all the same: the next looks are 30 s apart again.
 #[tokio::test]
 async fn a_demand_that_waited_for_a_read_s_check_makes_the_looks_quick_again() -> TestResult {
@@ -718,7 +718,7 @@ async fn a_demand_that_waited_for_a_read_s_check_makes_the_looks_quick_again() -
     Ok(())
 }
 
-/// MVC-003: a clock that steps back (a correction, a resumed machine) does not silence the
+/// A clock that steps back (a correction, a resumed machine) does not silence the
 /// checks: "Check again" asks whatever the clock says, and a read of an answer dated in the
 /// future asks again instead of waiting for the clock to catch up.
 #[tokio::test]
@@ -742,7 +742,7 @@ async fn a_clock_that_steps_back_does_not_silence_the_checks() -> TestResult {
     Ok(())
 }
 
-/// MVC-003: the instance asks at its start, before anyone reads anything.
+/// The instance asks at its start, before anyone reads anything.
 #[tokio::test]
 async fn the_start_asks_github_without_a_read() -> TestResult {
     let h = harness()?;
@@ -760,7 +760,7 @@ async fn the_start_asks_github_without_a_read() -> TestResult {
     Ok(())
 }
 
-/// MVC-003: storing the App through the manifest flow asks GitHub about its callback, before
+/// Storing the App through the manifest flow asks GitHub about its callback, before
 /// anyone reads anything.
 #[tokio::test]
 async fn storing_the_app_asks_github_without_a_read() -> TestResult {
@@ -805,7 +805,7 @@ async fn storing_the_app_asks_github_without_a_read() -> TestResult {
     Ok(())
 }
 
-/// MVC-003: a GitHub sign-in that completes proves the callback: GitHub exchanged a code for it.
+/// A GitHub sign-in that completes proves the callback: GitHub exchanged a code for it.
 /// The answer is "registered" at once, whatever was known, and GitHub is not asked for it; a
 /// sign-in GitHub refuses proves nothing.
 #[tokio::test]
@@ -844,7 +844,7 @@ async fn a_completed_github_sign_in_proves_the_callback() -> TestResult {
     Ok(())
 }
 
-/// MVC-003: a check that dies (a panic below the port) does not stop the checks: the next read
+/// A check that dies (a panic below the port) does not stop the checks: the next read
 /// asks again.
 #[tokio::test]
 async fn a_check_that_dies_does_not_stop_the_checks() -> TestResult {
@@ -860,7 +860,7 @@ async fn a_check_that_dies_does_not_stop_the_checks() -> TestResult {
     Ok(())
 }
 
-/// MVC-003: a sign-in that completes while GitHub is being asked is the better witness: the
+/// A sign-in that completes while GitHub is being asked is the better witness: the
 /// answer that was on its way (asked before the callback was there) does not undo it.
 #[tokio::test]
 async fn a_question_on_its_way_does_not_undo_a_completed_sign_in() -> TestResult {

@@ -1,4 +1,4 @@
-//! Notices for people (SPEC-624): a key per notice (newest wins per project, recipient and key),
+//! Notices for people: a key per notice (newest wins per project, recipient and key),
 //! an expiry (hidden everywhere once it passes, then pruned), a decision that never expires, and
 //! the reads: `GET`/`DELETE /api/me/notices` and the person tools over the remote MCP.
 
@@ -134,7 +134,7 @@ fn pair(key: &str, title: &str) -> (String, String) {
     (key.to_owned(), title.to_owned())
 }
 
-/// NTC-003, NTC-007, AC-1, AC-2: a newer notice with the same key replaces the older one for
+/// A newer notice with the same key replaces the older one for
 /// everyone who sees the project, with a new id, back for whoever dismissed the older one; it
 /// reaches only their event streams; another key stays beside it.
 #[tokio::test]
@@ -231,7 +231,7 @@ async fn the_same_key_replaces_the_previous_notice() -> TestResult {
     Ok(())
 }
 
-/// NTC-004, AC-3: an expired notice is left out of the HTTP read and the person tools at once,
+/// An expired notice is left out of the HTTP read and the person tools at once,
 /// and the tick prunes it; one that never expires stays.
 #[tokio::test]
 async fn an_expired_notice_is_hidden_and_pruned() -> TestResult {
@@ -292,7 +292,7 @@ async fn an_expired_notice_is_hidden_and_pruned() -> TestResult {
     Ok(())
 }
 
-/// NTC-005, AC-4: a decision posted with an expiry is refused; without one it never expires.
+/// A decision posted with an expiry is refused; without one it never expires.
 #[tokio::test]
 async fn a_decision_never_expires_silently() -> TestResult {
     let p = people().await?;
@@ -329,7 +329,7 @@ async fn a_decision_never_expires_silently() -> TestResult {
     Ok(())
 }
 
-/// NTC-006: a producer removes a notice and pages hear it; a person dismisses one through their
+/// A producer removes a notice and pages hear it; a person dismisses one through their
 /// agent for themselves only; a notice they do not see cannot be dismissed.
 #[tokio::test]
 async fn notices_are_removed_and_dismissed() -> TestResult {
@@ -384,7 +384,7 @@ async fn notices_are_removed_and_dismissed() -> TestResult {
     Ok(())
 }
 
-/// NTC-001, NTC-002, AC-5: a notice with a link outside Yulius or an expiry in the past is
+/// A notice with a link outside Yulius or an expiry in the past is
 /// refused; a long title is cut.
 #[tokio::test]
 async fn a_bad_notice_is_refused() -> TestResult {
@@ -419,7 +419,7 @@ async fn a_bad_notice_is_refused() -> TestResult {
     Ok(())
 }
 
-/// NTC-009, AC-8: the digest lists a person's live notices with their keys, and leaves out the
+/// The digest lists a person's live notices with their keys, and leaves out the
 /// expired one and the one they dismissed; someone who sees none of them gets no digest.
 #[tokio::test]
 async fn the_digest_lists_live_notices_only() -> TestResult {
@@ -482,7 +482,7 @@ async fn the_digest_lists_live_notices_only() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: a reader's notices are found behind many newer ones of a project they cannot
+/// A reader's notices are found behind many newer ones of a project they cannot
 /// see; the read's limit applies to what they may see.
 #[tokio::test]
 async fn hidden_notices_never_crowd_out_a_readers_own() -> TestResult {
@@ -516,7 +516,7 @@ async fn hidden_notices_never_crowd_out_a_readers_own() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: dismissing changes the person's own state: a read-only token may not, and an
+/// Dismissing changes the person's own state: a read-only token may not, and an
 /// operate token's call is audited; someone else's personal notice cannot be dismissed.
 #[tokio::test]
 async fn a_dismissal_is_a_change_of_ones_own() -> TestResult {
@@ -574,7 +574,7 @@ async fn a_dismissal_is_a_change_of_ones_own() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: a secret is redacted before a long text is cut, so no prefix of it is kept;
+/// A secret is redacted before a long text is cut, so no prefix of it is kept;
 /// a link a browser reads as another host and a key Yulius keeps for its own notices are
 /// refused.
 #[tokio::test]
@@ -638,7 +638,7 @@ async fn texts_are_redacted_whole_and_links_and_keys_checked() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: pages hear of each notice the cap drops; a notice dropped at once (its scope
+/// Pages hear of each notice the cap drops; a notice dropped at once (its scope
 /// is full of decisions) is refused, not published; a replacement that narrows who sees the
 /// notice tells the others it is gone; a title is one line.
 #[tokio::test]
@@ -697,7 +697,7 @@ async fn the_cap_and_a_narrowed_replacement_are_heard() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a scope full of decisions refuses a notice that would be dropped at once.
+/// A scope full of decisions refuses a notice that would be dropped at once.
 #[tokio::test]
 async fn a_scope_full_of_decisions_refuses_a_report() -> TestResult {
     use yulius_app::notices::NOTICES_KEPT;
@@ -726,7 +726,7 @@ async fn a_scope_full_of_decisions_refuses_a_report() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: `notice_dismiss` takes only a notice of its project or an instance-wide one,
+/// `notice_dismiss` takes only a notice of its project or an instance-wide one,
 /// and the Cockpit audits it as a change.
 #[tokio::test]
 async fn a_dismissal_names_its_own_project() -> TestResult {
@@ -800,6 +800,7 @@ fn subscription(
         in_use_by: 0,
         tokens_24h: None,
         tokens_7d: None,
+        billing: None,
         usage_read: None,
     }
 }
@@ -814,7 +815,7 @@ fn publish_subscription(p: &People, view: yulius_contracts::api::admin::AccountV
     );
 }
 
-/// NTC-010, AC-9: a subscription at its limit is one notice `account:<id>` for administrators
+/// A subscription at its limit is one notice `account:<id>` for administrators
 /// that expires at its reset; the same state again posts nothing; another reset replaces it; a
 /// usable subscription removes it; one that must sign in again never expires.
 #[tokio::test]

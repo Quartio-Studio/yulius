@@ -245,7 +245,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
 
   /** The merge queue's candidates in the range (SPEC-493 MQC-005). */
   function queueCard(q) {
-    const why = { member_left: 'a member left', member_failed: "a member's own run failed", bisected: 'bisected', base_moved: 'base moved', errored: 'errored', too_long: 'too long' };
+    const why = { member_left: 'a member left', member_failed: "a member's own run failed", bisected: 'bisected', base_moved: 'base moved', errored: 'errored', too_long: 'too long', gate_red: 'gate red' };
     const dissolved = Object.entries(q.dissolved_by || {}).map(([k, n]) => `${why[k] || k} ${int(n)}`).join(' · ');
     const minutes = Number.isFinite(q.median_arm_to_merge_minutes) ? `${Math.round(q.median_arm_to_merge_minutes)} min` : '—';
     return h('section', { class: 'card db-card', 'aria-label': 'Merge queue' },

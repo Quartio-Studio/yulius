@@ -18,6 +18,7 @@ written in Rust and inspired by [Cezar](https://github.com/open-mercato/cezar).
 ## Contents
 
 - [Is Yulius for you?](#is-yulius-for-you)
+- [What leaves your server](#what-leaves-your-server)
 - [From curious to first task](#from-curious-to-first-task)
 - [What you need before you start](#what-you-need-before-you-start)
 - [Recommended servers (VPS)](#recommended-servers-vps)
@@ -30,15 +31,33 @@ written in Rust and inspired by [Cezar](https://github.com/open-mercato/cezar).
 
 | ✅ A good fit | ❌ Not a good fit |
 | --- | --- |
-| A small team (about 2-5 people) with one or more Claude subscriptions | Someone who wants a hosted SaaS with nothing to install |
-| Code on GitHub (or a folder you can upload to try it first) | Teams that cannot send code to Claude (Anthropic) |
+| A small team (about 2-5 people who trust each other's agents) sharing **one server** | A team that needs high availability: Yulius is one server and one SQLite database, with no failover |
+| One or more Claude Pro or Max subscriptions (Codex and Antigravity can run beside Claude Code) | Claude through an API key, Amazon Bedrock or Google Vertex AI: Claude runs on Pro or Max subscriptions only |
+| Code on github.com (or a folder you can upload to try it first) | GitHub Enterprise Server, GitLab or Bitbucket: Yulius works with github.com only |
+| People who sign in with GitHub (plus one superadmin password) | Single sign-on through SAML or OIDC |
 | You want agents to deliver on their own, with people watching | You want to approve every line an agent types |
-| You can rent a Linux server and point a domain at it | Windows or macOS servers (macOS is for developing Yulius only) |
+| You can rent a Linux server and point a domain at it | Someone who wants a hosted SaaS with nothing to install, or Windows or macOS servers (macOS is for developing Yulius only) |
+| Your code may go to your model providers | Teams that cannot send code to Anthropic (or, for Codex and Antigravity, OpenAI and Google) |
 
 What it does for you, in short: native Claude Code sessions per task, each in its own sandbox with
 its own Docker, shells, browser and editor; a pool of Claude subscriptions it switches between by
 itself; tests, review and CI enforced on every task; and a Superagent you can ask for quick jobs.
 The full list is in the [product summary](docs/product.md).
+
+## What leaves your server
+
+Yulius runs on your server, and these services receive data from it. Agent sessions and CI jobs
+also have open internet access: whatever their commands send (a `curl`, a package publish, a
+`docker push`) leaves too.
+
+| Service | What it receives | On by default? |
+| --- | --- | --- |
+| Your model providers: Anthropic (Claude Code), and OpenAI (Codex) or Google (Antigravity) if you add them | The agents' prompts and every file an agent reads, as with the CLI on a laptop | Yes: this is how agents work |
+| GitHub (github.com) | Your repositories, pull requests and CI statuses, through Yulius's GitHub App | Yes, once you connect GitHub |
+| [Vidoc](#vidoc) (`model.vidocsecurity.com`) | **Code**: every file an agent's change or a pull request touches, for a security scan | **Off without a key. Once a superadmin saves a key, on for every project** until a project's admins switch it off on its CI/CD page (a playground has no switch of its own), or a superadmin for all projects. A project's own `VIDOC_API_KEY` secret turns its scans on too |
+| [Jev](#jev) (`api.typesafe.ai`) | Task prompts, titles, step titles, typed messages, and workflow names and descriptions; no repository files, but prompts often quote code | **Off without a key**; on for every task once a superadmin saves one |
+| Telegram | The notifications you chose and the messages you send to the bot | Off until you set up the bot |
+| npm registry, `storage.googleapis.com`, github.com, `download.docker.com` and your apt mirrors | Downloads only: Claude Code, Codex and Antigravity CLIs, Yulius's own updates from its repository, and host setup's packages | Yes (the Codex and Antigravity CLIs on first use) |
 
 ## From curious to first task
 
@@ -293,11 +312,10 @@ order and:
 
 ## Developing Yulius
 
-This section is for working on Yulius's own code. The product is specified in
-[SPEC-001](.ai/specs/SPEC-001-yulius-product.md) (product),
-[SPEC-002](.ai/specs/SPEC-002-yulius-architecture.md) (architecture and runtime contracts) and
-[SPEC-003](.ai/specs/SPEC-003-traceability.md) (source traceability); each spec's evidence section
-records what is verified.
+This section is for working on Yulius's own code. What Yulius does today is in the
+[product summary](docs/product.md), how it is built in the [architecture](docs/architecture.md).
+The specs in `.ai/specs` (SPEC-001 to SPEC-003 included) are history: they say why something was
+built, not what is current.
 
 Prerequisites: Python 3.11+, [rustup](https://rustup.rs), Git and a platform C linker.
 

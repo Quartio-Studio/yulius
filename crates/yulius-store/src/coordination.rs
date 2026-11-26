@@ -11,20 +11,19 @@ use yulius_app::ports::store::ReviewStart;
 use yulius_domain::ids::{MessageId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
+use crate::{SqliteStore, bad_column, opt_ts, text_parsed, to_i64, to_u32, to_u64};
 
 fn step_from_row(row: &Row<'_>) -> rusqlite::Result<StepRecord> {
     let id: String = row.get("id")?;
-    let task: String = row.get("task_id")?;
     Ok(StepRecord {
         id: StepId::parse(&id).map_err(|_| bad_column("step id", &id))?,
-        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         ordinal: to_u32(row.get("ordinal")?),
         title: row.get("title")?,
         status: row.get("status")?,
         note: row.get("note")?,
         updated_by: row.get("updated_by")?,
-        updated_at: row.get::<_, Option<i64>>("updated_at")?.map(Timestamp),
+        updated_at: opt_ts(row, "updated_at")?,
         effort: u8::try_from(row.get::<_, i64>("effort")?.clamp(1, 3)).unwrap_or(1),
     })
 }
@@ -39,11 +38,10 @@ fn opt_task(text: Option<String>) -> rusqlite::Result<Option<TaskId>> {
 
 fn message_from_row(row: &Row<'_>) -> rusqlite::Result<MessageRecord> {
     let id: String = row.get("id")?;
-    let sandbox: String = row.get("sandbox_id")?;
     let from_user: Option<String> = row.get("from_user")?;
     Ok(MessageRecord {
         id: MessageId::parse(&id).map_err(|_| bad_column("message id", &id))?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         from_task: opt_task(row.get("from_task")?)?,
         from_user: from_user
             .as_deref()
@@ -96,10 +94,9 @@ const REVIEW_ROUND_COLS: &str = "id, task_id, round, head, agent, model, reason,
     model_answered, started_at, ended_at, verdict, cut_off, pr_number, merged_at";
 
 fn review_round_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewRoundRecord> {
-    let task: String = row.get("task_id")?;
     Ok(ReviewRoundRecord {
         id: row.get("id")?,
-        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
         round: to_u32(row.get("round")?),
         head: row.get("head")?,
         agent: row.get("agent")?,
@@ -108,11 +105,11 @@ fn review_round_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewRoundRecord> {
         subagent_id: row.get("subagent_id")?,
         model_answered: row.get("model_answered")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        ended_at: opt_ts(row, "ended_at")?,
         verdict: row.get("verdict")?,
         cut_off: row.get("cut_off")?,
         pr_number: row.get::<_, Option<i64>>("pr_number")?.map(to_u64),
-        merged_at: row.get::<_, Option<i64>>("merged_at")?.map(Timestamp),
+        merged_at: opt_ts(row, "merged_at")?,
     })
 }
 
@@ -148,35 +145,33 @@ impl CoordinationStore for SqliteStore {
     ) -> AppResult<()> {
         let (task, steps, actor) = (task.as_str().to_owned(), steps.to_vec(), actor.to_owned());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let mut old = std::collections::BTreeMap::new();
             {
-                let mut stmt = tx.prepare("SELECT id, status FROM steps WHERE task_id = ?1").map_err(db)?;
-                let rows = stmt.query_map([&task], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(db)?;
+                let mut stmt = tx.prepare("SELECT id, status FROM steps WHERE task_id = ?1")?;
+                let rows = stmt.query_map([&task], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
                 for row in rows {
-                    let (id, status) = row.map_err(db)?;
+                    let (id, status) = row?;
                     old.insert(id, status);
                 }
             }
-            tx.execute("DELETE FROM steps WHERE task_id = ?1", [&task]).map_err(db)?;
+            tx.execute("DELETE FROM steps WHERE task_id = ?1", [&task])?;
             for s in &steps {
                 tx.execute(
                     &format!("INSERT INTO steps ({STEP_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"),
                     params![s.id.as_str(), task, i64::from(s.ordinal), s.title, s.status, s.note, s.updated_by, s.updated_at.map(|t| t.0), i64::from(s.effort.clamp(1, 3))],
-                )
-                .map_err(db)?;
+                )?;
                 let previous = old.get(s.id.as_str());
                 if previous.map(String::as_str) != Some(s.status.as_str()) {
-                    reset_goal_attempts_on_progress(&tx, &task, previous.map(String::as_str), &s.status).map_err(db)?;
+                    reset_goal_attempts_on_progress(&tx, &task, previous.map(String::as_str), &s.status)?;
                     tx.execute(
                         "INSERT INTO step_events (step_id, task_id, at, actor, from_status, to_status, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                         params![s.id.as_str(), task, at.0, actor, previous, s.status, s.note],
-                    )
-                    .map_err(db)?;
+                    )?;
                 }
             }
-            keep_first_plan_size(&tx, &task).map_err(db)?;
-            tx.commit().map_err(db)
+            keep_first_plan_size(&tx, &task)?;
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -190,8 +185,7 @@ impl CoordinationStore for SqliteStore {
                     [t],
                     |r| r.get(0),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(first.flatten().and_then(|n| u32::try_from(n).ok()))
         })
         .await
@@ -200,12 +194,10 @@ impl CoordinationStore for SqliteStore {
     async fn set_spec_status(&self, task: &TaskId, status: Option<&str>) -> AppResult<bool> {
         let (t, status) = (task.as_str().to_owned(), status.map(str::to_owned));
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE tasks SET spec_status = ?2 WHERE id = ?1 AND spec_status IS NOT ?2",
-                    params![t, status],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "UPDATE tasks SET spec_status = ?2 WHERE id = ?1 AND spec_status IS NOT ?2",
+                params![t, status],
+            )?;
             Ok(changed > 0)
         })
         .await
@@ -218,8 +210,7 @@ impl CoordinationStore for SqliteStore {
                 .query_row("SELECT spec_status FROM tasks WHERE id = ?1", [t], |r| {
                     r.get(0)
                 })
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             Ok(status.flatten())
         })
         .await
@@ -228,13 +219,11 @@ impl CoordinationStore for SqliteStore {
     async fn steps(&self, task: &TaskId) -> AppResult<Vec<StepRecord>> {
         let t = task.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {STEP_COLS} FROM steps WHERE task_id = ?1 ORDER BY ordinal"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([t], step_from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut stmt = c.prepare(&format!(
+                "SELECT {STEP_COLS} FROM steps WHERE task_id = ?1 ORDER BY ordinal"
+            ))?;
+            let rows = stmt.query_map([t], step_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -242,25 +231,20 @@ impl CoordinationStore for SqliteStore {
     async fn step_timings(&self, task: &TaskId) -> AppResult<Vec<StepTiming>> {
         let t = task.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT step_id, \
+            let mut stmt = c.prepare(
+                "SELECT step_id, \
                      MAX(CASE WHEN to_status = 'in_progress' THEN at END), \
                      MAX(CASE WHEN to_status IN ('done', 'skipped') THEN at END) \
                      FROM step_events WHERE task_id = ?1 GROUP BY step_id",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([t], |r| {
-                    let id: String = r.get(0)?;
-                    Ok(StepTiming {
-                        step_id: StepId::parse(&id).map_err(|_| bad_column("step id", &id))?,
-                        started_at: r.get::<_, Option<i64>>(1)?.map(Timestamp),
-                        finished_at: r.get::<_, Option<i64>>(2)?.map(Timestamp),
-                    })
+            )?;
+            let rows = stmt.query_map([t], |r| {
+                Ok(StepTiming {
+                    step_id: text_parsed(r, 0, "step id", StepId::parse)?,
+                    started_at: opt_ts(r, 1)?,
+                    finished_at: opt_ts(r, 2)?,
                 })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -280,26 +264,23 @@ impl CoordinationStore for SqliteStore {
             actor.to_owned(),
         );
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let current = tx
                 .query_row(&format!("SELECT {STEP_COLS} FROM steps WHERE id = ?1"), [&id], step_from_row)
-                .optional()
-                .map_err(db)?
+                .optional()?
                 .ok_or(AppError::NotFound)?;
             tx.execute(
                 "UPDATE steps SET status = ?1, note = COALESCE(?2, note), updated_by = ?3, updated_at = ?4 WHERE id = ?5",
                 params![status, note, actor, at.0, id],
-            )
-            .map_err(db)?;
+            )?;
             tx.execute(
                 "INSERT INTO step_events (step_id, task_id, at, actor, from_status, to_status, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![id, current.task_id.as_str(), at.0, actor, current.status, status, note],
-            )
-            .map_err(db)?;
-            reset_goal_attempts_on_progress(&tx, current.task_id.as_str(), Some(&current.status), &status).map_err(db)?;
-            let updated = tx.query_row(&format!("SELECT {STEP_COLS} FROM steps WHERE id = ?1"), [&id], step_from_row).map_err(db)?;
-            keep_first_plan_size(&tx, current.task_id.as_str()).map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            reset_goal_attempts_on_progress(&tx, current.task_id.as_str(), Some(&current.status), &status)?;
+            let updated = tx.query_row(&format!("SELECT {STEP_COLS} FROM steps WHERE id = ?1"), [&id], step_from_row)?;
+            keep_first_plan_size(&tx, current.task_id.as_str())?;
+            tx.commit()?;
             Ok(updated)
         })
         .await
@@ -308,7 +289,7 @@ impl CoordinationStore for SqliteStore {
     async fn insert_message(&self, m: &MessageRecord, recipients: &[TaskId]) -> AppResult<()> {
         let (m, recipients) = (m.clone(), recipients.to_vec());
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             tx.execute(
                 "INSERT INTO messages (id, sandbox_id, from_task, from_user, to_task, kind, subject, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
@@ -322,13 +303,11 @@ impl CoordinationStore for SqliteStore {
                     m.body,
                     m.created_at.0
                 ],
-            )
-            .map_err(db)?;
+            )?;
             for r in &recipients {
-                tx.execute("INSERT OR IGNORE INTO message_receipts (message_id, task_id) VALUES (?1, ?2)", params![m.id.as_str(), r.as_str()])
-                    .map_err(db)?;
+                tx.execute("INSERT OR IGNORE INTO message_receipts (message_id, task_id) VALUES (?1, ?2)", params![m.id.as_str(), r.as_str()])?;
             }
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -341,10 +320,9 @@ impl CoordinationStore for SqliteStore {
                     "SELECT {MSG_COLS} FROM messages m \
                      LEFT JOIN message_receipts r ON r.message_id = m.id AND r.task_id = ?1 \
                      WHERE r.task_id IS NOT NULL OR m.from_task = ?1 ORDER BY m.created_at DESC LIMIT ?2"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map(params![t, i64::from(limit)], message_from_row).map_err(db)?;
-            let mut out = rows.collect::<Result<Vec<_>, _>>().map_err(db)?;
+                ))?;
+            let rows = stmt.query_map(params![t, i64::from(limit)], message_from_row)?;
+            let mut out = rows.collect::<Result<Vec<_>, _>>()?;
             out.reverse();
             Ok(out)
         })
@@ -375,8 +353,7 @@ impl CoordinationStore for SqliteStore {
                     r.pr_number.map(to_i64),
                     r.merged_at.map(|t| t.0),
                 ],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -415,8 +392,7 @@ impl CoordinationStore for SqliteStore {
                  WHERE review_rounds.merged_at IS NULL AND review_rounds.ended_at IS NULL \
                  AND excluded.ended_at >= review_rounds.started_at",
                 params![id, task, head, model, subagent, started_at.0, ended_at, verdict],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -429,17 +405,13 @@ impl CoordinationStore for SqliteStore {
     ) -> AppResult<Vec<ReviewRoundRecord>> {
         let t = task.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {REVIEW_ROUND_COLS} \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {REVIEW_ROUND_COLS} \
                      FROM review_rounds WHERE task_id = ?1 AND (?2 = 0 OR merged_at IS NULL) \
                      ORDER BY started_at, rowid",
-                ))
-                .map_err(db)?;
-            let rows = stmt
-                .query_map(params![t, open_only], review_round_from_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map(params![t, open_only], review_round_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -460,9 +432,9 @@ impl CoordinationStore for SqliteStore {
                  WHERE task_id = ?1 AND merged_at IS wanted.merged \
                  AND pr_number IS (CASE WHEN wanted.merged IS NULL THEN NULL ELSE ?2 END) \
                  ORDER BY started_at, rowid LIMIT {MAX_REVIEW_ROUNDS_READ}"
-            )).map_err(db)?;
-            let rows = stmt.query_map(params![task, pr.map(to_i64)], review_round_from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            ))?;
+            let rows = stmt.query_map(params![task, pr.map(to_i64)], review_round_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         }).await
     }
 
@@ -481,7 +453,7 @@ impl CoordinationStore for SqliteStore {
             continuation_id.to_owned(),
         );
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let previous: Option<(i64, Option<i64>, bool)> = tx
                 .query_row(
                     "SELECT rowid, ended_at, agent = ?3 AND merged_at IS NULL \
@@ -490,8 +462,7 @@ impl CoordinationStore for SqliteStore {
                     params![task, subagent, agent, at.0],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
-                .optional()
-                .map_err(db)?;
+                .optional()?;
             let start = match previous {
                 Some((_, _, false)) => ReviewStart::Ignored,
                 Some((_, None, true)) => ReviewStart::Active,
@@ -507,21 +478,18 @@ impl CoordinationStore for SqliteStore {
                              subagent_id, model_answered, ?3 \
                          FROM review_rounds WHERE rowid = ?4",
                         params![id, task, at.0, row],
-                    )
-                    .map_err(db)?;
+                    )?;
                     ReviewStart::Continued
                 }
                 None => {
-                    let linked = tx
-                        .execute(
-                            "UPDATE review_rounds SET subagent_id = ?1 WHERE rowid = (\
+                    let linked = tx.execute(
+                        "UPDATE review_rounds SET subagent_id = ?1 WHERE rowid = (\
                              SELECT rowid FROM review_rounds WHERE task_id = ?2 \
                              AND merged_at IS NULL AND subagent_id IS NULL \
                              ORDER BY started_at DESC, rowid DESC LIMIT 1) \
                              AND agent = ?3 AND started_at <= ?4",
-                            params![subagent, task, agent, at.0],
-                        )
-                        .map_err(db)?;
+                        params![subagent, task, agent, at.0],
+                    )?;
                     if linked == 1 {
                         ReviewStart::Active
                     } else {
@@ -529,7 +497,7 @@ impl CoordinationStore for SqliteStore {
                     }
                 }
             };
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(start)
         })
         .await
@@ -542,8 +510,7 @@ impl CoordinationStore for SqliteStore {
                 "UPDATE review_rounds SET head = ?1 WHERE id = ?2 \
                  AND merged_at IS NULL AND head IS NULL",
                 params![head, id],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -569,15 +536,13 @@ impl CoordinationStore for SqliteStore {
                  AND r.merged_at >= ? AND r.merged_at < ? ORDER BY r.merged_at DESC, r.started_at, r.rowid \
                  LIMIT {MAX_REVIEW_ROUNDS_READ}"
             );
-            let mut stmt = c.prepare(&sql).map_err(db)?;
+            let mut stmt = c.prepare(&sql)?;
             let mut values: Vec<rusqlite::types::Value> =
                 ids.into_iter().map(rusqlite::types::Value::Text).collect();
             values.push(rusqlite::types::Value::Integer(from.map_or(i64::MIN, |t| t.0)));
             values.push(rusqlite::types::Value::Integer(to.map_or(i64::MAX, |t| t.0)));
-            let rows = stmt
-                .query_map(rusqlite::params_from_iter(values), review_round_from_row)
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let rows = stmt.query_map(rusqlite::params_from_iter(values), review_round_from_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -590,7 +555,7 @@ impl CoordinationStore for SqliteStore {
     ) -> AppResult<Option<String>> {
         let (task, subagent) = (task.as_str().to_owned(), subagent.to_owned());
         self.call(move |c| {
-            let round = round_for_observation(c, &task, &subagent, Some(at)).map_err(db)?;
+            let round = round_for_observation(c, &task, &subagent, Some(at))?;
             Ok(round.and_then(|(_, model, ended)| ended.is_none().then_some(model)))
         })
         .await
@@ -610,19 +575,16 @@ impl CoordinationStore for SqliteStore {
             model.map(str::to_owned),
         );
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            if let Some((id, _, _)) =
-                round_for_observation(&tx, &task, &subagent, at).map_err(db)?
-            {
+            let tx = c.transaction()?;
+            if let Some((id, _, _)) = round_for_observation(&tx, &task, &subagent, at)? {
                 tx.execute(
                     "UPDATE review_rounds SET model_answered = COALESCE(?1, model_answered), \
                      cut_off = cut_off OR ?2 WHERE id = ?3 \
                      AND ((?1 IS NOT NULL AND model_answered IS NOT ?1) OR (?2 AND NOT cut_off))",
                     params![model, cut_off, id],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)
+            Ok(tx.commit()?)
         })
         .await
     }
@@ -641,15 +603,13 @@ impl CoordinationStore for SqliteStore {
             model_answered.map(str::to_owned),
         );
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE review_rounds SET ended_at = ?1, verdict = ?2, \
+            let n = c.execute(
+                "UPDATE review_rounds SET ended_at = ?1, verdict = ?2, \
                      model_answered = COALESCE(?3, model_answered) \
                      WHERE task_id = ?4 AND subagent_id = ?5 AND merged_at IS NULL \
                      AND ended_at IS NULL AND started_at <= ?1",
-                    params![at.0, v, m, t, s],
-                )
-                .map_err(db)?;
+                params![at.0, v, m, t, s],
+            )?;
             Ok(n > 0)
         })
         .await
@@ -671,9 +631,8 @@ impl CoordinationStore for SqliteStore {
         );
         let v = verdict.map(str::to_owned);
         self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE review_rounds SET subagent_id = ?1, ended_at = ?2, verdict = ?3, \
+            let n = c.execute(
+                "UPDATE review_rounds SET subagent_id = ?1, ended_at = ?2, verdict = ?3, \
                      reason = CASE WHEN agent = ?5 THEN reason ELSE 'round' END, \
                      agent = ?5, model = ?6 \
                      WHERE rowid = (SELECT rowid FROM review_rounds WHERE task_id = ?4 \
@@ -682,9 +641,8 @@ impl CoordinationStore for SqliteStore {
                          ORDER BY started_at DESC, rowid DESC LIMIT 1) \
                      AND NOT EXISTS (SELECT 1 FROM review_rounds \
                          WHERE task_id = ?4 AND subagent_id = ?1)",
-                    params![s, at.0, v, t, a, m],
-                )
-                .map_err(db)?;
+                params![s, at.0, v, t, a, m],
+            )?;
             Ok(n > 0)
         })
         .await
@@ -696,8 +654,7 @@ impl CoordinationStore for SqliteStore {
             c.execute(
                 "INSERT INTO scope_claims (id, task_id, sandbox_id, pattern, note, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![cl.id, cl.task_id.as_str(), cl.sandbox_id.as_str(), cl.pattern, cl.note, cl.created_at.0],
-            )
-            .map_err(db)?;
+            )?;
             Ok(())
         })
         .await
@@ -707,23 +664,19 @@ impl CoordinationStore for SqliteStore {
         let s = sandbox.as_str().to_owned();
         self.call(move |c| {
             let mut stmt = c
-                .prepare("SELECT id, task_id, sandbox_id, pattern, note, created_at FROM scope_claims WHERE sandbox_id = ?1 AND released_at IS NULL ORDER BY created_at")
-                .map_err(db)?;
+                .prepare("SELECT id, task_id, sandbox_id, pattern, note, created_at FROM scope_claims WHERE sandbox_id = ?1 AND released_at IS NULL ORDER BY created_at")?;
             let rows = stmt
                 .query_map([s], |r| {
-                    let t: String = r.get(1)?;
-                    let sb: String = r.get(2)?;
                     Ok(ScopeClaimRecord {
                         id: r.get(0)?,
-                        task_id: TaskId::parse(&t).map_err(|_| bad_column("task id", &t))?,
-                        sandbox_id: SandboxId::parse(&sb).map_err(|_| bad_column("sandbox id", &sb))?,
+                        task_id: text_parsed(r, 1, "task id", TaskId::parse)?,
+                        sandbox_id: text_parsed(r, 2, "sandbox id", SandboxId::parse)?,
                         pattern: r.get(3)?,
                         note: r.get(4)?,
                         created_at: Timestamp(r.get(5)?),
                     })
-                })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+                })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -740,8 +693,7 @@ impl CoordinationStore for SqliteStore {
                 .execute(
                     "UPDATE scope_claims SET released_at = ?1 WHERE task_id = ?2 AND released_at IS NULL AND (?3 IS NULL OR pattern = ?3)",
                     params![at.0, t, p],
-                )
-                .map_err(db)?;
+                )?;
             Ok(u32::try_from(n).unwrap_or(u32::MAX))
         })
         .await
@@ -754,8 +706,7 @@ impl CoordinationStore for SqliteStore {
                 .execute(
                     "INSERT INTO record_numbers (sandbox_id, dir, prefix, number, task_id, reserved_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (sandbox_id, dir, prefix, number) DO NOTHING",
                     params![r.sandbox_id.as_str(), r.dir, r.prefix, to_i64(r.number), r.task_id.as_str(), r.reserved_at.0],
-                )
-                .map_err(db)?;
+                )?;
             Ok(inserted == 1)
         })
         .await
@@ -769,23 +720,19 @@ impl CoordinationStore for SqliteStore {
         let (s, d) = (sandbox.as_str().to_owned(), dir.to_owned());
         self.call(move |c| {
             let mut stmt = c
-                .prepare("SELECT sandbox_id, dir, prefix, number, task_id, reserved_at FROM record_numbers WHERE sandbox_id = ?1 AND dir = ?2 ORDER BY reserved_at, number")
-                .map_err(db)?;
+                .prepare("SELECT sandbox_id, dir, prefix, number, task_id, reserved_at FROM record_numbers WHERE sandbox_id = ?1 AND dir = ?2 ORDER BY reserved_at, number")?;
             let rows = stmt
                 .query_map(params![s, d], |r| {
-                    let sb: String = r.get(0)?;
-                    let t: String = r.get(4)?;
                     Ok(RecordReservation {
-                        sandbox_id: SandboxId::parse(&sb).map_err(|_| bad_column("sandbox id", &sb))?,
+                        sandbox_id: text_parsed(r, 0, "sandbox id", SandboxId::parse)?,
                         dir: r.get(1)?,
                         prefix: r.get(2)?,
                         number: to_u64(r.get(3)?),
-                        task_id: TaskId::parse(&t).map_err(|_| bad_column("task id", &t))?,
+                        task_id: text_parsed(r, 4, "task id", TaskId::parse)?,
                         reserved_at: Timestamp(r.get(5)?),
                     })
-                })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+                })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await
     }

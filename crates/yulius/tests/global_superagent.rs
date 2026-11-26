@@ -1,13 +1,15 @@
-//! The Global Superagent end to end (SPEC-427) with the real detached ptyhost and the Cockpit
+//! The Global Superagent end to end with the real detached ptyhost and the Cockpit
 //! tests' fake `claude`: one per person, in a folder of its own without built-in tools, served
 //! every sandbox's tools for its person through its own bearer, outliving its host sandbox.
 
-use crate::cockpit::{
+use crate::support;
+use crate::support::cockpit::{
     Fixture, ORIGIN, answer_record, attach, cockpit_id, cockpit_tool, conversation, fixture,
     fixture_with, insert_account, limited_conversation, mcp, predate_launch_digest, printed,
-    project_of, prompt_record, read_message, read_until, task_rests, wait_for,
+    project_of, prompt_record, read_message, read_until, task_rests,
 };
-use crate::support;
+use crate::support::eventually;
+use std::future::ready;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -68,7 +70,7 @@ fn globals(f: &Fixture) -> Vec<(String, String)> {
         .collect()
 }
 
-/// AC-GSA-1 (GSA-001, GSA-002, GSA-005): one per person, plain Claude Code without built-in
+/// One per person, plain Claude Code without built-in
 /// tools and with only the Yulius MCP, in a folder of its own; private; refused to a person who
 /// can work in no sandbox.
 #[tokio::test]
@@ -177,7 +179,7 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
     Ok(())
 }
 
-/// SPEC-493 MDL-001: a Global Superagent runs the default model, Opus 5.5, so a subscription
+/// A Global Superagent runs the default model, Opus 5.5, so a subscription
 /// that is only out of Fable's credits takes it, and nothing falls back.
 #[tokio::test]
 async fn a_global_superagent_starts_on_opus_where_fable_is_used_up() -> TestResult {
@@ -224,7 +226,7 @@ fn global_token(f: &Fixture, user: &str) -> Result<String, Box<dyn std::error::E
         .ok_or("no Global Superagent")?)
 }
 
-/// AC-GSA-2 (GSA-003): its bearer is served the remote MCP's tools for its person in every
+/// Its bearer is served the remote MCP's tools for its person in every
 /// project, without the vault, deploy and onboarding tools; the sandbox Superagent's bearer gets
 /// none of them.
 #[tokio::test]
@@ -309,7 +311,7 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
             .await?
             .ok_or("task")?;
     assert_eq!(task.sandbox_id, sandbox("s2"));
-    // On Claude Code by default (SPEC-620).
+    // On Claude Code by default.
     assert_eq!(task.harness, yulius_domain::harness::Harness::ClaudeCode);
     assert_eq!(f.h.app.task_summary(&task).await?.harness_choice, "chosen");
     assert_eq!(task.created_by, UserId::parse("u-alice")?);
@@ -385,7 +387,7 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
     Ok(())
 }
 
-/// AC-GSA-3 (GSA-005): its host sandbox removed, it ends; the next open is hosted by another
+/// Its host sandbox removed, it ends; the next open is hosted by another
 /// sandbox and resumes the same conversation.
 #[tokio::test]
 async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
@@ -420,9 +422,11 @@ async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
     )
     .await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
-    wait_for("the Global Superagent to end with its host", || {
-        globals(&f).is_empty()
-    })
+    eventually(
+        "the Global Superagent to end with its host",
+        crate::support::cockpit::WAIT,
+        || ready(globals(&f).is_empty()),
+    )
     .await?;
 
     let again = global_id(&f, &f.alice).await?;
@@ -443,7 +447,7 @@ async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
     Ok(())
 }
 
-/// GSA-005: a person who lost write access to its host gets it back under another sandbox.
+/// A person who lost write access to its host gets it back under another sandbox.
 #[tokio::test]
 async fn a_global_superagent_whose_host_was_lost_moves_to_another_sandbox() -> TestResult {
     let f = fixture().await?;
@@ -468,44 +472,7 @@ async fn a_global_superagent_whose_host_was_lost_moves_to_another_sandbox() -> T
     Ok(())
 }
 
-/// The plans a contained server hands its session host, which starts nothing (AC-GSA-4).
-#[derive(Default)]
-struct RecordingHost {
-    plans: std::sync::Mutex<Vec<yulius_app::ports::session::LaunchPlan>>,
-}
-
-#[async_trait::async_trait]
-impl yulius_app::ports::session::SessionHost for RecordingHost {
-    async fn spawn(
-        &self,
-        _run_dir: &Path,
-        _attempt_id: &str,
-        _task_id: &str,
-        plan: &yulius_app::ports::session::LaunchPlan,
-        _token: &[u8; 32],
-        _size: (u16, u16),
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        if let Ok(mut plans) = self.plans.lock() {
-            plans.push(plan.clone());
-        }
-        Err(yulius_app::error::AppError::Upstream("recorded".into()))
-    }
-    async fn attach(
-        &self,
-        _run_dir: &Path,
-        _token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        Err(yulius_app::error::AppError::NotFound)
-    }
-    fn inspect(&self, _run_dir: &Path) -> yulius_app::ports::session::RunInspection {
-        yulius_app::ports::session::RunInspection::Missing
-    }
-    fn terminate(&self, _run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        Ok(())
-    }
-}
-
-/// AC-GSA-4 (GSA-002): on a contained server the plan its session host gets is contained in a
+/// On a contained server the plan its session host gets is contained in a
 /// bubblewrap root of its own folder, without a sandbox holder, identity, repository or the
 /// person's home, with the host's password files covered, every shell command refused through a
 /// read-only prefix, and only the Yulius MCP without built-in tools or settings files.
@@ -513,7 +480,7 @@ impl yulius_app::ports::session::SessionHost for RecordingHost {
 async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
     use yulius_app::ports::session::Containment;
 
-    let host = std::sync::Arc::new(RecordingHost::default());
+    let host = std::sync::Arc::new(crate::support::ScriptedHost::default());
     let h = support::harness_with(support::HarnessOptions {
         session_host: Some(host.clone()),
         configure: Some(Box::new(|config| config.contained = true)),
@@ -533,13 +500,7 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
 
     let resp = call(&h.router, Method::POST, "/api/superagent", None, &alice).await?;
     assert_eq!(resp.status, StatusCode::BAD_GATEWAY, "{:?}", resp.body);
-    let plan = host
-        .plans
-        .lock()
-        .map_err(|_| "poisoned")?
-        .first()
-        .cloned()
-        .ok_or("nothing spawned")?;
+    let plan = host.plans().into_iter().next().ok_or("nothing spawned")?;
     let Containment::Bubblewrap {
         sandbox_root,
         home,
@@ -548,10 +509,36 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
         binds,
         identity,
         join,
+        guard,
     } = &plan.containment
     else {
         return Err("not contained".into());
     };
+    // Its memory and user-level instructions, read-only from its own folder.
+    let config = own.join(".claude");
+    let guarded: Vec<_> = guard
+        .iter()
+        .filter(|p| p.kind != yulius_contracts::ptyhost::GuardKind::Pin)
+        .map(|p| (p.anchor.as_str(), p.dest.clone()))
+        .collect();
+    let own_text = own.to_string_lossy();
+    assert_eq!(guarded.len(), 3, "{guard:?}");
+    assert!(
+        guarded
+            .iter()
+            .all(|(anchor, dest)| *anchor == own_text && Path::new(dest).starts_with(&config))
+    );
+    // The memory folder it reads is the one its guard binds (review round 1).
+    let memory = guard
+        .iter()
+        .find(|p| {
+            p.kind == yulius_contracts::ptyhost::GuardKind::Dir && p.dest.ends_with("/memory")
+        })
+        .ok_or("a guarded memory folder")?;
+    assert_eq!(
+        auto_memory_dir(&plan).as_deref(),
+        Some(memory.dest.as_str())
+    );
     assert_eq!(sandbox_root, &own);
     assert_eq!(home, &own);
     assert!(writable.is_empty(), "{writable:?}");
@@ -642,7 +629,7 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
     Ok(())
 }
 
-/// GSA-005: a Global Superagent running across a server restart is adopted as one: the same
+/// A Global Superagent running across a server restart is adopted as one: the same
 /// session, its bearer still served the remote tools, its folder its own.
 #[tokio::test]
 async fn a_running_global_superagent_is_adopted_after_a_restart() -> TestResult {
@@ -671,7 +658,7 @@ async fn a_running_global_superagent_is_adopted_after_a_restart() -> TestResult 
     Ok(())
 }
 
-/// GSA-005 (SPEC-074): a usage limit moves the Global Superagent to a subscription with capacity
+/// A usage limit moves the Global Superagent to a subscription with capacity
 /// as the sandbox one: still global, in its own folder, continuing the conversation.
 #[tokio::test]
 async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> TestResult {
@@ -695,13 +682,19 @@ async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> Test
     let exit = read_message(&mut socket, "exit").await?;
     assert_eq!(exit["status"], "switched", "{exit}");
     let mut again = None;
-    wait_for("the Global Superagent on another subscription", || {
-        again = globals(&f)
-            .into_iter()
-            .map(|(_, id)| id)
-            .find(|other| *other != id);
-        again.is_some()
-    })
+    eventually(
+        "the Global Superagent on another subscription",
+        crate::support::cockpit::WAIT,
+        || {
+            ready({
+                again = globals(&f)
+                    .into_iter()
+                    .map(|(_, id)| id)
+                    .find(|other| *other != id);
+                again.is_some()
+            })
+        },
+    )
     .await?;
     let again = again.ok_or("moved")?;
     let mut socket = attach(served.addr, &again, &f.alice).await?;
@@ -719,7 +712,7 @@ async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> Test
     Ok(())
 }
 
-/// GSA-005 (SPEC-186 SAV-006): one started by a Yulius before an update that changed what it is
+/// One started by a Yulius before an update that changed what it is
 /// served is adopted, then started again once idle as a Global Superagent, resuming its
 /// conversation; its old bearer ends with it.
 #[tokio::test]
@@ -746,13 +739,19 @@ async fn a_global_superagent_started_before_an_update_restarts_as_global() -> Te
     let served = serve(g.h.router.clone()).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
     let mut again = None;
-    wait_for("the Global Superagent to start again", || {
-        again = globals(&g)
-            .into_iter()
-            .map(|(_, other)| other)
-            .find(|other| *other != id);
-        again.is_some()
-    })
+    eventually(
+        "the Global Superagent to start again",
+        crate::support::cockpit::WAIT,
+        || {
+            ready({
+                again = globals(&g)
+                    .into_iter()
+                    .map(|(_, other)| other)
+                    .find(|other| *other != id);
+                again.is_some()
+            })
+        },
+    )
     .await?;
     let again = again.ok_or("restarted")?;
     let mut socket = attach(served.addr, &again, &g.alice).await?;
@@ -771,7 +770,7 @@ async fn a_global_superagent_started_before_an_update_restarts_as_global() -> Te
     Ok(())
 }
 
-/// GSA-003: its bearer is refused once its person can work in no sandbox, even while the session
+/// Its bearer is refused once its person can work in no sandbox, even while the session
 /// still runs.
 #[tokio::test]
 async fn the_global_bearer_is_refused_once_its_person_works_in_no_sandbox() -> TestResult {
@@ -790,7 +789,7 @@ async fn the_global_bearer_is_refused_once_its_person_works_in_no_sandbox() -> T
     Ok(())
 }
 
-/// Review round 1: its bearer has an operate token's bound of requests a minute.
+/// Its bearer has an operate token's bound of requests a minute.
 #[tokio::test]
 async fn the_global_bearer_is_bounded_per_minute() -> TestResult {
     let f = fixture().await?;
@@ -815,7 +814,7 @@ async fn the_global_bearer_is_bounded_per_minute() -> TestResult {
     Ok(())
 }
 
-/// AC-GKY-1, AC-GKY-2 (SPEC-430): its person types into it as into the sandbox Superagent (keys,
+/// Its person types into it as into the sandbox Superagent (keys,
 /// pastes and clicks reach its terminal); nobody else attaches to it; the message endpoints of
 /// SPEC-427 GSA-007 are gone.
 #[tokio::test]
@@ -867,7 +866,7 @@ async fn its_person_types_into_the_global_superagent() -> TestResult {
     Ok(())
 }
 
-/// AC-GIM-1 to AC-GIM-3 (SPEC-433): an image pasted into the Global Superagent is stored in its
+/// An image pasted into the Global Superagent is stored in its
 /// own folder, inside its root, and its path answered; only images, only for its own person
 /// while it runs; images older than a week go at the next upload.
 #[tokio::test]
@@ -947,7 +946,7 @@ async fn an_image_pasted_into_the_global_superagent_is_kept_in_its_own_folder() 
     Ok(())
 }
 
-/// SPEC-433 review round 1: its images folder is never reached through a link, the week-old
+/// Its images folder is never reached through a link, the week-old
 /// removal takes only regular files (never a folder, nor a link or what it points at), and a
 /// disabled account stores nothing.
 #[tokio::test]
@@ -1015,4 +1014,85 @@ async fn the_global_superagent_s_images_folder_refuses_links_and_disabled_accoun
     assert!(!folder.join("late.png").exists());
     f.h.app.end_all_shells().await;
     Ok(())
+}
+
+/// A person's Superagent in a sandbox guards its memory and user-level
+/// instructions, opened from the person's home on the host and bound where the session sees them
+/// (`/home/<login>/.claude`), keyed by the sandbox's repository; its memory folder is made first.
+#[tokio::test]
+async fn a_contained_superagent_guards_its_memory_in_the_persons_home() -> TestResult {
+    use yulius_app::ports::session::Containment;
+    use yulius_contracts::ptyhost::GuardKind;
+
+    let host = std::sync::Arc::new(crate::support::ScriptedHost::default());
+    let h = support::harness_with(support::HarnessOptions {
+        session_host: Some(host.clone()),
+        configure: Some(Box::new(|config| config.contained = true)),
+        ..support::HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    insert_account(&h, "acc-1", "token-1", 5.0).await?;
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(&repo)?;
+
+    let resp = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit",
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(!resp.status.is_success(), "{:?}", resp.body);
+    let plan = host.plans().into_iter().next().ok_or("nothing spawned")?;
+    let Containment::Bubblewrap { home, guard, .. } = &plan.containment else {
+        return Err("not contained".into());
+    };
+    let home_host = data.join("users/u-alice/home");
+    let key = yulius_app::memory_guard::claude_key(&repo);
+    let at = |p: PathBuf| p.to_string_lossy().into_owned();
+    let shown: Vec<(String, String, GuardKind)> = guard
+        .iter()
+        .map(|p| (p.relative.clone(), p.dest.clone(), p.kind))
+        .collect();
+    let memory = format!(".claude/projects/{key}/memory");
+    assert!(
+        shown.contains(&(memory.clone(), at(home.join(&memory)), GuardKind::Dir)),
+        "{shown:?}"
+    );
+    assert!(shown.contains(&(
+        ".claude/CLAUDE.md".into(),
+        at(home.join(".claude/CLAUDE.md")),
+        GuardKind::File
+    )));
+    assert!(guard.iter().all(|p| p.anchor == at(home_host.clone())));
+    assert!(home_host.join(&memory).is_dir(), "made before the session");
+    // The memory folder it reads is the one its guard binds (review round 1).
+    assert_eq!(auto_memory_dir(&plan), Some(at(home.join(&memory))));
+    // Its hooks learn the read-only paths, to say why a write there fails.
+    let readonly = plan
+        .env
+        .iter()
+        .find(|(k, _)| k == "YULIUS_READONLY_PATHS")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    assert!(
+        readonly.lines().any(|l| l == at(home.join(&memory))),
+        "{readonly}"
+    );
+    Ok(())
+}
+
+/// The `autoMemoryDirectory` of a Superagent's plan (its inline `--settings`).
+fn auto_memory_dir(plan: &yulius_app::ports::session::LaunchPlan) -> Option<String> {
+    let settings = plan
+        .argv
+        .windows(2)
+        .find(|w| w[0] == "--settings")
+        .map(|w| w[1].clone())?;
+    let settings: serde_json::Value = serde_json::from_str(&settings).ok()?;
+    settings["autoMemoryDirectory"].as_str().map(str::to_owned)
 }

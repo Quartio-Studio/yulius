@@ -24,8 +24,9 @@ use yulius_domain::time::Timestamp;
 
 use yulius_domain::time::parse_rfc3339;
 
-/// Largest Antigravity token file accepted.
-pub const ANTIGRAVITY_TOKEN_MAX_BYTES: usize = 64 * 1024;
+pub use yulius_domain::harness::{
+    ANTIGRAVITY_TOKEN_MAX_BYTES, CLAUDE_TOKEN_MIN_BODY, CLAUDE_TOKEN_PREFIX, CODEX_AUTH_MAX_BYTES,
+};
 
 /// An Antigravity credential, as its envelope holds it.
 #[derive(Clone, PartialEq, Eq)]
@@ -107,10 +108,6 @@ pub fn antigravity_refreshed_credential(fresh: &[u8], stored: &[u8]) -> Option<V
     }
 }
 
-/// Prefix of Claude long-lived OAuth tokens.
-pub const CLAUDE_TOKEN_PREFIX: &str = "sk-ant-oat01-";
-/// Minimum number of token characters after the prefix.
-pub const CLAUDE_TOKEN_MIN_BODY: usize = 20;
 /// Text that replaces a token in masked output.
 pub const MASK: &str = "sk-ant-oat01-[REDACTED]";
 
@@ -142,9 +139,6 @@ pub fn antigravity_sign_in_argv() -> Vec<String> {
 /// The `config.toml` of a Codex home Yulius prepares: credentials live in `auth.json`, never the
 /// OS keyring, so they can be moved into the vault and written back after a run.
 pub const CODEX_FILE_STORE_CONFIG: &str = "cli_auth_credentials_store = \"file\"\n";
-
-/// Largest Codex `auth.json` accepted.
-pub const CODEX_AUTH_MAX_BYTES: usize = 1024 * 1024;
 
 /// Why a Codex credential is not usable (no secret in the text).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

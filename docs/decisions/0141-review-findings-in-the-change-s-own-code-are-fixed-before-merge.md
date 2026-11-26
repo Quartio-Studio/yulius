@@ -20,10 +20,10 @@ review with "after 3 rounds, decide and record why", and `om-code-review` let a 
 
 ## Decision
 
-One rule, stated the same way wherever the review or follow-ups are described (the
-`delivery-pipeline` and `om-code-review` skills, the Feature and Fix workflows, this repository's
-`yulius-review`, `yulius-verify` and `yulius-git` primitives, [the engineering
-workflow](../engineering/workflow.md#review-output), the briefing and the `issue_create` tool):
+One rule, stated in `om-code-review` (refined 2026-11-26, audit L10 F2: before, every place that
+described the review or follow-ups repeated it; now the other skills, workflows and docs point to
+`om-code-review`, the briefing and the `issue_create` tool keep their short forms, and a test
+refuses a copy elsewhere):
 
 1. A finding in code or tests the change added or modified is fixed in the same pull request,
    test-first, and never becomes a follow-up issue, whatever its severity: a test that cannot

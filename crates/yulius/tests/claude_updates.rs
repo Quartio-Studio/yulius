@@ -1,8 +1,10 @@
-//! Claude Code kept current in the data directory (SPEC-421): a registry stub serves the
+//! Claude Code kept current in the data directory: a registry stub serves the
 //! dist-tags, the platform package's version document and a tarball whose `claude` is a script
 //! printing its version.
 
+use crate::support::eventually;
 use std::collections::HashMap;
+use std::future::ready;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +23,9 @@ use yulius::wiring::sandbox::parse_channel;
 use yulius_app::ports::agent_cli::{AgentCli as _, CheckResult, CliSource};
 use yulius_app::ports::session::Bind;
 use yulius_domain::agent_cli::{Channel, HOST_INSTALL, Version};
+
+/// How long a condition may take to hold.
+const WAIT: Duration = Duration::from_secs(30);
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -322,7 +327,7 @@ fn installed(root: &Path) -> Vec<String> {
     names
 }
 
-/// AC1: a newer `stable` is installed, verified and made current; runs then bind it.
+/// A newer `stable` is installed, verified and made current; runs then bind it.
 #[tokio::test]
 async fn a_newer_stable_release_is_installed_and_becomes_current() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -368,7 +373,7 @@ async fn a_newer_stable_release_is_installed_and_becomes_current() -> TestResult
     Ok(())
 }
 
-/// AC2: a refused release installs nothing and leaves the current version and no leftovers.
+/// A refused release installs nothing and leaves the current version and no leftovers.
 #[tokio::test]
 async fn a_refused_release_leaves_the_current_version() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -505,7 +510,7 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
     Ok(())
 }
 
-/// AC3: off asks nothing; a host as new as the channel downloads nothing.
+/// Off asks nothing; a host as new as the channel downloads nothing.
 #[tokio::test]
 async fn off_or_an_up_to_date_host_downloads_nothing() -> TestResult {
     let s = setup("2.1.311").await?;
@@ -524,7 +529,7 @@ async fn off_or_an_up_to_date_host_downloads_nothing() -> TestResult {
     assert!(s.updater.current().is_none());
     assert_eq!(agent_cli_source(&s.root, &s.host), s.host);
 
-    // Without a host install to bind over, nothing is asked either (CCU-005).
+    // Without a host install to bind over, nothing is asked either.
     let bare = ClaudeUpdater::with_registry(
         s.root.clone(),
         None,
@@ -538,7 +543,7 @@ async fn off_or_an_up_to_date_host_downloads_nothing() -> TestResult {
     Ok(())
 }
 
-/// AC4: the current version and the one before it are kept.
+/// The current version and the one before it are kept.
 #[tokio::test]
 async fn the_current_and_the_previous_version_stay() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -558,7 +563,7 @@ async fn the_current_and_the_previous_version_stay() -> TestResult {
     Ok(())
 }
 
-/// AC5: a host updated by hand past Yulius's version is the one runs get.
+/// A host updated by hand past Yulius's version is the one runs get.
 #[tokio::test]
 async fn a_newer_host_install_wins_over_yulius_s() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -585,15 +590,7 @@ fn updater_of(s: &Setup) -> Result<ClaudeUpdater, Box<dyn std::error::Error>> {
     )?)
 }
 
-async fn until(what: &str, mut holds: impl FnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while !holds() {
-        assert!(tokio::time::Instant::now() < deadline, "never: {what}");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-/// CCU-001: the loop checks on its own, again after each period; with `off` it asks nothing.
+/// The loop checks on its own, again after each period; with `off` it asks nothing.
 #[tokio::test]
 async fn the_loop_installs_without_anyone_asking() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -601,14 +598,17 @@ async fn the_loop_installs_without_anyone_asking() -> TestResult {
     s.stub.release("2.1.311", good("2.1.311")?);
     let service = ClaudeCode::new(updater_of(&s)?, Channel::Stable, false);
     let looping = service.start_every(Duration::ZERO, Duration::from_millis(50));
-    until("installed", || s.updater.current() == Some(v("2.1.311"))).await;
+    eventually("installed", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.311")))
+    })
+    .await?;
     // A later release is picked up by a later round.
     s.stub.tag("stable", "2.1.318");
     s.stub.release("2.1.318", good("2.1.318")?);
-    until("installed the next", || {
-        s.updater.current() == Some(v("2.1.318"))
+    eventually("installed the next", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.318")))
     })
-    .await;
+    .await?;
     looping.abort();
 
     let off = ClaudeCode::new(updater_of(&s)?, Channel::Off, false);
@@ -621,7 +621,7 @@ async fn the_loop_installs_without_anyone_asking() -> TestResult {
     Ok(())
 }
 
-/// CCU-003, CCU-005: a run binds the chosen directory at the host package's path; with updates
+/// A run binds the chosen directory at the host package's path; with updates
 /// off the host's own, and nothing without a host package.
 #[tokio::test]
 async fn runs_bind_the_chosen_version_at_the_host_package_path() -> TestResult {
@@ -648,7 +648,7 @@ async fn runs_bind_the_chosen_version_at_the_host_package_path() -> TestResult {
     Ok(())
 }
 
-/// CCU-006: the doctor says which Claude Code isolated runs get and where it comes from.
+/// The doctor says which Claude Code isolated runs get and where it comes from.
 #[tokio::test]
 async fn the_doctor_names_the_version_runs_get() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -677,7 +677,7 @@ async fn the_doctor_names_the_version_runs_get() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 AC5: the doctor fails loudly on a Claude Code that does not know the default model,
+/// The doctor fails loudly on a Claude Code that does not know the default model,
 /// with the fix; warns about another gap and a refused release; and names the channel the
 /// server follows (chosen in Settings) over its own argument.
 #[tokio::test]
@@ -762,7 +762,7 @@ async fn the_doctor_fails_on_a_claude_code_without_the_default_model() -> TestRe
     Ok(())
 }
 
-/// SPEC-461 CCM-006: every check is recorded, in memory for the Instance page and in the status
+/// Every check is recorded, in memory for the Instance page and in the status
 /// file for the doctor: the channel, npm's tags, what it did and what the version in use knows.
 #[tokio::test]
 async fn every_check_is_recorded_for_the_page_and_the_doctor() -> TestResult {
@@ -856,7 +856,7 @@ async fn every_check_is_recorded_for_the_page_and_the_doctor() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 CCM-009, CCM-010: a channel change applies to the next run's bind and is checked at
+/// A channel change applies to the next run's bind and is checked at
 /// once; "Check now" wakes the loop; a host without an npm install says why nothing is kept.
 #[tokio::test]
 async fn a_channel_change_and_check_now_take_effect_without_a_restart() -> TestResult {
@@ -879,52 +879,55 @@ async fn a_channel_change_and_check_now_take_effect_without_a_restart() -> TestR
     // Stable chosen in Settings: checked at once, and the next run binds Yulius's copy.
     service.set_channel(Channel::Stable, true);
     assert_eq!(service.channel(), (Channel::Stable, true));
-    until("stable installed", || {
-        s.updater.current() == Some(v("2.1.311"))
+    eventually("stable installed", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.311")))
     })
-    .await;
+    .await?;
     assert_eq!(
         service.binds(Some(&s.host)),
         [bind(s.root.join("versions/2.1.311").canonicalize()?)]
     );
-    until("the status file names the channel", || {
-        StatusFile::read(&s.root).is_some_and(|file| {
+    eventually("the status file names the channel", WAIT, || {
+        ready(StatusFile::read(&s.root).is_some_and(|file| {
             file.channel.as_deref() == Some("stable")
                 && file.chosen
                 && file.result.as_deref() == Some("installed")
-        })
+        }))
     })
-    .await;
+    .await?;
 
     // Off again: the next run binds the host's own, whatever is installed.
     service.set_channel(Channel::Off, true);
     assert_eq!(service.binds(Some(&s.host)), [bind(s.host.clone())]);
     assert_eq!(service.version_for_new_runs(), Some(v("2.1.292")));
-    until("off recorded", || {
-        StatusFile::read(&s.root).is_some_and(|file| file.channel.as_deref() == Some("off"))
+    eventually("off recorded", WAIT, || {
+        ready(StatusFile::read(&s.root).is_some_and(|file| file.channel.as_deref() == Some("off")))
     })
-    .await;
+    .await?;
 
     // A channel changed while nothing runs is "checking" from the request to the check's end.
-    until("the check ended", || !service.is_checking()).await;
+    eventually("the check ended", WAIT, || ready(!service.is_checking())).await?;
     service.set_channel(Channel::Off, false);
     assert!(service.is_checking(), "asked for, about to run");
-    until("the off check ended", || !service.is_checking()).await;
+    eventually("the off check ended", WAIT, || {
+        ready(!service.is_checking())
+    })
+    .await?;
 
     // Latest from the configuration, then "Check now" for a release published since.
     service.set_channel(Channel::Latest, false);
-    until("latest installed", || {
-        s.updater.current() == Some(v("2.1.322"))
+    eventually("latest installed", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.322")))
     })
-    .await;
-    until("the check ended", || !service.is_checking()).await;
+    .await?;
+    eventually("the check ended", WAIT, || ready(!service.is_checking())).await?;
     s.stub.tag("latest", "2.1.323");
     s.stub.release("2.1.323", good("2.1.323")?);
     service.check_now();
-    until("the release published since", || {
-        s.updater.current() == Some(v("2.1.323"))
+    eventually("the release published since", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.323")))
     })
-    .await;
+    .await?;
     looping.abort();
 
     // Without an npm install on the host nothing is kept current, and the status says why.
@@ -952,7 +955,7 @@ async fn a_channel_change_and_check_now_take_effect_without_a_restart() -> TestR
     Ok(())
 }
 
-/// Review finding 1: a host package laid out otherwise (its `claude` is not `bin/claude.exe`)
+/// A host package laid out otherwise (its `claude` is not `bin/claude.exe`)
 /// is neither updated nor bound over: runs keep the host's.
 #[tokio::test]
 async fn a_host_package_of_another_layout_is_left_alone() -> TestResult {
@@ -974,7 +977,7 @@ async fn a_host_package_of_another_layout_is_left_alone() -> TestResult {
     Ok(())
 }
 
-/// Review finding 2: a version a running process executes is kept past the switches, and removed
+/// A version a running process executes is kept past the switches, and removed
 /// by the first check after it ended.
 #[tokio::test]
 async fn a_version_a_process_runs_is_not_removed() -> TestResult {
@@ -1050,7 +1053,7 @@ async fn a_release_that_lacks_the_default_model_is_refused() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 AC3: on `stable`, when neither the version in use nor stable's release knows the
+/// On `stable`, when neither the version in use nor stable's release knows the
 /// default model, `latest`'s release is taken; when it does not know it either, nothing is, and
 /// both are named.
 #[tokio::test]
@@ -1099,7 +1102,7 @@ async fn stable_falls_forward_to_latest_for_the_default_model() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 AC3: a newer stable release without the default model is refused, then `latest`
+/// A newer stable release without the default model is refused, then `latest`
 /// too, and both are named; a version in use that knows the default model keeps `stable` on
 /// stable's releases.
 #[tokio::test]
@@ -1171,7 +1174,7 @@ async fn stable_names_both_refusals_and_stays_stable_while_the_default_is_known(
     Ok(())
 }
 
-/// SPEC-461 AC4: a release that knows the default model but not another offered one is taken;
+/// A release that knows the default model but not another offered one is taken;
 /// what it lacks is what the version in use lacks from then on.
 #[tokio::test]
 async fn a_release_lacking_another_offered_model_is_taken_and_the_gap_known() -> TestResult {
@@ -1192,7 +1195,7 @@ async fn a_release_lacking_another_offered_model_is_taken_and_the_gap_known() ->
     Ok(())
 }
 
-/// SPEC-461 AC2: an instance follows `latest` unless told otherwise, on `serve` and `doctor`
+/// An instance follows `latest` unless told otherwise, on `serve` and `doctor`
 /// (both declare [`DEFAULT_CHANNEL`]).
 #[test]
 fn the_channel_defaults_to_latest() -> TestResult {
@@ -1210,7 +1213,7 @@ fn the_channel_defaults_to_latest() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 CCM-002: the composer's list (`models.js`) and the server's are the same ids, the
+/// The composer's list (`models.js`) and the server's are the same ids, the
 /// default first.
 #[test]
 fn the_composer_offers_the_models_the_server_checks() -> TestResult {
@@ -1232,7 +1235,7 @@ fn the_composer_offers_the_models_the_server_checks() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: requests that arrive together (a channel changed twice before the loop woke)
+/// Requests that arrive together (a channel changed twice before the loop woke)
 /// never leave the card "checking": the loop runs the follow-up itself, whatever became of its
 /// wake-ups.
 #[tokio::test]
@@ -1249,23 +1252,23 @@ async fn requests_that_arrive_together_do_not_leave_it_checking() -> TestResult 
         service.set_channel(Channel::Stable, true);
         service.set_channel(Channel::Latest, true);
         assert!(service.is_checking());
-        until("the checks ended", || !service.is_checking()).await;
+        eventually("the checks ended", WAIT, || ready(!service.is_checking())).await?;
     }
     assert_eq!(s.updater.current(), Some(v("2.1.322")));
     // Nothing is left pending: a later request is a check again.
     s.stub.tag("latest", "2.1.323");
     s.stub.release("2.1.323", good("2.1.323")?);
     service.check_now();
-    until("the later check", || {
-        s.updater.current() == Some(v("2.1.323"))
+    eventually("the later check", WAIT, || {
+        ready(s.updater.current() == Some(v("2.1.323")))
     })
-    .await;
-    until("it ended", || !service.is_checking()).await;
+    .await?;
+    eventually("it ended", WAIT, || ready(!service.is_checking())).await?;
     looping.abort();
     Ok(())
 }
 
-/// Review round 1: when runs already get npm's newest release and it does not know the default
+/// When runs already get npm's newest release and it does not know the default
 /// model, the doctor does not promise a check or the host's install: no release knows it yet.
 #[tokio::test]
 async fn the_doctor_says_when_no_release_knows_the_default_model() -> TestResult {
@@ -1302,7 +1305,7 @@ async fn the_doctor_says_when_no_release_knows_the_default_model() -> TestResult
     Ok(())
 }
 
-/// Review round 2 (major 1): "no release knows it yet" is said only from a fresh read of npm's
+/// "no release knows it yet" is said only from a fresh read of npm's
 /// registry on a channel that reads it: not after a check that failed, not with updates off, and
 /// not from a read of hours ago, whatever `latest` the server remembers.
 #[tokio::test]
@@ -1361,7 +1364,7 @@ async fn a_remembered_latest_is_not_called_the_newest_release() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: requests made while a check runs (a channel changed twice) are answered by
+/// Requests made while a check runs (a channel changed twice) are answered by
 /// one more check, and nothing is left over that starts another: each read of the registry needs
 /// the test's pass here, so a check nobody asked for would never end.
 #[tokio::test]
@@ -1374,20 +1377,20 @@ async fn requests_made_while_a_check_runs_are_answered_by_one_more_check() -> Te
     let reads = || s.stub.tag_reads.load(Ordering::SeqCst);
     s.stub.stepped.store(true, Ordering::SeqCst);
     service.check_now();
-    until("the check reads the registry", || reads() == 1).await;
+    eventually("the check reads the registry", WAIT, || ready(reads() == 1)).await?;
     // Meanwhile the channel changes, twice.
     service.set_channel(Channel::Stable, true);
     service.set_channel(Channel::Latest, true);
     s.stub.pass();
-    until("the check that answers them", || reads() == 2).await;
+    eventually("the check that answers them", WAIT, || ready(reads() == 2)).await?;
     s.stub.pass();
-    until("the checks ended", || !service.is_checking()).await;
+    eventually("the checks ended", WAIT, || ready(!service.is_checking())).await?;
     assert_eq!(reads(), 2);
     // The next request is one check.
     service.check_now();
-    until("the check asked for", || reads() == 3).await;
+    eventually("the check asked for", WAIT, || ready(reads() == 3)).await?;
     s.stub.pass();
-    until("it ended", || !service.is_checking()).await;
+    eventually("it ended", WAIT, || ready(!service.is_checking())).await?;
     assert_eq!(reads(), 3);
     looping.abort();
     Ok(())

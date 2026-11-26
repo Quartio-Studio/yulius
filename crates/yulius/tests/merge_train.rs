@@ -1,10 +1,12 @@
-//! Merge trains end to end (SPEC-084): real repositories (a bare `origin` the fake GitHub merges
+//! Merge trains end to end: real repositories (a bare `origin` the fake GitHub merges
 //! in, Yulius's clone and the tasks' worktrees), the production Git adapter, real Yulius CI runs
 //! through the detached process host, and a fake GitHub that enforces a ruleset like Yulius's
 //! own: the `yulius/ci` status at success and the base in the head ("up to date") for every
 //! merge.
 
 use crate::support;
+use crate::support::BareRemote;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,7 +36,7 @@ use yulius_domain::time::Timestamp;
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 type TestResult = BoxResult<()>;
 
-/// The usual fixture shares one deadline from its start (SPEC-140 TWT-002): nextest kills it
+/// The usual fixture shares one deadline from its start: nextest kills it
 /// at 120 s (`slow-timeout` 30 s × `terminate-after` 4, `.config/nextest.toml`), and a test that
 /// misses its deadline 20 s before reports what it saw. The red train test takes 9 to 10 s alone
 /// and 37 to 41 s in 8 copies at once beside 24 busy loops (load 34 to 79).
@@ -50,99 +52,8 @@ name = "check"
 command = 'if [ -f clash-1 ] && [ -f clash-2 ]; then echo "clash-1 and clash-2 together"; exit 1; fi; echo ok'
 "#;
 
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
-fn git_ok(dir: &Path, args: &[&str]) -> Option<String> {
-    git(dir, args).ok()
-}
-
-/// GitHub's repository side: the bare `origin`. Merges land as GitHub lands them: the tree of
-/// merging the head into the base, as one squash commit or a merge commit.
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git_ok(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-    }
-    fn merge(&self, base: &str, head: &str, method: &str, message: &str) -> Result<String, String> {
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = git(&self.0, &["merge-tree", "--write-tree", &base_sha, head])
-            .map_err(|e| e.to_string())?;
-        let mut args = vec!["commit-tree", tree.as_str(), "-p", base_sha.as_str()];
-        if method == "merge" {
-            args.extend(["-p", head]);
-        }
-        args.extend(["-m", message]);
-        let commit = git(&self.0, &args).map_err(|e| e.to_string())?;
-        git(
-            &self.0,
-            &[
-                "update-ref",
-                &format!("refs/heads/{base}"),
-                &commit,
-                &base_sha,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(commit)
-    }
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-        .map_err(|e| e.to_string())
-    }
-    fn contains(&self, ancestor: &str, descendant: &str) -> Option<bool> {
-        let status = Command::new("git")
-            .args(["merge-base", "--is-ancestor", ancestor, descendant])
-            .current_dir(&self.0)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .ok()?;
-        status.code().map(|code| code == 0)
-    }
-}
-
 /// The spec of a task that finished its work: `done`, every Plan item ticked, Evidence (a task
-/// whose spec does not say done is not Done, SPEC-491 DON-004).
+/// whose spec does not say done is not Done).
 fn valid_spec(task: &str) -> String {
     format!(
         "---\nyulius-task: {task}\nstatus: done\n---\n# Change {task}\n\n\
@@ -286,7 +197,7 @@ async fn fixture_with(
             &format!("HEAD:{integration}"),
         ],
     )?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     h.github.strict.store(true, Ordering::SeqCst);
 
     let data = h.app.config.data_dir.clone();
@@ -476,6 +387,36 @@ impl Fixture {
 
     async fn runs(&self, app: &App) -> BoxResult<Vec<CiRunRecord>> {
         Ok(app.deps.store.ci_runs(&self.sandbox, 200).await?)
+    }
+
+    /// Arms tasks 1 and 2 at their worktrees once CI knows them.
+    async fn arm_both(
+        &self,
+        app: &App,
+        sandbox: &yulius_app::model::SandboxRecord,
+        one: &Path,
+        two: &Path,
+    ) -> TestResult {
+        app.ci_sync_sandbox(sandbox).await?;
+        self.arm(1, one).await?;
+        self.arm(2, two).await
+    }
+
+    /// Moves dev on so that the armed members need a candidate, forms it and returns its run.
+    async fn first_candidate(
+        &self,
+        app: &Arc<App>,
+        sandbox: &yulius_app::model::SandboxRecord,
+    ) -> BoxResult<CiRunRecord> {
+        self.advance_dev("other.txt")?;
+        app.ci_sync_sandbox(sandbox).await?;
+        app.merge_armed(&self.sandbox).await;
+        Ok(self
+            .train_runs(app)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("no candidate")?)
     }
 
     /// The runs of merge trains.
@@ -703,14 +644,14 @@ impl Fixture {
 }
 
 /// A new server process over the same data directory, database and GitHub: nothing of the
-/// last one's memory, armed merges put back from their file (DLV-205).
+/// last one's memory, armed merges put back from their file.
 async fn restart(app: &Arc<App>) -> Arc<App> {
     let next = App::new(app.config.clone(), app.deps.clone());
     next.restore_armed_merges().await;
     next
 }
 
-/// TRN-001..005, SPEC-441 MQ-003: three armed pull requests whose own runs passed, and whose
+/// Three armed pull requests whose own runs passed, and whose
 /// base moved: the one still up to date merges at once, and the other two are tested together by
 /// one run and merged one after another on it. Each is brought up to date with exactly the tree
 /// the train predicted (the union-merged changes log included), the train's verdict is published
@@ -727,7 +668,7 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
     for (n, worktree) in (1..).zip(&worktrees) {
         f.arm(n, worktree).await?;
     }
-    // #3 delivers a part of its plan: one slice is still ahead (SPEC-484 PLN-003).
+    // #3 delivers a part of its plan: one slice is still ahead.
     {
         use yulius_app::model::StepRecord;
         use yulius_domain::ids::StepId;
@@ -941,7 +882,7 @@ async fn a_singleton_configuration_refusal_tells_the_owner_what_the_parser_rejec
     Ok(())
 }
 
-/// SPEC-504 CFG-002 (review round 1): a merge candidate is checked as what the branch would be:
+/// A merge candidate is checked as what the branch would be:
 /// a member whose `yulius.toml` is invalid (its own run recorded passed, as a behind pull
 /// request's could be on an older base) makes the candidate's run fail at once, with a failed
 /// job `yulius.toml` naming the parser's message and no job run.
@@ -989,7 +930,7 @@ async fn a_candidate_with_an_invalid_yulius_toml_fails_with_the_parsers_message(
     Ok(())
 }
 
-/// SPEC-217 VDP-001 (review round 6): a train whose members changed the CI runs their jobs with
+/// A train whose members changed the CI runs their jobs with
 /// the trusted security job; a member's own job named `security` does not stand in for it.
 #[tokio::test]
 async fn a_train_with_its_own_jobs_keeps_the_security_job() -> TestResult {
@@ -997,7 +938,7 @@ async fn a_train_with_its_own_jobs_keeps_the_security_job() -> TestResult {
     let app = f.h.app.clone();
     app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -1074,7 +1015,7 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
     assert!(!f.merged(&app, 3).await?);
     let outcome = dropped().await?;
     // #1 and #2 passed without it on the same base: #3 is told at once, with no candidate of its
-    // own (SPEC-497 MQW-003).
+    // own.
     assert!(
         outcome.contains(
             "The merge you armed was dropped: pull request #3 merged into the current `dev` \
@@ -2070,7 +2011,7 @@ async fn check_recovered_singleton_arm(
         SingletonChange::MergedRetry | SingletonChange::MergedRetryOffline
     ) {
         let landed =
-            Origin(f.origin.clone()).merge(f.integration, head, "squash", "external merge")?;
+            BareRemote(f.origin.clone()).merge(f.integration, head, "squash", "external merge")?;
         {
             let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
             let pull = pulls
@@ -2436,7 +2377,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         _ => "prior-train",
     };
     let (mut red, mut job) =
-        crate::pr_watch::run(&f.sandbox, run_id, &sha, RunState::Failed, None, 1);
+        crate::support::pr_watch::run(&f.sandbox, run_id, &sha, RunState::Failed, None, 1);
     red.reference = CiRef::Train(vec![8, 9]);
     job.name = "shard 2".into();
     job.state = RunState::Running;
@@ -2537,7 +2478,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             tokio::spawn(async move { app.merge_armed(&sandbox).await })
         };
         support::point_reached(at).await?;
-        let (mut newer, job) = crate::pr_watch::run(
+        let (mut newer, job) = crate::support::pr_watch::run(
             &f.sandbox,
             "new-train-verdict",
             "another-tree",
@@ -2645,7 +2586,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             tokio::spawn(async move { app.merge_armed(&sandbox).await })
         };
         support::point_reached(at).await?;
-        let (mut rerun, job) = crate::pr_watch::run(
+        let (mut rerun, job) = crate::support::pr_watch::run(
             &f.sandbox,
             "later-rerun",
             &head,
@@ -2698,7 +2639,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                         }
                         _ => RunState::Failed,
                     };
-                    let (mut own, job) = crate::pr_watch::run(
+                    let (mut own, job) = crate::support::pr_watch::run(
                         &f.sandbox,
                         "ordinary-rerun",
                         &head,
@@ -2713,7 +2654,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                     } else {
                         RunState::Passed
                     };
-                    let (mut peer, job) = crate::pr_watch::run(
+                    let (mut peer, job) = crate::support::pr_watch::run(
                         &f.sandbox,
                         "peer",
                         &head,
@@ -2963,7 +2904,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         // Both the live slot and its durable decision still name this failure. A new
         // ordinary rerun must enter its bounded wait even before the daemon restarts.
         f.h.clock.0.fetch_add(1, Ordering::SeqCst);
-        let (mut rerun, job) = crate::pr_watch::run(
+        let (mut rerun, job) = crate::support::pr_watch::run(
             &f.sandbox,
             "recheck-owner",
             &head,
@@ -3065,7 +3006,7 @@ async fn inconclusive_candidate_runs_leave_the_same_tree_eligible_to_run() -> Te
     Ok(())
 }
 
-/// SPEC-497 MQW-003: the member a bisection left out is told only when the others passed without
+/// The member a bisection left out is told only when the others passed without
 /// it. Here #1 fails on the new base by itself: the candidate of two fails, #1 alone fails and is
 /// told, and #2, blamed for nothing, merges on a candidate of its own.
 #[tokio::test]
@@ -3118,7 +3059,7 @@ async fn a_member_left_out_is_blamed_only_when_the_others_pass_without_it() -> T
     Ok(())
 }
 
-/// TRN-003/007: an armed pull request that conflicts on top of the ones armed before it is left
+/// An armed pull request that conflicts on top of the ones armed before it is left
 /// out of their train and told so; it waits until they merged, then the one-by-one flow tells it
 /// what to resolve. The others merge on the train's run.
 #[tokio::test]
@@ -3208,7 +3149,7 @@ async fn a_pull_request_that_conflicts_in_the_train_is_left_out() -> TestResult 
     Ok(())
 }
 
-/// TRN-010: passes that decide armed merges at the same time (two runs ending together) take
+/// Passes that decide armed merges at the same time (two runs ending together) take
 /// turns. Two green, up-to-date pull requests: one merges, the other is brought up to date. It
 /// used to be merged by the other pass from a stale "up to date", refused by the strict ruleset
 /// as behind, and its armed merge dropped.
@@ -3240,7 +3181,7 @@ async fn passes_at_the_same_time_take_turns() -> TestResult {
     };
     let state = f.wait(other, &worktrees[other as usize - 1]).await?;
     assert_eq!(state["merge_armed"], true, "not dropped: {state}");
-    // Behind #{merged} now, it is tested on top of it (SPEC-441 MQ-003), its head untouched.
+    // Behind #{merged} now, it is tested on top of it, its head untouched.
     let trains = f.train_runs(&app).await?;
     assert_eq!(
         trains.iter().map(|r| r.reference.key()).collect::<Vec<_>>(),
@@ -3254,7 +3195,7 @@ async fn passes_at_the_same_time_take_turns() -> TestResult {
     Ok(())
 }
 
-/// TRN-011: an armed pull request whose agent is busy while its base moved on is not brought up
+/// An armed pull request whose agent is busy while its base moved on is not brought up
 /// to date (DLV-203 waits for an idle agent); it now waits too, instead of being merged, refused
 /// by the ruleset as behind and dropped. Once the agent is idle it is brought up to date.
 #[tokio::test]
@@ -3295,7 +3236,7 @@ async fn a_busy_agent_behind_its_base_waits_instead_of_being_refused() -> TestRe
         )
         .await?;
     app.merge_armed(&f.sandbox).await;
-    // Once idle it is tested on top of the moved base (SPEC-441 MQ-003), and merges on green.
+    // Once idle it is tested on top of the moved base, and merges on green.
     let trains = f.train_runs(&app).await?;
     assert_eq!(trains.len(), 1, "{trains:?}");
     assert_eq!(f.wait(1, &worktree).await?["merge_armed"], true);
@@ -3305,8 +3246,8 @@ async fn a_busy_agent_behind_its_base_waits_instead_of_being_refused() -> TestRe
     Ok(())
 }
 
-/// TRN-012: an agent that merges the integration branch into its armed branch itself, cleanly,
-/// keeps its armed merge: Git's own clean merges keep the review (SPEC-083 REV-001), so the
+/// An agent that merges the integration branch into its armed branch itself, cleanly,
+/// keeps its armed merge: Git's own clean merges keep the review, so the
 /// merge follows the new head instead of being dropped as "the branch moved on".
 #[tokio::test]
 async fn an_armed_merge_follows_the_agents_own_clean_merge_of_dev() -> TestResult {
@@ -3321,7 +3262,7 @@ async fn an_armed_merge_follows_the_agents_own_clean_merge_of_dev() -> TestResul
     let merged = git(&worktree, &["rev-parse", "HEAD"])?;
     assert_ne!(merged, armed);
     // Armed again with the head its review covered, before any pass: the place is kept and the
-    // merge follows the new head (SPEC-441 MQ-006).
+    // merge follows the new head.
     let (_, armed_at) = saved_armed(&app, 1)?.ok_or("armed")?;
     f.h.clock.0.fetch_add(1000, Ordering::SeqCst);
     // Its plan is recorded, so Yulius pushes the new head.
@@ -3355,9 +3296,9 @@ async fn an_armed_merge_follows_the_agents_own_clean_merge_of_dev() -> TestResul
     Ok(())
 }
 
-/// TRN-008: a train survives restarts, before its run and halfway through its merges: the next
+/// A train survives restarts, before its run and halfway through its merges: the next
 /// process runs it, then picks up the merges where they stopped (GitHub had not shown a pushed
-/// head yet) from the train's file and the armed merges' (DLV-205), without another run.
+/// head yet) from the train's file and the armed merges', without another run.
 #[tokio::test]
 async fn a_merge_train_survives_a_restart() -> TestResult {
     let f = fixture().await?;
@@ -3434,9 +3375,9 @@ async fn a_merge_train_survives_a_restart() -> TestResult {
     Ok(())
 }
 
-/// SPEC-441 MQ-001: the integration branch moving while an armed pull request's own run (its
+/// The integration branch moving while an armed pull request's own run (its
 /// pre-check) is queued or running changes nothing: Yulius does not merge the base into it, so
-/// the run is not superseded. Its merge candidate runs beside it (SPEC-493 MQC-001), and once
+/// the run is not superseded. Its merge candidate runs beside it, and once
 /// both passed the pull request lands on top of the moved base.
 #[tokio::test]
 async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
@@ -3462,7 +3403,7 @@ async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
     assert_eq!(pre_check.len(), 1, "{runs:?}");
     assert_eq!(pre_check[0].sha, head);
     assert!(pre_check[0].state.is_active(), "{runs:?}");
-    // Its candidate goes beside the pre-check (SPEC-493 MQC-001); nothing is merged into it.
+    // Its candidate goes beside the pre-check; nothing is merged into it.
     assert_eq!(f.train_runs(&app).await?.len(), 1, "{runs:?}");
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], true);
@@ -3492,7 +3433,7 @@ async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 MQC-001 (AC-13): two armed pull requests behind their base whose own runs are still
+/// Two armed pull requests behind their base whose own runs are still
 /// queued: their merge candidate forms at once and its run goes beside their own runs, nothing is
 /// merged into them meanwhile, and both merge once the candidate and their own runs passed: one CI
 /// cycle, not an own run and then a candidate.
@@ -3503,9 +3444,7 @@ async fn a_candidate_runs_beside_its_members_own_runs() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let heads = [
         git(&one, &["rev-parse", "HEAD"])?,
         git(&two, &["rev-parse", "HEAD"])?,
@@ -3562,7 +3501,7 @@ async fn a_candidate_runs_beside_its_members_own_runs() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 MQW-002: a candidate that passed merges its members at once, even while a member's
+/// A candidate that passed merges its members at once, even while a member's
 /// own run still runs: the candidate's run tested the exact merged result. The own run is held
 /// running (no process takes it), so only the candidate's run executes.
 #[tokio::test]
@@ -3574,15 +3513,7 @@ async fn a_passed_candidate_merges_while_a_members_own_run_goes() -> TestResult 
     app.ci_sync_sandbox(&sandbox).await?;
     f.arm(1, &one).await?;
     let own = hold_own_run(&f, &app, 1).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     f.decide_until(&app, || async {
         app.ci_sync_sandbox(&sandbox).await?;
@@ -3602,7 +3533,7 @@ async fn a_passed_candidate_merges_while_a_members_own_run_goes() -> TestResult 
     let landed = git(&f.origin, &["rev-parse", "dev"])?;
     assert_eq!(f.origin_tree(&checked)?, f.origin_tree(&landed)?);
     assert_eq!(
-        Origin(f.origin.clone()).contains(&checked, &landed),
+        BareRemote(f.origin.clone()).contains(&checked, &landed),
         Some(false)
     );
     let ctx = owner_ctx(&f, 1).await?;
@@ -3702,7 +3633,7 @@ async fn dissolved(app: &App) -> BoxResult<Vec<String>> {
     .await?)
 }
 
-/// SPEC-497 MQW-002 (was review round 1 of SPEC-493 fix 4): a member whose own run is stuck holds
+/// A member whose own run is stuck holds
 /// nothing back: once the candidate passed, both members merge, with no time limit to wait out
 /// and nothing dissolved.
 #[tokio::test]
@@ -3712,19 +3643,9 @@ async fn a_stuck_own_run_holds_nothing_back() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let stuck = hold_own_run(&f, &app, 1).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     f.decide_until(&app, || async {
         app.ci_sync_sandbox(&sandbox).await?;
@@ -3741,7 +3662,7 @@ async fn a_stuck_own_run_holds_nothing_back() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 MQW-001: a member whose own run is cancelled or errors (the infrastructure twice, a
+/// A member whose own run is cancelled or errors (the infrastructure twice, a
 /// time limit) stays in the candidate: that says nothing about its change, and the candidate's
 /// run, which goes on, decides it. Both merge on it.
 #[tokio::test]
@@ -3751,20 +3672,10 @@ async fn a_member_whose_own_run_is_cancelled_or_errors_stays_in_the_candidate() 
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held_one = hold_own_run(&f, &app, 1).await?;
     let held_two = hold_own_run(&f, &app, 2).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     end_own_run(&app, &held_one, RunState::Cancelled).await?;
     end_own_run(&app, &held_two, RunState::Error).await?;
     app.merge_armed(&f.sandbox).await;
@@ -3785,7 +3696,7 @@ async fn a_member_whose_own_run_is_cancelled_or_errors_stays_in_the_candidate() 
     Ok(())
 }
 
-/// SPEC-497 MQW-001: a candidate formed again with the same members on the same base (here after
+/// A candidate formed again with the same members on the same base (here after
 /// a passed one waited too long for a busy member) reuses the passed run of its tree: no second
 /// run is made, and it merges once the member is idle.
 #[tokio::test]
@@ -3793,7 +3704,7 @@ async fn a_candidate_formed_again_reuses_its_trees_passed_run() -> TestResult {
     formed_again(Project::Standard).await
 }
 
-/// SPEC-497 MQW-001 (review round 1): the first candidate's run skipped a job for its `paths`, so
+/// The first candidate's run skipped a job for its `paths`, so
 /// it is no source: the same candidate formed again gets a run of its own.
 #[tokio::test]
 async fn a_run_that_skipped_a_paths_job_is_no_source_for_a_candidate() -> TestResult {
@@ -3874,7 +3785,7 @@ async fn formed_again(project: Project) -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 MQW-003: two armed pull requests that both change files under a pattern the
+/// Two armed pull requests that both change files under a pattern the
 /// project's `[merge_queue] apart` names never share a candidate: the first goes into one, the
 /// other waits and merges on the next, on top of it. A third that changes nothing there joins the
 /// first. No candidate fails on their combination.
@@ -3975,20 +3886,10 @@ async fn a_member_whose_own_run_fails_during_the_merges_is_not_merged() -> TestR
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held = hold_own_run(&f, &app, 2).await?;
     let (at, go) = support::hold_point(yulius_app::race::Point::TrainMemberMerging, "t2");
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     // A pass merges #1 and stops before #2; #2's own run fails there.
     let pass = {
@@ -4011,7 +3912,7 @@ async fn a_member_whose_own_run_fails_during_the_merges_is_not_merged() -> TestR
     Ok(())
 }
 
-/// SPEC-497 MQW-001, MQW-002 (review round 1): a member whose own run fails after its candidate
+/// A member whose own run fails after its candidate
 /// passed is not merged on the candidate: it leaves with `member_failed`, its armed merge ends,
 /// and the other merges on a candidate formed again.
 #[tokio::test]
@@ -4021,19 +3922,9 @@ async fn a_failed_own_run_beats_a_passed_candidate() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held = hold_own_run(&f, &app, 2).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     end_own_run(&app, &held, RunState::Failed).await?;
     app.merge_armed(&f.sandbox).await;
@@ -4054,7 +3945,7 @@ async fn a_failed_own_run_beats_a_passed_candidate() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 4: a failed candidate waits for a member's own run that still
+/// A failed candidate waits for a member's own run that still
 /// goes (it may say why) for at most the wait limit, then it is bisected as before.
 #[tokio::test]
 async fn a_failed_candidate_waits_for_own_runs_within_the_wait_limit() -> TestResult {
@@ -4064,19 +3955,9 @@ async fn a_failed_candidate_waits_for_own_runs_within_the_wait_limit() -> TestRe
     // Each passes alone; together they fail the check.
     let one = f.task(1, &[("clash-1", "x\n")]).await?;
     let two = f.task(2, &[("clash-2", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held = hold_own_run(&f, &app, 2).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Failed);
     f.settle_but(&app, &held).await?;
     app.merge_armed(&f.sandbox).await;
@@ -4099,7 +3980,7 @@ async fn a_failed_candidate_waits_for_own_runs_within_the_wait_limit() -> TestRe
     Ok(())
 }
 
-/// Review round 3 of SPEC-493 fix 5: a run that passed when it was queued (every job skipped
+/// A run that passed when it was queued (every job skipped
 /// for its `paths`) never reaches the executor, whose run end starts the merge pass: the
 /// dispatcher starts it, so a merge armed before the run merges at once, with no other pass.
 #[tokio::test]
@@ -4142,7 +4023,7 @@ async fn a_merge_armed_on_a_run_of_skipped_jobs_happens_at_once() -> TestResult 
     Ok(())
 }
 
-/// SPEC-493 MQC-002 (AC-13): a member whose own run fails leaves the candidate: the candidate is
+/// A member whose own run fails leaves the candidate: the candidate is
 /// formed again from the other, which merges, and the failed member's armed merge ends with its
 /// run named, as a failed own run ends it outside a candidate.
 #[tokio::test]
@@ -4163,9 +4044,7 @@ async fn failed_member_leaves(fail_during_decision: bool) -> TestResult {
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     // Its own change fails the check alone.
     let two = f.task(2, &[("clash-1", "x\n"), ("clash-2", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let own = if fail_during_decision {
         Some(hold_own_run(&f, &app, 2).await?)
     } else {
@@ -4230,7 +4109,7 @@ async fn failed_member_leaves(fail_during_decision: bool) -> TestResult {
     Ok(())
 }
 
-/// SPEC-441 MQ-001, MQ-003, MQ-010: three pull requests from one base turn green one after
+/// Three pull requests from one base turn green one after
 /// another (one CI lane), and each merge moves the base. No pull request's run and no merge
 /// candidate is cancelled, and all three land in order after their 3 pre-checks and at most 2
 /// candidate runs.
@@ -4319,7 +4198,7 @@ fn saved_armed(app: &App, n: u32) -> BoxResult<Option<(String, i64)>> {
         }))
 }
 
-/// SPEC-441 MQ-006: when Yulius merges the integration branch into an armed pull request (its
+/// When Yulius merges the integration branch into an armed pull request (its
 /// merge candidate passed), the merge stays armed on the new head, with its place, while GitHub
 /// catches up, and merges once it has.
 #[tokio::test]
@@ -4447,7 +4326,7 @@ async fn verified_head_during_github_wait(retitle_fails: bool) -> TestResult {
     Ok(())
 }
 
-/// SPEC-441 MQ-006: `delivery_merge` called again for a head that is armed and in a merge
+/// `delivery_merge` called again for a head that is armed and in a merge
 /// candidate keeps its place: the candidate is not dissolved and its run goes on.
 #[tokio::test]
 async fn arming_the_same_head_again_keeps_its_place() -> TestResult {
@@ -4562,7 +4441,7 @@ async fn four_heads_that_pass_during_a_candidate_join_the_next_one_in_arm_order(
     Ok(())
 }
 
-/// SPEC-441 MQ-007: every armed pull request says where it stands, in `yulius wait` and in
+/// Every armed pull request says where it stands, in `yulius wait` and in
 /// `delivery_status`: one in the merge candidate under test, one green behind it waiting for the
 /// next candidate, and one whose agent is busy.
 #[tokio::test]
@@ -4652,7 +4531,7 @@ async fn every_armed_pull_request_says_where_it_stands() -> TestResult {
     Ok(())
 }
 
-/// SPEC-441 MQ-002, MQ-008: an armed pull request that is green and up to date merges on the
+/// An armed pull request that is green and up to date merges on the
 /// fast pass (every 20 seconds, with no CI run ending), even while a merge candidate of another
 /// is under test; that candidate's base moved, so it is formed again on the new base. A pass over
 /// a sandbox with nothing decidable does nothing.
@@ -4698,7 +4577,7 @@ async fn a_green_current_pull_request_merges_on_the_next_pass() -> TestResult {
     Ok(())
 }
 
-/// SPEC-441 MQ-009: a merge made by hand, pinned to a head whose own Yulius CI run passed
+/// A merge made by hand, pinned to a head whose own Yulius CI run passed
 /// (`gh pr merge --match-head-commit`), ends the armed merge with an outcome that says it counts
 /// as merged on green Yulius CI, and `delivery_merge` and `delivery_status` say so too. A hand
 /// merge at a head that never passed is told that it does not count.
@@ -4706,7 +4585,7 @@ async fn a_green_current_pull_request_merges_on_the_next_pass() -> TestResult {
 async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
-    let person = yulius_app::model::Secret("person-token".into());
+    let person = yulius_app::model::Secret::new("person-token".into());
     let (worktree, _peer, _) = shared_pull_heads(&f).await?;
     f.arm(1, &worktree).await?;
     let head = git(&worktree, &["rev-parse", "HEAD"])?;
@@ -4820,7 +4699,7 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     Ok(())
 }
 
-/// Review M2 (SPEC-441 MQ-004/MQ-005): a candidate whose run was cancelled (or errored) says
+/// A candidate whose run was cancelled (or errored) says
 /// nothing about its members, so they go one by one: each brought up to date after its own run
 /// passed, that head's run decides, and it merges. No second candidate forms from them.
 #[tokio::test]
@@ -4868,7 +4747,7 @@ async fn a_cancelled_candidate_sends_its_members_one_by_one() -> TestResult {
     Ok(())
 }
 
-/// Review M2 (SPEC-441 MQ-003): a member whose agent is busy when a passed candidate reaches it
+/// A member whose agent is busy when a passed candidate reaches it
 /// is waited for, not dropped from the candidate; it merges once its agent is idle. A member
 /// busy beyond the bound (`WAIT_LIMIT_MS`) ends the candidate and stays armed.
 #[tokio::test]
@@ -4928,7 +4807,7 @@ async fn a_busy_member_of_a_passed_candidate_is_waited_for() -> TestResult {
     Ok(())
 }
 
-/// Review minor 1 (SPEC-441 MQ-005): a member that cannot merge at its turn for a reason of its
+/// Review minor 1: a member that cannot merge at its turn for a reason of its
 /// own (here its owner can no longer act) goes one by one, where it is told why, instead of
 /// the same candidate being formed and run again.
 #[tokio::test]
@@ -4982,7 +4861,7 @@ async fn a_member_that_cannot_merge_is_told_instead_of_tested_again() -> TestRes
     Ok(())
 }
 
-/// Review minor 3 (SPEC-441 MQ-007): an armed head whose own run errored says so and how to go
+/// Review minor 3: an armed head whose own run errored says so and how to go
 /// on, instead of "waits for its own run", which would never come.
 #[tokio::test]
 async fn an_errored_run_says_to_rerun_it() -> TestResult {
@@ -5008,7 +4887,7 @@ async fn an_errored_run_says_to_rerun_it() -> TestResult {
     Ok(())
 }
 
-/// Review round 2, M3 (SPEC-441 MQ-005): a member whose branch cannot be brought up to date at
+/// A member whose branch cannot be brought up to date at
 /// its turn (here a stale `index.lock` in its worktree) ends the candidate and goes one by one,
 /// still armed and told where it stands; the same candidate is not formed and run again.
 #[tokio::test]
@@ -5052,7 +4931,7 @@ async fn a_member_that_cannot_be_updated_goes_one_by_one() -> TestResult {
     Ok(())
 }
 
-/// Review round 2, minor 1 (SPEC-441 MQ-008): an idle agent with uncommitted changes cannot be
+/// Review round 2, minor 1: an idle agent with uncommitted changes cannot be
 /// put in a candidate, so its green head behind the base gives the fast pass nothing to do until
 /// it commits.
 #[tokio::test]
@@ -5221,7 +5100,7 @@ async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> Tes
     );
 
     // Its agent merges `dev` in, Yulius pushes at the turn's end, and the new head passes.
-    assert!(git_ok(&worktree, &["merge", "-q", "origin/dev"]).is_none());
+    assert!(git(&worktree, &["merge", "-q", "origin/dev"]).is_err());
     std::fs::write(worktree.join("shared.txt"), "mine\nother\n")?;
     git(&worktree, &["add", "-A"])?;
     git(&worktree, &["commit", "-q", "--no-edit"])?;
@@ -5248,7 +5127,7 @@ async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> Tes
     Ok(())
 }
 
-/// SPEC-491 DON-001 (review of SPEC-491, M1): GitHub knows nothing of the union rule Yulius gives
+/// GitHub knows nothing of the union rule Yulius gives
 /// the changes log, so two pull requests that each add an entry at its top read "not mergeable"
 /// there while Yulius's own merge resolves them. Where the clone answers, it decides: the pull
 /// request is tested, the overview says no conflict, and the task chained after it starts.
@@ -5314,7 +5193,7 @@ async fn github_s_flag_does_not_hold_a_pull_request_the_clone_merges() -> TestRe
     Ok(())
 }
 
-/// SPEC-483 GRP-003 (finding D8): an agent that armed its merge and whose goal was then judged
+/// An agent that armed its merge and whose goal was then judged
 /// achieved is not Done while the merge is armed: a task chained after it waits, a supertask
 /// waits for it, Home counts it as working, and archiving it is refused (it would have ended the
 /// armed merge, said to nobody); the merge stays armed.
@@ -5495,7 +5374,7 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
     let queue = app.merge_queue_for_person(&ctx, &f.sandbox).await?;
     assert_eq!(queue["armed"], json!([]), "{queue}");
     // The merge is the person's, not a reviewed agent's: under their name, and said so
-    // (review of slice 5, F2).
+    // (review of slice 5).
     let merged: Vec<(String, String, String)> =
         yulius_app::ports::store_ext::AutomationStore::automation_audit(&f.h.store, "app#1", 100)
             .await?
@@ -5536,7 +5415,7 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
         false
     );
 
-    // A task whose run ended keeps no armed merge: it is not armed for nothing (F1).
+    // A task whose run ended keeps no armed merge: it is not armed for nothing.
     let third = f.task(3, &[("c.txt", "z\n")]).await?;
     let third_head = git(&third, &["rev-parse", "HEAD"])?;
     TaskStore::transition_task(
@@ -5562,7 +5441,7 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
         false
     );
     // Once its checks passed it merges at once, as the page's Merge does, and nothing is left
-    // armed (F6).
+    // armed.
     f.record_passed(&app, 3, &third_head).await?;
     let merged = app.merge_for_person(&owner_ctx(&f, 3).await?, "t3").await?;
     assert_eq!(
@@ -5576,7 +5455,7 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
         false
     );
 
-    // A commit not pushed yet is not armed: what would merge is the branch on GitHub (F5).
+    // A commit not pushed yet is not armed: what would merge is the branch on GitHub.
     let fourth = f.task(4, &[("d.txt", "w\n")]).await?;
     std::fs::write(fourth.join("later.txt"), "later\n")?;
     git(&fourth, &["add", "-A"])?;
@@ -5592,7 +5471,7 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
     Ok(())
 }
 
-/// A task chained after `t1`, created by Alice (who has a Claude account connected, SPEC-246).
+/// A task chained after `t1`, created by Alice (who has a Claude account connected).
 async fn chained_after_t1(f: &Fixture) -> BoxResult<TaskId> {
     use yulius_app::model::{AccountRecord, AccountStatus};
     use yulius_app::ports::store::AccountStore;
@@ -5632,7 +5511,7 @@ async fn status_of_task(f: &Fixture, id: &TaskId) -> Option<TaskStatus> {
         .map(|task| task.status)
 }
 
-/// SPEC-487 CHN-001 (review round 1, M1): a server that started again knows a merge is armed
+/// A server that started again knows a merge is armed
 /// before it put the armed merges back, so a chain pass in between (any task's turn end) does not
 /// find the green pull request Done.
 #[tokio::test]
@@ -5655,7 +5534,7 @@ async fn a_restarted_server_keeps_a_chained_task_waiting_for_an_armed_merge() ->
     Ok(())
 }
 
-/// SPEC-487 CHN-002 (review round 1, M3): an armed merge that ended without merging leaves a
+/// An armed merge that ended without merging leaves a
 /// green, open pull request and an idle agent that has not heard how it ended. That is not
 /// Done either: the task goes on by itself once the watch says so.
 #[tokio::test]
@@ -5690,7 +5569,7 @@ async fn a_task_chained_after_a_dropped_armed_merge_waits_for_its_news() -> Test
     Ok(())
 }
 
-/// SPEC-612 GF-006: once GitHub confirms a person's merge, the completed predecessor
+/// Once GitHub confirms a person's merge, the completed predecessor
 /// releases its successor without waiting for a terminal notification.
 #[tokio::test]
 async fn a_merge_github_reports_first_releases_the_finished_tasks_successor() -> TestResult {
@@ -5707,7 +5586,7 @@ async fn a_merge_github_reports_first_releases_the_finished_tasks_successor() ->
     app.watch_prs(&yulius_app::pr_watch::WatchBounds::default())
         .await;
     // A person merges it on GitHub; the record still says open.
-    let person = yulius_app::model::Secret("person-token".into());
+    let person = yulius_app::model::Secret::new("person-token".into());
     app.deps
         .github
         .merge_pull(&person, "acme", "app", 1, "squash", &head)
@@ -5726,7 +5605,7 @@ async fn a_merge_github_reports_first_releases_the_finished_tasks_successor() ->
     Ok(())
 }
 
-/// SPEC-575 MFS-002 (review round 1): with a merge-first environment a merge train skips the
+/// With a merge-first environment a merge train skips the
 /// full suite like its members' heads, and the integration branch's run after the train merged
 /// runs it, never reusing the train's tree that skipped it.
 #[tokio::test]
@@ -5806,7 +5685,7 @@ async fn a_train_skips_the_full_suite_and_the_merged_head_runs_it() -> TestResul
     Ok(())
 }
 
-/// SPEC-575 MFS-002 (review round 2): a merge candidate formed again reuses its tree, and its
+/// A merge candidate formed again reuses its tree, and its
 /// copied verdict keeps the full suite's skip, so the member's verdict built from it never
 /// stands in for the full suite: the merged head runs it.
 #[tokio::test]
@@ -5888,6 +5767,476 @@ async fn a_reused_candidate_still_leaves_the_full_suite_to_the_merged_head() -> 
             && j.state == RunState::Passed
             && j.output.contains("full suite ran")),
         "the merged head ran the full suite: {head_run:?} {jobs:?}"
+    );
+    Ok(())
+}
+
+/// `yulius.toml` with a full suite after the merge beside a merge-first staging target (SPEC-575)
+/// and the `[merge_queue]` lines `queue`.
+fn merge_first_toml(queue: &str) -> String {
+    format!(
+        "{YULIUS_TOML}\n[[ci.jobs]]\nname = \"full\"\ncommand = 'echo full suite ran'\n\
+         after_merge = true\n\n[cd.dev]\n[cd.prod]\n\n[cd.staging]\nstage = \"dev\"\n\
+         merge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\n\
+         migrations = \"none: stateless\"\n{queue}"
+    )
+}
+
+/// The integration head's full gate fails `test` (as its after-merge run would), the merge of
+/// task `owner` having made it when given; the head.
+async fn red_gate(f: &Fixture, test: &str, owner: Option<&str>) -> BoxResult<String> {
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    let head = git(
+        &f.repo,
+        &["rev-parse", &format!("origin/{}", f.integration)],
+    )?;
+    if let Some(task) = owner {
+        f.h.store
+            .execute_for_tests(&format!(
+                "INSERT INTO task_merges(task_id, sandbox_id, merged_sha, branch, pr_number, \
+                 head_sha) VALUES ('{task}', 's1', '{head}', 'dev', NULL, '{head}')"
+            ))
+            .await?;
+    }
+    let run = crate::support::staging::recorded_gate(
+        &f.h.app,
+        &f.sandbox,
+        &head,
+        RunState::Failed,
+        Some(&format!("---- {test} stdout ----\nassertion failed\n")),
+    )
+    .await?;
+    // Nothing to publish: CI counts it settled.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET status_note = 'recorded by the test' WHERE id = '{run}'"
+        ))
+        .await?;
+    Ok(head)
+}
+
+/// `delivery_merge` of `t<n>`'s head with `extra` arguments: its answer.
+async fn deliver(f: &Fixture, n: u32, worktree: &Path, extra: Value) -> BoxResult<Value> {
+    let head = git(worktree, &["rev-parse", "HEAD"])?;
+    let mut args = json!({"reviewed_head": head, "review_summary": "approve"});
+    if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+        args.extend(extra.clone());
+    }
+    let result = support::mcp_tool(&f.h, &format!("tok-t{n}"), "delivery_merge", args).await?;
+    assert_eq!(result["isError"], false, "{result}");
+    Ok(support::tool_text(&result))
+}
+
+/// The merge queue's stop as the CI/CD page reads it (`null` while merges go on).
+async fn stop_view(f: &Fixture) -> BoxResult<Value> {
+    let r = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/ci",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    Ok(r.body["merge_stop"].clone())
+}
+
+/// The task numbers the stop's `waiting` lists.
+async fn waiting_tasks(f: &Fixture, numbers: &[&str]) -> BoxResult<(Value, Value)> {
+    let mut expected = Vec::new();
+    for id in numbers {
+        let number =
+            f.h.store
+                .task(&TaskId::parse(id)?)
+                .await?
+                .ok_or("task")?
+                .number;
+        expected.push(json!(number));
+    }
+    let listed = stop_view(f).await?["waiting"]
+        .as_array()
+        .map(|w| w.iter().map(|e| e["task"].clone()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    Ok((Value::Array(listed), Value::Array(expected)))
+}
+
+/// After the queue's state is read again (it is kept for 15 s).
+fn later(f: &Fixture) {
+    f.h.clock.0.fetch_add(16_000, Ordering::SeqCst);
+}
+
+/// SPEC-676 RGS-002, RGS-003, RGS-007: on a merge-first project, a red after-merge gate at the
+/// integration head holds a green, up-to-date armed pull request: it stays armed, told which
+/// failure holds it; a passing rerun of that revision lets it merge on the next pass by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    f.advance_dev_with("yulius.toml", &merge_first_toml(""))?;
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let red = red_gate(&f, "tests::broken", None).await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    app.merge_armed(&f.sandbox).await;
+    assert!(f.merges().is_empty(), "{:?}", f.merges());
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], true, "{state}");
+    let note = state["merge_train"].as_str().unwrap_or_default();
+    for said in [
+        "Pull request #1 waits: the after-merge gate of `dev` is red",
+        &format!("`tests::broken` (first at {}", &red[..12]),
+        "it merges by itself then",
+    ] {
+        assert!(note.contains(said), "{said}: {state}");
+    }
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    assert!(
+        !app.decidable_in(&sandbox).await,
+        "a held merge decides nothing"
+    );
+    // The CI/CD page shows the stop (RGS-010): the failure, its run, the merges it holds.
+    let overview = || async {
+        let r = call(
+            &f.h.router,
+            Method::GET,
+            "/api/sandboxes/s1/ci",
+            None,
+            &f.alice,
+        )
+        .await?;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        BoxResult::Ok(r.body["merge_stop"].clone())
+    };
+    let stop = overview().await?;
+    assert_eq!(stop["failures"][0]["test"], "tests::broken", "{stop}");
+    assert_eq!(stop["failures"][0]["revision"], red.as_str(), "{stop}");
+    assert_eq!(stop["run_id"], format!("ci-{}", &red[..12]), "{stop}");
+    let number = app
+        .deps
+        .store
+        .task(&TaskId::parse("t1")?)
+        .await?
+        .ok_or("t1")?
+        .number;
+    assert_eq!(
+        stop["waiting"],
+        json!([{"task": number, "pull_request": 1}]),
+        "{stop}"
+    );
+    // While a pass decides it, the held merge still waits (review of the page slice).
+    later(&f);
+    let (at, go) = support::hold_point(yulius_app::race::Point::FreeArmTaken, "t1");
+    let pass = {
+        let app = Arc::clone(&app);
+        let sandbox = f.sandbox.clone();
+        tokio::spawn(async move { app.merge_armed(&sandbox).await })
+    };
+    support::point_reached(at).await?;
+    assert_eq!(
+        overview().await?["waiting"],
+        json!([{"task": number, "pull_request": 1}]),
+        "under decision"
+    );
+    go.send(())?;
+    pass.await?;
+    later(&f);
+    app.merge_armed(&f.sandbox).await;
+    assert!(f.merges().is_empty(), "still red");
+    crate::support::staging::recorded_gate_as(
+        &app,
+        &f.sandbox,
+        &red,
+        RunState::Passed,
+        None,
+        "ci-rerun".into(),
+    )
+    .await?;
+    later(&f);
+    assert!(app.decidable_in(&sandbox).await, "green again");
+    assert_eq!(overview().await?, Value::Null, "nothing stopped");
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.merges(), ["merge_pull #1 squash"]);
+    Ok(())
+}
+
+/// SPEC-676 RGS-004, RGS-005, RGS-006: while the queue is stopped, `delivery_merge` of a green
+/// head arms it and says why; one marked `repairs_gate` merges at once; the held one, behind
+/// now, joins no candidate, and the breaker's own pull request forms one alone and merges.
+#[tokio::test]
+async fn only_the_repair_merges_while_the_gate_is_red() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    // The test stays broken: every later run of the full suite fails it too.
+    let broken = merge_first_toml("").replace(
+        "echo full suite ran",
+        "printf -- \"---- tests::broken stdout ----\\nassertion failed\\n\"; exit 1",
+    );
+    f.advance_dev_with("yulius.toml", &broken)?;
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1u32, "a.txt"), (2, "b.txt"), (3, "c.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    red_gate(&f, "tests::broken", Some("t3")).await?;
+    for (n, worktree) in (1u32..).zip(&worktrees) {
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    let held = deliver(&f, 1, &worktrees[0], json!({})).await?;
+    assert_eq!(
+        (&held["merged"], &held["armed"]),
+        (&json!(false), &json!(true)),
+        "{held}"
+    );
+    assert!(
+        held["next"]
+            .as_str()
+            .is_some_and(|next| next.contains("the after-merge gate of `dev` is red")),
+        "{held}"
+    );
+    let repair = deliver(&f, 2, &worktrees[1], json!({"repairs_gate": true})).await?;
+    assert_eq!(repair["merged"], true, "{repair}");
+    // #3's merge made the red revision: its pull request is the repair Yulius attributes.
+    let breaker = deliver(&f, 3, &worktrees[2], json!({})).await?;
+    assert_eq!(breaker["armed"], true, "behind after #2: {breaker}");
+    // The page lists #1 as waiting, not the breaker's merge (RGS-010).
+    let (listed, expected) = waiting_tasks(&f, &["t1"]).await?;
+    assert_eq!(listed, expected);
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        f.merged(&app, 3).await
+    })
+    .await?;
+    assert_eq!(
+        f.merges(),
+        ["merge_pull #2 squash", "merge_pull #3 squash"],
+        "#1 waits"
+    );
+    assert!(
+        f.train_runs(&app)
+            .await?
+            .iter()
+            .all(|run| run.reference.key() == "train/3"),
+        "only the repair formed a candidate"
+    );
+    let state = f.wait(1, &worktrees[0]).await?;
+    assert_eq!(state["merge_armed"], true, "{state}");
+    let audit = yulius_app::ports::store::AuditStore::audit_details(
+        app.deps.store.as_ref(),
+        "app#2",
+        "delivery.agent.merge",
+        5,
+    )
+    .await?;
+    assert!(
+        audit
+            .iter()
+            .any(|d| d.contains("as the repair of the red gate")),
+        "{audit:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-676 RGS-006: a candidate under test when the gate turns red is dissolved (`gate_red`),
+/// and its members stay armed.
+#[tokio::test]
+async fn a_candidate_under_test_is_dissolved_when_the_gate_turns_red() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.advance_dev_with("yulius.toml", &merge_first_toml(""))?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
+    for (n, worktree) in [(1, &one), (2, &two)] {
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    let train = f.first_candidate(&app, &sandbox).await?;
+    assert!(train.state.is_active(), "{train:?}");
+    red_gate(&f, "tests::broken", None).await?;
+    later(&f);
+    app.merge_armed(&f.sandbox).await;
+    let gone = dissolved(&app).await?;
+    assert!(
+        gone.iter().any(|d| d.contains("(why: gate_red)")),
+        "{gone:?}"
+    );
+    assert!(f.merges().is_empty());
+    for (n, worktree) in [(1, &one), (2, &two)] {
+        assert_eq!(f.wait(n, worktree).await?["merge_armed"], true);
+    }
+    // A later revision's full gate passes (its run here, recorded): the queue resumes by itself.
+    f.advance_dev("fixed.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    let fixed = git(&f.repo, &["rev-parse", "origin/dev"])?;
+    let green =
+        crate::support::staging::recorded_gate(&app, &f.sandbox, &fixed, RunState::Passed, None)
+            .await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET status_note = 'recorded by the test' WHERE id = '{green}'"
+        ))
+        .await?;
+    later(&f);
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await?)
+    })
+    .await?;
+    Ok(())
+}
+
+/// SPEC-676 RGS-008: a failure of a quarantined flaky test stops nothing.
+#[tokio::test]
+async fn a_quarantined_test_does_not_stop_the_queue() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    f.advance_dev_with("yulius.toml", &merge_first_toml(""))?;
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    red_gate(&f, "tests::flaky", None).await?;
+    f.h.store
+        .execute_for_tests(
+            "INSERT INTO ci_quarantine(sandbox_id, test, job_key, issue_number, issue_url, since) \
+             VALUES ('s1', 'tests::flaky', 'full', 7, 'https://github.com/acme/app/issues/7', 1)",
+        )
+        .await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.merges(), ["merge_pull #1 squash"]);
+    Ok(())
+}
+
+/// SPEC-676 RGS-001: without a merge-first target the stop is off by default, and
+/// `stop_on_red_gate = false` turns it off beside one: a red gate holds nothing.
+#[tokio::test]
+async fn the_stop_is_off_without_merge_first_or_when_turned_off() -> TestResult {
+    for toml in [
+        format!("{YULIUS_TOML}\n[[ci.jobs]]\nname = \"full\"\ncommand = 'true'\n"),
+        merge_first_toml("\n[merge_queue]\nstop_on_red_gate = false\n"),
+    ] {
+        let f = fixture().await?;
+        let app = f.h.app.clone();
+        f.advance_dev_with("yulius.toml", &toml)?;
+        let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+        red_gate(&f, "tests::broken", None).await?;
+        f.arm(1, &worktree).await?;
+        f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+        app.merge_armed(&f.sandbox).await;
+        assert_eq!(f.merges(), ["merge_pull #1 squash"], "{toml}");
+    }
+    Ok(())
+}
+
+/// SPEC-676 RGS-005 (review round 1): `repairs_gate` on a head armed already, and behind, marks
+/// it in its place (the saved arm keeps its time); the mark survives a restart, the marked pull
+/// requests form a candidate while the gate is red and merge, audited as the repair; the one
+/// not marked waits.
+#[tokio::test]
+async fn a_repair_marked_on_an_armed_head_survives_a_restart_and_merges_on_a_candidate()
+-> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let broken = merge_first_toml("").replace(
+        "echo full suite ran",
+        "printf -- \"---- tests::broken stdout ----\\nassertion failed\\n\"; exit 1",
+    );
+    f.advance_dev_with("yulius.toml", &broken)?;
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1u32, "a.txt"), (2, "b.txt"), (3, "c.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    red_gate(&f, "tests::broken", None).await?;
+    for (n, worktree) in (1u32..).zip(&worktrees) {
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+        assert_eq!(deliver(&f, n, worktree, json!({})).await?["armed"], true);
+    }
+    let file = app
+        .config
+        .data_dir
+        .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved =
+        || -> BoxResult<Vec<Value>> { Ok(serde_json::from_str(&std::fs::read_to_string(&file)?)?) };
+    let entry = |entries: &[Value], task: &str| {
+        entries
+            .iter()
+            .find(|e| e["task"] == task)
+            .map(|e| (e["armed_at"].clone(), e["repair"].clone()))
+    };
+    let before = saved()?;
+    // `dev` moves on (its full suite still fails): the armed heads are behind.
+    f.advance_dev("other.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    for n in [1u32, 2] {
+        let worktree = &worktrees[usize::try_from(n - 1)?];
+        let answer = deliver(&f, n, worktree, json!({"repairs_gate": true})).await?;
+        assert_eq!(answer["armed"], true, "{answer}");
+    }
+    let after = saved()?;
+    for task in ["t1", "t2"] {
+        let (was, _) = entry(&before, task).ok_or("armed")?;
+        assert_eq!(entry(&after, task), Some((was, json!(true))), "{after:?}");
+    }
+    assert_eq!(entry(&after, "t3").map(|(_, r)| r), Some(Value::Null));
+    // The page lists only #3 as waiting: the marked repairs go through (RGS-010).
+    later(&f);
+    let (listed, expected) = waiting_tasks(&f, &["t3"]).await?;
+    assert_eq!(listed, expected);
+    let app = restart(&app).await;
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await?)
+    })
+    .await?;
+    assert!(!f.merged(&app, 3).await?, "#3 waits");
+    assert!(
+        f.train_runs(&app)
+            .await?
+            .iter()
+            .all(|run| run.reference.key() == "train/1+2"),
+        "only the repairs formed a candidate"
+    );
+    let gone = dissolved(&app).await?;
+    assert!(
+        gone.iter().all(|d| !d.contains("(why: gate_red)")),
+        "a merged repair holds nothing: {gone:?}"
+    );
+    let audit = |action: &'static str| {
+        let app = Arc::clone(&app);
+        async move {
+            BoxResult::Ok(
+                yulius_app::ports::store::AuditStore::audit_details(
+                    app.deps.store.as_ref(),
+                    "app#1",
+                    action,
+                    10,
+                )
+                .await?,
+            )
+        }
+    };
+    let armed = audit("delivery.agent.merge_armed").await?;
+    assert!(
+        armed
+            .iter()
+            .any(|d| d.contains("armed already at head") && d.contains("marked as the repair")),
+        "the mark is audited: {armed:?}"
+    );
+    let merged = audit("delivery.agent.merge").await?;
+    assert!(
+        merged
+            .iter()
+            .any(|d| d.contains("in merge train") && d.contains("marked as the repair")),
+        "the merge is audited as the repair: {merged:?}"
     );
     Ok(())
 }

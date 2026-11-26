@@ -20,6 +20,9 @@ versions are in `.config/tools.toml`, with the zig release (version and SHA-256 
 that compiles dependencies' vendored C for the macOS check; on Linux bootstrap downloads it once
 per home cache (`scripts/zig_install.py`, verified before it is unpacked) and links
 `.tools/bin/zig`, `macos-cc` and `macos-ar` (`scripts/zig_macos.py`); doctor checks them.
+Under Yulius CI (`YULIUS_CI=1`) `scripts/dev` runs `scripts/bootstrap.py --install-rustup`
+itself before the gate, once per job (`YULIUS_BOOTSTRAPPED` marks it for nested calls), so each CI job's command is just `scripts/dev <gate>`, and the gate prints
+its `::yulius-stage` lines.
 Bootstrap installs tools from locked crates.io
 packages into ignored `.tools/`, skips matching installed versions and can be rerun
 after failure. It does not change `rustup default`. `--install-rustup` installs rustup
@@ -40,13 +43,13 @@ On the instance, bootstrap installs the optional pinned mbx executable. A fresh 
 | --- | --- |
 | `scripts/dev doctor` | Compiler/tool versions and Python prerequisite |
 | `scripts/dev quick` | The checks of seconds, first in `ci` and `checks` (after `doctor`): the repository contracts (`scripts/check_repository.py`) and `cargo fmt --check`; run it before each commit you publish. In `ci` and `checks` the checker's Python tests then run beside the Rust gates (ADR-0363) |
+| `scripts/dev quality` | The pull request's `quality` job: doctor, quick and the checker's Python tests, each in its stage. It compiles nothing; the `lint` job's Clippy compiles every target |
 | `scripts/dev check` | Local Markdown links, no merge conflict marker lines outside vendored assets, skills (frontmatter, "Use when" description, body size, deployments equal `.apm/skills`), Cargo inheritance/layers, one integration test binary for the composition crate, web UI design tokens (no colour, type, radius or spacing literals in `styles.css`; WCAG contrast of every theme in `tokens.css`), instructions that tell an agent to merge by hand, promote or poll; checker regression tests; locked all-target compilation |
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
 | `scripts/dev macos` | Clippy with warnings denied on every target for `aarch64-apple-darwin`; on Linux the vendored C (ring, SQLite) is compiled by the pinned zig. Type-checks only: nothing is linked |
-| `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets. With `YULIUS_CI_MATRIX=i/n` (an individual matrix shard) only hash partition i of n, and the doctests in shard 1 (ADR-0358) |
+| `scripts/dev test` | nextest workspace tests with zero retries, leaving out the tests Yulius CI quarantined; doctests for eligible library targets. The CI `test` job runs it on each merged revision |
 | `scripts/dev docs` | Locked workspace rustdoc build with warnings denied |
-| `scripts/dev test-shard` | Both CI matrix jobs use one nextest archive of their run. They run their own hash partitions concurrently when both have a slot. The first partition runs doctests |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, quick, check, lint, macos, test, deps, then rustdoc with warnings denied; the checker's Python tests run beside the gates after quick, their output in a `checker-tests` stage at the end (ADR-0363) |
 | `scripts/dev checks` | Local aggregate of the five CI quality passes |
@@ -62,10 +65,7 @@ one file's tests with `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
 Test fixtures there hold no credential in a provider's shape: put one that needs it together
 from the prefix and a synthetic body (`concat!("sk_test_", "…")`); `fixture_hygiene` fails on
 a provider prefix followed by a token body ([ADR-0258](../decisions/0258-test-fixtures-hold-no-provider-shaped-credential-literal.md)).
-While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests
-the head while the reviewer reads. Do not run the whole gate locally before a review or between
-rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an
-outage). `scripts/dev ci` is that gate (ADR-0342).
+`scripts/dev ci` is the whole gate, which Yulius CI runs (ADR-0342).
 
 The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)
 and page errors, run in a browser against the UI's mock mode. They need Node 24.8+ (test-only;
@@ -310,7 +310,8 @@ steps are skipped). Run the file-reader selector locally with an explicit change
 
 ## Mutation testing
 
-Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the on-request command is `scripts/dev mutants`.
+The policy is the bundled skill `test-driven-development`'s: mutation checks are by hand. Here the
+command a request may ask for by name is `scripts/dev mutants`.
 
 Contained agents and CI jobs receive a private disk directory in `YULIUS_BUILD_SCRATCH`. Run `scripts/cargo --scratch-target check` (or another Cargo command) for an ad-hoc build. Each invocation places final and intermediate artifacts in its own target and removes it once its workers stop. Pass the subcommand first and expand any Cargo aliases yourself. Supported built-ins are `bench`, `build`, `check`, `clean`, `doc`, `fix`, `run`, `rustc`, `rustdoc` and `test`. For `clippy` and `nextest`, the launcher invokes the installed plugin directly, including when a Cargo alias shares its name. Eligible builds reuse the sandbox compiler cache across disposable targets. Omit explicit output-directory flags. The launcher pins both directories after user-supplied Cargo configuration. For `cargo run`, place `--config` before positional arguments, including separate option values such as the name in `--bin NAME`. Arguments after Cargo’s `--` separator go to the program as usual. Older sessions and local checkouts use a fresh directory under the checkout’s `target`. The host reclaims the run-owned directory on exit. The separate 1 GiB session tmpfs returns ENOSPC when full. On native macOS, a new process group can make it unclear whether a build worker survived. The command reports the retained scratch path in that case. For the disposable Cargo launcher, an unrelated process started during the build can also trigger retention.
 

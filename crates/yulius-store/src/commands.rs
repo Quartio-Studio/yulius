@@ -9,16 +9,15 @@ use yulius_app::ports::store_ext::{
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db};
+use crate::{DbError, SqliteStore, opt_ts, text_parsed};
 
 const COLUMNS: &str =
     "id, sandbox_id, name, definition, secret_id, created_by, created_at, updated_by, updated_at";
 
 fn command_row(row: &Row<'_>) -> rusqlite::Result<CommandRecord> {
-    let sandbox: String = row.get(1)?;
     Ok(CommandRecord {
         id: row.get(0)?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, 1, "sandbox id", SandboxId::parse)?,
         name: row.get(2)?,
         definition: row.get(3)?,
         secret_id: row.get(4)?,
@@ -29,18 +28,18 @@ fn command_row(row: &Row<'_>) -> rusqlite::Result<CommandRecord> {
     })
 }
 
-/// A unique name taken: said as such, not as "conflicting record"; any other failure as `db`
-/// says it.
-fn named(err: rusqlite::Error) -> AppError {
+/// A unique name taken: said as such, not as "conflicting record"; any other failure as any
+/// database error.
+fn named(err: rusqlite::Error) -> DbError {
     let unique = matches!(
         &err,
         rusqlite::Error::SqliteFailure(code, _)
             if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
     );
     if unique {
-        return AppError::Conflict("this project already has a command of that name".into());
+        return AppError::Conflict("this project already has a command of that name".into()).into();
     }
-    db(err)
+    err.into()
 }
 
 const RUN_COLUMNS: &str = "id, sandbox_id, command_id, command, command_updated_at, task_id, \
@@ -57,30 +56,27 @@ const LISTED_COLUMNS: &str = "id, sandbox_id, command_id, command, command_updat
 const KEEP_RUNS: i64 = 200;
 
 fn run_row(row: &Row<'_>) -> rusqlite::Result<CommandRunRecord> {
-    let sandbox: String = row.get(1)?;
-    let task: String = row.get(5)?;
-    let args: String = row.get(7)?;
     Ok(CommandRunRecord {
         id: row.get(0)?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, 1, "sandbox id", SandboxId::parse)?,
         command_id: row.get(2)?,
         command: row.get(3)?,
         command_updated_at: Timestamp(row.get(4)?),
-        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
+        task_id: text_parsed(row, 5, "task id", TaskId::parse)?,
         task_number: row.get(6)?,
-        args: serde_json::from_str(&args).map_err(|_| bad_column("args", &args))?,
+        args: text_parsed(row, 7, "args", |text| serde_json::from_str(text))?,
         line: row.get(8)?,
         changes: row.get(9)?,
         state: row.get(10)?,
         reason: row.get(11)?,
-        deadline: row.get::<_, Option<i64>>(12)?.map(Timestamp),
+        deadline: opt_ts(row, 12)?,
         answered_by: row.get(13)?,
         exit_code: row.get(14)?,
         stdout: row.get(15)?,
         stderr: row.get(16)?,
         created_at: Timestamp(row.get(17)?),
-        started_at: row.get::<_, Option<i64>>(18)?.map(Timestamp),
-        ended_at: row.get::<_, Option<i64>>(19)?.map(Timestamp),
+        started_at: opt_ts(row, 18)?,
+        ended_at: opt_ts(row, 19)?,
     })
 }
 
@@ -89,16 +85,12 @@ impl CommandStore for SqliteStore {
     async fn commands_in(&self, sandbox: &SandboxId) -> AppResult<Vec<CommandRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLUMNS} FROM commands WHERE sandbox_id = ?1 ORDER BY name"
-                ))
-                .map_err(db)?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM commands WHERE sandbox_id = ?1 ORDER BY name"
+            ))?;
             let rows = stmt
-                .query_map([sandbox], command_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([sandbox], command_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -107,13 +99,12 @@ impl CommandStore for SqliteStore {
     async fn command(&self, sandbox: &SandboxId, id: &str) -> AppResult<Option<CommandRecord>> {
         let (sandbox, id) = (sandbox.as_str().to_owned(), id.to_owned());
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLUMNS} FROM commands WHERE sandbox_id = ?1 AND id = ?2"),
                 [sandbox, id],
                 command_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -125,13 +116,12 @@ impl CommandStore for SqliteStore {
     ) -> AppResult<Option<CommandRecord>> {
         let (sandbox, name) = (sandbox.as_str().to_owned(), name.to_owned());
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {COLUMNS} FROM commands WHERE sandbox_id = ?1 AND name = ?2"),
                 [sandbox, name],
                 command_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -189,12 +179,10 @@ impl CommandStore for SqliteStore {
     async fn delete_command(&self, sandbox: &SandboxId, id: &str) -> AppResult<bool> {
         let (sandbox, id) = (sandbox.as_str().to_owned(), id.to_owned());
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "DELETE FROM commands WHERE sandbox_id = ?1 AND id = ?2",
-                    [sandbox, id],
-                )
-                .map_err(db)?;
+            let changed = c.execute(
+                "DELETE FROM commands WHERE sandbox_id = ?1 AND id = ?2",
+                [sandbox, id],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -208,26 +196,22 @@ impl CommandStore for SqliteStore {
         let r = run.clone();
         self.call(move |c| {
             let args = serde_json::to_string(&r.args).map_err(AppError::internal)?;
-            let tx = c.transaction().map_err(db)?;
-            let running: u32 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM command_runs WHERE sandbox_id = ?1 AND state = 'running'",
-                    [r.sandbox_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(db)?;
+            let tx = c.transaction()?;
+            let running: u32 = tx.query_row(
+                "SELECT COUNT(*) FROM command_runs WHERE sandbox_id = ?1 AND state = 'running'",
+                [r.sandbox_id.as_str()],
+                |row| row.get(0),
+            )?;
             if r.state == "running" && running >= max_running {
                 return Ok(RunInsert::Busy);
             }
             // One run of a task waits for a person at a time, also for calls made together
             // (review round 1 of slice 3).
-            let waiting: u32 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM command_runs WHERE task_id = ?1 AND state = 'waiting'",
-                    [r.task_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(db)?;
+            let waiting: u32 = tx.query_row(
+                "SELECT COUNT(*) FROM command_runs WHERE task_id = ?1 AND state = 'waiting'",
+                [r.task_id.as_str()],
+                |row| row.get(0),
+            )?;
             if r.state == "waiting" && waiting > 0 {
                 return Ok(RunInsert::TaskWaits);
             }
@@ -258,17 +242,15 @@ impl CommandStore for SqliteStore {
                     r.started_at.map(|t| t.0),
                     r.ended_at.map(|t| t.0),
                 ],
-            )
-            .map_err(db)?;
+            )?;
             // A project keeps its newest ended runs; a waiting or running one always stays.
             tx.execute(
                 "DELETE FROM command_runs WHERE sandbox_id = ?1 AND ended_at IS NOT NULL \
                  AND id NOT IN (SELECT id FROM command_runs WHERE sandbox_id = ?1 \
                  AND ended_at IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT ?2)",
                 params![r.sandbox_id.as_str(), KEEP_RUNS],
-            )
-            .map_err(db)?;
-            tx.commit().map_err(db)?;
+            )?;
+            tx.commit()?;
             Ok(RunInsert::Stored)
         })
         .await
@@ -280,7 +262,7 @@ impl CommandStore for SqliteStore {
     ) -> AppResult<Option<CommandRunRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!(
                     "SELECT {RUN_COLUMNS} FROM command_runs WHERE task_id = ?1 \
                      ORDER BY created_at DESC, id DESC LIMIT 1"
@@ -288,8 +270,7 @@ impl CommandStore for SqliteStore {
                 [task],
                 run_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -297,13 +278,12 @@ impl CommandStore for SqliteStore {
     async fn command_run(&self, id: &str) -> AppResult<Option<CommandRunRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!("SELECT {RUN_COLUMNS} FROM command_runs WHERE id = ?1"),
                 [id],
                 run_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }
@@ -311,13 +291,11 @@ impl CommandStore for SqliteStore {
     async fn start_command_run(&self, id: &str, from: &str, at: Timestamp) -> AppResult<bool> {
         let (id, from) = (id.to_owned(), from.to_owned());
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE command_runs SET state = 'running', started_at = ?1 \
+            let changed = c.execute(
+                "UPDATE command_runs SET state = 'running', started_at = ?1 \
                      WHERE id = ?2 AND state = ?3",
-                    params![at.0, id, from],
-                )
-                .map_err(db)?;
+                params![at.0, id, from],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -326,23 +304,21 @@ impl CommandStore for SqliteStore {
     async fn end_command_run(&self, id: &str, from: &str, end: &CommandRunEnd) -> AppResult<bool> {
         let (id, from, e) = (id.to_owned(), from.to_owned(), end.clone());
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    "UPDATE command_runs SET state = ?1, reason = ?2, exit_code = ?3, \
+            let changed = c.execute(
+                "UPDATE command_runs SET state = ?1, reason = ?2, exit_code = ?3, \
                      stdout = ?4, stderr = ?5, ended_at = ?6, args = '[]' \
                      WHERE id = ?7 AND state = ?8",
-                    params![
-                        e.state,
-                        e.reason,
-                        e.exit_code,
-                        e.stdout,
-                        e.stderr,
-                        e.at.0,
-                        id,
-                        from
-                    ],
-                )
-                .map_err(db)?;
+                params![
+                    e.state,
+                    e.reason,
+                    e.exit_code,
+                    e.stdout,
+                    e.stderr,
+                    e.at.0,
+                    id,
+                    from
+                ],
+            )?;
             Ok(changed == 1)
         })
         .await
@@ -351,16 +327,12 @@ impl CommandStore for SqliteStore {
     async fn command_runs_in_state(&self, state: &str) -> AppResult<Vec<CommandRunRecord>> {
         let state = state.to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {RUN_COLUMNS} FROM command_runs WHERE state = ?1 ORDER BY created_at"
-                ))
-                .map_err(db)?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM command_runs WHERE state = ?1 ORDER BY created_at"
+            ))?;
             let rows = stmt
-                .query_map([state], run_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map([state], run_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -392,8 +364,7 @@ impl CommandStore for SqliteStore {
                      WHERE id = ?3 AND state = 'waiting' AND deadline > ?1",
                     params![at.0, by, id],
                 )
-            }
-            .map_err(db)?;
+            }?;
             Ok(changed == 1)
         })
         .await
@@ -401,18 +372,14 @@ impl CommandStore for SqliteStore {
 
     async fn expire_command_runs(&self, at: Timestamp) -> AppResult<Vec<CommandRunRecord>> {
         self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
+            let tx = c.transaction()?;
             let due = {
-                let mut stmt = tx
-                    .prepare(&format!(
-                        "SELECT {RUN_COLUMNS} FROM command_runs \
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT {RUN_COLUMNS} FROM command_runs \
                          WHERE state = 'waiting' AND deadline <= ?1"
-                    ))
-                    .map_err(db)?;
-                stmt.query_map([at.0], run_row)
-                    .map_err(db)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(db)?
+                ))?;
+                stmt.query_map([at.0], run_row)?
+                    .collect::<Result<Vec<_>, _>>()?
             };
             for run in &due {
                 tx.execute(
@@ -420,10 +387,9 @@ impl CommandStore for SqliteStore {
                      reason = 'no answer in time, which is a no' \
                      WHERE id = ?2 AND state = 'waiting'",
                     params![at.0, run.id],
-                )
-                .map_err(db)?;
+                )?;
             }
-            tx.commit().map_err(db)?;
+            tx.commit()?;
             Ok(due)
         })
         .await
@@ -436,20 +402,16 @@ impl CommandStore for SqliteStore {
     ) -> AppResult<Vec<CommandRunRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {LISTED_COLUMNS} FROM command_runs WHERE sandbox_id = ?1 \
+            let mut stmt = c.prepare(&format!(
+                "SELECT {LISTED_COLUMNS} FROM command_runs WHERE sandbox_id = ?1 \
                      AND (ended_at IS NULL OR id IN (SELECT id FROM command_runs \
                      WHERE sandbox_id = ?1 AND ended_at IS NOT NULL \
                      ORDER BY created_at DESC, id DESC LIMIT ?2)) \
                      ORDER BY created_at DESC, id DESC"
-                ))
-                .map_err(db)?;
+            ))?;
             let rows = stmt
-                .query_map(params![sandbox, limit], run_row)
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
+                .query_map(params![sandbox, limit], run_row)?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await
@@ -461,7 +423,7 @@ impl CommandStore for SqliteStore {
     ) -> AppResult<Option<CommandRunRecord>> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
+            Ok(c.query_row(
                 &format!(
                     "SELECT {RUN_COLUMNS} FROM command_runs WHERE task_id = ?1 \
                      AND state = 'waiting' ORDER BY created_at DESC LIMIT 1"
@@ -469,8 +431,7 @@ impl CommandStore for SqliteStore {
                 [task],
                 run_row,
             )
-            .optional()
-            .map_err(db)
+            .optional()?)
         })
         .await
     }

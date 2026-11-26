@@ -4,6 +4,8 @@
 //! deletions.
 
 use crate::support;
+use crate::support::BareRemote;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,8 +16,8 @@ use std::time::Duration;
 use axum::http::{Method, StatusCode};
 use serde_json::Value;
 use support::{
-    Creds, FakeRemote, HarnessOptions, call, configure_github_app, harness_with, perms,
-    seed_github_user, seed_sandbox,
+    Creds, HarnessOptions, call, configure_github_app, harness_with, perms, seed_github_user,
+    seed_sandbox,
 };
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::error::{AppError, AppResult};
@@ -33,64 +35,6 @@ type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 type TestResult = BoxResult<()>;
 
 const WAIT: Duration = Duration::from_secs(60);
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
-/// The bare `origin` as the fake GitHub's repository side.
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .ok()
-    }
-    fn merge(&self, _: &str, _: &str, _: &str, _: &str) -> Result<String, String> {
-        Err("not used".into())
-    }
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-        .map_err(|e| e.to_string())
-    }
-}
 
 const YULIUS_TOML: &str = r#"[[ci.jobs]]
 name = "lint"
@@ -185,7 +129,7 @@ async fn fixture_tuned(
     git(&work, &["commit", "-q", "-m", "feature"])?;
     git(&work, &["push", "-q", "origin", "feat/one"])?;
     let head = git(&work, &["rev-parse", "HEAD"])?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     if let Ok(mut pulls) = h.github.pulls.lock() {
         pulls.push(GhPull {
             number: 1,
@@ -370,7 +314,7 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
         .await?;
     let jobs = detail["jobs"].as_array().ok_or("jobs")?;
     assert_eq!(jobs.len(), 3);
-    // Passing jobs keep no failing tests' output (SPEC-145 AC3).
+    // Passing jobs keep no failing tests' output.
     assert!(jobs.iter().all(|j| j["failures"].is_null()), "{detail}");
     let output = |i: usize| jobs[i]["output"].as_str().unwrap_or_default().to_owned();
     assert!(output(0).contains("lint-ok"), "{}", output(0));
@@ -498,7 +442,7 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
     Ok(())
 }
 
-/// SPEC-206 RMV-002 (#624): removing a sandbox cancels its CI runs (here a running one, its jobs
+/// Removing a sandbox cancels its CI runs (here a running one, its jobs
 /// killed; a queued one takes `ci_cancel`'s queued path): they went on to their end and
 /// published their statuses.
 #[tokio::test]
@@ -553,7 +497,7 @@ async fn removing_the_sandbox_cancels_its_ci_runs() -> TestResult {
     Ok(())
 }
 
-/// SPEC-108 PRL-003 (task #93): a run's queueing and its end change what a pull request's checks
+/// A run's queueing and its end change what a pull request's checks
 /// say, so each tells the sandbox's browsers to read them again, even when GitHub refuses the
 /// commit status.
 #[tokio::test]
@@ -580,7 +524,7 @@ async fn a_run_announces_its_pull_requests() -> TestResult {
     Ok(())
 }
 
-/// SPEC-391 VCT-003 (#842): a pull request from a fork is never tested, even when its head commit
+/// A pull request from a fork is never tested, even when its head commit
 /// is in the sandbox's clone (an agent fetched it to review it), with its own jobs or with the
 /// integration branch's and their secrets.
 #[tokio::test]
@@ -737,7 +681,7 @@ fn pull(
     Ok(())
 }
 
-/// SPEC-269 HSC-001: the background round removes what loses nothing, as Yulius, and keeps
+/// The background round removes what loses nothing, as Yulius, and keeps
 /// unmerged work. A branch already in dev that never was a pull request's head (a release or
 /// staging branch) is left to a person, and a branch an open pull request targets is never stale
 /// (review round 3).
@@ -810,7 +754,7 @@ async fn the_hygiene_round_removes_safe_items_itself() -> TestResult {
     Ok(())
 }
 
-/// SPEC-269 HSC-002: the report says what the last cleanup did and who did it, across scans; an
+/// The report says what the last cleanup did and who did it, across scans; an
 /// automatic round with nothing to do leaves it, and the round names when it runs next.
 #[tokio::test]
 async fn a_cleanup_is_kept_on_the_report() -> TestResult {
@@ -853,7 +797,7 @@ async fn a_cleanup_is_kept_on_the_report() -> TestResult {
     Ok(())
 }
 
-/// SPEC-269 (review round 1): a branch with commits pushed after its pull request closed is
+/// A branch with commits pushed after its pull request closed is
 /// unmerged work, and a local copy whose GitHub branch the same cleanup deleted is judged again
 /// (its commits are on GitHub no more) and kept.
 #[tokio::test]
@@ -932,7 +876,7 @@ async fn a_cleanup_never_loses_commits_that_only_a_branch_held() -> TestResult {
     Ok(())
 }
 
-/// SPEC-269 (review round 2): when the clone cannot be fetched, a branch is judged by the commit
+/// When the clone cannot be fetched, a branch is judged by the commit
 /// Yulius last saw: one that moved on GitHub since (new commits, no pull request) is kept, and
 /// local copies are kept as they cannot be confirmed on GitHub.
 #[tokio::test]
@@ -1001,7 +945,7 @@ async fn scan_counting_lookups(f: &Fixture) -> BoxResult<(support::Resp, Vec<Str
     Ok((scan, looked_up))
 }
 
-/// SPEC-269 (review round 4): branches already in dev never use up the pull-request lookups an
+/// Branches already in dev never use up the pull-request lookups an
 /// unmerged branch's verdict needs, however many there are.
 #[tokio::test]
 async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
@@ -1074,7 +1018,7 @@ async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
     Ok(())
 }
 
-/// SPEC-269 (review round 5): an open pull request's branch takes no lookup, and branches already
+/// An open pull request's branch takes no lookup, and branches already
 /// in the integration or production branch whose pull requests the bound left unread are named in
 /// a note (SPEC-379: here one only the production branch has).
 #[tokio::test]
@@ -1190,7 +1134,7 @@ async fn contained_jobs_see_only_their_sandbox() -> TestResult {
     Ok(())
 }
 
-/// SPEC-145 (#460, #485): a failing test's output stays readable however much the job prints
+/// A failing test's output stays readable however much the job prints
 /// after it. The job prints a nextest failure, then 600 KB (more than the 512 KiB of output it
 /// keeps) and fails: its failing tests' output is kept with it. (Its only job: a sibling would be
 /// cancelled by the failure, sooner or later; a passing job keeping none is checked in
@@ -1231,7 +1175,7 @@ command = 'printf "        FAIL [   0.547s] (290/1670) yulius::main cockpit::man
     Ok(())
 }
 
-/// SPEC-162 SKP-001..003: a job that exits with the skip code Yulius gives it ends skipped, not
+/// A job that exits with the skip code Yulius gives it ends skipped, not
 /// passed; its run passes and the commit status says a job was skipped, also when a merge with
 /// the same tree reuses that result.
 #[tokio::test]
@@ -1320,7 +1264,7 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     Ok(())
 }
 
-/// SPEC-497 SHR-001: a job split into shards (`matrix = "1/2 2/2"`) runs them side by side, each
+/// A job split into shards (`matrix = "1/2 2/2"`) runs them side by side, each
 /// told its shard; the run passes only when every shard passed. Each shard leaves a mark and waits
 /// for the other's (bounded), so a shard that ran alone says so and fails.
 #[tokio::test]
@@ -1389,7 +1333,7 @@ async fn a_sharded_job_runs_its_shards_side_by_side() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 SHR-002: a run takes the lane whose checkouts last built what it builds on. #1 and #2
+/// A run takes the lane whose checkouts last built what it builds on. #1 and #2
 /// run side by side in lanes 0 and 1; then #2 pushes first: its new run, queued first, takes lane
 /// 1 (its own previous build), not the first free, and its output says so; #1's takes lane 0.
 #[tokio::test]
@@ -1463,7 +1407,7 @@ async fn a_run_takes_the_lane_that_last_built_its_pull_request() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 CJP-001 to CJP-004 (AC-16): a job naming the files it tests ends skipped, with the
+/// A job naming the files it tests ends skipped, with the
 /// reason and without running, for a pull request touching none of them, which still passes and
 /// gates nothing; the integration branch's own run runs it; a pull request touching one of them
 /// runs it.
@@ -1607,7 +1551,7 @@ fn job_named(detail: &Value, name: &str) -> BoxResult<Value> {
         .ok_or("job")?)
 }
 
-/// Review round 2 of SPEC-493 fix 5: a pull request whose change touches none of its jobs'
+/// A pull request whose change touches none of its jobs'
 /// `paths` gets a run that passed when it was queued: no lane, no dispatch, its status success
 /// with every job skipped, and the gate's answer Passed.
 #[tokio::test]
@@ -1642,7 +1586,7 @@ async fn a_run_of_skipped_jobs_passes_when_it_is_queued() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 5: a run queued again (a restart, the disk quota) keeps a job
+/// A run queued again (a restart, the disk quota) keeps a job
 /// skipped for its `paths` skipped, with its reason; the other jobs go back to the queue.
 #[tokio::test]
 async fn a_requeued_run_keeps_its_paths_skip() -> TestResult {
@@ -1722,9 +1666,9 @@ async fn a_requeued_run_keeps_its_paths_skip() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 5: a squash merge of a pull request that skipped a `paths` job
+/// A squash merge of a pull request that skipped a `paths` job
 /// gives the integration branch the tree that pull request's run tested, but that run never ran
-/// the job: the integration branch's own run runs it instead of reusing the result (CJP-003).
+/// the job: the integration branch's own run runs it instead of reusing the result.
 #[tokio::test]
 async fn the_integration_branch_runs_a_paths_job_a_merged_tree_skipped() -> TestResult {
     let f = fixture_with(false, |_| {
@@ -1760,7 +1704,7 @@ async fn the_integration_branch_runs_a_paths_job_a_merged_tree_skipped() -> Test
 }
 
 /// A project with a quick check and an `after_merge` full suite; `staging` adds the merge-first
-/// environment (SPEC-575).
+/// environment.
 fn merge_first_toml(staging: bool) -> String {
     let mut text = "[[ci.jobs]]\nname = \"quick\"\ncommand = \"true\"\n\n\
                     [[ci.jobs]]\nname = \"full\"\ncommand = 'echo full suite ran'\n\
@@ -1856,7 +1800,7 @@ fn ran_the_full_suite(detail: &Value) -> bool {
     })
 }
 
-/// SPEC-575 MFS-002, review round 1: a pull request that turns the move off (it drops the
+/// A pull request that turns the move off (it drops the
 /// merge-first environment, or takes the job out of the full suite) is judged by the gate that
 /// skips the full suite, so the integration branch's run at its squash commit runs it instead of
 /// reusing that pull request's tree: the full suite runs once for the change, never nowhere.
@@ -1920,7 +1864,7 @@ async fn adopting_merge_first_runs_the_full_suite_on_its_own_pull_request() -> T
     Ok(())
 }
 
-/// SPEC-575 MFS-002: a pull request whose every job is part of the full suite would merge on no
+/// A pull request whose every job is part of the full suite would merge on no
 /// check at all, so the file is refused as configuration, naming why.
 #[tokio::test]
 async fn a_gate_of_only_after_merge_jobs_is_refused() -> TestResult {
@@ -1942,7 +1886,7 @@ async fn a_gate_of_only_after_merge_jobs_is_refused() -> TestResult {
     Ok(())
 }
 
-/// SPEC-575 MFS-002: without a merge-first environment (no shared staging target), the same
+/// Without a merge-first environment (no shared staging target), the same
 /// `after_merge` job runs on the pull request head: the project keeps its full suite there.
 #[tokio::test]
 async fn without_a_staging_target_the_full_suite_stays_on_the_pull_request() -> TestResult {
@@ -1964,7 +1908,7 @@ async fn without_a_staging_target_the_full_suite_stays_on_the_pull_request() -> 
     Ok(())
 }
 
-/// SPEC-504 review round 2: when Git cannot walk the integration branch's history for its last
+/// When Git cannot walk the integration branch's history for its last
 /// valid gate (here a commit of it is missing from the clone), a pull request's verdict is
 /// pending, never "no CI" (which would let a merge through on no checks).
 #[tokio::test]
@@ -1990,7 +1934,7 @@ async fn a_history_git_cannot_walk_leaves_a_head_pending_not_unconfigured() -> T
     Ok(())
 }
 
-/// SPEC-504 review round 1: an invalid file with no valid one before it names no fallback (the
+/// An invalid file with no valid one before it names no fallback (the
 /// page would otherwise say a gate runs while none does).
 #[tokio::test]
 async fn an_invalid_file_with_no_earlier_gate_names_no_fallback() -> TestResult {
@@ -2014,7 +1958,7 @@ async fn an_invalid_file_with_no_earlier_gate_names_no_fallback() -> TestResult 
     Ok(())
 }
 
-/// SPEC-504 CFG-004, review round 1: an episode without a gate that ended while the server was
+/// An episode without a gate that ended while the server was
 /// down is closed at the first look after the start, not counted on until the range's end.
 #[tokio::test]
 async fn an_episode_that_ended_while_the_server_was_down_is_closed() -> TestResult {
@@ -2046,7 +1990,7 @@ async fn an_episode_that_ended_while_the_server_was_down_is_closed() -> TestResu
     Ok(())
 }
 
-/// SPEC-504 CFG-002, review round 1: a pull request refused only because the integration
+/// A pull request refused only because the integration
 /// branch's file was invalid runs again once that file is valid, without a push.
 #[tokio::test]
 async fn a_head_refused_for_the_branchs_file_runs_again_once_it_is_valid() -> TestResult {
@@ -2148,7 +2092,7 @@ async fn a_change_to_a_jobs_time_limit_runs_its_twin() -> TestResult {
     Ok(())
 }
 
-/// SPEC-504 review round 3: a branch's run that reuses a same-tree verdict takes each job's
+/// A branch's run that reuses a same-tree verdict takes each job's
 /// verdict from the job that ran its command: a change's twin of it, not the integration
 /// branch's job of the same key.
 #[tokio::test]
@@ -2293,7 +2237,7 @@ async fn a_branch_never_reuses_a_run_that_did_not_run_its_jobs() -> TestResult {
     Ok(())
 }
 
-/// SPEC-504 review round 4: a branch reuses a same-tree verdict only where every job of its
+/// A branch reuses a same-tree verdict only where every job of its
 /// gate ran as it now defines it, its time limit too: a pull request's run that ran the job
 /// with the old limit only is no source, and the branch's run runs it again.
 #[tokio::test]
@@ -2312,7 +2256,7 @@ async fn a_branch_never_reuses_a_run_that_ran_its_job_with_another_time_limit() 
     Ok(())
 }
 
-/// SPEC-504 review round 4: a reused verdict comes from the job that ran as the branch now
+/// A reused verdict comes from the job that ran as the branch now
 /// defines it, here the twin with the new time limit, not the job of the same command with the
 /// old one.
 #[tokio::test]
@@ -2411,7 +2355,7 @@ async fn squash_after_run(
     Ok(merged)
 }
 
-/// Review round 3 of SPEC-493 fix 5: tree reuse into the integration branch's run looks past a
+/// Tree reuse into the integration branch's run looks past a
 /// same-tree source that skipped a `paths` job, to an older one that ran it.
 #[tokio::test]
 async fn a_branch_reuses_a_same_tree_run_that_ran_its_paths_job() -> TestResult {
@@ -2459,7 +2403,7 @@ async fn a_branch_reuses_a_same_tree_run_that_ran_its_paths_job() -> TestResult 
         ordinal,
         name: name.into(),
         key: name.into(),
-        // As the job ran it (a reuse needs every job's command to have run, SPEC-504).
+        // As the job ran it (a reuse needs every job's command to have run).
         command: if name == "web" {
             "echo web ran"
         } else {
@@ -2500,7 +2444,7 @@ async fn a_branch_reuses_a_same_tree_run_that_ran_its_paths_job() -> TestResult 
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 5: a job skipped for its `paths` waits for nothing: not for its
+/// A job skipped for its `paths` waits for nothing: not for its
 /// `exclusive` turn while another run's job of that name runs, nor for a slot.
 #[tokio::test]
 async fn a_skipped_exclusive_job_does_not_wait_for_its_turn() -> TestResult {
@@ -2546,7 +2490,7 @@ async fn a_skipped_exclusive_job_does_not_wait_for_its_turn() -> TestResult {
     Ok(())
 }
 
-/// SPEC-359 VSB-006: a job is told where its sandbox's Vidoc switch is, so a scan whose key
+/// A job is told where its sandbox's Vidoc switch is, so a scan whose key
 /// fails points there.
 #[tokio::test]
 async fn a_job_is_told_where_the_sandboxs_vidoc_switch_is() -> TestResult {
@@ -2567,7 +2511,7 @@ async fn a_job_is_told_where_the_sandboxs_vidoc_switch_is() -> TestResult {
     Ok(())
 }
 
-/// SPEC-273 NOI-006: a job that exits `$YULIUS_CI_INCOMPLETE_CODE` (a security scan Vidoc's
+/// A job that exits `$YULIUS_CI_INCOMPLETE_CODE` (a security scan Vidoc's
 /// outage cut short) ends error with the files it names, never failed: the status says
 /// incomplete, the merge is blocked, and the other job still ends passed.
 #[tokio::test]
@@ -2666,7 +2610,7 @@ impl Fixture {
     }
 }
 
-/// SPEC-273 NOI-007: a failed `security` job no longer stops the other jobs ("stopped early: job
+/// A failed `security` job no longer stops the other jobs ("stopped early: job
 /// security failed" left a commit without a test result), and a failed test job no longer stops
 /// the scan; both run to the end and report. Fail-fast among the other jobs stays.
 #[tokio::test]
@@ -2692,14 +2636,14 @@ command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
         },
         None,
         // Only the test ends a held job: the fixture's 8 s limit ended the jobs before a slow
-        // host had shown them running (#1079).
+        // host had shown them running.
         |config| config.ci.job_timeout = Duration::from_secs(3600),
     )
     .await?;
     let release = f.data.join("release");
     // The other runs go first, released: the integration branch's and the pull request's at its
     // present head. Held, the branch's three jobs kept the job slots from the run under test
-    // until their limit ended them (#1079).
+    // until their limit ended them.
     std::fs::write(&release, "")?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
@@ -2709,7 +2653,7 @@ command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
     let first = f.push_feature("fail-security", Some("x\n"))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     // Only this run will hold jobs: every other run has passed, so none competes with it for the
-    // job slots (#1079).
+    // job slots.
     let overview = f.get("/api/sandboxes/s1/ci").await?;
     assert!(
         overview["runs"]
@@ -2789,9 +2733,9 @@ command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
     Ok(())
 }
 
-/// While a run is going, its commit status counts the jobs that already ended (SPEC-198 RCS-001):
+/// While a run is going, its commit status counts the jobs that already ended:
 /// GitHub said "0 of 3 jobs passed" for PR #600 long after its security scan had passed, and the
-/// Superagent took the scan for one still running (#604). The final status still lands last.
+/// Superagent took the scan for one still running. The final status still lands last.
 #[tokio::test]
 async fn a_running_run_s_status_counts_the_jobs_that_ended() -> TestResult {
     let f = fixture_with(false, held_toml).await?;
@@ -2818,7 +2762,7 @@ async fn a_running_run_s_status_counts_the_jobs_that_ended() -> TestResult {
 }
 
 /// The statuses published as jobs end use no retry attempt of the run's final status: one that
-/// GitHub refused is published again by the retry loop (SPEC-198 RCS-004).
+/// GitHub refused is published again by the retry loop.
 #[tokio::test]
 async fn a_refused_final_status_is_retried_after_the_job_statuses() -> TestResult {
     let f = fixture_with(false, held_toml).await?;
@@ -3022,7 +2966,7 @@ impl Fixture {
     /// Lets time pass, a recheck interval at a time, until no run waits for disk any more. The
     /// check that noted the wait ends in the background and dates the next one from its own end:
     /// one jump of the clock taken before it ended left the next check a minute ahead, forever
-    /// in a frozen clock (#485).
+    /// in a frozen clock.
     async fn recheck_until_started(&self) -> BoxResult<()> {
         let deadline = tokio::time::Instant::now() + WAIT;
         loop {
@@ -3055,15 +2999,15 @@ impl Fixture {
     }
 }
 
-/// SPEC-059 CI-301, CI-302, CI-304 (#240, #256, #258): over the disk quota a run is not started
+/// Over the disk quota a run is not started
 /// and never ends in error. It stays queued, says it waits for disk and who holds the space, and
 /// its commit status stays pending (an armed merge keeps waiting). Once usage is under the quota
 /// it starts by itself at the next check and passes, without anyone running it again.
 ///
-/// #485: it failed once in CI after 2.16 s, an assertion whose message was lost. The race found
+/// It failed once in CI after 2.16 s, an assertion whose message was lost. The race found
 /// here (a disk check ending after the clock jump, fixed by `recheck_until_started`) only ever
-/// times out after a minute (SPEC-145), and probe delays at every publish, the check and a run's
-/// start and end reproduced nothing fast (SPEC-294). CI now keeps a failing test's output
+/// times out after a minute, and probe delays at every publish, the check and a run's
+/// start and end reproduced nothing fast. CI now keeps a failing test's output
 /// (`ci_status` with the run's id): a next failure names its assertion.
 #[tokio::test]
 async fn a_run_over_the_disk_quota_waits_and_starts_when_space_frees() -> TestResult {
@@ -3145,7 +3089,7 @@ async fn ci_uses_one_fresh_quota_reading_after_compiler_cache_upkeep() -> TestRe
     Ok(())
 }
 
-/// SPEC-059 CI-302: a run waiting for disk ends like any queued run when its pull request moves
+/// A run waiting for disk ends like any queued run when its pull request moves
 /// on: superseded, not left waiting.
 #[tokio::test]
 async fn a_run_waiting_for_disk_is_superseded_like_any_queued_run() -> TestResult {
@@ -3205,7 +3149,7 @@ async fn a_refusal_that_is_not_the_disk_quota_ends_the_run_in_error() -> TestRes
     Ok(())
 }
 
-/// SPEC-059 CI-303: usage crosses the quota between the dispatcher's check and a job's start, and
+/// Usage crosses the quota between the dispatcher's check and a job's start, and
 /// the job is refused. Its run goes back to the queue instead of ending in error, waits for disk,
 /// and passes once space frees.
 #[tokio::test]
@@ -3276,7 +3220,7 @@ impl SandboxIsolation for Limited {
     }
 }
 
-/// SPEC-082 RES-002, RES-003, RES-004: CI jobs declare the CPUs they use. Jobs whose budgets do
+/// CI jobs declare the CPUs they use. Jobs whose budgets do
 /// not fit in the sandbox together wait in the queue instead of running at once (two lanes,
 /// three job slots: before, all of them ran, each sized for the whole machine), and each job is
 /// told its budget in `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the repository's `[resources.env]`.
@@ -3327,7 +3271,7 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // SPEC-385 WSL-001: the other `build` waits for its CPUs (its job still queued), and its wait
+    // The other `build` waits for its CPUs (its job still queued), and its wait
     // is a span already, open. A wait whose job is already running is left out: its start ends it
     // just after (review round 1).
     let deadline = tokio::time::Instant::now() + WAIT;
@@ -3358,7 +3302,7 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
     std::fs::write(f.data.join("go"), "")?;
     f.settle().await?;
     f.all_passed(2).await?;
-    // WSL-002, WSL-004: each job's wait ended `started` at its job's start.
+    // Each job's wait ended `started` at its job's start.
     for id in &runs {
         let spans = run_spans(&f, id).await?;
         let jobs: Vec<_> = spans.iter().filter(|s| s.kind == "job").collect();
@@ -3403,7 +3347,7 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
     Ok(())
 }
 
-/// A CI run's spans (SPEC-137).
+/// A CI run's spans.
 async fn run_spans(f: &Fixture, run: &str) -> BoxResult<Vec<yulius_app::stages::SpanRecord>> {
     use yulius_app::ports::store_ext::SpanStore as _;
     Ok(f.h
@@ -3417,7 +3361,7 @@ async fn run_spans(f: &Fixture, run: &str) -> BoxResult<Vec<yulius_app::stages::
         .await?)
 }
 
-/// A CI run's waits for a job slot (SPEC-385).
+/// A CI run's waits for a job slot.
 async fn slot_waits(f: &Fixture, run: &str) -> BoxResult<Vec<yulius_app::stages::SpanRecord>> {
     Ok(run_spans(f, run)
         .await?
@@ -3426,7 +3370,7 @@ async fn slot_waits(f: &Fixture, run: &str) -> BoxResult<Vec<yulius_app::stages:
         .collect())
 }
 
-/// SPEC-385 WSL-002: a job cancelled while it waits for a slot (its run superseded by a push)
+/// A job cancelled while it waits for a slot (its run superseded by a push)
 /// ends its open wait `cancelled` when it is cancelled, and never gets a job span. The wait names
 /// the job's definition (`job`) and its display name (`detail.name`, a matrix job's "a (1)";
 /// review round 1).
@@ -3524,11 +3468,11 @@ async fn a_job_cancelled_while_it_waits_for_a_slot_ends_its_wait_cancelled() -> 
     Ok(())
 }
 
-/// A sandbox limited to 4 CPUs that records the CI jobs the app says run in it (SPEC-362).
+/// A sandbox limited to 4 CPUs that records the CI jobs the app says run in it.
 #[derive(Default)]
 struct Weighing {
     jobs: std::sync::Mutex<Vec<(String, u32)>>,
-    /// The CPUs held at each call (SPEC-497 HBA-004).
+    /// The CPUs held at each call.
     cpus: std::sync::Mutex<Vec<u32>>,
 }
 
@@ -3560,7 +3504,7 @@ impl SandboxIsolation for Weighing {
     }
 }
 
-/// SPEC-362 CSW-002: while a sandbox's CI jobs run, the app tells the isolation how many, so it
+/// While a sandbox's CI jobs run, the app tells the isolation how many, so it
 /// weighs the sandbox by them; every end counts (passed, timed out, and cancelled when a push
 /// supersedes the run, review round 1), and none is left counted.
 #[tokio::test]
@@ -3624,7 +3568,7 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
     assert!(seen.iter().all(|(sandbox, _)| sandbox == "s1"), "{seen:?}");
     let history = weighing.history();
     assert_eq!(history.last(), Some(&0), "a job left counted: {history:?}");
-    // SPEC-497 HBA-004: the CPUs the jobs hold reach the isolation, one per 1-CPU job.
+    // The CPUs the jobs hold reach the isolation, one per 1-CPU job.
     let cpus = weighing.cpus.lock().map_err(|_| "lock")?.clone();
     assert_eq!(cpus, history, "{cpus:?} against {history:?}");
     assert!(history.iter().all(|n| *n <= 3), "{history:?}");
@@ -3638,7 +3582,7 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
 }
 
 /// A contained sandbox's isolation that records which CI jobs got their own group and which it
-/// was told ended (SPEC-504 CLB-001, CLB-004), in order.
+/// was told ended, in order.
 #[derive(Default)]
 struct Grouping {
     calls: std::sync::Mutex<Vec<(&'static str, String)>>,
@@ -3698,7 +3642,7 @@ impl SandboxIsolation for Grouping {
     }
 }
 
-/// SPEC-504 CLB-001, CLB-004: every CI job gets its own group before it starts, and the
+/// Every CI job gets its own group before it starts, and the
 /// isolation hears that it ended, after it started, whatever the outcome: passed, failed, timed
 /// out, and cancelled when a push supersedes its run.
 #[tokio::test]
@@ -3798,7 +3742,7 @@ async fn launched_groups(
     grouping: Grouping,
 ) -> BoxResult<(Vec<PathBuf>, Vec<String>, Vec<(&'static str, String)>)> {
     use yulius_app::ports::session::Containment;
-    let recording = Arc::new(crate::cd::Recording {
+    let recording = Arc::new(crate::support::cd::Recording {
         inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
         seen: std::sync::Mutex::new(Vec::new()),
     });
@@ -3881,7 +3825,7 @@ async fn a_contained_ci_job_is_launched_in_its_own_group() -> TestResult {
     Ok(())
 }
 
-/// SPEC-504 CLB-004: a job a restart of Yulius ended (its run recorded as running, with no
+/// A job a restart of Yulius ended (its run recorded as running, with no
 /// executor) is told ended to the isolation when CI starts again; a removal that never ends
 /// (an engine that never answers) does not hold the run's requeue or CI's start (review round 1).
 #[tokio::test]
@@ -3967,7 +3911,7 @@ async fn a_job_a_restart_ended_is_told_ended_with(hangs: bool) -> TestResult {
 
 /// A sandbox limited to 4 CPUs (a CI budget of 3) whose CI and Docker engine use `millis`
 /// thousandths of a CPU, and whose engine of 4,096 networks has `networks` of them
-/// (`u32::MAX`: no running engine) (SPEC-497).
+/// (`u32::MAX`: no running engine).
 struct Measured {
     used: std::sync::Mutex<(tokio::time::Instant, u64)>,
     millis: AtomicU32,
@@ -4058,7 +4002,7 @@ async fn only_job_state(f: &Fixture, sha: &str) -> BoxResult<Option<RunState>> {
     Ok(None)
 }
 
-/// SPEC-497 HBA-002, HBA-005: a job that fits beside the running job's reservation still waits
+/// A job that fits beside the running job's reservation still waits
 /// while what CI really uses, with what the job that just started may still bring, leaves no
 /// room, says so, and starts once the use drops, while the first job still runs.
 #[tokio::test]
@@ -4121,7 +4065,7 @@ async fn a_job_waits_while_ci_uses_more_than_it_reserved() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 HBA-003: a job of a sandbox whose engine can make fewer than 32 more networks waits,
+/// A job of a sandbox whose engine can make fewer than 32 more networks waits,
 /// saying so, after the networks unused for 10 minutes were pruned, and starts once there is
 /// room.
 #[tokio::test]
@@ -4154,7 +4098,7 @@ async fn a_job_waits_for_docker_networks() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 (review rounds 1 and 2): a run's jobs that declare no `cpus` get shares of the CI
+/// A run's jobs that declare no `cpus` get shares of the CI
 /// budget, so they run at once on an idle host. 4 CPUs give a budget of 3: two jobs of 1 CPU
 /// each; shares of the capacity (2 each) would run one after the other.
 #[tokio::test]
@@ -4200,7 +4144,7 @@ async fn a_runs_default_shares_run_together() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 HBA-004 (review round 2): the isolation hears the CPUs a job holds, not the number
+/// The isolation hears the CPUs a job holds, not the number
 /// of jobs.
 #[tokio::test]
 async fn a_job_weighs_by_the_cpus_it_holds() -> TestResult {
@@ -4397,7 +4341,7 @@ const NO_POOL: &str = "echo \"Error response from daemon: could not find an avai
                        non-overlapping IPv4 address pool among the defaults to assign to the \
                        network\"; exit 1";
 
-/// SPEC-497 OFC-001: a job that met an infrastructure failure runs again once by itself and
+/// A job that met an infrastructure failure runs again once by itself and
 /// passes, saying so in its output and its reason; its run passes.
 #[tokio::test]
 async fn an_infrastructure_failure_runs_the_job_again_once() -> TestResult {
@@ -4427,7 +4371,7 @@ async fn an_infrastructure_failure_runs_the_job_again_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-001: a second infrastructure failure ends the job as an error saying so, never
+/// A second infrastructure failure ends the job as an error saying so, never
 /// a third run; a test's failure is never run again.
 #[tokio::test]
 async fn a_job_runs_again_once_and_only_for_the_infrastructure() -> TestResult {
@@ -4460,7 +4404,7 @@ async fn a_job_runs_again_once_and_only_for_the_infrastructure() -> TestResult {
     Ok(())
 }
 
-/// A sandbox whose OOM count grows at every look (SPEC-497 OFC-001).
+/// A sandbox whose OOM count grows at every look.
 #[derive(Default)]
 struct Oomy {
     looks: AtomicU64,
@@ -4480,7 +4424,7 @@ impl SandboxIsolation for Oomy {
     }
 }
 
-/// SPEC-497 OFC-001: a job killed (SIGKILL) while the kernel killed for memory in its sandbox
+/// A job killed (SIGKILL) while the kernel killed for memory in its sandbox
 /// runs again once.
 #[tokio::test]
 async fn a_job_killed_for_memory_runs_again_once() -> TestResult {
@@ -4498,7 +4442,7 @@ async fn a_job_killed_for_memory_runs_again_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-001 (review round 1): a Docker error the job went on from, then a test's
+/// A Docker error the job went on from, then a test's
 /// failure, is the change's: no second run. A first run thrown away for the infrastructure and
 /// a second that fails a test is the change's failure, not an infrastructure error.
 #[tokio::test]
@@ -4529,7 +4473,7 @@ async fn a_tests_failure_is_never_taken_for_the_infrastructure() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-001 (review round 2): a Docker error the job went on from, then its own failure
+/// A Docker error the job went on from, then its own failure
 /// in Go's, pytest's or jest's words, is the change's: no second run.
 #[tokio::test]
 async fn a_failure_in_any_runners_words_is_never_run_again() -> TestResult {
@@ -4552,7 +4496,7 @@ async fn a_failure_in_any_runners_words_is_never_run_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-001 (review round 2): a job with a failing test kept (nextest's block, with its
+/// A job with a failing test kept (nextest's block, with its
 /// blank lines) is the change's, even when the test failed on Docker's words: no second run.
 #[tokio::test]
 async fn a_kept_failing_test_is_never_run_again() -> TestResult {
@@ -4569,7 +4513,7 @@ async fn a_kept_failing_test_is_never_run_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-001 (review round 2): only the second run's own output decides it: a first run
+/// Only the second run's own output decides it: a first run
 /// thrown away for the infrastructure, then a second that fails with no runner's words, is the
 /// change's failure, not "again" the infrastructure.
 #[tokio::test]
@@ -4591,7 +4535,7 @@ async fn the_second_run_is_judged_on_its_own_output() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-001 (review round 2): after a full address pool the second run waits for room
+/// After a full address pool the second run waits for room
 /// in the engine, saying so in the job's output, and a cancellation ends it at once, cancelled,
 /// with no second start.
 #[tokio::test]
@@ -4662,7 +4606,7 @@ async fn the_wait_before_a_second_run_can_be_cancelled() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-001 (review round 3): a test's failure in Go's or pytest's words before Docker's
+/// A test's failure in Go's or pytest's words before Docker's
 /// words at the end (a teardown or a log dump) is the change's: no second run.
 #[tokio::test]
 async fn a_failure_before_dockers_words_is_never_run_again() -> TestResult {
@@ -4682,7 +4626,7 @@ async fn a_failure_before_dockers_words_is_never_run_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-001 (review round 3): past the bound of the wait for network room, the job ends
+/// Past the bound of the wait for network room, the job ends
 /// error saying its engine had no room, with no second run.
 #[tokio::test]
 async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
@@ -4749,7 +4693,7 @@ async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
     Ok(())
 }
 
-/// A sandbox whose OOM count never grows (SPEC-497 OFC-001, review round 1).
+/// A sandbox whose OOM count never grows.
 struct NoOom;
 
 #[async_trait::async_trait]
@@ -4766,7 +4710,7 @@ impl SandboxIsolation for NoOom {
     }
 }
 
-/// SPEC-497 OFC-001 (review round 1): a SIGKILL while the kernel killed nothing for memory is
+/// A SIGKILL while the kernel killed nothing for memory is
 /// the job's own failure: no second run.
 #[tokio::test]
 async fn a_kill_without_a_kill_for_memory_is_not_run_again() -> TestResult {
@@ -4876,7 +4820,7 @@ fn issue_titles(f: &Fixture) -> BoxResult<Vec<String>> {
         .collect())
 }
 
-/// SPEC-497 OFC-002: a test that fails in the runs of two different pull requests is quarantined
+/// A test that fails in the runs of two different pull requests is quarantined
 /// at once with one issue, the job that found it says so, a later job of the project is told it
 /// in its environment, and closing the issue ends the quarantine. The failing test is never run
 /// again by Yulius (each pull request's job ran once).
@@ -4959,7 +4903,7 @@ async fn a_test_failing_on_two_pull_requests_is_quarantined_with_an_issue() -> T
     Ok(())
 }
 
-/// SPEC-497 OFC-002 (review round 1): a test the integration branch failed too is broken there,
+/// A test the integration branch failed too is broken there,
 /// not flaky; two pull requests whose heads share a commit (a chained one) are one change.
 #[tokio::test]
 async fn no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it() -> TestResult {
@@ -5041,7 +4985,7 @@ async fn no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it()
     Ok(())
 }
 
-/// SPEC-618 FOC-001 (#1545): a test that checks the repository's content fails in each pull
+/// A test that checks the repository's content fails in each pull
 /// request that breaks its rule, naming the file. Two pull requests whose failures name a file
 /// their own change added (one whole, one as its crate prints it) quarantine nothing, and each
 /// job says why; the same failure naming a file the pull request did not change still counts,
@@ -5092,7 +5036,7 @@ async fn a_failure_naming_its_own_changed_file_makes_no_test_flaky() -> TestResu
     Ok(())
 }
 
-/// SPEC-618 (review round 1): a job failing more than 10 tests is broken and quarantines none,
+/// A job failing more than 10 tests is broken and quarantines none,
 /// counting the failures that are its change's own: ten tests another pull request failed too
 /// and one naming the file this one added still file no issue.
 #[tokio::test]
@@ -5132,7 +5076,7 @@ async fn a_broken_job_counts_its_own_failures_too() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-002 (review round 1): when the issue cannot be filed nothing is quarantined, and
+/// When the issue cannot be filed nothing is quarantined, and
 /// the output says why; a job failing more than 10 tests, kept or only counted, quarantines none.
 #[tokio::test]
 async fn no_quarantine_without_its_issue_or_for_a_broken_job() -> TestResult {
@@ -5177,7 +5121,7 @@ async fn no_quarantine_without_its_issue_or_for_a_broken_job() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-002 (review round 1): two jobs that make the same test flaky at once file one
+/// Two jobs that make the same test flaky at once file one
 /// issue; the second says it is quarantined.
 #[tokio::test]
 async fn two_jobs_at_once_file_one_issue() -> TestResult {
@@ -5242,7 +5186,7 @@ async fn run_jobs(f: &Fixture, run: &Value) -> BoxResult<Vec<Value>> {
     Ok(detail["jobs"].as_array().ok_or("jobs")?.clone())
 }
 
-/// SPEC-504 review round 2: a pull request that changes the command of an `exclusive` job runs
+/// A pull request that changes the command of an `exclusive` job runs
 /// the integration branch's job and its own changed one one at a time: they share the job's turn
 /// (its definition and matrix value), not one each by their names.
 #[tokio::test]
@@ -5285,7 +5229,7 @@ async fn an_exclusive_job_and_its_changed_twin_share_a_turn() -> TestResult {
     Ok(())
 }
 
-/// SPEC-435 JTL-001/002/004: three runs of an `exclusive` job run one at a time (a job that finds
+/// Three runs of an `exclusive` job run one at a time (a job that finds
 /// another inside exits 7), and the last one, which waited longer than the 5 s limit for its turn,
 /// still passes: the wait is outside its limit, and its record says how long it waited.
 #[tokio::test]
@@ -5386,7 +5330,7 @@ fn turn_toml(data: &Path) -> String {
     )
 }
 
-/// SPEC-435 JTL-001: a job waiting for its turn holds no job slot. With two slots, one run's
+/// A job waiting for its turn holds no job slot. With two slots, one run's
 /// `site` runs and the other's waits for its turn, and both runs' `lint` still run meanwhile; a
 /// waiting `site` holding a slot would leave `lint` queued until the running one ends.
 #[tokio::test]
@@ -5414,7 +5358,7 @@ fn two_held_toml(data: &Path) -> String {
     format!("[[ci.jobs]]\nname = \"a\"\n{hold}\n[[ci.jobs]]\nname = \"b\"\n{hold}")
 }
 
-/// SPEC-459 HSL-006: the limit of CI jobs at once changes while jobs run. With one slot one of
+/// The limit of CI jobs at once changes while jobs run. With one slot one of
 /// the four jobs runs; raised to three in Settings, two of the waiting ones start beside it
 /// without a restart and without the running one ending.
 #[tokio::test]
@@ -5468,7 +5412,7 @@ fn two_logged_toml(data: &Path) -> String {
     format!("{}\n{}", job("slot-waiter"), job("b"))
 }
 
-/// SPEC-459 HSL-007: lowered in Settings while jobs run, the limit lets them finish and starts
+/// Lowered in Settings while jobs run, the limit lets them finish and starts
 /// no waiting job beside them: with two of four jobs running and the limit lowered to one, no
 /// two jobs run at once after the first of them ended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -5534,7 +5478,7 @@ async fn a_lowered_job_limit_starts_no_job_beside_the_ones_it_lets_finish() -> T
     Ok(())
 }
 
-/// SPEC-435 JTL-001: a job cancelled while it waits for its turn ends cancelled without having
+/// A job cancelled while it waits for its turn ends cancelled without having
 /// started, and the turn still comes to a later run of the job.
 #[tokio::test]
 async fn a_job_cancelled_while_waiting_for_its_turn_never_starts() -> TestResult {
@@ -5589,7 +5533,7 @@ async fn a_job_cancelled_while_waiting_for_its_turn_never_starts() -> TestResult
     Ok(())
 }
 
-/// SPEC-435 JTL-003/005: a job's `timeout_minutes` replaces the instance's limit (2 s here): the
+/// A job's `timeout_minutes` replaces the instance's limit (2 s here): the
 /// job given a minute passes after 3 s; the other one is killed at 2 s and says how long it ran.
 #[tokio::test]
 async fn a_jobs_own_time_limit_replaces_the_instance_one() -> TestResult {
@@ -5717,7 +5661,7 @@ async fn concurrent_runs_never_share_a_ci_cache() -> TestResult {
     Ok(())
 }
 
-/// SPEC-351 review round 2: a link an agent put at `ci/cache` never steers what Yulius removes or
+/// A link an agent put at `ci/cache` never steers what Yulius removes or
 /// makes there. Before, a file named like a job's cache was removed through the link, outside the
 /// sandbox; now the link is replaced by a folder and the outside file stays.
 #[tokio::test]
@@ -5756,7 +5700,7 @@ fn names_in(dir: &Path) -> BoxResult<Vec<String>> {
     Ok(names)
 }
 
-/// #969 (SPEC-367 CJP-001): a link an agent put at `ci` fails the jobs before Yulius makes
+/// A link an agent put at `ci` fails the jobs before Yulius makes
 /// anything: before, `<target>/home` (and the checkout) were made at the link's target.
 #[tokio::test]
 async fn a_linked_ci_folder_fails_the_job_and_makes_nothing_outside() -> TestResult {
@@ -5776,7 +5720,7 @@ async fn a_linked_ci_folder_fails_the_job_and_makes_nothing_outside() -> TestRes
     Ok(())
 }
 
-/// #969 (SPEC-367 CJP-002): a link at `ci/home` is replaced by a folder of the sandbox, never the
+/// A link at `ci/home` is replaced by a folder of the sandbox, never the
 /// job's `HOME`: before, the job wrote into the link's target.
 #[tokio::test]
 async fn a_linked_ci_home_is_replaced_by_a_folder() -> TestResult {
@@ -5806,7 +5750,7 @@ async fn a_linked_ci_home_is_replaced_by_a_folder() -> TestResult {
     Ok(())
 }
 
-/// #969 (SPEC-367 CJP-002, CJP-003): a link at `ci/jobs` to a folder holding the checkouts' names
+/// A link at `ci/jobs` to a folder holding the checkouts' names
 /// is replaced by a folder: before, Git added the checkouts at the target, and the next run
 /// removed `<target>/<checkout>` through the link as a broken checkout.
 #[tokio::test]
@@ -5842,7 +5786,7 @@ async fn a_linked_ci_jobs_folder_is_never_checked_out_or_removed_through() -> Te
     Ok(())
 }
 
-/// A job that names its stages, a figure and prints a cargo test summary (SPEC-137 STG-203).
+/// A job that names its stages, a figure and prints a cargo test summary.
 /// Each step holds until the test creates its gate, `<data>/<next step>-<run id>`: the unit stage,
 /// the end of the stages and the end of the job.
 fn staged_toml(data: &Path) -> String {
@@ -5886,11 +5830,11 @@ async fn stage_recorded(
     }
 }
 
-/// SPEC-137 STG-201..203: a CI run's queue, preparation, its job with its slot wait and
+/// A CI run's queue, preparation, its job with its slot wait and
 /// checkout, and the stages and figures the job's output names are spans timed by Yulius's clock
 /// as it reads the output. The test alone moves the clock, each time once Yulius has recorded a
 /// stage's start (or the end of the stages) and before the job goes on, so a stage lasts exactly
-/// what the test moved the clock by, however late Yulius reads the output (#538).
+/// what the test moved the clock by, however late Yulius reads the output.
 #[tokio::test]
 async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
     use yulius_app::ports::store_ext::SpanStore as _;
@@ -6013,7 +5957,7 @@ name = "busy"
 command = 'i=0; while [ $i -lt 300000 ]; do i=$((i+1)); done; echo "::yulius-measure cpu_ms=1 memory_peak_mb=1 cache_hits=3"; echo done'
 "#;
 
-/// SPEC-154 USE-001..004 (#488): a CI job run through the process host records the CPU time and
+/// A CI job run through the process host records the CPU time and
 /// peak memory its process tree used on its `job` span, as Yulius measured them when the host
 /// reaped it; the job's own `::yulius-measure` cannot set them.
 #[tokio::test]
@@ -6064,7 +6008,7 @@ name = "runaway"
 command = '/bin/sh -c "while :; do :; done"'
 "#;
 
-/// SPEC-154 USE-002, review round 1: a job Yulius kills (here at its timeout) loses the processes
+/// A job Yulius kills (here at its timeout) loses the processes
 /// its host cannot reap (they go to init with the group kill), so what it measured would read as
 /// almost nothing: its use stays unknown, never a near-zero figure.
 #[tokio::test]
@@ -6138,7 +6082,7 @@ fn output_of<'a>(outputs: &'a [(String, String)], name: &str) -> BoxResult<&'a s
         .ok_or_else(|| format!("no job {name}: {outputs:?}").into())
 }
 
-/// SPEC-142 CSE-002..004: a job the integration branch grants `API_KEY` gets its placeholder, a
+/// A job the integration branch grants `API_KEY` gets its placeholder, a
 /// proxy credential of its own (a `ci:<run>` client while it runs, nothing after) and the CA
 /// bundle; a job without a grant gets none of these; a pull request that grants secrets in its own
 /// `yulius.toml` gets nothing more than the integration branch granted.
@@ -6257,8 +6201,8 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
     assert!(!plain_out.contains("ca-readable"), "{plain_out}");
 
     // The pull request grants secrets in its own yulius.toml, reuses the granted job's name for
-    // its own command and adds a job (SPEC-264 CSG-001, CSG-002, #659): the integration branch's
-    // jobs judge it, with their grant (SPEC-504 CFG-001), and its own run beside them with no
+    // its own command and adds a job: the integration branch's
+    // jobs judge it, with their grant, and its own run beside them with no
     // secret, since a grant binds the integration branch's name and command.
     let own = format!(
         "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY OTHER_KEY\"\ncommand = '{granted}'\n\n\
@@ -6310,7 +6254,7 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
     Ok(())
 }
 
-/// SPEC-195 VSC-001, VSC-011: every project's CI job runs Yulius's embedded scanner as
+/// Every project's CI job runs Yulius's embedded scanner as
 /// `yulius security-scan --ci`; without a Vidoc key it says why and ends skipped, never passed.
 #[tokio::test]
 async fn a_ci_job_runs_the_embedded_security_scan() -> TestResult {
@@ -6346,7 +6290,7 @@ async fn a_ci_job_runs_the_embedded_security_scan() -> TestResult {
     Ok(())
 }
 
-/// One `::yulius-finding` line, as the security scan prints it (SPEC-217 VSP-004).
+/// One `::yulius-finding` line, as the security scan prints it.
 fn finding_line(severity: &str, file: &str, fingerprint: &str) -> String {
     format!(
         "::yulius-finding {}\n",
@@ -6356,7 +6300,7 @@ fn finding_line(severity: &str, file: &str, fingerprint: &str) -> String {
     )
 }
 
-/// SPEC-217 VSI-004 (review round 1, M2): a filed finding's issue follows the integration branch.
+/// A filed finding's issue follows the integration branch.
 /// Closed while Vidoc still reports the finding and its code is on dev, it is reopened; once its
 /// line is gone from dev, it is closed, also when a branch behind dev still reports it, and that
 /// stale report reopens nothing; a finding already gone from dev is never filed.
@@ -6453,7 +6397,7 @@ async fn filed_issues_are_reopened_while_reported_and_closed_once_the_code_is_go
     Ok(())
 }
 
-/// SPEC-217 VSI-001 (review round 2): failed filings count against the 5 a job may try, and the
+/// Failed filings count against the 5 a job may try, and the
 /// rest wait for a later run.
 #[tokio::test]
 async fn a_job_tries_at_most_five_filings_failed_ones_included() -> TestResult {
@@ -6486,7 +6430,7 @@ async fn a_job_tries_at_most_five_filings_failed_ones_included() -> TestResult {
     Ok(())
 }
 
-/// SPEC-217 VSI-004 (review round 2): an issue GitHub no longer has (404) resolves its finding,
+/// An issue GitHub no longer has (404) resolves its finding,
 /// so later jobs make no call for it.
 #[tokio::test]
 async fn a_finding_whose_issue_is_gone_from_github_is_resolved() -> TestResult {
@@ -6526,7 +6470,7 @@ async fn a_finding_whose_issue_is_gone_from_github_is_resolved() -> TestResult {
     Ok(())
 }
 
-/// SPEC-217 VSI-004 (review round 3): a finding filed before is looked at for reopening even once
+/// A finding filed before is looked at for reopening even once
 /// the job's filings are used up.
 #[tokio::test]
 async fn a_closed_finding_is_reopened_past_the_filing_cap() -> TestResult {
@@ -6572,7 +6516,7 @@ async fn a_closed_finding_is_reopened_past_the_filing_cap() -> TestResult {
     Ok(())
 }
 
-/// SPEC-217 VSI-004 (review round 3): a finding whose issue is gone from GitHub (deleted) and that
+/// A finding whose issue is gone from GitHub (deleted) and that
 /// is reported again is filed anew.
 #[tokio::test]
 async fn a_reported_finding_whose_issue_was_deleted_is_filed_again() -> TestResult {
@@ -6603,7 +6547,7 @@ async fn a_reported_finding_whose_issue_was_deleted_is_filed_again() -> TestResu
     Ok(())
 }
 
-/// SPEC-217 VSI-002 (review round 1, m8): when GitHub refuses an issue, the claim is released and
+/// When GitHub refuses an issue, the claim is released and
 /// a later run files it.
 #[tokio::test]
 async fn a_finding_github_did_not_take_is_filed_by_a_later_run() -> TestResult {
@@ -6634,7 +6578,7 @@ async fn a_finding_github_did_not_take_is_filed_by_a_later_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-217 VSI-001..003: the `security` job's findings outside the change become one issue per
+/// The `security` job's findings outside the change become one issue per
 /// fingerprint, with the Definition-of-Ready labels; a later run files nothing again, and
 /// another job's lines file nothing.
 #[tokio::test]
@@ -6703,7 +6647,7 @@ async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestR
     Ok(())
 }
 
-/// SPEC-273 NOI-008: findings outside the change wait for the tests. A run whose other job failed
+/// Findings outside the change wait for the tests. A run whose other job failed
 /// files no issue and says why in the security job's output; once that job passes, the same
 /// findings are filed.
 #[tokio::test]
@@ -6747,7 +6691,7 @@ async fn findings_are_filed_only_from_a_run_whose_other_jobs_passed() -> TestRes
     Ok(())
 }
 
-/// SPEC-195 VSC-001 (review round 1): inside the containment too, a job finds `yulius` (bound
+/// Inside the containment too, a job finds `yulius` (bound
 /// read-only) and runs the embedded scan.
 #[tokio::test]
 async fn a_contained_ci_job_runs_the_embedded_security_scan() -> TestResult {
@@ -6799,7 +6743,7 @@ impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
     }
 }
 
-/// SPEC-195 VDK-005: a job granted `VIDOC_API_KEY` gets the instance key's placeholder when the
+/// A job granted `VIDOC_API_KEY` gets the instance key's placeholder when the
 /// sandbox has no such agent secret of its own, its output says where the key comes from, and the
 /// value never reaches it.
 #[tokio::test]
@@ -6811,7 +6755,7 @@ async fn a_granted_job_gets_the_instance_vidoc_key_without_a_project_secret() ->
     .await?;
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(INSTANCE_KEY.into()))),
+        Ok(Some(yulius_app::model::Secret::new(INSTANCE_KEY.into()))),
     ));
     f.h.app.load_vidoc_key().await;
     f.h.app.enable_egress(Some(
@@ -6839,7 +6783,7 @@ async fn a_granted_job_gets_the_instance_vidoc_key_without_a_project_secret() ->
     Ok(())
 }
 
-/// SPEC-217 VDP-001: with the instance's Vidoc key, a project whose CI does not scan gets the
+/// With the instance's Vidoc key, a project whose CI does not scan gets the
 /// built-in `security` job, granted the key; without a key it gets none.
 #[tokio::test]
 async fn every_project_with_a_vidoc_key_runs_the_built_in_security_job() -> TestResult {
@@ -6858,7 +6802,7 @@ async fn every_project_with_a_vidoc_key_runs_the_built_in_security_job() -> Test
     );
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -6883,7 +6827,7 @@ async fn every_project_with_a_vidoc_key_runs_the_built_in_security_job() -> Test
     Ok(())
 }
 
-/// SPEC-356 VIO-002: with Vidoc switched off for the instance, a project whose own switch is on
+/// With Vidoc switched off for the instance, a project whose own switch is on
 /// gets no built-in security job, and its own scanning job, with its own key, ends skipped.
 #[tokio::test]
 async fn no_project_scans_in_ci_while_vidoc_is_off_for_the_instance() -> TestResult {
@@ -6893,7 +6837,7 @@ async fn no_project_scans_in_ci_while_vidoc_is_off_for_the_instance() -> TestRes
     .await?;
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -6952,7 +6896,7 @@ async fn no_project_scans_in_ci_while_vidoc_is_off_for_the_instance() -> TestRes
     Ok(())
 }
 
-/// SPEC-338 VOF-002: a project whose Vidoc switch is off gets no built-in security job even with
+/// A project whose Vidoc switch is off gets no built-in security job even with
 /// the instance's key and its own, and its own scanning job says "disabled" and ends skipped, never passed.
 #[tokio::test]
 async fn a_switched_off_project_scans_nothing_in_ci() -> TestResult {
@@ -6962,7 +6906,7 @@ async fn a_switched_off_project_scans_nothing_in_ci() -> TestResult {
     .await?;
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -7050,7 +6994,7 @@ async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> Test
     let f = fixture_with(false, |_| String::new()).await?;
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -7084,7 +7028,7 @@ async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> Test
     Ok(())
 }
 
-/// SPEC-483 D4, SPEC-504 CFG-001: a run again tests a pull request with the jobs the scheduler
+/// A run again tests a pull request with the jobs the scheduler
 /// gave it: a pull request that changes the CI is tested with the integration branch's jobs and
 /// its own changed ones beside them, by its first run and by a run again (by a person, by the
 /// agent's `ci_rerun`, by Yulius after an errored run).
@@ -7167,14 +7111,14 @@ async fn a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now() ->
     let outputs = job_outputs(&f, &sha).await?;
     let names: Vec<&str> = outputs.iter().map(|(n, _)| n.as_str()).collect();
     // Exactly dev's jobs of now: none of the ones it only carries from its base runs beside
-    // them as its own change (SPEC-504 review round 2).
+    // them as its own change.
     assert_eq!(names, ["plain"], "{outputs:?}");
     let plain = output_of(&outputs, "plain")?;
     assert!(plain.contains("new") && !plain.contains("old"), "{plain}");
     Ok(())
 }
 
-/// SPEC-483 D5: the verdict of a commit that Yulius CI will test is "pending" before its first
+/// The verdict of a commit that Yulius CI will test is "pending" before its first
 /// run exists, also when the integration branch has no CI and the commit brings it: a merge
 /// that requires checks waits for that run instead of reading "no checks" in the meantime.
 #[tokio::test]
@@ -7238,7 +7182,7 @@ async fn a_repair_of_a_never_valid_configuration_is_tested_with_its_own_jobs() -
         f.h.app.ci_gate_result(&f.sandbox, &sha).await,
         GateResult::Run(Some(RunState::Passed))
     );
-    // SPEC-504 CFG-004: the minutes CI ran nothing because of its configuration are counted
+    // The minutes CI ran nothing because of its configuration are counted
     // until a gate is in force again (here the repair lands on dev 30 minutes later).
     f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
     f.push_dev("yulius.toml", Some(&one_job("repaired")))?;
@@ -7321,7 +7265,7 @@ async fn a_pull_request_that_changes_its_jobs_is_judged_by_the_integration_branc
     Ok(())
 }
 
-/// SPEC-504 CFG-002: a pull request whose own `yulius.toml` is invalid (autoresearch's PR #4: both
+/// A pull request whose own `yulius.toml` is invalid (autoresearch's PR #4: both
 /// `[commands] gate` and `[[ci.jobs]]`) fails its run with the parser's message, its jobs not
 /// run, so it cannot merge; the integration branch's own CI is untouched.
 #[tokio::test]
@@ -7388,7 +7332,7 @@ async fn an_invalid_integration_branch_runs_its_last_valid_gate_until_a_fix_merg
             .is_some_and(|p| p.contains("gate"))
     );
     assert_eq!(overview["gate"]["source"], "last_valid_yulius_toml");
-    // dev's own run at its invalid head fails at once, saying why (CFG-002, review round 1).
+    // dev's own run at its invalid head fails at once, saying why.
     let dev_run = run_of_sha(&f, &dev_head).await?;
     assert_eq!(dev_run["state"], "failed", "{dev_run}");
     assert!(
@@ -7437,7 +7381,7 @@ async fn an_invalid_integration_branch_runs_its_last_valid_gate_until_a_fix_merg
     Ok(())
 }
 
-/// SPEC-142 CSE-003: inside the containment, a granted job reads its CA bundle (written in its run
+/// Inside the containment, a granted job reads its CA bundle (written in its run
 /// directory, outside the sandbox).
 #[tokio::test]
 async fn a_contained_granted_job_reads_its_ca_bundle() -> TestResult {
@@ -7491,7 +7435,7 @@ async fn a_contained_granted_job_reads_its_ca_bundle() -> TestResult {
     Ok(())
 }
 
-/// SPEC-142 CSE-002, review B1: a CI job can write the sandbox's shared clone, so what it plants
+/// A CI job can write the sandbox's shared clone, so what it plants
 /// there (a `git replace` of the integration branch's `yulius.toml`) must not change any grant:
 /// grants come from the integration head GitHub reports, taken into a mirror only Yulius writes.
 /// A production-deploy secret is never granted.
@@ -7569,7 +7513,7 @@ async fn a_grant_forged_in_the_shared_clone_gives_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-142, review round 2: a fetch of the shared clone that fails (a concurrent fetch holding a
+/// A fetch of the shared clone that fails (a concurrent fetch holding a
 /// ref lock, a network blip) does not withhold a grant the clone can already verify.
 #[tokio::test]
 async fn a_grant_verifies_without_a_fresh_fetch_when_the_clone_has_the_head() -> TestResult {
@@ -7625,7 +7569,7 @@ fn all_passed_with(jobs: &[Value], output: &str) {
     }
 }
 
-/// #663 (SPEC-285 AC-1): a sandbox's `ci/logs` replaced by a link to a host folder gets no job log
+/// A sandbox's `ci/logs` replaced by a link to a host folder gets no job log
 /// created in that folder; the link is replaced by a folder of the sandbox and the jobs' output is
 /// still recorded.
 #[tokio::test]
@@ -7665,7 +7609,7 @@ async fn a_linked_ci_logs_folder_gets_no_host_write() -> TestResult {
     Ok(())
 }
 
-/// #663 (SPEC-285 AC-2): a link to a host file planted at a job log's path exactly between the
+/// A link to a host file planted at a job log's path exactly between the
 /// removal of the old log and the create is never followed: the host file keeps its content and
 /// the job's output is still recorded.
 #[tokio::test]
@@ -7700,7 +7644,7 @@ async fn a_link_planted_at_the_job_log_is_never_followed() -> TestResult {
     Ok(())
 }
 
-/// #663 (SPEC-285 AC-3): a job that relinks `ci/logs` to a host folder holding its log's name while
+/// A job that relinks `ci/logs` to a host folder holding its log's name while
 /// it runs leaves that host file in place when its log is removed, and its output is recorded.
 #[tokio::test]
 async fn a_job_relinking_ci_logs_keeps_the_host_file() -> TestResult {
@@ -7734,28 +7678,41 @@ async fn a_job_relinking_ci_logs_keeps_the_host_file() -> TestResult {
     Ok(())
 }
 
-/// SPEC-421 CCU-003 (review finding 5): a CI job in a joined sandbox binds the agent CLI its
+/// A CI job in a joined sandbox binds the agent CLI its
 /// join names, read-only at the host package's path.
 #[tokio::test]
 async fn a_ci_job_binds_the_agent_cli_of_its_join() -> TestResult {
     use yulius_app::ports::session::{Bind, Containment};
-    let recording = Arc::new(crate::cd::Recording {
+    let recording = Arc::new(crate::support::cd::Recording {
         inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
         seen: std::sync::Mutex::new(Vec::new()),
     });
     let f = fixture_hosted(true, |_| YULIUS_TOML.to_owned(), Some(recording.clone())).await?;
     assert!(
         f.h.app
-            .set_isolation(Arc::new(crate::cd::Holders::default()))
+            .set_isolation(Arc::new(crate::support::cd::Holders::default()))
     );
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
     let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
     assert!(!seen.is_empty(), "no CI job ran");
+    // A job runs the branch's code, so the sandbox's harness folders are
+    // masked for it.
+    let masks = yulius_app::memory_guard::sandbox_masks(
+        &f.h.app
+            .config
+            .data_dir
+            .join("sandboxes")
+            .join(f.sandbox.id.as_str()),
+    );
     for containment in &seen {
-        let Containment::Bubblewrap { binds, join, .. } = containment else {
+        let Containment::Bubblewrap {
+            binds, join, guard, ..
+        } = containment
+        else {
             return Err(format!("a contained job: {containment:?}").into());
         };
+        assert_eq!(guard, &masks);
         assert!(join.is_some(), "joined");
         assert!(
             binds.contains(&Bind {
@@ -7899,7 +7856,7 @@ async fn an_outside_opening_passes_a_stalled_inventory_and_survives_its_stale_li
         |_| YULIUS_TOML.to_owned(),
         None,
         move |config| {
-            config.github_webhook_secret = Some(yulius_app::model::Secret(key.into()));
+            config.github_webhook_secret = Some(yulius_app::model::Secret::new(key.into()));
         },
     )
     .await?;
@@ -7952,7 +7909,7 @@ async fn opening_fixture() -> BoxResult<Fixture> {
         |_| YULIUS_TOML.to_owned(),
         None,
         |config| {
-            config.github_webhook_secret = Some(yulius_app::model::Secret(OPENING_KEY.into()));
+            config.github_webhook_secret = Some(yulius_app::model::Secret::new(OPENING_KEY.into()));
         },
     )
     .await?;

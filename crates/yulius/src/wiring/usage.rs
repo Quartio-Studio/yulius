@@ -26,6 +26,7 @@
 
 use std::time::Duration;
 
+use crate::wiring::http::{BodyError, read_bounded};
 use async_trait::async_trait;
 use serde_json::Value;
 use yulius_app::model::Secret;
@@ -36,14 +37,6 @@ use yulius_domain::usage::{
     AccountUsage, LimitScope, ModelAnswer, ReportedLimit, SESSION_WINDOW_MINUTES, UsageWindow,
     WEEKLY_WINDOW_MINUTES,
 };
-
-fn now() -> Timestamp {
-    Timestamp(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
-    )
-}
 
 const CLAUDE_API: &str = "https://api.anthropic.com";
 const CODEX_API: &str = "https://chatgpt.com/backend-api";
@@ -75,11 +68,8 @@ impl ProviderUsage {
     /// # Errors
     /// When the HTTP client cannot be built.
     pub fn new() -> Result<Self, String> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
+        let http = super::http::client_builder()
             .timeout(TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("usage client setup failed: {e}"))?;
         Ok(Self {
@@ -125,17 +115,12 @@ impl ProviderUsage {
 
 /// Keep at most the usage probe's byte budget, including for chunked responses.
 async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, UsageFailure> {
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| {
-        tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
-        UsageFailure::new(TRY_AGAIN)
-    })? {
-        if chunk.len() > MAX_BODY - bytes.len() {
-            return Err(UsageFailure::new(TRY_AGAIN));
+    read_bounded(&mut response, MAX_BODY).await.map_err(|e| {
+        if let BodyError::Read(e) = e {
+            tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
         }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
+        UsageFailure::new(TRY_AGAIN)
+    })
 }
 
 /// The failure an HTTP status means (`None` for success): 403 is a sign-in without the
@@ -544,7 +529,7 @@ impl UsageProbe for ProviderUsage {
                         UsageFailureKind::NotShared => UsageFailure::of(f.kind, CODEX_NOT_SHARED),
                         _ => f,
                     })?;
-                    parse_codex(&body, now()).map_err(UsageFailure::new)
+                    parse_codex(&body, super::clock::now()).map_err(UsageFailure::new)
                 }
             },
             // No usage source of an Antigravity subscription was verified: its limits come from
@@ -729,7 +714,7 @@ mod tests {
             probe
                 .model_answer(
                     Provider::Anthropic,
-                    &Secret("synthetic".into()),
+                    &Secret::new("synthetic".into()),
                     PROBE_MODEL,
                 )
                 .await
@@ -812,8 +797,9 @@ mod tests {
             }
         });
         let probe = ProviderUsage::at(base)?;
-        let auth =
-            Secret(r#"{"tokens":{"access_token":"synthetic-access","account_id":"acc-1"}}"#.into());
+        let auth = Secret::new(
+            r#"{"tokens":{"access_token":"synthetic-access","account_id":"acc-1"}}"#.into(),
+        );
         let failure = probe
             .fetch(Provider::OpenAi, &auth)
             .await
@@ -861,13 +847,13 @@ mod tests {
             r#"{{"tokens":{{"access_token":"synthetic-access","account_id":"acc-1","id_token":"h.{claims}.s"}}}}"#
         );
         let usage = probe
-            .fetch(Provider::OpenAi, &Secret(auth.clone()))
+            .fetch(Provider::OpenAi, &Secret::new(auth.clone()))
             .await
             .map_err(|f| f.message)?;
         assert_eq!(usage.primary.and_then(|w| w.used_percent), Some(42.0));
         assert_eq!(
             probe
-                .account_email(Provider::OpenAi, &Secret(auth))
+                .account_email(Provider::OpenAi, &Secret::new(auth))
                 .await
                 .map_err(|f| f.message)?,
             Some("dev@example.com".to_owned())
@@ -875,13 +861,13 @@ mod tests {
         let refused = probe
             .fetch(
                 Provider::OpenAi,
-                &Secret(r#"{"tokens":{"access_token":"other"}}"#.into()),
+                &Secret::new(r#"{"tokens":{"access_token":"other"}}"#.into()),
             )
             .await
             .err()
             .ok_or("refused")?;
         assert_eq!(refused.kind, UsageFailureKind::Rejected);
-        let key = Secret(r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x"}"#.into());
+        let key = Secret::new(r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x"}"#.into());
         let none = probe
             .fetch(Provider::OpenAi, &key)
             .await
@@ -896,7 +882,7 @@ mod tests {
             None
         );
         let broken = probe
-            .fetch(Provider::OpenAi, &Secret("not json".into()))
+            .fetch(Provider::OpenAi, &Secret::new("not json".into()))
             .await
             .err()
             .ok_or("broken")?;
@@ -1223,7 +1209,7 @@ mod tests {
         let mut probe = ProviderUsage::new()?;
         probe.base = base;
         let failure = probe
-            .fetch(Provider::Anthropic, &Secret("token".into()))
+            .fetch(Provider::Anthropic, &Secret::new("token".into()))
             .await
             .err()
             .ok_or("a failure")?;
@@ -1257,7 +1243,7 @@ mod tests {
         let mut probe = ProviderUsage::new()?;
         probe.base = base;
         let usage = probe
-            .fetch(Provider::Anthropic, &Secret("token".into()))
+            .fetch(Provider::Anthropic, &Secret::new("token".into()))
             .await
             .map_err(|f| f.message)?;
         assert_eq!(usage.primary.and_then(|w| w.used_percent), Some(25.0));
@@ -1315,7 +1301,7 @@ mod tests {
         let mut probe = ProviderUsage::new()?;
         probe.base = serve_profile(reply).await?;
         Ok(probe
-            .account_email(Provider::Anthropic, &Secret(" token\n".into()))
+            .account_email(Provider::Anthropic, &Secret::new(" token\n".into()))
             .await)
     }
 
