@@ -5,14 +5,14 @@ or run that someone may want to reverse ([spec workflow](../engineering/specific
 its number from Yulius's `record_number` tool (`dir` `docs/decisions`).
 
 This index is generated from the records' titles and Status sections: run
-`python3 scripts/check_repository.py --decision-index` after adding a record or changing a title or
-Status, and after a merge conflict here. The repository check fails while it is stale.
+`python3 scripts/check_repository.py --decision-index` after adding a record, changing a title or
+Status, or merging dev. The repository check fails while an entry is missing, extra or out of date.
 
 - [0001](0001-single-rust-binary.md): One Rust binary with an embedded static web UI
 - [0002](0002-detached-ptyhost-per-run.md): A detached ptyhost process owns every agent run
 - [0003](0003-sandbox-isolation.md): Per-sandbox containment and namespace holder
 - [0004](0004-sqlite-wal-store.md): SQLite in WAL mode as the only database
-- [0005](0005-claude-only-accounts.md): Claude Code only; accounts are org secrets with per-sandbox homes
+- [0005](0005-claude-only-accounts.md): Claude Code only; accounts are org secrets with per-sandbox homes (partly superseded by 0355)
 - [0006](0006-yulius-mcp-and-hooks.md): One internal MCP server and hook protocol for coordination
 - [0007](0007-github-app-authority.md): GitHub App as the authority for repositories and permissions
 - [0008](0008-streamed-sandbox-browser.md): The sandbox browser is the real Chrome streamed as H.264
@@ -29,9 +29,9 @@ Status, and after a merge conflict here. The repository check fails while it is 
 - [0019](0019-start-rule-editor.md): The composer builds a start rule from picked conditions
 - [0020](0020-cockpit-as-a-plain-shell-session.md): The Cockpit is a plain Claude Code session on the shell runtime
 - [0021](0021-composer-drafts-in-the-browser.md): New-task drafts live in the browser
-- [0022](0022-native-task-attachments.md): Attached files reach Claude Code as `@path` mentions in its first message (partly superseded by 0026)
+- [0022](0022-native-task-attachments.md): Attached files reach Claude Code as `@path` mentions in its first message (partly superseded by 0026, 0095)
 - [0023](0023-no-messages-until-delivery-is-reliable.md): No messages until their delivery is reliable
-- [0024](0024-default-model-and-effort.md): Tasks default to Opus 5.5 at high effort (superseded by 0289)
+- [0024](0024-default-model-and-effort.md): Tasks default to Opus 5.5 at high effort (partly superseded by 0289)
 - [0025](0025-sandbox-navigation-more-group.md): Six sandbox pages in the sidebar, the rest under "More"
 - [0026](0026-attached-images-are-pasted.md): Attached images are pasted into the first message, not mentioned (partly superseded by 0095)
 - [0027](0027-step-back-past-a-usage-limit.md): A usage limit steps the transcript back; Claude Code continues the cut turn
@@ -146,10 +146,10 @@ Status, and after a merge conflict here. The repository check fails while it is 
 - [0138](0138-presence-updates-carry-a-per-tab-sequence-number.md): Presence updates carry a per-tab sequence number
 - [0139](0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md): A removed playground's code is purged on request, once nothing of its sandbox runs
 - [0140](0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md): Isolated sandboxes have no container engine, and their agents are told so (superseded by 0151)
-- [0141](0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md): Review findings in the change's own code are fixed before merge
+- [0141](0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md): Review findings in the change's own code are fixed before merge (partly superseded by 0427)
 - [0142](0142-a-playground-moves-into-an-empty-github-repository.md): A playground moves into an empty GitHub repository its mover could import
 - [0143](0143-session-view-scrollers-are-regions-as-laid-out.md): A session view block is a keyboard region when it scrolls as laid out
-- [0144](0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md): The Superagent reads the agent vault and verifies values by their hash (partly superseded by 0150)
+- [0144](0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md): The Superagent reads the agent vault and verifies values by their hash (partly superseded by 0150, 0281)
 - [0145](0145-someone-else-s-task-is-watched-as-its-live-transcript.md): Someone else's task is watched as its live transcript, read on from where it stopped
 - [0146](0146-the-editor-follows-the-file-in-front-by-polling-with-its-sha.md): The Editor follows the file in front by looking at it with its sha256
 - [0147](0147-the-step-strip-fits-itself-by-priority.md): The step strip fits itself in the page, giving way whole parts by priority
@@ -331,7 +331,7 @@ Status, and after a merge conflict here. The repository check fails while it is 
 - [0325](0325-a-pull-request-delivers-the-finished-part-of-a-plan.md): A pull request delivers the finished part of a plan
 - [0326](0326-a-workflow-agents-usage-limit-is-the-sessions.md): A workflow agent's usage limit is the session's, and a relaunch resumes the workflow by its run id
 - [0327](0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md): A run decides its plugin language servers, and they are off
-- [0328](0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md): A task is not Done while Yulius has pull request news for it
+- [0328](0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md): A task is not Done while Yulius has pull request news for it (partly superseded by 0450)
 - [0330](0330-the-superagent-does-what-its-person-may-do.md): The Superagent does what its person may do
 - [0331](0331-anyone-tidies-a-task-and-only-its-owners-consent-passes-control.md): Anyone who may work in a project tidies its tasks; control passes only by the owner's consent, which they can withdraw
 - [0332](0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md): Done needs a pull request that would merge and a spec that says done
@@ -349,7 +349,7 @@ Status, and after a merge conflict here. The repository check fails while it is 
 - [0344](0344-the-docker-front-gives-way-and-ends-connections-whose-client-is-gone.md): The Docker front gives way at its limit and ends connections whose client is gone
 - [0345](0345-an-approval-carries-across-a-follow-up-of-at-most-20-product-lines.md): An approval carries across a follow-up of at most 20 product lines
 - [0346](0346-a-cut-off-reviewer-is-resumed-after-its-session-moves.md): A cut-off reviewer is resumed after its session moves
-- [0347](0347-mutation-testing-runs-once-per-pull-request.md): Mutation testing runs once per pull request
+- [0347](0347-mutation-testing-runs-once-per-pull-request.md): Mutation testing runs once per pull request (partly superseded by 0439)
 - [0348](0348-an-overlapping-claim-is-told-to-both-tasks.md): An overlapping claim is told to both tasks
 - [0349](0349-a-merge-waits-out-githubs-unsettled-mergeability.md): A merge waits out GitHub's unsettled mergeability
 - [0350](0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md): CI jobs are admitted by what CI really holds on the host
@@ -364,7 +364,7 @@ Status, and after a merge conflict here. The repository check fails while it is 
 - [0359](0359-a-ci-jobs-containers-and-networks-carry-its-label-and-go-when-it-ends.md): A CI job's containers and networks carry its label and go when it ends
 - [0360](0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md): Dev's gate judges every change, and a bad yulius.toml never turns CI off
 - [0361](0361-antigravity-is-a-third-harness-picked-at-random-by-default.md): Antigravity is a third harness, on a pinned agy, picked at random by default (partly superseded by 0368)
-- [0362](0362-a-round-is-decided-by-the-code-not-by-ci-or-a-message.md): A round is decided by the code, not by CI or a message
+- [0362](0362-a-round-is-decided-by-the-code-not-by-ci-or-a-message.md): A round is decided by the code, not by CI or a message (partly superseded by 0439)
 - [0363](0363-the-quick-checks-run-first-and-the-checkers-tests-beside-the-rust-gates.md): The quick checks run first, and the checker's tests beside the Rust gates
 - [0364](0364-a-server-start-refreshes-every-sandboxs-skills-and-the-reviewers-prompt-is-a-contract.md): A server start refreshes every sandbox's skills, and the reviewer's prompt is a contract
 - [0365](0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md): A teammate takes control of a task at once, unless its owner chose to be asked
@@ -379,7 +379,7 @@ Status, and after a merge conflict here. The repository check fails while it is 
 - [0374](0374-compare-harnesses-by-executing-attempt.md): Compare harnesses by executing attempt
 - [0375](0375-codex-selects-ultrafast-for-pro-500.md): Codex selects Ultrafast for Pro 500
 - [0376](0376-review-instructions-follow-the-active-harness.md): Review instructions follow the active harness
-- [0377](0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md): Random draws uniformly across all harnesses with available subscriptions
+- [0377](0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md): Random draws uniformly across all harnesses with available subscriptions (partly superseded by 0422, 0426)
 - [0378](0378-keep-wheel-generated-arrows-out-of-task-prompts.md): Keep wheel-generated arrows out of task prompts
 - [0379](0379-a-needs-you-names-who-may-answer-it.md): A needs_you names who may answer it
 - [0380](0380-an-end-of-day-digest-built-from-task-state.md): An end-of-day digest built from task state, off by default
@@ -424,11 +424,11 @@ Status, and after a merge conflict here. The repository check fails while it is 
 - [0419](0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md): Antigravity Stop settles the turn, delivery computes fresh PR conflicts, and armed green PRs have a stall bound
 - [0420](0420-recognize-the-empty-codex-composer.md): Recognize the empty Codex composer before releasing a held message
 - [0421](0421-codex-right-click-opens-the-viewers-clipboard-menu.md): Codex right-click opens the viewer’s clipboard menu
-- [0422](0422-cli-and-superagent-task-creation-defaults-to-codex.md): CLI and Superagent task creation defaults to Codex
+- [0422](0422-cli-and-superagent-task-creation-defaults-to-codex.md): CLI and Superagent task creation defaults to Codex (superseded by 0457)
 - [0423](0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md): A webpage copy returns through the clicking viewer’s connection
 - [0424](0424-keep-a-recorded-merge-visible-when-follow-up-discovery-is-unavailable.md): Keep a recorded merge visible when follow-up discovery is unavailable
 - [0425](0425-pin-a-production-deploy-to-verified-dev.md): Pin a production deploy to verified dev
-- [0426](0426-the-new-task-composer-defaults-to-codex.md): The new-task composer defaults to Codex
+- [0426](0426-the-new-task-composer-defaults-to-codex.md): The new-task composer defaults to Codex (superseded by 0457)
 - [0427](0427-task-authorization-covers-independent-re-review.md): Task authorization covers independent re-review
 - [0428](0428-a-goal-turn-continues-its-declared-work.md): A goal turn continues its declared work
 - [0429](0429-continue-stopped-codex-work-in-its-saved-session.md): Continue stopped Codex work in its saved session

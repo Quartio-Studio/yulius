@@ -168,11 +168,29 @@ or run that someone may want to reverse ([spec workflow](../engineering/specific
 its number from Yulius's `record_number` tool (`dir` `docs/decisions`).
 
 This index is generated from the records' titles and Status sections: run
-`python3 scripts/check_repository.py --decision-index` after adding a record or changing a title or
-Status, and after a merge conflict here. The repository check fails while it is stale.
+`python3 scripts/check_repository.py --decision-index` after adding a record, changing a title or
+Status, or merging dev. The repository check fails while an entry is missing, extra or out of date.
 
 """
-SUPERSEDED = re.compile(r"superseded(?:\s+in\s+part)?(?:\s+on\s+[\d-]+)?\s+by\s+\[(?:ADR-)?(\d{4})\]", re.I)
+# A later record that replaces this one, said either way round in the Status section.
+SUPERSEDED = re.compile(r"(?<!itself )\bsuperseded\b(?P<q>[^.\[]{0,80}?)\s*by \[(?:ADR-)?(?P<n>\d{4})\](?P<after>[^.]*)", re.I)
+SUPERSEDES = re.compile(r"\[(?:ADR-)?(?P<n>\d{4})\] supersede(?:s|d) (?P<all>this decision)?", re.I)
+
+
+def superseded_mark(status):
+    """The index's note for a record's Status: wholly or partly superseded, and by which records."""
+    status = re.sub(r"\]\([^)]*\)", "]", " ".join(status.split()))
+    numbers, whole = [], False
+    for match in SUPERSEDED.finditer(status):
+        numbers.append(match["n"])
+        unqualified = re.fullmatch(r"(?: on [\d-]+)?", match["q"]) and not match["after"].lstrip().startswith("for ")
+        whole = whole or (match.start() == 0 and bool(unqualified))
+    for match in SUPERSEDES.finditer(status):
+        numbers.append(match["n"])
+        whole = whole or bool(match["all"])
+    if not numbers:
+        return " (superseded)" if status.lower().startswith("superseded") else ""
+    return f" ({'' if whole else 'partly '}superseded by {', '.join(dict.fromkeys(numbers))})"
 
 
 def decision_index(directory):
@@ -182,15 +200,18 @@ def decision_index(directory):
         text = path.read_text()
         title = text.split("\n", 1)[0].partition(". ")[2].strip()
         status = re.search(r"^## Status[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
-        status = status[1].strip() if status else ""
-        mark = ""
-        if superseded := SUPERSEDED.search(status):
-            whole = status.lower().startswith("superseded by")
-            mark = f" ({'' if whole else 'partly '}superseded by {superseded[1]})"
-        elif status.lower().startswith("superseded"):
-            mark = " (superseded)"
-        lines.append(f"- [{path.name[:4]}]({path.name}): {title}{mark}\n")
+        lines.append(f"- [{path.name[:4]}]({path.name}): {title}{superseded_mark(status[1] if status else '')}\n")
     return DECISION_INDEX_HEAD + "".join(lines)
+
+
+def index_is_current(text, directory):
+    """The committed index holds the generated header and exactly the generated entries. Their order
+    may differ: Git's union merge of two branches that each add a record keeps both lines in the
+    order of the side checked out, and `--decision-index` sorts them again."""
+    def parts(index):
+        lines = index.splitlines()
+        return [l for l in lines if not l.startswith("- [")], sorted(l for l in lines if l.startswith("- ["))
+    return parts(text) == parts(decision_index(directory))
 
 
 def decision_errors(directory):
@@ -204,7 +225,7 @@ def decision_errors(directory):
     readme = directory / "README.md"
     if not readme.is_file():
         errors.append(f"{readme}: missing; run python3 scripts/check_repository.py --decision-index")
-    elif readme.read_text() != decision_index(directory):
+    elif not index_is_current(readme.read_text(), directory):
         errors.append(f"{readme}: is stale; run python3 scripts/check_repository.py --decision-index")
     for path in sorted(directory.glob("*.md")):
         if path.name == "README.md":

@@ -4,7 +4,9 @@
 
 Superseded on 2026-11-26 (audit L10 F8): the index is generated from the records by
 `python3 scripts/check_repository.py --decision-index`, and the slots, `scripts/decision_slots.py`
-and the index's union line in `.gitattributes` are gone.
+and the index's union line in `.gitattributes` are gone. What the slots guaranteed still holds:
+the repository check accepts the index's entries in any order, so the union merge Yulius applies
+in its clones passes whichever of two new records' branches is checked out first.
 
 ## Context
 

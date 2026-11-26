@@ -4,7 +4,7 @@ import tempfile
 import re
 import subprocess
 import unittest
-from check_repository import branch_decision_changes, new_decision_errors, delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, decision_index, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
+from check_repository import branch_decision_changes, new_decision_errors, delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, decision_index, superseded_mark, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
 
 
 def package(name, layer, dependencies=()):
@@ -198,6 +198,23 @@ class RepositoryContracts(unittest.TestCase):
             ])
             self.assertIn("--decision-index", index)
 
+    def test_superseded_marks_follow_the_records_status(self):
+        cases = {
+            "Superseded on 2026-11-21 by [ADR-0444](x.md). Originally accepted.": " (superseded by 0444)",
+            "Superseded by [ADR-0289](x.md) for the model; the rest stands.": " (partly superseded by 0289)",
+            "Superseded on 2026-11-21 for delivery campaigns by [ADR-0439](x.md).": " (partly superseded by 0439)",
+            "Accepted. Its rule is superseded for Codex by\n[ADR-0355](x.md).": " (partly superseded by 0355)",
+            "Accepted. [SPEC-1](s.md) [ADR-0457](x.md) supersedes this decision: now Opus.": " (superseded by 0457)",
+            "Accepted. [ADR-0422](a.md) supersedes the draw. [ADR-0426](b.md) supersedes the select.":
+                " (partly superseded by 0422, 0426)",
+            "Accepted. On 2026-11-21, [ADR-0439](x.md) superseded the clause.": " (partly superseded by 0439)",
+            "Accepted. Amends [0100](a.md), itself superseded by [0200](b.md).": "",
+            "Accepted. Supersedes the effort of [ADR-0289](x.md).": "",
+            "Superseded on 2026-11-26: the index is generated.": " (superseded)",
+        }
+        for status, mark in cases.items():
+            self.assertEqual(superseded_mark(status), mark, status)
+
     def test_a_missing_or_stale_index_names_the_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             decisions = Path(tmp)
@@ -205,12 +222,40 @@ class RepositoryContracts(unittest.TestCase):
             self.assertEqual(decision_errors(decisions), [f"{decisions}/README.md: missing; run python3 scripts/check_repository.py --decision-index"])
             (decisions / "README.md").write_text(decision_index(decisions))
             (decisions / "0007-second.md").write_text("# 0007. Second\n")
-            errors = decision_errors(decisions)
-            self.assertEqual(len(errors), 1)
-            self.assertIn("is stale", errors[0])
-            self.assertIn("--decision-index", errors[0])
-            (decisions / "README.md").write_text(decision_index(decisions))
+            index = decision_index(decisions)
+            for stale in (index.replace("- [0007](0007-second.md): Second\n", ""),
+                          index + "- [0007](0007-second.md): Second\n",
+                          index.replace(": Second", ": Old title")):
+                (decisions / "README.md").write_text(stale)
+                errors = decision_errors(decisions)
+                self.assertEqual(len(errors), 1, stale)
+                self.assertIn("is stale", errors[0])
+                self.assertIn("--decision-index", errors[0])
+            (decisions / "README.md").write_text(index)
             self.assertEqual(decision_errors(decisions), [])
+
+    def test_two_branches_that_each_add_a_record_merge_in_either_order(self):
+        # Yulius merges the index with Git's union driver (the clone's info/attributes): each
+        # branch's new line survives in the order of the side checked out, and the check passes.
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp) / "decisions"
+            decisions.mkdir()
+            (decisions / "0006-base.md").write_text("# 0006. Base\n")
+            base = decision_index(decisions)
+            (decisions / "0007-left.md").write_text("# 0007. Left\n")
+            left = decision_index(decisions)
+            (decisions / "0007-left.md").unlink()
+            (decisions / "0008-right.md").write_text("# 0008. Right\n")
+            right = decision_index(decisions)
+            (decisions / "0007-left.md").write_text("# 0007. Left\n")
+            sides = {name: Path(tmp) / name for name in ("base", "left", "right")}
+            for name, text in (("base", base), ("left", left), ("right", right)):
+                sides[name].write_text(text)
+            for ours, theirs in (("left", "right"), ("right", "left")):
+                merged = subprocess.run(["git", "merge-file", "--union", "-p", sides[ours], sides["base"], sides[theirs]],
+                                        capture_output=True, text=True, check=True).stdout
+                (decisions / "README.md").write_text(merged)
+                self.assertEqual(decision_errors(decisions), [], merged)
 
     def test_a_new_decision_names_two_rejected_alternatives(self):
         adr = "# 0009. Choice\n\n## Alternatives\n\n- Keep it: {}\n\n## Consequences\n\n- One\n- Two\n"

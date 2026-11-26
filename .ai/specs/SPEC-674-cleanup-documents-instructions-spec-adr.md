@@ -42,7 +42,8 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 - **DOC-003** Each duplicated rule of L10 Q1 is stated in one place; rules the code enforces and
   explains at run time are not restated.
 - **DOC-004** The ADR index is generated from the ADR files (number, title, superseded marker);
-  the slot machinery and the union merge of the index are gone.
+  the slot machinery and the repository's union line for the index are gone, and a union merge
+  of two branches that each add a record still passes the check in either order.
 - **DOC-005** changes.md, architecture.md, operations.md and product.md fit the L10 Q9 budgets;
   moved text is moved verbatim to `docs/archive/` first; the briefing asks for a changes entry
   only for a user-visible change; the false sentences of Q5 are corrected.
@@ -115,7 +116,8 @@ and the link checker). The rest of the gate is Yulius CI's.
   script: number, title and a superseded mark read from the Status section; the check compares
   the committed file with the generated one. Yulius still adds a union line for the index to each
   clone's `info/attributes` (`integration_merges.rs`, outside this task's paths), so a merge of
-  two new entries keeps both lines and the check asks for a regeneration when their order is wrong.
+  two new entries keeps both lines in either order; the check compares the entries as a set (no
+  line missing, extra, duplicated or out of date), which keeps what the slots guaranteed.
 - Briefing rule 5 stays within the budget in both decision layouts: the directory arm drops its
   section list (the project docs check still names missing sections; "Alternatives" is implied
   by "two rejected alternatives"), the file arm drops its parts list, and "with at least one
