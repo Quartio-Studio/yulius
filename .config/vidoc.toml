@@ -773,14 +773,14 @@ reason = "every value unit_text formats passes unit_safe first (no newline, spac
 # holding one (valid_path); Request::opening is the only producer of the pastes. Pinned by
 # request.rs a_typed_first_message_carries_no_control_character (a prompt with ESC [201~).
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/typing.rs"
 title = "Terminal injection via unescaped paste end delimiter"
 reason = "Request::parse drops every control character but tab and newline from text and refuses paths holding one, so no paste holds ESC; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #752)"
 
 # #818 (duplicate of #752): each paste is bracketed (opening_pastes), so a newline in it is text and
 # Enter is written separately; control bytes are removed as for #752.
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/typing.rs"
 title = "Unvalidated paste bytes typed directly into the agent TUI"
 reason = "each paste is bracketed and Request::parse already dropped its control characters but tab and newline; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #818, #752)"
 
@@ -860,7 +860,7 @@ reason = "only trees no sandbox run can change at that time (bases, system trees
 # Uuid::new_v4 from getrandom (the OS CSPRNG), and random_bytes is rand::rng(), a CSPRNG seeded from
 # the OS. Pinned by crypto.rs ids_and_random_bytes_are_random.
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/launch.rs"
 title = "Entropy source unspecified for session IDs"
 reason = "new_id is Uuid::new_v4 from getrandom (OS CSPRNG) and random_bytes is rand::rng(); tested by ids_and_random_bytes_are_random (SPEC-398, #813)"
 
@@ -870,7 +870,7 @@ reason = "new_id is Uuid::new_v4 from getrandom (OS CSPRNG) and random_bytes is 
 # an argv. Pinned by profile_validation, revisions_cannot_be_options and
 # protected_names_are_single_quoted.
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/launch.rs"
 title = "Unvalidated deserialization of sandbox profile used in Git commands"
 reason = "profile branches are validated on write (DeliveryProfile::validate) and by each Git call, which runs with an argv; tested by profile_validation and revisions_cannot_be_options (SPEC-398, #696)"
 
@@ -1042,10 +1042,10 @@ reason = "no asker name can hold \", \" (#N, GitHub logins, [a-z0-9-] slugs) and
 # the Superagent after require(Work), split proposals) take the account from the server's own pool
 # choice (choose_account, pool_account), and the token only starts the agent process.
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/launch.rs"
 title = "Sealed credential decrypted without additional access control check"
 function = "open_credential"
-line = 2087
+line = 1151
 reason = "every caller gets the account from the server's pool choice after its own authorization; the token is never returned to a caller (SPEC-405, #815)"
 
 # SPEC-403 (task #384): the Vidoc findings on CD environments and CD run environments, triaged as
@@ -1126,8 +1126,8 @@ function = "read"
 # Its secret-bearing files are 0600 (write_private_file); the scrub wrapper (0755) holds only the
 # executable's path.
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
-line = 1362
+path = "crates/yulius-app/src/supervisor/launch.rs"
+line = 652
 title = "Run directory created with filesystem default permissions"
 reason = "the data directory above it is 0700 (prepare_data_dir) and the process host makes the run directory 0700 before the launch (prepare_run_dir); its secret-bearing files are 0600 (SPEC-408, #814)"
 
@@ -1135,7 +1135,7 @@ reason = "the data directory above it is 0700 (prepare_data_dir) and the process
 # /usr/local/bin:/usr/bin:/bin); a run in an isolated sandbox gets the fixed SANDBOX_PATH instead,
 # and a contained run without isolation sees the host's system directories read-only.
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/launch.rs"
 function = "base_env"
 title = "Host PATH propagated into agent environment"
 reason = "the operator sets the server's PATH, which no agent can; isolated runs get the fixed SANDBOX_PATH and contained ones see the host's system read-only (SPEC-403, SPEC-408, #716, #755)"
@@ -1144,7 +1144,7 @@ reason = "the operator sets the server's PATH, which no agent can; isolated runs
 # directory, a contained run sees only its generated files bound read-only, and an uncontained
 # agent already runs as the service user (#715).
 [[ignore]]
-path = "crates/yulius-app/src/supervisor.rs"
+path = "crates/yulius-app/src/supervisor/typing.rs"
 function = "save_screen"
 title = "Predictable temporary file name in save_screen"
 reason = "the run directory is 0700 under a 0700 data directory and hidden from contained runs; an uncontained agent already is the service user (SPEC-408, #698)"
