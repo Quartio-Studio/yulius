@@ -3,10 +3,10 @@
 //! check-in -> Needs You escalation for stalled armed green PRs.
 
 use crate::support;
+use crate::support::BareRemote;
 use crate::support::git;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -14,16 +14,14 @@ use std::time::Duration;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{
-    Creds, FakeRemote, HarnessOptions, call, configure_github_app, harness_with, perms,
-    seed_github_user, seed_sandbox,
+    Creds, HarnessOptions, call, configure_github_app, harness_with, perms, seed_github_user,
+    seed_sandbox,
 };
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
 use yulius_app::context::App;
 use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
-use yulius_app::ports::session::{
-    AttachedRun, BackgroundProbe, LaunchPlan, RunInspection, SessionHost, SpawnedRun, StrayProcess,
-};
+use yulius_app::ports::session::{BackgroundProbe, SessionHost};
 use yulius_app::ports::store::TaskStore;
 use yulius_app::pr_watch::WatchBounds;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
@@ -42,139 +40,6 @@ const YULIUS_TOML: &str = r#"[[ci.jobs]]
 name = "check"
 command = 'echo ok'
 "#;
-
-fn git_ok(dir: &Path, args: &[&str]) -> Option<String> {
-    git(dir, args).ok()
-}
-
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git_ok(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-    }
-
-    fn merge(&self, base: &str, head: &str, method: &str, message: &str) -> Result<String, String> {
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = git(&self.0, &["merge-tree", "--write-tree", &base_sha, head])
-            .map_err(|e| e.to_string())?;
-        let mut args = vec!["commit-tree", tree.as_str(), "-p", base_sha.as_str()];
-        if method == "merge" {
-            args.extend(["-p", head]);
-        }
-        args.extend(["-m", message]);
-        let commit = git(&self.0, &args).map_err(|e| e.to_string())?;
-        git(
-            &self.0,
-            &[
-                "update-ref",
-                &format!("refs/heads/{base}"),
-                &commit,
-                &base_sha,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(commit)
-    }
-
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-        .map_err(|e| e.to_string())
-    }
-
-    fn contains(&self, ancestor: &str, descendant: &str) -> Option<bool> {
-        let status = Command::new("git")
-            .args(["merge-base", "--is-ancestor", ancestor, descendant])
-            .current_dir(&self.0)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .ok()?;
-        status.code().map(|code| code == 0)
-    }
-}
-
-/// Real `PtySessionHost` wrapper whose background probe can be controlled for a synthetic live
-/// task attempt PID without spawning an actual `bwrap` container.
-struct ProbedHost {
-    inner: PtySessionHost,
-    shells: Arc<AtomicU32>,
-    waits: Arc<AtomicU32>,
-}
-
-#[async_trait::async_trait]
-impl SessionHost for ProbedHost {
-    async fn spawn(
-        &self,
-        run_dir: &Path,
-        attempt_id: &str,
-        task_id: &str,
-        plan: &LaunchPlan,
-        token: &[u8; 32],
-        size: (u16, u16),
-    ) -> yulius_app::error::AppResult<SpawnedRun> {
-        self.inner
-            .spawn(run_dir, attempt_id, task_id, plan, token, size)
-            .await
-    }
-
-    async fn attach(
-        &self,
-        run_dir: &Path,
-        token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<AttachedRun> {
-        self.inner.attach(run_dir, token).await
-    }
-
-    fn inspect(&self, run_dir: &Path) -> RunInspection {
-        self.inner.inspect(run_dir)
-    }
-
-    fn terminate(&self, run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        self.inner.terminate(run_dir)
-    }
-
-    fn background_shells(&self, child_pid: u32) -> Option<u32> {
-        if child_pid == 42_424 {
-            return Some(self.shells.load(Ordering::SeqCst));
-        }
-        self.inner.background_shells(child_pid)
-    }
-
-    fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
-        if child_pid == 42_424 {
-            return Some(BackgroundProbe {
-                shells: self.shells.load(Ordering::SeqCst),
-                waits: self.waits.load(Ordering::SeqCst),
-                strays: Vec::new(),
-            });
-        }
-        self.inner.background_probe(child_pid)
-    }
-
-    fn reap_strays(&self, strays: &[StrayProcess]) -> usize {
-        self.inner.reap_strays(strays)
-    }
-}
 
 fn valid_spec(task: &str) -> String {
     format!(
@@ -208,10 +73,35 @@ async fn fixture() -> BoxResult<Fixture> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let shells = Arc::new(AtomicU32::new(0));
     let waits = Arc::new(AtomicU32::new(0));
-    let host = Arc::new(ProbedHost {
-        inner: PtySessionHost::new(exe),
-        shells: Arc::clone(&shells),
-        waits: Arc::clone(&waits),
+    // A synthetic live attempt (pid 42 424) whose background probe the test sets, without a
+    // real container; every other run goes to the real host.
+    let real = Arc::new(PtySessionHost::new(exe));
+    let host = Arc::new(crate::support::ScriptedHost {
+        inner: Some(real.clone()),
+        background_shells: Some(Box::new({
+            let (inner, shells) = (Arc::clone(&real), Arc::clone(&shells));
+            move |pid| {
+                if pid == 42_424 {
+                    return Some(shells.load(Ordering::SeqCst));
+                }
+                inner.background_shells(pid)
+            }
+        })),
+        background_probe: Some(Box::new({
+            let inner = Arc::clone(&real);
+            let (shells, waits) = (Arc::clone(&shells), Arc::clone(&waits));
+            move |pid| {
+                if pid == 42_424 {
+                    return Some(BackgroundProbe {
+                        shells: shells.load(Ordering::SeqCst),
+                        waits: waits.load(Ordering::SeqCst),
+                        strays: Vec::new(),
+                    });
+                }
+                inner.background_probe(pid)
+            }
+        })),
+        ..crate::support::ScriptedHost::default()
     });
     let h = harness_with(HarnessOptions {
         session_host: Some(host),
@@ -245,7 +135,7 @@ async fn fixture() -> BoxResult<Fixture> {
     git(&work, &["add", "-A"])?;
     git(&work, &["commit", "-q", "-m", "init"])?;
     git(&work, &["push", "-q", "origin", "HEAD:main", "HEAD:dev"])?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     h.github.strict.store(true, Ordering::SeqCst);
 
     let data = h.app.config.data_dir.clone();
@@ -1182,7 +1072,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let github = Arc::new(crate::support::FakeGitHub::default());
-    github.set_remote(Arc::new(Origin(data.join("origin.git"))));
+    github.set_remote(Arc::new(BareRemote(data.join("origin.git"))));
     github.add_user("code-admin", 1, "admin");
     github.set_perm("admin", "acme/pool", perms("write"));
     let agent = crate::support::agents::FakeAgentOptions {

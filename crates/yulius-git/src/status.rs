@@ -144,14 +144,7 @@ impl Git {
         let head = self.rev_parse(repo, head)?;
         let output = self.run_ok(
             Invocation::new(self, "diff", Some(repo))
-                .args([
-                    "diff",
-                    "--numstat",
-                    "-z",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--end-of-options",
-                ])
+                .args(["diff", "--numstat", "-z", "--end-of-options"])
                 .arg(format!("{base}...{head}"))
                 .arg("--"),
         )?;
@@ -179,8 +172,6 @@ impl Git {
                     "--name-only",
                     "--no-renames",
                     "-z",
-                    "--no-ext-diff",
-                    "--no-textconv",
                     "--end-of-options",
                 ])
                 .arg(format!("{base}...{head}"))

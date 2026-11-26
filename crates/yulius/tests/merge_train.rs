@@ -5,6 +5,7 @@
 //! merge.
 
 use crate::support;
+use crate::support::BareRemote;
 use crate::support::git;
 
 use std::path::{Path, PathBuf};
@@ -50,74 +51,6 @@ const YULIUS_TOML: &str = r#"[[ci.jobs]]
 name = "check"
 command = 'if [ -f clash-1 ] && [ -f clash-2 ]; then echo "clash-1 and clash-2 together"; exit 1; fi; echo ok'
 "#;
-
-fn git_ok(dir: &Path, args: &[&str]) -> Option<String> {
-    git(dir, args).ok()
-}
-
-/// GitHub's repository side: the bare `origin`. Merges land as GitHub lands them: the tree of
-/// merging the head into the base, as one squash commit or a merge commit.
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git_ok(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-    }
-    fn merge(&self, base: &str, head: &str, method: &str, message: &str) -> Result<String, String> {
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = git(&self.0, &["merge-tree", "--write-tree", &base_sha, head])
-            .map_err(|e| e.to_string())?;
-        let mut args = vec!["commit-tree", tree.as_str(), "-p", base_sha.as_str()];
-        if method == "merge" {
-            args.extend(["-p", head]);
-        }
-        args.extend(["-m", message]);
-        let commit = git(&self.0, &args).map_err(|e| e.to_string())?;
-        git(
-            &self.0,
-            &[
-                "update-ref",
-                &format!("refs/heads/{base}"),
-                &commit,
-                &base_sha,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(commit)
-    }
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-        .map_err(|e| e.to_string())
-    }
-    fn contains(&self, ancestor: &str, descendant: &str) -> Option<bool> {
-        let status = Command::new("git")
-            .args(["merge-base", "--is-ancestor", ancestor, descendant])
-            .current_dir(&self.0)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .ok()?;
-        status.code().map(|code| code == 0)
-    }
-}
 
 /// The spec of a task that finished its work: `done`, every Plan item ticked, Evidence (a task
 /// whose spec does not say done is not Done, SPEC-491 DON-004).
@@ -264,7 +197,7 @@ async fn fixture_with(
             &format!("HEAD:{integration}"),
         ],
     )?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     h.github.strict.store(true, Ordering::SeqCst);
 
     let data = h.app.config.data_dir.clone();
@@ -2048,7 +1981,7 @@ async fn check_recovered_singleton_arm(
         SingletonChange::MergedRetry | SingletonChange::MergedRetryOffline
     ) {
         let landed =
-            Origin(f.origin.clone()).merge(f.integration, head, "squash", "external merge")?;
+            BareRemote(f.origin.clone()).merge(f.integration, head, "squash", "external merge")?;
         {
             let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
             let pull = pulls
@@ -3580,7 +3513,7 @@ async fn a_passed_candidate_merges_while_a_members_own_run_goes() -> TestResult 
     let landed = git(&f.origin, &["rev-parse", "dev"])?;
     assert_eq!(f.origin_tree(&checked)?, f.origin_tree(&landed)?);
     assert_eq!(
-        Origin(f.origin.clone()).contains(&checked, &landed),
+        BareRemote(f.origin.clone()).contains(&checked, &landed),
         Some(false)
     );
     let ctx = owner_ctx(&f, 1).await?;
@@ -5199,7 +5132,7 @@ async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> Tes
     );
 
     // Its agent merges `dev` in, Yulius pushes at the turn's end, and the new head passes.
-    assert!(git_ok(&worktree, &["merge", "-q", "origin/dev"]).is_none());
+    assert!(git(&worktree, &["merge", "-q", "origin/dev"]).is_err());
     std::fs::write(worktree.join("shared.txt"), "mine\nother\n")?;
     git(&worktree, &["add", "-A"])?;
     git(&worktree, &["commit", "-q", "--no-edit"])?;

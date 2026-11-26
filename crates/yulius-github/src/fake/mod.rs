@@ -34,7 +34,6 @@ use tokio::task::JoinHandle;
 use crate::config::{AppCredentials, GitHubConfig, OwnerKind, RetryPolicy};
 use crate::jwt::{parse_rsa_key, verify};
 use crate::secret::Secret;
-use crate::time::format_rfc3339;
 use crate::types::PullState;
 use yulius_domain::permission::GitHubPermissions;
 
@@ -1356,7 +1355,9 @@ fn installation_token(
         201,
         json!({
             "token": token,
-            "expires_at": format_rfc3339(now_secs(state) + INSTALLATION_TOKEN_SECS),
+            "expires_at": yulius_domain::time::format_rfc3339(yulius_domain::time::Timestamp(
+                (now_secs(state) + INSTALLATION_TOKEN_SECS).saturating_mul(1000)
+            )),
             "permissions": permissions,
         }),
     )
