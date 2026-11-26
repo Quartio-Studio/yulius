@@ -60,7 +60,7 @@ stash@{n}`), check the result, then drop that entry only. Never stash or clear o
   **merge commit** (or a fast-forward where the project's delivery profile says so); never squash
   or rebase the integration branch into production, and never cherry-pick around it.
 - Merge only on green: the project gate passed on the exact head, the independent review
-  approved it, and the branch is up to date (`delivery-pipeline`). After an approval, fix the remaining nits within 20 product lines and merge without another round: `delivery_merge` with the approved head counts them (tests and documents do not count). More than that, or a file leaving the change, needs a new round.
+  approved it, and the branch is up to date (`delivery-pipeline`).
 
 ## Cleanup
 

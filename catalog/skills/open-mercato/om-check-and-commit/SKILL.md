@@ -9,7 +9,7 @@ description: Make the current branch ready to publish - run the checks the chang
 
 Verify the branch end to end against the project's gates, fix what is straightforward, and
 publish only a branch in a good state. Publishing is part of the autonomous pipeline
-(`delivery-pipeline`). While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests the head while the reviewer reads. Do not run the whole gate locally before a review or between rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an outage).
+(`delivery-pipeline`), which says which checks to run when.
 
 ## Workflow
 
@@ -43,8 +43,7 @@ publish only a branch in a good state. Publishing is part of the autonomous pipe
      generated junk, secrets and large binaries.
    - Small atomic commits with conventional subjects (`feat(scope): ...`, `fix(scope): ...`,
      `chore(scope): ...`), each one concern.
-   - Never `--no-verify`; never amend, rebase or force-push pushed commits (bring the
-     integration branch in with a merge); no `git stash` as a tool.
+   - Never `--no-verify`; history and stashes follow `git-hygiene`.
    - Push your task branch (never the integration or production branch).
 6. **Report** in 3-6 lines: the gate result per command (anything not run, and why), the fixes
    made, and the commit and branch pushed, or the exact blocker.

@@ -13,7 +13,7 @@ use yulius_app::vidoc_key::{StoredVidocKey, VidocOff};
 use yulius_domain::time::Timestamp;
 use yulius_domain::update::RunState;
 
-use crate::{SqliteStore, bad_column};
+use crate::{SqliteStore, bad_column, opt_ts, text_as};
 
 const RUN_COLS: &str = "id, target_commit, from_commit, summary, state, outcome, error, \
     requested_by, created_at, state_since, finished_at";
@@ -23,20 +23,19 @@ fn state(column: &str, text: &str) -> rusqlite::Result<RunState> {
 }
 
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<UpdateRunRecord> {
-    let current: String = row.get("state")?;
     let outcome: Option<String> = row.get("outcome")?;
     Ok(UpdateRunRecord {
         id: row.get("id")?,
         target_commit: row.get("target_commit")?,
         from_commit: row.get("from_commit")?,
         summary: row.get("summary")?,
-        state: state("update state", &current)?,
+        state: text_as(row, "state", "update state", RunState::parse)?,
         outcome: outcome.map(|o| state("update outcome", &o)).transpose()?,
         error: row.get("error")?,
         requested_by: row.get("requested_by")?,
         created_at: Timestamp(row.get("created_at")?),
         state_since: Timestamp(row.get("state_since")?),
-        finished_at: row.get::<_, Option<i64>>("finished_at")?.map(Timestamp),
+        finished_at: opt_ts(row, "finished_at")?,
     })
 }
 

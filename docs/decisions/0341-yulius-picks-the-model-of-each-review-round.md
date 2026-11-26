@@ -62,7 +62,8 @@ Measured with Claude Code 2.1.325 against a local stand-in for the model API:
   the Agent tool and the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a
   pull request's first two rounds, then Opus 5.5)." The briefing, the definition of done, the
   workflows and `delivery_merge`'s description, which have size budgets, say its short form. A
-  test holds every place to it.
+  test holds every place to it. Since 2026-11-26 (audit L10 F2) the instruction texts no longer
+  repeat it: the briefing names the reviewer.
 
 ## Alternatives
 

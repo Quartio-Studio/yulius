@@ -11,7 +11,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::rollback::{CdRunKind, ReleaseKind, ReleaseRecord, RollbackStep, kept};
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_as, text_parsed};
 
 const COLS: &str = "id, sandbox_id, environment, stage, branch, sha, state, reason, requested_by, \
     task_id, deploy, verify, note, exit_code, started_at, ended_at, kind, source, steps";
@@ -42,18 +42,15 @@ fn steps_from(text: Option<String>) -> rusqlite::Result<Vec<RollbackStep>> {
 }
 
 fn run_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CdRunRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
-    let stage: String = row.get("stage")?;
-    let state: String = row.get("state")?;
     let task: Option<String> = row.get("task_id")?;
     Ok(CdRunRecord {
         id: row.get("id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         environment: row.get("environment")?,
-        stage: CdStage::parse(&stage).ok_or_else(|| bad_column("CD stage", &stage))?,
+        stage: text_as(row, "stage", "CD stage", CdStage::parse)?,
         branch: row.get("branch")?,
         sha: row.get("sha")?,
-        state: RunState::parse(&state).ok_or_else(|| bad_column("CD state", &state))?,
+        state: text_as(row, "state", "CD state", RunState::parse)?,
         reason: row.get("reason")?,
         requested_by: row.get("requested_by")?,
         task_id: task
@@ -69,23 +66,19 @@ fn run_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CdRunRecor
         },
         exit_code: row.get("exit_code")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
-        kind: {
-            let kind: String = row.get("kind")?;
-            CdRunKind::parse(&kind).ok_or_else(|| bad_column("CD run kind", &kind))?
-        },
+        ended_at: opt_ts(row, "ended_at")?,
+        kind: text_as(row, "kind", "CD run kind", CdRunKind::parse)?,
         source: row.get("source")?,
         steps: steps_from(row.get("steps")?)?,
     })
 }
 
 fn release_from_row(row: &Row<'_>) -> rusqlite::Result<ReleaseRecord> {
-    let kind: String = row.get("kind")?;
     Ok(ReleaseRecord {
         part: row.get("part")?,
         release: row.get("release")?,
         sha: row.get("sha")?,
-        kind: ReleaseKind::parse(&kind).ok_or_else(|| bad_column("release kind", &kind))?,
+        kind: text_as(row, "kind", "release kind", ReleaseKind::parse)?,
         requested_by: row.get("requested_by")?,
         at: Timestamp(row.get("at")?),
         barrier: row.get("barrier")?,
