@@ -35,8 +35,8 @@ before and their existing tests pass unchanged.
 ## Plan
 
 - [x] F2: one named-agent-secret lookup and one personal/production refusal in the vault tools
-- [ ] F2: one argument parser and one scrub-file planner in the vault tools
-- [ ] F2: independent review of the vault-preamble PR
+- [x] F2: one argument parser and one scrub-file planner in the vault tools
+- [x] F2: independent review of the vault-preamble PR
 - [x] F5: Q3 authorisation gaps checked (agent_git_credential, handoffs owner check)
 - [ ] F5: AuthContext is_admin/is_browser helpers and gating sites through require_*
 - [ ] F5: independent review of the auth-helper PR
@@ -68,5 +68,12 @@ before and their existing tests pass unchanged.
 
 - The vault's `session_hash.is_none()` checks stay: the two-factor unlock is stored per session
   hash, and they equal `!is_browser()` only through how `auth.rs` builds contexts.
+- F5: one `UserRecord::is_admin` (not on `AuthContext`): the event fan-out, notices and the
+  login-terminal recheck hold a `UserRecord`, so one helper covers every site. The gating sites
+  keep their own refusal texts, so none is routed through `require_instance_admin` or
+  `require_superadmin` (their texts differ). `AuthContext::token_allows` folds the three copies of
+  "a token's scope narrows, a session's does not". The disabled-user rechecks after the extractor
+  stay: `App` methods are also called with contexts built outside the HTTP extractor, and no test
+  proves each of them refuses a disabled person first.
 - Helpers stay inside the vault module where the copies are all there (`parse_args`, `named`),
   so the parallel MCP-argument cleanup (#656) is not raced.
