@@ -1355,11 +1355,14 @@ async fn adds_to_and_preview_merge_differ_with_several_merge_bases() -> TestResu
             real.preview_merge(repo, &base, &head).await?,
             TrainStep::Conflict(_)
         );
+        git(repo, &["checkout", "-q", "-b", "probe", &base])?;
+        let by_git_merge = git(repo, &["merge", "-q", "--no-commit", "--no-ff", &head]).is_err();
+        assert_eq!(by_git_merge, merge_conflicts, "{shape}: git merge");
         assert_eq!(
-            by_preview, merge_conflicts,
+            by_preview, by_git_merge,
             "{shape}: preview_merge as git merge"
         );
-        assert_eq!(by_adds_to, !merge_conflicts, "{shape}: adds_to differs");
+        assert_eq!(by_adds_to, !by_git_merge, "{shape}: adds_to differs");
     }
     Ok(())
 }

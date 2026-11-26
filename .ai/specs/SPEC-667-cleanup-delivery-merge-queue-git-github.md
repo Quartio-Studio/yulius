@@ -48,7 +48,7 @@ PR 0.
 - [x] Queue: independent review answered
 - [x] Merge: preview_merge vs adds_to agreement test
 - [x] Merge: conflict checks compared; F3 and F4 reported
-- [ ] Merge: independent review answered
+- [x] Merge: independent review answered
 - [ ] Queue leftovers: typed dissolve reason, is_merged, branch filter, typed queue
 - [ ] Leftovers/finish: TaskCache kind and background probe
 - [ ] F6/F9/F10: independent review answered
