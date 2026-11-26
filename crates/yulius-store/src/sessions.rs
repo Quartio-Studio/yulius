@@ -331,8 +331,7 @@ impl SessionStore for SqliteStore {
         self.call(move |c| {
             let tx = c.transaction()?;
             tx.execute("DELETE FROM oauth_states WHERE expires_at < ?1", [at.0])?;
-            let live: i64 = tx
-                .query_row("SELECT COUNT(*) FROM oauth_states", [], |row| row.get(0))?;
+            let live: i64 = tx.query_row("SELECT COUNT(*) FROM oauth_states", [], |row| row.get(0))?;
             if live >= max_live {
                 return Ok(false);
             }

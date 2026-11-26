@@ -286,6 +286,7 @@ impl SpanStore for SqliteStore {
 #[cfg(test)]
 mod tests {
     use serde_json::Value as Json;
+    use yulius_app::error::AppError;
     use yulius_app::model::{MetricsRecord, PauseKind, PauseRecord};
     use yulius_app::needs_you::NeedsYouRecord;
     use yulius_app::ports::store::{CoordinationStore as _, TaskStore as _};
@@ -343,7 +344,7 @@ mod tests {
     async fn spans(store: &SqliteStore, kind: SubjectKind, id: &str) -> AppResult<Vec<SpanRecord>> {
         store
             .subject_spans(
-                &SandboxId::parse("s1").map_err(yulius_app::error::AppError::internal)?,
+                &SandboxId::parse("s1").map_err(AppError::internal)?,
                 kind,
                 id,
                 1_000,

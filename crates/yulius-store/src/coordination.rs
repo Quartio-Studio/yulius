@@ -545,8 +545,7 @@ impl CoordinationStore for SqliteStore {
                 ids.into_iter().map(rusqlite::types::Value::Text).collect();
             values.push(rusqlite::types::Value::Integer(from.map_or(i64::MIN, |t| t.0)));
             values.push(rusqlite::types::Value::Integer(to.map_or(i64::MAX, |t| t.0)));
-            let rows = stmt
-                .query_map(rusqlite::params_from_iter(values), review_round_from_row)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(values), review_round_from_row)?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await

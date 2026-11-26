@@ -752,8 +752,7 @@ impl TaskStore for SqliteStore {
             for sql in statements {
                 tx.execute(sql, [id.as_str()])?;
             }
-            let deleted = tx
-                .execute("DELETE FROM tasks WHERE id = ?1", [id.as_str()])?;
+            let deleted = tx.execute("DELETE FROM tasks WHERE id = ?1", [id.as_str()])?;
             tx.commit()?;
             Ok(deleted > 0)
         })
@@ -1727,11 +1726,10 @@ impl TaskStore for SqliteStore {
                     "SELECT r.attempt_id FROM metrics_recounts r LEFT JOIN attempts a ON a.id = r.attempt_id \
                      WHERE r.outcome IS NULL ORDER BY COALESCE(a.started_at, 0), r.attempt_id",
                 )?;
-            let rows = stmt
-                .query_map([], |r| r.get::<_, String>(0))?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
             rows.map(|id| {
                 let id = id?;
-                Ok(AttemptId::parse(&id).map_err(|_| bad_column("attempt_id", &id))?)
+                AttemptId::parse(&id).map_err(|_| bad_column("attempt_id", &id).into())
             })
             .collect()
         })

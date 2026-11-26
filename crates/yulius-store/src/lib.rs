@@ -478,7 +478,7 @@ fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
 }
 
 /// An application error raised on the database thread: `?` turns a SQLite error into one
-/// (constraint violations become conflicts) and back into an [`AppError`] at the caller.
+/// (constraint violations become conflicts), and [`SqliteStore::call`] unwraps it.
 #[derive(Debug)]
 pub(crate) struct DbError(pub(crate) AppError);
 
@@ -499,12 +499,6 @@ impl From<rusqlite::Error> for DbError {
 impl From<AppError> for DbError {
     fn from(err: AppError) -> Self {
         Self(err)
-    }
-}
-
-impl From<DbError> for AppError {
-    fn from(DbError(err): DbError) -> Self {
-        err
     }
 }
 
