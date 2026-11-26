@@ -175,8 +175,8 @@ finish the rest.
 
 Delete the remote branch, the local branch and the worktree once merged; leave no stale
 branches, worktrees or tags (`git-hygiene`; in Yulius: `repo_hygiene`, `repo_cleanup`). Close
-the issue (by the merge into the default branch, or yourself after the merge), and add the entry
-to the changes log.
+the issue (by the merge into the default branch, or yourself after the merge), and add a line to
+the changes log when people using the project will notice the change.
 
 ## Test reliability
 
