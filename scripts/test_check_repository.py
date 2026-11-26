@@ -165,6 +165,9 @@ class RepositoryContracts(unittest.TestCase):
             errors = decision_errors(decisions)
             self.assertEqual(len(errors), 1)
             self.assertTrue("0007-parallel.md" in errors[0] and "0007-second.md" in errors[0], errors)
+            # Regenerating lists both, so only the collision is reported until one is renumbered.
+            (decisions / "README.md").write_text(regenerated_index((decisions / "README.md").read_text(), decisions))
+            self.assertEqual(decision_errors(decisions), errors)
             # A renumbered record whose title kept the old number is caught too.
             (decisions / "0007-parallel.md").rename(decisions / "0008-parallel.md")
             (decisions / "README.md").write_text(decision_index(decisions))

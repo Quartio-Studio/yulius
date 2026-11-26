@@ -211,12 +211,13 @@ def regenerated_index(current, directory):
     duplicate a line), each corrected in place; entries without a record go, and missing records
     are appended in number order."""
     generated = decision_index(directory)
-    wanted = {line[3:7]: line for line in generated.splitlines() if line.startswith("- [")}
+    record = lambda line: re.match(r"- \[\d{4}\]\(([^)]+)\)", line)
+    wanted = {record(line)[1]: line for line in generated.splitlines() if record(line)}
     kept = []
     for line in current.splitlines():
-        number = line[3:7] if line.startswith("- [") else None
-        if number in wanted and wanted[number] not in kept:
-            kept.append(wanted[number])
+        name = record(line)[1] if record(line) else None
+        if name in wanted and wanted[name] not in kept:
+            kept.append(wanted[name])
     kept += [line for line in wanted.values() if line not in kept]
     return DECISION_INDEX_HEAD + "".join(f"{line}\n" for line in kept)
 
