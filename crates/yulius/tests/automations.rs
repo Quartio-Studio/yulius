@@ -657,7 +657,7 @@ async fn enable_template(w: &World, who: &Creds, id: &str) -> Result<support::Re
     .await
 }
 
-/// AC-AUT-7 (SPEC-042): two Enables pressed at the same moment (two people, two tabs) still
+/// AC-AUT-7: two Enables pressed at the same moment (two people, two tabs) still
 /// give one automation; a person without access to the project does not see the templates.
 #[tokio::test]
 async fn simultaneous_enables_never_duplicate_an_automation() -> TestResult {
@@ -694,7 +694,7 @@ async fn simultaneous_enables_never_duplicate_an_automation() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-7 (SPEC-042): the ready-made automations are listed in every project, enabled with one
+/// AC-AUT-7: the ready-made automations are listed in every project, enabled with one
 /// call (created, then re-enabled without a duplicate), recognised by name, and need write access.
 #[tokio::test]
 async fn ready_made_automations_are_enabled_in_one_call() -> TestResult {
@@ -883,7 +883,7 @@ async fn due_run_creates_exactly_one_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-240 AGM-001 (#719): a run's task starts in goal mode, scheduled or Run now, so a run that
+/// A run's task starts in goal mode, scheduled or Run now, so a run that
 /// changes no repository file is Done once its goal is achieved instead of waiting at "Your turn".
 #[tokio::test]
 async fn an_automation_runs_its_task_as_a_goal() -> TestResult {
@@ -1369,7 +1369,7 @@ async fn agents_manage_automations_through_mcp_tools() -> TestResult {
     assert!(!err, "{created}");
     let automation = &created["automation"];
     assert_eq!(automation["created_via"], "agent");
-    // No agent named: the calling task's own, Claude Code here (SPEC-514 PIN-002).
+    // No agent named: the calling task's own, Claude Code here.
     assert_eq!(
         automation["harness"], "claude",
         "defaults to the agent's harness"
@@ -1443,7 +1443,7 @@ async fn agents_manage_automations_through_mcp_tools() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-9 (SPEC-066 AUT-012): an agent lists the ready-made automations and enables one by
+/// AC-AUT-9: an agent lists the ready-made automations and enables one by
 /// its catalog id through the MCP endpoint, with the Automations page's semantics: created
 /// enabled once, then re-enabled unchanged, never duplicated; an unknown id is a clear error.
 #[tokio::test]

@@ -1,4 +1,4 @@
-//! Changing how a waiting task starts (SPEC-126): a prepared or chained task takes another start
+//! Changing how a waiting task starts: a prepared or chained task takes another start
 //! choice before its first run. These tests use the in-memory harness with no session slot, where
 //! a released task leaves `prepared` and `chained`.
 
@@ -24,7 +24,7 @@ const CREATE: &str = "/api/sandboxes/s1/tasks";
 const HOUR: i64 = 3_600_000;
 
 /// Sandbox `s1` where alice may write and her task `t-run` runs; bob may read only, carol may
-/// write but owns none of alice's tasks (SPEC-070).
+/// write but owns none of alice's tasks.
 async fn world() -> Result<(Harness, Creds, Creds, Creds, TaskRecord), Error> {
     let h = harness_configured(|c| c.max_live_sessions = 0)?;
     support::exhausted_subscription(&h).await?;
@@ -358,7 +358,7 @@ async fn a_changed_rule_judges_tasks_from_when_it_was_written() -> TestResult {
     Ok(())
 }
 
-/// CHS-007: the old predecessor no longer lists the task, the new one does.
+/// The old predecessor no longer lists the task, the new one does.
 #[tokio::test]
 async fn the_predecessors_follow_a_changed_chain() -> TestResult {
     let (h, alice, _, _, _) = world().await?;

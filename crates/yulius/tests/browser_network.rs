@@ -1,4 +1,4 @@
-//! The sandbox browsers' way out (SPEC-483 E2, ADR-0321) as the server wires it: a proxy of its
+//! The sandbox browsers' way out (SPEC-483 E2) as the server wires it: a proxy of its
 //! own per browser, bound to the egress proxy and to the application's record of a sandbox's
 //! ports. With `YULIUS_TEST_CHROMIUM` (never in CI), a real Chromium behind it.
 

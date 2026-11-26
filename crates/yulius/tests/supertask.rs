@@ -1,4 +1,4 @@
-//! Supertasks (SPEC-071, SPEC-001 TSK-018): a task that waits for the running work of its
+//! Supertasks: a task that waits for the running work of its
 //! project, then runs alone while every other task of the project waits for it. The scenario
 //! with real processes is in `supervision.rs`; these tests use the in-memory harness, where a
 //! start that passes the hold fails at once (no Git, no session host), so a task the hold keeps
@@ -156,7 +156,7 @@ async fn held_by(h: &Harness, creds: &Creds, task: &TaskRecord) -> Result<Value,
     Ok(summary(h, creds, task.id.as_str()).await?["held_by"].clone())
 }
 
-/// AC-SUP-2..4 (the rule, SUP-002, SUP-003, SUP-005): a supertask waits for the project's
+/// AC-SUP-2..4 (the rule): a supertask waits for the project's
 /// working task; every other start of the project waits for the supertask (a new task, a
 /// continued one, Start now on a chained one); another project is not held; once the working
 /// task is Done the supertask goes, and once it ended the others go.
@@ -273,7 +273,7 @@ async fn a_supertask_waits_for_working_tasks_and_holds_its_project() -> TestResu
     Ok(())
 }
 
-/// SUP-003: supertasks of one project go one at a time, by task number; a supertask without
+/// Supertasks of one project go one at a time, by task number; a supertask without
 /// working tasks starts at once.
 #[tokio::test]
 async fn supertasks_go_one_at_a_time() -> TestResult {
@@ -338,7 +338,7 @@ async fn end_attempt(h: &Harness, task: &str) -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 QUE-001 (#1278): stopping one of two waiting tasks, neither a supertask, in a world
+/// Stopping one of two waiting tasks, neither a supertask, in a world
 /// with free sessions runs no pass of the queue: the other stays waiting (a pass would start it
 /// before a bulk stop reached it). The check is bounded: it can only miss the pass, never fail
 /// without one (this harness has no background tick).
@@ -358,7 +358,7 @@ async fn stopping_a_waiting_task_that_is_no_supertask_starts_no_other() -> TestR
     Ok(())
 }
 
-/// SUP-005 (review): a queued supertask stopped while slots are free lets the tasks it held start
+/// A queued supertask stopped while slots are free lets the tasks it held start
 /// without waiting for the next tick of the queue.
 #[tokio::test]
 async fn stopping_a_queued_supertask_starts_the_tasks_it_held() -> TestResult {
@@ -394,7 +394,7 @@ async fn stopping_a_queued_supertask_starts_the_tasks_it_held() -> TestResult {
     .await
 }
 
-/// SUP-006 (review): at the session limit, a new supertask relabels the project's queued tasks
+/// At the session limit, a new supertask relabels the project's queued tasks
 /// at once: the queue publishes them with what they wait for.
 #[tokio::test]
 async fn a_new_supertask_relabels_the_queue_at_the_session_limit() -> TestResult {
@@ -441,7 +441,7 @@ async fn a_running_task_is_not_started_twice() -> TestResult {
     Ok(())
 }
 
-/// SUP-002 (review round 2): a task paused for capacity before it ran keeps its pause, with its
+/// A task paused for capacity before it ran keeps its pause, with its
 /// kind and continuation, while a supertask holds its project; once the hold ends the resume
 /// loop starts it.
 #[tokio::test]
@@ -538,7 +538,7 @@ async fn a_held_capacity_resume_keeps_its_pause() -> TestResult {
     .await
 }
 
-/// SUP-005 (review round 2): deleting a queued supertask, or a supertask that fails to start,
+/// Deleting a queued supertask, or a supertask that fails to start,
 /// lets the tasks it held go without waiting for the next tick of the queue.
 #[tokio::test]
 async fn a_deleted_or_failed_supertask_releases_its_project() -> TestResult {
@@ -606,7 +606,7 @@ async fn a_deleted_or_failed_supertask_releases_its_project() -> TestResult {
     .await
 }
 
-/// SPEC-487 CHN-002 and SPEC-612 GF-006: a verification step keeps one merged task
+/// A verification step keeps one merged task
 /// working until it receives PR news. A completed delivery releases the supertask.
 #[tokio::test]
 async fn a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge() -> TestResult {

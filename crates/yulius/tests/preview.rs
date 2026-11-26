@@ -457,7 +457,7 @@ async fn a_preview_opens_after_a_single_use_handshake() -> TestResult {
         StatusCode::FORBIDDEN,
         "a blocked cookie is reported, not looped"
     );
-    // SPEC-483 PRV-001: the proxy's own pages carry no script and are framed by nothing else.
+    // The proxy's own pages carry no script and are framed by nothing else.
     assert_eq!(
         lost.header("content-security-policy").as_deref(),
         Some("default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'")
@@ -612,7 +612,7 @@ async fn the_dev_server_sees_a_plain_localhost_request() -> TestResult {
             ("sec-fetch-site", "same-origin"),
             ("x-forwarded-for", "203.0.113.9"),
             ("x-forwarded-host", "attacker.example"),
-            // The reverse proxy's headers (ACC-013): its secret never reaches a sandbox.
+            // The reverse proxy's headers: its secret never reaches a sandbox.
             ("x-yulius-client-ip", "203.0.113.9"),
             (
                 "x-yulius-proxy-secret",
@@ -1092,7 +1092,7 @@ async fn yulius_is_never_shown_inside_itself() -> TestResult {
     Ok(())
 }
 
-/// SPEC-247 (review): a read-only API token gets no preview, whose proxy forwards every method;
+/// A read-only API token gets no preview, whose proxy forwards every method;
 /// a preview granted to an operate token ends at the next check once the token is revoked.
 #[tokio::test]
 async fn previews_follow_the_api_token_they_were_granted_to() -> TestResult {

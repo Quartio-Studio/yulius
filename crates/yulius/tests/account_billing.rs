@@ -1,4 +1,4 @@
-//! When a subscription charges its card (SPEC-651): an administrator gives one charge date and
+//! When a subscription charges its card: an administrator gives one charge date and
 //! how often it repeats, and every view of the subscription says when it charges next.
 
 use crate::support;
@@ -82,7 +82,7 @@ async fn listed(
     Ok(found)
 }
 
-/// SPEC-651 BIL-003, BIL-004: an administrator sets, changes and removes the charge date; the
+/// An administrator sets, changes and removes the charge date; the
 /// answer, the list and the published update say when the next charge is, counted from today.
 #[tokio::test]
 async fn an_administrator_sets_and_removes_when_a_subscription_charges() -> TestResult {
@@ -175,7 +175,7 @@ async fn an_administrator_sets_and_removes_when_a_subscription_charges() -> Test
     Ok(())
 }
 
-/// SPEC-651 BIL-003: a date that is not `YYYY-MM-DD`, a year out of range, another period or
+/// A date that is not `YYYY-MM-DD`, a year out of range, another period or
 /// field are refused with nothing written; members are refused; an unknown subscription is 404.
 #[tokio::test]
 async fn a_charge_date_is_refused_unless_an_administrator_gives_a_real_one() -> TestResult {
@@ -244,7 +244,7 @@ impl UsageProbe for EmailOnly {
     }
 }
 
-/// SPEC-651 BIL-004: an update or answer about a subscription for another reason still carries
+/// An update or answer about a subscription for another reason still carries
 /// its charge date: the email the background round reads (`publish_account_id`), a usage
 /// refresh, a pasted token; a removal publishes `null`.
 #[tokio::test]

@@ -86,7 +86,7 @@ fn archive_keeps_the_owner_when_a_replacement_arm_arrives_at_close() -> TestResu
 }
 
 /// Delete closes a Done session first: an arm arriving at that close keeps the owner, its
-/// session and its records (SPEC-621 FIN-003).
+/// session and its records.
 #[test]
 fn delete_keeps_the_owner_when_a_replacement_arm_arrives_at_close() -> TestResult {
     with_idle_candidate(async |data, app, remote, id, _| {
@@ -132,7 +132,7 @@ fn delete_keeps_the_owner_when_a_replacement_arm_arrives_at_close() -> TestResul
 }
 
 /// Removing the subscription of a live owner whose integration failure still applies moves
-/// the session instead of closing it as Done (SPEC-621 FIN-003).
+/// the session instead of closing it as Done.
 #[test]
 fn removing_the_subscription_moves_an_unverified_owner_instead_of_closing_it() -> TestResult {
     use yulius_domain::task::{Activity, TaskStatus};
@@ -191,8 +191,7 @@ fn a_replacement_merge_is_refused_while_the_reader_settles_a_close() -> TestResu
 }
 
 /// The list, Home and the task's own views show a live owner whose achieved goal still has a
-/// recorded integration failure as waiting on Yulius, not Done, until the watch clears it
-/// (SPEC-621 FIN-004).
+/// recorded integration failure as waiting on Yulius, not Done, until the watch clears it.
 #[test]
 fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResult {
     use yulius_domain::task::{Activity, TaskStatus};
@@ -245,7 +244,7 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
         assert_eq!(published, Some(false), "{told:?}");
         // The pass told the owner about its green head, and the fake agent answers with a turn
         // that the session watcher reads on its own clock: once it was read, the owner is at
-        // rest again, and what follows hears the watch alone (SPEC-640 FLK-002). The answer
+        // rest again, and what follows hears the watch alone. The answer
         // stays `working` here: the reattached agent's hooks name the first server, and the
         // fake agent writes no record that closes the turn.
         assert!(told.iter().any(|(task, _)| task == &id), "{told:?}");
@@ -373,7 +372,7 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
         let mut events = app.events.subscribe();
         // The session's own watcher publishes on its own clock (its shell probe, its
         // transcript): a whole round of it while the pass reads the pull request says nothing
-        // new, so the pass's one publish is all the views hear (SPEC-640 FLK-002).
+        // new, so the pass's one publish is all the views hear.
         let (reading, release) =
             super::pause_watch_or_queue(super::Point::CandidateObservationRead, &id);
         let pass = {
@@ -405,7 +404,7 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
 }
 
 /// A task chained after a live owner whose achieved goal has a recorded integration failure
-/// starts only once the watch has observed that failure no longer applies (SPEC-621 FIN-003).
+/// starts only once the watch has observed that failure no longer applies.
 #[test]
 fn a_chained_successor_waits_until_the_live_owners_failure_is_cleared() -> TestResult {
     use yulius_domain::task::{Activity, TaskStatus};
@@ -600,7 +599,7 @@ fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> Te
         assert!(pass?.is_empty());
         // Capacity readers (the queue woken by the stop, the status panel, account views) take
         // the owner's delivery guard on their own clocks, also while a pass reads the pull
-        // request (SPEC-642 FLK-001). Hold one pass inside its hosted read while the status
+        // request. Hold one pass inside its hosted read while the status
         // panel holds the guard. A pass that met the guard before its read typed nothing.
         let ctx = yulius_app::auth::AuthContext {
             user: app
@@ -650,7 +649,7 @@ fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> Te
             "a pass that met the guard typed {first:?}"
         );
         // Wait for what is asserted, the pass that types the notice: any pass before it met a
-        // capacity reader and typed nothing (SPEC-642 FLK-002).
+        // capacity reader and typed nothing.
         let retry = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let retry = app.watch_prs(&WatchBounds::default()).await;
@@ -1005,7 +1004,7 @@ fn a_new_pr_on_the_same_head_and_base_releases_the_candidate_owner() -> TestResu
     })
 }
 
-/// Each PR condition is its own test (#1649): its own budget, and a failure names it.
+/// Each PR condition is its own test: its own budget, and a failure names it.
 #[test]
 fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner_from_a_fork() -> TestResult {
     unrelated_or_merged_pr_releases_the_owner("fork")
@@ -1052,7 +1051,7 @@ fn unrelated_or_merged_pr_releases_the_owner(field: &str) -> TestResult {
     )
 }
 
-/// #1649: a park pass held inside its PR verification ends the wait at its bound, and the
+/// A park pass held inside its PR verification ends the wait at its bound, and the
 /// failure says where the pass was.
 #[test]
 fn a_park_pass_held_in_its_pr_reads_fails_at_the_bound_and_names_the_stage() -> TestResult {
@@ -1085,7 +1084,7 @@ fn a_park_pass_held_in_its_pr_reads_fails_at_the_bound_and_names_the_stage() -> 
     })
 }
 
-/// #1649: a park decided while its session is slow to end is reported as begun, beside the last
+/// A park decided while its session is slow to end is reported as begun, beside the last
 /// stage reached; a wait on a task that is not running says so.
 #[test]
 fn a_park_whose_session_has_not_ended_is_reported_as_begun() -> TestResult {
@@ -1119,7 +1118,7 @@ fn a_park_whose_session_has_not_ended_is_reported_as_begun() -> TestResult {
     })
 }
 
-/// #1649: a case whose phase never ends fails at its bound naming the case and the phase, and
+/// A case whose phase never ends fails at its bound naming the case and the phase, and
 /// its task is still stopped.
 #[test]
 fn a_stalled_case_fails_at_its_bound_naming_the_case_and_phase() -> TestResult {
@@ -1224,7 +1223,7 @@ impl Default for CaseBounds {
     }
 }
 
-/// An answered candidate owner restored after a restart, idle, handed to `check` (#1649).
+/// An answered candidate owner restored after a restart, idle, handed to `check`.
 /// Seeding, the restart and the check each have their bound and share the case's, the cleanup
 /// has its own, and a failure names `case` and the phase. The task is stopped after a check that
 /// failed or timed out too, and the check's failure is printed before that stop.
@@ -2814,7 +2813,7 @@ async fn restore_owner(
     // The reattached session's watcher starts its first round a second later: it probes the
     // idle shells (unknown until then) and replays the transcript to its end, publishing and
     // settling the activity on its own clock. A test sees the owner after that round, not
-    // racing it (SPEC-640 FLK-001).
+    // racing it.
     crate::support::eventually(
         "the reattached transcript replay",
         Duration::from_secs(30),

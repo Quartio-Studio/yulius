@@ -1,4 +1,4 @@
-//! Forked tasks (SPEC-628): a fork continues a copy of its source's conversation (a fixture
+//! Forked tasks: a fork continues a copy of its source's conversation (a fixture
 //! conversation in the source's transcript) from the source branch's head, on its own branch and
 //! worktree, and the source goes on untouched.
 //!
@@ -74,7 +74,7 @@ async fn latest_session(app: &App, id: &TaskId) -> Result<String, BoxError> {
         .session_id)
 }
 
-/// SPEC-628 FRK-004..008: the fork resumes a copy of the source's conversation, with `cwd` its
+/// The fork resumes a copy of the source's conversation, with `cwd` its
 /// own worktree, from the source branch's head commit; the source's record, plan, transcript,
 /// branch and live run are unchanged; both pages link the two.
 #[test]
@@ -170,7 +170,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
         ready(&app, &fork_id).await?;
         let fork = task(&app, &fork_id).await?;
 
-        // FRK-006: a copy of the source's session under a new id Yulius named.
+        // A copy of the source's session under a new id Yulius named.
         let attempt = app
             .deps
             .store
@@ -219,7 +219,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
         let opening = screen(&app, &fork_id);
         assert!(opening.contains("a fork of task #1"), "{opening}");
 
-        // FRK-005: its own branch and worktree, at the source's head; no uncommitted work.
+        // Its own branch and worktree, at the source's head; no uncommitted work.
         let fork_tree = PathBuf::from(fork.worktree_path.as_deref().ok_or("worktree")?);
         assert_ne!(fork.branch, source.branch);
         assert_ne!(fork_tree, worktree);
@@ -233,7 +233,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
         let fork_branch = fork.branch.clone().ok_or("branch")?;
         assert_eq!(git(&fork_tree, &["rev-parse", &fork_branch])?, head);
 
-        // FRK-001: the plan is a copy, statuses and notes kept.
+        // The plan is a copy, statuses and notes kept.
         let steps = app.deps.store.steps(&fork_id).await?;
         assert_eq!(steps.len(), 1);
         assert_eq!(
@@ -246,7 +246,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
         );
         assert_ne!(steps[0].id, step.id);
 
-        // FRK-004: the source is untouched and its run goes on.
+        // The source is untouched and its run goes on.
         let after = task(&app, &source_id).await?;
         assert_eq!(
             (
@@ -273,7 +273,7 @@ fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_al
             .ok_or("source run")?;
         assert_eq!(live.id, source_attempt.id);
 
-        // FRK-008: each page links the other.
+        // Each page links the other.
         let fork_summary = app.task_summary(&fork).await?;
         let origin = fork_summary.forked_from.ok_or("forked_from")?;
         assert_eq!(
@@ -323,7 +323,7 @@ async fn closed_task(
         .await?)
 }
 
-/// SPEC-628 FRK-002, FRK-003: an Antigravity task, a task without a conversation, a message over
+/// An Antigravity task, a task without a conversation, a message over
 /// 64 KiB and a model of another harness are refused, and nothing is created.
 #[test]
 fn forks_that_cannot_continue_are_refused_and_create_nothing() -> TestResult {
@@ -374,7 +374,7 @@ fn forks_that_cannot_continue_are_refused_and_create_nothing() -> TestResult {
             app.fork_task(&ctx, unstarted.id.as_str(), &codex_model)
                 .await,
         )?;
-        // A subscription of another provider, or one that is gone (FRK-002).
+        // A subscription of another provider, or one that is gone.
         crate::support::codex::connect_codex(&app).await?;
         for (account, said) in [
             ("a-codex", "is not a Claude subscription"),
@@ -408,7 +408,7 @@ fn launch_of(attempt: &yulius_app::model::AttemptRecord) -> Result<String, BoxEr
     )?)
 }
 
-/// SPEC-628 FRK-002, FRK-006: a Codex fork that waits in the queue (the source holds the only
+/// A Codex fork that waits in the queue (the source holds the only
 /// session slot) keeps the subscription the person named, launches as `codex fork <source>`
 /// once the slot frees, adopts a session of its own, and its next launch resumes that session.
 #[test]
@@ -550,7 +550,7 @@ fn a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session() -> Te
     Ok(())
 }
 
-/// SPEC-628 FRK-006: a fork whose first launch fails before a process runs has no session of its
+/// A fork whose first launch fails before a process runs has no session of its
 /// own, so its next launch is still a fork of the source's session.
 #[test]
 fn a_fork_whose_first_launch_failed_launches_as_a_fork_again() -> TestResult {
@@ -612,7 +612,7 @@ fn a_fork_whose_first_launch_failed_launches_as_a_fork_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-628 FRK-001 (review round 1): a queue pass between the fork's task and its record starts
+/// A queue pass between the fork's task and its record starts
 /// nothing: the fork waits where the queue does not start it until its record is written, and
 /// then launches as a fork.
 #[test]
@@ -690,7 +690,7 @@ fn a_queue_pass_before_the_forks_record_starts_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-628 FRK-001: the `task_fork` tool forks a task of the project for the person the calling
+/// The `task_fork` tool forks a task of the project for the person the calling
 /// agent works for, with origin `agent`, and answers the new task and where it came from.
 #[test]
 fn the_task_fork_tool_forks_a_task_of_the_project() -> TestResult {
@@ -763,7 +763,7 @@ fn the_task_fork_tool_forks_a_task_of_the_project() -> TestResult {
     Ok(())
 }
 
-/// SPEC-628 FRK-001 (review round 2): a fork whose record cannot be written leaves nothing: its
+/// A fork whose record cannot be written leaves nothing: its
 /// source is deleted before the record is written, so the record's link fails, and the task, its
 /// stored copy and the staged copy are removed again.
 #[test]

@@ -1,4 +1,4 @@
-//! Prepared tasks (SPEC-105, SPEC-001 TSK-019): a task written now and started later, when a
+//! Prepared tasks: a task written now and started later, when a
 //! person presses Start now ("when I decide") or by itself at its time. These tests use the
 //! in-memory harness, where a start fails at once (no Git, no session host): a task that was
 //! released leaves `prepared` and `queued`.
@@ -201,7 +201,7 @@ async fn a_task_is_created_prepared_or_scheduled() -> TestResult {
     Ok(())
 }
 
-/// PRP-001: at most 32 prepared tasks wait in one sandbox.
+/// At most 32 prepared tasks wait in one sandbox.
 #[tokio::test]
 async fn a_sandbox_holds_a_bounded_number_of_prepared_tasks() -> TestResult {
     let (h, alice, _) = world().await?;
@@ -457,7 +457,7 @@ async fn a_prepared_task_is_rescheduled() -> TestResult {
 
 /// Review of SPEC-105: a request starts only its own task when its time is due; another
 /// sandbox-wide due task waits for the tick, and a second writer who does not own the task
-/// (SPEC-070) changes nothing.
+/// changes nothing.
 #[tokio::test]
 async fn a_request_releases_only_its_own_task_and_only_for_its_owner() -> TestResult {
     let (h, alice, _) = world().await?;

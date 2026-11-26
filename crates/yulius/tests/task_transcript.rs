@@ -342,7 +342,7 @@ async fn a_watcher_s_next_poll_reads_only_what_was_written_since() -> TestResult
     Ok(())
 }
 
-/// SPEC-525 (#1440): a watcher of someone else's Codex task reads its session. The rollout's lines
+/// A watcher of someone else's Codex task reads its session. The rollout's lines
 /// read as nothing before, so the watch view said "Codex is starting…" for the whole run.
 #[tokio::test]
 async fn a_watcher_reads_a_codex_task_s_rollout() -> TestResult {

@@ -1,9 +1,9 @@
-//! Auto-saved notes (SPEC-041 NOT-003..007): one notepad per sandbox and one for the team, stored
+//! Auto-saved notes: one notepad per sandbox and one for the team, stored
 //! with revisions; a stale revision is refused, readers read and writers edit sandbox notes, every
 //! signed-in person edits team notes, and each stored edit is announced to the people who may read it.
-//! Personal notes (SPEC-103 NOT-011..013) are each person's own, in every sandbox, and their edits
+//! Personal notes are each person's own, in every sandbox, and their edits
 //! reach only their owner.
-//! Presence (SPEC-112 NOT-018..019): who has a shared notepad open and where their selection is,
+//! Presence: who has a shared notepad open and where their selection is,
 //! relayed to its readers and stored nowhere, at most 20 updates a second per person and notepad.
 
 use crate::support;
@@ -639,7 +639,7 @@ async fn presence_is_relayed_to_readers() -> TestResult {
             revision: 0,
             selection: None,
             hello: false,
-            // Without `seq` (an older page): 0, which receivers never drop (SPEC-170 TKS-003).
+            // Without `seq` (an older page): 0, which receivers never drop.
             seq: 0,
         }
     );

@@ -300,7 +300,7 @@ async fn wait_for(app: &App, task: &TaskId, needle: &str) -> TestResult {
     .into())
 }
 
-/// The task terminal people watch (VLT-007) and the run's environment: the agent's environment
+/// The task terminal people watch and the run's environment: the agent's environment
 /// holds the placeholder and the wrapper, never the value; a value typed or printed into the
 /// terminal shows as the label; the run's fingerprint file holds no value.
 #[test]
@@ -377,7 +377,7 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
         wait_for(&app, &task.id, "ENV CLAUDE_CODE_SHELL_PREFIX=set").await?;
         wait_for(&app, &task.id, "ENV YULIUS_SCRUB_FILE=set").await?;
         // The prefix is one program: Claude Code 2.1.292 spawns it as the command of a stdio MCP
-        // server with the server's command line as one quoted argument (SPEC-358).
+        // server with the server's command line as one quoted argument.
         let run_dir = std::path::PathBuf::from(
             app.deps
                 .store

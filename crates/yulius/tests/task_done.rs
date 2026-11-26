@@ -51,7 +51,7 @@ async fn start(
 }
 
 /// A session host that connects to a run only once the agent's SessionStart hook was answered, so
-/// the hook lands before the supervisor watches the run, as on a busy host (#243). Bounded: without
+/// the hook lands before the supervisor watches the run, as on a busy host. Bounded: without
 /// a hook the attach goes ahead after 30 s.
 struct AttachAfterSessionStart {
     inner: PtySessionHost,
@@ -105,7 +105,7 @@ struct LateHook {
     handled: tokio::sync::watch::Sender<bool>,
 }
 
-/// What a test sees and decides of the turn hooks at the internal listener (SPEC-453): each Stop
+/// What a test sees and decides of the turn hooks at the internal listener: each Stop
 /// Yulius answered (not held) is reported on `stop_answered`, and while `prompts_lost` is set a
 /// `UserPromptSubmit` never reaches Yulius: its client fails open, as on an unreachable server.
 #[derive(Clone)]
@@ -115,7 +115,7 @@ struct TurnHooks {
 }
 
 /// The fake agent with `agent`'s options; Bob writes the fixture's repository (a hand-over during
-/// a launch, SPEC-248).
+/// a launch).
 fn live(fake: &Path, agent: FakeAgentOptions) -> Live {
     let live = Live::new(Some(fake), agent);
     live.github
@@ -130,7 +130,7 @@ struct Hold {
     attach_late: bool,
     /// The server sees a `/goal` prompt hook (a resumed session's typed goal) only after its
     /// hold, then handles it to its end, as a loaded host does once the hook client gave up
-    /// waiting (SPEC-346).
+    /// waiting.
     late_goal: Option<LateHook>,
     /// The test follows the turn hooks.
     turn_hooks: Option<TurnHooks>,
@@ -211,7 +211,7 @@ async fn start_holding(
                     return next.run(request).await;
                 }
                 late.holding.store(true, SeqCst);
-                // Its own task: the client hanging up does not cancel it (ADR-0115).
+                // Its own task: the client hanging up does not cancel it.
                 let handling = tokio::spawn(async move {
                     tokio::time::sleep(late.hold).await;
                     let mut stopped = late.stop_handled.subscribe();
@@ -353,7 +353,7 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserId), BoxError> {
     Ok((sandbox.id, user.id))
 }
 
-/// A goal-mode task (TSK-010): Yulius types `/goal <prompt>` once the session is ready.
+/// A goal-mode task: Yulius types `/goal <prompt>` once the session is ready.
 async fn goal_task(
     app: &Arc<App>,
     sandbox: &SandboxId,
@@ -432,7 +432,7 @@ fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
     Ok((dir, data))
 }
 
-/// TSK-014: the goal turn ends cleanly (Stop hook), Claude Code records the goal as achieved and
+/// The goal turn ends cleanly (Stop hook), Claude Code records the goal as achieved and
 /// no shell is left: the task is Done. Typing again makes it Working; after that turn it waits
 /// for the user (the achieved goal no longer counts), but it answered with nothing open: nobody
 /// has to act, and it is not counted in Needs you (SPEC-429; task #17 of another project read
@@ -455,7 +455,7 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
-        // SPEC-117 ONE-001: the session's only first message is its goal, the launch prompt.
+        // The session's only first message is its goal, the launch prompt.
         let launch = first_launch(&app, &id).await?;
         assert!(
             launch.contains("prompt: Some(\"/goal Tidy the parser and verify it\\n\\nDone = "),
@@ -522,7 +522,7 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             .counts;
         assert_eq!(counts.needs_attention, 0, "answered: nobody has to act");
         // It reads Answered under Done, where Archive is offered: archiving closes its session
-        // as for a Done task, not "stop the task first" (SPEC-429 ANS-007).
+        // as for a Done task, not "stop the task first".
         let archived = app.archive_task(&ctx, id.as_str(), true).await?;
         assert!(archived.archived, "archived");
         // Closed, not stopped; it stays Running until its session is gone (`close_task_now`).
@@ -609,7 +609,7 @@ fn an_idle_compaction_leaves_a_done_task_done() -> TestResult {
     Ok(())
 }
 
-/// SPEC-085 STT-005: a person types `/compact` into the idle session of a Done task. Claude Code
+/// A person types `/compact` into the idle session of a Done task. Claude Code
 /// writes the command as typed, compacts and writes its records (no turn, no Stop hook): the task
 /// stays Done throughout and after. A prompt typed right after is work as always.
 #[test]
@@ -766,9 +766,9 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
             view().await.ok() == Some((Some("waiting".into()), Some(0), false))
         })
         .await?;
-        // Its goal failed: the work is unfinished, so it is the person's turn (SPEC-429 ANS-002).
+        // Its goal failed: the work is unfinished, so it is the person's turn.
         // The fake's turn is shorter than a transcript read, so the record may come after it: the
-        // UI is told then, not left reading Answered (ANS-008).
+        // UI is told then, not left reading Answered.
         let published = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 match events.recv().await {
@@ -813,7 +813,7 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
 }
 
 /// A goal task that got its goal from its launch prompt, then stopped and continued: the resumed
-/// session (no prompt) gets its `/goal` typed once it reads input (SPEC-117 ONE-007). Returns
+/// session (no prompt) gets its `/goal` typed once it reads input. Returns
 /// once the resumed run's screen replaced the first one's, before its goal.
 async fn continued_goal_task(
     app: &Arc<App>,
@@ -879,7 +879,7 @@ async fn goal_typed_into_the_resumed_session(app: &App, id: &TaskId) -> TestResu
     Ok(())
 }
 
-/// TSK-010, SPEC-117 ONE-007: a goal typed into a resumed session whose TUI drops the first
+/// A goal typed into a resumed session whose TUI drops the first
 /// submit is typed again until Claude Code takes it, so the task goes on instead of showing the
 /// goal unsubmitted.
 #[test]
@@ -900,7 +900,7 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
         let (sandbox, user) = seed(&app, &data).await?;
         let id = continued_goal_task(&app, &sandbox, &user).await?;
         goal_typed_into_the_resumed_session(&app, &id).await?;
-        // About a second after the goal turn, also at a load average of 60 (SPEC-067).
+        // About a second after the goal turn, also at a load average of 60.
         eventually("Done", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
@@ -911,7 +911,7 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-002: the TUI dropped the typed goal's submit, so the goal may still sit in the
+/// The TUI dropped the typed goal's submit, so the goal may still sit in the
 /// prompt box until a later try submits it. A message for the task that comes meanwhile is
 /// refused, as while a message is being typed: typed now, it would be sent with the goal by the
 /// next Enter, or erased when the goal is typed again.
@@ -973,7 +973,7 @@ fn nothing_is_typed_while_a_typed_goal_is_not_taken() -> TestResult {
     Ok(())
 }
 
-/// SPEC-346 LPH-002, LPH-003 (#921): the goal typed into a resumed session (after a dropped
+/// The goal typed into a resumed session (after a dropped
 /// submit, as above) whose `UserPromptSubmit` the server handles only after the hook client gave
 /// up (5 s): the agent ran the goal turn meanwhile, its Stop waited for the verdict and Claude
 /// Code recorded the goal as met. The late prompt changes nothing, and the task is Done. Before,
@@ -1063,7 +1063,7 @@ async fn start_following(
     Ok((app, turn, answered))
 }
 
-/// SPEC-453 TPO-001 (#1066): a goal turn's Stop arrives while the transcript watcher is between
+/// A goal turn's Stop arrives while the transcript watcher is between
 /// its last-Stop check of that turn's prompt and the turn it starts for it: the Stop waits for
 /// the prompt, opens its verdict wait after it, and Claude Code's "met" makes the task Done.
 /// Before, the watcher cleared the verdict wait the Stop had just opened: "met" found no waited
@@ -1118,7 +1118,7 @@ fn a_goal_whose_stop_races_its_transcript_prompt_is_done() -> TestResult {
     Ok(())
 }
 
-/// SPEC-453 TPO-002 (#1066): a turn Yulius knows only from the transcript (its prompt hook was
+/// A turn Yulius knows only from the transcript (its prompt hook was
 /// lost) whose Stop read the task before the watcher's prompt set Working: the Stop settles the
 /// task as it is by then, Your turn. It used to settle from its copy, which already read Your
 /// turn, so it wrote nothing and the task stayed Working with the agent idle.
@@ -1201,7 +1201,7 @@ fn a_stop_that_raced_its_transcript_prompt_settles_the_turn() -> TestResult {
     Ok(())
 }
 
-/// TSK-010 (#243), SPEC-117 ONE-007: a resumed session's SessionStart hook answered before the
+/// A resumed session's SessionStart hook answered before the
 /// supervisor watches the run (a fast TUI, a busy host) still counts: the goal is typed once the
 /// TUI is quiet, not after the 45 s fallback for a TUI without hooks.
 #[test]
@@ -1242,7 +1242,7 @@ fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> T
     Ok(())
 }
 
-/// SPEC-011, SPEC-117 ONE-001, SPEC-212 WHL-001: a goal task writes its request file (the request,
+/// A goal task writes its request file (the request,
 /// its attached files and the definition of done) and starts from a `/goal` that is the whole
 /// request, each attached file at its place, then the definition of done, given as the launch
 /// prompt: one first message, nothing typed into the session.
@@ -1331,11 +1331,11 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
 /// when it starts: in the request file and the goal of a goal task, in the first message of a
 /// prompt task.
 ///
-/// The wait is real (SPEC-082 TST-002): another task holds the only session slot, so the
+/// The wait is real: another task holds the only session slot, so the
 /// session limit queues the task and nothing can start it before its message is in; the
 /// holder's stop then frees the slot and the queue starts it. Before, the test moved a task to
 /// `queued` itself while slots were free: any pass of the queue (the previous task's stop or
-/// Done, SES-101) could start it first, and the message was refused about one run in four.
+/// Done) could start it first, and the message was refused about one run in four.
 #[test]
 fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1382,7 +1382,7 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
         };
         for mode in [TaskMode::Goal, TaskMode::Prompt] {
             // A prompt task holds the only slot: after its turn it waits for its person and is
-            // never Done, so it keeps the slot until it is stopped (SES-101).
+            // never Done, so it keeps the slot until it is stopped.
             let holder = app
                 .create_task_internal(new_task(TaskMode::Prompt, "Hold the slot"))
                 .await?
@@ -1477,9 +1477,9 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
     Ok(())
 }
 
-/// SPEC-034 LIM-003, SPEC-072 LRS-004 (#278): a goal session whose turn a usage limit cut moves to
+/// A goal session whose turn a usage limit cut moves to
 /// another subscription by a continued resume; Claude Code redoes the cut turn first, and the goal
-/// is typed again after that turn's Stop, not during it, and once, as one line (SPEC-212 WHL-003).
+/// is typed again after that turn's Stop, not during it, and once, as one line.
 #[test]
 fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1523,7 +1523,7 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
             .create_task_internal(NewTask {
                 sandbox: sandbox.clone(),
                 created_by: user.clone(),
-                // SPEC-212 WHL-003: more than one line; the typed goal is one.
+                // More than one line; the typed goal is one.
                 prompt: "Make the header blue\n\nand the footer".into(),
                 harness: Harness::ClaudeCode,
                 title: Some("Blue header".into()),
@@ -1670,10 +1670,10 @@ fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> 
     Ok(())
 }
 
-/// SPEC-030 PIMG-002: a prompt-mode task with an attached image starts with no command-line
+/// A prompt-mode task with an attached image starts with no command-line
 /// prompt; its first message is typed into the TUI with the image pasted (`[Image #1]`, as
 /// Claude Code attaches a pasted image) and the other files mentioned. An older prompt's files
-/// follow its text, so the image is pasted after it (SPEC-124 INL-007).
+/// follow its text, so the image is pasted after it.
 #[test]
 fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1732,7 +1732,7 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
     Ok(())
 }
 
-/// SPEC-124 INL-007: an image written inside the text (`@'path'`, as the composer writes it) is
+/// An image written inside the text (`@'path'`, as the composer writes it) is
 /// pasted where it sits: one first message with `[Image #1]` between the words around it.
 #[test]
 fn an_image_in_the_text_is_pasted_where_it_sits() -> TestResult {
@@ -1784,7 +1784,7 @@ fn an_image_in_the_text_is_pasted_where_it_sits() -> TestResult {
     Ok(())
 }
 
-/// TSK-014: the goal turn leaves a background shell (Claude Code's Bash tool shape): the task is
+/// The goal turn leaves a background shell (Claude Code's Bash tool shape): the task is
 /// shown Working with one background shell until the shell ends, then Done.
 #[test]
 fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
@@ -1831,7 +1831,7 @@ fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
     Ok(())
 }
 
-/// SPEC-486 WFL-006: a prompt that reaches a session whose workflow a usage limit paused (here
+/// A prompt that reaches a session whose workflow a usage limit paused (here
 /// the move off the limited subscription was refused, so the session stays where it is) is told,
 /// through the prompt hook, to resume the run by its id and not to start it again. Before the
 /// limit, and for a session without a workflow, the hook adds nothing.
@@ -2053,7 +2053,7 @@ fn a_woken_turn_keeps_the_working_stretch(prompt_lost: bool) -> TestResult {
             "one working stretch through the woken turn: {stretches:?}"
         );
 
-        // The person types: a new stretch (WSW-002), although the task stayed in the state its
+        // The person types: a new stretch, although the task stayed in the state its
         // last stretch ended in.
         eventually(
             "the stretch ended with the turn",
@@ -2092,7 +2092,7 @@ fn a_wake_read_from_the_transcript_keeps_the_working_stretch() -> TestResult {
     a_woken_turn_keeps_the_working_stretch(true)
 }
 
-/// SPEC-079 BGW-001 (#305), SES-101: under a limit of one session, a Done task with a background
+/// Under a limit of one session, a Done task with a background
 /// shell still holds the slot; once the shell ends, the queued task starts at once (no tick runs
 /// in this test, so without the drain it would never start).
 #[test]
@@ -2272,7 +2272,7 @@ fn an_agent_that_stopped_with_its_own_work_running_keeps_the_task_working() -> T
     Ok(())
 }
 
-/// SPEC-079 BGW-003 (#265): the goal turn leaves a Monitor stream (no process: only the transcript
+/// The goal turn leaves a Monitor stream (no process: only the transcript
 /// says it runs). The task is Working with it counted until the stream ends (its notification wakes
 /// the session) or, when it never reports, until its expiry.
 fn a_monitor_counts_until_it_ends_or_expires(ends: bool) -> TestResult {
@@ -2398,7 +2398,7 @@ async fn runs_on_the_spare(app: &App, id: &TaskId) -> bool {
         })
 }
 
-/// SPEC-483 SWT-001: the look at the session's background work gives no answer (the probe timed
+/// The look at the session's background work gives no answer (the probe timed
 /// out, the process table could not be read) at a turn's end that would move the session to
 /// another subscription. Work that cannot be told is taken as running, as everywhere else that
 /// asks: the session stays and is answered, and moves at a later turn's end, once the look
@@ -2451,7 +2451,7 @@ fn a_switch_waits_while_the_background_work_cannot_be_told() -> TestResult {
             run_states(&app, &id).await
         );
         // The look answers again: the next turn's end moves the session (a turn longer than
-        // the time in which its prompt's record may still be unread, SPEC-471 CCQ-004).
+        // the time in which its prompt's record may still be unread).
         host.silence_probe(false);
         app.send_input(&id, b"/work 3000 go on\r").await?;
         eventually("the move", Duration::from_secs(60), || {
@@ -2464,7 +2464,7 @@ fn a_switch_waits_while_the_background_work_cannot_be_told() -> TestResult {
     Ok(())
 }
 
-/// SPEC-079 BGW-004 (#271): the goal turn launches a background agent while the task's
+/// The goal turn launches a background agent while the task's
 /// subscription is at its threshold. The Stop decides a proactive switch, which would end the
 /// agent: it waits while the agent is pending and is made at the Stop after the agent finished.
 #[test]
@@ -2521,7 +2521,7 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
     Ok(())
 }
 
-/// SPEC-140 STP-001 (#464): a stop that comes while the task's run is launching (spawned, Yulius
+/// A stop that comes while the task's run is launching (spawned, Yulius
 /// not attached yet) finds no run to ask. The run is asked once it is attached, so it ends at once
 /// as stopped, not when the escalation terminates it (here 60 s, beyond the wait).
 #[test]
@@ -2569,7 +2569,7 @@ fn a_stop_while_the_run_is_launching_ends_it_once_attached() -> TestResult {
     Ok(())
 }
 
-/// SPEC-140 STP-002 (review): a stop that ended no run leaves no intent for the next run. Here a
+/// A stop that ended no run leaves no intent for the next run. Here a
 /// switch's old run has ended and its new run waits for the launch (another task's launch holds
 /// it), the task is stopped then, and the switch gives up and rests it (SPEC-250 STW-006: not
 /// stopping with no run until a second stop). Continued, the task's resumed run is not shut down
@@ -2629,7 +2629,7 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
         host.release();
         let refused = tokio::time::timeout(Duration::from_secs(60), switch).await??;
         assert!(refused.is_err(), "{refused:?}");
-        // The switch that gives up rests the task its stop left with no run (SPEC-250 STW-006).
+        // The switch that gives up rests the task its stop left with no run.
         assert_eq!(
             task(&app, &id).await?.status,
             TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled),
@@ -2782,7 +2782,7 @@ async fn gated_goal_task_ending_with(
     Ok((app, host, id))
 }
 
-/// SPEC-483 SWT-002: the session a switch asked to end does not end in time, and its host cannot
+/// The session a switch asked to end does not end in time, and its host cannot
 /// be terminated (a process that survives the kill). No new session starts beside it: the run
 /// stays the task's live run, the task runs and says so to a person, and the switch failed.
 /// The run's end is no longer the switch's: a session that leaves by itself afterwards ends as
@@ -2857,7 +2857,7 @@ fn a_switch_whose_old_run_cannot_be_ended_starts_no_new_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-635 EFL-001 (#1611): the switch's old run cannot be ended while its goal turn's prompt
+/// The switch's old run cannot be ended while its goal turn's prompt
 /// hook is still on its way, as on a loaded host. That prompt and the turn's Stop come after the
 /// flag was raised: the task keeps reading the flag "Yulius could not end this session", which
 /// no work of that session answers. Before, the prompt set Working and the Stop settled the turn:
@@ -2917,7 +2917,7 @@ fn a_late_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResult {
     Ok(())
 }
 
-/// SPEC-635 EFL-001 (review round 1): with the "could not end" flag standing, a person's prompt
+/// With the "could not end" flag standing, a person's prompt
 /// whose hook never reaches Yulius starts its turn from the transcript (the watcher's user turn),
 /// and that turn's Stop settles it: the flag stays.
 #[test]
@@ -2967,7 +2967,7 @@ fn a_transcript_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResul
     Ok(())
 }
 
-/// SPEC-635 EFL-001 (review round 1): with the "could not end" flag standing, the person
+/// With the "could not end" flag standing, the person
 /// interrupts a turn (Claude Code's interrupt line, no Stop): the flag stays.
 #[test]
 fn an_interrupted_turn_of_a_run_that_cannot_be_ended_keeps_its_flag() -> TestResult {
@@ -3042,7 +3042,7 @@ async fn flag_still_stands(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// SPEC-635 EFL-003 (review round 2): a session write looks at the task after the failure was
+/// A session write looks at the task after the failure was
 /// recorded but before its flag is stored, and writes only once the flag is stored. The flag
 /// stays: a write that saw the failure leaves the task as it is until the flag stands. Before,
 /// it saw no flag yet and wrote over it.
@@ -3095,7 +3095,7 @@ fn a_write_that_looked_before_the_flag_was_stored_leaves_it() -> TestResult {
     Ok(())
 }
 
-/// SPEC-635 EFL-002 (review round 1): the run cannot be ended, but the task reads another
+/// The run cannot be ended, but the task reads another
 /// matter's flag (as when it was flagged already and the "could not end" flag was never raised:
 /// a close or a lost connection of a task that waits on a question). That flag is answered as
 /// before: a person's prompt and its turn move the task on. Before, every session write was
@@ -3135,7 +3135,7 @@ fn another_flag_on_a_run_that_cannot_be_ended_is_answered_as_before() -> TestRes
     Ok(())
 }
 
-/// SPEC-635 EFL-002 (review round 1): a capacity pause replaced the "could not end" flag (the
+/// A capacity pause replaced the "could not end" flag (the
 /// task left Running) and its release made the task run again. The flag is gone, so the session's
 /// turns settle the task as before. Before, every write stayed refused and the task read Working
 /// for good.
@@ -3233,7 +3233,7 @@ async fn ends_by_itself(
     Ok(())
 }
 
-/// SPEC-483 SWT-002: the session a switch asked to end does not end in time and its host is
+/// The session a switch asked to end does not end in time and its host is
 /// terminated. The switch failed and starts no new run: the task rests as
 /// `stopped_switch_timeout` with its one run ended. Who records the run's end first, its reader
 /// (`switch_timeout`) or the switch (`lost`), is the order the two tests below force; here
@@ -3331,7 +3331,7 @@ where
     );
 }
 
-/// SPEC-483 SWT-002 (review): the run's reader sees its host go before the switch that gave the
+/// The run's reader sees its host go before the switch that gave the
 /// run up records the loss. The loss is that switch's all the same: the task rests as
 /// `stopped_switch_timeout`, not `stopped_lost`.
 #[test]
@@ -3352,7 +3352,7 @@ fn a_run_its_switch_gave_up_is_that_switchs_loss_whoever_sees_it_first() -> Test
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review): the run exits by itself after the switch gave it up, before its
+/// The run exits by itself after the switch gave it up, before its
 /// host is terminated. Its exit is recorded as the switch's timeout and rests the task the same
 /// way: it is not left switching with no run.
 #[test]
@@ -3373,7 +3373,7 @@ fn a_run_that_exits_as_its_switch_gives_it_up_rests_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review): the same exit, and the host then cannot be terminated (the test
+/// The same exit, and the host then cannot be terminated (the test
 /// host refuses). The run ended, so nothing is said about a session that could not be ended and
 /// the task is not put back to running with no run.
 #[test]
@@ -3401,7 +3401,7 @@ fn a_run_that_exits_before_a_refused_kill_rests_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review): the old run ends by itself just as the switch's wait runs out: its
+/// The old run ends by itself just as the switch's wait runs out: its
 /// end is being recorded (the switch's intent was taken) when the switch looks. The switch waits
 /// for that word and goes on: the run ended as switched and the new run starts, instead of a
 /// task left switching with no run.
@@ -3452,7 +3452,7 @@ fn a_run_whose_end_is_being_recorded_as_the_wait_runs_out_is_switched() -> TestR
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review, round 2): the session leaves by itself after the switch made the
+/// The session leaves by itself after the switch made the
 /// task `switching` and before the switch claims the run's end. Its end closes the task, as it
 /// does without a switch, and the switch gives way: the task is not left switching with no run,
 /// and nothing says a session did not end in time.
@@ -3476,7 +3476,7 @@ fn a_run_that_ends_before_its_switch_claims_it_closes_the_task() -> TestResult {
                         app.send_input(&id, b"/exit\r").await?;
                         // The run's end is recorded and its task rests: "before its switch
                         // claims it" means the whole end, or a loaded host lets the switch go
-                        // on between the two and wait out its bound (#1456).
+                        // on between the two and wait out its bound.
                         eventually("the run's end", Duration::from_secs(30), || async {
                             matches!(
                                 app.deps.store.attempt(&run.id).await,
@@ -3520,7 +3520,7 @@ fn a_run_that_ends_before_its_switch_claims_it_closes_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 SWT-002 (review, round 2): the run's exit is being recorded (its recorder took the
+/// The run's exit is being recorded (its recorder took the
 /// given-up intent) when the kill is refused and the switch puts the task back to running. The
 /// switch waits for that record before it asks whether the run lives: the run ended, so nothing
 /// says a session could not be ended, and the task rests as after the timeout.
@@ -3644,7 +3644,7 @@ async fn expect_stopped(app: &Arc<App>, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-001 (#527): a stop reads the task while its switch's new run is launching
+/// A stop reads the task while its switch's new run is launching
 /// (`Switching`), and the switch completes (`Running`) before the stop's status change. The stop
 /// reads the task again and stops it from there: the task ends stopped, not running with no run.
 #[test]
@@ -3705,7 +3705,7 @@ fn a_stop_that_loses_to_a_completing_switch_still_ends_the_task() -> TestResult 
     Ok(())
 }
 
-/// SPEC-250 STW-003: the run ends by itself after a stop decided to end it, before the stop's
+/// The run ends by itself after a stop decided to end it, before the stop's
 /// status change (the agent exited at that moment). Its end rests the task, so the task ends
 /// stopped, not stopping with no run left to end.
 #[test]
@@ -3756,7 +3756,7 @@ fn a_run_that_ends_before_the_stops_change_still_ends_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-006: a stop lands while a switch waits for its old run to end. The stop takes
+/// A stop lands while a switch waits for its old run to end. The stop takes
 /// over that end, so the switch starts no new run: the task ends stopped with its one run ended,
 /// not stopped (or running) with a new run nobody ends.
 #[test]
@@ -3845,7 +3845,7 @@ async fn switch_result(
     outcome.ok_or_else(|| "no switch result".into())
 }
 
-/// SPEC-250 STW-006 (review): a stop lands after the switch's status change, before the switch
+/// A stop lands after the switch's status change, before the switch
 /// sets its intent for the old run. The switch keeps the stop's intent and gives up: the task ends
 /// stopped with its one run, not stopping with no run (or queued again).
 #[test]
@@ -3885,7 +3885,7 @@ fn a_stop_before_a_switch_sets_its_intent_starts_no_new_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-006 (review): a close reads the task running, a switch starts and asks the old
+/// A close reads the task running, a switch starts and asks the old
 /// run to end, then the close sets its intent. The switch gives up and the old run's end closes the
 /// task from `Switching`: it ends closed, not switching with no run. The run's end is held until
 /// the switch answered, so the switch says why from what the close told it, not from a status the
@@ -4027,7 +4027,7 @@ fn pause_at_switch(app: &Arc<App>, id: &TaskId) -> tokio::sync::watch::Receiver<
     )
 }
 
-/// SPEC-250 STW-006 (review round 3): the switch goes on from `WaitingCapacity`, and before its
+/// The switch goes on from `WaitingCapacity`, and before its
 /// launch takes the lock, the capacity loop's start runs the task (`Running`). That start won: the
 /// switch is completed, not overtaken.
 #[test]
@@ -4068,7 +4068,7 @@ fn a_switch_whose_paused_task_another_start_runs_is_completed() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-006 (review round 2): a task paused for capacity during its switch (a Stop
+/// A task paused for capacity during its switch (a Stop
 /// hook's wait moves `Switching` to `WaitingCapacity`) is not overtaken: the switch goes on and
 /// launches, as before SPEC-250.
 #[test]
@@ -4105,7 +4105,7 @@ async fn kill_run_host(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// SPEC-301 LRS-001 (#686): a run's connection is lost while the server runs, after output that
+/// A run's connection is lost while the server runs, after output that
 /// came since its last settled turn. The loss saves the hub's screen: the run's `final-screen`
 /// shows that output, not the screen its last turn settled on.
 #[test]
@@ -4319,7 +4319,7 @@ fn not_the_run_befores_screen(run_dir: &str) -> TestResult {
     Ok(())
 }
 
-/// SPEC-301 LRS-001 (review): a continued task's new run is lost before Yulius attached to it
+/// A continued task's new run is lost before Yulius attached to it
 /// (its stop's escalation ends it). The hub still shows the previous run's screen, which is not
 /// the new run's: the new run saves no screen.
 #[test]
@@ -4347,7 +4347,7 @@ fn a_run_lost_before_it_attached_saves_no_screen_of_the_run_before() -> TestResu
     Ok(())
 }
 
-/// SPEC-301 LRS-001 (review round 2): the new run is lost just as Yulius attaches to it, once it
+/// The new run is lost just as Yulius attaches to it, once it
 /// counts as the task's attached run. Its hub shows its own screen by then: the run before's is
 /// not saved as its own.
 #[test]
@@ -4392,7 +4392,7 @@ fn a_run_lost_as_it_attaches_saves_no_screen_of_the_run_before() -> TestResult {
     Ok(())
 }
 
-/// SPEC-301 (review round 3), TSK-006: a viewer controls the size as a continued run attaches and
+/// A viewer controls the size as a continued run attaches and
 /// changes it just after the attach took it. The run ends at the viewer's new size, not the one
 /// the attach read.
 #[test]
@@ -4439,7 +4439,7 @@ fn a_size_changed_as_the_run_attaches_is_kept() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-006 (review): the old run is lost while the switch waits for its end. The switch
+/// The old run is lost while the switch waits for its end. The switch
 /// gives up and says the session ended: the task rests lost with its one run, and nothing
 /// starts that no one asked for.
 #[test]
@@ -4477,7 +4477,7 @@ fn a_switch_whose_old_run_is_lost_starts_no_new_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-250 STW-005 (review): a stop lands while a lost run's loss is recorded, between its read
+/// A stop lands while a lost run's loss is recorded, between its read
 /// of the task and its status change. The loss is recorded again from `Stopping`: the task rests,
 /// not stopping with no run.
 #[test]
@@ -4540,7 +4540,7 @@ async fn resume(app: &Arc<App>, id: &TaskId) -> AppResult<()> {
         .await
 }
 
-/// SPEC-458 RUN-002, RUN-003 (#439): a task that rests while its run lives under this server. A
+/// A task that rests while its run lives under this server. A
 /// start is refused and changes nothing (it used to leave the task `failed_precondition`, which
 /// takes no message, with the run going on); a stop ends that run, and then the task continues.
 #[test]
@@ -4611,7 +4611,7 @@ async fn second_server(data: &Path, fake: &Path) -> Result<Arc<App>, BoxError> {
     Ok(app)
 }
 
-/// SPEC-458 RUN-002 (ADR-0050): a start finds a live run on record that this server holds no
+/// A start finds a live run on record that this server holds no
 /// connection to, its host killed from outside. It ends what is left of it, records it lost and
 /// starts the new run, instead of answering "task already has a live run" for ever.
 #[test]
@@ -4705,14 +4705,14 @@ fn continuing_an_unheld_run_waits_for_the_observer_that_recorded_its_loss() -> T
     result
 }
 
-/// SPEC-458 RUN-003: Stop on such a task ends the run (its host still runs here) and records it
+/// Stop on such a task ends the run (its host still runs here) and records it
 /// lost, instead of answering "task is stopped_server_lost" and changing nothing.
 #[test]
 fn a_stop_settles_a_run_no_server_holds() -> TestResult {
     stop_unheld_run(false)
 }
 
-/// #1449: the agent exits after inspection and the host lingers to deliver its exit frame.
+/// The agent exits after inspection and the host lingers to deliver its exit frame.
 #[test]
 fn a_stop_settles_a_run_whose_detached_host_lingers() -> TestResult {
     stop_unheld_run(true)
@@ -4802,7 +4802,7 @@ fn stop_unheld_run(delay_host_exit: bool) -> TestResult {
     Ok(())
 }
 
-/// SPEC-507 SKR-005 (review round 2): a skill refresh holds the launch lock while it installs
+/// A skill refresh holds the launch lock while it installs
 /// into a sandbox's home, so a launch there (whose install writes the same folder) waits for it
 /// and goes on once it ended.
 #[test]
@@ -4874,7 +4874,7 @@ fn a_launch_waits_for_a_skill_refresh_of_its_home() -> TestResult {
     Ok(())
 }
 
-/// SPEC-458 RUN-001 (#439): the start-up reconciliation runs while a task launches (the queue
+/// The start-up reconciliation runs while a task launches (the queue
 /// starts one as soon as a lost run frees its slot), between `Starting` and its run's record. The
 /// task is not taken for one a dead server left starting: it used to rest `stopped_server_lost`
 /// with its run going on.
@@ -4979,7 +4979,7 @@ fn a_start_during_a_launch_leaves_the_run_being_launched_alone() -> TestResult {
     Ok(())
 }
 
-/// Review of SPEC-458 (RUN-001): the start-up sweep rests only what the server before this one
+/// Review of SPEC-458: the start-up sweep rests only what the server before this one
 /// left live. A task that was resting when the reconciliation began and that this server moved
 /// on meanwhile is this server's, also in the moment it has no run on record.
 #[test]
@@ -5023,7 +5023,7 @@ fn the_startup_sweep_rests_only_what_the_earlier_server_left() -> TestResult {
     Ok(())
 }
 
-/// Review of SPEC-458 (RUN-001): a run this server attached to again is its own. When that run
+/// Review of SPEC-458: a run this server attached to again is its own. When that run
 /// ends while the reconciliation still goes on, the task is for a moment live without a run on
 /// record; the sweep must leave it to the run's own end, not rest it as a dead server's.
 #[test]
@@ -5078,7 +5078,7 @@ fn the_startup_sweep_leaves_a_task_whose_run_this_server_holds_again() -> TestRe
     Ok(())
 }
 
-/// SPEC-250 STW-005: a stop lands while the end of the task's run is recorded, between the end's
+/// A stop lands while the end of the task's run is recorded, between the end's
 /// read of the task and its status change (the agent exited at that moment). The end's change is
 /// made again from the stop's status: the task ends stopped, not stopping with no run.
 #[test]
@@ -5112,7 +5112,7 @@ fn a_stop_while_a_runs_end_is_recorded_still_ends_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-079 BGW-005 (#264): Yulius's Stop hook runs before the goal evaluator. While the goal is
+/// Yulius's Stop hook runs before the goal evaluator. While the goal is
 /// open the turn waits for the verdict: the verdict "not met" sends the agent on, and the task
 /// never reads Your turn or Done in between; the verdict "met" makes it Done.
 #[test]
@@ -5191,7 +5191,7 @@ fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
     Ok(())
 }
 
-/// SPEC-079 BGW-005 (#264): the goal turn's Stop waits for the verdict. "failed" makes the task
+/// The goal turn's Stop waits for the verdict. "failed" makes the task
 /// wait for its person before the turn's record (6 s later) comes; no verdict at all settles it at
 /// that record as before, well before the 20 s bound. Neither reads Done.
 fn an_unmet_goal_leaves_the_task_waiting(verdict: &'static str) -> TestResult {
@@ -5303,7 +5303,7 @@ fn a_stop_a_hook_continued_does_not_leave_the_task_waiting() -> TestResult {
     a_session_goes_on_from_its_stop(false, "STOP CONTINUED")
 }
 
-/// STA-004 (review of SPEC-032): the goal verdict "not met" sends the agent on, then an API error
+/// The goal verdict "not met" sends the agent on, then an API error
 /// ends that turn and Claude Code runs no Stop hook. The task does not stay Working for good: the
 /// record that closes the turn makes it wait for the person again.
 #[test]
@@ -5406,7 +5406,7 @@ fn a_goal_turn_claude_code_retries_after_an_api_error_stays_working() -> TestRes
     Ok(())
 }
 
-/// SPEC-333 AER-002: the goal turn and Claude Code's three retries all fail, and Claude Code gives
+/// The goal turn and Claude Code's three retries all fail, and Claude Code gives
 /// up ("Goal paused after 3 automatic retries · <cause>"). The task is in Needs you, with a request
 /// that says what happened and to send a message, and stays there once the record that closes the
 /// turn is read; it read Working while the retries ran. With `check_errors` each turn ended cleanly
@@ -5608,7 +5608,7 @@ fn a_restart_after_spent_goal_retries_puts_the_task_in_needs_you() -> TestResult
     })
 }
 
-/// The fake agent of a goal task whose retries Claude Code spends (SPEC-469): four API errors,
+/// The fake agent of a goal task whose retries Claude Code spends: four API errors,
 /// then its pause.
 fn pausing_agent() -> FakeAgentOptions {
     FakeAgentOptions {
@@ -5728,7 +5728,7 @@ fn a_session_claude_code_wakes_after_its_goal_pause_no_longer_needs_you() -> Tes
     Ok(())
 }
 
-/// SPEC-469 GPW-001: the paused session goes on with no prompt anyone sees (a hidden
+/// The paused session goes on with no prompt anyone sees (a hidden
 /// continuation: no prompt hook, no prompt record that starts a turn). The agent's work alone
 /// says so: the request ends, and the task that read Needs you from the pause reads Working, as
 /// it does after a visible wake-up.
@@ -5940,7 +5940,7 @@ fn a_woken_turn_the_api_refuses_again_still_needs_you() -> TestResult {
     Ok(())
 }
 
-/// SPEC-469 GPW-006: the store refuses the write that ends the request (a trigger aborts it)
+/// The store refuses the write that ends the request (a trigger aborts it)
 /// when the agent's first work is read. Nothing is lost: the request stays, and the agent's
 /// next work ends it once the store takes the write.
 #[test]
@@ -5994,7 +5994,7 @@ fn a_request_the_store_could_not_end_ends_at_the_agents_next_work() -> TestResul
     Ok(())
 }
 
-/// SPEC-469 GPW-003: the agent asked a person for something before Claude Code paused the goal
+/// The agent asked a person for something before Claude Code paused the goal
 /// (Yulius opens no second request). The session's work after the pause is no answer to the
 /// agent's question: its request stays, as SPEC-134 says.
 #[test]
@@ -6135,7 +6135,7 @@ fn unprompted_agent(wake: &Path, hold: &Path) -> FakeAgentOptions {
     }
 }
 
-/// SPEC-469 GPW-003 (review round 1): a task that another matter flagged before Claude Code
+/// A task that another matter flagged before Claude Code
 /// paused the goal keeps that flag. The pause asks its request beside it; the session's work
 /// (no visible prompt) ends the request, and the task still reads Needs you.
 #[test]
@@ -6160,7 +6160,7 @@ fn a_task_flagged_before_the_goal_pause_keeps_that_flag_through_the_agents_work(
     Ok(())
 }
 
-/// SPEC-469 GPW-003 and GPW-004 (review round 1): the same across a restart of Yulius. The new
+/// The same across a restart of Yulius. The new
 /// server takes the time of the pause's flag from the task's state only when the task reads
 /// Needs you since the request was asked; this task was flagged before.
 #[test]
@@ -6193,7 +6193,7 @@ fn a_task_flagged_before_the_goal_pause_keeps_that_flag_after_a_restart() -> Tes
     )
 }
 
-/// SPEC-469 (review round 1): the flag the pause raised is replaced without a word (a status
+/// The flag the pause raised is replaced without a word (a status
 /// change does that, as when a held turn ends), and another matter flags the task afterwards.
 /// The time of the pause's flag says nothing about that later one: the session's work ends the
 /// request for the pause and leaves the task in Needs you.
@@ -6386,7 +6386,7 @@ fn agent_token(data: &Path) -> Result<String, BoxError> {
     Err("no process of this run holds a task token".into())
 }
 
-/// SPEC-472 ATN-011 (review round 2): the agent asked for a secret (Needs you: answer it on the
+/// The agent asked for a secret (Needs you: answer it on the
 /// Secrets page), then Claude Code asks the person something. The flag is the question's from
 /// then on. The person answers the question first and the agent works on: that work answers
 /// the flag, as it does for a question on an unflagged task, so the task does not keep reading
@@ -6472,7 +6472,7 @@ fn a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_wo
         assert!(why().await?.is_null(), "no flag, no reason");
 
         // The request still waits on the Secrets page; its answer changes nothing of the task
-        // (a dismissal: allowing needs the person's two-factor unlock, ADR-0317).
+        // (a dismissal: allowing needs the person's two-factor unlock).
         app.answer_host_request(
             &ctx,
             &secret.id,
@@ -6511,7 +6511,7 @@ async fn still_flagged_after_the_replay(app: &Arc<App>, id: &TaskId) -> TestResu
     Ok(())
 }
 
-/// SPEC-472 ATN-010 (#1221): Yulius restarts (an update freezes every agent mid-turn) while a
+/// Yulius restarts (an update freezes every agent mid-turn) while a
 /// session asks its person something. The new server never saw the notice that flagged the
 /// task; the person answers, the agent goes on, and its work still makes the task Working: it
 /// does not read "Needs your action · its question is in the terminal" over a working session
@@ -6542,9 +6542,9 @@ fn a_notice_is_answered_by_the_agents_work_after_a_restart() -> TestResult {
     )
 }
 
-/// SPEC-472 ATN-010: what the session's work does not answer before a restart, it does not
+/// What the session's work does not answer before a restart, it does not
 /// answer after one: a worker's permission prompt stays through the main session's work, as
-/// while Yulius watches (STA-003).
+/// while Yulius watches.
 #[test]
 fn a_workers_notice_is_not_answered_by_the_agents_work_after_a_restart() -> TestResult {
     worker_notice_after_restart(false)
@@ -6658,7 +6658,7 @@ fn worker_notice_after_restart(second: bool) -> TestResult {
     )
 }
 
-/// SPEC-472 ATN-010: the flag a notice raised before a restart was replaced without a word and
+/// The flag a notice raised before a restart was replaced without a word and
 /// another matter flagged the task afterwards. The agent's work after the restart does not lift
 /// that flag: the reason kept with the notice's flag speaks for that flag only.
 #[test]
@@ -6696,7 +6696,7 @@ fn a_flag_raised_after_a_notices_is_not_lifted_after_a_restart() -> TestResult {
     )
 }
 
-/// SPEC-469 GPW-004: Yulius restarts while a session whose goal Claude Code paused waits for a
+/// Yulius restarts while a session whose goal Claude Code paused waits for a
 /// person (Needs you, with the request). `down` runs while no server does, with the session's
 /// transcript; `check` runs with the new server, once it reattached the run.
 fn a_restart_while_a_goal_is_paused(
@@ -6753,7 +6753,7 @@ fn a_restart_after(
     Ok(())
 }
 
-/// SPEC-469 GPW-004: the session is still paused when Yulius starts again, and keeps its request.
+/// The session is still paused when Yulius starts again, and keeps its request.
 /// Claude Code wakes it afterwards: the request ends then, although the new server never saw the
 /// pause itself.
 #[test]
@@ -6798,7 +6798,7 @@ fn a_session_woken_after_a_restart_no_longer_needs_you() -> TestResult {
     )
 }
 
-/// SPEC-469 GPW-004 (review round 1): Yulius restarts while the session is paused, and the
+/// Yulius restarts while the session is paused, and the
 /// session then goes on with no prompt anyone sees. The new server never saw the pause flag the
 /// task, and still the agent's work is past that flag: the request ends and the task reads
 /// Working, not Needs you until the turn ends.
@@ -6847,7 +6847,7 @@ fn a_session_that_goes_on_unprompted_after_a_restart_no_longer_needs_you() -> Te
     )
 }
 
-/// SPEC-469 GPW-004: Claude Code wakes the paused session while Yulius is down, and the agent
+/// Claude Code wakes the paused session while Yulius is down, and the agent
 /// works. The start reads that from the transcript: the request ends and the task follows its
 /// session (Working while the woken turn runs, waiting once it ended), not Needs you for good.
 #[test]
@@ -7007,9 +7007,9 @@ fn run_pids(run_dir: &Path) -> Result<(i32, i32), BoxError> {
 
 /// SPEC-229 (task #215, 2026-10-18: the host rebooted and #213/#214, Done with their pull requests
 /// merged, read "Stopped (server restarted)" with a blank terminal): a reboot ends every session
-/// while Yulius is down. A task whose goal was achieved lost nothing and is Closed (RBT-001); one
+/// while Yulius is down. A task whose goal was achieved lost nothing and is Closed; one
 /// whose turn ended otherwise is Stopped (server restarted); both keep the screen their last turn
-/// ended on (RBT-002).
+/// ended on.
 #[test]
 fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -7242,7 +7242,7 @@ async fn a_chain_starts_when_its_predecessor_achieves_its_goal() -> TestResult {
     Ok(())
 }
 
-/// TSK-014, UI-006: a Done task (goal achieved, no shell left) can be archived: the session is
+/// A Done task (goal achieved, no shell left) can be archived: the session is
 /// closed as it is archived. A task that only waits for the user still has to be stopped first.
 #[test]
 fn a_done_task_can_be_archived() -> TestResult {
@@ -7283,7 +7283,7 @@ fn a_done_task_can_be_archived() -> TestResult {
     Ok(())
 }
 
-/// SPEC-153 OLC-003 (#431, SPEC-106 OTR-004): a live, Done onboarding task with plan steps open,
+/// A live, Done onboarding task with plan steps open,
 /// in a `preparing` sandbox whose project validates, is archived: closed, its run's end awaited
 /// (an open plan does not make the sandbox ready while the run lives), then archived, and the
 /// sandbox is `ready`.
@@ -7393,7 +7393,7 @@ fn onboarding_audit(data: &Path, sandbox: &SandboxId) -> Result<Vec<String>, Box
     Ok(rows.filter_map(Result::ok).flatten().collect())
 }
 
-/// SPEC-153 OLC-001 (#406): an admin's Skip that lands while Start onboarding is starting the
+/// An admin's Skip that lands while Start onboarding is starting the
 /// onboarding task (held at its run's attach) is never undone: the sandbox stays `skipped`.
 #[test]
 fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
@@ -7478,7 +7478,7 @@ fn a_skip_during_start_onboarding_stays_skipped() -> TestResult {
     Ok(())
 }
 
-/// SPEC-153 OLC-001 (review): a refresh that sees the onboarding task start writes `preparing`
+/// A refresh that sees the onboarding task start writes `preparing`
 /// (as `system`) before Start onboarding does; the start's own write then loses, and the person
 /// who pressed Start onboarding is still in the audit log.
 #[test]
@@ -7548,7 +7548,7 @@ fn a_start_onboarding_a_refresh_got_ahead_of_is_audited_as_its_person() -> TestR
     Ok(())
 }
 
-/// SPEC-039 (DDL-001): a Done task can be deleted like an ended one: its idle session is closed
+/// A Done task can be deleted like an ended one: its idle session is closed
 /// first, and the deletion returns only once the run has ended, so nothing of it is left behind.
 #[test]
 fn a_done_task_can_be_deleted_its_session_is_closed_first() -> TestResult {
@@ -7805,7 +7805,7 @@ async fn running_task(
     Ok((app, ctx, id, attempt))
 }
 
-/// SPEC-065 END-001 (#284, review): when the agent survives termination but its host is gone,
+/// When the agent survives termination but its host is gone,
 /// the connection to the run is lost; the run is still not recorded as ended, so the task stays
 /// undeletable.
 #[test]
@@ -7849,7 +7849,7 @@ fn a_run_whose_agent_survives_termination_is_not_ended_when_its_connection_is_lo
     Ok(())
 }
 
-/// SPEC-065 END-005 and END-003 (#290, #285): a run whose host never takes the shutdown request
+/// A run whose host never takes the shutdown request
 /// is still escalated and ended when it is closed for deletion; when the close returns, the run's
 /// ending is fully recorded, so the task chained after it already has its outcome, and deleting
 /// the predecessor then gives it one outcome: "#N was deleted".
@@ -7969,7 +7969,7 @@ impl SessionHost for HeldSpawn {
     }
 }
 
-/// SPEC-248 FUP-002 (review round 1): control passing while a run is launched — its fingerprint
+/// Control passing while a run is launched — its fingerprint
 /// file computed for the previous owner, not yet written — still leaves the run the new owner's
 /// fingerprints once it is live.
 #[test]
@@ -8538,8 +8538,8 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
 }
 
 /// SPEC-487 CHN-002 (review round 3, R3-1): Claude Code hands a notification of its own, a
-/// slash command or a `!` line on alone, and a prompt behind it at the next turn's end
-/// (SPEC-479). News that waits in the queue behind such an entry is still due after that
+/// slash command or a `!` line on alone, and a prompt behind it at the next turn's end.
+/// News that waits in the queue behind such an entry is still due after that
 /// entry's turn: the queue holds it, whatever turn began after it was typed.
 #[test]
 fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult {
@@ -8708,7 +8708,7 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
     Ok(())
 }
 
-/// #1190: a process that exited and is not reaped yet counts as gone; a running one does not.
+/// A process that exited and is not reaped yet counts as gone; a running one does not.
 #[test]
 fn an_exited_process_not_yet_reaped_is_gone() -> TestResult {
     let mut running = std::process::Command::new("sleep").arg("30").spawn()?;

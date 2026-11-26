@@ -17,7 +17,7 @@ use yulius_domain::time::Timestamp;
 /// Fake-agent behaviour for every launch planned by [`FakeAgentHarness`].
 #[derive(Debug, Clone, Default)]
 pub struct FakeAgentOptions {
-    /// Counts the Codex CLI installs asked of the harness (`provide_codex(true)`, SPEC-503).
+    /// Counts the Codex CLI installs asked of the harness (`provide_codex(true)`).
     pub codex_installs: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// Count the Antigravity CLI installs asked for (`provide_antigravity(true)`).
     pub antigravity_installs: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
@@ -124,7 +124,7 @@ pub struct FakeAgentOptions {
     /// With `hooks`, leave out Claude Code's SessionStart hook at start, like a CLI too old to
     /// have it. Every supported Claude Code runs it before its prompt box reads, so the fake
     /// does too by default (`--session-start`); without it a goal is typed only after the
-    /// hookless fallback, which made every goal test wait 45 s (SPEC-082 TST-001).
+    /// hookless fallback, which made every goal test wait 45 s.
     pub no_session_start: bool,
     /// Run a turn of this many milliseconds first when the launch has a first message
     /// (`--opening-turn-ms`).
@@ -132,7 +132,7 @@ pub struct FakeAgentOptions {
     /// Each echoed message is a silent turn of this many milliseconds (`--echo-turn-ms`).
     pub echo_turn_ms: Option<u64>,
     /// The agent never takes a `/goal` launch prompt, like a Claude Code that refuses the
-    /// condition (SPEC-117): it is not passed on.
+    /// condition: it is not passed on.
     pub ignores_goal_prompt: bool,
     /// Also report these environment variables at start (`--report-env`: set and length, never
     /// the value).
@@ -154,7 +154,7 @@ pub struct FakeAgentOptions {
     /// (`--cli-version-file`): rewriting it stands for a newer Claude Code at the next start.
     pub cli_version_file: Option<PathBuf>,
     /// A workflow the agent launches (`/workflow`) has its second agent refused by a usage
-    /// limit, written to that agent's transcript only (`--workflow-limit`, SPEC-486).
+    /// limit, written to that agent's transcript only (`--workflow-limit`).
     pub workflow_limit: bool,
     /// That refusal is of the usage credits of the model the agent runs: this model, or the
     /// session's own for `session` (`--workflow-limit-model`).
@@ -171,12 +171,12 @@ pub struct FakeAgentOptions {
     /// A goal turn or an echoed turn ends only once this file exists (`--turn-hold-file`).
     pub turn_hold_file: Option<PathBuf>,
     /// An echoed turn takes the lines entered while it runs as Claude Code takes prompts
-    /// entered during a turn (`--queue-prompts`, SPEC-471): the prompt hook at the Enter, an
+    /// entered during a turn (`--queue-prompts`): the prompt hook at the Enter, an
     /// `enqueue` record, nothing released by a blocked Stop, and one turn for all that wait
     /// after the Stop that ends the turn.
     pub queue_prompts: bool,
     /// A Stop a hook blocks continues with a tool call and its result before the answer
-    /// (`--stop-tool`, SPEC-493 DEF-001).
+    /// (`--stop-tool`).
     pub stop_tool: bool,
     /// A waiting line's `enqueue` record is written only once this file exists
     /// (`--queue-record-file`).
@@ -191,12 +191,12 @@ pub struct FakeAgentOptions {
     pub resume_record: bool,
     /// Simulate Claude skipping goal restoration because workspace trust or hook policy forbids it.
     pub forget_goal: bool,
-    /// The Codex CLI the harness says it provides (SPEC-503 CLI-002); its program is recorded in
+    /// The Codex CLI the harness says it provides; its program is recorded in
     /// `fake-launch.txt`, the fake agent runs instead.
     pub provided_codex: Option<yulius_app::ports::harness::ProvidedCli>,
-    /// The Antigravity CLI the harness provides (SPEC-505 AGY-007); `None`: the host's `agy`.
+    /// The Antigravity CLI the harness provides; `None`: the host's `agy`.
     pub provided_antigravity: Option<yulius_app::ports::harness::ProvidedCli>,
-    /// The Codex CLI cannot be provided, for this reason (SPEC-503 CLI-002).
+    /// The Codex CLI cannot be provided, for this reason.
     pub codex_unavailable: Option<String>,
     /// Each answer about the Codex CLI waits for a permit of this gate (a test watches the task
     /// before its start goes on).
@@ -290,7 +290,7 @@ impl HarnessPort for FakeAgentHarness {
         }
         let _ = std::fs::write(launch.run_dir.join("fake-launch.txt"), settings);
         // A resume continues the same session (and transcript), like `claude --resume <id>`.
-        // A fork (SPEC-628) starts a new session holding a copy of the one it names.
+        // A fork starts a new session holding a copy of the one it names.
         let (resumed, forked) = match &launch.mode {
             yulius_app::ports::harness::SessionMode::Resume {
                 session_id,
@@ -328,7 +328,7 @@ impl HarnessPort for FakeAgentHarness {
         ];
         if let (true, Some(home)) = (codex, &launch.codex_home) {
             // The rollout lives in the sandbox's shared sessions, reached through the home's
-            // `sessions` link as Codex reaches it (SPEC-503 CDX-003).
+            // `sessions` link as Codex reaches it.
             let sessions = home.join("sessions");
             let path = match self.inner.find_codex_rollout(&sessions, &session) {
                 Ok(Some(existing)) => existing,
@@ -342,7 +342,7 @@ impl HarnessPort for FakeAgentHarness {
             argv.extend(["--transcript-kind".into(), "codex".into()]);
         } else if let (true, Some(home)) = (antigravity, &launch.antigravity_home) {
             // The conversation lives in the sandbox's shared brain, reached through the home's
-            // `brain` link as the CLI reaches it (SPEC-505 AGY-003).
+            // `brain` link as the CLI reaches it.
             let path = yulius_harness::paths::antigravity_transcript_path(
                 &home.join(".gemini/antigravity-cli/brain"),
                 &session,
@@ -529,7 +529,7 @@ impl HarnessPort for FakeAgentHarness {
             argv.extend(["--workflow-limit-model".into(), model.clone()]);
         }
         // The prompt of a resume that tells the agent to resume its workflows reaches it, as
-        // `claude --resume <id> <prompt>` gives it (SPEC-486 WFL-004).
+        // `claude --resume <id> <prompt>` gives it.
         if let yulius_app::ports::harness::SessionMode::Resume {
             prompt: Some(prompt),
             ..
@@ -540,15 +540,15 @@ impl HarnessPort for FakeAgentHarness {
         {
             argv.extend(["--prompt".into(), prompt.clone()]);
         }
-        // The Antigravity CLI runs no SessionStart for a resumed conversation (SPEC-505).
+        // The Antigravity CLI runs no SessionStart for a resumed conversation.
         if self.options.hooks && !self.options.no_session_start && !(antigravity && resumed_session)
         {
             argv.push("--session-start".into());
         }
         // A continued resume (CLAUDE_CODE_RESUME_INTERRUPTED_TURN) opens with the turn Claude
-        // Code redoes, like a first message (SPEC-034).
+        // Code redoes, like a first message.
         // A `/goal` launch prompt sets the goal and runs the goal's own turn, as Claude Code
-        // does (SPEC-117): no opening turn before it.
+        // does: no opening turn before it.
         let goal_prompt = matches!(
             &launch.mode,
             yulius_app::ports::harness::SessionMode::New { prompt: Some(prompt), .. }
@@ -731,7 +731,7 @@ impl HarnessPort for FakeAgentHarness {
     }
 }
 
-/// What is wrong with a resume after a usage limit (SPEC-034): the launch in `run_dir` must be a
+/// What is wrong with a resume after a usage limit: the launch in `run_dir` must be a
 /// native resume without a prompt that asks Claude Code to continue the interrupted turn, and no
 /// Claude transcript under `data` may still hold a usage-limit record. Empty when all is right.
 #[must_use]

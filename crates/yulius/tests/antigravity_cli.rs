@@ -147,7 +147,7 @@ fn cli(s: &Setup, platform: Platform) -> Result<PinnedCli, Box<dyn std::error::E
     )?)
 }
 
-/// AGY-007, NEO-003: the pinned release is downloaded once for callers at the same time, checked
+/// The pinned release is downloaded once for callers at the same time, checked
 /// against its pinned sha512 and installed as `<root>/1.5.12-linux-x64/antigravity`, runnable by
 /// every sandbox user, with nothing else left in the root.
 #[tokio::test]
@@ -176,7 +176,7 @@ async fn the_pinned_antigravity_cli_installs_once() -> TestResult {
     Ok(())
 }
 
-/// AGY-007: a tarball of another sha512, one without the binary, one whose binary is no ELF for
+/// A tarball of another sha512, one without the binary, one whose binary is no ELF for
 /// this machine, and one with a link are refused, the reason naming the Antigravity CLI, and
 /// nothing is installed.
 #[tokio::test]
@@ -234,7 +234,7 @@ async fn a_tarball_that_is_not_the_pinned_release_is_refused() -> TestResult {
     Ok(())
 }
 
-/// AGY-007: Antigravity runs get the provided CLI; without it, the host's `agy`; with neither,
+/// Antigravity runs get the provided CLI; without it, the host's `agy`; with neither,
 /// a reason naming the release. A caller that must not wait gets only what is ready.
 #[tokio::test]
 async fn antigravity_runs_get_the_provided_cli_or_a_reason() -> TestResult {

@@ -1,5 +1,5 @@
 //! Sessions record the Claude Code that runs them, and a running task moves to a newer one at
-//! its turn boundary in the same session (SPEC-461 CCM-011..CCM-013), with real processes as in
+//! its turn boundary in the same session, with real processes as in
 //! `pool_supervision.rs`: the fake agent's transcript names the version a file holds when it
 //! starts, so rewriting the file stands for a newer Claude Code at the session's next start.
 
@@ -64,7 +64,7 @@ async fn run_versions(app: &App, id: &TaskId) -> Vec<Option<String>> {
         .collect()
 }
 
-/// AC8 (CCM-011, CCM-012): a session records the Claude Code version its transcript names, and
+/// A session records the Claude Code version its transcript names, and
 /// the task's detail shows it with the model the task asks for and the model that answered.
 #[test]
 fn a_session_records_its_claude_code_and_the_task_shows_it() -> TestResult {
@@ -296,7 +296,7 @@ async fn with_a_waiting_prompt(app: &Arc<App>, data: &Path) -> Result<(TaskId, U
 
 type BoxError = Box<dyn std::error::Error>;
 
-/// SPEC-471 CCQ-001 (AC1): a run that is reattached after a restart of the server reads its own
+/// A run that is reattached after a restart of the server reads its own
 /// lines again and knows what waits in Claude Code's queue.
 #[test]
 fn a_reattached_run_knows_what_waits_in_its_queue() -> TestResult {
@@ -335,7 +335,7 @@ fn a_reattached_run_knows_what_waits_in_its_queue() -> TestResult {
     Ok(())
 }
 
-/// SPEC-471 CCQ-001 (AC1): a run that is reattached after a restart of the server has written
+/// A run that is reattached after a restart of the server has written
 /// lines this server has not read: until they are read again, what waits in Claude Code's
 /// queue is not known, which counts as holding something (a turn's end then leaves the session
 /// where it is). Here nothing waits: once the lines were read, the queue reads empty.
@@ -393,7 +393,7 @@ fn a_reattached_runs_queue_is_not_known_until_its_lines_were_read() -> TestResul
     Ok(())
 }
 
-/// SPEC-471 CCQ-001 (AC1): a run that ends with a prompt in Claude Code's queue leaves its
+/// A run that ends with a prompt in Claude Code's queue leaves its
 /// `enqueue` record behind. The run that resumes the session does not read it as its own and
 /// starts with an empty queue: Claude Code does not take the queue over.
 #[test]
@@ -586,7 +586,7 @@ mod moves {
             ..options
         };
         // The fake agent ends a turn milliseconds after its prompt, which no turn of a model
-        // does: the time a prompt's record may take to be written (SPEC-471 CCQ-004) is taken
+        // does: the time a prompt's record may take to be written is taken
         // as none, unless a test sets it.
         let configure = |config: &mut AppConfig| {
             config.claude_code_queue_record_ms = 0;
@@ -782,7 +782,7 @@ mod moves {
         Ok(())
     }
 
-    /// AC9: an idle prompt-mode session on 2.1.311 is restarted once its turn ended, when runs
+    /// An idle prompt-mode session on 2.1.311 is restarted once its turn ended, when runs
     /// get 2.1.322: the same Claude session and subscription, by resume, with one line in its
     /// terminal; it is idle again, names the new version at once, is not restarted again, and
     /// the task's info shows both sessions and no subscription switch.
@@ -832,7 +832,7 @@ mod moves {
             );
             assert_eq!(attempts[0].account_id, attempts[1].account_id);
             settled(&s, Activity::Waiting).await?;
-            // The restart is no news (SPEC-468 CCF-008): the task was its person's turn, read
+            // The restart is no news: the task was its person's turn, read
             // "continuing" while it restarted, and is their turn again. It never read Working
             // in between, which viewers took for work and a notification for a new "Your turn".
             let read = published(&mut events, &s.id)?;
@@ -929,7 +929,7 @@ mod moves {
             turn(&s, "one").await?;
             settled(&s, Activity::Waiting).await?;
             // What a person typed into the old session is no draft in the new one, whose
-            // prompt box starts empty (SPEC-468 CCF-010).
+            // prompt box starts empty.
             s.app.record_typing(&s.id, &s.user);
             assert!(s.app.has_draft(&s.id));
             let ctx = s.ctx().await?;
@@ -955,7 +955,7 @@ mod moves {
         Ok(())
     }
 
-    /// AC9: a session a person typed into in the last minute is not restarted under them, also
+    /// A session a person typed into in the last minute is not restarted under them, also
     /// when they start typing while the turn's end looks at the session's background work.
     #[test]
     fn a_session_someone_types_into_is_not_restarted() -> TestResult {
@@ -1129,7 +1129,7 @@ mod moves {
         Ok(hook_answered(h, prompt).await?.0)
     }
 
-    /// A Jev that reads a typed prompt as new scope, so Yulius holds it (TSK-013), once it
+    /// A Jev that reads a typed prompt as new scope, so Yulius holds it, once it
     /// read `passes` prompts as context.
     struct HoldsPrompts {
         passes: std::sync::atomic::AtomicUsize,
@@ -1175,7 +1175,7 @@ mod moves {
         }
     }
 
-    /// SPEC-468 CCF-010: a prompt Yulius's scope check holds (TSK-013) never reaches the agent,
+    /// A prompt Yulius's scope check holds never reaches the agent,
     /// and Claude Code puts its text back into the prompt box (the intake module's own check
     /// with 2.1.295; 2.1.322 lands a line a hook dropped in the composer). That submit emptied
     /// nothing: the turn that ran meanwhile ends and the session stays. The hook used to count
@@ -1217,7 +1217,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-468 CCF-010: a prompt that waits for a subscription with room and is then held by
+    /// A prompt that waits for a subscription with room and is then held by
     /// the scope check (which let it through before the wait and reads it again after) was
     /// never taken by the agent: Claude Code puts it back into the prompt box. Its first
     /// request used to empty the box at once, so the text was forgotten.
@@ -1304,7 +1304,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-468 CCF-010 (review round 3): a prompt whose hook Yulius answers with an error
+    /// A prompt whose hook Yulius answers with an error
     /// goes on all the same, since the hook client fails open: the box is empty. Here the task
     /// is deleted while its prompt is answered.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1498,7 +1498,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-468 CCF-010: a prompt that is held at its submit (here: no subscription has room)
+    /// A prompt that is held at its submit (here: no subscription has room)
     /// is sent again by the hook client every ten seconds, stamped anew each time, until it
     /// goes on. That is one submit: what a person types while it is held is a draft, and it
     /// is one still when the prompt goes on. Each request used to count as a submit, so the
@@ -1570,7 +1570,7 @@ mod moves {
         .await
     }
 
-    /// SPEC-468 CCF-011: a message Yulius typed for a person (here: through their Superagent)
+    /// A message Yulius typed for a person (here: through their Superagent)
     /// is a draft until it is submitted: a turn's end before that, which the gate blocks here,
     /// leaves the session where it is, the message gets its turn, and that turn's end
     /// restarts the session.
@@ -1581,8 +1581,7 @@ mod moves {
     /// Claude Code submits at the Enter, also while a turn runs (seen with 2.1.322): with it
     /// that state lasts from the paste to the Enter, or longer when the Enter failed. The
     /// wait in Claude Code's queue that follows the submit is another rule's, shown in the
-    /// real order by `a_waiting_message_yulius_typed_keeps_the_session_at_the_gates_block`
-    /// (SPEC-471).
+    /// real order by `a_waiting_message_yulius_typed_keeps_the_session_at_the_gates_block`.
     #[test]
     fn a_message_yulius_typed_keeps_the_session_until_its_submit() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1640,7 +1639,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-468 CCF-011 (review round 2): a message that could not be typed (here: no process
+    /// A message that could not be typed (here: no process
     /// runs, so the session has no terminal to type into) is in no prompt box and no queue:
     /// it leaves no draft behind.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1703,7 +1702,7 @@ mod moves {
         Yulius,
     }
 
-    /// SPEC-471 CCQ-002 (AC2, AC3): a prompt-mode session on 2.1.311 runs a turn the gate will
+    /// A prompt-mode session on 2.1.311 runs a turn the gate will
     /// block while runs get 2.1.322. A prompt entered while the turn runs waits in Claude
     /// Code's queue; the Stop the gate blocks does not restart the session, the prompt is
     /// answered in the same run, and a later turn's end restarts the session.
@@ -1792,7 +1791,7 @@ mod moves {
         stop(&s.app, &s.id).await
     }
 
-    /// SPEC-471 AC2: the prompt a person entered while the turn ran.
+    /// The prompt a person entered while the turn ran.
     #[test]
     fn a_persons_waiting_prompt_keeps_the_session_at_the_gates_block() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1805,7 +1804,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-471 AC3: a message Yulius typed while the turn ran, whose sender was told "sent".
+    /// A message Yulius typed while the turn ran, whose sender was told "sent".
     #[test]
     fn a_waiting_message_yulius_typed_keeps_the_session_at_the_gates_block() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1818,7 +1817,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-471 CCQ-002 (AC4, AC5): an idle prompt-mode session on 2.1.311 whose turn ends
+    /// An idle prompt-mode session on 2.1.311 whose turn ends
     /// cleanly while `prompts` wait, when runs get 2.1.322. The hand-over is held, so nothing
     /// of it is written when the turn's end decides: the session keeps its run. Once the
     /// hand-over goes on, all that waited are answered there in one turn, and that turn's end
@@ -1888,7 +1887,7 @@ mod moves {
         stop(&s.app, &s.id).await
     }
 
-    /// SPEC-471 AC4: the clean Stop of an idle prompt-mode session with one prompt waiting.
+    /// The clean Stop of an idle prompt-mode session with one prompt waiting.
     #[test]
     fn a_waiting_prompt_keeps_an_idle_session_after_a_clean_stop() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1950,7 +1949,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-471 AC5: two prompts entered while one turn ran are answered in one turn.
+    /// Two prompts entered while one turn ran are answered in one turn.
     #[test]
     fn two_waiting_prompts_keep_the_session_and_get_one_turn() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1963,7 +1962,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-471 CCQ-003 (AC6): Claude Code writes the `dequeue` of a hand-over before the
+    /// Claude Code writes the `dequeue` of a hand-over before the
     /// prompt record of the turn it starts. Between the two its queue is empty and no turn
     /// shows: here the agent holds the turn's start, and the turn's end decides once the
     /// hand-over was read. The session stays, and moves at the handed-on turn's end. The
@@ -2220,7 +2219,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-471 CCQ-004 (AC7): Claude Code writes a waiting prompt's record once its hook
+    /// Claude Code writes a waiting prompt's record once its hook
     /// returned, and the record reaches the file a moment later; here the agent writes it
     /// only when the test says so, and the turn ends right after the prompt's hook. Nothing
     /// in the transcript says a prompt waits when the turn's end decides: the session stays
@@ -2296,7 +2295,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-471 CCQ-004 (AC7), on the test's clock: a turn's end less than two seconds after
+    /// SPEC-471 CCQ-004, on the test's clock: a turn's end less than two seconds after
     /// a prompt from the prompt box went on does not look at the session, since the record
     /// that says where the prompt went may not be written; one two seconds after it does.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2327,7 +2326,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-471 CCQ-004 (AC7), on the test's clock: a prompt from the prompt box that goes on
+    /// SPEC-471 CCQ-004, on the test's clock: a prompt from the prompt box that goes on
     /// while a turn's end looks at the session (here a command, which starts no turn Yulius
     /// sees) is not in the lines that look read: the session stays, however the clock moved
     /// meanwhile. The next turn's end restarts it.
@@ -2374,7 +2373,7 @@ mod moves {
         Ok(())
     }
 
-    /// AC9 (review round 1, finding 1): a session with a background shell is left alone, and so
+    /// A session with a background shell is left alone, and so
     /// is one whose only background shell runs `yulius wait`: restarted, it would never hear
     /// what it waits for.
     #[test]
@@ -2723,7 +2722,7 @@ mod moves {
         (runs(s).await, goals, s.app.goal_is_open(&s.id))
     }
 
-    /// SPEC-468 CCF-001: a version upgrade waits while a person's goal is open. A turn that
+    /// A version upgrade waits while a person's goal is open. A turn that
     /// closes with that goal open and no verdict leaves the task its person's turn.
     #[test]
     fn a_persons_own_goal_keeps_an_idle_prompt_session_where_it_is() -> TestResult {
@@ -2749,7 +2748,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-468 CCF-001: the same session at a Stop the gate blocks. A restart there would give
+    /// The same session at a Stop the gate blocks. A restart there would give
     /// the resumed session the gate's reasons and no goal: the Stop is answered with the block
     /// instead, and the session keeps its goal. Its goal is known when the Stop comes, so the
     /// session is not even looked at.
@@ -2819,8 +2818,8 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-468 CCF-008: a prompt-mode session whose person's goal failed is their turn, with
-    /// work left (SPEC-429), and reads so after its idle restart too: what Claude Code last
+    /// A prompt-mode session whose person's goal failed is their turn, with
+    /// work left, and reads so after its idle restart too: what Claude Code last
     /// recorded of the goal is what the agent left, in the same session with nothing typed. It
     /// used to be forgotten with the old run, so the task read "Answered" from then on, which
     /// its person was notified of.
@@ -2916,7 +2915,7 @@ mod moves {
         Ok(())
     }
 
-    /// CCM-013 (review round 1, finding 3): a session that cannot continue on a version stops
+    /// A session that cannot continue on a version stops
     /// its task, and no other session is sent to that version: the card says so.
     #[test]
     fn a_version_a_session_could_not_continue_on_gets_no_other_session() -> TestResult {
@@ -2984,7 +2983,7 @@ mod moves {
         turn_of(&s.app, &other, "hello").await?;
         until_decided(&flag).await?;
         assert_eq!(runs_of(&s.app, &other).await, 1, "not sent to that version");
-        // Its info promises that version at its next start only (SPEC-468 CCF-003).
+        // Its info promises that version at its next start only.
         let detail = s.app.task_detail(&s.ctx().await?, other.as_str()).await?;
         assert_eq!(
             (detail.cli_moves_to.as_deref(), detail.cli_moves_stopped),
@@ -3102,11 +3101,10 @@ mod moves {
         Ok(())
     }
 
-    /// CCM-013: a restarted session that started shows that the version works: its start takes
+    /// A restarted session that started shows that the version works: its start takes
     /// the restart off the breaker's watch, so nothing is stopped whenever its time to start
     /// passes, also after the session ended later. The start is seen at its race point and the
-    /// time to start is an hour, so the test does not depend on how fast a session starts
-    /// (SPEC-468 CCF-004).
+    /// time to start is an hour, so the test does not depend on how fast a session starts.
     #[test]
     fn a_restarted_session_that_starts_in_time_stops_nothing() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -3259,7 +3257,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-468 CCF-006: the second turn's end comes once the first's restart is over. It
+    /// The second turn's end comes once the first's restart is over. It
     /// finds the session sent to that version and restarts nothing: the restarted session
     /// would be ended for a third run, and the first restart's start replaced on the watch.
     #[test]
@@ -3417,7 +3415,7 @@ mod moves {
         Ok(())
     }
 
-    // --- SPEC-479 (#1194): a move to another subscription at a turn's end, and what waits in
+    // --- SPEC-479: a move to another subscription at a turn's end, and what waits in
     // Claude Code's queue then. The fake agent is in Claude Code's order (`--queue-prompts`).
 
     /// The subscription each run of the task is on, oldest first.
@@ -3428,7 +3426,7 @@ mod moves {
             .collect()
     }
 
-    /// SPEC-479 SWQ-001 (AC1, AC2): a turn runs on a subscription that reaches its limit, with
+    /// A turn runs on a subscription that reaches its limit, with
     /// another one free. A prompt entered while the turn runs waits in Claude Code's queue.
     /// The turn's end does not move the session: the prompt is answered in the same run, once,
     /// and that turn's end moves the session to the other subscription. The move used to come
@@ -3514,7 +3512,7 @@ mod moves {
         stop(&s.app, &s.id).await
     }
 
-    /// SPEC-479 AC1: a message Yulius typed while the turn ran, whose sender was told "sent".
+    /// A message Yulius typed while the turn ran, whose sender was told "sent".
     #[test]
     fn a_waiting_message_yulius_typed_is_answered_before_the_subscription_changes() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -3528,7 +3526,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-479 AC2: the prompt a person entered while the turn ran.
+    /// The prompt a person entered while the turn ran.
     #[test]
     fn a_persons_waiting_prompt_is_answered_before_the_subscription_changes() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -3542,7 +3540,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-479 AC3: the same at a Stop the gate blocks. The move used to take the gate's
+    /// The same at a Stop the gate blocks. The move used to take the gate's
     /// reasons to the resumed session; with a prompt waiting the gate blocks in place.
     #[test]
     fn a_waiting_prompt_is_answered_before_the_subscription_changes_at_the_gates_block()
@@ -3558,7 +3556,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-479 SWQ-002 (AC4): Claude Code leaves some of its own notifications in its queue
+    /// Claude Code leaves some of its own notifications in its queue
     /// for good (the fake agent's `/stuck` line). The turn's end at which such an entry is
     /// first seen keeps the session, since nothing says yet that it stays. That turn's closing
     /// record finds it still waiting: it was left, and the next turn's end moves the session.
@@ -3613,7 +3611,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-493 DEF-001 (AC-23): the same entry in a turn whose Stops a hook blocks (the
+    /// The same entry in a turn whose Stops a hook blocks (the
     /// gate's here, a goal's alike). A blocked Stop writes no closing record, so the entry was
     /// never marked left and the session stayed at every Stop. Now the first Stop keeps the
     /// session; the continuation's tool result is where Claude Code would have taken a
@@ -3668,7 +3666,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-493 DEF-001 (AC-23, review round 1 of fix 10a): a prompt in the notice's place,
+    /// A prompt in the notice's place,
     /// in the same blocked turn with the same tool results, is never left: the session stays
     /// through the blocked Stops, the prompt is answered in that run, and only then does the
     /// session move. (The fake agent takes nothing in at a tool result; Claude Code would.)
@@ -3722,7 +3720,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-479 SWQ-002 (AC9, review round 1): Claude Code hands on an entry of its own (a
+    /// Claude Code hands on an entry of its own (a
     /// notification of finished background work, a slash command, a `!` line) alone, and a
     /// prompt that waits behind it stays in the queue through that turn's closing record,
     /// until the next turn's end. Such a prompt was not left: the end of the entry's turn
@@ -3789,7 +3787,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-479 SWQ-003 (AC5): no subscription has room and the gate would block, so the
+    /// No subscription has room and the gate would block, so the
     /// turn's end holds the turn (the task waits for capacity) with a prompt in Claude Code's
     /// queue. The second subscription gets room. The session is not moved over the prompt: the
     /// hold is released in place, the Stop is asked again and answered as on a subscription
@@ -3799,7 +3797,7 @@ mod moves {
         held_turn_with_a_waiting_prompt(false)
     }
 
-    /// SPEC-479 SWQ-003 (review round 1): the pool reads the lines written so far before it
+    /// The pool reads the lines written so far before it
     /// asks what waits. Here the prompt's `enqueue` record reaches the transcript only after
     /// the turn was held, and the pool looks the moment it is in the file, before the watcher's
     /// next round: without that read the queue reads empty and the held turn is moved.
@@ -3909,7 +3907,7 @@ mod moves {
         text
     }
 
-    /// SPEC-479 SWQ-004 (AC6): the session stays for a waiting prompt on a subscription that
+    /// The session stays for a waiting prompt on a subscription that
     /// is at its limit, and the handed-on turn is cut by that limit. The session then moves as
     /// after any turn a limit cuts: resumed past the limit on the other subscription with
     /// nothing typed, from a transcript that holds the prompt's record and no limit record,
@@ -4093,7 +4091,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-479 SWQ-003: a turn held at its Stop for capacity, with room on another
+    /// A turn held at its Stop for capacity, with room on another
     /// subscription, goes on in place while a prompt may wait (here: one went on moments ago),
     /// and is moved once none does.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4119,7 +4117,7 @@ mod moves {
         until_move_tried(&h, &task).await
     }
 
-    /// SPEC-479 SWQ-003: only a turn held at its Stop is released in place. A turn a usage
+    /// Only a turn held at its Stop is released in place. A turn a usage
     /// limit cut cannot go on where it is: it is moved past the limit whatever may wait.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_turn_the_limit_cut_is_moved_whatever_may_wait() -> TestResult {
@@ -4133,7 +4131,7 @@ mod moves {
         until_move_tried(&h, &task).await
     }
 
-    /// SPEC-479 SWQ-003: a held turn is released in place only where a process holds it. A
+    /// A held turn is released in place only where a process holds it. A
     /// task that waits for capacity without one (its run is gone) is started, not set running
     /// with nothing to run it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4163,7 +4161,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-479 SWQ-003 (review round 1): a held turn with a prompt that may wait stays held
+    /// A held turn with a prompt that may wait stays held
     /// while no subscription has room. It is released in place only where the pool would
     /// move it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4213,7 +4211,7 @@ mod moves {
         Ok(internal.oneshot(request).await?.status())
     }
 
-    /// SPEC-479 SWQ-003 (review round 1): while the pool reads a held turn's lines, its person
+    /// While the pool reads a held turn's lines, its person
     /// types into it (the hold ends) and the task is paused again, now with that prompt held.
     /// The pool released the pause it had read: the new one is not its to end, and the task
     /// keeps waiting with its prompt held.

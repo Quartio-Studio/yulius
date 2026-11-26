@@ -200,7 +200,7 @@ async fn inherited_gate_receipts_preserve_the_origin_and_leave_finished_tasks_qu
             }
         }
     }
-    // Their turns ended: a finished task mid-turn is decided once it is idle (SPEC-631 SWK-001).
+    // Their turns ended: a finished task mid-turn is decided once it is idle.
     for task in ["breaker", "later1", "later2", "later3", "mixed"] {
         f.h.store
             .set_activity(
@@ -272,7 +272,7 @@ async fn a_closed_merge_owners_failed_test_reaches_the_project_without_a_staging
     Ok(())
 }
 
-/// SPEC-624 NTC-010, AC-10: a failure nobody repairs is one notice `gate:<test>` for the
+/// A failure nobody repairs is one notice `gate:<test>` for the
 /// project's people, posted once across ticks and removed once the gate passes.
 #[tokio::test]
 async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResult {
@@ -325,7 +325,7 @@ async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResu
     Ok(())
 }
 
-/// SPEC-624 review round 1 of #1711: a project with a working task does not tell its people
+/// A project with a working task does not tell its people
 /// "nobody repairs it" while that task is only momentarily unable to take the notice (no
 /// session to type into, a draft, typing); a test name posting changes is posted once.
 #[tokio::test]
@@ -1194,7 +1194,7 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
     settle(&f).await?;
     assert_eq!(deployed(&f).await?, [r1.clone(), r3.clone()]);
 
-    // The queue as people and agents read it, with its run and revision ids (SPEC-575).
+    // The queue as people and agents read it, with its run and revision ids.
     let overview = f.get("/api/sandboxes/s1/cd").await?;
     let staging = overview["environments"]
         .as_array()
@@ -1438,7 +1438,7 @@ async fn a_lost_deploy_is_retried_and_concurrent_tasks_deploy_in_revision_order(
     Ok(())
 }
 
-/// SPEC-575 MFS-003: a revision no run judged gets one candidate run of the full gate at exactly
+/// A revision no run judged gets one candidate run of the full gate at exactly
 /// that commit, with the full suite in it. Another round queues no second one, and a run of the
 /// revision that skipped the full suite judges nothing.
 #[tokio::test]
@@ -1489,7 +1489,7 @@ async fn a_revision_nobody_judged_gets_one_candidate_run_of_the_full_gate() -> T
 const ROLLBACK: &str = "#!/bin/sh\necho \"$YULIUS_CD_RELEASE_SHA\" > \"$MARKS/staging\"\necho restored >> \"$MARKS/restores\"\n";
 const STAGING_VERIFY: &str = "#!/bin/sh\ntest \"$(cat \"$MARKS/staging\")\" = \"${YULIUS_CD_RELEASE_SHA:-$YULIUS_CD_SHA}\" && echo verified\n";
 
-/// SPEC-575 MFS-007: a revision whose full gate passed but whose deploy fails is
+/// A revision whose full gate passed but whose deploy fails is
 /// `deploy_failed` with that run. Yulius puts staging back on its last verified release with one
 /// restore (a rollback run of that release, verified), never a second one, and the same
 /// revision may be asked again (a retried deployment).
@@ -1588,7 +1588,7 @@ async fn a_failed_deploy_puts_staging_back_on_its_last_verified_release() -> Tes
     Ok(())
 }
 
-/// SPEC-575 MFS-009: with a merge-first target, a person's production deploy promotes only the
+/// With a merge-first target, a person's production deploy promotes only the
 /// revision staging verified, including while the next integration commit is still checking.
 #[tokio::test]
 async fn production_is_promoted_only_from_the_verified_staging_revision() -> TestResult {
@@ -3228,7 +3228,7 @@ async fn the_final_step_waits_for_staging_until_its_answer_is_delivered() -> Tes
     Ok(())
 }
 
-/// SPEC-575 MFS-013: a task whose work merged into a merge-first project reads in
+/// A task whose work merged into a merge-first project reads in
 /// `delivery_status` that staging waits for its request, then where its request stands. A task
 /// whose session began before its project switched (the switch's own task) learns it there,
 /// since every merge receipt sends the agent to `delivery_status`.
@@ -3333,7 +3333,7 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     Ok(())
 }
 
-/// SPEC-575 MFS-013 (review round 1 of MFS-013): after a failed gate the line says how to go on,
+/// After a failed gate the line says how to go on,
 /// and once the fix merged it names the fix's revision as due, then the newer request.
 #[tokio::test]
 async fn delivery_status_after_a_failed_gate_names_the_fix() -> TestResult {
@@ -3386,7 +3386,7 @@ fn promoting_toml() -> String {
     )
 }
 
-/// SPEC-591 STG-008: Yulius's own `yulius.toml` makes `[cd.dev]` its merge-first staging target, so
+/// Yulius's own `yulius.toml` makes `[cd.dev]` its merge-first staging target, so
 /// a person's production deploy and the Delivery page's promotion are refused while staging has
 /// not verified a revision whose full suite passed: a red or untested dev is fixed forward, never
 /// promoted.
@@ -3762,7 +3762,7 @@ async fn an_unreadable_head_fails_the_automatic_promotion() -> TestResult {
     Ok(())
 }
 
-/// A person asks the merge-first target for the integration head (SPEC-650 PST-001).
+/// A person asks the merge-first target for the integration head.
 async fn person_asks(f: &Fixture, who: &crate::support::Creds) -> BoxResult<Value> {
     let answer = crate::support::call(
         &f.h.router,
@@ -3788,7 +3788,7 @@ async fn staging_view(f: &Fixture) -> BoxResult<Value> {
         .clone())
 }
 
-/// SPEC-650 PST-001, PST-002, PST-005: with no task finishing anything, a person's request
+/// With no task finishing anything, a person's request
 /// deploys the green head; a red head waits, in plain words, and the next green head deploys
 /// and includes it.
 #[tokio::test]
@@ -3852,7 +3852,7 @@ async fn a_persons_request_deploys_the_green_head_and_a_red_one_waits_for_the_ne
     Ok(())
 }
 
-/// SPEC-650 PST-001, PST-005: while the head's full gate runs, a person's request waits for it
+/// While the head's full gate runs, a person's request waits for it
 /// and the page says so; the plain deploy of the target names the request that works.
 #[tokio::test]
 async fn a_persons_request_waits_while_the_heads_gate_runs() -> TestResult {
@@ -3904,7 +3904,7 @@ async fn alice_answers(
         .await)
 }
 
-/// SPEC-650 PST-004: the Superagent's `cd_deploy` of the merge-first target waits on its panel
+/// The Superagent's `cd_deploy` of the merge-first target waits on its panel
 /// as a production deploy does, for a person with write access; approved with the slug, it
 /// records the person's staging request; declined, nothing.
 #[tokio::test]
@@ -4435,7 +4435,7 @@ async fn the_schedule_asks_for_the_head_after_the_configured_merges() -> TestRes
     Ok(())
 }
 
-/// SPEC-650 PST-006: with only the timer on, staging behind the head is asked for once it has
+/// With only the timer on, staging behind the head is asked for once it has
 /// not changed for `serve_every_minutes`; `0` for both keys never asks.
 #[tokio::test]
 async fn the_schedule_asks_for_the_head_on_its_timer() -> TestResult {
@@ -4485,7 +4485,7 @@ async fn the_schedule_asks_for_the_head_on_its_timer() -> TestResult {
     Ok(())
 }
 
-/// SPEC-650 PST-006: the background tick checks each project's schedule, at most every 5
+/// The background tick checks each project's schedule, at most every 5
 /// minutes (each check reads the head from GitHub).
 #[tokio::test]
 async fn the_staging_tick_checks_the_schedule_at_most_every_5_minutes() -> TestResult {
@@ -4943,7 +4943,7 @@ async fn a_needs_you_card_may_ask_a_named_person_who_can_press_the_deploy() -> T
     Ok(())
 }
 
-/// The candidate run judging `sha` (SPEC-575 MFS-003), if one was queued.
+/// The candidate run judging `sha`, if one was queued.
 async fn candidate(f: &Fixture, sha: &str) -> BoxResult<Option<String>> {
     let runs =
         f.h.store
@@ -4977,7 +4977,7 @@ async fn finish(f: &Fixture, id: &str, full: RunState, tests: &[&str]) -> TestRe
     Ok(())
 }
 
-/// SPEC-653 NWF-001: a request below a newer revision whose full gate passed gets no run of its
+/// A request below a newer revision whose full gate passed gets no run of its
 /// own. Nobody asked for the green revision and a red head sits above it, yet Yulius asks for the
 /// green revision itself, deploys it and includes the request (review round 1, finding 1).
 #[tokio::test]
@@ -5051,7 +5051,7 @@ async fn a_persons_request_under_a_green_newer_revision_says_so_and_is_included(
     Ok(())
 }
 
-/// SPEC-653 NWF-002 and NWF-004: of three waiting requests the newest gets the only run. Its new
+/// Of three waiting requests the newest gets the only run. Its new
 /// failure narrows the range: the middle request is judged, then the older one, and only the
 /// merge that brought the failure fails its gate; the newest inherits it.
 #[tokio::test]
@@ -5116,7 +5116,7 @@ async fn the_newest_goes_first_and_a_new_failure_is_narrowed_to_its_merge() -> T
     Ok(())
 }
 
-/// SPEC-653 NWF-004: while a red revision's range still holds a waiting request, nobody is
+/// While a red revision's range still holds a waiting request, nobody is
 /// named as the breaker, even when the lane is busy and the narrowing run cannot start yet.
 /// Once it is narrowed, the notice names the merge that brought the failure.
 #[tokio::test]
@@ -5170,7 +5170,7 @@ async fn no_repair_owner_is_named_before_a_new_failure_is_narrowed() -> TestResu
     Ok(())
 }
 
-/// SPEC-653 NWF-006 (review round 1): a person's cancel of a request's own candidate stands,
+/// A person's cancel of a request's own candidate stands,
 /// also when a newer red revision with only earlier failures would answer it without a run.
 #[tokio::test]
 async fn a_cancelled_candidate_fails_its_gate_under_a_red_revision() -> TestResult {
@@ -5199,7 +5199,7 @@ async fn a_cancelled_candidate_fails_its_gate_under_a_red_revision() -> TestResu
     Ok(())
 }
 
-/// SPEC-653 NWF-003 (review round 1): a request between two red revisions with the same failure
+/// A request between two red revisions with the same failure
 /// needs no run. The queue reads below the lowest request down to the judged revision whose
 /// failures the newer red one is compared with.
 #[tokio::test]
@@ -5224,7 +5224,7 @@ async fn a_request_between_red_revisions_with_the_same_failure_gets_no_run() -> 
     Ok(())
 }
 
-/// SPEC-653 NWF-001 (review round 2): a round that moved a covered request to `inherited` and
+/// A round that moved a covered request to `inherited` and
 /// ended before it asked for the green revision (an error, a restart) is made good by a later
 /// round, although no request is testing any more.
 #[tokio::test]

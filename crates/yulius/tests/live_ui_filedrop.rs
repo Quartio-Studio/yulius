@@ -166,7 +166,7 @@ async fn files_dragged_from_disk_reach_the_repository_and_the_agent() -> TestRes
     };
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    // The UI's origin must be the server's: cookie sessions refuse other origins (ADR-14).
+    // The UI's origin must be the server's: cookie sessions refuse other origins.
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = listener.local_addr()?;
     let dir = tempfile::Builder::new().prefix("ylf").tempdir_in("/tmp")?;

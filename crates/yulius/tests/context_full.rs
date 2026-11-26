@@ -64,7 +64,7 @@ fn audited(data: &Path, id: &TaskId) -> Result<Vec<String>, Box<dyn std::error::
 
 /// Waits until the task's recovery audit satisfies `done`, then returns it. A row is written a
 /// moment after the flag or the notice it goes with, so a test reading the audit right after
-/// those can see the row before (#430).
+/// those can see the row before.
 async fn audit_when(
     data: &Path,
     id: &TaskId,
@@ -221,7 +221,7 @@ fn published(
     (seen, collector)
 }
 
-/// CTX-002 (SPEC-085 STT-006): the refused prompt ends the turn, and while Yulius compacts the
+/// The refused prompt ends the turn, and while Yulius compacts the
 /// session by itself the task reads Working, not Your turn: nobody has to act. The compaction here
 /// never finishes, so nothing else moves the task; it never read idle since the prompt.
 #[test]
@@ -275,7 +275,7 @@ fn a_full_session_reads_working_while_yulius_compacts_it() -> TestResult {
     Ok(())
 }
 
-/// CTX-002, CTX-006 (SPEC-085 STT-006): a person who types into the full session takes it over;
+/// A person who types into the full session takes it over;
 /// Yulius types nothing, says so, and the task waits for them (Your turn), not Working.
 #[test]
 fn a_full_session_a_person_types_into_waits_for_them() -> TestResult {
@@ -433,7 +433,7 @@ async fn refused_soon(
     Ok((id, ctx, attach))
 }
 
-/// SPEC-483 TYP-001: the way a context usually fills. A person types a prompt and sends it, and
+/// The way a context usually fills. A person types a prompt and sends it, and
 /// the full context refuses it: the prompt emptied the box, their keys are no draft, and Yulius
 /// compacts the session.
 #[test]
@@ -457,7 +457,7 @@ fn a_persons_own_refused_prompt_is_compacted() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-001: a person types while the turn runs and sends nothing; then the context is
+/// A person types while the turn runs and sends nothing; then the context is
 /// full. Their text may sit in the prompt box, so `/compact` typed now would be sent with it:
 /// Yulius holds the compaction, the task reads Needs your action with why and what to do, and
 /// nothing is typed. When they type on, the session is theirs (the flag ends, Your turn); when
@@ -522,7 +522,7 @@ fn a_possible_draft_holds_the_compaction_and_its_person_is_told() -> TestResult 
     Ok(())
 }
 
-/// SPEC-483 TYP-001: nobody answers the flag (a goal task whose person pressed a key hours ago
+/// Nobody answers the flag (a goal task whose person pressed a key hours ago
 /// and left), and the key left nothing in the box. The hold is bounded: after it Yulius types
 /// its command, the session is compacted and told to carry on (the command's Enter emptied the
 /// box, so the old key keeps nothing out any more), and the task works on instead of waiting
@@ -571,7 +571,7 @@ fn a_held_compaction_is_typed_once_its_hold_is_over() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-001: nobody answers the flag and real text sits in the box. After the hold
+/// Nobody answers the flag and real text sits in the box. After the hold
 /// Yulius's command goes out behind that text, as a prompt, which the full context refuses:
 /// that refusal is the compaction's failure, and the task continues in a fresh session at
 /// once, not after the ten minutes a compaction's outcome gets.
@@ -614,7 +614,7 @@ fn a_command_sent_behind_real_text_continues_in_a_fresh_session() -> TestResult 
     Ok(())
 }
 
-/// SPEC-483 TYP-001 (review, round 3): during the hold the box is emptied without a key and
+/// During the hold the box is emptied without a key and
 /// without a turn: a prompt hook for a command reaches Yulius (sent here by the test with the
 /// run's own token, as a Claude Code that runs the hook for commands sends it). The hold is
 /// over: when Yulius types its command, the task does not read the hold's flag any more.
@@ -693,7 +693,7 @@ fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-001: Yulius restarts while a compaction is held. The hold did not give the
+/// Yulius restarts while a compaction is held. The hold did not give the
 /// recovery up: the new server ends the old flag and starts the recovery over, hold and all,
 /// and the task goes on (here in a fresh session: real text sits in the box).
 #[test]
@@ -752,7 +752,7 @@ fn a_key_at(
     });
 }
 
-/// SPEC-483 TYP-002: a person starts to type just before Yulius types `/compact` (the terminal
+/// A person starts to type just before Yulius types `/compact` (the terminal
 /// was quiet and nobody had typed; Yulius may wait for the typing mark there). Asked again
 /// with the mark held, their key keeps the line out: the session is left to them.
 #[test]
@@ -799,7 +799,7 @@ fn a_key_just_before_the_compaction_keeps_it_out() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-001: a person types while Yulius compacts the session (here right after the
+/// A person types while Yulius compacts the session (here right after the
 /// command's Enter). The line that wakes the compacted session is not typed behind what they
 /// typed: the session is compacted, the terminal says that it was not told to carry on, and
 /// the task waits for them.
@@ -849,7 +849,7 @@ fn a_draft_typed_during_the_compaction_keeps_the_wake_up_out() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 TYP-002: while Yulius types `/compact` (the line is in the prompt box, its Enter not
+/// While Yulius types `/compact` (the line is in the prompt box, its Enter not
 /// sent yet), nothing else is typed into the session: a message for the task is refused, as
 /// while another message is being typed, and the command is submitted as it was typed.
 #[test]
@@ -929,7 +929,7 @@ async fn activity_is(app: &Arc<App>, id: &TaskId, activity: Activity) -> bool {
         .is_ok_and(|t| t.activity == Some(activity))
 }
 
-/// CTX-006: a compaction cut short (the person stopped the task and continued it) does not keep
+/// A compaction cut short (the person stopped the task and continued it) does not keep
 /// the episode waiting: the continued session's full context is compacted in its turn.
 #[test]
 fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResult {
@@ -1008,7 +1008,7 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
     Ok(())
 }
 
-/// CTX-004/005: a fresh session that cannot start (here the repository is gone) leaves the full
+/// A fresh session that cannot start (here the repository is gone) leaves the full
 /// session as it is, so the task needs a person, told why.
 #[test]
 fn a_fresh_session_that_cannot_start_needs_a_person() -> TestResult {
@@ -1060,7 +1060,7 @@ fn a_fresh_session_that_cannot_start_needs_a_person() -> TestResult {
     Ok(())
 }
 
-/// CTX-004: a compaction that fails continues the task in a fresh session on the same
+/// A compaction that fails continues the task in a fresh session on the same
 /// subscription, opened with the handoff, which reaches the agent.
 #[test]
 fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
@@ -1128,7 +1128,7 @@ fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
     Ok(())
 }
 
-/// CTX-005: a fresh session that is full too flags the task with the reason; no third run.
+/// A fresh session that is full too flags the task with the reason; no third run.
 #[test]
 fn a_full_fresh_session_needs_a_person() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1177,7 +1177,7 @@ fn a_full_fresh_session_needs_a_person() -> TestResult {
             .map(String::as_str),
             Some("needs attention: the context is still full after compacting and a fresh session")
         );
-        // The task says it to whoever opens it later (SPEC-472 ATN-004).
+        // The task says it to whoever opens it later.
         assert_eq!(
             crate::support::attention(&app, id.as_str()).await?,
             serde_json::json!({
@@ -1196,7 +1196,7 @@ fn a_full_fresh_session_needs_a_person() -> TestResult {
     Ok(())
 }
 
-/// CTX-007: a session whose context filled while Yulius was down (its transcript ends in the
+/// A session whose context filled while Yulius was down (its transcript ends in the
 /// refusal) is compacted once the restarted server reattaches it.
 #[test]
 fn a_context_that_filled_during_a_restart_is_compacted_after_it() -> TestResult {

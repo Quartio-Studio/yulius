@@ -721,7 +721,7 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
         0
     );
 
-    // SPEC-413 ANR-001 (#1027): another shell's file that a task's request names (the Superagent
+    // Another shell's file that a task's request names (the Superagent
     // put a pasted screenshot into `task_create`) stays when that shell ends.
     let other = call(
         &h.router,
@@ -938,7 +938,7 @@ async fn agent_reads_an_attachment(contained: bool) -> TestResult {
         "",
         "the attachment must not show in git status"
     );
-    // Leaving the session closes the task (HRN-002); then it can be deleted.
+    // Leaving the session closes the task; then it can be deleted.
     h.app.send_input(&id, b"/exit\r").await?;
     let store = h.store.clone();
     let stopped = id.clone();
@@ -1025,7 +1025,7 @@ fn swap(folder: &Path, outside: &Path, back: bool) -> std::io::Result<()> {
 /// A contained shell is root in its sandbox: a `RENAME_EXCHANGE` loop shows the server a link at
 /// each use of `folder` and the real folder at each check of it. Modeled exactly with the pause
 /// points: a link while the temporary file is created and when it takes its name, the folder
-/// while the server checks again (#657).
+/// while the server checks again.
 fn exchange_loop(below: &Path, folder: &Path, outside: &Path) {
     use yulius_app::race::{Point, on};
     for (point, back) in [
@@ -1116,7 +1116,7 @@ async fn an_editor_upload_never_replaces_a_file_through_a_swapped_folder() -> Te
     Ok(())
 }
 
-/// Hooks `point` to swap the sandbox `s1`'s `attachments` folder for a link to `outside` (#660).
+/// Hooks `point` to swap the sandbox `s1`'s `attachments` folder for a link to `outside`.
 fn attachments_swapped_at(data: &Path, outside: &Path, point: yulius_app::race::Point) {
     let sandbox = data.join("sandboxes/s1");
     let (folder, target) = (sandbox.join("attachments"), outside.to_path_buf());
@@ -1197,7 +1197,7 @@ async fn old_drafts_are_never_pruned_through_a_swapped_folder() -> TestResult {
     Ok(())
 }
 
-/// SPEC-402 VUG-004 (#809): a draft dated before 1970 is older than a week, so the owner's next
+/// A draft dated before 1970 is older than a week, so the owner's next
 /// upload prunes it as it prunes any old draft; a fresh one and a folder stay.
 #[tokio::test]
 async fn a_draft_dated_before_1970_is_old() -> TestResult {
@@ -1231,7 +1231,7 @@ async fn a_draft_dated_before_1970_is_old() -> TestResult {
     Ok(())
 }
 
-/// SPEC-413 ANR-002 (#1023): a draft older than a week that a waiting task's request names
+/// A draft older than a week that a waiting task's request names
 /// survives its owner's next upload and stays readable at its path; an unnamed one goes.
 #[tokio::test]
 async fn an_old_draft_a_request_names_is_never_pruned() -> TestResult {
@@ -1311,7 +1311,7 @@ async fn an_old_draft_a_request_names_is_never_pruned() -> TestResult {
     Ok(())
 }
 
-/// SPEC-413 ANR-002: the drafts folder's bound (500) counts the drafts younger than a week, which
+/// The drafts folder's bound (500) counts the drafts younger than a week, which
 /// wait for a task; older ones a request keeps never block the next drop.
 #[tokio::test]
 async fn kept_old_drafts_never_fill_the_drafts_folder() -> TestResult {
@@ -1348,7 +1348,7 @@ async fn kept_old_drafts_never_fill_the_drafts_folder() -> TestResult {
     Ok(())
 }
 
-/// SPEC-413 ANR-001, ANR-002: while the sandbox's tasks and automations cannot be read (the
+/// While the sandbox's tasks and automations cannot be read (the
 /// `automations` table renamed away), an old draft and a gone shell's folder stay.
 #[tokio::test]
 async fn unreadable_requests_keep_old_drafts_and_shell_folders() -> TestResult {
@@ -1410,7 +1410,7 @@ async fn upload_declaring(
     .await
 }
 
-/// SPEC-325 UPL-002: with files up to 1 GiB, a few uploads could fill the disk that also holds
+/// With files up to 1 GiB, a few uploads could fill the disk that also holds
 /// the database; one that would take it to the critical level (95 % used) is refused before
 /// anything is created, like a file over the limit (422, not retried as a 429 would be).
 #[tokio::test]

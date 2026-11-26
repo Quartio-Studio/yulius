@@ -1,5 +1,5 @@
 //! SPEC-191 PER: a person pauses a running task and resumes it later. Its run is frozen as an
-//! update freezes it (ADR-0131), or held at its turn boundary when it cannot be frozen; the pause
+//! update freezes it, or held at its turn boundary when it cannot be frozen; the pause
 //! is stored, survives an update and a restart, and every way Yulius ends the run thaws it first.
 
 use crate::support::eventually;
@@ -228,7 +228,7 @@ async fn a_run_that_cannot_be_frozen_pauses_at_its_turn_boundary() -> TestResult
     Ok(())
 }
 
-/// PER-001: a freeze the kernel does not confirm is asked again, then thawed, and the run pauses
+/// A freeze the kernel does not confirm is asked again, then thawed, and the run pauses
 /// at its turn boundary instead.
 #[tokio::test]
 async fn a_freeze_that_never_settles_falls_back_to_the_turn_boundary() -> TestResult {
@@ -249,7 +249,7 @@ async fn a_freeze_that_never_settles_falls_back_to_the_turn_boundary() -> TestRe
     Ok(())
 }
 
-/// AC-PER-4 (PER-004): stopping a paused task thaws its run before the agent is asked to end, and
+/// AC-PER-4: stopping a paused task thaws its run before the agent is asked to end, and
 /// clears the pause.
 #[tokio::test]
 async fn stopping_a_paused_task_thaws_it_first() -> TestResult {
@@ -271,7 +271,7 @@ async fn stopping_a_paused_task_thaws_it_first() -> TestResult {
     Ok(())
 }
 
-/// AC-PER-4 (PER-003/004): a pause left on an older attempt is not shown and freezes nothing at
+/// AC-PER-4: a pause left on an older attempt is not shown and freezes nothing at
 /// start; a pause of the live run is frozen again by a restarted server.
 #[tokio::test]
 async fn a_restart_freezes_the_live_run_s_pause_again_and_ignores_an_old_one() -> TestResult {
@@ -300,7 +300,7 @@ async fn a_restart_freezes_the_live_run_s_pause_again_and_ignores_an_old_one() -
     Ok(())
 }
 
-/// Review M1 (PER-001/002): a resume that lands while the pause's freeze is under way never
+/// Review M1: a resume that lands while the pause's freeze is under way never
 /// leaves the run frozen without a pause.
 #[tokio::test]
 async fn a_resume_during_the_pause_s_freeze_leaves_nothing_frozen() -> TestResult {
@@ -349,7 +349,7 @@ async fn a_resume_during_the_pause_s_freeze_leaves_nothing_frozen() -> TestResul
     Ok(())
 }
 
-/// Review M2 (PER-005): a paused task is not switched, and the launch-goal watch does not count
+/// Review M2: a paused task is not switched, and the launch-goal watch does not count
 /// the time it is paused.
 #[tokio::test]
 async fn a_paused_task_is_not_switched_and_its_launch_goal_waits() -> TestResult {
@@ -381,7 +381,7 @@ async fn a_paused_task_is_not_switched_and_its_launch_goal_waits() -> TestResult
     Ok(())
 }
 
-/// Review M2 (PER-004): closing a paused task (TSK-014) thaws its run first and clears the pause.
+/// Review M2: closing a paused task thaws its run first and clears the pause.
 #[tokio::test]
 async fn closing_a_paused_task_thaws_it_first() -> TestResult {
     let f = fixture().await?;
@@ -393,7 +393,7 @@ async fn closing_a_paused_task_thaws_it_first() -> TestResult {
     Ok(())
 }
 
-/// Review L4 (PER-001): a run that cannot be frozen and waits at its prompt is paused already:
+/// Review L4: a run that cannot be frozen and waits at its prompt is paused already:
 /// it makes no hook call until someone types, which the hold then catches.
 #[tokio::test]
 async fn an_idle_run_that_cannot_be_frozen_is_paused_at_once() -> TestResult {

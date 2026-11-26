@@ -1,4 +1,4 @@
-//! An automation starts its tasks like New task (SPEC-078, SPEC-001 AUT-013): start now (queued),
+//! An automation starts its tasks like New task: start now (queued),
 //! as a supertask, after a task or when a start rule is true. The in-memory harness caps live
 //! sessions at 0, so a created task stays where its start choice put it.
 
@@ -511,7 +511,7 @@ async fn close(h: &Harness, task: &TaskRecord, at: i64) -> Result<(), Error> {
     Ok(())
 }
 
-/// AC-AUT-23 (SPEC-093): Run now creates its task with the start choice it is given, for that
+/// AC-AUT-23: Run now creates its task with the start choice it is given, for that
 /// run only, checked like a save; without a body it uses the stored choice.
 #[tokio::test]
 async fn run_now_starts_its_task_with_the_choice_it_is_given() -> TestResult {
@@ -697,7 +697,7 @@ async fn agents_set_the_start_choice_with_the_automation_tools() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-26 (SPEC-155): "When I decide" is stored as `prepared`, read back and cleared; it is
+/// AC-AUT-26: "When I decide" is stored as `prepared`, read back and cleared; it is
 /// refused with any other start choice on create, update and Run now, and nothing changes.
 #[tokio::test]
 async fn an_automation_stores_when_i_decide() -> TestResult {
@@ -776,7 +776,7 @@ async fn act_on(h: &Harness, creds: &Creds, path: &str) -> Result<support::Resp,
     call(&h.router, Method::POST, path, None, creds).await
 }
 
-/// AC-AUT-27 and AC-AUT-28 (SPEC-155): each run of a prepared automation creates its task
+/// AC-AUT-27 and AC-AUT-28: each run of a prepared automation creates its task
 /// `prepared`, which waits across ticks; while it waits the next run is skipped; once it was
 /// started and ended the next run prepares a new one. Run now with `prepared` prepares a task of a
 /// start-now automation for that run only; a sandbox full of prepared tasks fails the run.
@@ -894,7 +894,7 @@ async fn each_run_of_a_prepared_automation_prepares_its_task() -> TestResult {
     Ok(())
 }
 
-/// AC-AUT-29 (SPEC-155): agents set "When I decide" with `prepared` in `automation_create` and
+/// AC-AUT-29: agents set "When I decide" with `prepared` in `automation_create` and
 /// `automation_update`; another choice replaces it; together with another choice it is refused.
 #[tokio::test]
 async fn agents_set_when_i_decide_with_the_automation_tools() -> TestResult {

@@ -90,7 +90,7 @@ impl UsageProbe for FakeProbe {
     }
 }
 
-/// Asked about a stored limit (SPEC-473), Claude still refuses the model and names no reset: the
+/// Asked about a stored limit, Claude still refuses the model and names no reset: the
 /// limit stays as it is stored.
 async fn still_refused() -> Result<yulius_domain::usage::ModelAnswer, UsageFailure> {
     Ok(yulius_domain::usage::ModelAnswer {
@@ -103,7 +103,7 @@ async fn still_refused() -> Result<yulius_domain::usage::ModelAnswer, UsageFailu
 }
 
 /// A usage request during which a running task observes the account's limit (the transcript
-/// observer marks it limited), answered with throttling (#72).
+/// observer marks it limited), answered with throttling.
 struct LimitDuringRequest(std::sync::Mutex<Option<yulius_store::SqliteStore>>);
 
 /// The usage a task's limit hit stores: the session window full.
@@ -218,10 +218,10 @@ async fn admins_refresh_provider_usage_and_see_observed_tokens() -> TestResult {
     Ok(())
 }
 
-/// SPEC-464 UCL-004, UCL-005, UCL-009: a model's limit stored for a subscription survives a
+/// A model's limit stored for a subscription survives a
 /// usage reading, which cannot see it; the API shows it as the model's weekly window beside the
 /// subscription's own usage, and the subscription reads `limited` only while the default model
-/// cannot run on it: one that is out of Fable's allowance alone is `ok` (SPEC-493 MDL-001). An
+/// cannot run on it: one that is out of Fable's allowance alone is `ok`. An
 /// allowance whose reset passed is dropped, and a window read at 100 % makes the subscription
 /// `limited` like a limit Claude reported.
 #[tokio::test]
@@ -276,7 +276,7 @@ async fn a_reading_keeps_a_models_limit_and_the_status_follows_the_windows() -> 
     assert!(usage["weekly_fable"]["resets_at"].is_string(), "{usage}");
     assert_eq!(usage["secondary"]["used_percent"], 7.5, "the week is read");
     assert_eq!(usage["primary"]["used_percent"], 42.0);
-    // Only Fable is used up there: the default model, Opus 5.5, still runs (SPEC-493).
+    // Only Fable is used up there: the default model, Opus 5.5, still runs.
     assert_eq!(out.body["status"], "ok");
 
     let reset = refresh("a-reset").await?;
@@ -318,7 +318,7 @@ async fn a_sign_in_that_cannot_read_usage_is_not_an_error() -> TestResult {
     )
     .await?;
     assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
-    // The answer says that Claude gave no usage reading (SPEC-473 RFR-013).
+    // The answer says that Claude gave no usage reading.
     assert_eq!(refreshed.body["usage_read"], false, "{:?}", refreshed.body);
     assert!(
         refreshed.body["last_error"].is_null(),
@@ -347,7 +347,7 @@ async fn a_sign_in_that_cannot_read_usage_is_not_an_error() -> TestResult {
     Ok(())
 }
 
-/// #27: usage refreshes in the background, and a throttled usage request (HTTP 429) backs off for
+/// Usage refreshes in the background, and a throttled usage request (HTTP 429) backs off for
 /// the provider's `Retry-After` and keeps the last known usage instead of losing it.
 #[tokio::test]
 async fn background_rounds_refresh_usage_and_back_off_on_throttling() -> TestResult {
@@ -410,7 +410,7 @@ async fn background_rounds_refresh_usage_and_back_off_on_throttling() -> TestRes
     Ok(())
 }
 
-/// #72: a failed usage request must not write back the account as it was when the round began:
+/// A failed usage request must not write back the account as it was when the round began:
 /// a limit a running task observed meanwhile stays, so routing keeps skipping the account.
 #[tokio::test]
 async fn a_failed_refresh_keeps_a_limit_observed_meanwhile() -> TestResult {
@@ -440,7 +440,7 @@ async fn a_failed_refresh_keeps_a_limit_observed_meanwhile() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 SGN-002: a usage reading never makes a subscription usable that is not. One left
+/// A usage reading never makes a subscription usable that is not. One left
 /// `error` with a credential (rows written before a failed re-login kept `relogin`), like one
 /// that needs a new sign-in, is not asked by the background round, and a reading an
 /// administrator asks for stores its figures and leaves its status and its reason.
@@ -484,7 +484,7 @@ async fn a_usage_reading_leaves_a_broken_subscription_broken() -> TestResult {
 }
 
 /// A failed usage reading is a note only over no error or an earlier note: a re-login error
-/// written while it ran stays (ROT-009).
+/// written while it ran stays.
 #[tokio::test]
 async fn a_failed_refresh_keeps_a_relogin_error() -> TestResult {
     let h = harness_with(HarnessOptions {
@@ -551,7 +551,7 @@ async fn opening_the_subscriptions_list_reads_usage_again() -> TestResult {
 }
 
 /// The real provider probe for Codex, counting the questions about a model's limit (SPEC-503
-/// CDX-008: Codex has none to ask); a ChatGPT sign-in's reading is `parse_codex`'s of a reached
+/// Codex has none to ask); a ChatGPT sign-in's reading is `parse_codex`'s of a reached
 /// limit, an API key's has no windows.
 struct CodexProbe {
     real: yulius::wiring::usage::ProviderUsage,

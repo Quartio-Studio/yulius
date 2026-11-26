@@ -1,4 +1,4 @@
-//! Copies of production secrets agents ask for (SPEC-440, ADR-0284): an agent asks with
+//! Copies of production secrets agents ask for: an agent asks with
 //! `secret_request_copy`; a person who manages the secret and the project allows the copy after a
 //! two-factor unlock, which creates a new agent secret of the same value bound to the hosts asked
 //! for, or dismisses it. The production secret itself stays production's.
@@ -70,8 +70,8 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     let prod = created.body["id"].as_str().ok_or("id")?.to_owned();
-    // Set up in the store: allowing production through the API needs a two-factor unlock
-    // (ADR-0317), which these tests ask of a session that has none yet.
+    // Set up in the store: allowing production through the API needs a two-factor unlock,
+    // which these tests ask of a session that has none yet.
     assert!(h.store.vault_set_cd_prod(&prod, false, true).await?);
     let other = call(
         &h.router,
@@ -170,7 +170,7 @@ async fn asker(w: &World, task: &str) -> Result<String, Box<dyn std::error::Erro
     Ok(format!("#{number}"))
 }
 
-/// SPEC-440 CPY-001, CPY-003..CPY-005, CPY-007 (AC-1, AC-2): a task asks for a copy of a
+/// A task asks for a copy of a
 /// production secret and waits; a person allows it after their two-factor code; the copy has the
 /// production value, is bound to the host asked for and is the agents' to use, while the
 /// production secret keeps no hosts and no `.env` allowance; the task works on.
@@ -191,7 +191,7 @@ async fn a_person_allows_the_copy_an_agent_asked_for() -> TestResult {
     );
     assert!(!asked.to_string().contains(VALUE), "{asked}");
     assert_eq!(activity(&w, "t1").await?, Some(Activity::NeedsAttention));
-    // The task says what its person does, and where (SPEC-472 ATN-004).
+    // The task says what its person does, and where.
     assert_eq!(
         support::attention(&w.h.app, "t1").await?,
         json!({
@@ -329,7 +329,7 @@ async fn a_person_allows_the_copy_an_agent_asked_for() -> TestResult {
     Ok(())
 }
 
-/// SPEC-440 CPY-001, CPY-002, CPY-006 (AC-3, AC-4): the tool refuses what is not a copy of a
+/// The tool refuses what is not a copy of a
 /// production secret, saying what to do instead; the production refusals point to it; asking the
 /// same copy again adds the asker, asking another replaces it; a dismissal creates nothing,
 /// needs no unlock and lets every asking task work on.
@@ -387,7 +387,7 @@ async fn copies_are_asked_for_production_secrets_and_dismissed() -> TestResult {
     );
     assert_ne!(activity(&w, "t1").await?, Some(Activity::NeedsAttention));
 
-    // CPY-006: the production refusal names the way.
+    // The production refusal names the way.
     let hosts = support::mcp_tool(
         &w.h,
         TOKEN,
@@ -397,7 +397,7 @@ async fn copies_are_asked_for_production_secrets_and_dismissed() -> TestResult {
     .await?;
     assert!(refusal(&hosts).contains("secret_request_copy"), "{hosts}");
 
-    // CPY-002: the same copy again adds the asker; another copy replaces the request.
+    // The same copy again adds the asker; another copy replaces the request.
     let (one, two) = (asker(&w, "t1").await?, asker(&w, "t2").await?);
     // In any order, the same hosts are the same copy (review of SPEC-440, finding 6).
     ask(&w, TOKEN, copy_args(&[HOST, "dev2.example.test"])).await?;
@@ -473,7 +473,7 @@ async fn copies_are_asked_for_production_secrets_and_dismissed() -> TestResult {
     .await?;
     assert_eq!(nothing.status, StatusCode::CONFLICT, "{}", nothing.body);
 
-    // CPY-007: deleting the production secret removes its requests, and the task works on.
+    // Deleting the production secret removes its requests, and the task works on.
     ask(&w, TOKEN, copy_args(&[HOST])).await?;
     assert_eq!(activity(&w, "t1").await?, Some(Activity::NeedsAttention));
     let deleted = call(

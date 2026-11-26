@@ -114,7 +114,7 @@ async fn bundles_import_under_the_prefix() -> TestResult {
     Ok(())
 }
 
-/// SPEC-219 ENV-001: an environment run's head comes from the repository's GitHub URL, with the
+/// An environment run's head comes from the repository's GitHub URL, with the
 /// token, straight into Yulius's own mirror (the test seam stands a local bare repository in for
 /// `https://github.com/`).
 #[tokio::test]
@@ -227,7 +227,7 @@ impl Swapped {
     }
 }
 
-/// #844 (SPEC-401 VCD-001): a clean worktree swapped for a link once its checks passed has the
+/// A clean worktree swapped for a link once its checks passed has the
 /// link removed, never what it names.
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -256,7 +256,7 @@ async fn a_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind
     Ok(())
 }
 
-/// #844 (SPEC-401 VCD-001): a task's deletion discards its worktree; one swapped for a link once
+/// A task's deletion discards its worktree; one swapped for a link once
 /// the checks passed has the link removed, never the folder behind it.
 #[cfg(target_os = "linux")]
 #[tokio::test]

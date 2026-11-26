@@ -1,4 +1,4 @@
-//! The Jev key managed by the superadmin (SPEC-001 ADM-001, ADM-002): set (as setup's optional
+//! The Jev key managed by the superadmin: set (as setup's optional
 //! step does), replaced, removed and tested through the API, sealed at rest, used by task intake
 //! at once, `YULIUS_JEV_API_KEY_FILE` honoured while nothing is saved, and never returned.
 

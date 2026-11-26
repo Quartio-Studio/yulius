@@ -24,7 +24,7 @@ use yulius_app::ports::store_ext::AutomationStore;
 use yulius_domain::intake::{ChoiceAnswer, ChoiceQuestion};
 
 /// A fake Jev for the Auto questions. Mode: a request that reports a "problem" or something
-/// "broken" is a fix (SPEC-517 FIX-001), else one with a question mark is a prompt.
+/// "broken" is a fix, else one with a question mark is a prompt.
 /// Workflow (by the option's name): a question gets "Research / Question", "spec it anyway" gets "Feature",
 /// "crash" gets "Fix", "typo" gets none, anything else "Feature". "maybe" makes every answer unsure. Records every question it saw.
 #[derive(Default)]

@@ -147,7 +147,7 @@ async fn task_of_model(
     Ok(record.id)
 }
 
-/// Nobody is asked to do anything about `id` (SPEC-482 FBK-008).
+/// Nobody is asked to do anything about `id`.
 async fn needs_nobody(app: &App, id: &TaskId) -> TestResult {
     let asked = app.deps.store.task_needs_you(id).await?;
     assert!(asked.is_none(), "nobody is asked: {asked:?}");
@@ -164,7 +164,7 @@ async fn needs_nobody(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// AC-1: one subscription, a task set to Fable 5.2, and Claude Code refuses Fable for its usage
+/// One subscription, a task set to Fable 5.2, and Claude Code refuses Fable for its usage
 /// credits without saying when they reset (2.1.311). Before SPEC-482 the task asked a person
 /// (`task.limit_without_end`); now the same session goes on, on the same subscription, launched
 /// with Opus 5.5 past the refused turn, and says so. Its own setting stays Fable 5.2.
@@ -235,7 +235,7 @@ fn a_task_out_of_fable_everywhere_goes_on_with_opus_on_its_subscription() -> Tes
     Ok(())
 }
 
-/// AC-5: a limit reported to a run on the fallback is the fallback model's. The run on Opus 5.5
+/// A limit reported to a run on the fallback is the fallback model's. The run on Opus 5.5
 /// is refused for its credits too: that fills `weekly_opus` and leaves Fable's window with its
 /// own reset, and with neither model left the task waits at its limit, as before.
 #[test]
@@ -488,7 +488,7 @@ fn named_continue_during_change(change: NamedChange) -> TestResult {
     result
 }
 
-/// AC-3 and AC-4: with Fable used up on every subscription a new task of a Fable model starts on
+/// With Fable used up on every subscription a new task of a Fable model starts on
 /// Opus 5.5 at once, and a task set to another model is launched as it is set. Once a
 /// subscription can run Fable again, the run on the fallback is left alone; the task's next
 /// launch (Continue after a stop) runs its own model again and says so.
@@ -515,9 +515,9 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
             launched(&app, &id).await?,
             [(asked_for(OPUS), Some(OPUS.to_owned()))]
         );
-        // AC-7: the task's detail names the model its run is on, and the capacity view names
+        // The task's detail names the model its run is on, and the capacity view names
         // the fallback of Fable work; it counts for the default model, Opus 5.5, which both
-        // subscriptions run (SPEC-493 MDL-001).
+        // subscriptions run.
         let ctx = AuthContext {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
@@ -686,7 +686,7 @@ fn a_task_refused_for_both_models_is_retried_once_then_asks_a_person() -> TestRe
     Ok(())
 }
 
-/// Review round 1 (SPEC-482 FBK-007): Fable is used up for 40 more hours, as Claude Code 2.1.322
+/// Review round 1: Fable is used up for 40 more hours, as Claude Code 2.1.322
 /// says it, and the fallback is refused without a word on when that ends. Each provider reading
 /// ends the fallback's limit, and the pool, which places with the fallback, started the session
 /// on it again at every reading until Fable's reset: a loop of refused restarts nobody heard
@@ -764,7 +764,7 @@ fn a_fallback_refused_with_no_end_is_retried_once_then_waits_for_fable() -> Test
     Ok(())
 }
 
-/// SPEC-482 FBK-003: a run on the fallback that hits a limit there is moved off its
+/// A run on the fallback that hits a limit there is moved off its
 /// subscription, as at any limit: the limit binds the model it runs. With Fable used up on both
 /// subscriptions the session goes on with Opus 5.5 on the other one.
 #[test]
@@ -809,7 +809,7 @@ fn a_run_on_the_fallback_moves_off_the_subscription_that_refused_it() -> TestRes
     Ok(())
 }
 
-/// Review round 1 (SPEC-482 FBK-004): a restart that keeps its subscription (here the fresh
+/// Review round 1: a restart that keeps its subscription (here the fresh
 /// session after a full context that compacting did not help) asked for the run's own
 /// subscription as a person would. A run on the fallback sits where Fable is used up, so once
 /// another subscription ran Fable again the request was refused ("… is at its usage limit")

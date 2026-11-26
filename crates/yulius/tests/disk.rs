@@ -1,8 +1,8 @@
-//! Disk upkeep end to end (SPEC-008, SPEC-001 NFR-009): a real repository with real worktrees,
+//! Disk upkeep end to end: a real repository with real worktrees,
 //! the real Git adapter and tasks in every state. Build caches of tasks that do not work are
 //! removed, the worktrees of closed and cancelled tasks go, idle tasks lose theirs only under
 //! pressure, working tasks never, and the agent is told what was freed.
-//! Linux only: elsewhere the upkeep finds no cache to prune (SPEC-263).
+//! Linux only: elsewhere the upkeep finds no cache to prune.
 #![cfg(target_os = "linux")]
 
 use crate::support;
@@ -190,7 +190,7 @@ async fn caches_and_worktrees_of_ended_tasks_go_after_a_grace_period() -> BoxRes
     assert!(report.freed >= 4 * 2 * BIG as u64, "{report:?}");
     // The branch of a removed worktree stays, so Continue can recreate it.
     assert!(git(&w.repo, &["branch", "--list", "feat/t-closed"])?.contains("feat/t-closed"));
-    // MSR-002 (SPEC-028): nobody is told through messages.
+    // Nobody is told through messages.
     assert!(w.told("t-crash").await?.is_empty());
     assert!(w.told("t-closed").await?.is_empty());
     assert!(w.told("t-work").await?.is_empty());
@@ -235,7 +235,7 @@ async fn idle_tasks_lose_their_caches_only_under_pressure_and_the_largest_first(
     Ok(())
 }
 
-/// SPEC-215 LFT-005 (ADR-0170): a done task loses its caches after 30 quiet minutes, keeps its
+/// A done task loses its caches after 30 quiet minutes, keeps its
 /// worktree and uncommitted work; a waiting task keeps its caches for 4 hours.
 #[tokio::test]
 async fn a_done_task_loses_its_caches_after_half_an_hour_and_keeps_its_worktree() -> BoxResult<()> {
@@ -365,7 +365,7 @@ async fn declared_paths_with_tracked_files_and_unignored_paths_are_never_pruned(
     Ok(())
 }
 
-/// SPEC-288 FIF-004 (#853): a FIFO named `yulius.toml`, in a task whose caches go (the
+/// A FIFO named `yulius.toml`, in a task whose caches go (the
 /// `find_caches` path) and in one whose worktree goes (`worktree_only_caches`), is never waited on:
 /// the round ends, recognised caches go, and what only that file declared stays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -475,7 +475,7 @@ impl World {
     }
 }
 
-/// SPEC-269 (review round 1): the automatic round keeps a paused task's worktree (its process is
+/// The automatic round keeps a paused task's worktree (its process is
 /// alive and resumes in it), and an archived task's worktree that holds ignored files nobody can
 /// rebuild; an archived one holding only caches goes.
 #[tokio::test]
@@ -628,7 +628,7 @@ async fn a_ci_cache_stays_while_a_run_executes_and_goes_once_it_ends() -> BoxRes
     Ok(())
 }
 
-/// SPEC-351 (review round 1): a job checkout's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, where
+/// A job checkout's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, where
 /// a project may keep a Cargo target directory) is pruned like the caches in its checkout: at once
 /// past a quarter of the quota, under pressure otherwise, never while a run executes.
 #[tokio::test]
@@ -670,7 +670,7 @@ async fn a_ci_job_s_own_cache_is_pruned_like_its_checkout_s() -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-019 DSK-003: a closed task's worktree whose only ignored files are rebuildable (the
+/// A closed task's worktree whose only ignored files are rebuildable (the
 /// repository's tool directory, Node modules) is removed; before, any ignored file kept it forever.
 #[tokio::test]
 async fn an_ended_worktree_holding_only_rebuildable_files_is_removed() -> BoxResult<()> {
@@ -695,7 +695,7 @@ async fn an_ended_worktree_holding_only_rebuildable_files_is_removed() -> BoxRes
     Ok(())
 }
 
-/// SPEC-019 DSK-002: an idle task that has not moved for hours loses its caches without any
+/// An idle task that has not moved for hours loses its caches without any
 /// quota pressure (it keeps its worktree).
 #[tokio::test]
 async fn a_long_idle_task_loses_its_caches_without_pressure() -> BoxResult<()> {
@@ -715,7 +715,7 @@ async fn a_long_idle_task_loses_its_caches_without_pressure() -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-019 DSK-004: a worktree no task owns (an agent's own `git worktree add`) loses its
+/// A worktree no task owns (an agent's own `git worktree add`) loses its
 /// caches once untouched for a day.
 #[tokio::test]
 async fn an_orphan_worktree_loses_its_caches_after_a_day() -> BoxResult<()> {
@@ -786,7 +786,7 @@ impl World {
     }
 }
 
-/// SPEC-059 DSK-201 (#245): under pressure, an idle task's caches go only when a fresh probe says
+/// Under pressure, an idle task's caches go only when a fresh probe says
 /// nothing of it runs in the background. A running build in a background shell, a pending
 /// background subagent and a probe that gives no answer all keep them.
 #[tokio::test]
@@ -842,7 +842,7 @@ async fn an_idle_task_with_background_work_keeps_its_caches() -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-059 DSK-202 (#258): a start refused over the quota says who holds the space: the largest
+/// A start refused over the quota says who holds the space: the largest
 /// directories of the last measurement, a task's worktree by its number.
 #[tokio::test]
 async fn a_refusal_names_the_largest_consumers() -> BoxResult<()> {
@@ -926,7 +926,7 @@ impl SandboxIsolation for EngineQuota {
     fn release(&self, _: &SandboxId) {}
 }
 
-/// SPEC-187 DKR-006: the engine's unused images and build cache are pruned when the upkeep must
+/// The engine's unused images and build cache are pruned when the upkeep must
 /// free space, reported like the other caches, and left alone otherwise.
 #[tokio::test]
 async fn engine_images_and_build_cache_are_pruned_only_under_pressure() -> BoxResult<()> {
@@ -987,7 +987,7 @@ impl World {
         Ok(())
     }
 
-    /// A second sandbox `s2`, whose agents make the links (#649); its directory exists.
+    /// A second sandbox `s2`, whose agents make the links; its directory exists.
     async fn attacker(&self) -> BoxResult<(SandboxRecord, PathBuf)> {
         let sandbox = seed_sandbox(&self.h, "s2", "evil", "u-alice").await?;
         let dir = self.h.app.config.data_dir.join("sandboxes/s2");
@@ -996,7 +996,7 @@ impl World {
     }
 }
 
-/// #649 (SPEC-263 DUL-001): a sandbox that replaces its `worktrees` with a link to another
+/// A sandbox that replaces its `worktrees` with a link to another
 /// sandbox's never gets that sandbox's caches measured or removed as its own.
 #[tokio::test]
 async fn a_linked_worktrees_folder_never_reaches_another_sandbox() -> BoxResult<()> {
@@ -1017,7 +1017,7 @@ async fn a_linked_worktrees_folder_never_reaches_another_sandbox() -> BoxResult<
     Ok(())
 }
 
-/// #649 (SPEC-263 DUL-001): one entry of `worktrees` linked to another sandbox's worktree.
+/// One entry of `worktrees` linked to another sandbox's worktree.
 #[tokio::test]
 async fn a_linked_worktree_entry_never_reaches_another_sandbox() -> BoxResult<()> {
     let w = world().await?;
@@ -1035,7 +1035,7 @@ async fn a_linked_worktree_entry_never_reaches_another_sandbox() -> BoxResult<()
     Ok(())
 }
 
-/// #649 (SPEC-263 DUL-001): a linked `ci/jobs` never gets another sandbox's CI checkout caches
+/// A linked `ci/jobs` never gets another sandbox's CI checkout caches
 /// pruned, also under pressure.
 #[tokio::test]
 async fn a_linked_ci_jobs_folder_never_reaches_another_sandbox() -> BoxResult<()> {
@@ -1099,7 +1099,7 @@ async fn an_upkeep_cut_off_mid_removal_frees_the_ci_lane() -> BoxResult<()> {
     Ok(())
 }
 
-/// #649 (SPEC-263 DUL-001): a linked `ci`, the same.
+/// A linked `ci`, the same.
 #[tokio::test]
 async fn a_linked_ci_folder_never_reaches_another_sandbox() -> BoxResult<()> {
     let w = world().await?;
@@ -1116,7 +1116,7 @@ async fn a_linked_ci_folder_never_reaches_another_sandbox() -> BoxResult<()> {
     Ok(())
 }
 
-/// #649 (SPEC-263 DUL-002): a `worktrees` swapped for a link after the scan, right before the
+/// A `worktrees` swapped for a link after the scan, right before the
 /// removal, makes the removal fail instead of following the link.
 #[tokio::test]
 async fn a_worktrees_folder_swapped_for_a_link_after_the_scan_is_not_followed() -> BoxResult<()> {
@@ -1200,7 +1200,7 @@ impl World {
     }
 }
 
-/// #649 (SPEC-263 DUL-001): a closed task's worktree reached through a linked `worktrees` is
+/// A closed task's worktree reached through a linked `worktrees` is
 /// never handed to Git for removal.
 #[tokio::test]
 async fn an_ended_worktree_reached_through_a_link_is_never_removed() -> BoxResult<()> {
@@ -1218,7 +1218,7 @@ async fn an_ended_worktree_reached_through_a_link_is_never_removed() -> BoxResul
     Ok(())
 }
 
-/// #649 (SPEC-263 DUL-003): a `worktrees` swapped for a link after the scan found a real ended
+/// A `worktrees` swapped for a link after the scan found a real ended
 /// worktree is checked again before Git removes it.
 #[tokio::test]
 async fn an_ended_worktree_swapped_for_a_link_after_the_scan_is_not_removed() -> BoxResult<()> {
@@ -1278,7 +1278,7 @@ fn cargo_unit(w: &World, profile: &Path, hash: &str, hours: i64) -> BoxResult<()
     Ok(())
 }
 
-/// SPEC-276 RDA-001..RDA-004: the sweep reaches the build directories of worktrees and CI
+/// The sweep reaches the build directories of worktrees and CI
 /// checkouts and deletes units unused for two days, keeps recent ones and audits what it freed.
 /// Artifact units, which tests read after Cargo released its lock, go only where nothing runs
 /// tests: a resting task's worktree, a CI checkout under the CI claim. A working task keeps them
@@ -1386,7 +1386,7 @@ async fn the_sweep_deletes_unused_build_units_of_worktrees_and_ci_checkouts() ->
     Ok(())
 }
 
-/// SPEC-276 RDA-006: a waiting task keeps its caches while the data disk is fine or merely low;
+/// A waiting task keeps its caches while the data disk is fine or merely low;
 /// once the disk is critical, a round prunes them (back towards 85 %), sweeps, and the rise is
 /// audited once.
 #[tokio::test]
@@ -1440,7 +1440,7 @@ async fn a_critical_data_disk_prunes_idle_caches_and_is_audited() -> BoxResult<(
     Ok(())
 }
 
-/// SPEC-276 RDA-007: anyone signed in reads the data disk's level; a change of level, and while
+/// Anyone signed in reads the data disk's level; a change of level, and while
 /// the disk is low of its used percent, reaches every page as `disk.updated`; the same reading
 /// again sends nothing.
 #[tokio::test]
@@ -1489,7 +1489,7 @@ async fn the_disk_level_is_served_and_its_changes_are_published() -> BoxResult<(
     Ok(())
 }
 
-/// SPEC-276 RDA-008: an archived task's build output goes in the next round, without the
+/// An archived task's build output goes in the next round, without the
 /// 10-minute grace an ended task gets (it may be continued at once; an archived one is put away).
 #[tokio::test]
 async fn an_archived_task_loses_its_caches_without_the_grace() -> BoxResult<()> {
@@ -1511,7 +1511,7 @@ async fn an_archived_task_loses_its_caches_without_the_grace() -> BoxResult<()> 
     Ok(())
 }
 
-/// SPEC-276 RDA-008: archiving a task through the API starts a round at once: its build output
+/// Archiving a task through the API starts a round at once: its build output
 /// goes without anyone running the upkeep (review round 1: the test above calls it by hand).
 #[tokio::test]
 async fn archiving_a_task_through_the_api_removes_its_build_output() -> BoxResult<()> {
@@ -1541,7 +1541,7 @@ async fn archiving_a_task_through_the_api_removes_its_build_output() -> BoxResul
     Ok(())
 }
 
-/// SPEC-276 RDA-006: while the disk is low, the safe leftovers round starts with a disk round, at
+/// While the disk is low, the safe leftovers round starts with a disk round, at
 /// most once every 10 minutes; at ok it does not.
 #[tokio::test]
 async fn a_low_disk_starts_the_leftovers_round_at_most_every_ten_minutes() -> BoxResult<()> {
@@ -1561,7 +1561,7 @@ async fn a_low_disk_starts_the_leftovers_round_at_most_every_ten_minutes() -> Bo
     Ok(())
 }
 
-/// RCC-002: pressure reclaims the sandbox's shared compiler store only between builds.
+/// Pressure reclaims the sandbox's shared compiler store only between builds.
 #[tokio::test]
 async fn pressure_reclaims_the_compiler_cache_only_without_build_readers() -> BoxResult<()> {
     let w = world().await?;

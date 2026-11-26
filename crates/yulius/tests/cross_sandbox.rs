@@ -1,4 +1,4 @@
-//! Tasks the Superagent starts in its person's other sandboxes (SPEC-335): `sandboxes_list`
+//! Tasks the Superagent starts in its person's other sandboxes: `sandboxes_list`
 //! names where it may ask, `sandbox_task_create` waits for the person's answer, and only the
 //! person, from a browser session, approves or declines each request. SPEC-442: the same requests
 //! start, re-chain, message and stop a task of another sandbox; `sandbox_task_get` only reads.
@@ -158,7 +158,7 @@ async fn task_count(w: &World, sandbox: &str) -> Result<usize, Error> {
         .len())
 }
 
-/// XSR-001: the Superagent lists the other sandboxes its person can work in, not its own, not
+/// The Superagent lists the other sandboxes its person can work in, not its own, not
 /// one they only read, not one they cannot see.
 #[tokio::test]
 async fn the_superagent_lists_the_other_sandboxes_its_person_can_work_in() -> TestResult {
@@ -215,7 +215,7 @@ async fn an_approved_request_creates_the_task_in_the_other_sandbox() -> TestResu
     assert_eq!(task.sandbox_id, SandboxId::parse("s2")?);
     assert_eq!(task.prompt, prompt);
     assert_eq!(task.title, "API client v2");
-    // On Claude Code by default (SPEC-620).
+    // On Claude Code by default.
     assert_eq!(task.harness, yulius_domain::harness::Harness::ClaudeCode);
     assert_eq!(w.h.app.task_summary(&task).await?.harness_choice, "chosen");
     assert_eq!(task.created_by, w.alice_id);
@@ -547,7 +547,7 @@ async fn an_amended_request_is_answered_only_as_read() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 XRQ-002: the waiting requests and the outcomes are kept in a file beside the
+/// The waiting requests and the outcomes are kept in a file beside the
 /// database and put back at a start, so a restart of Yulius loses none.
 #[tokio::test]
 async fn waiting_requests_are_kept_across_a_restart() -> TestResult {
@@ -770,7 +770,7 @@ async fn what_cannot_be_asked_is_refused_without_asking() -> TestResult {
             json!({"sandbox": "website", "prompt": "x", "colour": "red"}),
             "colour",
         ),
-        // `task_create`'s `paths` and `start_anyway` (SPEC-493 SCO-004) are not on the
+        // `task_create`'s `paths` and `start_anyway` are not on the
         // person's card, so they cannot be asked for here (review rounds 1 and 2 of fix 9).
         (
             json!({"sandbox": "website", "prompt": "x", "paths": ["crates/a/**"]}),
@@ -841,7 +841,7 @@ async fn text_with_characters_nobody_sees_is_refused_without_asking() -> TestRes
     Ok(())
 }
 
-/// XSR-004: at most 3 requests wait per person and sandbox.
+/// At most 3 requests wait per person and sandbox.
 #[tokio::test]
 async fn a_fourth_waiting_request_is_refused() -> TestResult {
     let w = world(60_000).await?;
@@ -889,7 +889,7 @@ async fn a_fourth_waiting_request_is_refused() -> TestResult {
     Ok(())
 }
 
-/// XSR-006: approving rechecks the person's access in the target: one who lost it gets the
+/// Approving rechecks the person's access in the target: one who lost it gets the
 /// refusal, as does the waiting call, and nothing is created.
 #[tokio::test]
 async fn approval_rechecks_access_to_the_target() -> TestResult {
@@ -916,7 +916,7 @@ async fn approval_rechecks_access_to_the_target() -> TestResult {
     Ok(())
 }
 
-/// The answers `superagent.cross_task` audited about `sandbox`, oldest first (XSR-009).
+/// The answers `superagent.cross_task` audited about `sandbox`, oldest first.
 async fn audited(w: &World, sandbox: &str) -> Result<Vec<Value>, Error> {
     let mut rows =
         w.h.store
@@ -929,7 +929,7 @@ async fn audited(w: &World, sandbox: &str) -> Result<Vec<Value>, Error> {
     Ok(rows)
 }
 
-/// XSR-009: every way a request ends is audited on the target, with the source and the
+/// Every way a request ends is audited on the target, with the source and the
 /// caller and never the prompt; XSR-007: its announcements reach its person only.
 #[tokio::test]
 async fn answers_are_audited_without_the_prompt_and_announced_to_the_person_only() -> TestResult {
@@ -1013,7 +1013,7 @@ async fn an_approval_whose_page_went_away_still_reaches_the_call() -> TestResult
     Ok(())
 }
 
-/// SPEC-355 SLR-003 (review round 1): a waiting `sandbox_task_create` call carries no byte for up
+/// A waiting `sandbox_task_create` call carries no byte for up
 /// to its wait and grace, so the relays and the egress proxy must never pick it to give way to a
 /// new connection: their idle floor outlasts it.
 #[test]
@@ -1174,7 +1174,7 @@ async fn an_approved_start_starts_a_prepared_task_of_another_sandbox() -> TestRe
     Ok(())
 }
 
-/// SPEC-442 XST-002: `sandbox_task_update` re-chains a task of another sandbox after another of
+/// `sandbox_task_update` re-chains a task of another sandbox after another of
 /// that sandbox's tasks, as `task_update` does there.
 #[tokio::test]
 async fn an_approved_update_rechains_a_task_of_another_sandbox() -> TestResult {
@@ -1199,7 +1199,7 @@ async fn an_approved_update_rechains_a_task_of_another_sandbox() -> TestResult {
     Ok(())
 }
 
-/// SPEC-442 XST-002, XST-003: a message to a task of another sandbox that has not started is
+/// A message to a task of another sandbox that has not started is
 /// added to its request as the person's; a stop cancels a waiting task.
 #[tokio::test]
 async fn approved_messages_and_stops_reach_the_task_of_another_sandbox() -> TestResult {
@@ -1277,7 +1277,7 @@ async fn a_declined_change_changes_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-442 XST-002: what cannot be asked about a task of another sandbox is refused at once,
+/// What cannot be asked about a task of another sandbox is refused at once,
 /// and nothing waits.
 #[tokio::test]
 async fn what_cannot_be_changed_is_refused_without_asking() -> TestResult {
@@ -1367,7 +1367,7 @@ async fn what_cannot_be_changed_is_refused_without_asking() -> TestResult {
     Ok(())
 }
 
-/// SPEC-442 XST-003: the approval's refusal is the answer: a task that started meanwhile is not
+/// The approval's refusal is the answer: a task that started meanwhile is not
 /// changed, and the call says why.
 #[tokio::test]
 async fn an_approval_refused_by_the_target_is_the_answer() -> TestResult {
@@ -1482,7 +1482,7 @@ async fn every_cross_sandbox_answer_is_audited_in_both_sandboxes() -> TestResult
     Ok(())
 }
 
-/// SPEC-487 XRQ-001: a change nobody answered while the call waited stays on the panel and is
+/// A change nobody answered while the call waited stays on the panel and is
 /// audited only once answered, in both sandboxes.
 #[tokio::test]
 async fn an_unanswered_change_waits_and_is_audited_when_answered() -> TestResult {
@@ -1809,7 +1809,7 @@ async fn a_message_to_a_task_holding_its_owners_personal_secrets_is_refused() ->
     Ok(())
 }
 
-/// SPEC-487 REL-005: the Superagent asks to start its project's onboarding; the person's click
+/// The Superagent asks to start its project's onboarding; the person's click
 /// on its panel runs the project page's Start onboarding as them (no slug: it releases nothing).
 #[tokio::test]
 async fn onboarding_starts_on_the_persons_click() -> TestResult {

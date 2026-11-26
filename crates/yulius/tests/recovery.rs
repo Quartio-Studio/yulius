@@ -54,7 +54,7 @@ fn wrong_code(code: &str) -> String {
     format!("{}{}", (first + 1) % 10, &code[1..])
 }
 
-/// SPEC-242 PWM-001: recovery takes an 8-character password; 7 are refused with the minimum,
+/// Recovery takes an 8-character password; 7 are refused with the minimum,
 /// before the code is checked, so the refusal spends no attempt.
 #[tokio::test]
 async fn recovery_accepts_eight_characters_and_refuses_seven_without_spending_an_attempt()

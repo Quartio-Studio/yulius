@@ -88,7 +88,7 @@ async fn seed_run(
 /// `tok-other`, and the internal router their agents call.
 async fn project() -> Result<(support::Harness, axum::Router), Box<dyn std::error::Error>> {
     let h = harness()?;
-    // The tasks' owner may view the project, as a task's reads need (SPEC-625 PSV-003).
+    // The tasks' owner may view the project, as a task's reads need.
     support::seed_github_user(&h, "u1", "alice").await?;
     h.github
         .set_perm("alice", "Quartio-Studio/studio", support::perms("write"));
@@ -191,7 +191,7 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
         .filter_map(|t| t["name"].as_str())
         .collect();
     assert!(names.contains(&"steps_set"));
-    // MSR-001: no message tools (SPEC-028).
+    // No message tools.
     for gone in ["message_send", "messages_inbox"] {
         assert!(!names.contains(&gone), "`{gone}` is not served");
         let (refused, err) = tool(
@@ -213,7 +213,7 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
         assert!(names.contains(&announced), "#50: `{announced}` is served");
     }
 
-    // A task sees the parallel task (COM-001).
+    // A task sees the parallel task.
     let (tasks, err) = tool(
         &internal,
         "tok-claude",
@@ -225,7 +225,7 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     assert_eq!(tasks["tasks"][0]["harness"], "claude");
     assert_eq!(tasks["you"]["harness"], "claude");
 
-    // Scope claims (COM-003, AC-COM-3, #50): an overlap is reported to the claiming task.
+    // Scope claims (COM-003, AC-COM-3): an overlap is reported to the claiming task.
     let (claimed, err) = tool(
         &internal,
         "tok-claude",
@@ -286,7 +286,7 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     let (after, _) = tool(&internal, "tok-other", "scopes_list", json!({})).await?;
     assert_eq!(after["conflicts"].as_array().map(Vec::len), Some(0));
 
-    // #73: claiming a pattern the task already holds tells nobody again; a malformed release
+    // Claiming a pattern the task already holds tells nobody again; a malformed release
     // is refused instead of releasing every claim; claims per task are bounded.
     let (_, err) = tool(
         &internal,
@@ -356,7 +356,7 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     }
     assert!(capped, "claims per task are bounded");
 
-    // spec_check runs the Stop gate's validator (DSC-003); project_context rebuilds the briefing.
+    // spec_check runs the Stop gate's validator; project_context rebuilds the briefing.
     // Without a workflow and without a worktree (so without changes) no spec is needed yet
     // (DSC-013: features and fixes need one, research and questions do not).
     let (no_tree, err) = tool(&internal, "tok-claude", "spec_check", json!({})).await?;
@@ -416,8 +416,8 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
         "{context}"
     );
 
-    // Steps: set, update, and status preserved on re-plan (STP-001/002); a plan of similar-effort
-    // steps whose progress arrives steadily (STP-006..008).
+    // Steps: set, update, and status preserved on re-plan; a plan of similar-effort
+    // steps whose progress arrives steadily.
     let (planned, err) = tool(
         &internal,
         "tok-claude",
@@ -667,7 +667,7 @@ async fn step_tools_answer_with_short_text_not_records() -> TestResult {
     Ok(())
 }
 
-/// SPEC-484 PLN-004, PLN-005: a task of many slices lists them all without being told to merge
+/// A task of many slices lists them all without being told to merge
 /// them (task #465's 18 slices), and the tick that completes a plan asks whether work the agent
 /// knows of is left out.
 #[tokio::test]
@@ -729,7 +729,7 @@ async fn a_long_plan_is_not_nudged_and_a_complete_one_asks_once_more() -> TestRe
         "{last}"
     );
 
-    // SPEC-491 DON-007: with every step finished, a spec that does not say done keeps the task
+    // With every step finished, a spec that does not say done keeps the task
     // from Done, and the step tools say so; a spec that says done, or none, adds nothing.
     assert!(!last.contains("the spec says"), "no spec read: {last}");
     let claude1 = TaskId::parse("claude1")?;
@@ -745,7 +745,7 @@ async fn a_long_plan_is_not_nudged_and_a_complete_one_asks_once_more() -> TestRe
     let told = agent_text(&internal, "steps_get", json!({})).await?;
     assert!(!told.contains("the spec says"), "{told}");
 
-    // Work found later: the plan grows, and every count says what it had at first (PLN-010).
+    // Work found later: the plan grows, and every count says what it had at first.
     assert!(!last.contains("at first"), "{last}");
     let grown = agent_text(
         &internal,
@@ -770,7 +770,7 @@ async fn a_long_plan_is_not_nudged_and_a_complete_one_asks_once_more() -> TestRe
     Ok(())
 }
 
-/// SPEC-194 TOP-008: `tasks_list` scope `active` lists a task paused for capacity (it still owns
+/// `tasks_list` scope `active` lists a task paused for capacity (it still owns
 /// its work, so the open-issues automation must not start a second task for its issue), and
 /// leaves out a closed one.
 #[tokio::test]
@@ -798,7 +798,7 @@ async fn active_tasks_include_those_paused_for_capacity() -> TestResult {
     Ok(())
 }
 
-/// SPEC-432 MCR-002: a request of a task's agent to `POST /mcp` (its bridge's ping) records the
+/// A request of a task's agent to `POST /mcp` (its bridge's ping) records the
 /// contact on that task only.
 #[tokio::test]
 async fn an_agent_request_records_its_tasks_mcp_contact() -> TestResult {

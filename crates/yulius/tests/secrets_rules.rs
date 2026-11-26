@@ -1,4 +1,4 @@
-//! Method and path rules of agent secrets (SPEC-627, ADR-0458): a secret with rules goes only
+//! Method and path rules of agent secrets: a secret with rules goes only
 //! into requests that match them; any other request that would use it is refused and audited.
 
 use crate::support;
@@ -103,7 +103,7 @@ async fn activity(w: &World, action: &str) -> Result<Vec<Value>, Box<dyn std::er
         .collect())
 }
 
-/// AC-6 (MPR-001, MPR-006, MPR-007): rules are stored with the secret, shown to every reader,
+/// Rules are stored with the secret, shown to every reader,
 /// replaced and cleared by its managers, and refused with 422 when malformed.
 #[tokio::test]
 async fn rules_are_stored_shown_replaced_and_validated() -> TestResult {
@@ -190,7 +190,7 @@ async fn rules_are_stored_shown_replaced_and_validated() -> TestResult {
     Ok(())
 }
 
-/// AC-1, AC-2 (MPR-002, MPR-003, MPR-008): a placeholder of a secret with rules is replaced only
+/// A placeholder of a secret with rules is replaced only
 /// in a matching request; a POST and a path outside the rules are refused with a text naming the
 /// secret, the method and the path; a secret without rules on the same host works as before, and
 /// a request that uses no secret goes out untouched.
@@ -281,7 +281,7 @@ async fn a_secret_with_rules_is_sent_only_for_matching_requests() -> TestResult 
     Ok(())
 }
 
-/// AC-3 (MPR-002, MPR-003): an injected secret with rules is added only to matching requests;
+/// An injected secret with rules is added only to matching requests;
 /// of two secrets injecting one header, each goes with the requests its rules allow; a request
 /// neither allows, and one naming a secret outside its rules, is refused.
 #[tokio::test]
@@ -335,7 +335,7 @@ async fn injection_follows_the_rules() -> TestResult {
     Ok(())
 }
 
-/// AC-4 (MPR-004): for a secret with rules, a matching path that a server could normalise to
+/// For a secret with rules, a matching path that a server could normalise to
 /// another resource, and a method-override header, are refused; an encoded slash is not.
 #[tokio::test]
 async fn paths_and_overrides_that_could_escape_the_rules_are_refused() -> TestResult {
@@ -422,7 +422,7 @@ async fn paths_and_overrides_that_could_escape_the_rules_are_refused() -> TestRe
     Ok(())
 }
 
-/// AC-5 (MPR-005): every refusal is audited with the secret's name, the method, the path and the
+/// Every refusal is audited with the secret's name, the method, the path and the
 /// host, never a value or the query; the same refusal repeated by the same run is one entry.
 #[tokio::test]
 async fn refusals_are_audited_once_per_run_without_values() -> TestResult {
@@ -474,7 +474,7 @@ async fn refusals_are_audited_once_per_run_without_values() -> TestResult {
     Ok(())
 }
 
-/// AC-7 (MPR-007): a task's agent reads each secret's rules in `secrets_list`, and how they work.
+/// A task's agent reads each secret's rules in `secrets_list`, and how they work.
 #[tokio::test]
 async fn secrets_list_shows_the_rules_to_agents() -> TestResult {
     let w = world().await?;
@@ -509,7 +509,7 @@ async fn secrets_list_shows_the_rules_to_agents() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 1 (MPR-002): another secret's value placed in the path cannot move it
+/// Review round 1, finding 1: another secret's value placed in the path cannot move it
 /// outside the rules once replaced (`..` resolved by the proxy's client, `?` starting a query,
 /// `#` a fragment): the rules hold for the path as sent and as it goes out.
 #[tokio::test]
@@ -577,7 +577,7 @@ async fn a_placeholder_value_cannot_move_the_path_outside_the_rules() -> TestRes
     Ok(())
 }
 
-/// Review round 1, finding 6 (MPR-002, MPR-005): a placeholder inside Basic credentials is a use
+/// Review round 1, finding 6: a placeholder inside Basic credentials is a use
 /// too, and a CI job's request outside the rules is refused and audited as `ci:<run>`.
 #[tokio::test]
 async fn basic_credentials_and_ci_jobs_are_held_to_the_rules() -> TestResult {
@@ -638,7 +638,7 @@ async fn basic_credentials_and_ci_jobs_are_held_to_the_rules() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 3 (MPR-005): a run's distinct refusals of one secret are audited up to
+/// Review round 1, finding 3: a run's distinct refusals of one secret are audited up to
 /// a bound, then once as "further refusals not listed", so varying the path cannot flood the trail.
 #[tokio::test]
 async fn a_runs_distinct_refusals_are_audited_up_to_a_bound() -> TestResult {
@@ -675,7 +675,7 @@ async fn a_runs_distinct_refusals_are_audited_up_to_a_bound() -> TestResult {
     Ok(())
 }
 
-/// Review round 1, finding 2 (MPR-009): a secret with rules is not bound to hosts an agent asks
+/// Review round 1, finding 2: a secret with rules is not bound to hosts an agent asks
 /// for, even with `auto_allow`: a person allows them, so an agent cannot send it to a server of
 /// its own and learn the value there. A secret without rules still binds them at once.
 #[tokio::test]

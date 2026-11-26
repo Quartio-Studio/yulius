@@ -1,4 +1,4 @@
-//! Queued messages (SPEC-052 QMS-001..005): a task that has not started takes messages into its
+//! Queued messages: a task that has not started takes messages into its
 //! request — queued, chained or paused before its first start — and refuses them once it has a
 //! run or a session; the detail carries the request and whether the task started.
 

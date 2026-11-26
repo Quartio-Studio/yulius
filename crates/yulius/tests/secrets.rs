@@ -1,5 +1,5 @@
-//! The secrets vault over the public API, the internal listener and the egress policy
-//! (SPEC-001 VLT-001..009, SPEC-002 ADR-20): team secrets and re-authentication, encryption at
+//! The secrets vault over the public API, the internal listener and the egress policy:
+//! team secrets and re-authentication, encryption at
 //! rest, access control, agent secrets applied to requests for their bound hosts only, the MCP
 //! tools and redaction of MCP results, fingerprints and MCP `${secret:NAME}` references.
 
@@ -372,7 +372,7 @@ async fn two_factor_is_set_up_once_and_unlocks_the_vault() -> TestResult {
     Ok(())
 }
 
-/// #295 (SPEC-061 AC2): seed B is set up in another tab while a code of pending seed A is being
+/// Seed B is set up in another tab while a code of pending seed A is being
 /// checked (forced between the check and the accept). The code is refused, B stays pending, and
 /// only a code of B confirms it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -481,7 +481,7 @@ async fn reset(
     .await
 }
 
-/// #291 (SPEC-061 AC3, AC4): the superadmin and instance administrators reset a member's lost
+/// The superadmin and instance administrators reset a member's lost
 /// two-factor after their own unlock; members, API tokens, locked vaults and self-resets are
 /// refused. The member then sets two-factor up again, and the old seed's codes are refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -506,7 +506,7 @@ async fn administrators_reset_a_lost_two_factor() -> TestResult {
         async move { call(&router, Method::GET, "/api/auth/reauth", None, &creds).await }
     };
 
-    // Refusals change nothing (AC4).
+    // Refusals change nothing.
     let member = reset(&h, &bob, &anna_id).await?;
     assert_eq!(member.status, StatusCode::FORBIDDEN, "{}", member.body);
     let token = reset(&h, &ivan_token, &anna_id).await?;
@@ -539,7 +539,7 @@ async fn administrators_reset_a_lost_two_factor() -> TestResult {
         (&json!("on"), &json!(true))
     );
 
-    // The superadmin resets it: the seed and Anna's unlock are gone (AC3).
+    // The superadmin resets it: the seed and Anna's unlock are gone.
     let done = reset(&h, &admin, &anna_id).await?;
     assert_eq!(done.status, StatusCode::NO_CONTENT, "{}", done.body);
     let after = anna_status(anna.clone()).await?;
@@ -659,7 +659,7 @@ async fn administrators_reset_a_lost_two_factor() -> TestResult {
     Ok(())
 }
 
-/// #291 (SPEC-061 AC5): instance administrators read the people and their two-factor state, to
+/// Instance administrators read the people and their two-factor state, to
 /// reset it from the Users page; changing users stays the superadmin's.
 #[tokio::test]
 async fn instance_administrators_see_the_people_and_their_two_factor() -> TestResult {
@@ -783,7 +783,7 @@ async fn ten_wrong_codes_lock_two_factor_until_identity_is_confirmed() -> TestRe
     Ok(())
 }
 
-/// AC4: setting up needs a recent sign-in or confirmation, so a stolen session alone cannot
+/// Setting up needs a recent sign-in or confirmation, so a stolen session alone cannot
 /// enroll its own authenticator.
 #[tokio::test]
 async fn setting_up_two_factor_needs_a_recent_sign_in() -> TestResult {
@@ -1000,7 +1000,7 @@ async fn get_as(
     call(&w.h.router, Method::GET, path, None, creds).await
 }
 
-/// SPEC-216 SCO-001/002, AC-5: a team secret belongs to a sandbox (the default) or is team-wide;
+/// A team secret belongs to a sandbox (the default) or is team-wide;
 /// a sandbox's one is seen and changed only by people who can view that sandbox.
 #[tokio::test]
 async fn team_secrets_belong_to_a_sandbox_unless_team_wide() -> TestResult {
@@ -1188,7 +1188,7 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
         shown.body["notes"],
         format!("User name: docs-admin\nTwo-factor seed: {SEED}\n\nDocs admin login")
     );
-    // ADR-0313: a run's fingerprints hold the value and not the seed, which never enters a
+    // A run's fingerprints hold the value and not the seed, which never enters a
     // sandbox (Yulius types the code); Yulius' own redaction of the project covers both.
     let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
     let set =
@@ -1208,7 +1208,7 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
     Ok(())
 }
 
-/// SPEC-193 MLK-002, MLK-003: a key whose line breaks a single-line field lost is refused on
+/// A key whose line breaks a single-line field lost is refused on
 /// create and on update; one stored that way before is kept as it is and listed `flattened` to
 /// the people who manage it, and to nobody else.
 #[tokio::test]
@@ -1360,7 +1360,7 @@ async fn a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers(
     Ok(())
 }
 
-/// SPEC-431 RVK-001, RVK-002: a key stored with literal `\n` is revealed, to show or to copy, as
+/// A key stored with literal `\n` is revealed, to show or to copy, as
 /// the key file it stands for; any other value comes back as stored, its `\n` included.
 #[tokio::test]
 async fn a_revealed_key_block_comes_back_as_its_key_file() -> TestResult {
@@ -1498,7 +1498,7 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
         .iter()
         .filter_map(|s| Some((s["name"].as_str()?, s["enabled"].as_bool()?)))
         .collect();
-    // SPEC-245 SCP-003: a global secret shows in every sandbox, switched on only where it was
+    // A global secret shows in every sandbox, switched on only where it was
     // added until an administrator switches it on elsewhere.
     assert_eq!(listed, vec![("GLOBAL_KEY", false)], "listed, but off in s2");
 
@@ -1534,7 +1534,7 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
         let response = add_agent_secret(&w, &w.writer, "s1", body.clone()).await?;
         assert_eq!(response.status, status, "{body}: {}", response.body);
     }
-    // SPEC-245 RES-001: a project secret may take a global secret's name; it wins in its project.
+    // A project secret may take a global secret's name; it wins in its project.
     let mine = add_agent_secret(
         &w,
         &w.writer,
@@ -1886,7 +1886,7 @@ async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
     Ok(())
 }
 
-/// SPEC-142 CSE-004, CSE-005: a CI job's proxy client (`ci:<run>`) uses only the secrets its job
+/// A CI job's proxy client (`ci:<run>`) uses only the secrets its job
 /// was granted, only toward their bound hosts, audited under the run; its credential ends with the
 /// job.
 #[tokio::test]
@@ -1900,7 +1900,7 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
         if created.body["name"] == "PROD_KEY" {
-            // Made a production secret: its host goes with that (ADR-0324).
+            // Made a production secret: its host goes with that.
             let id = created.body["id"].as_str().ok_or("id")?;
             crate::support::production_secret(&w.h.store, id).await?;
         }
@@ -1921,7 +1921,7 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         "a host bound only to a secret the job was not granted is a plain tunnel"
     );
     // A production-deploy secret is never a CI job's, even when its name is granted. It has no
-    // host either (ADR-0324), so nothing here is intercepted for it whatever the proxy's rule
+    // host either, so nothing here is intercepted for it whatever the proxy's rule
     // is: the rule itself is held by `ports::egress::tests`.
     assert!(!app.egress_intercepts(&ci, "prod.test", 443).await);
     let named = app
@@ -2115,7 +2115,7 @@ async fn an_ended_runs_proxy_client_adds_no_secret() -> TestResult {
     Ok(())
 }
 
-/// VLT-005, VLT-007: `secrets_list` gives names only, every MCP result is redacted, the
+/// `secrets_list` gives names only, every MCP result is redacted, the
 /// fingerprints endpoint gives no value but finds one.
 #[tokio::test]
 async fn agents_list_names_and_read_redacted_results() -> TestResult {
@@ -2276,7 +2276,7 @@ async fn mcp_secret_references_resolve_to_agent_secrets() -> TestResult {
     Ok(())
 }
 
-/// SPEC-216 SCO-004, AC-6: the team secrets (all of every sandbox) when the upgrade ran become one
+/// The team secrets (all of every sandbox) when the upgrade ran become one
 /// secret per sandbox, each with the original value and notes, once; team-wide ones added
 /// afterwards, and agent secrets an administrator made team-wide, stay team-wide.
 #[tokio::test]
@@ -2455,7 +2455,7 @@ async fn nothing_is_stored_in_clear() -> TestResult {
     Ok(())
 }
 
-/// The egress proxy is served on the internal listener (SPEC-002 ADR-20): a `CONNECT` with the
+/// The egress proxy is served on the internal listener: a `CONNECT` with the
 /// run's task token opens a tunnel, without it 407; the internal API keeps working beside it.
 #[tokio::test]
 async fn the_proxy_shares_the_internal_listener() -> TestResult {
@@ -2573,7 +2573,7 @@ async fn a_secret_without_hosts_is_sent_nowhere() -> TestResult {
         Some("Bearer yulius-secret-VIDOC_API_KEY"),
         "the placeholder stays: the host is not bound"
     );
-    // People may still bind (and unbind) hosts directly, against the hosts they saw (SPEC-216).
+    // People may still bind (and unbind) hosts directly, against the hosts they saw.
     let id = created.body["id"].as_str().ok_or("id")?;
     let bound = call(
         &w.h.router,
@@ -2615,7 +2615,7 @@ async fn agent_secret_of(w: &World, name: &str) -> Result<Value, Box<dyn std::er
         .ok_or(name.to_owned())?)
 }
 
-/// SPEC-483 V5 (ADR-0317): sending a value to a server of one's choice reads it. For a secret
+/// SPEC-483 V5: sending a value to a server of one's choice reads it. For a secret
 /// people allow use by use, a host it is not bound to and `.env` copies need what a reveal
 /// needs: a browser session with the two-factor unlock; an API token is refused. What sends it
 /// nowhere new (a description, fewer hosts, a dismissal, a revocation) needs neither, and a
@@ -2920,7 +2920,7 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
         task.activity,
         Some(yulius_domain::task::Activity::NeedsAttention)
     );
-    // The task says what its person does, and where (SPEC-472 ATN-004).
+    // The task says what its person does, and where.
     assert_eq!(
         support::attention(&w.h.app, "t1").await?,
         json!({
@@ -2972,7 +2972,7 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     assert_eq!(allowed.body["requested_hosts"], json!([]));
     assert_eq!(allowed.body["requested_by"], Value::Null);
     assert!(app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
-    // SPEC-213 SRA-001: nothing waits for a person any more.
+    // Nothing waits for a person any more.
     let task =
         w.h.store
             .task(&yulius_domain::ids::TaskId::parse("t1")?)
@@ -3036,7 +3036,7 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     Ok(())
 }
 
-/// SPEC-216 SSA-001/002/005, AC-1/AC-2: a new agent secret lets agents set it up (its hosts bind
+/// A new agent secret lets agents set it up (its hosts bind
 /// at once, no person needed) unless its creator turned that off; its managers change it in Edit.
 #[tokio::test]
 async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
@@ -3065,7 +3065,7 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     );
     assert_eq!(asked["bound"], json!(["api.vidoc.test"]), "{asked}");
     assert_eq!(asked["waiting"], json!([]), "{asked}");
-    // Open Secrets pages show the bound host without a reload (SPEC-209).
+    // Open Secrets pages show the bound host without a reload.
     assert_eq!(announced.take(), vec![Some("s1".to_owned())]);
     let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
     assert_eq!(secret["hosts"], json!(["api.vidoc.test"]));
@@ -3213,7 +3213,7 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     assert_eq!(secret["hosts"], json!(["api.vidoc.test", "eu.vidoc.test"]));
     assert_eq!(secret["requested_hosts"], json!(["us.vidoc.test"]));
     assert!(app.egress_intercepts(&s1, "eu.vidoc.test", 443).await);
-    // Once nothing the task asked for waits, it no longer needs a person (SPEC-213).
+    // Once nothing the task asked for waits, it no longer needs a person.
     let all = tool_text(
         &mcp_tool(
             &w.h,
@@ -3282,7 +3282,7 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     Ok(())
 }
 
-/// SPEC-209 SRE-001/002/004 (#631): an agent's host request is announced to the open Secrets
+/// An agent's host request is announced to the open Secrets
 /// pages of the secret's sandbox, or of every sandbox for an instance-wide secret, so its Allow
 /// shows without a reload; a request that changes nothing is not announced.
 #[tokio::test]
@@ -3335,8 +3335,8 @@ async fn an_agents_host_request_is_announced_to_open_secrets_pages() -> TestResu
     Ok(())
 }
 
-/// SPEC-472 ATN-011: a task that asked for two secrets keeps its flag after the first answer
-/// (SPEC-213 SRA-002), and the flag then points at the request that still waits: here the
+/// A task that asked for two secrets keeps its flag after the first answer,
+/// and the flag then points at the request that still waits: here the
 /// project's secret is answered and the one of every sandbox, on another tab of the Secrets
 /// page, still waits.
 #[tokio::test]
@@ -3408,7 +3408,7 @@ async fn a_flag_points_at_the_secret_request_that_still_waits() -> TestResult {
     Ok(())
 }
 
-/// SPEC-121 review round 1: an answer covers exactly the hosts the person saw. A host an agent
+/// An answer covers exactly the hosts the person saw. A host an agent
 /// added while the page was open is never allowed unseen; the answer changes only the hosts and
 /// the request; limits and instance-wide secrets hold.
 #[tokio::test]
@@ -3528,7 +3528,7 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
     Ok(())
 }
 
-/// SPEC-178 VAU-002 (review round 2, ADR-0144): `secret_verify` is the Superagent's only. A
+/// `secret_verify` is the Superagent's only. A
 /// task's transcript is readable by every member who can view the project, and a matching
 /// candidate's SHA-256 is the value's: a task agent is neither served it nor answered.
 #[tokio::test]
@@ -3655,7 +3655,7 @@ async fn the_egress_policy_never_sends_a_value_with_a_line_break() -> TestResult
     Ok(())
 }
 
-/// ADR-0313: asking for the fingerprints again tells a run nothing more. The set is the same on
+/// Asking for the fingerprints again tells a run nothing more. The set is the same on
 /// every request (a set that changed its hash base each time gave a value away to as many
 /// requests as it has bytes), and all it says about a value besides its length and salted digest
 /// is a tag of a few bits.

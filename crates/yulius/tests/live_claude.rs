@@ -519,7 +519,7 @@ impl LiveHome {
     }
 }
 
-/// SPEC-485 LSP-004 (ADR-0327): in each of eight layouts in which the real CLI loads a plugin's
+/// In each of eight layouts in which the real CLI loads a plugin's
 /// language server, it loads none when started with the settings Yulius plans for a run of that
 /// home and worktree, and the plugin without a language server stays on. Each layout is first shown to be
 /// one the CLI loads three servers from (the control), so a layout a later Claude Code no longer

@@ -1,4 +1,4 @@
-//! Settings → Instance, "Claude Code" over the API (SPEC-461 CCM-008..CCM-010): the superadmin
+//! Settings → Instance, "Claude Code" over the API: the superadmin
 //! sees which Claude Code sandboxes get and what it lacks, changes the release channel (stored,
 //! audited, applied to the adapter at once) and starts a check; nobody else does.
 
@@ -115,7 +115,7 @@ const VIEW: &str = "/api/admin/claude-code";
 const CHECK: &str = "/api/admin/claude-code/check";
 const CHANNEL: &str = "/api/admin/claude-code/channel";
 
-/// CCM-008: a server that does not isolate sandboxes keeps nothing current: the card says why,
+/// A server that does not isolate sandboxes keeps nothing current: the card says why,
 /// and there is nothing to check or change.
 #[tokio::test]
 async fn without_isolation_the_card_says_why_and_nothing_changes() -> TestResult {
@@ -151,7 +151,7 @@ async fn without_isolation_the_card_says_why_and_nothing_changes() -> TestResult
     Ok(())
 }
 
-/// AC6 (CCM-009): the superadmin's channel is stored, audited and followed at once; `null` goes
+/// The superadmin's channel is stored, audited and followed at once; `null` goes
 /// back to the server's configuration; an unknown channel and everyone else are refused.
 #[tokio::test]
 async fn the_superadmin_changes_the_channel_stored_audited_and_applied() -> TestResult {
@@ -366,7 +366,7 @@ async fn the_view_says_when_the_binary_could_not_be_read_for_its_models() -> Tes
     Ok(())
 }
 
-/// AC6 (CCM-010) and CCM-008: "Check now" answers 202 with the view saying it runs, and the view
+/// "Check now" answers 202 with the view saying it runs, and the view
 /// names what is wrong, with the fix, while runs get a Claude Code without the default model.
 #[tokio::test]
 async fn check_now_starts_a_check_and_the_view_says_what_is_wrong() -> TestResult {

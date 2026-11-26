@@ -327,7 +327,7 @@ async fn split_check_proposes_workstreams_and_defaults_to_one_task() -> TestResu
     Ok(())
 }
 
-/// SPEC-188 OSP-004: broad work is proposed as a supertask, also when it is short; work that
+/// Broad work is proposed as a supertask, also when it is short; work that
 /// splits never is; a prompt under 3 words, an unsure Jev and Jev down answer false.
 #[tokio::test]
 async fn intake_check_proposes_a_supertask_for_broad_work_that_does_not_split() -> TestResult {
@@ -409,7 +409,7 @@ impl ChoiceEvaluator for TogetherJev {
     }
 }
 
-/// SPEC-188 OSP-004: the split and breadth questions are asked at once, within one deadline,
+/// The split and breadth questions are asked at once, within one deadline,
 /// and the check counts as checked when only one of them answers.
 #[tokio::test]
 async fn intake_check_asks_split_and_breadth_at_once() -> TestResult {
@@ -746,7 +746,7 @@ fn prompt_body(prompt: &str) -> Value {
     json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": prompt})
 }
 
-/// SPEC-346 LPH-002 (#921, review rounds 2 and 3): the turn's Stop arrives while its prompt,
+/// The turn's Stop arrives while its prompt,
 /// past its turn-end check, is still setting Working: the Stop waits for it and then settles the
 /// task as it is, Your turn. It used to settle from the copy it read before waiting, which already
 /// read Your turn, so the task stayed Working with the agent idle.
@@ -798,7 +798,7 @@ async fn a_stop_that_waited_for_its_prompt_settles_after_it() -> TestResult {
     Ok(())
 }
 
-/// SPEC-346 LPH-002 (#921, review round 3): a late Stop of the turn before (sent before this
+/// A late Stop of the turn before (sent before this
 /// prompt) settles the task while the prompt's scope check runs: the prompt still sets Working,
 /// from the task as it is now. It used to compare with the copy it read on arrival (Working) and
 /// write nothing, so the task read Your turn while the agent worked.
@@ -843,7 +843,7 @@ async fn a_prompt_sets_working_over_an_older_stop_that_settled_meanwhile() -> Te
     Ok(())
 }
 
-/// SPEC-346 LPH-001: a hook's sent time is never taken later than Yulius's clock, and one not
+/// A hook's sent time is never taken later than Yulius's clock, and one not
 /// after the epoch counts as none: a Stop the client says it sent in an hour, or a prompt from
 /// 1970, never makes the next prompt look like history.
 #[tokio::test]
@@ -893,7 +893,7 @@ async fn a_hooks_sent_time_is_clamped_to_now() -> TestResult {
     Ok(())
 }
 
-/// SPEC-346 LPH-002 (#921): a typed prompt whose handling outlasts the hook client's wait (here
+/// A typed prompt whose handling outlasts the hook client's wait (here
 /// its scope check) is answered after the turn it started ended: the client failed open, the
 /// agent ran the turn and its Stop settled the task. The late prompt leaves the task as that Stop
 /// left it; before, it set Working again and nothing ended that turn.
@@ -1197,12 +1197,12 @@ async fn drops_scope_skips_the_chosen_steps_and_chains_the_new_direction() -> Te
         r.body["task"]["steps"]["done"], 1,
         "skipped counts as finished"
     );
-    // MSR-002 (SPEC-028): the skipped steps carry the change; no message is stored.
+    // The skipped steps carry the change; no message is stored.
     assert!(i.h.store.task_messages(&task, 10).await?.is_empty());
     Ok(())
 }
 
-/// SPEC-341 LSS-002: a step the person rules out is skipped under the task's steps lock. A step
+/// A step the person rules out is skipped under the task's steps lock. A step
 /// the agent finished while the skip waited stays done, and the answer says no open step was
 /// left instead of "0 steps skipped".
 #[tokio::test]
@@ -1258,7 +1258,7 @@ async fn a_step_finished_while_the_skip_waits_stays_done() -> TestResult {
     Ok(())
 }
 
-/// SPEC-377 SAZ-001: the answer when none of the chosen steps was still open to skip.
+/// The answer when none of the chosen steps was still open to skip.
 fn nothing_left_to_skip(body: &Value) -> String {
     format!(
         "No open step was left to skip (finished, skipped or removed meanwhile); #{} runs after this task.",
@@ -1266,7 +1266,7 @@ fn nothing_left_to_skip(body: &Value) -> String {
     )
 }
 
-/// SPEC-377 SAZ-002 (#944): a step the spec sync or `steps_set` removed while the skip waited
+/// A step the spec sync or `steps_set` removed while the skip waited
 /// for the steps lock stays removed, and the answer does not claim it was finished.
 #[tokio::test]
 async fn a_step_removed_while_the_skip_waits_stays_removed() -> TestResult {
@@ -1331,7 +1331,7 @@ async fn a_step_removed_while_the_skip_waits_stays_removed() -> TestResult {
     Ok(())
 }
 
-/// SPEC-377 SAZ-003: "Skip the selected steps…" with no step checked chains the new direction,
+/// "Skip the selected steps…" with no step checked chains the new direction,
 /// skips nothing and says no step was chosen, not that one was finished meanwhile.
 #[tokio::test]
 async fn a_skip_with_no_chosen_step_says_so() -> TestResult {
@@ -1466,7 +1466,7 @@ async fn redirect_reverts_only_with_confirmation_and_keeps_the_work() -> TestRes
     Ok(())
 }
 
-/// SPEC-017 RUL-003/RUL-005: a task waits for a logical sentence over other tasks: `and` needs
+/// A task waits for a logical sentence over other tasks: `and` needs
 /// both, `or` either, `ended` fires when a task stops, a rule that can no longer be true needs a
 /// person, and every refusal is a 422 with a reason.
 #[tokio::test]
@@ -1559,7 +1559,7 @@ async fn a_task_starts_when_its_start_rule_is_true() -> TestResult {
     Ok(())
 }
 
-/// SPEC-017: the background tick starts a task whose rule became true, Start now releases a
+/// The background tick starts a task whose rule became true, Start now releases a
 /// rule task, and deleting a task a rule names counts as that task ending.
 #[tokio::test]
 async fn start_rules_follow_the_tick_start_now_and_deletions() -> TestResult {

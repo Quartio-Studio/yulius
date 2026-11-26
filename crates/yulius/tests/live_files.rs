@@ -1,4 +1,4 @@
-//! The Editor's shared text (SPEC-411 EDT-016..020): writers join one document per file, their
+//! The Editor's shared text: writers join one document per file, their
 //! concurrent edits are transformed into one order and published to the sandbox's writers only;
 //! the server saves the text with the caller's access and follows the disk, keeping a conflict
 //! for a person's choice.
@@ -182,7 +182,7 @@ async fn concurrent_edits_of_two_writers_land_in_one_order_for_writers_only() ->
     Ok(())
 }
 
-/// AC-411-2 (EDT-018): only the people who may read the folder see the text; a task worktree's
+/// AC-411-2: only the people who may read the folder see the text; a task worktree's
 /// text is changed by its owner only, and nobody else starts it from their own text.
 #[tokio::test]
 async fn only_writers_see_the_text_and_only_a_worktrees_owner_changes_it() -> TestResult {
@@ -388,7 +388,7 @@ async fn edits_that_do_not_fit_are_refused() -> TestResult {
     Ok(())
 }
 
-/// AC-411-3 (EDT-019): a save writes the shared text with the document's base and marks it saved
+/// AC-411-3: a save writes the shared text with the document's base and marks it saved
 /// for everyone; text already saved writes nothing.
 #[tokio::test]
 async fn a_save_writes_the_shared_text_once() -> TestResult {
@@ -423,7 +423,7 @@ async fn a_save_writes_the_shared_text_once() -> TestResult {
     Ok(())
 }
 
-/// AC-411-3 (EDT-020): a disk change under saved text becomes one step; under unsaved text it is
+/// AC-411-3: a disk change under saved text becomes one step; under unsaved text it is
 /// kept as a conflict, which a save reports without writing, Keep mine writes over and Take disk
 /// version replaces.
 #[tokio::test]
@@ -539,7 +539,7 @@ async fn the_disk_is_followed_and_a_conflict_waits_for_a_choice() -> TestResult 
     Ok(())
 }
 
-/// EDT-018, EDT-022: a writer who joins a file nobody edits starts it from their own text (a
+/// A writer who joins a file nobody edits starts it from their own text (a
 /// restart lost the document); clean text from an older version gives way to the disk's.
 #[tokio::test]
 async fn a_writer_starts_the_document_from_their_own_text() -> TestResult {
@@ -590,7 +590,7 @@ async fn a_writer_starts_the_document_from_their_own_text() -> TestResult {
     Ok(())
 }
 
-/// EDT-021: presence may name the live document and revision its offsets are in.
+/// Presence may name the live document and revision its offsets are in.
 #[tokio::test]
 async fn presence_carries_the_live_revision() -> TestResult {
     let (h, alice, _, _) = fixture().await?;

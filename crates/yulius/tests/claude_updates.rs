@@ -1,4 +1,4 @@
-//! Claude Code kept current in the data directory (SPEC-421): a registry stub serves the
+//! Claude Code kept current in the data directory: a registry stub serves the
 //! dist-tags, the platform package's version document and a tarball whose `claude` is a script
 //! printing its version.
 
@@ -327,7 +327,7 @@ fn installed(root: &Path) -> Vec<String> {
     names
 }
 
-/// AC1: a newer `stable` is installed, verified and made current; runs then bind it.
+/// A newer `stable` is installed, verified and made current; runs then bind it.
 #[tokio::test]
 async fn a_newer_stable_release_is_installed_and_becomes_current() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -373,7 +373,7 @@ async fn a_newer_stable_release_is_installed_and_becomes_current() -> TestResult
     Ok(())
 }
 
-/// AC2: a refused release installs nothing and leaves the current version and no leftovers.
+/// A refused release installs nothing and leaves the current version and no leftovers.
 #[tokio::test]
 async fn a_refused_release_leaves_the_current_version() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -510,7 +510,7 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
     Ok(())
 }
 
-/// AC3: off asks nothing; a host as new as the channel downloads nothing.
+/// Off asks nothing; a host as new as the channel downloads nothing.
 #[tokio::test]
 async fn off_or_an_up_to_date_host_downloads_nothing() -> TestResult {
     let s = setup("2.1.311").await?;
@@ -529,7 +529,7 @@ async fn off_or_an_up_to_date_host_downloads_nothing() -> TestResult {
     assert!(s.updater.current().is_none());
     assert_eq!(agent_cli_source(&s.root, &s.host), s.host);
 
-    // Without a host install to bind over, nothing is asked either (CCU-005).
+    // Without a host install to bind over, nothing is asked either.
     let bare = ClaudeUpdater::with_registry(
         s.root.clone(),
         None,
@@ -543,7 +543,7 @@ async fn off_or_an_up_to_date_host_downloads_nothing() -> TestResult {
     Ok(())
 }
 
-/// AC4: the current version and the one before it are kept.
+/// The current version and the one before it are kept.
 #[tokio::test]
 async fn the_current_and_the_previous_version_stay() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -563,7 +563,7 @@ async fn the_current_and_the_previous_version_stay() -> TestResult {
     Ok(())
 }
 
-/// AC5: a host updated by hand past Yulius's version is the one runs get.
+/// A host updated by hand past Yulius's version is the one runs get.
 #[tokio::test]
 async fn a_newer_host_install_wins_over_yulius_s() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -590,7 +590,7 @@ fn updater_of(s: &Setup) -> Result<ClaudeUpdater, Box<dyn std::error::Error>> {
     )?)
 }
 
-/// CCU-001: the loop checks on its own, again after each period; with `off` it asks nothing.
+/// The loop checks on its own, again after each period; with `off` it asks nothing.
 #[tokio::test]
 async fn the_loop_installs_without_anyone_asking() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -621,7 +621,7 @@ async fn the_loop_installs_without_anyone_asking() -> TestResult {
     Ok(())
 }
 
-/// CCU-003, CCU-005: a run binds the chosen directory at the host package's path; with updates
+/// A run binds the chosen directory at the host package's path; with updates
 /// off the host's own, and nothing without a host package.
 #[tokio::test]
 async fn runs_bind_the_chosen_version_at_the_host_package_path() -> TestResult {
@@ -648,7 +648,7 @@ async fn runs_bind_the_chosen_version_at_the_host_package_path() -> TestResult {
     Ok(())
 }
 
-/// CCU-006: the doctor says which Claude Code isolated runs get and where it comes from.
+/// The doctor says which Claude Code isolated runs get and where it comes from.
 #[tokio::test]
 async fn the_doctor_names_the_version_runs_get() -> TestResult {
     let s = setup("2.1.292").await?;
@@ -677,7 +677,7 @@ async fn the_doctor_names_the_version_runs_get() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 AC5: the doctor fails loudly on a Claude Code that does not know the default model,
+/// The doctor fails loudly on a Claude Code that does not know the default model,
 /// with the fix; warns about another gap and a refused release; and names the channel the
 /// server follows (chosen in Settings) over its own argument.
 #[tokio::test]
@@ -762,7 +762,7 @@ async fn the_doctor_fails_on_a_claude_code_without_the_default_model() -> TestRe
     Ok(())
 }
 
-/// SPEC-461 CCM-006: every check is recorded, in memory for the Instance page and in the status
+/// Every check is recorded, in memory for the Instance page and in the status
 /// file for the doctor: the channel, npm's tags, what it did and what the version in use knows.
 #[tokio::test]
 async fn every_check_is_recorded_for_the_page_and_the_doctor() -> TestResult {
@@ -856,7 +856,7 @@ async fn every_check_is_recorded_for_the_page_and_the_doctor() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 CCM-009, CCM-010: a channel change applies to the next run's bind and is checked at
+/// A channel change applies to the next run's bind and is checked at
 /// once; "Check now" wakes the loop; a host without an npm install says why nothing is kept.
 #[tokio::test]
 async fn a_channel_change_and_check_now_take_effect_without_a_restart() -> TestResult {
@@ -1053,7 +1053,7 @@ async fn a_release_that_lacks_the_default_model_is_refused() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 AC3: on `stable`, when neither the version in use nor stable's release knows the
+/// On `stable`, when neither the version in use nor stable's release knows the
 /// default model, `latest`'s release is taken; when it does not know it either, nothing is, and
 /// both are named.
 #[tokio::test]
@@ -1102,7 +1102,7 @@ async fn stable_falls_forward_to_latest_for_the_default_model() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 AC3: a newer stable release without the default model is refused, then `latest`
+/// A newer stable release without the default model is refused, then `latest`
 /// too, and both are named; a version in use that knows the default model keeps `stable` on
 /// stable's releases.
 #[tokio::test]
@@ -1174,7 +1174,7 @@ async fn stable_names_both_refusals_and_stays_stable_while_the_default_is_known(
     Ok(())
 }
 
-/// SPEC-461 AC4: a release that knows the default model but not another offered one is taken;
+/// A release that knows the default model but not another offered one is taken;
 /// what it lacks is what the version in use lacks from then on.
 #[tokio::test]
 async fn a_release_lacking_another_offered_model_is_taken_and_the_gap_known() -> TestResult {
@@ -1195,7 +1195,7 @@ async fn a_release_lacking_another_offered_model_is_taken_and_the_gap_known() ->
     Ok(())
 }
 
-/// SPEC-461 AC2: an instance follows `latest` unless told otherwise, on `serve` and `doctor`
+/// An instance follows `latest` unless told otherwise, on `serve` and `doctor`
 /// (both declare [`DEFAULT_CHANNEL`]).
 #[test]
 fn the_channel_defaults_to_latest() -> TestResult {
@@ -1213,7 +1213,7 @@ fn the_channel_defaults_to_latest() -> TestResult {
     Ok(())
 }
 
-/// SPEC-461 CCM-002: the composer's list (`models.js`) and the server's are the same ids, the
+/// The composer's list (`models.js`) and the server's are the same ids, the
 /// default first.
 #[test]
 fn the_composer_offers_the_models_the_server_checks() -> TestResult {

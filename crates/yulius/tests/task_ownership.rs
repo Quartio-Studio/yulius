@@ -1,4 +1,4 @@
-//! SPEC-070, SPEC-490: a task is owned by one person, whose GitHub credentials it uses. Only the
+//! A task is owned by one person, whose GitHub credentials it uses. Only the
 //! owner steers the task; anyone else who may work in the project stops, archives and deletes
 //! it, and asks the owner for control, and a hand-over moves the task's GitHub identity to the
 //! new owner.
@@ -52,7 +52,7 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
 
 /// Who the task with live run token `token` acts as on GitHub: the login whose token opened the
 /// issue its agent asked Yulius for (Yulius's own GitHub calls carry the owner's token; the
-/// agent's shell never does, ADR-0114).
+/// agent's shell never does).
 async fn github_actor(h: &Harness, token: &str) -> Result<String, Box<dyn std::error::Error>> {
     let result = mcp_tool(
         h,
@@ -72,7 +72,7 @@ async fn github_actor(h: &Harness, token: &str) -> Result<String, Box<dyn std::e
         .ok_or("no issue opened")?)
 }
 
-/// AC1: a new task's owner is its creator, and its summary names them.
+/// A new task's owner is its creator, and its summary names them.
 #[tokio::test]
 async fn a_task_is_owned_by_its_creator() -> TestResult {
     let f = fixture().await?;
@@ -123,7 +123,7 @@ async fn auth(h: &Harness, id: &str) -> Result<AuthContext, Box<dyn std::error::
     })
 }
 
-/// The ways the web API steers a task (SPEC-490 OWN-004), each with a body that passes its
+/// The ways the web API steers a task, each with a body that passes its
 /// validation.
 fn steering(task: &str) -> Vec<(Method, String, Option<serde_json::Value>)> {
     let path = |rest: &str| format!("/api/tasks/{task}{rest}");
@@ -160,7 +160,7 @@ fn steering(task: &str) -> Vec<(Method, String, Option<serde_json::Value>)> {
     ]
 }
 
-/// What the refusal of control says (SPEC-490 OWN-004, SPEC-510 TKC-006): whose the task is, how
+/// What the refusal of control says: whose the task is, how
 /// to get control, and what is open to everyone.
 fn says_whose_and_how(message: &str) -> bool {
     message.contains("@alice")
@@ -227,7 +227,7 @@ async fn task_call(
     .await
 }
 
-/// SPEC-490 OWN-002, AC-1: a person who may work in the project stops, archives, restores and
+/// A person who may work in the project stops, archives, restores and
 /// deletes a task they do not own, with the checks these have for its owner (a running task is
 /// not archived or deleted before it is stopped).
 #[tokio::test]
@@ -275,7 +275,7 @@ async fn anyone_who_may_work_tidies_another_persons_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-490 OWN-005, AC-6: a stop, an archive and a restore of a task by someone who does not
+/// A stop, an archive and a restore of a task by someone who does not
 /// own it are audited under their login with the owner's, and the stop is said in the task's
 /// terminal; the owner's own page actions leave no such entry and say nothing.
 #[tokio::test]
@@ -366,7 +366,7 @@ async fn a_tidy_by_someone_else_names_them_and_the_owner() -> TestResult {
     Ok(())
 }
 
-/// SPEC-490 OWN-002: a task that waits to start is cancelled by anyone who may work.
+/// A task that waits to start is cancelled by anyone who may work.
 #[tokio::test]
 async fn anyone_who_may_work_cancels_a_task_that_waits() -> TestResult {
     let f = fixture().await?;
@@ -384,7 +384,7 @@ async fn anyone_who_may_work_cancels_a_task_that_waits() -> TestResult {
     Ok(())
 }
 
-/// SPEC-490 OWN-002, AC-2: tidying needs write access. A reader is refused (403) and a person
+/// Tidying needs write access. A reader is refused (403) and a person
 /// without access to the project does not see the task (404); nothing changes.
 #[tokio::test]
 async fn a_reader_tidies_nothing() -> TestResult {
@@ -431,7 +431,7 @@ fn forbidden(result: &Result<(), yulius_app::error::AppError>) -> bool {
     matches!(result, Err(yulius_app::error::AppError::Forbidden(_)))
 }
 
-/// SPEC-118 KEY-002: the typist's write grant spares each keystroke the permission lookup, yet a
+/// The typist's write grant spares each keystroke the permission lookup, yet a
 /// hand-over refuses the previous owner's very next keystroke.
 #[tokio::test]
 async fn a_hand_over_refuses_the_previous_owners_next_keystroke() -> TestResult {
@@ -456,7 +456,7 @@ async fn a_hand_over_refuses_the_previous_owners_next_keystroke() -> TestResult 
     Ok(())
 }
 
-/// SPEC-118 KEY-002 (review): disabling the typist refuses their next keystroke, although the
+/// Disabling the typist refuses their next keystroke, although the
 /// viewer's own copy of the user (taken when the socket opened) is not disabled.
 #[tokio::test]
 async fn disabling_the_typist_refuses_their_next_keystroke() -> TestResult {
@@ -473,7 +473,7 @@ async fn disabling_the_typist_refuses_their_next_keystroke() -> TestResult {
     Ok(())
 }
 
-/// SPEC-118 KEY-002 (review): signing out (the web session revoked) refuses the next keystroke of
+/// Signing out (the web session revoked) refuses the next keystroke of
 /// a terminal opened with that session.
 #[tokio::test]
 async fn signing_out_refuses_the_next_keystroke() -> TestResult {
@@ -502,7 +502,7 @@ async fn signing_out_refuses_the_next_keystroke() -> TestResult {
     Ok(())
 }
 
-/// SPEC-118 KEY-003: a grant older than 30 s is re-confirmed beside the input. A GitHub downgrade
+/// A grant older than 30 s is re-confirmed beside the input. A GitHub downgrade
 /// found there (the permission cache expired) refuses the keystrokes after the one that found it.
 #[tokio::test]
 async fn a_downgrade_found_beside_the_input_refuses_the_next_keystroke() -> TestResult {
@@ -539,7 +539,7 @@ fn id_of(f: &Fixture) -> &str {
     f.task.id.as_str()
 }
 
-/// SPEC-490 OWN-002, AC-1: an agent acting for a person (here a task of Bob's) stops, archives
+/// An agent acting for a person (here a task of Bob's) stops, archives
 /// and deletes a task Bob does not own, as Bob may; it steers none (a message is refused with
 /// the owner's name).
 #[tokio::test]
@@ -952,7 +952,7 @@ async fn a_requester_who_cannot_work_gives_way() -> TestResult {
     Ok(())
 }
 
-/// AC2 (review), ADR-0114: after a hand-over the agent's `gh` (a credential asked without a
+/// After a hand-over the agent's `gh` (a credential asked without a
 /// repository path) still gets the App's agent token, never the new owner's.
 #[tokio::test]
 async fn the_agents_gh_never_gets_the_new_owners_token() -> TestResult {
@@ -1073,7 +1073,7 @@ async fn take_back(
     .await
 }
 
-/// SPEC-490 OWN-009, OWN-010, AC-9: Alice hands her task to Bob on his request and takes it back
+/// Alice hands her task to Bob on his request and takes it back
 /// without asking: it is hers again, acts on GitHub as her, Bob is refused control again, and the
 /// terminal and the audit say so. Nobody else takes it back, and once she has, nor does she.
 #[tokio::test]
@@ -1110,7 +1110,7 @@ async fn the_giver_takes_a_task_back() -> TestResult {
     let mut events = f.h.app.events.subscribe();
     let back = take_back(&f, &f.alice).await?;
     assert_eq!(back.status, 200, "{}", back.body);
-    // Bob, from whom it was taken, is told in his own event stream (OWN-010).
+    // Bob, from whom it was taken, is told in his own event stream.
     let mut told = Vec::new();
     while let Ok(envelope) = events.try_recv() {
         if let yulius_contracts::events::UiEvent::ControlTakenBack { task_id, by, .. } =
@@ -1145,7 +1145,7 @@ async fn the_giver_takes_a_task_back() -> TestResult {
     Ok(())
 }
 
-/// SPEC-490 OWN-009, AC-9, AC-10: the right ends when control moves again. Handed on by Bob to
+/// The right ends when control moves again. Handed on by Bob to
 /// Carol, only Bob takes it back; handed back to Alice on her request, nobody does; a giver who
 /// can no longer work is refused.
 #[tokio::test]
@@ -1248,7 +1248,7 @@ async fn ask_first(
     .await
 }
 
-/// SPEC-510 TKC-001, TKC-002, AC1: Bob takes Alice's task without asking. It acts on GitHub as
+/// Bob takes Alice's task without asking. It acts on GitHub as
 /// him, Carol's waiting request is dropped, Alice is told wherever she is and takes it back, and
 /// the terminal and the audit say so.
 #[tokio::test]
@@ -1299,7 +1299,7 @@ async fn a_teammate_takes_control_at_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-510 TKC-003, AC2: Alice chooses to be asked. Bob's take is refused naming her and the
+/// Alice chooses to be asked. Bob's take is refused naming her and the
 /// task stays hers; his request waits for her answer. The choice is hers alone and is read back
 /// from `/api/me`.
 #[tokio::test]
@@ -1332,7 +1332,7 @@ async fn an_owner_who_asks_first_is_asked() -> TestResult {
         "{message}"
     );
     assert_eq!(github_actor(&f.h, "tt").await?, "alice");
-    // Steering her task, Bob is told to ask her (TKC-006).
+    // Steering her task, Bob is told to ask her.
     let continued = call(
         &f.h.router,
         Method::POST,
@@ -1357,7 +1357,7 @@ async fn an_owner_who_asks_first_is_asked() -> TestResult {
     Ok(())
 }
 
-/// SPEC-510 TKC-004, AC3: an owner who can no longer act holds no task, whatever they chose.
+/// An owner who can no longer act holds no task, whatever they chose.
 #[tokio::test]
 async fn an_absent_owner_who_asks_first_loses_the_task_to_a_take() -> TestResult {
     let f = fixture().await?;
@@ -1372,7 +1372,7 @@ async fn an_absent_owner_who_asks_first_loses_the_task_to_a_take() -> TestResult
     Ok(())
 }
 
-/// SPEC-510 TKC-007, AC4: the owner, a reader and a disabled account take nothing.
+/// The owner, a reader and a disabled account take nothing.
 #[tokio::test]
 async fn a_take_is_refused_to_whoever_may_not_take() -> TestResult {
     let f = fixture().await?;
@@ -1400,14 +1400,14 @@ async fn a_take_is_refused_to_whoever_may_not_take() -> TestResult {
     Ok(())
 }
 
-/// SPEC-510 TKC-002 (review rounds 1 and 2): Alice takes back by taking control herself. She was
+/// Alice takes back by taking control herself. She was
 /// the giver, so it is a take-back: nobody may take it back afterwards, nothing promises it, and
 /// Bob, from whom it was taken, is told it was taken back.
 #[tokio::test]
 async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     let f = fixture().await?;
     assert_eq!(take(&f, &f.bob).await?.status, 200);
-    // Bob asking first does not keep the task from whoever it was taken from (ADR-0365).
+    // Bob asking first does not keep the task from whoever it was taken from.
     assert_eq!(ask_first(&f.h, &f.bob, true).await?.status, 200);
     let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
     let mut events = f.h.app.events.subscribe();
@@ -1444,7 +1444,7 @@ async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     Ok(())
 }
 
-/// What the agent of task `id` asks a person (SPEC-134), as the `needs_you` tool records it.
+/// What the agent of task `id` asks a person, as the `needs_you` tool records it.
 async fn ask(h: &Harness, id: &str) -> TestResult {
     let asked = yulius_app::needs_you::NeedsYouRecord {
         action: "Choose the staging region".into(),
@@ -1462,7 +1462,7 @@ async fn ask(h: &Harness, id: &str) -> TestResult {
     Ok(())
 }
 
-/// `POST /api/tasks/{id}/needs-you/answer` (SPEC-516) by `who`.
+/// `POST /api/tasks/{id}/needs-you/answer` by `who`.
 async fn answer(
     h: &Harness,
     id: &str,
@@ -1479,7 +1479,7 @@ async fn answer(
     .await
 }
 
-/// SPEC-516 NYA-004, AC2: an answer is refused, saying why, with nothing to answer, an empty
+/// An answer is refused, saying why, with nothing to answer, an empty
 /// text, a task that does not run, an agent asking in its terminal, the owner's personal secret
 /// within the run's reach, a reader and a disabled account; the request stays open and the task
 /// stays its owner's.
@@ -1567,7 +1567,7 @@ async fn a_needs_you_answer_is_refused_where_it_must_not_reach_the_agent() -> Te
     Ok(())
 }
 
-/// SPEC-516 NYA-004 (review round 1): the owner's personal MCP server for the project keeps a
+/// The owner's personal MCP server for the project keeps a
 /// teammate's answer out as their personal secret does.
 #[tokio::test]
 async fn the_owners_personal_mcp_server_keeps_a_teammates_answer_out() -> TestResult {
@@ -1598,7 +1598,7 @@ async fn the_owners_personal_mcp_server_keeps_a_teammates_answer_out() -> TestRe
     Ok(())
 }
 
-/// SPEC-516 NYA-004 (review round 1): an automation's task holds no person's secrets or servers,
+/// An automation's task holds no person's secrets or servers,
 /// so its owner's personal secret does not keep a teammate's answer out: it goes on to the
 /// session (here none is live, which is the refusal it meets).
 #[tokio::test]
@@ -1638,7 +1638,7 @@ async fn an_automations_task_is_answered_whatever_its_owners_personal_secrets() 
     Ok(())
 }
 
-/// SPEC-516 NYA-004 (review round 1): the access check may wait on GitHub; what the task is
+/// The access check may wait on GitHub; what the task is
 /// doing is decided from a read after it. The agent opens a question in its terminal meanwhile,
 /// and the answer is refused for it rather than typed into the menu.
 #[tokio::test]
@@ -1719,7 +1719,7 @@ async fn asked_of(
     Ok((at, named))
 }
 
-/// SPEC-512 ANS-001 (#1418): a request names whom it waits for; a login without write access to
+/// A request names whom it waits for; a login without write access to
 /// the project, or no person of the instance, refuses the whole request, saying which; the owner
 /// named is no one extra.
 #[tokio::test]
@@ -1754,9 +1754,9 @@ async fn a_needs_you_names_who_it_waits_for() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 ANS-002, ANS-003 (#1418): a named request is answered by its owner and whom it
+/// A named request is answered by its owner and whom it
 /// names, on the page and through `task_message`; another writer is refused with whom it asks.
-/// A request that names nobody stays any writer's (ADR-0370).
+/// A request that names nobody stays any writer's.
 #[tokio::test]
 async fn a_named_request_is_answered_by_whom_it_names() -> TestResult {
     let f = fixture().await?;
@@ -1836,7 +1836,7 @@ async fn a_named_request_is_answered_by_whom_it_names() -> TestResult {
     Ok(())
 }
 
-/// `POST /api/tasks/t1/needs-you/withdraw` of Bob by `who` (SPEC-512 ANS-005).
+/// `POST /api/tasks/t1/needs-you/withdraw` of Bob by `who`.
 async fn withdraw_bob(
     f: &Fixture,
     who: &Creds,
@@ -1851,7 +1851,7 @@ async fn withdraw_bob(
     .await
 }
 
-/// SPEC-512 ANS-004, ANS-005 (#1418): an answer to a request that was replaced, or by a person
+/// An answer to a request that was replaced, or by a person
 /// the owner withdrew, is refused saying which; only the owner withdraws, and it is audited.
 #[tokio::test]
 async fn an_answer_to_a_replaced_or_withdrawn_request_is_refused() -> TestResult {
@@ -1925,9 +1925,8 @@ async fn an_answer_to_a_replaced_or_withdrawn_request_is_refused() -> TestResult
     Ok(())
 }
 
-/// SPEC-512 ANS-006 (#1418): a person a request names answers it and nothing else: terminal
-/// input, Continue and merges stay the owner's; a stop is anyone's who may work there
-/// (ADR-0331).
+/// A person a request names answers it and nothing else: terminal
+/// input, Continue and merges stay the owner's; a stop is anyone's who may work there.
 #[tokio::test]
 async fn a_named_person_steers_nothing_else() -> TestResult {
     let f = fixture().await?;
@@ -1952,7 +1951,7 @@ async fn a_named_person_steers_nothing_else() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 ANS-001, ANS-005 (review of part 2): more than ten names, or a disabled person,
+/// More than ten names, or a disabled person,
 /// refuse the request; a withdrawal with no request, or of a login it does not name, is 409; a
 /// withdrawn person's own agent is refused too.
 #[tokio::test]
@@ -2003,7 +2002,7 @@ async fn naming_and_withdrawing_refuse_what_cannot_hold() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 ANS-001 (review of part 2): when GitHub does not answer, a named person's access is
+/// When GitHub does not answer, a named person's access is
 /// not judged "none": the request is refused saying it could not be checked now.
 #[tokio::test]
 async fn a_name_whose_access_cannot_be_checked_is_said_so() -> TestResult {
@@ -2022,7 +2021,7 @@ async fn a_name_whose_access_cannot_be_checked_is_said_so() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 ANS-001 (review round 3 of part 2): a person with no usable GitHub sign-in cannot
+/// A person with no usable GitHub sign-in cannot
 /// be named until they sign in again; a task whose run holds the owner's personal secrets
 /// names nobody else, since only its owner can answer it.
 #[tokio::test]

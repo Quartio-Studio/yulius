@@ -31,7 +31,7 @@ async fn agent(
     })
 }
 
-/// AC-21 (SCO-001): B claims `crates/a/**` while live task A holds `crates/a/src/x.rs`. B's
+/// B claims `crates/a/**` while live task A holds `crates/a/src/x.rs`. B's
 /// answer names A, its title, its note, its step in progress and its pull request (none yet);
 /// A's session gets one message naming B and the paths, and a second claim of the same paths
 /// types nothing again.
@@ -153,7 +153,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         assert_eq!(pull_request["stage"], "pr_open", "{answer}");
         assert_eq!(pull_request["checks"], "passed", "{answer}");
         assert_eq!(pull_request["merge_armed"], false, "{answer}");
-        // SCO-002: both tasks' views (the page's and the list's) carry the overlap.
+        // Both tasks' views (the page's and the list's) carry the overlap.
         let b_number = app.deps.store.task(&b).await?.ok_or("b")?.number;
         let view = |id: yulius_domain::ids::TaskId| {
             let app = app.clone();
@@ -176,7 +176,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
             "{seen_by_b:?}"
         );
         assert_eq!(seen_by_b[0].patterns, ["crates/a/**"]);
-        // AC-22 (SCO-004): a task created with paths a live task holds is not made blind: the
+        // A task created with paths a live task holds is not made blind: the
         // answer names the holder and offers to run it after that task; with `after_task` it
         // is made, waiting behind it, holding its paths.
         let caller = claimer.caller();

@@ -1,7 +1,7 @@
-//! Leftovers end to end (SPEC-215, ADR-0170): a real store, the real Git adapter, a data
+//! Leftovers end to end: a real store, the real Git adapter, a data
 //! directory laid out as the server writes it and a fake isolation whose holders the test starts
-//! and stops. A removed sandbox's disposable parts go once nothing of it runs (#625), its system
-//! layer once its holder has stopped (#582), a partly cleaned one is finished, what PRJ-009 keeps
+//! and stops. A removed sandbox's disposable parts go once nothing of it runs, its system
+//! layer once its holder has stopped, a partly cleaned one is finished, what PRJ-009 keeps
 //! stays, and every rule is checked again right before a deletion.
 
 use crate::support;
@@ -33,7 +33,7 @@ use yulius_domain::time::Timestamp;
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// Holders the test starts and stops; mapped removals are recorded and done by the walk the
-/// mapped root runs (`sandbox-host remove-tree --below <data>`, ADR-0176).
+/// mapped root runs (`sandbox-host remove-tree --below <data>`).
 #[derive(Default)]
 struct Holders {
     data: PathBuf,
@@ -198,7 +198,7 @@ fn kinds(items: &[Leftover]) -> Vec<(Kind, String)> {
     kinds
 }
 
-/// #625 and PRJ-009: a removed sandbox loses its worktrees, CI checkouts, browser, CD files,
+/// A removed sandbox loses its worktrees, CI checkouts, browser, CD files,
 /// system layer and holder state in one automatic round once 10 minutes have passed and nothing
 /// of it runs, each audited; its clone, home, transcripts and export stay; a live sandbox keeps
 /// everything.
@@ -208,10 +208,10 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
     let w = world().await?;
     let old = w.sandbox("old").await?;
     let live = w.sandbox("live").await?;
-    // A snapshot import's checkout a failed import left (ADR-0213).
+    // A snapshot import's checkout a failed import left.
     write(&w.at("import-worktrees/old/import-j1/src/a.txt"), "x")?;
     write(&w.at("import-worktrees/live/import-j2/src/a.txt"), "x")?;
-    // Script watches' files (SPEC-630): written by the sandbox's mapped ids too.
+    // Script watches' files: written by the sandbox's mapped ids too.
     write(&w.at("watches/old/home/.cache/x"), "x")?;
     write(&w.at("watches/live/home/.cache/x"), "x")?;
     w.remove("old").await?;
@@ -247,7 +247,7 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
         mapped.contains(&w.at("sysroots/old")),
         "the system layer goes through the isolation's mapped removal"
     );
-    // #675: CI jobs and agents write files there as the sandbox's mapped ids.
+    // CI jobs and agents write files there as the sandbox's mapped ids.
     for sandbox_written in ["worktrees", "ci", "browser"] {
         assert!(
             mapped.contains(&old.join(sandbox_written)),
@@ -303,7 +303,7 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
     Ok(())
 }
 
-/// #582: the system layer and holder state stay while the holder runs and go once it stopped.
+/// The system layer and holder state stay while the holder runs and go once it stopped.
 #[tokio::test]
 async fn the_system_layer_waits_for_the_holder_to_stop() -> BoxResult<()> {
     let w = world().await?;
@@ -330,7 +330,7 @@ async fn the_system_layer_waits_for_the_holder_to_stop() -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-279 PDE-007: a sandbox's production holder trees (`<sid>.prod`) are the sandbox's: never
+/// A sandbox's production holder trees (`<sid>.prod`) are the sandbox's: never
 /// `Unowned` while it lives; with a removed sandbox they go once its production holder stopped,
 /// and a production run's files (written as mapped ids) go through the mapped removal.
 #[tokio::test]
@@ -390,7 +390,7 @@ async fn production_holder_trees_belong_to_their_sandbox() -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-279 (review finding 2): a live sandbox's production run files no running deploy owns,
+/// A live sandbox's production run files no running deploy owns,
 /// left by a removal that failed, are an ended run: listed after a day and removed as mapped
 /// root; a running deploy's are kept.
 #[tokio::test]
@@ -519,7 +519,7 @@ async fn a_running_job_or_a_live_holder_blocks_deletion() -> BoxResult<()> {
     Ok(())
 }
 
-/// LFT-007: the rule is checked again right before each deletion. A CI run or a holder that
+/// The rule is checked again right before each deletion. A CI run or a holder that
 /// started after the scan keeps the files the scan listed; the item is reported as kept.
 #[tokio::test]
 async fn the_rule_is_checked_again_at_deletion() -> BoxResult<()> {
@@ -558,7 +558,7 @@ async fn the_rule_is_checked_again_at_deletion() -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-413 ANR-002 (#1023): an old composer draft that a waiting task's request names is no
+/// An old composer draft that a waiting task's request names is no
 /// leftover, and one a request names by the time it would be deleted stays; an unnamed one goes.
 #[tokio::test]
 async fn old_drafts_a_request_names_are_no_leftovers() -> BoxResult<()> {
@@ -623,7 +623,7 @@ async fn old_drafts_a_request_names_are_no_leftovers() -> BoxResult<()> {
     Ok(())
 }
 
-/// LFT-006: instance leftovers. A smoke test's sandbox whose process is gone, old run
+/// Instance leftovers. A smoke test's sandbox whose process is gone, old run
 /// directories and transcripts of deleted tasks go by themselves; a directory no sandbox owns
 /// and a worktree no task owns wait for a person.
 #[tokio::test]
@@ -701,7 +701,7 @@ async fn instance_leftovers_are_found_and_only_safe_ones_go_by_themselves() -> B
         w.at("import-worktrees/live/import-j9/file").exists(),
         "it may hold a person's uncommitted files: a person decides"
     );
-    // A person deletes it (ADR-0213): outside the sandbox directory, as the server's own files.
+    // A person deletes it: outside the sandbox directory, as the server's own files.
     let checkout = w.at("import-worktrees/live/import-j9");
     let item: Vec<Leftover> = items
         .iter()
@@ -725,7 +725,7 @@ async fn instance_leftovers_are_found_and_only_safe_ones_go_by_themselves() -> B
     Ok(())
 }
 
-/// SPEC-219 (review of 5d72af32): a delivery environment run's directory (`runs/env-<run>`) is
+/// A delivery environment run's directory (`runs/env-<run>`) is
 /// its own while the run is `running`, however old; once it ended, it is an ended run.
 #[tokio::test]
 async fn a_running_environment_run_keeps_its_directory() -> BoxResult<()> {
@@ -785,7 +785,7 @@ async fn settled(h: &support::Harness, creds: &Creds) -> BoxResult<Value> {
     Err("the job never ended".into())
 }
 
-/// LFT-010: the superadmin lists, rescans and deletes; everyone else is refused; Delete all
+/// The superadmin lists, rescans and deletes; everyone else is refused; Delete all
 /// safe never takes an item that needs a person; unknown ids are refused.
 #[tokio::test]
 async fn the_superadmin_lists_rescans_and_deletes_through_the_api() -> BoxResult<()> {
@@ -907,7 +907,7 @@ async fn gone_within(path: &Path, limit: Duration) -> bool {
     true
 }
 
-/// LFT-009: the automatic round runs at start (two minutes in, so after every update) and
+/// The automatic round runs at start (two minutes in, so after every update) and
 /// again every period (an hour); starting writes the CLI's key (0600). The test shortens the
 /// periods to 100 ms and 600 ms.
 #[tokio::test]
@@ -955,7 +955,7 @@ async fn the_round_runs_at_start_and_every_period() -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-276 RDA-011, RDA-012: a removed sandbox whose files were asked to go loses every one of
+/// A removed sandbox whose files were asked to go loses every one of
 /// them (clone, home and sessions, worktrees, CI, browser, system layer, holder state, CD files,
 /// transcripts and export) as soon as nothing of it runs, without the 10-minute wait, and waits
 /// while its holder lives; a kept one keeps what PRJ-009 keeps; another sandbox's export whose slug
@@ -1014,7 +1014,7 @@ async fn a_purged_sandbox_loses_every_file_once_nothing_runs_and_a_kept_one_keep
     Ok(())
 }
 
-/// SPEC-276 RDA-012: a removed sandbox whose files were kept is listed with its removal and the
+/// A removed sandbox whose files were kept is listed with its removal and the
 /// size of everything of it; the superadmin's Delete files (the purge) deletes them and the list
 /// no longer shows it; a member cannot purge a removed sandbox.
 #[tokio::test]
@@ -1071,7 +1071,7 @@ async fn kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request() -> 
     Ok(())
 }
 
-/// SPEC-276 RDA-011: a purge waiting for its holder is tried again by its watch, which deletes the
+/// A purge waiting for its holder is tried again by its watch, which deletes the
 /// files soon after the holder stopped, with no round and no person.
 #[tokio::test]
 async fn the_purge_watch_deletes_the_files_once_the_holder_stops() -> BoxResult<()> {
@@ -1100,7 +1100,7 @@ async fn the_purge_watch_deletes_the_files_once_the_holder_stops() -> BoxResult<
     Ok(())
 }
 
-/// SPEC-276 RDA-011 (review round 1): the leftovers round leaves a sandbox whose purge was
+/// The leftovers round leaves a sandbox whose purge was
 /// requested to the purge, so two deleters never work on one tree.
 #[tokio::test]
 async fn the_leftovers_round_leaves_a_purged_sandbox_to_its_purge() -> BoxResult<()> {
@@ -1123,7 +1123,7 @@ async fn the_leftovers_round_leaves_a_purged_sandbox_to_its_purge() -> BoxResult
     Ok(())
 }
 
-/// SPEC-276 RDA-012 (review round 1): a sandbox removed with its files kept is listed at once,
+/// A sandbox removed with its files kept is listed at once,
 /// before any scan measured it.
 #[tokio::test]
 async fn a_kept_sandbox_is_listed_before_a_scan() -> BoxResult<()> {
@@ -1139,7 +1139,7 @@ async fn a_kept_sandbox_is_listed_before_a_scan() -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-276 RDA-009: the automatic round deletes the safe leftovers with nobody running the
+/// The automatic round deletes the safe leftovers with nobody running the
 /// CLI, and the view says when it last ran and what it did.
 #[tokio::test]
 async fn the_view_shows_what_the_last_automatic_round_did() -> BoxResult<()> {
@@ -1166,7 +1166,7 @@ async fn the_view_shows_what_the_last_automatic_round_did() -> BoxResult<()> {
     Ok(())
 }
 
-/// LFT-012: `yulius leftovers` lists and deletes through the loopback listener with the key the
+/// `yulius leftovers` lists and deletes through the loopback listener with the key the
 /// server wrote; a refused confirmation deletes nothing; a wrong key or no server is reported
 /// with exit 2.
 #[tokio::test]
@@ -1272,7 +1272,7 @@ async fn the_cli_lists_and_deletes_with_the_server_s_key() -> BoxResult<()> {
     Ok(())
 }
 
-/// LFT-012: the loopback routes refuse a request without the key, with an empty one, a wrong
+/// The loopback routes refuse a request without the key, with an empty one, a wrong
 /// one, and every request before the server wrote its key.
 #[tokio::test]
 async fn the_loopback_routes_need_the_server_s_key() -> BoxResult<()> {
@@ -1620,7 +1620,7 @@ async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-351 CCH-003: a job's cache (`ci/cache/<checkout>`) goes like its checkout, and what the
+/// A job's cache (`ci/cache/<checkout>`) goes like its checkout, and what the
 /// cache every job shared held (entries named like no job) goes too; a used job's cache stays.
 #[tokio::test]
 async fn unused_ci_caches_go_like_their_checkouts() -> BoxResult<()> {
@@ -1664,7 +1664,7 @@ async fn unused_ci_caches_go_like_their_checkouts() -> BoxResult<()> {
     Ok(())
 }
 
-/// LFT-007: a done task's cache listed by a scan stays when the task works again before the
+/// A done task's cache listed by a scan stays when the task works again before the
 /// deletion.
 #[tokio::test]
 async fn a_cache_whose_task_works_again_is_kept() -> BoxResult<()> {

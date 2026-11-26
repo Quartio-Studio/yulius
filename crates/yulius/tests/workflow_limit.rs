@@ -1,4 +1,4 @@
-//! SPEC-486: a usage limit met while a session runs a dynamic workflow (Claude Code's Workflow
+//! A usage limit met while a session runs a dynamic workflow (Claude Code's Workflow
 //! tool). The limit refuses the workflow's agents, is written to their transcripts only and
 //! pauses the workflow without waking the session's own thread; Yulius moves the task as at any
 //! limit and tells the relaunched session to resume the workflow by its run id.
@@ -48,7 +48,7 @@ fn relaunch(run_dir: &str) -> Result<(String, String), BoxError> {
     Ok((launch, run))
 }
 
-/// WFL-004: the relaunch opens with the prompt that resumes the workflow by its run id, in the
+/// The relaunch opens with the prompt that resumes the workflow by its run id, in the
 /// same session, in place of the silent continuation of SPEC-034.
 fn resume_prompt_problems(launch: &str) -> Vec<String> {
     let mut problems = Vec::new();
@@ -81,7 +81,7 @@ async fn shown(app: &App, id: &TaskId) -> Result<(String, bool, Option<u32>), Bo
 /// pauses and the session's own transcript shows a finished turn. With another subscription
 /// free, the task moves to it by itself, with no pause and no person; the session is relaunched
 /// with the prompt that resumes the run by its id, and the run finishes: its first agent's
-/// result is kept, the refused agent and the next run (SPEC-486 WFL-002, WFL-004).
+/// result is kept, the refused agent and the next run.
 #[test]
 fn a_limit_met_by_a_workflow_s_agent_moves_the_task_and_resumes_the_workflow() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -162,7 +162,7 @@ fn a_limit_met_by_a_workflow_s_agent_moves_the_task_and_resumes_the_workflow() -
     Ok(())
 }
 
-/// WFL-005: with no subscription that can take the task, the limit a workflow's agent met opens
+/// With no subscription that can take the task, the limit a workflow's agent met opens
 /// a `limit` pause: the task reads paused with the reset it waits for, not working. When a
 /// subscription has room again the task resumes there by itself, with the prompt that resumes
 /// the run.
@@ -304,7 +304,7 @@ fn a_limit_that_also_cuts_the_session_s_turn_moves_once_and_resumes_the_workflow
     Ok(())
 }
 
-/// WFL-003, WFL-004: a workflow is known from its launch, with no limit at all: nothing moves
+/// A workflow is known from its launch, with no limit at all: nothing moves
 /// and nothing pauses while it runs, and a relaunch of the session for another reason (here a
 /// move a person asks for) ends the workflow with the old process and tells the session's
 /// agent to resume it, after no other words.
@@ -389,7 +389,7 @@ async fn model_week(app: &App, account: &str, family: &str) -> serde_json::Value
     stored[format!("weekly_{family}")].clone()
 }
 
-/// WFL-002 (review round 1): a workflow's agent that runs another model than the session's is
+/// A workflow's agent that runs another model than the session's is
 /// refused for that model's usage credits. The limit is that model's: the subscription's reading
 /// keeps it, and the task, whose own model still runs, is neither moved nor paused, nor is its
 /// own model's allowance marked used up.
@@ -401,7 +401,7 @@ fn a_limit_of_another_model_met_by_a_workflow_s_agent_leaves_the_task() -> TestR
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let agent = FakeAgentOptions {
-            // The session runs the default model, Opus 5.5 (SPEC-493); the agent runs Fable.
+            // The session runs the default model, Opus 5.5; the agent runs Fable.
             workflow_limit_model: Some("claude-fable-5-2".into()),
             ..workflow_agent(true)
         };
@@ -439,7 +439,7 @@ fn a_limit_of_another_model_met_by_a_workflow_s_agent_leaves_the_task() -> TestR
     Ok(())
 }
 
-/// WFL-002: the same refusal met by an agent that runs the session's model (its meta file names
+/// The same refusal met by an agent that runs the session's model (its meta file names
 /// none) is the session's: the task moves, and the limit is kept as its model's.
 #[test]
 fn a_limit_of_the_session_s_model_met_by_a_workflow_s_agent_moves_the_task() -> TestResult {
@@ -488,7 +488,7 @@ fn a_limit_of_the_session_s_model_met_by_a_workflow_s_agent_moves_the_task() -> 
     Ok(())
 }
 
-/// WFL-004 (review round 1): the unfinished runs are still known when the relaunch past the
+/// The unfinished runs are still known when the relaunch past the
 /// limit fails after the old process ended. The task stops ("switch failed"), and the launch
 /// that continues it afterwards still tells its session to resume the workflow.
 #[test]
@@ -553,7 +553,7 @@ fn a_relaunch_that_fails_still_knows_the_workflow_at_the_next_one() -> TestResul
     Ok(())
 }
 
-/// WFL-003 (review round 1): the unfinished runs and the limit that paused them are known
+/// The unfinished runs and the limit that paused them are known
 /// after a Yulius restart, from the replay of the run's transcript and its workflow agents'.
 /// The task that waited at the limit still waits, and its resume tells the session to resume
 /// the workflow.

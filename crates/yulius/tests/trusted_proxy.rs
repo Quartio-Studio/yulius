@@ -426,7 +426,7 @@ async fn device_start(
         .0)
 }
 
-/// #169: device start is limited per client like password sign-in, in its own buckets: a
+/// Device start is limited per client like password sign-in, in its own buckets: a
 /// proxied client's starts past the burst get 429 while another client and password sign-in
 /// are unaffected; a minute later the first client starts again.
 #[tokio::test]

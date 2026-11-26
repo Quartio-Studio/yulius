@@ -1,4 +1,4 @@
-//! The server's own Git, confined (SPEC-483 G1, ADR-0322): the real adapter exactly as the
+//! The server's own Git, confined (SPEC-483 G1): the real adapter exactly as the
 //! server builds it, in the server's folder layout, against a clone whose every file an agent
 //! writes. Whatever the clone's configuration names is not run, and a link in the clone leads
 //! Git nowhere outside the sandbox's folders.
@@ -432,7 +432,7 @@ async fn only_the_sandboxes_own_origin_is_taken_from_its_configuration() -> Test
     Ok(())
 }
 
-/// G2 (ADR-0323): a transfer with a remote on the web carries the server's token, and in the
+/// G2: a transfer with a remote on the web carries the server's token, and in the
 /// clone it would be shaped by the clone's configuration, where a key for a URL beats the
 /// server's own. Here the clone names a proxy (for every address and for the remote's) and
 /// switches the certificate check off; the remote itself answers nobody. The server's fetch,
@@ -1287,7 +1287,7 @@ fn the_doctor_reports_the_confinement() -> TestResult {
         .find(|line| line.contains("git confinement"))
         .ok_or_else(|| format!("no such check in: {said}"))?;
     assert!(line.starts_with("ok"), "{line}");
-    // And that this machine's Git leaves a missing object missing when told to (ADR-0323).
+    // And that this machine's Git leaves a missing object missing when told to.
     let line = said
         .lines()
         .find(|line| line.contains("git missing objects"))

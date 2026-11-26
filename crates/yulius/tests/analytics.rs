@@ -1,5 +1,5 @@
 //! Analytics summary/export over visible sandboxes and the status panel (AC-ANL-1/3,
-//! AC-STA-1; ANL-001..003, UI-007).
+//! AC-STA-1; ANL-001..003).
 
 use crate::support;
 
@@ -296,7 +296,7 @@ async fn seed_cohort(h: &support::Harness) -> TestResult {
         json!({"harness": "claude", "account": "acc-a"}),
     )
     .await?;
-    // A restart on a newer Claude Code keeps the subscription: it is no switch (SPEC-461).
+    // A restart on a newer Claude Code keeps the subscription: it is no switch.
     h.store
         .insert_switch(&SwitchDecisionRecord {
             id: "d3".into(),
@@ -508,7 +508,7 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
     assert!(b["account_email"].is_null(), "unknown stays unknown");
 
     // Durations from attempts: t1 = 30 + 10 min, t2 = 20 min; active time from metrics: only
-    // t1's first run reported it (SPEC-087 MET-005).
+    // t1's first run reported it.
     assert_eq!(
         s["duration_ms"],
         json!({"median": 1_800_000, "p90": 2_400_000, "total_wall": 3_600_000, "total_active": 600_000,
@@ -802,12 +802,12 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
             "{hidden} is for administrators only"
         );
     }
-    // Members name a subscription when they move their task to it (SPEC-447 MOV-004).
+    // Members name a subscription when they move their task to it.
     assert!(a["id"].as_str().is_some_and(|id| !id.is_empty()), "{a}");
     let b = by(&s["accounts"], "label", "Claude B")?;
     assert!(b["usage"]["primary"].is_null(), "unknown usage stays null");
 
-    // The superadmin sees every sandbox (ACC-012); an instance administrator only what GitHub
+    // The superadmin sees every sandbox; an instance administrator only what GitHub
     // grants.
     let owner_view = call(&h.router, Method::GET, "/api/status", None, &admin).await?;
     let mut every = owner_view.body["sandboxes"]
@@ -853,7 +853,7 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
     Ok(())
 }
 
-/// SPEC-493 REV-006 (review round 1 of fix 1c): the reviews read counts only the sandboxes the
+/// The reviews read counts only the sandboxes the
 /// caller sees: a member of one of two counts its pull requests alone, and asking for the other
 /// by id is not found.
 #[tokio::test]
@@ -899,7 +899,7 @@ async fn the_reviews_read_counts_only_visible_sandboxes() -> TestResult {
                 merged_at: None,
             })
             .await?;
-        // SPEC-506 FST-007: the seen pull request's second round, after the approval, asked
+        // The seen pull request's second round, after the approval, asked
         // for changes.
         if id == "t-seen" {
             h.store
@@ -959,7 +959,7 @@ async fn the_reviews_read_counts_only_visible_sandboxes() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 MQC-005 (AC-15): the merge-queue read counts the candidates formed, merged and
+/// The merge-queue read counts the candidates formed, merged and
 /// dissolved by why, per day, from the audit entries of the sandboxes the caller sees, and the
 /// minutes from arming a merge to it; a hidden sandbox is not found.
 #[tokio::test]
@@ -1058,7 +1058,7 @@ async fn the_merge_queue_read_counts_candidates_from_the_audit_log() -> TestResu
         "{body}"
     );
     assert_eq!(body["dissolved_by"]["member_left"], 1, "{body}");
-    // SPEC-497 MQW-004: each dissolved candidate is listed with its why and whole reason.
+    // Each dissolved candidate is listed with its why and whole reason.
     let recent = body["dissolved_recent"]
         .as_array()
         .ok_or("dissolved_recent")?;
@@ -1087,7 +1087,7 @@ async fn the_merge_queue_read_counts_candidates_from_the_audit_log() -> TestResu
     Ok(())
 }
 
-/// SPEC-497 OFC-003: the merge queue's read counts CI minutes by how the runs ended: passed,
+/// The merge queue's read counts CI minutes by how the runs ended: passed,
 /// failed only for the infrastructure, cancelled, the thrown-away runs apart, and the share
 /// outside the change; another sandbox's run only for the admin.
 #[tokio::test]
@@ -1220,7 +1220,7 @@ async fn the_merge_queue_read_counts_ci_minutes_by_outcome() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497: once a minute the dispatcher keeps the host's load from CI (its CPUs busy since the
+/// Once a minute the dispatcher keeps the host's load from CI (its CPUs busy since the
 /// last reading, the CPUs running jobs reserved and measured, the jobs waiting), and
 /// `GET /api/analytics/ci-load` reads it by hour for anyone signed in; a reversed range is
 /// refused.
@@ -1360,7 +1360,7 @@ async fn the_docker_read_counts_restarts_give_ways_and_needs_you_per_week() -> T
     entry(OCT1 + HOUR, one.clone(), DOCKER_RESTARTED, "it stayed full").await?;
     entry(OCT1 + 2 * HOUR, one.clone(), DOCKER_GAVE_WAY, "3").await?;
     entry(OCT1 + 7 * 24 * HOUR, one.clone(), DOCKER_GAVE_WAY, "2").await?;
-    // SPEC-504 CLB-006: what CI jobs left, at their end and by the sweep.
+    // What CI jobs left, at their end and by the sweep.
     entry(
         OCT1 + 3 * HOUR,
         one.clone(),

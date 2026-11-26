@@ -249,7 +249,7 @@ impl Fixture {
     }
 
     /// Records a passed rollback drill of `dev` at `branch`'s head, so a production deploy of
-    /// that tree is not refused for its rollback (SPEC-415): for tests about something else.
+    /// that tree is not refused for its rollback: for tests about something else.
     pub(crate) async fn prove(&self, branch: &str) -> TestResult {
         let sha = self.head(branch)?;
         let id = format!("drill-{}", &sha[..12]);

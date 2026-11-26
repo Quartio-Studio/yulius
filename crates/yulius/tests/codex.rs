@@ -1,4 +1,4 @@
-//! Codex as a second harness with real processes (SPEC-503): supervisor → detached
+//! Codex as a second harness with real processes: supervisor → detached
 //! `yulius ptyhost` → fake agent writing a Codex CLI 0.169 shaped rollout. A Codex task runs on a
 //! Codex account in its own Codex home, its rollout is found and watched, its usage reaches its
 //! account, it moves to another Codex account at a usage limit by a native resume, a restart
@@ -155,7 +155,7 @@ fn a_codex_restart_checks_the_harness_and_history_of_legacy_records() -> TestRes
     })
 }
 
-/// SPEC-629 RBL-003: an idle Codex goal task on a subscription past the rebalance threshold
+/// An idle Codex goal task on a subscription past the rebalance threshold
 /// moves at the next pass to one with room, in the same conversation with nothing typed, and
 /// keeps its Done.
 #[test]
@@ -1719,7 +1719,7 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
     Ok(())
 }
 
-/// SPEC-503 CDX-006: the Codex home's `auth.json` is the agent's to write, so only a genuine
+/// The Codex home's `auth.json` is the agent's to write, so only a genuine
 /// refresh goes back into the vault. A newer one another run of the account left in the sandbox
 /// is taken at the next launch instead of being overwritten with the vault's older copy; one the
 /// agent forged (another ChatGPT account) is never taken.
@@ -1937,7 +1937,7 @@ fn a_contained_codex_run_sees_the_provided_codex_cli() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CLI-002: a Codex CLI that cannot be provided fails the start (its reason goes to the
+/// A Codex CLI that cannot be provided fails the start (its reason goes to the
 /// terminal's "Could not start" notice) before anything is spawned, instead of a run that dies
 /// with `codex: not found`.
 #[test]
@@ -2093,7 +2093,7 @@ fn codex_rotation_uses_task_effort(effort_override: Option<&str>) -> TestResult 
     Ok(())
 }
 
-/// SPEC-503 CDX-009: with no Codex account left with capacity, a Codex task waits instead of
+/// With no Codex account left with capacity, a Codex task waits instead of
 /// running on the Claude account.
 #[test]
 fn a_codex_task_waits_while_no_codex_account_has_capacity() -> TestResult {
@@ -2154,7 +2154,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFram
     said
 }
 
-/// SPEC-503 CDX-013, AC-503-7, with SPEC-447 (MOV-001, MOV-003, MOV-006): a Codex task moves only
+/// SPEC-503 CDX-013, AC-503-7, with SPEC-447: a Codex task moves only
 /// between Codex subscriptions. A person's move to the Claude subscription is refused naming why;
 /// removing its Codex subscription moves it to the other Codex one in the same session, never to
 /// the Claude one that has room; removing that one too leaves it waiting, asking for a Codex
@@ -2309,7 +2309,7 @@ fn a_codex_task_moves_only_between_codex_subscriptions() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-013 and CDX-006: Continue on a Claude subscription is refused up front for a
+/// Continue on a Claude subscription is refused up front for a
 /// Codex task, which keeps resting instead of failing; and a Codex start whose subscription is
 /// removed just after it was chosen (SPEC-447's race point) starts on the other Codex one without
 /// leaving the removed one's credentials in the sandbox.
@@ -2438,7 +2438,7 @@ fn a_codex_start_that_loses_its_subscription_leaves_no_credentials() -> TestResu
     Ok(())
 }
 
-/// SPEC-503 CDX-006: when the account is gone by the run's end (removed or
+/// When the account is gone by the run's end (removed or
 /// signed out meanwhile), its credentials do not stay in the sandbox for later tasks to read.
 #[test]
 fn a_gone_accounts_codex_credentials_leave_the_sandbox() -> TestResult {
@@ -2699,7 +2699,7 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
             assert!(!run_dir.join(marker).exists(), "{marker}");
         }
         // Without a model or effort of its own it runs GPT-6.2 Astra at high effort, recorded for
-        // the run and named for the task, never a Claude model (SPEC-511 CXD-002, CDX-013).
+        // the run and named for the task, never a Claude model.
         assert_eq!(attempt.model.as_deref(), Some("gpt-6.2-astra"));
         let ctx = admin_ctx(&app, &user).await?;
         let detail = app.task_detail(&ctx, id.as_str()).await?;
@@ -2708,7 +2708,7 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
         assert_eq!(detail.effort.as_deref(), Some("high"));
         assert!(detail.effort_default);
         // The pool weighs the task by the model its run was launched with, so a subscription
-        // it is at the limit of is left out (SPEC-511 review): one family for both.
+        // it is at the limit of is left out: one family for both.
         let record = task(&app, &id).await?;
         let input = app.rotation_input(&record, Some(account.clone())).await?;
         assert_eq!(input.running, Some(input.family));
@@ -3096,7 +3096,7 @@ async fn run_codex_task(
     Ok(())
 }
 
-/// SPEC-503 CDX-011, CDX-006: a sign-in imported as an `auth.json` (from `codex login` on a
+/// A sign-in imported as an `auth.json` (from `codex login` on a
 /// laptop) is what a Codex task's home gets; the tokens Codex refreshes during the run go back
 /// into the account; and a later import replaces them for the next run.
 #[test]
@@ -3269,7 +3269,7 @@ fn new_and_resumed_codex_sessions_choose_the_subscription_with_more_quota() -> T
     })
 }
 
-/// SPEC-503 CDX-010: the capacity view (the Dashboard's Subscriptions card) names each
+/// The capacity view (the Dashboard's Subscriptions card) names each
 /// subscription's provider, and with nothing available it resumes when the first subscription
 /// of any provider does, a Codex one included.
 #[test]

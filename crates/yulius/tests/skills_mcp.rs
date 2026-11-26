@@ -66,7 +66,7 @@ fn inode(path: &Path) -> std::io::Result<u64> {
     Ok(std::fs::symlink_metadata(path)?.ino())
 }
 
-/// SPEC-507 AC-1, AC-2, AC-4, AC-5: a server start with a changed skill refreshes the copy in a
+/// A server start with a changed skill refreshes the copy in a
 /// sandbox whose task is running, rewrites nothing else, leaves the agent's own skill alone, skips
 /// a sandbox without a home, logs a sandbox whose skills folder is behind a link and goes on, and
 /// audits what it did; a switched skill reaches the home at once.
@@ -188,7 +188,7 @@ async fn a_server_start_refreshes_every_sandboxs_skills() -> TestResult {
         1
     );
 
-    // A switched skill reaches the home at once (SKR-003).
+    // A switched skill reaches the home at once.
     let off = call(
         &w.h.router,
         Method::PUT,
@@ -227,7 +227,7 @@ async fn a_server_start_refreshes_every_sandboxs_skills() -> TestResult {
     Ok(())
 }
 
-/// SPEC-507 review round 2: a repository `SKILL.md` an agent swaps for a FIFO after the catalog
+/// A repository `SKILL.md` an agent swaps for a FIFO after the catalog
 /// checked it, right before the open, never holds the server's start.
 #[tokio::test]
 async fn a_skill_md_swapped_for_a_fifo_never_holds_the_start() -> TestResult {
@@ -262,7 +262,7 @@ async fn a_skill_md_swapped_for_a_fifo_never_holds_the_start() -> TestResult {
     Ok(())
 }
 
-/// SPEC-507 review round 2: a `SKILL.md` that is a link to a file in its own skill is listed and
+/// A `SKILL.md` that is a link to a file in its own skill is listed and
 /// shown, as before the catalog opened files without following links.
 #[tokio::test]
 async fn a_linked_skill_md_inside_its_skill_is_shown() -> TestResult {
@@ -291,7 +291,7 @@ async fn a_linked_skill_md_inside_its_skill_is_shown() -> TestResult {
     Ok(())
 }
 
-/// SPEC-507 SKR-003, SKR-004 (review round 2): a switch whose request is dropped while its
+/// A switch whose request is dropped while its
 /// refresh waits for the launch lock still refreshes the home and audits it.
 #[tokio::test]
 async fn a_switch_dropped_while_it_waits_still_refreshes_the_home() -> TestResult {
@@ -370,7 +370,7 @@ async fn a_switch_dropped_while_it_waits_still_refreshes_the_home() -> TestResul
     Ok(())
 }
 
-/// SPEC-507 SKR-003 (review round 3): two switches in a row leave the home as the last one
+/// Two switches in a row leave the home as the last one
 /// stored, whichever refresh runs last: a refresh reads the skills under the launch lock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_home_follows_the_last_of_two_switches() -> TestResult {
@@ -965,7 +965,7 @@ async fn test_server(w: &World, creds: &Creds, id: &str) -> Result<(StatusCode, 
     Ok((r.status, r.body))
 }
 
-/// MCP-003: a secret value may be a reference to an agent secret, `${secret:NAME}`. It is kept
+/// A secret value may be a reference to an agent secret, `${secret:NAME}`. It is kept
 /// write-only like any value and resolved when a run starts through the vault's hook; while
 /// nothing answers to it, the run gets the server without that variable or token (never the
 /// literal reference). Plain values are attached as before.

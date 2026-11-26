@@ -1,4 +1,4 @@
-//! SPEC-580: Antigravity armed green PRs parked with background `yulius wait`,
+//! Antigravity armed green PRs parked with background `yulius wait`,
 //! fresh PR conflict reporting and immediate arm drop on conflict, and bounded
 //! check-in -> Needs You escalation for stalled armed green PRs.
 
@@ -782,7 +782,7 @@ async fn stalled_armed_green_pr_checks_in_then_escalates_to_needs_you_and_auto_c
         "notice must say why the PR waits: {notice:?}"
     );
 
-    // Verify tasks_list and task_get parity (SPEC-578).
+    // Verify tasks_list and task_get parity.
     let caller = yulius_app::coordination::ProjectCaller {
         sandbox: f.sandbox.clone(),
         user: task.owner.clone(),
