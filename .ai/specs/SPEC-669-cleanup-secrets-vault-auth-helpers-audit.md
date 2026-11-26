@@ -108,7 +108,9 @@ before and their existing tests pass unchanged.
   `read_login_file` keeps its path signature (its tests are unchanged): its folder is opened by
   path and the file below it without following a link, so a link swapped in after the old
   `symlink_metadata` check is no longer followed (the audit's one stated change; the texts stay).
-  The run readers zero an oversized or half-read Codex copy too, as the Antigravity one did.
+  The run readers zero an oversized or half-read Codex copy too, as the Antigravity one did. One
+  corner differs: a `codex` folder the server may search but not list (never made so: it is
+  created 0700) now refuses with "did not store credentials", as the folder is opened to read.
 - F3: the credential constants live once in `yulius_domain::harness` and `yulius-harness`
   re-exports them: the app may not depend on an adapter crate, so "export them from
   yulius-harness" would not reach `accounts.rs` and the supervisor.
@@ -127,7 +129,8 @@ before and their existing tests pass unchanged.
   - F6: PR #1822 (round 2 approved after the restored changes log and a whole-value assertion);
   - F7: PR #1823;
   - F8: PR #1827;
-  - F3: this pull request.
+  - F3: PR #1828 (approved; its two minors, a file refused unread by its metadata and a socket
+    as "not usable", are fixed in its last product commit).
 - For each PR: `cargo clippy --workspace --all-targets -- -D warnings` was clean, and
   `cargo test -p yulius-app --lib` passed in full (741 to 744 tests). The touched crates'
   tests passed: contracts, github, import, harness, store, server, egress and domain, as each
@@ -136,8 +139,8 @@ before and their existing tests pass unchanged.
   `watches::run_bounds_are_enforced`. That test fails in this sandbox and on `dev` alike
   (SIGXFSZ instead of EFBIG, #1795). `context_full::a_compaction_held_at_a_restart_is_taken_up_again`
   failed once with `AddrInUse` on the shared host and passed 5/5 alone.
-- Q3: both authorisation gaps are real. They were reported to the owner (`needs_you`) and are
-  fixed by task #659, not here:
+- Q3: both authorisation gaps are real. They were reported to the owner (`needs_you`) and task
+  #659 (PR #1821, in review) fixes them, not this task:
   - `hooks.rs` `agent_git_credential` gives a disabled person's runs a token;
   - `handoffs.rs` `answer_handoff` checks the owner, not Control.
 - Not done:

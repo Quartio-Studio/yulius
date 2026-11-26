@@ -206,8 +206,9 @@ pub(crate) enum Bounded {
 }
 
 /// Reads the file `name` in the folder `dir`, opened without following a link or waiting on a
-/// FIFO, at most `max` bytes. The room is reserved first and a copy not handed back is zeroed, so
-/// no partial or oversized copy is left in memory.
+/// FIFO, at most `max` bytes: a file larger by its metadata is refused unread, and the read is
+/// bounded too. The room is reserved first and a copy not handed back is zeroed, so no partial or
+/// oversized copy is left in memory.
 ///
 /// # Errors
 /// The open's error (`NotFound`, a link's `ELOOP`) or the read's.
@@ -215,8 +216,12 @@ pub(crate) fn read_bounded_at(dir: &OwnedFd, name: &OsStr, max: usize) -> std::i
     use std::io::Read as _;
     let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
     let file = std::fs::File::from(openat(dir, name, flags, Mode::empty())?);
-    if !file.metadata()?.is_file() {
+    let meta = file.metadata()?;
+    if !meta.is_file() {
         return Ok(Bounded::NotPlain);
+    }
+    if meta.len() > u64::try_from(max).unwrap_or(u64::MAX) {
+        return Ok(Bounded::TooLarge);
     }
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(max + 1));
     file.take(u64::try_from(max + 1).unwrap_or(u64::MAX))
