@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::wiring::http::{BodyError, read_bounded};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use yulius_app::model::Secret;
@@ -97,10 +98,7 @@ impl ChannelConnector for TelegramBots {
                     .into(),
             );
         }
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
-            .redirect(reqwest::redirect::Policy::none())
+        let http = super::http::client_builder()
             .build()
             .map_err(|_| "the Telegram client could not be set up".to_owned())?;
         Ok(Arc::new(TelegramBot {
@@ -174,19 +172,14 @@ impl TelegramBot {
             409 => return Err(Channel(ChannelError::Conflict)),
             _ => return Err(Channel(ChannelError::Unavailable)),
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| Channel(ChannelError::Unavailable))?
-        {
-            if bytes.len() + chunk.len() > MAX_ANSWER_BYTES {
-                bytes.extend_from_slice(&chunk);
-                bytes.truncate(HEAD_BYTES);
-                return Err(CallFailure::TooLarge(bytes));
+        let bytes = match read_bounded(&mut response, MAX_ANSWER_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(BodyError::Read(_)) => return Err(Channel(ChannelError::Unavailable)),
+            Err(BodyError::TooLarge(mut head)) => {
+                head.truncate(HEAD_BYTES);
+                return Err(CallFailure::TooLarge(head));
             }
-            bytes.extend_from_slice(&chunk);
-        }
+        };
         let answer: Value =
             serde_json::from_slice(&bytes).map_err(|_| Channel(ChannelError::Invalid))?;
         if answer.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -405,18 +398,12 @@ impl NotificationChannel for TelegramBot {
         if !response.status().is_success() {
             return Err(ChannelError::Unavailable);
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
+        read_bounded(&mut response, usize::try_from(max).unwrap_or(usize::MAX))
             .await
-            .map_err(|_| ChannelError::Unavailable)?
-        {
-            if u64::try_from(bytes.len() + chunk.len()).unwrap_or(u64::MAX) > max {
-                return Err(ChannelError::TooLarge);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(bytes)
+            .map_err(|e| match e {
+                BodyError::Read(_) => ChannelError::Unavailable,
+                BodyError::TooLarge(_) => ChannelError::TooLarge,
+            })
     }
 
     async fn receive(&self, cursor: Option<&str>) -> Result<Received, ChannelError> {

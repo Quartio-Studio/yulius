@@ -173,7 +173,7 @@ class DecisionSlots(unittest.TestCase):
             shared = git("rev-parse", "HEAD")
             git("update-ref", "refs/remotes/origin/dev", shared)
             name = f"{number}-tree-evidence.md"
-            (decisions / name).write_text(f"# {number}. Tree evidence\n")
+            (decisions / name).write_text(f"# {number}. Tree evidence\n\n## Alternatives\n\n- One: no.\n- Two: no.\n")
             index.write_text(extend(layout.replace(marker, f"- [{number}]({name}) Tree evidence.\n" + marker)))
             git("add", ".")
             tree = git("write-tree")
