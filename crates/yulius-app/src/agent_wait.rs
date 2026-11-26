@@ -172,6 +172,7 @@ impl ArmedSlot {
     /// Nothing is armed any more (merged at once by `delivery_merge`); a decision in progress is
     /// superseded.
     fn clear(&mut self) {
+        self.under_decision = None;
         self.generation += 1;
         self.retirement_pending = None;
         self.merge = None;
@@ -197,7 +198,9 @@ impl ArmedSlot {
     /// merge was armed (or cleared) meanwhile. Returns whether the armed merge changed (to save).
     fn finish(&mut self, deciding: &Deciding, verdict: Verdict) -> bool {
         self.deciding = self.deciding.saturating_sub(1);
-        self.under_decision = None;
+        if self.deciding == 0 {
+            self.under_decision = None;
+        }
         let note = self.pending_note.take();
         if self.generation != deciding.generation {
             return false;

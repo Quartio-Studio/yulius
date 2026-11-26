@@ -161,7 +161,7 @@ pub struct MergeStop {
     pub failures: Vec<MergeStopFailure>,
     /// The red run to read and run again.
     pub run_id: String,
-    /// The armed merges it holds, by task number.
+    /// The armed merges it holds, in the order they were armed.
     #[serde(default)]
     pub waiting: Vec<MergeStopWaiting>,
 }

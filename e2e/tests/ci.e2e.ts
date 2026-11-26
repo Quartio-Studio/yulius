@@ -509,7 +509,8 @@ test('readers see the stopped queue and can review the red run, not rerun it', a
 
 test('a focused stopped-queue link keeps the keyboard when its run moves, and lets go when the stop clears', async ({ app, browser, screen }) => {
   type Mock = { __yuliusMock: { ci: { sb_studio: { merge_stop: { run_id: string } | null } } } };
-  await app.open(mock('/s/studio/ci', '&merge_stop=1'));
+  // Beside the gate notice's banner: each link keeps a key of its own.
+  await app.open(mock('/s/studio/ci', '&merge_stop=1&gate_notice=1'));
   const focused = () => browser.evaluate(() => (document.activeElement as HTMLAnchorElement | null)?.getAttribute('href') ?? document.activeElement?.getAttribute('aria-label'));
   await screen.getByRole('link', 'Review and rerun the red run').focus();
   await browser.evaluate(() => {
