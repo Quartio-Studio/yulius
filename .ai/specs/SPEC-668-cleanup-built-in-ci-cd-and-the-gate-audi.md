@@ -1,6 +1,6 @@
 ---
 yulius-task: 5827cfb1-ecdb-452d-aa9a-c60afa00bdba
-status: in-progress
+status: done
 ---
 
 # SPEC-668: Cleanup: built-in CI/CD and the gate (audit L3)
@@ -40,11 +40,11 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 - [x] PR4: [disk] validated by parse_yulius_toml (test first)
 - [x] PR4: vidoc.rs on the TOML parser; one frontmatter, one clip, doctests folded
 - [x] PR4: review approved and merged into dev
-- [ ] PR5: move-only split of ci_job
-- [ ] PR5: move-only split of cd_prepare into cd_resolve_target and cd_promote_for
-- [ ] PR5: F6 production pinning without staging simplified in cd_promote_for
-- [ ] PR5: review approved and merged into dev
-- [ ] Closing summary with what changed, verification and Not done
+- [x] PR5: move-only split of ci_job
+- [x] PR5: move-only split of cd_prepare into cd_resolve_target and cd_promote_for
+- [x] PR5: F6 checked against product's CD and reported to the owner, not changed
+- [x] PR5: review approved
+- [x] Closing summary with what changed, verification and Not done
 
 ## Acceptance criteria
 
@@ -59,3 +59,20 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 
 - Bootstrap runs in `scripts/dev` under `YULIUS_CI`, not in xtask: xtask is compiled by the
   toolchain bootstrap installs.
+- F6 is not done: Quartio-Studio/product (`[cd.prod] promote = true`, no rollback, dev without
+  `merge_first`) reaches the pinning branches on its CD page and before its production deploy's
+  rollback refusal, so removing them changes what it shows. That is the owner's decision.
+
+## Evidence
+
+- PR1 #1773 (F7, F11) merged at 05bb2b303: CI job commands are `scripts/dev <gate>`; `quality`
+  no longer compiles. Checker tests 282, xtask 33, yulius-domain 665 passed.
+- PR2 #1785 (F1) merged at f7c17b14f: one `test` job. Dev run before `6e8a3467` 6m39s (shards
+  6m06s and 4m41s); after `ca4bd9b0` 7m12s (`test` 6m04s; e2e 7m00s sets the run).
+- PR3 #1799 (F2) merged at 5ed478be5: prove-on-dev deleted after reading the CD tables of
+  yulius, quartio-v2, autoresearch, product, studio, Branding and VistulaValley. 5027 tests and
+  the CD e2e spec (27) passed.
+- PR4 #1806 (F8a, F12) merged at 1986071cc: shared config readers, `[disk]` checked, vidoc.toml
+  read as TOML; 5061 tests passed; reviewer differentials of 13k config and 19k frontmatter files.
+- PR5 (F5): move-only splits of `ci_job` and `cd_prepare`; 4946 tests of yulius, yulius-app and
+  yulius-domain passed.
